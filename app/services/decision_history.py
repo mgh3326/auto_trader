@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.investment_reports import InvestmentReportItem
+from app.models.review import TradeRetrospective
 from app.services.trade_journal.forecast_service import _normalize_symbol_for_filter
 
 MARKET_TO_INSTRUMENT = {"kr": "equity_kr", "us": "equity_us", "crypto": "crypto"}
@@ -67,11 +68,15 @@ async def build_decision_context(
 
     prior_decisions = await _prior_decisions(db, norm)
 
+    lessons, outcomes = await _retrospectives(db, norm)
+
     ctx: dict[str, Any] = {
         "symbol": norm,
         "market": market,
         "link_quality": "symbol_window",
         "prior_decisions": prior_decisions,
+        "prior_lessons": lessons,
+        "realized_outcomes": outcomes,
     }
     return ctx
 
@@ -101,3 +106,35 @@ async def _prior_decisions(db: AsyncSession, symbol: str) -> list[dict[str, Any]
         if len(out) >= MAX_DECISIONS:
             break
     return out
+
+async def _retrospectives(
+    db: AsyncSession, symbol: str
+) -> tuple[list[str], list[dict[str, Any]]]:
+    rows = (
+        await db.execute(
+            select(TradeRetrospective)
+            .where(TradeRetrospective.symbol == symbol)
+            .order_by(TradeRetrospective.created_at.desc())
+        )
+    ).scalars().all()
+    lessons: list[str] = []
+    outcomes: list[dict[str, Any]] = []
+    for r in rows:
+        if _is_smoke(r.created_by_profile, r.strategy_key, r.correlation_id, r.lesson):
+            continue
+        if r.lesson and r.lesson.strip() and len(lessons) < MAX_LESSONS:
+            lessons.append(_truncate(r.lesson))
+        if len(outcomes) < MAX_OUTCOMES:
+            outcomes.append(
+                {
+                    "date": r.created_at.date().isoformat() if r.created_at else None,
+                    "side": r.side,
+                    "outcome": r.outcome,
+                    "trigger_type": r.trigger_type,
+                    "pnl_pct": float(r.pnl_pct) if r.pnl_pct is not None else None,
+                    "realized_pnl": (
+                        float(r.realized_pnl) if r.realized_pnl is not None else None
+                    ),
+                }
+            )
+    return lessons, outcomes

@@ -9,11 +9,21 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
+import pytest_asyncio
+from sqlalchemy import delete
+from app.models.review import (
+    KISLiveOrderLedger,
+    LiveOrderLedger,
+    TossLiveOrderLedger,
+    TradeForecast,
+)
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.investment_reports import InvestmentReport, InvestmentReportItem
+from app.models.review import TradeRetrospective
 from app.services.decision_history import build_decision_context
 
 pytestmark = [
@@ -22,7 +32,37 @@ pytestmark = [
 ]
 
 
+
+@pytest_asyncio.fixture(autouse=True)
+async def _cleanup_decision_history(db_session: AsyncSession):
+    """Reset review-spine tables we touch (keeps tests parallel-safe via
+    investment_reports_cleanup_lock at the module level)."""
+    for model in (
+        TradeRetrospective,
+        TradeForecast,
+        KISLiveOrderLedger,
+        LiveOrderLedger,
+        TossLiveOrderLedger,
+    ):
+        await db_session.execute(delete(model))
+    await db_session.commit()
+    try:
+        yield
+    finally:
+        for model in (
+            TradeRetrospective,
+            TradeForecast,
+            KISLiveOrderLedger,
+            LiveOrderLedger,
+            TossLiveOrderLedger,
+        ):
+            await db_session.execute(delete(model))
+        await db_session.commit()
+
+
 async def _make_report(db: AsyncSession, **overrides) -> InvestmentReport:
+
+
     payload = {
         "report_uuid": uuid.uuid4(),
         "idempotency_key": f"key-{uuid.uuid4()}",
@@ -94,3 +134,55 @@ async def test_prior_decisions_newest_first_capped_and_smoke_filtered(
     assert len(decisions) == 6  # capped
     assert decisions[0]["rationale"] == "real decision 7"  # newest first
     assert all("Smoke" not in d["rationale"] for d in decisions)  # smoke excluded
+
+
+async def _add_retro(db: AsyncSession, **overrides) -> None:
+    payload = {
+        "symbol": "005930",
+        "instrument_type": "equity_kr",
+        "account_mode": "upbit_live",
+        "outcome": "filled",
+        "side": "sell",
+        "strategy_key": "resistance_ladder",
+        "correlation_id": f"live:{uuid.uuid4()}",
+        "realized_pnl": Decimal("33914.0000"),
+        "realized_pnl_currency": "KRW",
+        "realized_pnl_source": "caller_supplied",
+        "pnl_pct": Decimal("11.9000"),
+        "trigger_type": "fill",
+        "lesson": "앵커+러너 분할이 작동",
+        "next_strategy": None,
+    }
+    payload.update(overrides)
+    db.add(TradeRetrospective(**payload))
+    await db.flush()
+
+
+@pytest.mark.asyncio
+async def test_lessons_and_outcomes_smoke_filtered_and_capped(
+    db_session: AsyncSession,
+) -> None:
+    await _add_retro(db_session, symbol="KRW-JUP", lesson="real lesson A")
+    await _add_retro(db_session, symbol="KRW-JUP", lesson="real lesson B")
+    # smoke row: created_by_profile carries SMOKE marker
+    await _add_retro(
+        db_session,
+        symbol="KRW-JUP",
+        created_by_profile="HERMES_OPERATOR_SMOKE",
+        strategy_key="rob474_smoke_x",
+        correlation_id="rob474-smoke-x",
+        lesson="correlation_id upsert is idempotent",
+    )
+    await db_session.commit()
+
+    ctx = await build_decision_context(db_session, symbol="KRW-JUP", market="crypto")
+
+    assert ctx is not None
+    assert "real lesson A" in ctx["prior_lessons"]
+    assert "real lesson B" in ctx["prior_lessons"]
+    assert all("idempotent" not in les for les in ctx["prior_lessons"])
+    assert len(ctx["realized_outcomes"]) == 2  # smoke excluded
+    first = ctx["realized_outcomes"][0]
+    assert first["pnl_pct"] == 11.9
+    assert first["realized_pnl"] == 33914.0
+    assert first["outcome"] == "filled"
