@@ -437,9 +437,7 @@ class StockDetailDecisionHistory(BaseModel):
     realizedOutcomes: list[StockDetailDecisionHistoryOutcome] = Field(
         default_factory=list
     )
-    openClaims: list[StockDetailDecisionHistoryOpenClaim] = Field(
-        default_factory=list
-    )
+    openClaims: list[StockDetailDecisionHistoryOpenClaim] = Field(default_factory=list)
     runningBrierSymbol: StockDetailDecisionHistoryBrier = Field(
         default_factory=StockDetailDecisionHistoryBrier
     )

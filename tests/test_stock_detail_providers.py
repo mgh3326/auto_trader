@@ -415,7 +415,11 @@ async def test_decision_history_provider_maps_payload(monkeypatch):
             }
         ],
         "running_brier_symbol": {"n": 12, "mean_brier": 0.18, "flag": "ok"},
-        "running_brier_global": {"n": 4, "mean_brier": None, "flag": "insufficient_sample"},
+        "running_brier_global": {
+            "n": 4,
+            "mean_brier": None,
+            "flag": "insufficient_sample",
+        },
     }
 
     async def fake_build(db, symbol, market):
