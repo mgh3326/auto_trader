@@ -114,6 +114,42 @@ async def test_retrospectives_grouped_by_item_uuid(db_session: AsyncSession) -> 
 
 
 @pytest.mark.asyncio
+async def test_forecast_projection_includes_correlation_id(
+    db_session: AsyncSession,
+) -> None:
+    item_uuid = uuid4()
+    db_session.add(
+        _forecast(
+            str(item_uuid),
+            correlation_id="live:kis_live:xyz",
+        )
+    )
+    await db_session.flush()
+
+    result = await list_forecasts_for_item_uuids(db_session, [item_uuid])
+
+    assert result[str(item_uuid)][0].correlation_id == "live:kis_live:xyz"
+
+
+@pytest.mark.asyncio
+async def test_retrospective_projection_includes_correlation_id(
+    db_session: AsyncSession,
+) -> None:
+    item_uuid = uuid4()
+    db_session.add(
+        _retro(
+            str(item_uuid),
+            correlation_id="live:kis_live:retro-1",
+        )
+    )
+    await db_session.flush()
+
+    result = await list_retrospectives_for_item_uuids(db_session, [item_uuid])
+
+    assert result[str(item_uuid)][0].correlation_id == "live:kis_live:retro-1"
+
+
+@pytest.mark.asyncio
 async def test_empty_input_returns_empty_dict(db_session: AsyncSession) -> None:
     assert await list_forecasts_for_item_uuids(db_session, []) == {}
     assert await list_retrospectives_for_item_uuids(db_session, []) == {}
