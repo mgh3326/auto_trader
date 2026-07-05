@@ -197,7 +197,6 @@ async def test_reconcile_buy_journal_receives_correlation_id(monkeypatch, db_ses
         _order_session_factory,
         _save_kis_live_order_ledger,
     )
-    from app.mcp_server.tooling.order_journal import _create_trade_journal_for_buy
     from app.models.review import KISLiveOrderLedger
 
     captured = {}
