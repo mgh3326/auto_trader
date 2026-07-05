@@ -20,6 +20,7 @@ from app.mcp_server.tooling.analysis_screen_core import normalize_screen_request
 from app.mcp_server.tooling.earnings_context import (
     _kr_ingestion_freshness,
     build_earnings_context,
+    normalize_earnings_market,
 )
 from app.mcp_server.tooling.market_data_indicators import (
     _fetch_ohlcv_for_indicators,
@@ -908,7 +909,9 @@ async def _attach_earnings(
                 if not isinstance(result, dict) or "error" in result:
                     continue
                 mkt = result.get("market_type") or market
-                if str(mkt or "").strip().lower() == "kr" and kr_freshness is None:
+                if normalize_earnings_market(str(mkt or "")) == "kr" and (
+                    kr_freshness is None
+                ):
                     try:
                         kr_freshness = await _kr_ingestion_freshness(db)
                     except Exception:  # fail-open: freshness is advisory
