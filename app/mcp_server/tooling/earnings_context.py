@@ -19,11 +19,11 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.market_events import MarketEventIngestionPartition
-from app.services.market_events.freshness_service import _ensure_aware, _is_stale
 from app.mcp_server.tooling.fundamentals._financials import (
     handle_get_earnings_calendar,
 )
+from app.models.market_events import MarketEventIngestionPartition
+from app.services.market_events.freshness_service import _ensure_aware, _is_stale
 
 _WINDOW_DAYS = 30
 _TIMING_MAP = {"bmo": "BMO", "amc": "AMC", "dmh": "DMH"}
@@ -43,9 +43,11 @@ def _compact_earnings(
     data_as_of: str | None,
 ) -> dict[str, Any]:
     source = tool_result.get("source")
-    market_label = "kr" if (
-        tool_result.get("market") == "kr" or source == "market_events"
-    ) else "us"
+    market_label = (
+        "kr"
+        if (tool_result.get("market") == "kr" or source == "market_events")
+        else "us"
+    )
 
     ctx: dict[str, Any] = {
         "symbol": tool_result.get("symbol"),
@@ -114,8 +116,13 @@ async def _kr_ingestion_freshness(db: AsyncSession) -> tuple[str, str | None]:
     if finished_at is None:
         return ("unknown", None)
     aware = _ensure_aware(finished_at)
-    freshness = "stale" if _is_stale(aware, now=datetime.datetime.now(datetime.UTC)) else "fresh"
+    freshness = (
+        "stale"
+        if _is_stale(aware, now=datetime.datetime.now(datetime.UTC))
+        else "fresh"
+    )
     return (freshness, aware.date().isoformat())
+
 
 _EQUITY_MARKETS = {"kr", "us"}
 

@@ -17,6 +17,10 @@ import yfinance as yf
 
 from app.mcp_server.tooling import analysis_screening, foreigners_liquidity
 from app.mcp_server.tooling.analysis_screen_core import normalize_screen_request
+from app.mcp_server.tooling.earnings_context import (
+    _kr_ingestion_freshness,
+    build_earnings_context,
+)
 from app.mcp_server.tooling.market_data_indicators import (
     _fetch_ohlcv_for_indicators,
 )
@@ -33,10 +37,6 @@ from app.mcp_server.tooling.shared import (
 from app.monitoring import yfinance_tracing_session
 from app.services.brokers.kis.client import KISClient
 from app.services.decision_history import build_decision_context
-from app.mcp_server.tooling.earnings_context import (
-    _kr_ingestion_freshness,
-    build_earnings_context,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -924,8 +924,6 @@ async def _attach_earnings(
                     result["earnings"] = ctx
     except Exception as exc:  # fail-open: advisory-only
         logger.debug("earnings injection skipped: %s", exc)
-
-
 
 
 async def analyze_stock_batch_impl(

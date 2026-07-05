@@ -10,8 +10,12 @@ from app.mcp_server.tooling import analysis_tool_handlers as h
 @pytest.mark.asyncio
 async def test_attach_earnings_injects_when_context_exists(monkeypatch):
     async def _fake_build(symbol, market, *, today=None, kr_freshness=None):
-        return {"symbol": symbol, "market": market, "has_upcoming": False,
-                "next_earnings": None}
+        return {
+            "symbol": symbol,
+            "market": market,
+            "has_upcoming": False,
+            "next_earnings": None,
+        }
 
     async def _fake_kr_fresh(db):
         return ("fresh", "2026-07-06")
@@ -56,6 +60,6 @@ async def test_attach_earnings_skips_error_and_crypto_rows(monkeypatch):
     }
     await h._attach_earnings(results, market=None)
 
-    assert "earnings" not in results["BADSYM"]      # error row skipped pre-build
-    assert "earnings" not in results["BTC"]         # build returns None → omit
+    assert "earnings" not in results["BADSYM"]  # error row skipped pre-build
+    assert "earnings" not in results["BTC"]  # build returns None → omit
     assert results["NVDA"]["earnings"] == {"symbol": "NVDA"}  # equity attached

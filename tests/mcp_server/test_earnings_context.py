@@ -28,11 +28,19 @@ def test_compact_earnings_us_upcoming_picks_nearest_future():
         "earnings": [
             {"date": "2026-01-01", "hour": "amc"},  # past — excluded
             {"date": "2026-07-25", "hour": "bmo", "eps_estimate": 0.9},
-            {"date": "2026-07-18", "hour": "amc", "eps_estimate": 0.84,
-             "revenue_estimate": 26500000000, "quarter": 2, "year": 2026},
+            {
+                "date": "2026-07-18",
+                "hour": "amc",
+                "eps_estimate": 0.84,
+                "revenue_estimate": 26500000000,
+                "quarter": 2,
+                "year": 2026,
+            },
         ],
     }
-    ctx = ec._compact_earnings(tool_result, today=TODAY, freshness="live", data_as_of=None)
+    ctx = ec._compact_earnings(
+        tool_result, today=TODAY, freshness="live", data_as_of=None
+    )
     assert ctx["market"] == "us"
     assert ctx["source"] == "finnhub"
     assert ctx["freshness"] == "live"
@@ -41,7 +49,7 @@ def test_compact_earnings_us_upcoming_picks_nearest_future():
     assert "data_as_of" not in ctx
     assert ctx["has_upcoming"] is True
     ne = ctx["next_earnings"]
-    assert ne["date"] == "2026-07-18"       # nearest future, not the earlier past row
+    assert ne["date"] == "2026-07-18"  # nearest future, not the earlier past row
     assert ne["d_minus"] == 12
     assert ne["timing"] == "AMC"
     assert ne["eps_estimate"] == 0.84
@@ -50,7 +58,9 @@ def test_compact_earnings_us_upcoming_picks_nearest_future():
 
 def test_compact_earnings_no_upcoming_is_explicit_signal():
     tool_result = {"symbol": "HCA", "source": "finnhub", "earnings": []}
-    ctx = ec._compact_earnings(tool_result, today=TODAY, freshness="live", data_as_of=None)
+    ctx = ec._compact_earnings(
+        tool_result, today=TODAY, freshness="live", data_as_of=None
+    )
     assert ctx["has_upcoming"] is False
     assert ctx["next_earnings"] is None
     assert ctx["note"] == "no scheduled earnings within 30 days"
@@ -62,8 +72,13 @@ def test_compact_earnings_kr_carries_freshness_and_data_as_of():
         "market": "kr",
         "source": "market_events",
         "earnings": [
-            {"date": "2026-07-25", "time_hint": "unknown", "status": "scheduled",
-             "quarter": 2, "year": 2026},
+            {
+                "date": "2026-07-25",
+                "time_hint": "unknown",
+                "status": "scheduled",
+                "quarter": 2,
+                "year": 2026,
+            },
         ],
     }
     ctx = ec._compact_earnings(
@@ -79,7 +94,9 @@ def test_compact_earnings_kr_carries_freshness_and_data_as_of():
 
 def test_compact_earnings_error_payload_degrades():
     tool_result = {"symbol": "NVDA", "source": "finnhub", "error": "429 quota"}
-    ctx = ec._compact_earnings(tool_result, today=TODAY, freshness="live", data_as_of=None)
+    ctx = ec._compact_earnings(
+        tool_result, today=TODAY, freshness="live", data_as_of=None
+    )
     assert ctx["has_upcoming"] is False
     assert ctx["next_earnings"] is None
     assert "degraded" in ctx["note"]
@@ -140,7 +157,8 @@ async def test_build_earnings_context_us_calls_handler_and_shapes(monkeypatch):
         assert from_date == "2026-07-06"
         assert to_date == "2026-08-05"  # today + 30d
         return {
-            "symbol": "NVDA", "source": "finnhub",
+            "symbol": "NVDA",
+            "source": "finnhub",
             "earnings": [{"date": "2026-07-18", "hour": "amc", "eps_estimate": 0.84}],
         }
 
@@ -156,7 +174,9 @@ async def test_build_earnings_context_us_calls_handler_and_shapes(monkeypatch):
 async def test_build_earnings_context_kr_uses_passed_freshness(monkeypatch):
     async def _fake_handler(symbol, from_date, to_date, market):
         return {
-            "symbol": "005930", "market": "kr", "source": "market_events",
+            "symbol": "005930",
+            "market": "kr",
+            "source": "market_events",
             "earnings": [{"date": "2026-07-25", "time_hint": "unknown"}],
         }
 
