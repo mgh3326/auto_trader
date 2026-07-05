@@ -830,3 +830,69 @@ async def test_reconcile_booked_fill_notification_failure_is_fail_open(db_sessio
     assert out["action"] == "booked"
     assert out["fill_notified"] is False
     notifier.notify_fill.assert_awaited_once()
+
+
+async def test_reconcile_buy_journal_backfills_correlation_id(db_session):
+    """ROB-714: reconcile-time buy journal must carry the ledger row's
+    correlation_id. Drives the REAL _reconcile_one_toss_row (KR path)."""
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.mcp_server.tooling.toss_live_evidence import TossFillEvidence
+
+    row = await TossLiveOrderLedgerService(db_session).record_send(
+        operation_kind="place",
+        market="kr",
+        symbol="034020",
+        side="buy",
+        order_type="limit",
+        time_in_force="DAY",
+        quantity=Decimal("3"),
+        price=Decimal("85000"),
+        order_amount=None,
+        currency="KRW",
+        client_order_id="cid-corr-kr",
+        broker_order_id="ord-corr-kr",
+        original_order_id=None,
+        status="accepted",
+        broker_status=None,
+        response_code="0",
+        response_message=None,
+        raw_response={},
+        thesis="t",
+        strategy="s",
+        correlation_id="live:toss_live:reconcileKR",
+    )
+    evidence = TossFillEvidence(
+        verdict="filled",
+        local_status="filled",
+        broker_status="FILLED",
+        filled_qty=Decimal("3"),
+        avg_price=Decimal("85100"),
+        commission=Decimal("0"),
+        tax=Decimal("0"),
+        fee_total=Decimal("0"),
+        settlement_date=None,
+        raw_order={"status": "FILLED"},
+        reason="filled",
+    )
+
+    class _Adapter:
+        fetch_evidence = AsyncMock(return_value=evidence)
+
+    with (
+        patch.object(mod.settings, "toss_fill_notify_enabled", False),
+        patch.object(mod, "TossEvidenceAdapter", return_value=_Adapter()),
+        patch.object(mod, "_save_order_fill", new=AsyncMock(return_value=101)),
+        patch.object(
+            mod,
+            "_create_trade_journal_for_buy",
+            new=AsyncMock(return_value={"journal_created": True, "journal_id": 202}),
+        ) as m_journal,
+        patch.object(mod, "_link_journal_to_fill", new=AsyncMock()),
+    ):
+        await mod._reconcile_one_toss_row(row, dry_run=False)
+
+    m_journal.assert_awaited_once()
+    assert m_journal.await_args.kwargs["correlation_id"] == "live:toss_live:reconcileKR"

@@ -146,6 +146,58 @@ async def test_create_returns_idempotent_false_on_first_call(
     assert response["report"]["market"] == "kr"
 
 
+# --------------------------------------------------------------------------- #
+# ROB-712 — fail-open advisory warnings on investment_report_create
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_create_warns_on_deferred_item_without_confidence(
+    session: AsyncSession,
+) -> None:
+    # ROB-712: a deferred_no_action item without confidence is a calibration
+    # dead-zone. The response must surface a non-empty warning so the operator
+    # knows to backfill confidence + a resolvable forecast_save.
+    response = await investment_report_create_impl(
+        items=[
+            {
+                "client_item_key": "k1",
+                "item_kind": "watch",
+                "operation": "review",
+                "symbol": "005930",
+                "intent": "buy_review",
+                "rationale": "rejected: RSI too high",
+                "decision_bucket": "deferred_no_action",
+                # confidence intentionally omitted
+            }
+        ],
+        **_create_kwargs(),
+    )
+    assert response["success"] is True
+    assert any("confidence" in w for w in response["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_create_no_warning_when_deferred_has_confidence(
+    session: AsyncSession,
+) -> None:
+    response = await investment_report_create_impl(
+        items=[
+            {
+                "client_item_key": "k1",
+                "item_kind": "watch",
+                "operation": "review",
+                "symbol": "005930",
+                "intent": "buy_review",
+                "rationale": "rejected",
+                "decision_bucket": "deferred_no_action",
+                "confidence": 42,
+            }
+        ],
+        **_create_kwargs(),
+    )
+    assert response["success"] is True
+    assert response["warnings"] == []
+
+
 @pytest.mark.asyncio
 async def test_create_returns_idempotent_true_on_replay(
     session: AsyncSession,

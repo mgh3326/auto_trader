@@ -850,3 +850,71 @@ async def test_reconcile_partial_rerun_is_delta_idempotent(db_session):
     assert row.status == "filled"
     assert float(row.filled_qty) == 3.0
     assert row.journal_id == 7
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_buy_journal_backfills_correlation_id(db_session):
+    """ROB-714: reconcile-time buy journal must carry the ledger row's
+    correlation_id so the forecast/journal/retrospective spine stays connected
+    through reconcile. Drives the REAL _reconcile_one_ledger_row (not a spy)."""
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+
+    from app.mcp_server.tooling import kis_live_ledger as kl
+    from app.mcp_server.tooling.kis_live_ledger import _save_kis_live_order_ledger
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence,
+        FillVerdict,
+    )
+
+    lid = await _save_kis_live_order_ledger(
+        symbol="000660",
+        instrument_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        quantity=1.0,
+        price=1000.0,
+        amount=1000.0,
+        currency="KRW",
+        order_no="TEST-RC-CORR-KR",
+        order_time="0930",
+        krx_fwdg_ord_orgno=None,
+        status="accepted",
+        response_code="0",
+        response_message=None,
+        raw_response=None,
+        reason=None,
+        thesis="t",
+        strategy="s",
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
+        correlation_id="live:kis_live:reconcileKR",
+    )
+    row = await kl._load_ledger_row(lid)
+    filled = FillEvidence(
+        FillVerdict.FILLED, Decimal("1"), Decimal("1005"), None, "filled", ""
+    )
+    with (
+        patch.object(
+            kl,
+            "_fetch_live_daily_rows",
+            new=AsyncMock(return_value=[{"odno": "TEST-RC-CORR-KR"}]),
+        ),
+        patch.object(kl, "classify_fill_evidence", return_value=filled),
+        patch.object(kl, "_save_order_fill", new=AsyncMock(return_value=111)),
+        patch.object(
+            kl,
+            "_create_trade_journal_for_buy",
+            new=AsyncMock(return_value={"journal_id": 9}),
+        ) as m_buy,
+        patch.object(kl, "_link_journal_to_fill", new=AsyncMock(return_value=None)),
+    ):
+        await kl._reconcile_one_ledger_row(row, dry_run=False)
+
+    m_buy.assert_awaited_once()
+    assert m_buy.await_args.kwargs["correlation_id"] == "live:kis_live:reconcileKR"

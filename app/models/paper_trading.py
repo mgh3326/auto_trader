@@ -132,6 +132,10 @@ class PaperTrade(Base):
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     reason: Mapped[str | None] = mapped_column(Text)
     realized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    correlation_id: Mapped[str | None] = mapped_column(Text)
+    journal_id: Mapped[int | None] = mapped_column(BigInteger)
+    artifact_uuid: Mapped[str | None] = mapped_column(Text)
+    forecast_id: Mapped[str | None] = mapped_column(Text)
     executed_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )
@@ -166,4 +170,78 @@ class PaperDailySnapshot(Base):
     daily_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class PaperPendingOrder(Base):
+    """paper.paper_pending_orders — resting paper limit orders (ROB-703).
+
+    A resting limit only persists here until PaperLimitOrderService.reconcile_pending_orders
+    decides the live market crossed the limit. reserved_krw is held against the
+    account's cash balance until the order fills or is cancelled, so the account's
+    free cash = cash_krw (the reservation is already deducted on place and released
+    back on fill/cancel).
+    """
+
+    __tablename__ = "paper_pending_orders"
+    __table_args__ = (
+        CheckConstraint("side IN ('buy','sell')", name="paper_pending_orders_side"),
+        CheckConstraint(
+            "order_type IN ('limit')", name="paper_pending_orders_order_type"
+        ),
+        CheckConstraint(
+            "status IN ('pending','filled','cancelled')",
+            name="paper_pending_orders_status",
+        ),
+        Index("ix_paper_pending_orders_account_id", "account_id"),
+        Index("ix_paper_pending_orders_status", "status"),
+        {"schema": "paper"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    account_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("paper.paper_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    side: Mapped[str] = mapped_column(String(4), nullable=False)
+    order_type: Mapped[str] = mapped_column(
+        String(8), nullable=False, server_default="limit"
+    )
+    limit_price: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    reserved_krw: Mapped[Decimal] = mapped_column(
+        Numeric(20, 4), nullable=False, server_default="0"
+    )
+    status: Mapped[str] = mapped_column(
+        String(10), nullable=False, server_default="pending"
+    )
+    thesis: Mapped[str | None] = mapped_column(Text)
+    correlation_id: Mapped[str | None] = mapped_column(Text)
+    journal_id: Mapped[int | None] = mapped_column(BigInteger)
+    artifact_uuid: Mapped[str | None] = mapped_column(Text)
+    forecast_id: Mapped[str | None] = mapped_column(Text)
+    fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    paper_trade_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("paper.paper_trades.id", ondelete="SET NULL"),
+    )
+    placed_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    filled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )

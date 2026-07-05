@@ -12,6 +12,7 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import now_kst
+from app.models.paper_trading import PaperTrade
 from app.models.review import (
     KISLiveOrderLedger,
     LiveOrderLedger,
@@ -35,6 +36,7 @@ async def _cleanup(
         KISLiveOrderLedger,
         LiveOrderLedger,
         TossLiveOrderLedger,
+        PaperTrade,
     ):
         await db_session.execute(delete(model))
     await db_session.commit()

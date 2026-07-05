@@ -208,6 +208,17 @@ def test_hard_constraints_reference_policy_keys_not_numbers():
     assert "1.01" not in joined
 
 
+def test_buy_discovery_have_negative_class_constraint():
+    # ROB-712 — buy + discovery lanes must encode the negative-class recording
+    # convention: deferred_no_action items keep confidence + a resolvable
+    # forecast so calibration isn't censored.
+    for lane in ("buy", "discovery"):
+        joined = " ".join(L.HARD_CONSTRAINTS[lane]).lower()
+        assert "deferred_no_action" in joined
+        assert "confidence" in joined
+        assert "forecast" in joined
+
+
 # --- ROB-660: sell lane account routing ---------------------------------------
 
 

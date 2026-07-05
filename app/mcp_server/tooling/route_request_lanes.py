@@ -136,6 +136,10 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "no two-sided (buy+sell) resting orders on same Toss symbol",
         "over-concentration cap: portfolio.sector_cluster_cap_pct per sector cluster",
         "portfolio.max_symbols_per_theme per theme; add-not-cut (average down, no stop-loss)",
+        "negative class: record each reviewed-but-rejected candidate as a "
+        "decision_bucket=deferred_no_action item with confidence + rejection "
+        "reason, and leave a resolvable forecast_save (price_target, e.g. "
+        "'no +X% within N days') so calibration isn't censored (ROB-712)",
     ],
     "sell": [
         "loss guard: sell price >= avg * sell.loss_guard_min_multiple",
@@ -151,6 +155,10 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "portfolio.max_symbols_per_theme per theme",
         "rights-issue / overhang filter before ranking",
         "per-symbol sizing: buy.per_symbol_notional_krw_range",
+        "negative class: record each reviewed-but-rejected candidate as a "
+        "decision_bucket=deferred_no_action item with confidence + rejection "
+        "reason, and leave a resolvable forecast_save (price_target, e.g. "
+        "'no +X% within N days') so calibration isn't censored (ROB-712)",
     ],
     "bootstrap": [
         "context-load only; no order mutation in this lane",
@@ -166,6 +174,16 @@ MUTATION_TOOLS: frozenset[str] = frozenset(
     | LIVE_RECONCILE_TOOL_NAMES
     | TOSS_LIVE_ORDER_TOOL_NAMES
     | KIWOOM_MOCK_TOOL_NAMES
+    | frozenset(
+        {
+            # ROB-703: paper resting-limit sim mutations (paper-table writes only,
+            # no live/Upbit broker mutation). paper_list_pending_orders is read-only
+            # and lives in READ_ONLY_ADVISORY_TOOLS.
+            "paper_place_limit_order",
+            "paper_cancel_pending_order",
+            "paper_reconcile_orders",
+        }
+    )
 )
 
 # Market-aware execution mutation tools (ROB-658). The LANE_SEQUENCES above are
@@ -300,6 +318,7 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "get_trade_journal",
         "get_trade_retrospectives",
         "get_trading_policy",
+        "get_trading_scoreboard",
         "get_upbit_altseason",
         "get_upbit_index",
         "get_user_setting",
@@ -318,6 +337,7 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "list_active_journals",
         "list_active_watches",
         "modify_journal_entry",
+        "paper_list_pending_orders",
         "research_session_get",
         "research_session_list_recent",
         "research_summary_get",

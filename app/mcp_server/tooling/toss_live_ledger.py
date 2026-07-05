@@ -10,6 +10,7 @@ import sentry_sdk
 
 from app.core.config import settings
 from app.core.portfolio_links import build_position_detail_url
+from app.core.timezone import now_kst
 from app.mcp_server.tooling.fx_pnl import capture_reconcile_spot_fx
 from app.mcp_server.tooling.kis_live_ledger import _order_session_factory
 from app.mcp_server.tooling.order_journal import (
@@ -30,7 +31,11 @@ from app.services.fill_notification import (
     is_fill_notifiable,
     normalize_toss_fill,
 )
+from app.services.live_correlation import live_correlation_id
+from app.services.live_place_provenance import publish_place_time_forecast
 from app.services.toss_live_order_ledger_service import TossLiveOrderLedgerService
+
+_TOSS_MARKET_TO_INSTRUMENT = {"kr": "equity_kr", "us": "equity_us"}
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +91,17 @@ async def record_toss_place_order(
     approval_hash: str | None = None,
 ) -> dict[str, Any]:
     status = "accepted" if broker_order_id else "rejected"
+
+    correlation_id = live_correlation_id(
+        account_scope="toss_live",
+        symbol=symbol,
+        side=side,
+        price=(price if price is not None else Decimal("0")),
+        quantity=(quantity if quantity is not None else Decimal("0")),
+        kst_trade_day=now_kst().strftime("%Y-%m-%d"),
+        rung=0,
+    )
+
     async with _order_session_factory()() as db:
         row = await TossLiveOrderLedgerService(db).record_send(
             operation_kind="place",
@@ -117,12 +133,28 @@ async def record_toss_place_order(
             indicators_snapshot=indicators_snapshot,
             report_item_uuid=report_item_uuid,
             approval_hash=approval_hash,
+            correlation_id=correlation_id,
         )
+
+    if status == "accepted":
+        await publish_place_time_forecast(
+            correlation_id=correlation_id,
+            symbol=symbol,
+            instrument_type=_TOSS_MARKET_TO_INSTRUMENT.get(market, market),
+            side=side,
+            target_price=float(target_price) if target_price is not None else None,
+            min_hold_days=min_hold_days,
+            session_label="toss_live_place",
+            created_by="auto_place_live",
+            report_item_uuid=report_item_uuid,
+        )
+
     return {
         "ledger_id": row.id,
         "broker_status": row.status,
         "fill_recorded": False,
         "journal_created": False,
+        "correlation_id": correlation_id,
     }
 
 
@@ -351,6 +383,7 @@ async def _reconcile_one_toss_row(
             indicators_snapshot=row.indicators_snapshot,
             account_type="live",
             account="toss",
+            correlation_id=getattr(row, "correlation_id", None),
             buy_fx_rate=float(fx_capture.rate)
             if fx_capture and fx_capture.rate
             else None,

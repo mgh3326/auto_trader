@@ -33,6 +33,9 @@ from app.mcp_server.tooling.paper_analytics_registration import (
     PAPER_ANALYTICS_TOOL_NAMES,
 )
 from app.mcp_server.tooling.paper_journal_registration import PAPER_JOURNAL_TOOL_NAMES
+from app.mcp_server.tooling.paper_limit_order_handler import (
+    PAPER_LIMIT_ORDER_TOOL_NAMES,
+)
 from app.mcp_server.tooling.registry import register_all_tools
 from app.mcp_server.tooling.us_dual_paper import US_DUAL_PAPER_TOOL_NAMES
 from tests._mcp_tooling_support import DummyMCP
@@ -229,6 +232,7 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
         | KIS_MOCK_ORDER_TOOL_NAMES
         | LIVE_RECONCILE_TOOL_NAMES
         | TOSS_LIVE_ORDER_TOOL_NAMES
+        | PAPER_LIMIT_ORDER_TOOL_NAMES
     ),
     McpProfile.HERMES_PAPER_KIS: set(KIS_MOCK_ORDER_TOOL_NAMES),
     McpProfile.CRYPTO: _LEGACY_ORDER_TOOL_NAMES | LIVE_RECONCILE_TOOL_NAMES,
@@ -247,6 +251,7 @@ _ALL_ORDER_TOOL_NAMES = (
     | KIWOOM_MOCK_TOOL_NAMES
     | _ALPACA_MUTATING
     | TOSS_LIVE_ORDER_TOOL_NAMES
+    | PAPER_LIMIT_ORDER_TOOL_NAMES
 )
 
 
