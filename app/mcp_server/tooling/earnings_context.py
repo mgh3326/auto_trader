@@ -16,6 +16,12 @@ from __future__ import annotations
 import datetime
 from typing import Any
 
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.market_events import MarketEventIngestionPartition
+from app.services.market_events.freshness_service import _ensure_aware, _is_stale
+
 _WINDOW_DAYS = 30
 _TIMING_MAP = {"bmo": "BMO", "amc": "AMC", "dmh": "DMH"}
 
@@ -87,3 +93,23 @@ def _compact_earnings(
         "status": item.get("status"),
     }
     return ctx
+
+
+async def _kr_ingestion_freshness(db: AsyncSession) -> tuple[str, str | None]:
+    """Newest succeeded KR earnings ingestion → (freshness, data_as_of ISO|None).
+
+    Global per (market=kr, category=earnings) — compute ONCE per batch, not per
+    symbol. Reuses the market_events STALE_AFTER_HOURS threshold. Fail-open at
+    the caller: a DB error leaves KR rows on ('unknown', None).
+    """
+    stmt = select(func.max(MarketEventIngestionPartition.finished_at)).where(
+        MarketEventIngestionPartition.market == "kr",
+        MarketEventIngestionPartition.category == "earnings",
+        MarketEventIngestionPartition.status == "succeeded",
+    )
+    finished_at = (await db.execute(stmt)).scalar_one_or_none()
+    if finished_at is None:
+        return ("unknown", None)
+    aware = _ensure_aware(finished_at)
+    freshness = "stale" if _is_stale(aware, now=datetime.datetime.now(datetime.UTC)) else "fresh"
+    return (freshness, aware.date().isoformat())

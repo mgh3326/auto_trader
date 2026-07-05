@@ -7,6 +7,7 @@ import datetime
 import pytest
 
 from app.mcp_server.tooling import earnings_context as ec
+from app.services.market_events.freshness_service import STALE_AFTER_HOURS
 
 TODAY = datetime.date(2026, 7, 6)
 
@@ -82,3 +83,44 @@ def test_compact_earnings_error_payload_degrades():
     assert ctx["has_upcoming"] is False
     assert ctx["next_earnings"] is None
     assert "degraded" in ctx["note"]
+
+
+class _FakeScalarResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
+
+
+class _FakeDB:
+    def __init__(self, value):
+        self._value = value
+
+    async def execute(self, _stmt):
+        return _FakeScalarResult(self._value)
+
+
+@pytest.mark.asyncio
+async def test_kr_freshness_none_partition_is_unknown():
+    freshness, as_of = await ec._kr_ingestion_freshness(_FakeDB(None))
+    assert freshness == "unknown"
+    assert as_of is None
+
+
+@pytest.mark.asyncio
+async def test_kr_freshness_recent_is_fresh():
+    recent = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=1)
+    freshness, as_of = await ec._kr_ingestion_freshness(_FakeDB(recent))
+    assert freshness == "fresh"
+    assert as_of == recent.date().isoformat()
+
+
+@pytest.mark.asyncio
+async def test_kr_freshness_old_is_stale():
+    old = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
+        hours=STALE_AFTER_HOURS + 5
+    )
+    freshness, as_of = await ec._kr_ingestion_freshness(_FakeDB(old))
+    assert freshness == "stale"
+    assert as_of == old.date().isoformat()
