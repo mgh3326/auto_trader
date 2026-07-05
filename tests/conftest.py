@@ -1388,7 +1388,7 @@ async def db_session():
                     text(
                         "ALTER TABLE review.trade_retrospectives "
                         "ADD CONSTRAINT ck_trade_retrospectives_account_mode "
-                        "CHECK (account_mode IN ('kis_mock','kiwoom_mock','kis_live','toss_live','alpaca_paper','upbit_live'))"
+                        "CHECK (account_mode IN ('kis_mock','kiwoom_mock','kis_live','toss_live','alpaca_paper','upbit_live','paper'))"
                     )
                 )
                 # ROB-647 — postmortem structuring columns + CHECK constraints.
@@ -1421,7 +1421,7 @@ async def db_session():
                         "CHECK (trigger_type IS NULL OR trigger_type IN ("
                         "'fill','partial_fill','rejected_order','cancelled','expired',"
                         "'thesis_change','policy_violation','stale_evidence',"
-                        "'guardrail_block'))"
+                        "'guardrail_block','stop_loss'))"
                     )
                 )
                 await conn.execute(
@@ -1439,6 +1439,22 @@ async def db_session():
                         "'user_input','analysis','policy','execution','harness'))"
                     )
                 )
+                # ROB-705 — paper provenance columns on paper_trades +
+                # paper_pending_orders. create_all is no-op on the persistent
+                # test tables; mirror migration 20260705_rob705 here.
+                for ptable in ("paper_trades", "paper_pending_orders"):
+                    for pcol, pddl in (
+                        ("correlation_id", "TEXT"),
+                        ("journal_id", "BIGINT"),
+                        ("artifact_uuid", "TEXT"),
+                        ("forecast_id", "TEXT"),
+                    ):
+                        await conn.execute(
+                            text(
+                                f"ALTER TABLE paper.{ptable} "
+                                f"ADD COLUMN IF NOT EXISTS {pcol} {pddl}"
+                            )
+                        )
                 # B-1 (binance-phase1) — benchmark_return_bps on scalping_daily_reviews.
                 # create_all is no-op on the persistent test table, so add here.
                 await conn.execute(

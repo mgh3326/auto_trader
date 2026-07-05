@@ -158,6 +158,7 @@ async def _create_trade_journal_for_buy(
     buy_fx_rate: float | None = None,
     fx_rate_source: str | None = None,
     fx_pnl_accuracy: str | None = None,
+    correlation_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a draft trade journal entry for a buy order.
 
@@ -196,6 +197,7 @@ async def _create_trade_journal_for_buy(
         buy_fx_rate=Decimal(str(buy_fx_rate)) if buy_fx_rate is not None else None,
         fx_rate_source=fx_rate_source,
         fx_pnl_accuracy=fx_pnl_accuracy,
+        correlation_id=correlation_id,
     )
 
     async with _order_session_factory()() as db:
