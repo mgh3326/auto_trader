@@ -149,6 +149,33 @@ async def test_build_earnings_context_crypto_returns_none():
     assert ctx is None
 
 
+def test_normalize_earnings_market_accepts_real_market_type_values():
+    # resolve_market_type produces equity_kr/equity_us/crypto — the gate must
+    # accept the equity_* forms (the {"kr","us"}-only gate was a production
+    # no-op) while still taking the bare tool-param forms.
+    assert ec.normalize_earnings_market("equity_us") == "us"
+    assert ec.normalize_earnings_market("equity_kr") == "kr"
+    assert ec.normalize_earnings_market("us") == "us"
+    assert ec.normalize_earnings_market("kr") == "kr"
+    assert ec.normalize_earnings_market(" Equity_US ") == "us"
+    assert ec.normalize_earnings_market("crypto") is None
+    assert ec.normalize_earnings_market("") is None
+    assert ec.normalize_earnings_market(None) is None
+
+
+@pytest.mark.asyncio
+async def test_build_earnings_context_equity_us_passes_gate(monkeypatch):
+    async def _fake_handler(symbol, from_date, to_date, market):
+        assert market == "us"  # normalized before dispatch
+        return {"symbol": symbol, "source": "finnhub", "earnings": []}
+
+    monkeypatch.setattr(ec, "handle_get_earnings_calendar", _fake_handler)
+    ctx = await ec.build_earnings_context("NVDA", "equity_us", today=TODAY)
+    assert ctx is not None
+    assert ctx["market"] == "us"
+    assert ctx["has_upcoming"] is False
+
+
 @pytest.mark.asyncio
 async def test_build_earnings_context_us_calls_handler_and_shapes(monkeypatch):
     async def _fake_handler(symbol, from_date, to_date, market):

@@ -124,7 +124,21 @@ async def _kr_ingestion_freshness(db: AsyncSession) -> tuple[str, str | None]:
     return (freshness, aware.date().isoformat())
 
 
-_EQUITY_MARKETS = {"kr", "us"}
+# Accept both the analyze_stock_batch row values (resolve_market_type →
+# equity_kr / equity_us / crypto) and the tool-level market params (kr / us).
+# The original {"kr", "us"}-only gate made injection a production no-op because
+# real compact rows always carry the equity_* form.
+_MARKET_ALIASES = {
+    "kr": "kr",
+    "equity_kr": "kr",
+    "us": "us",
+    "equity_us": "us",
+}
+
+
+def normalize_earnings_market(market: str | None) -> str | None:
+    """Map a market/market_type value to "kr"/"us", or None for non-equity."""
+    return _MARKET_ALIASES.get((market or "").strip().lower())
 
 
 async def build_earnings_context(
@@ -140,8 +154,8 @@ async def build_earnings_context(
     there. For US/KR equities it ALWAYS returns a dict (no-earnings is an
     explicit has_upcoming=False signal). US freshness is "live"; KR freshness is
     taken from ``kr_freshness`` (computed once per batch by the caller)."""
-    market_norm = (market or "").strip().lower()
-    if market_norm not in _EQUITY_MARKETS:
+    market_norm = normalize_earnings_market(market)
+    if market_norm is None:
         return None
 
     today = today or datetime.date.today()
