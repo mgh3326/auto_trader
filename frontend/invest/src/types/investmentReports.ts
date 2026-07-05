@@ -243,6 +243,29 @@ export interface LinkedOrder {
   reportItemUuid?: string | null;
 }
 
+export interface ForecastLink {
+  forecastId: string;
+  status: string;
+  outcome: boolean | null;
+  reviewDate: string | null;
+  direction: string | null;
+  targetPrice: number | null;
+  probability: number;
+  brierScore: number | null;
+  resolutionSource: string | null;
+}
+
+export interface RetrospectiveLink {
+  retrospectiveId: number;
+  outcome: string;
+  lesson: string | null;
+  resultSummary: string | null;
+  rootCauseClass: string | null;
+  triggerType: string | null;
+  pnlPct: number | null;
+  createdAt: string | null;
+}
+
 export interface InvestmentReportItem {
   itemUuid: string;
   itemKind: ItemKind;
@@ -277,6 +300,8 @@ export interface InvestmentReportItem {
   citedDimensionReportUuids?: string[];
   // ROB-554 — live orders linked to this item (null when none).
   linkedOrders?: LinkedOrder[] | null;
+  // ROB-715 — backend-derived summary of evidence_snapshot.structured_evidence.
+  structuredEvidenceSummary?: string | null;
 }
 
 export interface InvestmentReportItemDecision {
@@ -422,6 +447,9 @@ export interface InvestmentReportBundle {
   // ROB-335 — additive intraday ActionPacket projection. Null for legacy /
   // non-intraday reports.
   actionPacket?: ActionPacket | null;
+  // ROB-715 — item→forecast/retrospective exact-join maps keyed by item UUID.
+  forecastsByItemUuid?: Record<string, ForecastLink[]>;
+  retrospectivesByItemUuid?: Record<string, RetrospectiveLink[]>;
 }
 
 export interface InvestmentReportListResponse {
