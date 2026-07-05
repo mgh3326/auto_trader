@@ -57,6 +57,8 @@ async def _make_report(db: AsyncSession, **overrides) -> InvestmentReport:
     db.add(row)
     await db.flush()
     return row
+pytestmark = pytest.mark.usefixtures("investment_reports_cleanup_lock")
+
 
 
 async def _add_item(
