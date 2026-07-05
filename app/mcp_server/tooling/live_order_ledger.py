@@ -517,7 +517,6 @@ async def _record_live_order(
         rung=0,
     )
     ledger_id = await _save_live_order_ledger(
-
         broker=broker,
         account_scope=account_scope,
         market=market,

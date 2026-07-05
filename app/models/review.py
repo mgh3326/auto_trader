@@ -329,7 +329,6 @@ class KISLiveOrderLedger(Base):
     # AlpacaPaperOrderLedger.candidate_uuid). nullable: legacy/unlinked → NULL.
     report_item_uuid: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
 
-
     # ROB-653 P6-B — content approval-hash + local idempotency key (additive).
     approval_hash: Mapped[str | None] = mapped_column(Text)
     idempotency_key: Mapped[str | None] = mapped_column(Text)

@@ -5,7 +5,6 @@ from app.services.live_place_provenance import publish_place_time_forecast
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-
 async def test_buy_with_target_publishes_at_or_above_forecast(monkeypatch):
     captured = {}
 
@@ -45,7 +44,6 @@ async def test_buy_with_target_publishes_at_or_above_forecast(monkeypatch):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-
 async def test_sell_or_no_target_skips_forecast(monkeypatch):
     called = False
 

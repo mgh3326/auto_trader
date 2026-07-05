@@ -96,8 +96,7 @@ class TossLiveOrderLedgerService:
         report_item_uuid: str | uuid.UUID | None = None,
         approval_hash: str | None = None,
         correlation_id: str | None = None,
-) -> TossLiveOrderLedger:
-
+    ) -> TossLiveOrderLedger:
 
         # ROB-545 B2 — idempotent on client_order_id. A live POST retried with
         # the same clientOrderId (the smoke's idempotency check) must not raise a

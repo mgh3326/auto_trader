@@ -104,7 +104,6 @@ async def record_toss_place_order(
 
     async with _order_session_factory()() as db:
         row = await TossLiveOrderLedgerService(db).record_send(
-
             operation_kind="place",
             market=market,
             symbol=symbol,
@@ -157,7 +156,6 @@ async def record_toss_place_order(
         "journal_created": False,
         "correlation_id": correlation_id,
     }
-
 
 
 async def record_toss_replacement_order(

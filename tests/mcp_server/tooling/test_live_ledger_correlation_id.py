@@ -30,9 +30,7 @@ def test_correlation_id_column_present_and_nullable(model):
     assert col is not None
     assert col.nullable is True
     # indexed for join lookups
-    index_cols = {
-        tuple(c.name for c in idx.columns) for idx in model.__table__.indexes
-    }
+    index_cols = {tuple(c.name for c in idx.columns) for idx in model.__table__.indexes}
     assert ("correlation_id",) in index_cols
 
 
@@ -81,6 +79,7 @@ async def test_save_kis_live_ledger_persists_correlation_id(db_session):
             )
         ).scalar_one()
     assert row.correlation_id == "live:kis_live:deadbeefdeadbeef"
+
 
 @pytest.mark.integration
 @pytest.mark.asyncio
@@ -251,7 +250,6 @@ async def test_reconcile_buy_journal_receives_correlation_id(monkeypatch, db_ses
     # mirroring what the reconcile path does in production.
     assert row.correlation_id == "live:kis_live:reconcileX"
     jr = await spy_create_journal(
-
         symbol=row.symbol,
         market_type=row.instrument_type,
         preview={

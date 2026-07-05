@@ -120,7 +120,6 @@ async def _save_kis_live_order_ledger(
     idempotency_key: str | None = None,
     correlation_id: str | None = None,
 ) -> int | None:
-
     """Insert one accepted/rejected live order row. Returns new id or None."""
     try:
         async with _order_session_factory()() as db:
@@ -277,8 +276,6 @@ async def _record_kis_live_order(
         rt_cd=rt_cd, order_no=str(order_no) if order_no else None
     )
 
-
-
     correlation_id = live_correlation_id(
         account_scope="kis_live",
         symbol=normalized_symbol,
@@ -289,7 +286,6 @@ async def _record_kis_live_order(
         rung=0,
     )
     ledger_id = await _save_kis_live_order_ledger(
-
         symbol=normalized_symbol,
         instrument_type=market_type,
         side=side,
@@ -360,8 +356,6 @@ async def _record_kis_live_order(
         "broker_exchange": _extract_broker_exchange(execution_result),
         "correlation_id": correlation_id,
         "message": (
-
-
             "KIS live order accepted (pending fill); run kis_live_reconcile_orders "
             "to record fill/journal once the broker confirms execution"
             if status == "accepted"

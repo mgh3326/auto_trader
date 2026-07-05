@@ -40,7 +40,9 @@ async def publish_place_time_forecast(
     if side.lower() != "buy" or target_price is None:
         return None
     horizon_days = (
-        min_hold_days if (min_hold_days and min_hold_days > 0) else _DEFAULT_HORIZON_DAYS
+        min_hold_days
+        if (min_hold_days and min_hold_days > 0)
+        else _DEFAULT_HORIZON_DAYS
     )
     review_date = (now_kst().date() + timedelta(days=horizon_days)).isoformat()
     try:
