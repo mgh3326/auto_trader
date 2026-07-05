@@ -122,6 +122,13 @@ lanes:
 6. Foreign-cascade names (e.g. semis): no market order until **price band
    reached AND foreign selling stops** — until both, only a small deep rung.
 
+7. **Negative-class recording (ROB-712):** every reviewed-but-rejected candidate
+   leaves a `decision_bucket=deferred_no_action` item with `confidence` +
+   rejection reason, plus a resolvable `forecast_save(kind="price_target", …)`
+   (e.g. "no +X% within N days") so calibration isn't censored. The
+   `investment_report_create` response surfaces a `warnings` advisory when an
+   item is missing `confidence`.
+
 ```yaml
 # playbook-machine-readable: buy lane (ROB-649 source)
 lanes:
@@ -224,6 +231,13 @@ recurring new-buy discovery-and-ranking round. It has no code definition yet;
    freshness (newly pulled back).
 5. **Execute:** winners only, support-line limit, `buy.per_symbol_notional_krw_range`
    per symbol.
+
+6. **Negative-class recording (ROB-712):** every reviewed-but-rejected candidate
+   leaves a `decision_bucket=deferred_no_action` item with `confidence` +
+   rejection reason, plus a resolvable `forecast_save(kind="price_target", …)`
+   (e.g. "no +X% within N days") so calibration isn't censored. The
+   `investment_report_create` response surfaces a `warnings` advisory when an
+   item is missing `confidence`.
 
 ```yaml
 # playbook-machine-readable: discovery lane / candidate tournament (ROB-649 source)

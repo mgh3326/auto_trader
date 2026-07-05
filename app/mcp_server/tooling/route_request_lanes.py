@@ -136,8 +136,13 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "no two-sided (buy+sell) resting orders on same Toss symbol",
         "over-concentration cap: portfolio.sector_cluster_cap_pct per sector cluster",
         "portfolio.max_symbols_per_theme per theme; add-not-cut (average down, no stop-loss)",
+        "negative class: record each reviewed-but-rejected candidate as a "
+        "decision_bucket=deferred_no_action item with confidence + rejection "
+        "reason, and leave a resolvable forecast_save (price_target, e.g. "
+        "'no +X% within N days') so calibration isn't censored (ROB-712)",
     ],
     "sell": [
+
         "loss guard: sell price >= avg * sell.loss_guard_min_multiple",
         "KRX tick rounding",
         "no two-sided (buy+sell) resting orders on same Toss symbol",
@@ -151,7 +156,12 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "portfolio.max_symbols_per_theme per theme",
         "rights-issue / overhang filter before ranking",
         "per-symbol sizing: buy.per_symbol_notional_krw_range",
+        "negative class: record each reviewed-but-rejected candidate as a "
+        "decision_bucket=deferred_no_action item with confidence + rejection "
+        "reason, and leave a resolvable forecast_save (price_target, e.g. "
+        "'no +X% within N days') so calibration isn't censored (ROB-712)",
     ],
+
     "bootstrap": [
         "context-load only; no order mutation in this lane",
         "recovery gate frame: recovery_gate.min_conditions_met of 4",
