@@ -61,8 +61,7 @@ async def session() -> AsyncSession:
             for table in reversed(INVESTMENT_REPORTS_TABLES):
                 await conn.execute(
                     sa.text(
-                        f'TRUNCATE TABLE review."{table.name}" '
-                        "RESTART IDENTITY CASCADE"
+                        f'TRUNCATE TABLE review."{table.name}" RESTART IDENTITY CASCADE'
                     )
                 )
 

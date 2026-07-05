@@ -546,9 +546,7 @@ async def _bootstrap_test_schema():
                     if already:
                         return
                     await apply_test_schema(conn)
-                    await conn.execute(
-                        text("DELETE FROM public._pytest_schema_ready")
-                    )
+                    await conn.execute(text("DELETE FROM public._pytest_schema_ready"))
                     await conn.execute(
                         text(
                             "INSERT INTO public._pytest_schema_ready (content_hash) "
@@ -566,7 +564,6 @@ async def _bootstrap_test_schema():
     yield
 
 
-
 # Database fixtures for integration tests
 
 
@@ -582,6 +579,7 @@ async def db_session():
 
     async with AsyncSessionLocal() as session:
         yield session
+
 
 @pytest_asyncio.fixture
 async def investment_reports_cleanup_lock(db_session):
@@ -610,7 +608,6 @@ async def investment_reports_cleanup_lock(db_session):
         INVESTMENT_REPORTS_TABLES,
         INVESTMENT_REPORTS_TEST_LOCK_ID,
     )
-
 
     async def _truncate_investment_report_tables() -> None:
         # Keep this cleanup aligned with tests._investment_reports_helpers.session:
@@ -647,6 +644,7 @@ async def investment_reports_cleanup_lock(db_session):
                 text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
                 {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
             )
+
 
 @pytest_asyncio.fixture
 async def user(db_session):

@@ -179,7 +179,6 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ALTER TABLE review.live_order_ledger ADD COLUMN IF NOT EXISTS idempotency_key TEXT",
     # ---- invest_kr_fundamentals_snapshots (ROB-430) ----
     "ALTER TABLE invest_kr_fundamentals_snapshots ADD COLUMN IF NOT EXISTS week_high_52_date DATE",
-
     # ---- report snapshot metadata + diagnostics (review.investment_reports) ----
     "ALTER TABLE review.investment_reports ADD COLUMN IF NOT EXISTS snapshot_bundle_uuid UUID",
     "ALTER TABLE review.investment_reports ADD COLUMN IF NOT EXISTS snapshot_policy_version TEXT",
@@ -245,7 +244,7 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "OR apply_policy = 'requires_user_approval'"
     ")",
     # Watch-invariant CHECKs (ROB-274): drop canonical + hashed names then recreate
-    'ALTER TABLE review.investment_report_items DROP CONSTRAINT IF EXISTS '
+    "ALTER TABLE review.investment_report_items DROP CONSTRAINT IF EXISTS "
     '"ck_investment_report_items_ck_investment_report_items_w_421e"',
     "ALTER TABLE review.investment_report_items DROP CONSTRAINT IF EXISTS "
     "ck_investment_report_items_watch_has_condition",
@@ -256,7 +255,7 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "OR operation IN ('cancel','keep','review') "
     "OR watch_condition IS NOT NULL"
     ")",
-    'ALTER TABLE review.investment_report_items DROP CONSTRAINT IF EXISTS '
+    "ALTER TABLE review.investment_report_items DROP CONSTRAINT IF EXISTS "
     '"ck_investment_report_items_ck_investment_report_items_w_fdaa"',
     "ALTER TABLE review.investment_report_items DROP CONSTRAINT IF EXISTS "
     "ck_investment_report_items_watch_has_expiry",
@@ -452,7 +451,9 @@ _DDL_STATEMENTS: tuple[str, ...] = (
 # so persistent local DBs don't take unconditional AccessExclusive locks on   #
 # every hot column.                                                           #
 # --------------------------------------------------------------------------- #
-_ROB_534_SYMBOL_UNIVERSE_COLUMNS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+_ROB_534_SYMBOL_UNIVERSE_COLUMNS: tuple[
+    tuple[str, tuple[tuple[str, str], ...]], ...
+] = (
     (
         "kr_symbol_universe",
         (
@@ -503,11 +504,12 @@ async def _maybe_add_column(conn, table: str, column: str, ddl_type: str) -> Non
     ).first()
     if has:
         return
-    await conn.execute(
-        text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
-    )
+    await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}"))
 
-async def _maybe_add_unique_constraint(conn, table: str, constraint_name: str, columns: str) -> None:
+
+async def _maybe_add_unique_constraint(
+    conn, table: str, constraint_name: str, columns: str
+) -> None:
     has = (
         await conn.execute(
             text(
@@ -521,10 +523,9 @@ async def _maybe_add_unique_constraint(conn, table: str, constraint_name: str, c
     if has:
         return
     await conn.execute(
-        text(
-            f"ALTER TABLE {table} ADD CONSTRAINT {constraint_name} UNIQUE ({columns})"
-        )
+        text(f"ALTER TABLE {table} ADD CONSTRAINT {constraint_name} UNIQUE ({columns})")
     )
+
 
 def schema_content_hash() -> str:
     """SHA256 hex of the bootstrap version + the DDL tuple.
@@ -557,9 +558,7 @@ async def apply_test_schema(conn) -> None:
     # absent) -- kept as code, NOT in _DDL_STATEMENTS.
 
     # ROB-440 — high_52w_date on market_valuation_snapshots
-    await _maybe_add_column(
-        conn, "market_valuation_snapshots", "high_52w_date", "DATE"
-    )
+    await _maybe_add_column(conn, "market_valuation_snapshots", "high_52w_date", "DATE")
 
     # ROB-443 — funding_rate / OI / long-short on crypto screener snapshots
     await _maybe_add_column(
@@ -605,7 +604,9 @@ async def apply_test_schema(conn) -> None:
         )
     ).first()
     if legacy_has_symbol:
-        await conn.execute(text("DROP TABLE IF EXISTS public.crypto_candles_1d CASCADE"))
+        await conn.execute(
+            text("DROP TABLE IF EXISTS public.crypto_candles_1d CASCADE")
+        )
 
     # --- conditional CHECK refreshers (drop+recreate depending on catalogue) ---
 
