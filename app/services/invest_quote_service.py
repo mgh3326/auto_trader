@@ -133,3 +133,17 @@ class InvestQuoteService:
 
         await asyncio.gather(*(_fetch(s) for s in symbols))
         return results
+
+    async def kis_only_kr_prices(self, symbols: list[str]) -> dict[str, float | None]:
+        """ROB-709 shadow: RAW KIS KR batch layer (no fallback chain). Read-only."""
+        return await self._kis_fetch_kr(symbols)
+
+    async def kis_only_us_prices(self, symbols: list[str]) -> dict[str, float | None]:
+        """ROB-709 shadow: RAW KIS US batch layer (no fallback chain). Read-only.
+
+        NOTE (ROB-708 already landed on this branch): _kis_fetch_us now reads a
+        live-last quote (inquire_overseas_price / HHDFS00000300), so the A/B
+        shadow's US divergence bar is a valid promotion signal when this
+        passthrough is used as the KIS side (pass --us-kis-live-last).
+        """
+        return await self._kis_fetch_us(symbols)
