@@ -4,7 +4,7 @@ Pytest configuration and common fixtures for auto-trader tests.
 
 import asyncio
 import os
-from collections.abc import Generator, Iterable
+from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -114,127 +114,23 @@ _ensure_test_env()
 
 from app.core.config import settings
 
-MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
-MARKET_VALUATION_SOURCE_MODEL_CHECK_NAME = (
-    "ck_market_valuation_snapshots_ck_market_valuation_snapshots_source"
-)
-MARKET_VALUATION_SOURCE_VALUES = ("naver_finance", "yahoo", "toss_openapi")
-
-SNAPSHOT_KIND_CHECK_NAME = "ck_investment_snapshots_snapshot_kind"
-SNAPSHOT_KIND_MODEL_CHECK_NAME = (
-    "ck_investment_snapshots_ck_investment_snapshots_snapshot_kind"
-)
-SNAPSHOT_KIND_CHECK_NAMES = (
-    SNAPSHOT_KIND_MODEL_CHECK_NAME,
+# Re-export the schema-patch helpers + constants from ``tests._schema_bootstrap``
+# for back-compat with tests/test_conftest_schema_patches.py (which imports them
+# off ``tests.conftest``). The unified DDL lives in that module now.
+from tests._schema_bootstrap import (  # noqa: F401
+    MARKET_VALUATION_SOURCE_CHECK_NAME,
+    MARKET_VALUATION_SOURCE_MODEL_CHECK_NAME,
+    MARKET_VALUATION_SOURCE_VALUES,
     SNAPSHOT_KIND_CHECK_NAME,
+    SNAPSHOT_KIND_CHECK_NAMES,
+    SNAPSHOT_KIND_MODEL_CHECK_NAME,
+    SNAPSHOT_KIND_VALUES,
+    _check_constraint_sql,
+    _constraint_definitions_need_refresh,
+    _ensure_investment_snapshot_kind_constraint,
+    _ensure_market_valuation_source_constraint,
+    _quote_ident,
 )
-SNAPSHOT_KIND_VALUES = (
-    "portfolio",
-    "market",
-    "news",
-    "symbol",
-    "candidate_universe",
-    "browser_probe",
-    "invest_page",
-    "journal",
-    "watch_context",
-    "naver_remote_debug",
-    "toss_remote_debug",
-    "llm_input_frozen",
-    "pending_orders",
-    "validated_run_card",
-    "kr_market_ranking",
-    "investor_flow",
-)
-
-
-def _quote_ident(identifier: str) -> str:
-    return '"' + identifier.replace('"', '""') + '"'
-
-
-def _check_constraint_sql(column_name: str, values: tuple[str, ...]) -> str:
-    values_sql = ",".join(f"'{value}'" for value in values)
-    return f"CHECK ({column_name} IN ({values_sql}))"
-
-
-def _constraint_definitions_need_refresh(
-    definitions: Iterable[str | None],
-    required_values: tuple[str, ...],
-) -> bool:
-    definitions = list(definitions)
-    if not definitions:
-        return True
-    return any(
-        not all(value in (definition or "") for value in required_values)
-        for definition in definitions
-    )
-
-
-async def _ensure_market_valuation_source_constraint(conn, sql_text) -> None:
-    constraints = await conn.execute(
-        sql_text(
-            "SELECT conname, pg_get_constraintdef(oid) AS definition "
-            "FROM pg_constraint "
-            "WHERE conrelid = 'market_valuation_snapshots'::regclass "
-            "AND pg_get_constraintdef(oid) LIKE '%source%' "
-            "AND contype = 'c'"
-        )
-    )
-    rows = list(constraints)
-    if not _constraint_definitions_need_refresh(
-        [row[1] for row in rows],
-        MARKET_VALUATION_SOURCE_VALUES,
-    ):
-        return
-
-    for name, _definition in rows:
-        await conn.execute(
-            sql_text(
-                "ALTER TABLE market_valuation_snapshots "
-                f"DROP CONSTRAINT IF EXISTS {_quote_ident(name)}"
-            )
-        )
-    await conn.execute(
-        sql_text(
-            "ALTER TABLE market_valuation_snapshots "
-            f"ADD CONSTRAINT {MARKET_VALUATION_SOURCE_CHECK_NAME} "
-            f"{_check_constraint_sql('source', MARKET_VALUATION_SOURCE_VALUES)}"
-        )
-    )
-
-
-async def _ensure_investment_snapshot_kind_constraint(conn, sql_text) -> None:
-    names_sql = ",".join(f"'{name}'" for name in SNAPSHOT_KIND_CHECK_NAMES)
-    constraints = await conn.execute(
-        sql_text(
-            "SELECT conname, pg_get_constraintdef(oid) AS definition "
-            "FROM pg_constraint "
-            "WHERE conrelid = 'review.investment_snapshots'::regclass "
-            f"AND conname IN ({names_sql}) "
-            "AND contype = 'c'"
-        )
-    )
-    rows = list(constraints)
-    if not _constraint_definitions_need_refresh(
-        [row[1] for row in rows],
-        SNAPSHOT_KIND_VALUES,
-    ):
-        return
-
-    for name in SNAPSHOT_KIND_CHECK_NAMES:
-        await conn.execute(
-            sql_text(
-                "ALTER TABLE review.investment_snapshots "
-                f"DROP CONSTRAINT IF EXISTS {_quote_ident(name)}"
-            )
-        )
-    await conn.execute(
-        sql_text(
-            "ALTER TABLE review.investment_snapshots "
-            f"ADD CONSTRAINT {SNAPSHOT_KIND_CHECK_NAME} "
-            f"{_check_constraint_sql('snapshot_kind', SNAPSHOT_KIND_VALUES)}"
-        )
-    )
 
 
 @pytest.fixture(scope="session")
@@ -603,876 +499,83 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(skip_live)
 
 
-# Database fixtures for integration tests
-@pytest_asyncio.fixture
-async def db_session():
-    """Create a database session for testing with schema setup.
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def _bootstrap_test_schema():
+    """ROB-723: apply the test schema exactly once, before any test body.
 
-    CI runs pytest-xdist (``--dist=loadfile``), so multiple workers
-    concurrently instantiate this fixture and the ``session`` fixture in
-    ``tests/_investment_reports_helpers.py``. Both fixtures execute DDL on
-    ``review.*`` tables; concurrent ALTER + CASCADE TRUNCATE collide on
-    ``AccessExclusiveLock`` and deadlock (observed under CI as ROB-274 PR
-    failure). We serialize the DDL phase here under the same advisory
-    lock the helper uses (``INVESTMENT_REPORTS_TEST_LOCK_ID``) so the two
-    fixtures take turns on the schema patch while the rest of the suite
-    stays parallel. The lock is released BEFORE yielding so the per-test
-    body runs unserialized.
+    Under xdist ``--dist=loadfile`` every worker enters this session-scoped
+    autouse fixture before running its first test. The first worker to win the
+    advisory lock runs the full DDL while all other workers block on the lock
+    (barrier); subsequent workers see the content-hash sentinel and skip all
+    DDL. Result: schema DDL (AccessExclusive) never overlaps another worker's
+    test-body SELECT, closing the deadlock window.
     """
     from sqlalchemy import text
 
-    import app.models  # noqa: F401
-    import app.models.market_events  # noqa: F401
-    from app.core.db import AsyncSessionLocal, engine
-    from app.models.base import Base
+    from app.core.db import engine
+    from tests._db_retry import run_with_deadlock_retry
     from tests._investment_reports_helpers import INVESTMENT_REPORTS_TEST_LOCK_ID
+    from tests._schema_bootstrap import apply_test_schema, schema_content_hash
 
-    async with engine.connect() as guard:
-        await guard.execute(
-            text("SELECT pg_advisory_lock(CAST(:lock_id AS bigint))"),
-            {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
-        )
-        try:
-            async with engine.begin() as conn:
-                # Create required schemas first (PostgreSQL-specific)
-                for schema in ["paper", "research", "review"]:
-                    await conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
-                await conn.run_sync(Base.metadata.create_all)
-                # Idempotent column additions for schema drift between
-                # create_all and migrations.
-                await conn.execute(
-                    text(
-                        "ALTER TABLE market_events "
-                        "ADD COLUMN IF NOT EXISTS currency TEXT"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE us_symbol_universe "
-                        "ADD COLUMN IF NOT EXISTS is_common_stock BOOLEAN"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.analysis_artifacts "
-                        "ADD COLUMN IF NOT EXISTS correlation_id TEXT"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.analysis_artifacts "
-                        "ADD COLUMN IF NOT EXISTS account_scope TEXT"
-                    )
-                )
-                # ROB-653: Add approval_hash and idempotency_key to ledgers for test DB
-                for table in ["kis_live_order_ledger", "live_order_ledger"]:
-                    await conn.execute(
-                        text(
-                            f"ALTER TABLE review.{table} "
-                            "ADD COLUMN IF NOT EXISTS approval_hash TEXT"
-                        )
-                    )
-                    await conn.execute(
-                        text(
-                            f"ALTER TABLE review.{table} "
-                            "ADD COLUMN IF NOT EXISTS idempotency_key TEXT"
-                        )
-                    )
-                # correlation_id idempotent-upsert needs the unique index on
-                # pre-existing tables (fresh DBs get it via create_all).
-                await conn.execute(
-                    text(
-                        "CREATE UNIQUE INDEX IF NOT EXISTS "
-                        "uq_analysis_artifacts_correlation_id "
-                        "ON review.analysis_artifacts (correlation_id)"
-                    )
-                )
-                # ROB-648 lifecycle fields — patched in for pre-existing tables
-                # (fresh DBs get them via create_all).
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.analysis_artifacts "
-                        "ADD COLUMN IF NOT EXISTS content_hash TEXT"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.analysis_artifacts "
-                        "ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.analysis_artifacts "
-                        "ADD COLUMN IF NOT EXISTS readiness_label TEXT"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "DO $$ BEGIN "
-                        "IF NOT EXISTS (SELECT 1 FROM pg_constraint "
-                        "WHERE conname = 'ck_analysis_artifacts_readiness_label') "
-                        "THEN ALTER TABLE review.analysis_artifacts "
-                        "ADD CONSTRAINT ck_analysis_artifacts_readiness_label "
-                        "CHECK (readiness_label IS NULL OR readiness_label IN ("
-                        "'screen_grade','not_decision_ready',"
-                        "'ready_for_order_review','blocked')); "
-                        "END IF; END $$"
-                    )
-                )
-                # ROB-430 PR-② — week_high_52_date added to the (persistent) KR
-                # fundamentals snapshot table; create_all is a no-op on the existing
-                # table, so patch the column in here (mirrors the alembic migration).
-                await conn.execute(
-                    text(
-                        "ALTER TABLE invest_kr_fundamentals_snapshots "
-                        "ADD COLUMN IF NOT EXISTS week_high_52_date DATE"
-                    )
-                )
-                # ROB-440 PR3 — high_52w_date added to the (persistent) market
-                # valuation snapshot table for US undervalued_breakout date-recency.
-                # On a FRESH DB create_all already adds it (the ORM model declares
-                # it), so only ALTER when genuinely missing — an unconditional
-                # ALTER (even IF NOT EXISTS) takes an AccessExclusive lock on this
-                # HOT table and widens the xdist DDL-vs-test deadlock window.
-                mv_has_high_52w_date = (
-                    await conn.execute(
-                        text(
-                            "SELECT 1 FROM information_schema.columns "
-                            "WHERE table_name = 'market_valuation_snapshots' "
-                            "AND column_name = 'high_52w_date'"
-                        )
-                    )
-                ).first()
-                if not mv_has_high_52w_date:
-                    await conn.execute(
-                        text(
-                            "ALTER TABLE market_valuation_snapshots "
-                            "ADD COLUMN high_52w_date DATE"
-                        )
-                    )
-                # ROB-534 — Toss symbol master columns.
-                for table, cols in [
-                    (
-                        "kr_symbol_universe",
-                        [
-                            ("security_type", "VARCHAR(20)"),
-                            ("is_common_share", "BOOLEAN"),
-                            ("listing_status", "VARCHAR(20)"),
-                            ("list_date", "DATE"),
-                            ("delist_date", "DATE"),
-                            ("shares_outstanding", "NUMERIC(30, 0)"),
-                            ("leverage_factor", "NUMERIC(12, 6)"),
-                            ("krx_trading_suspended", "BOOLEAN"),
-                            ("nxt_trading_suspended", "BOOLEAN"),
-                            ("isin", "VARCHAR(20)"),
-                            ("toss_master_updated_at", "TIMESTAMP WITH TIME ZONE"),
-                        ],
-                    ),
-                    (
-                        "us_symbol_universe",
-                        [
-                            ("security_type", "VARCHAR(20)"),
-                            ("is_common_share", "BOOLEAN"),
-                            ("listing_status", "VARCHAR(20)"),
-                            ("list_date", "DATE"),
-                            ("delist_date", "DATE"),
-                            ("shares_outstanding", "NUMERIC(30, 0)"),
-                            ("leverage_factor", "NUMERIC(12, 6)"),
-                            ("isin", "VARCHAR(20)"),
-                            ("toss_master_updated_at", "TIMESTAMP WITH TIME ZONE"),
-                        ],
-                    ),
-                ]:
-                    for col_name, col_type in cols:
-                        has_col = (
-                            await conn.execute(
-                                text(
-                                    f"SELECT 1 FROM information_schema.columns "
-                                    f"WHERE table_name = '{table}' AND column_name = '{col_name}'"
-                                )
-                            )
-                        ).first()
-                        if not has_col:
-                            await conn.execute(
-                                text(
-                                    f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}"
-                                )
-                            )
-                await _ensure_market_valuation_source_constraint(conn, text)
-                # Recreate unique constraint if missing
-                has_uq = (
-                    await conn.execute(
-                        text(
-                            "SELECT 1 FROM pg_constraint "
-                            "WHERE conrelid = 'market_valuation_snapshots'::regclass "
-                            "AND conname = 'uq_market_valuation_snapshots_market_symbol_date_source'"
-                        )
-                    )
-                ).first()
-                if not has_uq:
-                    await conn.execute(
-                        text(
-                            "ALTER TABLE market_valuation_snapshots "
-                            "ADD CONSTRAINT uq_market_valuation_snapshots_market_symbol_date_source "
-                            "UNIQUE (market, symbol, snapshot_date, source)"
-                        )
-                    )
-                # ROB-443 PR1 — funding_rate added to the (persistent) crypto
-                # screener snapshot table. Same fresh-DB/create_all logic: only
-                # ALTER when genuinely missing to avoid an AccessExclusive lock.
-                crypto_has_funding_rate = (
-                    await conn.execute(
-                        text(
-                            "SELECT 1 FROM information_schema.columns "
-                            "WHERE table_name = 'invest_crypto_screener_snapshots' "
-                            "AND column_name = 'funding_rate'"
-                        )
-                    )
-                ).first()
-                if not crypto_has_funding_rate:
-                    await conn.execute(
-                        text(
-                            "ALTER TABLE invest_crypto_screener_snapshots "
-                            "ADD COLUMN funding_rate NUMERIC(12, 8)"
-                        )
-                    )
-                # ROB-443 follow-up — OI / long-short columns on the (persistent)
-                # crypto screener snapshot table. Same conditional-ALTER pattern.
-                for _col, _ddl in (
-                    ("open_interest_usd", "open_interest_usd NUMERIC(28, 2)"),
-                    ("oi_change_24h", "oi_change_24h NUMERIC(10, 4)"),
-                    (
-                        "long_short_account_ratio",
-                        "long_short_account_ratio NUMERIC(10, 4)",
-                    ),
-                ):
-                    _has = (
-                        await conn.execute(
-                            text(
-                                "SELECT 1 FROM information_schema.columns "
-                                "WHERE table_name = 'invest_crypto_screener_snapshots' "
-                                "AND column_name = :c"
-                            ),
-                            {"c": _col},
-                        )
-                    ).first()
-                    if not _has:
-                        await conn.execute(
-                            text(
-                                "ALTER TABLE invest_crypto_screener_snapshots "
-                                f"ADD COLUMN {_ddl}"
-                            )
-                        )
-                # ROB-284 — crypto_candles_1d migrates in-place from the
-                # legacy (symbol, market) shape to the (instrument_id, time)
-                # shape. The test DB picks up its schema from
-                # ``Base.metadata.create_all`` which is no-op against an
-                # existing table; if the legacy table is still present we
-                # drop it here so create_all rebuilds it from the new ORM
-                # model (``app.models.crypto_candles.CryptoCandle1d``).
-                legacy_has_symbol = (
-                    await conn.execute(
-                        text(
-                            "SELECT 1 FROM information_schema.columns "
-                            "WHERE table_name = 'crypto_candles_1d' "
-                            "AND column_name = 'symbol'"
-                        )
-                    )
-                ).first()
-                if legacy_has_symbol:
-                    await conn.execute(
-                        text("DROP TABLE IF EXISTS public.crypto_candles_1d CASCADE")
-                    )
-                # ROB-269 Phase 3 — snapshot metadata + 3-layer stale gate
-                # layer (i). create_all is no-op for already-existing tables,
-                # so we patch the six new columns + index + CHECK constraint
-                # here so the persistent test DB picks them up without a full
-                # alembic upgrade cycle.
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_reports "
-                        "ADD COLUMN IF NOT EXISTS snapshot_bundle_uuid UUID"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_reports "
-                        "ADD COLUMN IF NOT EXISTS snapshot_policy_version TEXT"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_reports "
-                        "ADD COLUMN IF NOT EXISTS snapshot_coverage_summary JSONB"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_reports "
-                        "ADD COLUMN IF NOT EXISTS snapshot_freshness_summary JSONB"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_reports "
-                        "ADD COLUMN IF NOT EXISTS source_conflicts JSONB"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_reports "
-                        "ADD COLUMN IF NOT EXISTS unavailable_sources JSONB"
-                    )
-                )
-                # ROB-318 Phase 3 (PR-B) — deterministic report diagnostics.
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_reports "
-                        "ADD COLUMN IF NOT EXISTS snapshot_report_diagnostics JSONB"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "CREATE INDEX IF NOT EXISTS "
-                        "ix_investment_reports_snapshot_bundle_uuid "
-                        "ON review.investment_reports (snapshot_bundle_uuid)"
-                    )
-                )
-                # Postgres has no native ADD CONSTRAINT IF NOT EXISTS;
-                # drop+recreate is idempotent and avoids a catalog-table probe.
-                # ROB-269 Phase 3 (corrected by 20260519_rob269_p3a): explicit
-                # ``IS NOT NULL`` guard prevents CHECK from accepting UNKNOWN
-                # when ``overall`` is missing or JSON-null.
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_reports "
-                        "DROP CONSTRAINT IF EXISTS "
-                        "ck_investment_reports_no_published_on_hard_stale"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_reports "
-                        "ADD CONSTRAINT "
-                        "ck_investment_reports_no_published_on_hard_stale "
-                        "CHECK ("
-                        "status <> 'published' "
-                        "OR snapshot_freshness_summary IS NULL "
-                        "OR ("
-                        "(snapshot_freshness_summary->>'overall') IS NOT NULL "
-                        "AND (snapshot_freshness_summary->>'overall') IN "
-                        "('fresh','soft_stale','partial')"
-                        "))"
-                    )
-                )
-                # Avoid repeated AccessExclusive constraint refreshes on this
-                # hot table while xdist workers are already running test bodies.
-                await _ensure_investment_snapshot_kind_constraint(conn, text)
-                # ROB-274 — proposal-state columns + operation-aware CHECKs on
-                # investment_report_items. Mirrors the persistent-DB patch
-                # pattern above; the canonical schema lives in migration
-                # 20260520_rob274_p1_add_proposal_fields_to_report_items.py.
-                for column_sql in (
-                    "ADD COLUMN IF NOT EXISTS operation TEXT",
-                    "ADD COLUMN IF NOT EXISTS target_ref JSONB",
-                    "ADD COLUMN IF NOT EXISTS current_state JSONB",
-                    "ADD COLUMN IF NOT EXISTS proposed_state JSONB",
-                    "ADD COLUMN IF NOT EXISTS diff JSONB",
-                    "ADD COLUMN IF NOT EXISTS apply_policy TEXT",
-                    "ADD COLUMN IF NOT EXISTS decision_bucket TEXT",
-                    "ADD COLUMN IF NOT EXISTS cited_symbol_report_uuid UUID",
-                    "ADD COLUMN IF NOT EXISTS cited_dimension_report_uuids UUID[] NOT NULL DEFAULT ARRAY[]::uuid[]",
-                    "ADD COLUMN IF NOT EXISTS cited_snapshot_uuids UUID[] NOT NULL DEFAULT ARRAY[]::uuid[]",
-                ):
-                    await conn.execute(
-                        text(f"ALTER TABLE review.investment_report_items {column_sql}")
-                    )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_report_items "
-                        "DROP CONSTRAINT IF EXISTS "
-                        "ck_investment_report_items_ck_investment_report_items_decision_bucket"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_report_items "
-                        "DROP CONSTRAINT IF EXISTS "
-                        "ck_investment_report_items_decision_bucket"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_report_items "
-                        "ADD CONSTRAINT ck_investment_report_items_decision_bucket "
-                        "CHECK ("
-                        "decision_bucket IS NULL OR decision_bucket IN ("
-                        "'new_buy_candidate','open_action','completed_or_existing','deferred_no_action','risk_watch'"
-                        "))"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "CREATE INDEX IF NOT EXISTS "
-                        "ix_investment_report_items_operation_kind "
-                        "ON review.investment_report_items "
-                        "(operation, item_kind, status)"
-                    )
-                )
-                # operation + apply_policy CHECKs — drop+recreate is idempotent
-                # and avoids a catalog-table probe.
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_report_items "
-                        "DROP CONSTRAINT IF EXISTS "
-                        "ck_investment_report_items_operation"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_report_items "
-                        "ADD CONSTRAINT ck_investment_report_items_operation "
-                        "CHECK ("
-                        "operation IS NULL OR operation IN ("
-                        "'create','modify','cancel','keep','replace','review'"
-                        "))"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_report_items "
-                        "DROP CONSTRAINT IF EXISTS "
-                        "ck_investment_report_items_apply_policy"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_report_items "
-                        "ADD CONSTRAINT ck_investment_report_items_apply_policy "
-                        "CHECK ("
-                        "apply_policy IS NULL "
-                        "OR apply_policy = 'requires_user_approval'"
-                        ")"
-                    )
-                )
-                # Rewrite watch-condition and watch-expiry CHECKs to the
-                # operation-aware predicates. We drop the canonical name + the
-                # hashed name the ROB-265 migration created under the
-                # project's MetaData naming convention (see 20260520_rob274_p1
-                # docstring).
-                for canonical, hashed in (
-                    (
-                        "ck_investment_report_items_watch_has_condition",
-                        "ck_investment_report_items_ck_investment_report_items_w_421e",
-                    ),
-                    (
-                        "ck_investment_report_items_watch_has_expiry",
-                        "ck_investment_report_items_ck_investment_report_items_w_fdaa",
-                    ),
-                ):
-                    await conn.execute(
-                        text(
-                            f"ALTER TABLE review.investment_report_items "
-                            f'DROP CONSTRAINT IF EXISTS "{hashed}"'
-                        )
-                    )
-                    await conn.execute(
-                        text(
-                            f"ALTER TABLE review.investment_report_items "
-                            f'DROP CONSTRAINT IF EXISTS "{canonical}"'
-                        )
-                    )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_report_items "
-                        "ADD CONSTRAINT "
-                        "ck_investment_report_items_watch_has_condition "
-                        "CHECK ("
-                        "item_kind <> 'watch' "
-                        "OR operation IN ('cancel','keep','review') "
-                        "OR watch_condition IS NOT NULL"
-                        ")"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_report_items "
-                        "ADD CONSTRAINT "
-                        "ck_investment_report_items_watch_has_expiry "
-                        "CHECK ("
-                        "item_kind <> 'watch' "
-                        "OR operation IN ('cancel','keep','review') "
-                        "OR valid_until IS NOT NULL"
-                        ")"
-                    )
-                )
-                # ROB-321 — add missing scalping columns if they are not present
-                # on review.kis_mock_order_ledger in persistent test DB.
-                for col_name, col_type in (
-                    ("correlation_id", "TEXT"),
-                    ("scalping_role", "TEXT"),
-                    ("exit_reason", "TEXT"),
-                    ("gross_pnl", "NUMERIC(20, 4)"),
-                    ("net_pnl", "NUMERIC(20, 4)"),
-                ):
-                    await conn.execute(
-                        text(
-                            f"ALTER TABLE review.kis_mock_order_ledger "
-                            f"ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
-                        )
-                    )
-                # ROB-406 — extend kis_mock_order_ledger.lifecycle_state CHECK
-                # to include 'cancelled'. create_all is no-op on the persistent
-                # test table, so drop+recreate here; canonical schema lives in
-                # migration <rev>_rob406_kis_mock_cancelled_state.py.
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.kis_mock_order_ledger "
-                        "DROP CONSTRAINT IF EXISTS "
-                        "kis_mock_ledger_lifecycle_state_allowed"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.kis_mock_order_ledger "
-                        "DROP CONSTRAINT IF EXISTS "
-                        "ck_kis_mock_order_ledger_kis_mock_ledger_lifecycle_stat_8e10"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.kis_mock_order_ledger "
-                        "ADD CONSTRAINT ck_kis_mock_order_ledger_kis_mock_ledger_lifecycle_stat_8e10 "
-                        "CHECK (lifecycle_state IN ("
-                        "'planned','previewed','submitted','accepted','pending',"
-                        "'fill','reconciled','stale','failed','anomaly','cancelled'"
-                        "))"
-                    )
-                )
-                # ROB-403 — investment_watch_alerts: add conditions/combine/
-                # threshold_high columns + extend operator CHECK to 'between'.
-                # create_all is no-op on the persistent test table.
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_watch_alerts "
-                        "ADD COLUMN IF NOT EXISTS threshold_high NUMERIC(20,8)"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_watch_alerts "
-                        "ADD COLUMN IF NOT EXISTS conditions JSONB "
-                        "NOT NULL DEFAULT '[]'::jsonb"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_watch_alerts "
-                        "ADD COLUMN IF NOT EXISTS combine TEXT "
-                        "NOT NULL DEFAULT 'and'"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_watch_alerts "
-                        "DROP CONSTRAINT IF EXISTS "
-                        "ck_investment_watch_alerts_operator"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_watch_alerts "
-                        "DROP CONSTRAINT IF EXISTS "
-                        "ck_investment_watch_alerts_ck_investment_watch_alerts_operator"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_watch_alerts "
-                        "ADD CONSTRAINT ck_investment_watch_alerts_operator "
-                        "CHECK (operator IN ('above','below','between'))"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_watch_alerts "
-                        "DROP CONSTRAINT IF EXISTS "
-                        "ck_investment_watch_alerts_combine"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_watch_alerts "
-                        "DROP CONSTRAINT IF EXISTS "
-                        "ck_investment_watch_alerts_ck_investment_watch_alerts_combine"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_watch_alerts "
-                        "ADD CONSTRAINT ck_investment_watch_alerts_combine "
-                        "CHECK (combine IN ('and'))"
-                    )
-                )
-                # ROB-403 — investment_watch_events: between + threshold_high.
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_watch_events "
-                        "ADD COLUMN IF NOT EXISTS threshold_high NUMERIC(20,8)"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_watch_events "
-                        "DROP CONSTRAINT IF EXISTS "
-                        "ck_investment_watch_events_operator"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_watch_events "
-                        "DROP CONSTRAINT IF EXISTS "
-                        "ck_investment_watch_events_ck_investment_watch_events_operator"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_watch_events "
-                        "ADD CONSTRAINT ck_investment_watch_events_operator "
-                        "CHECK (operator IN ('above','below','between'))"
-                    )
-                )
-                # ROB-402 — action_mode auto_execute_mock on alerts + events.
-                for _t in ("investment_watch_alerts", "investment_watch_events"):
-                    _c = f"ck_{_t}_action_mode"
-                    await conn.execute(
-                        text(f"ALTER TABLE review.{_t} DROP CONSTRAINT IF EXISTS {_c}")
-                    )
-                    await conn.execute(
-                        text(
-                            f"ALTER TABLE review.{_t} DROP CONSTRAINT IF EXISTS {_c}_{_c}"
-                        )
-                    )
-                    await conn.execute(
-                        text(
-                            f"ALTER TABLE review.{_t} DROP CONSTRAINT IF EXISTS ck_investment_watch_alerts_ck_investment_watch_alerts_a_646d"
-                        )
-                    )
-                    await conn.execute(
-                        text(
-                            f"ALTER TABLE review.{_t} DROP CONSTRAINT IF EXISTS ck_investment_watch_events_ck_investment_watch_events_a_05f0"
-                        )
-                    )
-                    await conn.execute(
-                        text(
-                            f"ALTER TABLE review.{_t} DROP CONSTRAINT IF EXISTS ck_investment_watch_events_ck_investment_watch_events_ac_6a20"
-                        )
-                    )
-                    await conn.execute(
-                        text(
-                            f"ALTER TABLE review.{_t} ADD CONSTRAINT {_c} "
-                            "CHECK (action_mode IN ('notify_only','preview_only',"
-                            "'approval_required','auto_execute_mock'))"
-                        )
-                    )
-                # ROB-402 — outcome executed on events.
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_watch_events DROP CONSTRAINT IF EXISTS ck_investment_watch_events_outcome"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_watch_events DROP CONSTRAINT IF EXISTS ck_investment_watch_events_ck_investment_watch_events_outcome"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.investment_watch_events ADD CONSTRAINT ck_investment_watch_events_outcome "
-                        "CHECK (outcome IN ('notified','review_required','preview_attached',"
-                        "'executed','expired','ignored','failed'))"
-                    )
-                )
-                # ROB-405 Slice A — trade_journals: correlation_id + account_type 'mock'.
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.trade_journals "
-                        "ADD COLUMN IF NOT EXISTS correlation_id TEXT"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.trade_journals "
-                        "DROP CONSTRAINT IF EXISTS trade_journals_account_type"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.trade_journals "
-                        "DROP CONSTRAINT IF EXISTS ck_trade_journals_trade_journals_account_type"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.trade_journals "
-                        "ADD CONSTRAINT trade_journals_account_type "
-                        "CHECK (account_type IN ('live','paper','mock'))"
-                    )
-                )
-                # ROB-473 — report_item_uuid column on live order ledgers
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.kis_live_order_ledger "
-                        "ADD COLUMN IF NOT EXISTS report_item_uuid UUID"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.live_order_ledger "
-                        "ADD COLUMN IF NOT EXISTS report_item_uuid UUID"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "CREATE INDEX IF NOT EXISTS "
-                        "ix_kis_live_ledger_report_item_uuid "
-                        "ON review.kis_live_order_ledger (report_item_uuid)"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "CREATE INDEX IF NOT EXISTS "
-                        "ix_live_ledger_report_item_uuid "
-                        "ON review.live_order_ledger (report_item_uuid)"
-                    )
-                )
+    wanted = schema_content_hash()
 
-                # ROB-568 — US FX PnL fields
-                for table in (
-                    "trade_journals",
-                    "live_order_ledger",
-                    "toss_live_order_ledger",
-                    "trade_retrospectives",
-                ):
-                    for col, ddl in (
-                        ("buy_fx_rate", "NUMERIC(18, 4)"),
-                        ("sell_fx_rate", "NUMERIC(18, 4)"),
-                        ("fx_pnl_krw", "NUMERIC(20, 4)"),
-                        ("security_pnl_usd", "NUMERIC(20, 4)"),
-                        ("security_pnl_krw", "NUMERIC(20, 4)"),
-                        ("total_pnl_krw", "NUMERIC(20, 4)"),
-                        ("fx_rate_source", "TEXT"),
-                        ("fx_pnl_accuracy", "TEXT"),
-                    ):
-                        await conn.execute(
-                            text(
-                                f"ALTER TABLE review.{table} ADD COLUMN IF NOT EXISTS {col} {ddl}"
-                            )
-                        )
-
-                # ROB-568 — TradeRetrospective account_mode constraint
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.trade_retrospectives "
-                        "DROP CONSTRAINT IF EXISTS ck_trade_retrospectives_account_mode"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.trade_retrospectives "
-                        "DROP CONSTRAINT IF EXISTS ck_trade_retrospectives_ck_trade_retrospectives_account_mode"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.trade_retrospectives "
-                        "ADD CONSTRAINT ck_trade_retrospectives_account_mode "
-                        "CHECK (account_mode IN ('kis_mock','kiwoom_mock','kis_live','toss_live','alpaca_paper','upbit_live','paper'))"
-                    )
-                )
-                # ROB-647 — postmortem structuring columns + CHECK constraints.
-                # create_all is no-op on the persistent test table; mirror the
-                # additive migration 20260702_rob647 here.
-                for col, ddl in (
-                    ("trigger_type", "TEXT"),
-                    ("root_cause_class", "TEXT"),
-                    ("intended_vs_happened", "JSONB"),
-                    ("next_actions", "JSONB"),
-                    ("guardrail_fired", "TEXT"),
-                    ("policy_version", "TEXT"),
-                ):
-                    await conn.execute(
-                        text(
-                            f"ALTER TABLE review.trade_retrospectives "
-                            f"ADD COLUMN IF NOT EXISTS {col} {ddl}"
-                        )
-                    )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.trade_retrospectives "
-                        "DROP CONSTRAINT IF EXISTS ck_trade_retrospectives_trigger_type"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.trade_retrospectives "
-                        "ADD CONSTRAINT ck_trade_retrospectives_trigger_type "
-                        "CHECK (trigger_type IS NULL OR trigger_type IN ("
-                        "'fill','partial_fill','rejected_order','cancelled','expired',"
-                        "'thesis_change','policy_violation','stale_evidence',"
-                        "'guardrail_block','stop_loss'))"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.trade_retrospectives "
-                        "DROP CONSTRAINT IF EXISTS "
-                        "ck_trade_retrospectives_root_cause_class"
-                    )
-                )
-                await conn.execute(
-                    text(
-                        "ALTER TABLE review.trade_retrospectives "
-                        "ADD CONSTRAINT ck_trade_retrospectives_root_cause_class "
-                        "CHECK (root_cause_class IS NULL OR root_cause_class IN ("
-                        "'user_input','analysis','policy','execution','harness'))"
-                    )
-                )
-                # ROB-705 — paper provenance columns on paper_trades +
-                # paper_pending_orders. create_all is no-op on the persistent
-                # test tables; mirror migration 20260705_rob705 here.
-                for ptable in ("paper_trades", "paper_pending_orders"):
-                    for pcol, pddl in (
-                        ("correlation_id", "TEXT"),
-                        ("journal_id", "BIGINT"),
-                        ("artifact_uuid", "TEXT"),
-                        ("forecast_id", "TEXT"),
-                    ):
-                        await conn.execute(
-                            text(
-                                f"ALTER TABLE paper.{ptable} "
-                                f"ADD COLUMN IF NOT EXISTS {pcol} {pddl}"
-                            )
-                        )
-                # B-1 (binance-phase1) — benchmark_return_bps on scalping_daily_reviews.
-                # create_all is no-op on the persistent test table, so add here.
-                await conn.execute(
-                    text(
-                        "ALTER TABLE scalping_daily_reviews "
-                        "ADD COLUMN IF NOT EXISTS benchmark_return_bps NUMERIC(12, 4)"
-                    )
-                )
-        finally:
-            # Release the advisory lock BEFORE yielding so the per-test body
-            # runs unserialized. The DDL above is durable + idempotent, so
-            # the next worker that takes the lock is a no-op at the PG layer
-            # but still needs the lock to safely co-exist with concurrent
-            # TRUNCATEs from tests/_investment_reports_helpers.session.
+    async def _bootstrap_once() -> None:
+        async with engine.connect() as guard:
             await guard.execute(
-                text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
+                text("SELECT pg_advisory_lock(CAST(:lock_id AS bigint))"),
                 {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
             )
+            try:
+                async with engine.begin() as conn:
+                    await conn.execute(
+                        text(
+                            "CREATE TABLE IF NOT EXISTS public._pytest_schema_ready ("
+                            "content_hash TEXT PRIMARY KEY, "
+                            "applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+                        )
+                    )
+                    already = (
+                        await conn.execute(
+                            text(
+                                "SELECT 1 FROM public._pytest_schema_ready "
+                                "WHERE content_hash = :h"
+                            ),
+                            {"h": wanted},
+                        )
+                    ).first()
+                    if already:
+                        return
+                    await apply_test_schema(conn)
+                    await conn.execute(text("DELETE FROM public._pytest_schema_ready"))
+                    await conn.execute(
+                        text(
+                            "INSERT INTO public._pytest_schema_ready (content_hash) "
+                            "VALUES (:h)"
+                        ),
+                        {"h": wanted},
+                    )
+            finally:
+                await guard.execute(
+                    text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
+                    {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
+                )
+
+    await run_with_deadlock_retry(_bootstrap_once)
+    yield
+
+
+# Database fixtures for integration tests
+
+
+@pytest_asyncio.fixture
+async def db_session():
+    """Async session against the shared test_db.
+
+    Schema is owned by the session-scoped ``_bootstrap_test_schema`` barrier
+    (ROB-723); this fixture performs no DDL — that is what previously overlapped
+    other xdist workers' test bodies and deadlocked.
+    """
+    from app.core.db import AsyncSessionLocal
 
     async with AsyncSessionLocal() as session:
         yield session
@@ -1500,6 +603,7 @@ async def investment_reports_cleanup_lock(db_session):
     from sqlalchemy import text
 
     from app.core.db import engine
+    from tests._db_retry import run_with_deadlock_retry
     from tests._investment_reports_helpers import (
         INVESTMENT_REPORTS_TABLES,
         INVESTMENT_REPORTS_TEST_LOCK_ID,
@@ -1525,10 +629,16 @@ async def investment_reports_cleanup_lock(db_session):
         )
         try:
             await db_session.rollback()
-            await _truncate_investment_report_tables()
+            await run_with_deadlock_retry(
+                _truncate_investment_report_tables,
+                rollback=db_session.rollback,
+            )
             yield db_session
             await db_session.rollback()
-            await _truncate_investment_report_tables()
+            await run_with_deadlock_retry(
+                _truncate_investment_report_tables,
+                rollback=db_session.rollback,
+            )
         finally:
             await guard.execute(
                 text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
