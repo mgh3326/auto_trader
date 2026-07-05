@@ -125,3 +125,61 @@ async def test_record_live_order_us_buy_mints_corr_and_publishes(monkeypatch):
     assert seen["instrument_type"] == "equity_us"
     assert seen["side"] == "buy"
     assert seen["target_price"] == 210.0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_record_toss_place_kr_buy_mints_and_publishes(monkeypatch):
+    from decimal import Decimal as D
+
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
+    seen = {}
+
+    async def spy_publish(**kwargs):
+        seen.update(kwargs)
+        return "fc-toss-1"
+
+    async def fake_record_send(self, **kwargs):
+        class _Row:
+            id = 1
+            status = "accepted"
+
+        fake_record_send.kwargs = kwargs
+        return _Row()
+
+    monkeypatch.setattr(mod, "publish_place_time_forecast", spy_publish)
+    monkeypatch.setattr(
+        "app.services.toss_live_order_ledger_service."
+        "TossLiveOrderLedgerService.record_send",
+        fake_record_send,
+    )
+
+    res = await mod.record_toss_place_order(
+        market="kr",
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        time_in_force="day",
+        quantity=D("1"),
+        price=D("70000"),
+        order_amount=None,
+        currency="KRW",
+        client_order_id="cid-1",
+        broker_order_id="bord-1",
+        raw_response={},
+        reason=None,
+        exit_reason=None,
+        thesis="t",
+        strategy=None,
+        target_price=D("80000"),
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        indicators_snapshot=None,
+        report_item_uuid=None,
+    )
+    assert res["correlation_id"].startswith("live:toss_live:")
+    assert fake_record_send.kwargs["correlation_id"] == res["correlation_id"]
+    assert seen["instrument_type"] == "equity_kr"
+    assert seen["target_price"] == 80000.0
