@@ -26,6 +26,12 @@ from app.models.review import LiveOrderLedger
 from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
     FillVerdict,
 )
+from app.services.live_correlation import live_correlation_id
+from app.services.live_place_provenance import publish_place_time_forecast
+from app.core.timezone import now_kst
+
+
+_LIVE_MARKET_TO_INSTRUMENT = {"us": "equity_us", "crypto": "crypto"}
 
 logger = logging.getLogger(__name__)
 
@@ -501,7 +507,17 @@ async def _record_live_order(
     status = _derive_live_send_status(
         rt_cd=rt_cd, order_no=str(order_no) if order_no else None
     )
+    correlation_id = live_correlation_id(
+        account_scope=account_scope,
+        symbol=normalized_symbol,
+        side=side,
+        price=Decimal(str(price_val)),
+        quantity=Decimal(str(qty_val)),
+        kst_trade_day=now_kst().strftime("%Y-%m-%d"),
+        rung=0,
+    )
     ledger_id = await _save_live_order_ledger(
+
         broker=broker,
         account_scope=account_scope,
         market=market,
@@ -535,9 +551,25 @@ async def _record_live_order(
         report_item_uuid=report_item_uuid,
         approval_hash=approval_hash,
         idempotency_key=idempotency_key,
+        correlation_id=correlation_id,
     )
+
+    if status == "accepted":
+        await publish_place_time_forecast(
+            correlation_id=correlation_id,
+            symbol=normalized_symbol,
+            instrument_type=_LIVE_MARKET_TO_INSTRUMENT.get(market, market),
+            side=side,
+            target_price=target_price,
+            min_hold_days=min_hold_days,
+            session_label="live_place",
+            created_by="auto_place_live",
+            report_item_uuid=str(report_item_uuid) if report_item_uuid else None,
+        )
+
     fill_recorded = False
     inline_outcome: dict[str, Any] | None = None
+
     if inline_confirm and status == "accepted":
         row = await _load_live_ledger_row(ledger_id)
         if row is not None:
@@ -552,6 +584,7 @@ async def _record_live_order(
         "account_scope": account_scope,
         "market": market,
         "ledger_id": ledger_id,
+        "correlation_id": correlation_id,
         "order_id": str(order_no) if order_no else None,
         "broker_status": status,
         "fill_recorded": fill_recorded,

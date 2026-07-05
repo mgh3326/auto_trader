@@ -81,3 +81,47 @@ async def test_save_kis_live_ledger_persists_correlation_id(db_session):
             )
         ).scalar_one()
     assert row.correlation_id == "live:kis_live:deadbeefdeadbeef"
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_record_live_order_us_buy_mints_corr_and_publishes(monkeypatch):
+    from app.mcp_server.tooling import live_order_ledger as mod
+
+    seen = {}
+
+    async def spy_publish(**kwargs):
+        seen.update(kwargs)
+        return "fc-us-1"
+
+    monkeypatch.setattr(mod, "publish_place_time_forecast", spy_publish)
+
+    res = await mod._record_live_order(
+        broker="kis",
+        account_scope="kis_live",
+        market="us",
+        normalized_symbol="AAPL",
+        exchange="NASD",
+        market_symbol=None,
+        side="buy",
+        order_kind="limit",
+        currency="USD",
+        order_no="US-CORR-1",
+        order_time=None,
+        rt_cd="0",
+        response_message=None,
+        dry_run_result={"price": 190.0, "quantity": 2, "estimated_value": 380.0},
+        execution_result={"rt_cd": "0"},
+        reason=None,
+        exit_reason=None,
+        thesis="t",
+        strategy=None,
+        target_price=210.0,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        indicators_snapshot=None,
+    )
+    assert res["correlation_id"].startswith("live:kis_live:")
+    assert seen["instrument_type"] == "equity_us"
+    assert seen["side"] == "buy"
+    assert seen["target_price"] == 210.0
