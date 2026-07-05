@@ -874,6 +874,9 @@ class InvestmentReportItemResponse(BaseModel):
     # with reconcile-written fill rollup. None when the item has no linked orders;
     # set post-validation by the bundle serializers, not read from the ORM row.
     linked_orders: list[LinkedOrderView] | None = None
+    # ROB-715 — backend-derived one-line summary of evidence_snapshot's
+    # structured_evidence (frontend never parses the nested structure).
+    structured_evidence_summary: str | None = None
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -1129,6 +1132,13 @@ class InvestmentReportBundle(BaseModel):
     # Empty for reports with no Hermes-marked news.
     news_citations: list[InvestmentReportNewsCitationResponse] = Field(
         default_factory=list
+    )
+    # ROB-715 — item→forecast/retrospective exact-join maps keyed by item UUID.
+    forecasts_by_item_uuid: dict[str, list[ForecastLinkResponse]] = Field(
+        default_factory=dict
+    )
+    retrospectives_by_item_uuid: dict[str, list[RetrospectiveLinkResponse]] = Field(
+        default_factory=dict
     )
 
 
