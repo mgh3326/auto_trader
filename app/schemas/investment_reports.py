@@ -791,6 +791,33 @@ class LinkedOrderView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ForecastLinkResponse(BaseModel):
+    """ROB-715 — an item's own forecast, projected for the audit surface."""
+
+    forecast_id: str
+    status: str
+    outcome: bool | None = None
+    review_date: str | None = None
+    direction: str | None = None
+    target_price: float | None = None
+    probability: float
+    brier_score: float | None = None
+    resolution_source: str | None = None
+
+
+class RetrospectiveLinkResponse(BaseModel):
+    """ROB-715 — an item's own retrospective, projected for the audit surface."""
+
+    retrospective_id: int
+    outcome: str
+    lesson: str | None = None
+    result_summary: str | None = None
+    root_cause_class: str | None = None
+    trigger_type: str | None = None
+    pnl_pct: float | None = None
+    created_at: str | None = None
+
+
 class StockDetailOrderLedgerResponse(BaseModel):
     """ROB-559 — per-symbol live order history for the stock-detail page.
 
