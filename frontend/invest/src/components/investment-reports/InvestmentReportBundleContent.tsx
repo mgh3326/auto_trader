@@ -416,6 +416,33 @@ function ItemRow({
           </span>
         </div>
       ) : null}
+      {tradeSetup ? (
+        <div
+          className="item-plan-vs-actual"
+          data-testid="item-plan-vs-actual"
+          style={{ fontSize: 12, color: "var(--fg-2)" }}
+        >
+          <span>
+            계획: 진입 {tradeSetup.headline.entry} · 손절 {tradeSetup.headline.riskPct}% · 목표 {tradeSetup.headline.rewardPct}%
+          </span>
+          {(() => {
+            const filled = (item.linkedOrders ?? []).find(
+              (o) =>
+                o.avgFillPrice != null &&
+                o.avgFillPrice !== "" &&
+                String(o.avgFillPrice) !== "0",
+            );
+            return filled ? (
+              <span>
+                {" "}
+                · 실제 체결 {String(filled.avgFillPrice)}
+              </span>
+            ) : (
+              <span style={{ color: "var(--fg-3)" }}> · 체결 없음</span>
+            );
+          })()}
+        </div>
+      ) : null}
       {invalidationTriggers ? (
         <div style={{ display: "grid", gap: 4 }}>
           <div style={{ fontSize: 12, color: "var(--fg-2)", fontWeight: 800 }}>
