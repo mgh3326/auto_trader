@@ -280,6 +280,8 @@ class KISLiveOrderLedger(Base):
         Index("ix_kis_live_ledger_status", "status"),
         Index("ix_kis_live_ledger_symbol", "symbol"),
         Index("ix_kis_live_ledger_report_item_uuid", "report_item_uuid"),
+        # ROB-714 — learning-loop provenance spine join index.
+        Index("ix_kis_live_ledger_correlation_id", "correlation_id"),
         {"schema": "review"},
     )
 
@@ -330,6 +332,10 @@ class KISLiveOrderLedger(Base):
     # ROB-653 P6-B — content approval-hash + local idempotency key (additive).
     approval_hash: Mapped[str | None] = mapped_column(Text)
     idempotency_key: Mapped[str | None] = mapped_column(Text)
+    # ROB-714 — learning-loop provenance spine (send-time mint, immutable).
+    # Links this order to its place-time forecast + reconcile-time journal +
+    # retrospective. NULL for legacy rows. See app.services.live_correlation.
+    correlation_id: Mapped[str | None] = mapped_column(Text)
 
     # reconcile outcomes
     filled_qty: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
@@ -366,6 +372,8 @@ class LiveOrderLedger(Base):
         Index("ix_live_ledger_status", "status"),
         Index("ix_live_ledger_market_symbol", "market", "symbol"),
         Index("ix_live_ledger_report_item_uuid", "report_item_uuid"),
+        # ROB-714 — learning-loop provenance spine join index.
+        Index("ix_live_ledger_correlation_id", "correlation_id"),
         {"schema": "review"},
     )
 
@@ -420,6 +428,10 @@ class LiveOrderLedger(Base):
     # ROB-653 P6-B — content approval-hash + local idempotency key (additive).
     approval_hash: Mapped[str | None] = mapped_column(Text)
     idempotency_key: Mapped[str | None] = mapped_column(Text)
+    # ROB-714 — learning-loop provenance spine (send-time mint, immutable).
+    # Links this order to its place-time forecast + reconcile-time journal +
+    # retrospective. NULL for legacy rows. See app.services.live_correlation.
+    correlation_id: Mapped[str | None] = mapped_column(Text)
 
     # ROB-164 defensive-trim approval audit, captured at send so the
     # evidence-gated journal close (reconcile) can still append the
@@ -522,6 +534,8 @@ class TossLiveOrderLedger(Base):
         Index("ix_toss_live_ledger_broker_status", "broker_status"),
         Index("ix_toss_live_ledger_report_item_uuid", "report_item_uuid"),
         Index("ix_toss_live_ledger_replaced_by", "replaced_by_order_id"),
+        # ROB-714 — learning-loop provenance spine join index.
+        Index("ix_toss_live_ledger_correlation_id", "correlation_id"),
         {"schema": "review"},
     )
 
@@ -571,6 +585,10 @@ class TossLiveOrderLedger(Base):
     indicators_snapshot: Mapped[dict | None] = mapped_column(JSONB)
     report_item_uuid: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
     approval_hash: Mapped[str | None] = mapped_column(Text)
+    # ROB-714 — learning-loop provenance spine (send-time mint, immutable).
+    # Links this order to its place-time forecast + reconcile-time journal +
+    # retrospective. NULL for legacy rows. See app.services.live_correlation.
+    correlation_id: Mapped[str | None] = mapped_column(Text)
 
     filled_qty: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
