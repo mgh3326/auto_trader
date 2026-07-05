@@ -520,15 +520,16 @@ async def test_resolve_candle_partition_kr_us_crypto(db_session: AsyncSession):
     assert await svc._resolve_candle_partition(
         db_session, symbol="KRW-BTC", instrument_type="crypto"
     ) == (MarketKey.CRYPTO, "upbit_krw")
-    assert await svc._resolve_candle_partition(
-        db_session, symbol="X", instrument_type="bond"
-    ) is None
-
+    assert (
+        await svc._resolve_candle_partition(
+            db_session, symbol="X", instrument_type="bond"
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
 async def test_resolve_backfills_missing_candles_then_scores(
-
     db_session: AsyncSession, monkeypatch
 ):
     # ROB-712: when the resolution window has no candles, resolve_forecast must
@@ -552,6 +553,7 @@ async def test_resolve_backfills_missing_candles_then_scores(
 
     async def fake_backfill(*, symbol, market, partition, horizon_bars=200):
         calls["n"] += 1
+
         # Mirror the real-world effect: after the backfill a subsequent read
         # of the same window returns candles.
         async def seeded_read(*_a, **_k):

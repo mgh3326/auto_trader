@@ -451,7 +451,6 @@ def _negative_class_warnings(validated_items: list[Any]) -> list[str]:
         return []
 
 
-
 # ---------------------------------------------------------------------------
 # investment_report_create
 # ---------------------------------------------------------------------------
@@ -488,7 +487,6 @@ async def investment_report_create_impl(
     # confidence so the negative class stays calibratable. The helper never
     # raises; an empty list is the no-op default.
     warnings = _negative_class_warnings(validated_items)
-
 
     payload: dict[str, Any] = {
         "report_type": report_type,

@@ -1167,6 +1167,7 @@ class InvestmentReportCreateResponse(BaseModel):
     # omits confidence (negative-class calibration needs confidence + forecast).
     warnings: list[str] = Field(default_factory=list)
 
+
 class InvestmentReportDecideItemResponse(BaseModel):
     """``investment_report_decide_item`` MCP return shape."""
 

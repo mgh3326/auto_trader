@@ -13,8 +13,6 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import uuid
-
-
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -594,7 +592,6 @@ async def _backfill_daily_candles(
         await service.close()
 
 
-
 async def _read_window_candles(
     db: AsyncSession,
     *,
@@ -633,7 +630,6 @@ async def _read_window_candles(
         end=end_dt,
     )
     return [r for r in rows if start_date <= _row_date(r) <= review_date]
-
 
 
 async def resolve_forecast(

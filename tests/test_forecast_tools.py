@@ -111,11 +111,7 @@ async def test_forecast_resolve_passes_backfill_flag(monkeypatch):
 
     monkeypatch.setattr(forecast_tools, "_session_factory", _factory)
 
-
-
-    res = await forecast_resolve(
-        forecast_id="x", dry_run=True, backfill_missing=False
-    )
+    res = await forecast_resolve(forecast_id="x", dry_run=True, backfill_missing=False)
     assert res["success"] is True
     assert seen["backfill_missing"] is False
     assert seen["forecast_id"] == "x"

@@ -142,7 +142,6 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "'no +X% within N days') so calibration isn't censored (ROB-712)",
     ],
     "sell": [
-
         "loss guard: sell price >= avg * sell.loss_guard_min_multiple",
         "KRX tick rounding",
         "no two-sided (buy+sell) resting orders on same Toss symbol",
@@ -161,7 +160,6 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "reason, and leave a resolvable forecast_save (price_target, e.g. "
         "'no +X% within N days') so calibration isn't censored (ROB-712)",
     ],
-
     "bootstrap": [
         "context-load only; no order mutation in this lane",
         "recovery gate frame: recovery_gate.min_conditions_met of 4",

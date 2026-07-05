@@ -55,7 +55,6 @@ def register_forecast_tools(mcp: Any) -> None:
             "Missing daily candles for a not-yet-loaded symbol are lazily "
             "fetched+persisted once, then re-read (backfill_missing=true "
             "default; set false for a fast peek that skips the fetch)."
-
         ),
     )(forecast_resolve)
     _ = mcp.tool(
