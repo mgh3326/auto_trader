@@ -44,6 +44,7 @@ _VALID_ACCOUNT_MODES = {
     "toss_live",
     "alpaca_paper",
     "upbit_live",
+    "paper",
 }
 _VALID_OUTCOMES = {
     "filled",
