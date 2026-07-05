@@ -80,7 +80,8 @@ async def build_decision_context(
 ) -> dict[str, Any] | None:
     """Build the decision_history payload for one symbol, or None if no signal.
 
-    """setup_tag, when supplied, selects which setup comes first in realized_r_by_tag."""
+    ``setup_tag``, when supplied, selects which setup comes first in
+    ``realized_r_by_tag`` (ROB-713). It is otherwise unused.
     """
     instrument_type = MARKET_TO_INSTRUMENT.get(market)
     norm = _normalize_symbol_for_filter(symbol, instrument_type)
@@ -133,15 +134,15 @@ def _fold_brier(agg: dict[str, Any]) -> dict[str, Any]:
         "mean_brier": round(mean, 4) if mean is not None else None,
         "flag": "insufficient_sample" if n < 10 else "ok",
     }
+
+
 async def _realized_r_by_tag(
     db: AsyncSession, market: str, setup_tag: str | None
 ) -> dict[str, dict[str, Any]]:
     """Bounded per-tag map for the ROB-713 scoreboard — portfolio-wide, not per-symbol."""
     board = await build_trading_scoreboard(db, market=market)
     groups = board.get("groups", [])
-    ordered = sorted(
-        groups, key=lambda g: (g["tag"] != setup_tag, -int(g["n"]))
-    )
+    ordered = sorted(groups, key=lambda g: (g["tag"] != setup_tag, -int(g["n"])))
     out: dict[str, dict[str, Any]] = {}
     for g in ordered[:_MAX_TAGS]:
         if g["tag"] == "untagged":

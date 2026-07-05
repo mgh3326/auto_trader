@@ -43,4 +43,10 @@ async def get_trading_scoreboard(
             )
     except Exception as exc:  # noqa: BLE001
         logger.exception("get_trading_scoreboard failed")
-        return {"count": 0, "groups": [], "overall": None, "as_of": None, "error": str(exc)}
+        return {
+            "count": 0,
+            "groups": [],
+            "overall": None,
+            "as_of": None,
+            "error": str(exc),
+        }

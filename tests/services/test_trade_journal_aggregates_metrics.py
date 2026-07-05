@@ -48,13 +48,13 @@ async def test_excursions_from_stubbed_ohlcv(monkeypatch):
 
     async def fake_get_ohlcv(symbol, market, period, count, end=None):
         return [
-            C(datetime(2026, 6, 1, tzinfo=UTC), 101, 95),   # low 95
-            C(datetime(2026, 6, 3, tzinfo=UTC), 118, 99),   # high 118
+            C(datetime(2026, 6, 1, tzinfo=UTC), 101, 95),  # low 95
+            C(datetime(2026, 6, 3, tzinfo=UTC), 118, 99),  # high 118
             C(datetime(2026, 6, 5, tzinfo=UTC), 113, 108),
         ]
 
     monkeypatch.setattr(agg, "get_ohlcv", fake_get_ohlcv)
     mae, mfe, degraded = await agg.compute_excursions(_trade())
-    assert mae == pytest.approx((95 - 100) / 100)   # -0.05
-    assert mfe == pytest.approx((118 - 100) / 100)   # +0.18
+    assert mae == pytest.approx((95 - 100) / 100)  # -0.05
+    assert mfe == pytest.approx((118 - 100) / 100)  # +0.18
     assert degraded is False

@@ -52,11 +52,7 @@ def _market_for(source: str, row: object) -> str:
 
 
 def _account_of(source: str, row: object) -> str:
-    return (
-        getattr(row, "account_scope", None)
-        or getattr(row, "broker", None)
-        or source
-    )
+    return getattr(row, "account_scope", None) or getattr(row, "broker", None) or source
 
 
 def _coerce_uuid(value: str | None) -> uuid.UUID | None:
@@ -153,7 +149,9 @@ async def load_fills(
                     continue
                 if date_to and d > date_to:
                     continue
-            if _is_smoke(getattr(r, "correlation_id", None), getattr(r, "status", None)):
+            if _is_smoke(
+                getattr(r, "correlation_id", None), getattr(r, "status", None)
+            ):
                 continue
             corr = getattr(r, "correlation_id", None)
             item_uuid = getattr(r, "report_item_uuid", None)
@@ -164,7 +162,9 @@ async def load_fills(
                     account=_account_of(source, r),
                     side=r.side,
                     qty=float(r.filled_qty),
-                    price=float(r.avg_fill_price) if r.avg_fill_price is not None else 0.0,
+                    price=float(r.avg_fill_price)
+                    if r.avg_fill_price is not None
+                    else 0.0,
                     fee=_fee_of(r),
                     ts=r.trade_date,
                     item_uuid=str(item_uuid) if item_uuid else None,
@@ -187,7 +187,15 @@ def pair_fills_fifo(fills: list[Fill]) -> list[ClosedTrade]:
         for f in group_sorted:
             if f.side == "buy":
                 open_lots.append(
-                    _Lot(f.qty, f.qty, f.price, f.fee, f.ts, f.item_uuid, f.correlation_id)
+                    _Lot(
+                        f.qty,
+                        f.qty,
+                        f.price,
+                        f.fee,
+                        f.ts,
+                        f.item_uuid,
+                        f.correlation_id,
+                    )
                 )
                 continue
             if f.side != "sell":
@@ -222,15 +230,21 @@ def pair_fills_fifo(fills: list[Fill]) -> list[ClosedTrade]:
                     entry_ts=entry_ts,
                     exit_ts=f.ts,
                     pnl_abs=gross - fees,
-                    pnl_pct=(f.price - entry_price) / entry_price if entry_price else 0.0,
+                    pnl_pct=(f.price - entry_price) / entry_price
+                    if entry_price
+                    else 0.0,
                     fees=fees,
                     entry_item_uuids=tuple(
-                        dict.fromkeys(lot.item_uuid for _, lot in consumed if lot.item_uuid)
+                        dict.fromkeys(
+                            lot.item_uuid for _, lot in consumed if lot.item_uuid
+                        )
                     ),
                     exit_item_uuid=f.item_uuid,
                     entry_correlation_ids=tuple(
                         dict.fromkeys(
-                            lot.correlation_id for _, lot in consumed if lot.correlation_id
+                            lot.correlation_id
+                            for _, lot in consumed
+                            if lot.correlation_id
                         )
                     ),
                     exit_correlation_id=f.correlation_id,
@@ -251,7 +265,9 @@ async def resolve_setup_tag(
     norm = _normalize_symbol_for_filter(trade.symbol, instrument)
     window_start = trade.entry_ts - timedelta(days=window_days)
 
-    corr_ids = [c for c in (*trade.entry_correlation_ids, trade.exit_correlation_id) if c]
+    corr_ids = [
+        c for c in (*trade.entry_correlation_ids, trade.exit_correlation_id) if c
+    ]
     if corr_ids:
         row = (
             await db.execute(
@@ -284,7 +300,14 @@ async def resolve_setup_tag(
         return TagInfo(retro_key, "strategy_key", "symbol_window")
 
     item_uuids_raw = [u for u in (*trade.entry_item_uuids, trade.exit_item_uuid) if u]
-    item_uuids = [u for u in (uid if isinstance(uid, uuid.UUID) else _coerce_uuid(uid) for uid in item_uuids_raw) if u is not None]
+    item_uuids = [
+        u
+        for u in (
+            uid if isinstance(uid, uuid.UUID) else _coerce_uuid(uid)
+            for uid in item_uuids_raw
+        )
+        if u is not None
+    ]
     if item_uuids:
         intent = (
             await db.execute(
@@ -314,6 +337,7 @@ async def resolve_setup_tag(
 
     return TagInfo("untagged", "untagged", "symbol_window")
 
+
 _MAX_OHLCV_BARS = 200
 
 
@@ -335,9 +359,9 @@ async def planned_stop_for(
 
     item_uuids_raw = [u for u in (*trade.entry_item_uuids, trade.exit_item_uuid) if u]
     item_uuids = [
-        u for u in (
-            x if isinstance(x, uuid.UUID) else _coerce_uuid(x)
-            for x in item_uuids_raw
+        u
+        for u in (
+            x if isinstance(x, uuid.UUID) else _coerce_uuid(x) for x in item_uuids_raw
         )
         if u is not None
     ]
@@ -501,9 +525,7 @@ async def build_trading_scoreboard(
             mae, mfe, _degraded = await compute_excursions(t)
         except Exception:
             mae, mfe = None, None
-        rows.append(
-            TradeMetrics(t, tag, compute_r_multiple(t, stop), mae, mfe)
-        )
+        rows.append(TradeMetrics(t, tag, compute_r_multiple(t, stop), mae, mfe))
 
     groups = aggregate_by_tag(rows)
     if setup_tag:

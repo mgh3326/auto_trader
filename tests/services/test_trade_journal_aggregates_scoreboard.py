@@ -11,20 +11,32 @@ from app.services.trade_journal.aggregates import (
 )
 
 
-def _tm(pnl_pct, r, tag="pullback_long", tag_source="strategy_key", link="symbol_window"):
+def _tm(
+    pnl_pct, r, tag="pullback_long", tag_source="strategy_key", link="symbol_window"
+):
     ct = ClosedTrade(
-        market="kr", symbol="005930", account="a", qty=10,
-        entry_price=100.0, exit_price=100.0 * (1 + pnl_pct),
+        market="kr",
+        symbol="005930",
+        account="a",
+        qty=10,
+        entry_price=100.0,
+        exit_price=100.0 * (1 + pnl_pct),
         entry_ts=datetime(2026, 6, 1, tzinfo=UTC),
         exit_ts=datetime(2026, 6, 2, tzinfo=UTC),
-        pnl_abs=1000.0 * pnl_pct, pnl_pct=pnl_pct, fees=0.0,
-        entry_item_uuids=(), exit_item_uuid=None,
-        entry_correlation_ids=(), exit_correlation_id=None,
+        pnl_abs=1000.0 * pnl_pct,
+        pnl_pct=pnl_pct,
+        fees=0.0,
+        entry_item_uuids=(),
+        exit_item_uuid=None,
+        entry_correlation_ids=(),
+        exit_correlation_id=None,
     )
     return TradeMetrics(
         trade=ct,
         tag=TagInfo(tag, tag_source, link),
-        r_multiple=r, mae=-0.03, mfe=0.08,
+        r_multiple=r,
+        mae=-0.03,
+        mfe=0.08,
     )
 
 
