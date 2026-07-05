@@ -118,4 +118,16 @@ describe("ROB-715 raw item fields", () => {
     expect(screen.getByText(/2 evidence fields/)).toBeInTheDocument();
     expect(screen.getByTestId("item-max-action")).toBeInTheDocument();
   });
+
+  it("formats a quantity-based max_action with the 주 suffix (not mojibake)", () => {
+    const bundle = makeBundle(
+      makeItem({
+        maxAction: { side: "buy", quantity: 10, limit_price: 195000 },
+      }),
+    );
+    renderContent(bundle);
+    const maxAction = screen.getByTestId("item-max-action");
+    expect(maxAction).toHaveTextContent("10주");
+    expect(maxAction.textContent).not.toContain("······");
+  });
 });

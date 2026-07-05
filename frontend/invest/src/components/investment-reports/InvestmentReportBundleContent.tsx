@@ -278,7 +278,7 @@ function parseInvalidationTriggers(
 function formatMaxAction(a: Record<string, unknown>): string {
   const parts: string[] = [];
   if (a.side) parts.push(String(a.side));
-  if (a.quantity != null) parts.push(`${a.quantity}\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7`);
+  if (a.quantity != null) parts.push(`${a.quantity}\uc8fc`);
   if (a.notional != null) parts.push(`${a.notional}`);
   if (a.limit_price != null) parts.push(`@${a.limit_price}`);
   if (a.ladder_level != null) parts.push(`ladder ${a.ladder_level}`);

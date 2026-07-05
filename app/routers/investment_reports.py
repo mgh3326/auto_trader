@@ -61,7 +61,6 @@ def _serialise_bundle(bundle: dict) -> InvestmentReportBundle:
     # ROB-554 — attach reverse-looked-up linked orders (set post-validation;
     # the ORM item row has no such attribute). Missing key => legacy/no orders.
     linked_by_uuid = bundle.get("linked_orders_by_item_uuid", {})
-    linked_by_uuid = bundle.get("linked_orders_by_item_uuid", {})
     forecasts_by_uuid = bundle.get("forecasts_by_item_uuid", {})
     retrospectives_by_uuid = bundle.get("retrospectives_by_item_uuid", {})
     item_responses = []
