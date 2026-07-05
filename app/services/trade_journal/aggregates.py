@@ -3,8 +3,8 @@ MAE) over live-ledger fills. Read-only, no LLM (ROB-501), no schema change."""
 
 from __future__ import annotations
 
-import uuid
 import copy
+import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -443,6 +443,7 @@ class TradeMetrics:
     mfe: float | None
     degraded: bool = False
 
+
 def _agg_one(tag: str, rows: list[TradeMetrics]) -> dict:
     pnls = [r.trade.pnl_pct for r in rows if r.trade.pnl_pct is not None]
     wins = [p for p in pnls if p > 0]
@@ -504,7 +505,15 @@ async def build_trading_scoreboard(
     ``now`` is exposed for tests so the TTL comparison is deterministic; in
     production the orchestrator defaults to ``datetime.now(timezone.utc)``.
     """
-    key = (market, account_mode, date_from, date_to, setup_tag, min_sample, include_excursions)
+    key = (
+        market,
+        account_mode,
+        date_from,
+        date_to,
+        setup_tag,
+        min_sample,
+        include_excursions,
+    )
     stamp = (now or datetime.now(UTC)).timestamp()
     if use_cache:
         cached = _scoreboard_cache.get(key)

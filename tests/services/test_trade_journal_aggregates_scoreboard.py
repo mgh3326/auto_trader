@@ -101,12 +101,8 @@ async def test_include_excursions_in_cache_key(db_session, monkeypatch):
 
     monkeypatch.setattr(agg, "load_fills", counting_load_fills)
     stamp = datetime(2026, 7, 5, tzinfo=UTC)
-    await agg.build_trading_scoreboard(
-        db_session, include_excursions=True, now=stamp
-    )
-    await agg.build_trading_scoreboard(
-        db_session, include_excursions=False, now=stamp
-    )
+    await agg.build_trading_scoreboard(db_session, include_excursions=True, now=stamp)
+    await agg.build_trading_scoreboard(db_session, include_excursions=False, now=stamp)
     # distinct cache keys → load_fills ran twice, not served from one cache slot
     assert calls["n"] == 2
 

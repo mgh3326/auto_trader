@@ -147,9 +147,7 @@ async def _realized_r_by_tag(
     """
     from app.services.trade_journal.aggregates import build_trading_scoreboard
 
-    board = await build_trading_scoreboard(
-        db, market=market, include_excursions=False
-    )
+    board = await build_trading_scoreboard(db, market=market, include_excursions=False)
     groups = [g for g in board.get("groups", []) if g["tag"] != "untagged"]
     ordered = sorted(groups, key=lambda g: (g["tag"] != setup_tag, -int(g["n"])))
     return {g["tag"]: {k: g.get(k) for k in _R_KEYS} for g in ordered[:_MAX_TAGS]}

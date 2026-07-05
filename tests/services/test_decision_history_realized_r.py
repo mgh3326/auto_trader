@@ -103,12 +103,28 @@ async def test_untagged_dominant_still_returns_real_tags(db_session, monkeypatch
         assert include_excursions is False  # read-path must skip excursions
         return {
             "groups": [
-                {"tag": "untagged", "n": 99, "expectancy_r": 0.0, "win_rate": 0.0,
-                 "profit_factor": None, "avg_mae": None, "insufficient_sample": False},
-                {"tag": "pullback_long", "n": 5, "expectancy_r": 1.2, "win_rate": 0.6,
-                 "profit_factor": 2.0, "avg_mae": -0.02, "insufficient_sample": True},
+                {
+                    "tag": "untagged",
+                    "n": 99,
+                    "expectancy_r": 0.0,
+                    "win_rate": 0.0,
+                    "profit_factor": None,
+                    "avg_mae": None,
+                    "insufficient_sample": False,
+                },
+                {
+                    "tag": "pullback_long",
+                    "n": 5,
+                    "expectancy_r": 1.2,
+                    "win_rate": 0.6,
+                    "profit_factor": 2.0,
+                    "avg_mae": -0.02,
+                    "insufficient_sample": True,
+                },
             ],
-            "overall": None, "as_of": "x", "count": 104,
+            "overall": None,
+            "as_of": "x",
+            "count": 104,
         }
 
     monkeypatch.setattr(
