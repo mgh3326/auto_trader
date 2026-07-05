@@ -3,22 +3,28 @@ MAE) over live-ledger fills. Read-only, no LLM (ROB-501), no schema change."""
 
 from __future__ import annotations
 
+import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.symbol import to_db_symbol
+from app.models.investment_reports import InvestmentReportItem
 from app.models.review import (
     KISLiveOrderLedger,
     LiveOrderLedger,
     TossLiveOrderLedger,
+    TradeRetrospective,
 )
+from app.services.trade_journal.forecast_service import _normalize_symbol_for_filter
 
 _EPS = 1e-9
 _SMOKE_TOKENS = ("smoke",)
+
+_MARKET_TO_INSTRUMENT = {"kr": "equity_kr", "us": "equity_us", "crypto": "crypto"}
 
 
 def _is_smoke(*values: str | None) -> bool:
@@ -49,6 +55,15 @@ def _account_of(source: str, row: object) -> str:
         or getattr(row, "broker", None)
         or source
     )
+
+
+def _coerce_uuid(value: str | None) -> uuid.UUID | None:
+    if not value:
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, AttributeError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -94,6 +109,13 @@ class _Lot:
     ts: datetime
     item_uuid: str | None
     correlation_id: str | None
+
+
+@dataclass(frozen=True)
+class TagInfo:
+    tag: str
+    tag_source: str
+    link_quality: str
 
 
 async def load_fills(
@@ -213,3 +235,79 @@ def pair_fills_fifo(fills: list[Fill]) -> list[ClosedTrade]:
                 )
             )
     return closed
+
+
+async def resolve_setup_tag(
+    db: AsyncSession, trade: ClosedTrade, *, window_days: int = 45
+) -> TagInfo:
+    """Resolve the setup tag for a closed round-trip.
+
+    Precedence: ``strategy_key`` (exact via correlation_id, then symbol_window) →
+    ``intent`` (exact via item_uuid, then symbol_window) → ``untagged``.
+    """
+    instrument = _MARKET_TO_INSTRUMENT.get(trade.market)
+    norm = _normalize_symbol_for_filter(trade.symbol, instrument)
+    window_start = trade.entry_ts - timedelta(days=window_days)
+
+    corr_ids = [c for c in (*trade.entry_correlation_ids, trade.exit_correlation_id) if c]
+    if corr_ids:
+        row = (
+            await db.execute(
+                select(TradeRetrospective.strategy_key)
+                .where(
+                    TradeRetrospective.correlation_id.in_(corr_ids),
+                    TradeRetrospective.strategy_key.isnot(None),
+                )
+                .order_by(TradeRetrospective.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if row and not _is_smoke(row):
+            return TagInfo(row, "strategy_key", "exact")
+
+    retro_key = (
+        await db.execute(
+            select(TradeRetrospective.strategy_key)
+            .where(
+                TradeRetrospective.symbol == norm,
+                TradeRetrospective.strategy_key.isnot(None),
+                TradeRetrospective.created_at <= trade.exit_ts,
+                TradeRetrospective.created_at >= window_start,
+            )
+            .order_by(TradeRetrospective.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if retro_key and not _is_smoke(retro_key):
+        return TagInfo(retro_key, "strategy_key", "symbol_window")
+
+    item_uuids_raw = [u for u in (*trade.entry_item_uuids, trade.exit_item_uuid) if u]
+    item_uuids = [u for u in (uid if isinstance(uid, uuid.UUID) else _coerce_uuid(uid) for uid in item_uuids_raw) if u is not None]
+    if item_uuids:
+        intent = (
+            await db.execute(
+                select(InvestmentReportItem.intent)
+                .where(InvestmentReportItem.item_uuid.in_(item_uuids))
+                .order_by(InvestmentReportItem.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if intent:
+            return TagInfo(intent, "intent", "exact")
+
+    intent_win = (
+        await db.execute(
+            select(InvestmentReportItem.intent)
+            .where(
+                InvestmentReportItem.symbol == norm,
+                InvestmentReportItem.created_at <= trade.entry_ts,
+                InvestmentReportItem.created_at >= window_start,
+            )
+            .order_by(InvestmentReportItem.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if intent_win:
+        return TagInfo(intent_win, "intent", "symbol_window")
+
+    return TagInfo("untagged", "untagged", "symbol_window")
