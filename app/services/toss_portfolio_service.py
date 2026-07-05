@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Protocol
@@ -139,6 +140,13 @@ async def fetch_toss_portfolio_snapshot(
     created_client = client is None
     active_client: TossPortfolioClient = client or TossReadClient.from_settings()
 
+    # ROB-707: the cash (buying-power) snapshot is independent of holdings, so
+    # kick it off concurrently with the holdings/sellable chain instead of
+    # awaiting it serially after the position loop. Output is unchanged; only
+    # the wall-clock overlap changes. Drained/cancelled in the finally if the
+    # holdings chain raises before we await it.
+    cash_task = asyncio.ensure_future(fetch_toss_cash_snapshot(client=active_client))
+
     try:
         with sentry_sdk.start_span(
             op="invest.home.toss_api.phase",
@@ -257,7 +265,7 @@ async def fetch_toss_portfolio_snapshot(
                 )
             )
 
-        cash_snapshot = await fetch_toss_cash_snapshot(client=active_client)
+        cash_snapshot = await cash_task
         errors.extend(cash_snapshot.errors)
 
         return TossPortfolioSnapshot(
@@ -267,5 +275,14 @@ async def fetch_toss_portfolio_snapshot(
             errors=errors,
         )
     finally:
+        # ROB-707: if the holdings/sellable chain raised before we awaited the
+        # cash task, cancel and drain it so it never touches a closed client
+        # (and never leaks a pending task). fetch_toss_cash_snapshot swallows
+        # per-currency errors internally, so this only fires on holdings-chain
+        # failure.
+        if not cash_task.done():
+            cash_task.cancel()
+            with contextlib.suppress(BaseException):
+                await cash_task
         if created_client:
             await active_client.aclose()

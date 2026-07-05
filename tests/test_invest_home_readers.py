@@ -2024,3 +2024,52 @@ async def test_toss_cash_snapshot_runs_concurrently_with_holdings(monkeypatch):
     assert snap.cash_krw == Decimal("10")
     assert snap.cash_usd == Decimal("10")
     assert snap.errors == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_toss_cash_snapshot_drained_when_holdings_chain_raises(monkeypatch):
+    """ROB-707: when the holdings/sellable chain raises before the cash task
+    is awaited, the finally block must cancel and drain the pending cash task
+    so it never touches a closed client and never leaks a pending coroutine."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.services import toss_portfolio_service as svc
+
+    aclose_calls = 0
+    bp_started = asyncio.Event()
+    bp_cancelled = asyncio.Event()
+
+    class _Client:
+        async def holdings(self):
+            # Raise AFTER the cash fetch has started so the cash task is
+            # genuinely pending when the finally block runs.
+            await asyncio.wait_for(bp_started.wait(), timeout=1.0)
+            raise RuntimeError("holdings boom")
+
+        async def sellable_quantity(self, *, symbol):
+            raise AssertionError("no fanout on raise")
+
+        async def buying_power(self, *, currency):
+            bp_started.set()
+            # Block forever until cancelled — proves drain works.
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                bp_cancelled.set()
+                raise
+            return SimpleNamespace(currency=currency, cash_buying_power=0)
+
+        async def aclose(self):
+            nonlocal aclose_calls
+            aclose_calls += 1
+
+    with pytest.raises(RuntimeError, match="holdings boom"):
+        await svc.fetch_toss_portfolio_snapshot(need_sellable=False, client=_Client())
+
+    # The pending cash task must have been cancelled and drained (the buying
+    # power coroutine observed CancelledError). The shared client (created
+    # client=False here) must NOT be closed — caller owns it.
+    assert bp_cancelled.is_set(), "pending cash task was not cancelled"
+    assert aclose_calls == 0, "client must not be closed when caller owns it"
