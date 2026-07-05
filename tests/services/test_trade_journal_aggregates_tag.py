@@ -50,7 +50,7 @@ async def test_strategy_key_symbol_window(db_session: AsyncSession):
             created_at=datetime(2026, 6, 4, tzinfo=UTC),
         )
     )
-    await db_session.commit()
+    await db_session.flush()
 
     info = await resolve_setup_tag(db_session, _trade(symbol=sym))
     assert info.tag == "pullback_long"
