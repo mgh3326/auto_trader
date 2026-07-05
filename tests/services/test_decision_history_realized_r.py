@@ -66,7 +66,13 @@ async def test_realized_r_by_tag_present_and_bounded(db_session, monkeypatch):
             "count": 60,
         }
 
-    monkeypatch.setattr(dh, "build_trading_scoreboard", fake_scoreboard)
+    # build_trading_scoreboard is imported lazily inside _realized_r_by_tag
+    # (keeps decision_history free of the broker import chain), so patch it at
+    # its source module rather than on the decision_history namespace.
+    monkeypatch.setattr(
+        "app.services.trade_journal.aggregates.build_trading_scoreboard",
+        fake_scoreboard,
+    )
 
     sym = _digit_symbol()
     norm = _normalize_symbol_for_filter(sym, "equity_kr")

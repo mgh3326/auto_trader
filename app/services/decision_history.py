@@ -26,7 +26,6 @@ from app.models.review import (
     TradeForecast,
     TradeRetrospective,
 )
-from app.services.trade_journal.aggregates import build_trading_scoreboard
 from app.services.trade_journal.forecast_service import (
     _normalize_symbol_for_filter,
     build_forecast_calibration_aggregate,
@@ -139,7 +138,15 @@ def _fold_brier(agg: dict[str, Any]) -> dict[str, Any]:
 async def _realized_r_by_tag(
     db: AsyncSession, market: str, setup_tag: str | None
 ) -> dict[str, dict[str, Any]]:
-    """Bounded per-tag map for the ROB-713 scoreboard — portfolio-wide, not per-symbol."""
+    """Bounded per-tag map for the ROB-713 scoreboard — portfolio-wide, not per-symbol.
+
+    Imported lazily so `import app.services.decision_history` stays free of the
+    market-data/broker import chain — `app.services.invest_view_model`
+    (ROB-716 stock-detail surface) imports this module and must not transitively
+    pull execution paths (`tests/test_invest_view_model_safety.py`).
+    """
+    from app.services.trade_journal.aggregates import build_trading_scoreboard
+
     board = await build_trading_scoreboard(db, market=market)
     groups = board.get("groups", [])
     ordered = sorted(groups, key=lambda g: (g["tag"] != setup_tag, -int(g["n"])))
