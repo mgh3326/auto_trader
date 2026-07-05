@@ -134,3 +134,11 @@ async def test_load_fills_excludes_smoke_marked_reason(db_session):
     await db_session.flush()
     fills = await agg.load_fills(db_session, market="kr")
     assert all("005930" not in f.symbol or f.price != 100.0 for f in fills)
+
+
+def test_excursions_degraded_surfaced_in_group():
+    r1 = _tm(0.10, 2.0)
+    r2 = _tm(-0.05, -1.0)
+    r1.degraded = True  # TradeMetrics is @dataclass (not frozen) → mutable
+    [g] = aggregate_by_tag([r1, r2])
+    assert g["excursions_degraded"] == 1

@@ -440,7 +440,7 @@ class TradeMetrics:
     r_multiple: float | None
     mae: float | None
     mfe: float | None
-
+    degraded: bool = False
 
 def _agg_one(tag: str, rows: list[TradeMetrics]) -> dict:
     pnls = [r.trade.pnl_pct for r in rows if r.trade.pnl_pct is not None]
@@ -468,6 +468,7 @@ def _agg_one(tag: str, rows: list[TradeMetrics]) -> dict:
         "avg_r": fmean(rs) if rs else None,
         "median_r": median(rs) if rs else None,
         "r_coverage": (len(rs) / n) if n else None,
+        "excursions_degraded": sum(1 for r in rows if r.degraded),
         "avg_mae": fmean(maes) if maes else None,
         "avg_mfe": fmean(mfes) if mfes else None,
         "worst_mae": min(maes) if maes else None,
@@ -528,12 +529,15 @@ async def build_trading_scoreboard(
         except Exception:
             stop = None
         mae, mfe = None, None
+        degraded = False
         if include_excursions:
             try:
-                mae, mfe, _degraded = await compute_excursions(t)
+                mae, mfe, degraded = await compute_excursions(t)
             except Exception:
-                mae, mfe = None, None
-        rows.append(TradeMetrics(t, tag, compute_r_multiple(t, stop), mae, mfe))
+                mae, mfe, degraded = None, None, False
+        rows.append(
+            TradeMetrics(t, tag, compute_r_multiple(t, stop), mae, mfe, degraded)
+        )
 
     groups = aggregate_by_tag(rows)
     if setup_tag:
