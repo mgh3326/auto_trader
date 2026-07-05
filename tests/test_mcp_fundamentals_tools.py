@@ -4450,6 +4450,16 @@ async def test_analyze_stock_kr_falls_back_to_quote_helper_when_ohlcv_empty(
 ):
     tools = build_tools()
 
+    async def _no_nxt_tradability(symbols):
+        # Same shared-DB shard-order flake as the golden-quote test above: the
+        # unstubbed enrich opens a real AsyncSessionLocal and any exception is
+        # swallowed by _gather_task_results(return_exceptions=True), dropping
+        # the "quote" key entirely (KeyError on main CI, run 28739101307).
+        _ = symbols
+        return {}
+
+    _patch_runtime_attr(monkeypatch, "get_kr_nxt_tradability", _no_nxt_tradability)
+
     async def mock_fetch_ohlcv(symbol, market_type, count):
         _ = symbol, market_type, count
         return pd.DataFrame(
