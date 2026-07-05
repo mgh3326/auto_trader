@@ -488,6 +488,7 @@ async def build_trading_scoreboard(
     date_to: date | None = None,
     setup_tag: str | None = None,
     min_sample: int = 1,
+    include_excursions: bool = True,
     use_cache: bool = True,
     now: datetime | None = None,
 ) -> dict:
@@ -496,7 +497,7 @@ async def build_trading_scoreboard(
     ``now`` is exposed for tests so the TTL comparison is deterministic; in
     production the orchestrator defaults to ``datetime.now(timezone.utc)``.
     """
-    key = (market, account_mode, date_from, date_to, setup_tag, min_sample)
+    key = (market, account_mode, date_from, date_to, setup_tag, min_sample, include_excursions)
     stamp = (now or datetime.now(UTC)).timestamp()
     if use_cache:
         cached = _scoreboard_cache.get(key)
@@ -521,10 +522,12 @@ async def build_trading_scoreboard(
             stop = await planned_stop_for(db, t)
         except Exception:
             stop = None
-        try:
-            mae, mfe, _degraded = await compute_excursions(t)
-        except Exception:
-            mae, mfe = None, None
+        mae, mfe = None, None
+        if include_excursions:
+            try:
+                mae, mfe, _degraded = await compute_excursions(t)
+            except Exception:
+                mae, mfe = None, None
         rows.append(TradeMetrics(t, tag, compute_r_multiple(t, stop), mae, mfe))
 
     groups = aggregate_by_tag(rows)
