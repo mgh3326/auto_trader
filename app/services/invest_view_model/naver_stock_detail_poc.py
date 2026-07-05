@@ -100,7 +100,7 @@ async def build_naver_stock_detail_poc(
                 url=f"https://stock.naver.com/worldstock/stock/{quoted}/investmentinfo",
                 status="needs_auth_or_contract_check",
                 payloadFields=["analyst/consensus-like widgets if available"],
-                mappedFields=["latestAnalysis", "valuation"],
+                mappedFields=["valuation"],
                 risk="May be personalized or contract-gated; do not depend on it in production without review.",
             ),
         ]

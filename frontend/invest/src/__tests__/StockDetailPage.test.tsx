@@ -122,15 +122,23 @@ const aboveFold: StockDetailResponse = {
     ],
     caution: "환율 민감도는 USD/KRW 1% 변동을 보유 평가액에 단순 적용한 가정치입니다.",
   },
-  latestAnalysis: {
-    id: 11,
-    modelName: "committee",
-    decision: "hold",
-    confidence: 0.72,
-    appropriateBuyRange: [195, 205],
-    appropriateSellRange: [220, 230],
-    reasonsTop3: ["나스닥100 분산", "최근 5일 상승", "밸류에이션은 중립"],
-    createdAt: "2026-05-09T12:00:00Z",
+  decisionHistory: {
+    symbol: "000660",
+    market: "kr",
+    linkQuality: "symbol_window",
+    priorDecisions: [
+      { date: "2026-06-28", intent: "buy_review", side: "buy", decisionBucket: "new_buy_candidate", confidence: 0.7, rationale: "HBM 수요 지속" },
+    ],
+    priorLessons: ["과열 구간 추격 금지"],
+    realizedOutcomes: [
+      { date: "2026-06-20", side: "sell", outcome: "stop_loss", triggerType: "stop", pnlPct: -3.1, realizedPnl: -31000 },
+    ],
+    openClaims: [
+      { probability: 0.7, horizon: "1w", reviewDate: "2026-07-10", direction: "up", targetPrice: 82000 },
+    ],
+    runningBrierSymbol: { n: 12, meanBrier: 0.18, flag: "ok" },
+    runningBrierGlobal: { n: 4, meanBrier: null, flag: "insufficient_sample" },
+    cautionLabel: "종목 기준 집계이며 특정 판단과 특정 결과의 직접 연결이 아닙니다.",
   },
   orderbookSupport: { supported: false, reason: "us_unsupported" },
   orderbook: null,
@@ -294,7 +302,9 @@ test("renders the QQQM stock detail shell from the read-only backend contract", 
   expect(screen.getByTestId("stock-detail-fx-sensitivity")).toHaveTextContent("USD/KRW");
   expect(screen.getByTestId("stock-detail-fx-sensitivity")).toHaveTextContent("+₩5,748");
   expect(screen.getByTestId("stock-detail-profile")).toHaveTextContent("ETF");
-  expect(screen.getByTestId("stock-detail-analysis")).toHaveTextContent("hold");
+  expect(screen.getByTestId("stock-detail-decision-history")).toBeInTheDocument();
+  expect(screen.getByText("판단 이력")).toBeInTheDocument();
+  expect(screen.getByText("HBM 수요 지속")).toBeInTheDocument();
   expect(screen.getByTestId("stock-detail-naver-poc")).toHaveTextContent("Naver 원천 데이터 PoC");
   expect(screen.getByTestId("stock-detail-naver-poc")).toHaveTextContent("live fetch off");
 
