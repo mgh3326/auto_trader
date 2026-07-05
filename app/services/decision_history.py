@@ -67,7 +67,7 @@ async def build_decision_context(
     symbol: str,
     market: str,
     setup_tag: str | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     """Build the decision_history payload for one symbol, or None if no signal.
 
     setup_tag is reserved for realized_r_by_tag (ROB-713 stage 3); unused here.
