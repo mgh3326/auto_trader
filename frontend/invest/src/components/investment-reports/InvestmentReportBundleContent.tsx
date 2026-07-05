@@ -11,12 +11,14 @@ import { useInvestmentReportBundle } from "../../hooks/useInvestmentReportBundle
 import { LinkedOrderRow, linkedOrderKey } from "../orders/LinkedOrderRow";
 import type {
   DeliveryStatus,
+  ForecastLink,
   InvestmentReportItem,
   InvestmentReportItemDecision,
   InvestmentWatchAlert,
   InvestmentWatchEvent,
   NoActionSummary,
   ReportReviewSections,
+  RetrospectiveLink,
   SnapshotFreshnessSummary,
   SnapshotReportDiagnostics,
 } from "../../types/investmentReports";
@@ -276,9 +278,13 @@ function parseInvalidationTriggers(
 function ItemRow({
   item,
   decisions,
+  forecastLinks,
+  retrospectiveLinks,
 }: {
   item: InvestmentReportItem;
   decisions: InvestmentReportItemDecision[];
+  forecastLinks?: ForecastLink[];
+  retrospectiveLinks?: RetrospectiveLink[];
 }) {
   const kindLabel = ITEM_KIND_LABELS[item.itemKind] ?? item.itemKind;
   const statusLabel = ITEM_STATUS_LABELS[item.status] ?? item.status;
@@ -383,6 +389,64 @@ function ItemRow({
           ))}
         </div>
       ) : null}
+      {/* ROB-715 — forecast → fill → retrospective learning loop. */}
+      <div data-testid={`item-loop-${item.itemUuid}`}>
+        {(forecastLinks ?? []).length === 0 &&
+        (retrospectiveLinks ?? []).length === 0 ? (
+          <span
+            className="item-loop-empty muted"
+            style={{ fontSize: 12, color: "var(--fg-3)" }}
+          >
+            해소 대기 / 미연결
+          </span>
+        ) : (
+          <div
+            style={{
+              display: "grid",
+              gap: 4,
+              padding: 10,
+              border: "1px solid var(--border)",
+              borderRadius: 10,
+              background: "var(--surface-2)",
+            }}
+          >
+            <div
+              style={{ fontSize: 12, color: "var(--fg-2)", fontWeight: 800 }}
+            >
+              학습 루프
+            </div>
+            {(forecastLinks ?? []).map((f) => (
+              <div
+                key={f.forecastId}
+                data-testid={`item-loop-forecast-${f.forecastId}`}
+                style={{ fontSize: 12, color: "var(--fg-2)" }}
+              >
+                <span>
+                  {f.status === "closed"
+                    ? f.outcome
+                      ? "적중"
+                      : "빗나감"
+                    : "해소 대기"}
+                </span>
+                {f.brierScore != null ? (
+                  <span> · Brier {f.brierScore.toFixed(2)}</span>
+                ) : null}
+                {f.reviewDate ? <span> · {f.reviewDate}</span> : null}
+              </div>
+            ))}
+            {(retrospectiveLinks ?? []).map((r) => (
+              <div
+                key={r.retrospectiveId}
+                data-testid={`item-loop-retro-${r.retrospectiveId}`}
+                style={{ fontSize: 12, color: "var(--fg-2)" }}
+              >
+                <span>회고: {r.outcome}</span>
+                {r.lesson ? <span> — {r.lesson}</span> : null}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
       {item.watchCondition ? (
         <div
           style={{
@@ -602,10 +666,14 @@ function ReviewSectionsView({
   review,
   items,
   decisionsByItemUuid,
+  forecastsByItemUuid,
+  retrospectivesByItemUuid,
 }: {
   review: ReportReviewSections;
   items: InvestmentReportItem[];
   decisionsByItemUuid: Record<string, InvestmentReportItemDecision[]>;
+  forecastsByItemUuid: Record<string, ForecastLink[]>;
+  retrospectivesByItemUuid: Record<string, RetrospectiveLink[]>;
 }) {
   const projectedUuids = new Set(
     review.sections.flatMap((section) => section.items.map((it) => it.itemUuid)),
@@ -630,6 +698,10 @@ function ReviewSectionsView({
                   key={item.itemUuid}
                   item={item}
                   decisions={decisionsByItemUuid[item.itemUuid] ?? []}
+                  forecastLinks={forecastsByItemUuid[item.itemUuid] ?? []}
+                  retrospectiveLinks={
+                    retrospectivesByItemUuid[item.itemUuid] ?? []
+                  }
                 />
               ))
             ) : (
@@ -648,6 +720,10 @@ function ReviewSectionsView({
               key={item.itemUuid}
               item={item}
               decisions={decisionsByItemUuid[item.itemUuid] ?? []}
+              forecastLinks={forecastsByItemUuid[item.itemUuid] ?? []}
+              retrospectiveLinks={
+                retrospectivesByItemUuid[item.itemUuid] ?? []
+              }
             />
           ))}
         </section>
@@ -779,6 +855,8 @@ export function InvestmentReportBundleContent({
           review={review}
           items={bundle.items}
           decisionsByItemUuid={bundle.decisionsByItemUuid}
+          forecastsByItemUuid={bundle.forecastsByItemUuid ?? {}}
+          retrospectivesByItemUuid={bundle.retrospectivesByItemUuid ?? {}}
         />
       ) : (
         (["action", "watch", "risk"] as const).map((kind) =>
@@ -792,6 +870,12 @@ export function InvestmentReportBundleContent({
                   key={item.itemUuid}
                   item={item}
                   decisions={bundle.decisionsByItemUuid[item.itemUuid] ?? []}
+                  forecastLinks={
+                    bundle.forecastsByItemUuid?.[item.itemUuid] ?? []
+                  }
+                  retrospectiveLinks={
+                    bundle.retrospectivesByItemUuid?.[item.itemUuid] ?? []
+                  }
                 />
               ))}
             </section>
