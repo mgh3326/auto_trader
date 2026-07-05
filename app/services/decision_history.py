@@ -19,15 +19,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.investment_reports import InvestmentReportItem
-
 from app.models.review import (
     KISLiveOrderLedger,
     LiveOrderLedger,
     TossLiveOrderLedger,
-    TradeRetrospective,
     TradeForecast,
+    TradeRetrospective,
 )
-from app.services.trade_journal.forecast_service import _normalize_symbol_for_filter
+from app.services.trade_journal.forecast_service import (
+    _normalize_symbol_for_filter,
+    build_forecast_calibration_aggregate,
+)
 
 MARKET_TO_INSTRUMENT = {"kr": "equity_kr", "us": "equity_us", "crypto": "crypto"}
 
@@ -79,6 +81,15 @@ async def build_decision_context(
     fills = await _recent_fills(db, norm)
     open_claims = await _open_claims(db, norm)
 
+    if not (prior_decisions or lessons or outcomes or fills or open_claims):
+        return None  # no signal — omit the field entirely
+
+    brier_symbol = _fold_brier(
+        await build_forecast_calibration_aggregate(
+            db, symbol=norm, instrument_type=instrument_type
+        )
+    )
+    brier_global = _fold_brier(await build_forecast_calibration_aggregate(db))
 
     ctx: dict[str, Any] = {
         "symbol": norm,
@@ -86,11 +97,32 @@ async def build_decision_context(
         "link_quality": "symbol_window",
         "prior_decisions": prior_decisions,
         "prior_lessons": lessons,
+        "realized_outcomes": outcomes,
         "recent_fills": fills,
         "open_claims": open_claims,
-        "realized_outcomes": outcomes,
+        "running_brier_symbol": brier_symbol,
+        "running_brier_global": brier_global,
     }
     return ctx
+
+
+
+
+def _fold_brier(agg: dict[str, Any]) -> dict[str, Any]:
+    groups = agg.get("groups", [])
+    n = sum(int(g["sample_size"]) for g in groups)
+    scored = [g for g in groups if g.get("avg_brier_score") is not None]
+    denom = sum(int(g["sample_size"]) for g in scored)
+    mean = (
+        sum(g["avg_brier_score"] * g["sample_size"] for g in scored) / denom
+        if denom
+        else None
+    )
+    return {
+        "n": n,
+        "mean_brier": round(mean, 4) if mean is not None else None,
+        "flag": "insufficient_sample" if n < 10 else "ok",
+    }
 
 
 async def _prior_decisions(db: AsyncSession, symbol: str) -> list[dict[str, Any]]:

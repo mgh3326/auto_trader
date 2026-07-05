@@ -242,3 +242,25 @@ async def test_recent_fills_and_open_claims(db_session: AsyncSession) -> None:
     assert claim["direction"] == "at_or_above"
     assert claim["target_price"] == "2463000"
     assert claim["review_date"] == "2026-07-17"
+
+@pytest.mark.asyncio
+async def test_brier_insufficient_sample_and_empty_returns_none(
+    db_session: AsyncSession,
+) -> None:
+    # symbol with zero scored forecasts → insufficient_sample
+    report = await _make_report(db_session)
+    await _add_item(db_session, report.id, symbol="000660", rationale="real")
+    await db_session.commit()
+
+    ctx = await build_decision_context(db_session, symbol="000660", market="kr")
+    assert ctx is not None
+    assert ctx["running_brier_symbol"] == {
+        "n": 0,
+        "mean_brier": None,
+        "flag": "insufficient_sample",
+    }
+    assert ctx["running_brier_global"]["flag"] == "insufficient_sample"
+
+    # a symbol with no history anywhere → None (nothing to inject)
+    empty = await build_decision_context(db_session, symbol="ZZZZZ", market="kr")
+    assert empty is None
