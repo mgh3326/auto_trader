@@ -33,7 +33,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.money import quantize_crypto_qty, quantize_money
 from app.core.timezone import KST, now_kst
-from app.mcp_server.tooling.order_journal import _create_trade_journal_for_buy
+from app.mcp_server.tooling.order_journal import (
+    _close_journals_on_sell,
+    _create_trade_journal_for_buy,
+)
+from app.mcp_server.tooling.paper_order_handler import _activate_paper_journal
 from app.mcp_server.tooling.shared import (
     DEFAULT_MINIMUM_VALUES,
     resolve_market_type,
@@ -521,15 +525,47 @@ class PaperLimitOrderService:
             # here loses only the (nullable) FK link, never the fill or count.
             filled += 1
             try:
-                order.paper_trade_id = await _latest_trade_id(
+                trade_id = await _latest_trade_id(
                     self.db,
                     account_id=account_id,
                     symbol=order.symbol,
                     side=order.side,
                 )
+                order.paper_trade_id = trade_id
+                if trade_id is not None:
+                    trade = await self.db.get(PaperTrade, trade_id)
+                    if trade is not None:
+                        trade.correlation_id = order.correlation_id
+                        trade.journal_id = order.journal_id
+                        trade.artifact_uuid = order.artifact_uuid
+                        trade.forecast_id = order.forecast_id
                 await self.db.commit()
             except Exception:
                 await self.db.rollback()
+
+            # Journal bridge — best-effort: a buy fill activates the draft
+            # journal; a sell fill closes it with pnl_pct. Both helpers own
+            # their own sessions/commits; a failure here must never undo the
+            # durably-committed fill above.
+            try:
+                if order.side == "buy":
+                    await _activate_paper_journal(
+                        symbol=order.symbol, account_name=account.name
+                    )
+                else:
+                    await _close_journals_on_sell(
+                        symbol=order.symbol,
+                        sell_quantity=float(order.quantity),
+                        sell_price=float(fill_price),
+                        exit_reason=order.thesis or "paper resting-limit fill",
+                        account_type="paper",
+                        account=account.name,
+                    )
+            except Exception:
+                logger.exception(
+                    "paper reconcile: journal bridge failed for correlation_id=%s",
+                    order.correlation_id,
+                )
 
         return {
             "success": True,

@@ -1,11 +1,13 @@
-"""ROB-705 — Place-time provenance integration tests.
+"""ROB-705 — Place-time provenance + fill bridge integration tests.
 
 Verifies ``place_limit_order`` stamps the deterministic ``correlation_id``
 spine on the ``PaperPendingOrder``, links a draft ``TradeJournal``, and (when
 probability/target/review-date are supplied) creates a ``price_target``
-Forecast carrying the same correlation id.
+Forecast carrying the same correlation id. Also verifies ``reconcile_pending_orders``
+carries the spine onto the booked ``PaperTrade`` and activates the draft journal.
 """
 
+import datetime as dt
 import uuid
 from decimal import Decimal
 from typing import Any
@@ -13,7 +15,8 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
-from app.models.paper_trading import PaperPendingOrder
+from app.core.timezone import now_kst
+from app.models.paper_trading import PaperPendingOrder, PaperTrade
 from app.services.paper_limit_order_service import PaperLimitOrderService
 from app.services.paper_trading_service import PaperTradingService
 
@@ -51,3 +54,53 @@ async def test_place_stamps_correlation_and_journal(db_session: Any) -> None:
     assert row.correlation_id and row.correlation_id.startswith(f"paper:{acct.id}:")
     assert row.journal_id is not None  # draft journal linked
     assert row.forecast_id is not None  # forecast linked
+
+
+def _candle(low: Decimal, high: Decimal, timestamp: dt.datetime | None = None) -> Any:
+    class _C:
+        pass
+
+    c = _C()
+    c.low = low
+    c.high = high
+    c.timestamp = timestamp
+    return c
+
+
+@pytest.mark.asyncio
+async def test_fill_carries_correlation_to_paper_trade(
+    db_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pts = PaperTradingService(db_session)
+    acct = await pts.create_account(
+        name=_uniq("rob705-fill"), initial_capital_krw=Decimal("1000000")
+    )
+    svc = PaperLimitOrderService(db_session)
+    place = await svc.place_limit_order(
+        account_id=acct.id,
+        symbol="KRW-BTC",
+        side="buy",
+        limit_price=Decimal("94400000"),
+        amount=Decimal("100000"),
+        thesis="support bounce",
+    )
+    assert place["success"], place
+    corr_id = place["correlation_id"]
+    assert corr_id and corr_id.startswith(f"paper:{acct.id}:")
+
+    ts = now_kst().replace(tzinfo=None) + dt.timedelta(minutes=1)
+
+    async def _bars(symbol, market, period, count, end=None):  # noqa: ARG001
+        return [_candle(Decimal("94000000"), Decimal("95000000"), ts)]
+
+    monkeypatch.setattr("app.services.paper_limit_order_service.get_ohlcv", _bars)
+    res = await svc.reconcile_pending_orders(account_id=acct.id)
+    assert res["success"] and res["filled"] == 1, res
+
+    tr = (
+        await db_session.execute(
+            select(PaperTrade).where(PaperTrade.account_id == acct.id)
+        )
+    ).scalar_one()
+    assert tr.correlation_id == corr_id
+    assert tr.journal_id is not None
