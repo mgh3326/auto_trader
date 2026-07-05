@@ -144,4 +144,12 @@ describe("ROB-715 item loop section", () => {
     renderContent(bundle);
     expect(screen.getByText("해소 대기 / 미연결")).toBeInTheDocument();
   });
+
+  it("suppresses the empty placeholder for non-action items without loop data", () => {
+    const bundle = makeBundle(makeItem({ itemKind: "watch" }));
+    bundle.forecastsByItemUuid = {};
+    bundle.retrospectivesByItemUuid = {};
+    renderContent(bundle);
+    expect(screen.queryByText("해소 대기 / 미연결")).not.toBeInTheDocument();
+  });
 });

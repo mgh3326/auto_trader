@@ -422,9 +422,10 @@ function ItemRow({
           data-testid="item-plan-vs-actual"
           style={{ fontSize: 12, color: "var(--fg-2)" }}
         >
-          <span>
-            계획: 진입 {tradeSetup.headline.entry} · 손절 {tradeSetup.headline.riskPct}% · 목표 {tradeSetup.headline.rewardPct}%
-          </span>
+          {/* R:R (손절/목표 %) is already shown in the pill above; this row
+              adds the plan→actual juxtaposition the pill can't: planned entry
+              vs the actual fill price. */}
+          <span>계획 진입 {tradeSetup.headline.entry}</span>
           {(() => {
             const filled = (item.linkedOrders ?? []).find(
               (o) =>
@@ -433,12 +434,9 @@ function ItemRow({
                 String(o.avgFillPrice) !== "0",
             );
             return filled ? (
-              <span>
-                {" "}
-                · 실제 체결 {String(filled.avgFillPrice)}
-              </span>
+              <span> → 실제 체결 {String(filled.avgFillPrice)}</span>
             ) : (
-              <span style={{ color: "var(--fg-3)" }}> · 체결 없음</span>
+              <span style={{ color: "var(--fg-3)" }}> → 체결 대기</span>
             );
           })()}
         </div>
@@ -470,18 +468,24 @@ function ItemRow({
           ))}
         </div>
       ) : null}
-      {/* ROB-715 — forecast → fill → retrospective learning loop. */}
-      <div data-testid={`item-loop-${item.itemUuid}`}>
-        {(forecastLinks ?? []).length === 0 &&
-        (retrospectiveLinks ?? []).length === 0 ? (
-          <span
-            className="item-loop-empty muted"
-            style={{ fontSize: 12, color: "var(--fg-3)" }}
-          >
-            해소 대기 / 미연결
-          </span>
-        ) : (
-          <div
+      {/* ROB-715 — forecast → fill → retrospective learning loop. The
+          "not yet linked" placeholder is shown only for action items — watch/
+          risk rows rarely carry a forecast, so blanketing every row with it
+          would be noise. Rows with actual loop data render regardless of kind. */}
+      {(forecastLinks ?? []).length === 0 &&
+      (retrospectiveLinks ?? []).length === 0 &&
+      item.itemKind !== "action" ? null : (
+        <div data-testid={`item-loop-${item.itemUuid}`}>
+          {(forecastLinks ?? []).length === 0 &&
+          (retrospectiveLinks ?? []).length === 0 ? (
+            <span
+              className="item-loop-empty muted"
+              style={{ fontSize: 12, color: "var(--fg-3)" }}
+            >
+              해소 대기 / 미연결
+            </span>
+          ) : (
+            <div
             style={{
               display: "grid",
               gap: 4,
@@ -526,8 +530,9 @@ function ItemRow({
               </div>
             ))}
           </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
       {item.watchCondition ? (
         <div
           style={{
