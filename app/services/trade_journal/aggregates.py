@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.services.market_data import get_ohlcv
 
 from app.core.symbol import to_db_symbol
 from app.models.investment_reports import InvestmentReportItem
@@ -311,3 +312,87 @@ async def resolve_setup_tag(
         return TagInfo(intent_win, "intent", "symbol_window")
 
     return TagInfo("untagged", "untagged", "symbol_window")
+
+_MAX_OHLCV_BARS = 200
+
+
+def compute_r_multiple(trade: ClosedTrade, planned_stop: float | None) -> float | None:
+    if planned_stop is None:
+        return None
+    risk = abs(trade.entry_price - planned_stop)
+    if risk <= _EPS:
+        return None
+    return (trade.exit_price - trade.entry_price) / risk
+
+
+async def planned_stop_for(
+    db: AsyncSession, trade: ClosedTrade, *, window_days: int = 45
+) -> float | None:
+    instrument = _MARKET_TO_INSTRUMENT.get(trade.market)
+    norm = _normalize_symbol_for_filter(trade.symbol, instrument)
+    window_start = trade.entry_ts - timedelta(days=window_days)
+
+    item_uuids_raw = [u for u in (*trade.entry_item_uuids, trade.exit_item_uuid) if u]
+    item_uuids = [
+        u for u in (
+            x if isinstance(x, uuid.UUID) else _coerce_uuid(x)
+            for x in item_uuids_raw
+        )
+        if u is not None
+    ]
+    if item_uuids:
+        stmt = (
+            select(InvestmentReportItem.evidence_snapshot)
+            .where(InvestmentReportItem.item_uuid.in_(item_uuids))
+            .order_by(InvestmentReportItem.created_at.desc())
+            .limit(1)
+        )
+    else:
+        stmt = (
+            select(InvestmentReportItem.evidence_snapshot)
+            .where(
+                InvestmentReportItem.symbol == norm,
+                InvestmentReportItem.created_at <= trade.entry_ts,
+                InvestmentReportItem.created_at >= window_start,
+            )
+            .order_by(InvestmentReportItem.created_at.desc())
+            .limit(1)
+        )
+    snapshot = (await db.execute(stmt)).scalar_one_or_none()
+    if not isinstance(snapshot, dict):
+        return None
+    stop = (snapshot.get("trade_setup") or {}).get("stop")
+    try:
+        return float(stop) if stop is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+async def compute_excursions(
+    trade: ClosedTrade,
+) -> tuple[float | None, float | None, bool]:
+    """Compute MAE / MFE over daily candles spanning the trade.
+
+    Returns ``(mae, mfe, degraded)``. When the trade spans >200 trading days the
+    result carries ``degraded=True`` (we cap the candle fetch at 200 bars).
+    """
+
+    span_days = (trade.exit_ts.date() - trade.entry_ts.date()).days + 1
+    degraded = span_days > _MAX_OHLCV_BARS
+    count = min(max(span_days + 2, 2), _MAX_OHLCV_BARS)
+    candles = await get_ohlcv(
+        trade.symbol, trade.market, period="day", count=count, end=trade.exit_ts
+    )
+    window = [
+        c
+        for c in candles
+        if trade.entry_ts.date() <= c.timestamp.date() <= trade.exit_ts.date()
+    ]
+    if not window:
+        return None, None, degraded
+    entry = trade.entry_price
+    if entry <= _EPS:
+        return None, None, degraded
+    mae = (min(float(c.low) for c in window) - entry) / entry
+    mfe = (max(float(c.high) for c in window) - entry) / entry
+    return mae, mfe, degraded
