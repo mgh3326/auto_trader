@@ -521,6 +521,37 @@ async def list_closed_forecasts(
     )
 
 
+_BACKFILL_HORIZON_BARS = 200
+
+
+async def _resolve_candle_partition(
+    db: AsyncSession, *, symbol: str, instrument_type: str
+) -> tuple[MarketKey, str] | None:
+    """Resolve (market, partition) for the daily-candle store.
+
+    Single source of truth so the resolution read (_read_window_candles) and the
+    lazy backfill (_backfill_daily_candles) always use the SAME partition string
+    — crypto in particular must be "upbit_krw" so both sides resolve the same
+    crypto_instruments row (repository.py:141). Returns None when the US exchange
+    lookup fails or the instrument has no daily store. ROB-712.
+    """
+    if instrument_type == "equity_kr":
+        return MarketKey.KR, "KRX"
+    if instrument_type == "crypto":
+        return MarketKey.CRYPTO, "upbit_krw"
+    if instrument_type == "equity_us":
+        from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
+
+        try:
+            partition = await get_us_exchange_by_symbol(symbol, db=db)
+        except Exception:
+            return None
+        if not partition:
+            return None
+        return MarketKey.US, partition
+    return None
+
+
 async def _read_window_candles(
     db: AsyncSession,
     *,
@@ -535,22 +566,12 @@ async def _read_window_candles(
     exchange lookup failure) so the caller can mark the forecast unresolved
     rather than scoring against an empty window.
     """
-    if instrument_type == "equity_kr":
-        market, partition = MarketKey.KR, "KRX"
-    elif instrument_type == "crypto":
-        market, partition = MarketKey.CRYPTO, "upbit_krw"
-    elif instrument_type == "equity_us":
-        from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
-
-        try:
-            partition = await get_us_exchange_by_symbol(symbol, db=db)
-        except Exception:
-            return None
-        if not partition:
-            return None
-        market = MarketKey.US
-    else:
+    resolved = await _resolve_candle_partition(
+        db, symbol=symbol, instrument_type=instrument_type
+    )
+    if resolved is None:
         return None
+    market, partition = resolved
 
     # Pad the UTC window by 2 days each side to absorb tz/session boundary skew,
     # then filter by the candle's calendar date for a clean inclusive window.
@@ -569,6 +590,7 @@ async def _read_window_candles(
         end=end_dt,
     )
     return [r for r in rows if start_date <= _row_date(r) <= review_date]
+
 
 
 async def resolve_forecast(

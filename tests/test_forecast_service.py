@@ -504,3 +504,22 @@ async def test_list_forecasts_symbol_filter_normalizes_equity_us(
     matched = await svc.list_forecasts(db_session, symbol="BRK-B")
     assert matched["summary"]["count"] == 1
     assert matched["entries"][0]["symbol"] == "BRK.B"
+
+
+# --------------------------------------------------------------------------- #
+# ROB-712: shared _resolve_candle_partition mapping
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_resolve_candle_partition_kr_us_crypto(db_session: AsyncSession):
+    from app.services.daily_candles.repository import MarketKey
+
+    assert await svc._resolve_candle_partition(
+        db_session, symbol="005930", instrument_type="equity_kr"
+    ) == (MarketKey.KR, "KRX")
+    # crypto MUST use the resolve-canonical partition so read/write are symmetric
+    assert await svc._resolve_candle_partition(
+        db_session, symbol="KRW-BTC", instrument_type="crypto"
+    ) == (MarketKey.CRYPTO, "upbit_krw")
+    assert await svc._resolve_candle_partition(
+        db_session, symbol="X", instrument_type="bond"
+    ) is None
