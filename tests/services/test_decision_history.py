@@ -32,6 +32,12 @@ from app.models.review import (
 from app.services.decision_history import build_decision_context
 from app.services.trade_journal.forecast_service import _normalize_symbol_for_filter
 
+# ROB-723: these tests use the global committing ``db_session`` and touch the
+# investment_reports family, so serialize their review-table access under the
+# shared cleanup lock (same lock the helper ``session`` fixture holds) to avoid
+# racing another worker's TRUNCATE.
+pytestmark = pytest.mark.usefixtures("investment_reports_cleanup_lock")
+
 
 def _uniq_symbol() -> str:
     """A per-test symbol unique across the whole run (xdist-safe)."""
@@ -57,9 +63,6 @@ async def _make_report(db: AsyncSession, **overrides) -> InvestmentReport:
     db.add(row)
     await db.flush()
     return row
-
-
-pytestmark = pytest.mark.usefixtures("investment_reports_cleanup_lock")
 
 
 async def _add_item(

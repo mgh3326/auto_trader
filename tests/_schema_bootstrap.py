@@ -551,6 +551,25 @@ async def apply_test_schema(conn) -> None:
 
     for schema in ("paper", "research", "review"):
         await conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
+
+    # ROB-284 — drop the legacy crypto_candles_1d shape BEFORE create_all so
+    # Base.metadata rebuilds it from the new ORM model within this same barrier
+    # run. (The barrier applies the schema exactly once; if the drop ran after
+    # create_all the table would be left missing until the next hash change.)
+    legacy_has_symbol = (
+        await conn.execute(
+            text(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'crypto_candles_1d' "
+                "AND column_name = 'symbol'"
+            )
+        )
+    ).first()
+    if legacy_has_symbol:
+        await conn.execute(
+            text("DROP TABLE IF EXISTS public.crypto_candles_1d CASCADE")
+        )
+
     await conn.run_sync(Base.metadata.create_all)
 
     # --- conditional "only when genuinely missing" probes (per-table catalog
@@ -591,22 +610,6 @@ async def apply_test_schema(conn) -> None:
     for table, cols in _ROB_534_SYMBOL_UNIVERSE_COLUMNS:
         for col_name, col_type in cols:
             await _maybe_add_column(conn, table, col_name, col_type)
-
-    # ROB-284 — drop the legacy crypto_candles_1d shape so Base.metadata
-    # rebuilds it from the new ORM model.
-    legacy_has_symbol = (
-        await conn.execute(
-            text(
-                "SELECT 1 FROM information_schema.columns "
-                "WHERE table_name = 'crypto_candles_1d' "
-                "AND column_name = 'symbol'"
-            )
-        )
-    ).first()
-    if legacy_has_symbol:
-        await conn.execute(
-            text("DROP TABLE IF EXISTS public.crypto_candles_1d CASCADE")
-        )
 
     # --- conditional CHECK refreshers (drop+recreate depending on catalogue) ---
 
