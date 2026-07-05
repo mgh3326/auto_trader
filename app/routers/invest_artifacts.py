@@ -54,6 +54,7 @@ async def list_artifacts(
     symbol: Annotated[str | None, Query()] = None,
     include_stale: Annotated[bool, Query()] = False,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    correlation_id: Annotated[list[str] | None, Query()] = None,
 ) -> AnalysisArtifactListResponse:
     _validate("market", market, _VALID_MARKETS)
     _validate("kind", kind, _VALID_KINDS)
@@ -66,6 +67,7 @@ async def list_artifacts(
         symbol=symbol,
         include_stale=include_stale,
         limit=limit,
+        correlation_ids=correlation_id,
     )
     filters = AnalysisArtifactListRequest(
         market=market,
@@ -74,6 +76,7 @@ async def list_artifacts(
         symbol=symbol,
         include_stale=include_stale,
         limit=limit,
+        correlation_id=",".join(correlation_id) if correlation_id else None,
     )
     metas = [AnalysisArtifactMeta.model_validate(r) for r in rows]
     return AnalysisArtifactListResponse(

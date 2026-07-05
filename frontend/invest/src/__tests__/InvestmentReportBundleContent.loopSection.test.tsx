@@ -152,4 +152,60 @@ describe("ROB-715 item loop section", () => {
     renderContent(bundle);
     expect(screen.queryByText("해소 대기 / 미연결")).not.toBeInTheDocument();
   });
+  it("renders a closed forecast with null outcome as neutral, not miss", () => {
+    const bundle = makeBundle(makeItem({}));
+    bundle.forecastsByItemUuid = {
+      u1: [
+        {
+          forecastId: "f-null",
+          status: "closed",
+          outcome: null,
+          reviewDate: null,
+          direction: "at_or_above",
+          targetPrice: 200000,
+          probability: 0.5,
+          brierScore: null,
+          resolutionSource: null,
+        },
+      ],
+    };
+    bundle.retrospectivesByItemUuid = {};
+    renderContent(bundle);
+    expect(screen.getByText("결과 미기록")).toBeInTheDocument();
+    expect(screen.queryByText("빗나감")).not.toBeInTheDocument();
+  });
+
+  it("still renders closed outcome=false as 빗나감 and outcome=true as 적중", () => {
+    const bundle = makeBundle(makeItem({}));
+    bundle.forecastsByItemUuid = {
+      u1: [
+        {
+          forecastId: "f-miss",
+          status: "closed",
+          outcome: false,
+          reviewDate: null,
+          direction: "at_or_above",
+          targetPrice: 200000,
+          probability: 0.5,
+          brierScore: null,
+          resolutionSource: null,
+        },
+        {
+          forecastId: "f-hit",
+          status: "closed",
+          outcome: true,
+          reviewDate: null,
+          direction: "at_or_above",
+          targetPrice: 200000,
+          probability: 0.5,
+          brierScore: null,
+          resolutionSource: null,
+        },
+      ],
+    };
+    bundle.retrospectivesByItemUuid = {};
+    renderContent(bundle);
+    expect(screen.getByText("빗나감")).toBeInTheDocument();
+    expect(screen.getByText("적중")).toBeInTheDocument();
+  });
 });

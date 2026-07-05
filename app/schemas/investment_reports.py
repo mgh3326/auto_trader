@@ -803,6 +803,7 @@ class ForecastLinkResponse(BaseModel):
     probability: float
     brier_score: float | None = None
     resolution_source: str | None = None
+    correlation_id: str | None = None
 
 
 class RetrospectiveLinkResponse(BaseModel):
@@ -816,6 +817,7 @@ class RetrospectiveLinkResponse(BaseModel):
     trigger_type: str | None = None
     pnl_pct: float | None = None
     created_at: str | None = None
+    correlation_id: str | None = None
 
 
 class StockDetailOrderLedgerResponse(BaseModel):

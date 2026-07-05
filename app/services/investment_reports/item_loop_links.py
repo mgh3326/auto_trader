@@ -40,6 +40,7 @@ def _project_forecast(row: TradeForecast) -> ForecastLinkResponse:
         probability=float(row.probability),
         brier_score=(float(row.brier_score) if row.brier_score is not None else None),
         resolution_source=row.resolution_source,
+        correlation_id=row.correlation_id,
     )
 
 
@@ -53,6 +54,7 @@ def _project_retrospective(row: TradeRetrospective) -> RetrospectiveLinkResponse
         trigger_type=row.trigger_type,
         pnl_pct=float(row.pnl_pct) if row.pnl_pct is not None else None,
         created_at=_iso(row.created_at),
+        correlation_id=row.correlation_id,
     )
 
 

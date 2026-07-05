@@ -159,6 +159,7 @@ class AnalysisArtifactService:
         include_stale: bool = False,
         limit: int = 20,
         correlation_id: str | None = None,
+        correlation_ids: list[str] | None = None,
         account_scope: str | None = None,
         readiness_label: AnalysisArtifactReadinessLiteral | None = None,
     ) -> list[AnalysisArtifact]:
@@ -191,6 +192,8 @@ class AnalysisArtifactService:
             stmt = stmt.where(AnalysisArtifact.as_of >= since)
         if correlation_id is not None:
             stmt = stmt.where(AnalysisArtifact.correlation_id == correlation_id)
+        if correlation_ids:
+            stmt = stmt.where(AnalysisArtifact.correlation_id.in_(correlation_ids))
         if account_scope is not None:
             stmt = stmt.where(AnalysisArtifact.account_scope == account_scope)
         if readiness_label is not None:
