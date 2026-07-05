@@ -19,6 +19,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.symbol import to_db_symbol
 from app.core.timezone import now_kst
+from app.models.paper_trading import PaperTrade
 from app.models.review import (
     KISLiveOrderLedger,
     LiveOrderLedger,
@@ -872,6 +873,8 @@ def _pending_entry(
     report_item_uuid: Any,
     trade_date: datetime | None,
     row_id: int,
+    suggested_correlation_id: str | None = None,
+    suggested_trigger_type: str | None = None,
 ) -> dict[str, Any]:
     ref = order_ref or f"id:{row_id}"
     return {
@@ -888,9 +891,8 @@ def _pending_entry(
         "trade_date_kst": trade_date.astimezone(_KST).isoformat()
         if trade_date
         else None,
-        # The correlation_id a session should pass to save_trade_retrospective so
-        # the row is marked covered on the next pending scan.
-        "suggested_correlation_id": f"{ledger}:{ref}",
+        "suggested_correlation_id": suggested_correlation_id or f"{ledger}:{ref}",
+        "suggested_trigger_type": suggested_trigger_type,
     }
 
 
@@ -1022,6 +1024,53 @@ async def build_retrospective_pending(
                 report_item_uuid=row.report_item_uuid,
                 trade_date=row.trade_date,
                 row_id=row.id,
+            )
+            if not _is_covered(entry, covered_cids, covered_uuids):
+                pending.append(entry)
+
+    # 4. Paper trades (ROB-705) — every paper_trades row is a fill (no status
+    # column); window-filter only. Loss-making sells carry a stop_loss hint.
+    if account_mode in (None, "paper"):
+        paper_rows = (
+            (
+                await db.execute(
+                    select(PaperTrade)
+                    .where(
+                        PaperTrade.executed_at >= window_start,
+                        PaperTrade.executed_at <= window_end,
+                    )
+                    .order_by(PaperTrade.executed_at.desc())
+                    .limit(_PENDING_LEDGER_FETCH_CAP)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for r in paper_rows:
+            scanned += 1
+            itype = r.instrument_type.value
+            market = "crypto" if itype == "crypto" else itype.removeprefix("equity_")
+            trig = (
+                "stop_loss"
+                if r.side == "sell"
+                and r.realized_pnl is not None
+                and r.realized_pnl < 0
+                else None
+            )
+            entry = _pending_entry(
+                ledger="paper_trades",
+                account_mode="paper",
+                market=market,
+                instrument_type=itype,
+                symbol=r.symbol,
+                side=r.side,
+                status="filled",
+                order_ref=r.correlation_id or f"paper_trade:{r.id}",
+                report_item_uuid=None,
+                trade_date=r.executed_at,
+                row_id=r.id,
+                suggested_correlation_id=(r.correlation_id or f"paper_trade:{r.id}"),
+                suggested_trigger_type=trig,
             )
             if not _is_covered(entry, covered_cids, covered_uuids):
                 pending.append(entry)
