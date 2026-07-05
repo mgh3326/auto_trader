@@ -385,6 +385,7 @@ async def _reconcile_one_toss_row(
             indicators_snapshot=row.indicators_snapshot,
             account_type="live",
             account="toss",
+            correlation_id=row.correlation_id,
             buy_fx_rate=float(fx_capture.rate)
             if fx_capture and fx_capture.rate
             else None,

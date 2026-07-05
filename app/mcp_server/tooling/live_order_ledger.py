@@ -316,6 +316,7 @@ async def _reconcile_one_live_row(
             indicators_snapshot=row.indicators_snapshot,
             account_type="live",
             account=row.broker,
+            correlation_id=row.correlation_id,
             buy_fx_rate=float(fx_capture.rate)
             if fx_capture and fx_capture.rate
             else None,
