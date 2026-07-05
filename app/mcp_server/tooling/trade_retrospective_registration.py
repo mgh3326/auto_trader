@@ -38,7 +38,7 @@ def register_trade_retrospective_tools(mcp: Any) -> None:
             "analysis, policy, execution, harness} (NOT process_error/etc.); "
             "trigger_type in {fill, partial_fill, rejected_order, cancelled, "
             "expired, thesis_change, policy_violation, stale_evidence, "
-            "guardrail_block}. When trigger_type is set, a non-empty next_actions "
+            "guardrail_block, stop_loss}. When trigger_type is set, a non-empty next_actions "
             "list is required in the same call (each next_action needs a non-empty "
             "action; optional owner/issue_id/status/due_kst_date, status in "
             "{open, in_progress, done})."
