@@ -90,16 +90,33 @@ class DailyCandleSyncService:
         return await self._sync_crypto(target, horizon_bars)
 
     async def _sync_kr(self, target: SyncTarget, horizon_bars: int) -> SyncOneResult:
-        frame = await self._kis_kr(code=target.symbol, n=horizon_bars)
-        rows = frame_to_rows(
-            frame, symbol=target.symbol, partition=target.partition, source="kis"
-        )
         fallback_used = False
-        if not rows and self._toss_kr is not None:
-            logger.warning(
-                "KIS returned no rows for KR symbol; attempting Toss fallback symbol=%s",
-                target.symbol,
+        rows: list[DailyCandleRow] = []
+        kis_errored = False
+        try:
+            frame = await self._kis_kr(code=target.symbol, n=horizon_bars)
+            rows = frame_to_rows(
+                frame, symbol=target.symbol, partition=target.partition, source="kis"
             )
+        except Exception as exc:
+            # ROB-706: a KIS exception/timeout is as much a fallback trigger as
+            # empty rows (the 2026-07-04 maintenance RAISED, it did not return []).
+            # Fall back only when a Toss fetcher is wired; otherwise preserve
+            # today's behavior and re-raise.
+            if self._toss_kr is None:
+                raise
+            kis_errored = True
+            logger.warning(
+                "KIS raised for KR symbol=%s; attempting Toss fallback: %s",
+                target.symbol,
+                exc,
+            )
+        if not rows and self._toss_kr is not None:
+            if not kis_errored:
+                logger.warning(
+                    "KIS returned no rows for KR symbol; attempting Toss fallback symbol=%s",
+                    target.symbol,
+                )
             toss_frame = await self._toss_kr(symbol=target.symbol, n=horizon_bars)
             rows = frame_to_rows(
                 toss_frame,
