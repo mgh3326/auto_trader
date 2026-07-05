@@ -30,6 +30,7 @@ VALID_TRIGGER_TYPES: frozenset[str] = frozenset(
         "policy_violation",
         "stale_evidence",
         "guardrail_block",
+        "stop_loss",
     }
 )
 

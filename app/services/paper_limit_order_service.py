@@ -24,14 +24,21 @@ exactly once. ``paper_trade_id`` is recovered by querying the most-recent
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import AsyncSessionLocal
 from app.core.money import quantize_crypto_qty, quantize_money
 from app.core.timezone import KST, now_kst
+from app.mcp_server.tooling.order_journal import (
+    _close_journals_on_sell,
+    _create_trade_journal_for_buy,
+)
+from app.mcp_server.tooling.paper_order_handler import _activate_paper_journal
 from app.mcp_server.tooling.shared import (
     DEFAULT_MINIMUM_VALUES,
     resolve_market_type,
@@ -41,11 +48,15 @@ from app.models.paper_trading import (
     PaperTrade,
 )
 from app.services.market_data.service import get_ohlcv
+from app.services.paper_correlation import paper_correlation_id
 from app.services.paper_fills import limit_crossed, snap_limit_down
 from app.services.paper_trading_service import (
     PaperTradingService,
     calculate_fee,
 )
+from app.services.trade_journal.forecast_service import save_forecast
+
+logger = logging.getLogger(__name__)
 
 # Upbit reserves 5000 KRW as the minimum order notional for crypto.
 _MIN_CRYPTO_KRW = Decimal(str(DEFAULT_MINIMUM_VALUES["crypto"]))
@@ -137,6 +148,12 @@ class PaperLimitOrderService:
         quantity: Decimal | float | int | None = None,
         amount: Decimal | float | int | None = None,
         thesis: str | None = None,
+        strategy: str | None = None,
+        target_price: Decimal | float | int | None = None,
+        stop_loss: Decimal | float | int | None = None,
+        probability: float | None = None,
+        review_date: str | None = None,
+        artifact_uuid: str | None = None,
     ) -> dict[str, Any]:
         side_norm = side.lower()
         if side_norm not in ("buy", "sell"):
@@ -244,7 +261,20 @@ class PaperLimitOrderService:
                     ),
                 }
 
-        # 6. Persist the resting order
+        # 6. Mint deterministic provenance spine (ROB-653 P6-B trade-day+rung
+        # salt) — order, fill, journal, and forecast share one stable id.
+        kst_trade_day = now_kst().strftime("%Y-%m-%d")
+        corr_id = paper_correlation_id(
+            account_id=account_id,
+            symbol=resolved_symbol,
+            side=side_norm,
+            limit_price=snapped_price,
+            quantity=qty,
+            kst_trade_day=kst_trade_day,
+            rung=0,
+        )
+
+        # 7. Persist the resting order
         order = PaperPendingOrder(
             account_id=account_id,
             symbol=resolved_symbol,
@@ -255,11 +285,92 @@ class PaperLimitOrderService:
             reserved_krw=reserved_krw_value,
             status="pending",
             thesis=thesis,
+            correlation_id=corr_id,
+            artifact_uuid=artifact_uuid,
             placed_at=now_kst(),
         )
         self.db.add(order)
         await self.db.flush()
         await self.db.refresh(order)
+
+        # 8. Place-time provenance — best-effort: failures are logged and
+        # continued so a journal/forecast hiccup never aborts the order.
+        if side_norm == "buy" and thesis:
+            try:
+                journal_res = await _create_trade_journal_for_buy(
+                    symbol=resolved_symbol,
+                    market_type="crypto",
+                    preview={
+                        "price": snapped_price,
+                        "quantity": qty,
+                        "estimated_value": quantize_money(qty * snapped_price),
+                    },
+                    thesis=thesis,
+                    strategy=(strategy or ""),
+                    target_price=(
+                        float(Decimal(str(target_price)))
+                        if target_price is not None
+                        else None
+                    ),
+                    stop_loss=(
+                        float(Decimal(str(stop_loss)))
+                        if stop_loss is not None
+                        else None
+                    ),
+                    min_hold_days=None,
+                    notes=None,
+                    indicators_snapshot=None,
+                    account_type="paper",
+                    account=account.name,
+                    correlation_id=corr_id,
+                )
+                order.journal_id = journal_res.get("journal_id")
+            except Exception:
+                logger.exception(
+                    "paper place_limit_order: failed to create draft journal "
+                    "for correlation_id=%s",
+                    corr_id,
+                )
+
+            if probability is not None and target_price is not None and review_date:
+                try:
+                    # This block is buy-only (gated above). A buy's profit
+                    # target sits ABOVE entry, so the forecast resolves TRUE
+                    # iff price RISES to it -> at_or_above. (at_or_below would
+                    # be trivially true from bar 1 and poison the Brier signal.)
+                    direction = "at_or_above"
+                    # Isolate the forecast write in its OWN session: a flush
+                    # failure here must not poison the order's transaction
+                    # (self.db) and roll back the order (the journal path is
+                    # already isolated the same way).
+                    async with AsyncSessionLocal() as fdb:
+                        _action, fc = await save_forecast(
+                            fdb,
+                            created_by="paper_sim",
+                            symbol=resolved_symbol,
+                            instrument_type="crypto",
+                            forecast_target={
+                                "kind": "price_target",
+                                "direction": direction,
+                                "target_price": float(Decimal(str(target_price))),
+                            },
+                            probability=float(probability),
+                            review_date=review_date,
+                            correlation_id=corr_id,
+                            horizon=None,
+                            model_label=None,
+                            session_label="paper_place",
+                            artifact_uuid=artifact_uuid,
+                        )
+                        fid = getattr(fc, "forecast_id", None)
+                        await fdb.commit()
+                    order.forecast_id = str(fid) if fid is not None else None
+                except Exception:
+                    logger.exception(
+                        "paper place_limit_order: failed to save forecast "
+                        "for correlation_id=%s",
+                        corr_id,
+                    )
 
         # Snapshot updated cash for the response
         await self.db.refresh(account)
@@ -276,6 +387,9 @@ class PaperLimitOrderService:
             "quantity": qty,
             "reserved_krw": reserved_krw_value,
             "cash_krw": Decimal(account.cash_krw),
+            "correlation_id": corr_id,
+            "journal_id": order.journal_id,
+            "forecast_id": order.forecast_id,
             "placed_at": order.placed_at,
         }
 
@@ -423,15 +537,52 @@ class PaperLimitOrderService:
             # here loses only the (nullable) FK link, never the fill or count.
             filled += 1
             try:
-                order.paper_trade_id = await _latest_trade_id(
+                trade_id = await _latest_trade_id(
                     self.db,
                     account_id=account_id,
                     symbol=order.symbol,
                     side=order.side,
                 )
+                order.paper_trade_id = trade_id
+                if trade_id is not None:
+                    trade = await self.db.get(PaperTrade, trade_id)
+                    if trade is not None:
+                        trade.correlation_id = order.correlation_id
+                        trade.journal_id = order.journal_id
+                        trade.artifact_uuid = order.artifact_uuid
+                        trade.forecast_id = order.forecast_id
                 await self.db.commit()
             except Exception:
                 await self.db.rollback()
+
+            # Journal bridge — best-effort: a buy fill activates the draft
+            # journal; a sell fill closes it with pnl_pct. Both helpers own
+            # their own sessions/commits; a failure here must never undo the
+            # durably-committed fill above.
+            try:
+                if order.side == "buy":
+                    # Activate THIS order's own draft journal by id (a
+                    # thesis-less buy has no journal_id -> nothing to activate).
+                    if order.journal_id is not None:
+                        await _activate_paper_journal(
+                            symbol=order.symbol,
+                            account_name=account.name,
+                            journal_id=order.journal_id,
+                        )
+                else:
+                    await _close_journals_on_sell(
+                        symbol=order.symbol,
+                        sell_quantity=float(order.quantity),
+                        sell_price=float(fill_price),
+                        exit_reason=order.thesis or "paper resting-limit fill",
+                        account_type="paper",
+                        account=account.name,
+                    )
+            except Exception:
+                logger.exception(
+                    "paper reconcile: journal bridge failed for correlation_id=%s",
+                    order.correlation_id,
+                )
 
         return {
             "success": True,

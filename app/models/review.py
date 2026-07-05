@@ -964,7 +964,7 @@ class TradeRetrospective(Base):
             "correlation_id", name="uq_trade_retrospectives_correlation_id"
         ),
         CheckConstraint(
-            "account_mode IN ('kis_mock','kiwoom_mock','kis_live','toss_live','alpaca_paper','upbit_live')",
+            "account_mode IN ('kis_mock','kiwoom_mock','kis_live','toss_live','alpaca_paper','upbit_live','paper')",
             name="account_mode",
         ),
         CheckConstraint(
@@ -991,7 +991,7 @@ class TradeRetrospective(Base):
         CheckConstraint(
             "trigger_type IS NULL OR trigger_type IN ("
             "'fill','partial_fill','rejected_order','cancelled','expired',"
-            "'thesis_change','policy_violation','stale_evidence','guardrail_block'"
+            "'thesis_change','policy_violation','stale_evidence','guardrail_block','stop_loss'"
             ")",
             name="ck_trade_retrospectives_trigger_type",
         ),

@@ -157,6 +157,12 @@ def register_paper_limit_order_tools(mcp: FastMCP) -> None:
         quantity: float | None = None,
         amount_krw: float | None = None,
         thesis: str | None = None,
+        strategy: str | None = None,
+        target_price: float | None = None,
+        stop_loss: float | None = None,
+        probability: float | None = None,
+        review_date: str | None = None,
+        artifact_uuid: str | None = None,
         dry_run: bool = True,
         confirm: bool = False,
     ) -> dict[str, Any]:
@@ -187,6 +193,16 @@ def register_paper_limit_order_tools(mcp: FastMCP) -> None:
                     quantity=Decimal(str(quantity)) if quantity is not None else None,
                     amount=Decimal(str(amount_krw)) if amount_krw is not None else None,
                     thesis=thesis,
+                    strategy=strategy,
+                    target_price=(
+                        Decimal(str(target_price)) if target_price is not None else None
+                    ),
+                    stop_loss=(
+                        Decimal(str(stop_loss)) if stop_loss is not None else None
+                    ),
+                    probability=probability,
+                    review_date=review_date,
+                    artifact_uuid=artifact_uuid,
                 )
         except Exception as exc:  # noqa: BLE001 — surface unexpected error
             return {"success": False, "error": f"unexpected error: {exc}"}

@@ -132,6 +132,10 @@ class PaperTrade(Base):
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     reason: Mapped[str | None] = mapped_column(Text)
     realized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    correlation_id: Mapped[str | None] = mapped_column(Text)
+    journal_id: Mapped[int | None] = mapped_column(BigInteger)
+    artifact_uuid: Mapped[str | None] = mapped_column(Text)
+    forecast_id: Mapped[str | None] = mapped_column(Text)
     executed_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )
@@ -214,6 +218,10 @@ class PaperPendingOrder(Base):
         String(10), nullable=False, server_default="pending"
     )
     thesis: Mapped[str | None] = mapped_column(Text)
+    correlation_id: Mapped[str | None] = mapped_column(Text)
+    journal_id: Mapped[int | None] = mapped_column(BigInteger)
+    artifact_uuid: Mapped[str | None] = mapped_column(Text)
+    forecast_id: Mapped[str | None] = mapped_column(Text)
     fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     paper_trade_id: Mapped[int | None] = mapped_column(
         BigInteger,
