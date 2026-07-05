@@ -59,7 +59,9 @@ async def _make_report(db: AsyncSession, **overrides) -> InvestmentReport:
     return row
 
 
-async def _add_item(db: AsyncSession, report_id: int, *, symbol: str, **overrides) -> None:
+async def _add_item(
+    db: AsyncSession, report_id: int, *, symbol: str, **overrides
+) -> None:
     payload = {
         "report_id": report_id,
         "item_uuid": uuid.uuid4(),
