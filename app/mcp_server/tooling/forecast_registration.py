@@ -51,7 +51,11 @@ def register_forecast_tools(mcp: Any) -> None:
             "daily OHLCV (ROB-639 DB-first, equity_kr/equity_us/crypto). "
             "Non-price kinds (or price forecasts you must override) require an "
             "explicit forecast_id plus manual_outcome (bool) and manual_evidence. "
-            "Idempotent: a closed forecast is never re-scored."
+            "Idempotent: a closed forecast is never re-scored. "
+            "Missing daily candles for a not-yet-loaded symbol are lazily "
+            "fetched+persisted once, then re-read (backfill_missing=true "
+            "default; set false for a fast peek that skips the fetch)."
+
         ),
     )(forecast_resolve)
     _ = mcp.tool(

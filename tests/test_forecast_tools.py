@@ -77,6 +77,50 @@ async def test_save_missing_symbol_envelope():
     assert "symbol" in res["error"]
 
 
+# ROB-712 — forecast_resolve must expose backfill_missing and forward it to
+# resolve_forecast on both the single and the batch path.
+@pytest.mark.asyncio
+async def test_forecast_resolve_passes_backfill_flag(monkeypatch):
+    from app.mcp_server.tooling import forecast_tools
+
+    seen: dict[str, object] = {}
+
+    async def fake_resolve(db, *, forecast_id, persist, backfill_missing=True, **kw):
+        seen["backfill_missing"] = backfill_missing
+        seen["forecast_id"] = forecast_id
+        return {"status": "unresolved_no_data", "changed": False}
+
+    monkeypatch.setattr(forecast_tools, "resolve_forecast", fake_resolve)
+
+    # Stub the session factory so the test never opens a DB connection.
+    # Production shape: _session_factory() -> sessionmaker; () -> session;
+    # the session is an async context manager that yields the AsyncSession.
+    class _StubSession:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *_a):
+            return False
+
+    class _StubSessionMaker:
+        def __call__(self) -> _StubSession:
+            return _StubSession()
+
+    def _factory():
+        return _StubSessionMaker()
+
+    monkeypatch.setattr(forecast_tools, "_session_factory", _factory)
+
+
+
+    res = await forecast_resolve(
+        forecast_id="x", dry_run=True, backfill_missing=False
+    )
+    assert res["success"] is True
+    assert seen["backfill_missing"] is False
+    assert seen["forecast_id"] == "x"
+
+
 # --------------------------------------------------------------------------- #
 # DB-backed envelope tests (opt-in: request the _clean fixture explicitly so
 # the wiring tests above stay DB-free)
