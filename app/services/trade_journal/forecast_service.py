@@ -11,7 +11,10 @@ apart from the DB write.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import uuid
+
+
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -31,6 +34,9 @@ from app.services.daily_candles.repository import (
     MarketKey,
 )
 from app.services.trading_policy_service import policy_version_stamp
+
+logger = logging.getLogger(__name__)
+
 
 # Fail-open fallback policy stamp. ROB-659: the default now comes from the ROB-646
 # trading-policy YAML single source via ``_default_policy_version`` (below); this
@@ -552,6 +558,43 @@ async def _resolve_candle_partition(
     return None
 
 
+async def _backfill_daily_candles(
+    *,
+    symbol: str,
+    market: MarketKey,
+    partition: str,
+    horizon_bars: int = _BACKFILL_HORIZON_BARS,
+) -> int:
+    """Best-effort one-symbol daily-candle fetch+persist for a not-yet-loaded
+    (typically rejected/non-held) symbol so its price_target forecast can
+    resolve. Uses the shared sync service on its OWN session (commits+closes via
+    close_callbacks). Never raises — returns 0 on any failure so resolve stays
+    graceful (unresolved_no_data). ROB-712.
+    """
+    from app.services.daily_candles.sync_service import (
+        SyncTarget,
+        _build_default_service,
+    )
+
+    try:
+        service = await _build_default_service()
+    except Exception:
+        logger.exception("ROB-712 backfill: service build failed symbol=%s", symbol)
+        return 0
+    try:
+        result = await service.sync_one(
+            target=SyncTarget(market=market, symbol=symbol, partition=partition),
+            horizon_bars=horizon_bars,
+        )
+        return result.rows_upserted
+    except Exception:
+        logger.exception("ROB-712 backfill: sync_one failed symbol=%s", symbol)
+        return 0
+    finally:
+        await service.close()
+
+
+
 async def _read_window_candles(
     db: AsyncSession,
     *,
@@ -602,6 +645,7 @@ async def resolve_forecast(
     manual_observed_value: float | None = None,
     manual_evidence: Any | None = None,
     now: datetime | None = None,
+    backfill_missing: bool = True,
 ) -> dict[str, Any]:
     """Resolve one forecast. Idempotent: a closed forecast is never re-scored.
 
@@ -661,6 +705,27 @@ async def resolve_forecast(
             start_date=start_date,
             review_date=row.review_date,
         )
+        # ROB-712: rejected (non-held) symbols usually have no daily OHLCV in
+        # the DB yet. Lazily fetch+persist once via the shared sync service, then
+        # re-read. Never raises — backfill returns 0 on failure and the existing
+        # unresolved_no_data branch still runs below.
+        if not candles and backfill_missing:
+            resolved = await _resolve_candle_partition(
+                db, symbol=row.symbol, instrument_type=instrument
+            )
+            if resolved is not None:
+                market, partition = resolved
+                rows = await _backfill_daily_candles(
+                    symbol=row.symbol, market=market, partition=partition
+                )
+                if rows:
+                    candles = await _read_window_candles(
+                        db,
+                        symbol=row.symbol,
+                        instrument_type=instrument,
+                        start_date=start_date,
+                        review_date=row.review_date,
+                    )
         if not candles:
             return {
                 "status": "unresolved_no_data",
@@ -668,6 +733,7 @@ async def resolve_forecast(
                 "reason": "no loaded daily candles in the resolution window",
                 "forecast": serialize_forecast(row),
             }
+
         direction = target.get("direction")
         target_price = float(target.get("target_price"))
         outcome, observed = classify_price_target_outcome(
