@@ -46,7 +46,12 @@ async def _make_paper_trade(
         executed_at=now_kst(),
     )
     db.add(trade)
-    await db.flush()
+    # COMMIT (not flush): build_retrospective_pending scans the live order
+    # ledgers too. If this INSERT stays uncommitted, the test transaction holds
+    # write locks during that broad multi-ledger scan and deadlocks with the
+    # parallel kis_live-ledger tests (xdist + shared DB). Committing first means
+    # the scan runs lock-free -> out of any deadlock cycle.
+    await db.commit()
     return trade
 
 
