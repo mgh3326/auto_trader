@@ -109,3 +109,28 @@ async def test_include_excursions_in_cache_key(db_session, monkeypatch):
     )
     # distinct cache keys → load_fills ran twice, not served from one cache slot
     assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_load_fills_excludes_smoke_marked_reason(db_session):
+    from datetime import UTC, datetime
+
+    from app.models.review import KISLiveOrderLedger
+
+    db_session.add(
+        KISLiveOrderLedger(
+            symbol="005930",
+            instrument_type="equity_kr",
+            side="buy",
+            order_type="limit",
+            status="filled",
+            lifecycle_state="fill",
+            filled_qty=10,
+            avg_fill_price=100.0,
+            trade_date=datetime(2026, 6, 1, tzinfo=UTC),
+            reason="smoke-only probe do not journal",
+        )
+    )
+    await db_session.flush()
+    fills = await agg.load_fills(db_session, market="kr")
+    assert all("005930" not in f.symbol or f.price != 100.0 for f in fills)

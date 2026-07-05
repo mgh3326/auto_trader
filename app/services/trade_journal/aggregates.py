@@ -150,7 +150,12 @@ async def load_fills(
                 if date_to and d > date_to:
                     continue
             if _is_smoke(
-                getattr(r, "correlation_id", None), getattr(r, "status", None)
+                getattr(r, "correlation_id", None),
+                getattr(r, "status", None),
+                getattr(r, "reason", None),
+                getattr(r, "thesis", None),
+                getattr(r, "strategy", None),
+                getattr(r, "notes", None),
             ):
                 continue
             corr = getattr(r, "correlation_id", None)
