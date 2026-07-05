@@ -11,12 +11,14 @@ import { useInvestmentReportBundle } from "../../hooks/useInvestmentReportBundle
 import { LinkedOrderRow, linkedOrderKey } from "../orders/LinkedOrderRow";
 import type {
   DeliveryStatus,
+  ForecastLink,
   InvestmentReportItem,
   InvestmentReportItemDecision,
   InvestmentWatchAlert,
   InvestmentWatchEvent,
   NoActionSummary,
   ReportReviewSections,
+  RetrospectiveLink,
   SnapshotFreshnessSummary,
   SnapshotReportDiagnostics,
 } from "../../types/investmentReports";
@@ -273,12 +275,26 @@ function parseInvalidationTriggers(
   return raw as string[];
 }
 
+function formatMaxAction(a: Record<string, unknown>): string {
+  const parts: string[] = [];
+  if (a.side) parts.push(String(a.side));
+  if (a.quantity != null) parts.push(`${a.quantity}\uc8fc`);
+  if (a.notional != null) parts.push(`${a.notional}`);
+  if (a.limit_price != null) parts.push(`@${a.limit_price}`);
+  if (a.ladder_level != null) parts.push(`ladder ${a.ladder_level}`);
+  return parts.join(" · ");
+}
+
 function ItemRow({
   item,
   decisions,
+  forecastLinks,
+  retrospectiveLinks,
 }: {
   item: InvestmentReportItem;
   decisions: InvestmentReportItemDecision[];
+  forecastLinks?: ForecastLink[];
+  retrospectiveLinks?: RetrospectiveLink[];
 }) {
   const kindLabel = ITEM_KIND_LABELS[item.itemKind] ?? item.itemKind;
   const statusLabel = ITEM_STATUS_LABELS[item.status] ?? item.status;
@@ -345,6 +361,50 @@ function ItemRow({
       <div style={{ color: "var(--fg-2)", fontSize: 13, lineHeight: 1.55 }}>
         {item.rationale}
       </div>
+      {item.decisionBucket ? (
+        <span
+          className="item-decision-bucket-badge"
+          data-testid="item-decision-bucket-badge"
+          style={{
+            fontSize: 12,
+            fontWeight: 800,
+            color: "var(--fg-2)",
+            padding: "2px 8px",
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+          }}
+        >
+          {item.decisionBucket}
+        </span>
+      ) : null}
+      {item.triggerChecklist && item.triggerChecklist.length > 0 ? (
+        <ul
+          className="item-trigger-checklist"
+          style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "var(--fg-2)" }}
+        >
+          {item.triggerChecklist.map((t: unknown, i: number) => (
+            <li key={i}>{String(t)}</li>
+          ))}
+        </ul>
+      ) : null}
+      {item.maxAction &&
+      Object.keys(item.maxAction).length > 0 ? (
+        <div
+          className="item-max-action"
+          data-testid="item-max-action"
+          style={{ fontSize: 12, color: "var(--fg-2)" }}
+        >
+          {formatMaxAction(item.maxAction as Record<string, unknown>)}
+        </div>
+      ) : null}
+      {item.structuredEvidenceSummary ? (
+        <div
+          className="item-structured-evidence"
+          style={{ fontSize: 12, color: "var(--fg-3)" }}
+        >
+          {item.structuredEvidenceSummary}
+        </div>
+      ) : null}
       {tradeSetup ? (
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
           <Pill tone={tradeSetup.direction === "long" ? "gain" : "warn"} size="sm">
@@ -354,6 +414,31 @@ function ItemRow({
             손익비 R:R {tradeSetup.headline.rrRatio} · 리스크{" "}
             {tradeSetup.headline.riskPct}% · 리워드 {tradeSetup.headline.rewardPct}%
           </span>
+        </div>
+      ) : null}
+      {tradeSetup ? (
+        <div
+          className="item-plan-vs-actual"
+          data-testid="item-plan-vs-actual"
+          style={{ fontSize: 12, color: "var(--fg-2)" }}
+        >
+          {/* R:R (손절/목표 %) is already shown in the pill above; this row
+              adds the plan→actual juxtaposition the pill can't: planned entry
+              vs the actual fill price. */}
+          <span>계획 진입 {tradeSetup.headline.entry}</span>
+          {(() => {
+            const filled = (item.linkedOrders ?? []).find(
+              (o) =>
+                o.avgFillPrice != null &&
+                o.avgFillPrice !== "" &&
+                String(o.avgFillPrice) !== "0",
+            );
+            return filled ? (
+              <span> → 실제 체결 {String(filled.avgFillPrice)}</span>
+            ) : (
+              <span style={{ color: "var(--fg-3)" }}> → 체결 대기</span>
+            );
+          })()}
         </div>
       ) : null}
       {invalidationTriggers ? (
@@ -383,6 +468,71 @@ function ItemRow({
           ))}
         </div>
       ) : null}
+      {/* ROB-715 — forecast → fill → retrospective learning loop. The
+          "not yet linked" placeholder is shown only for action items — watch/
+          risk rows rarely carry a forecast, so blanketing every row with it
+          would be noise. Rows with actual loop data render regardless of kind. */}
+      {(forecastLinks ?? []).length === 0 &&
+      (retrospectiveLinks ?? []).length === 0 &&
+      item.itemKind !== "action" ? null : (
+        <div data-testid={`item-loop-${item.itemUuid}`}>
+          {(forecastLinks ?? []).length === 0 &&
+          (retrospectiveLinks ?? []).length === 0 ? (
+            <span
+              className="item-loop-empty muted"
+              style={{ fontSize: 12, color: "var(--fg-3)" }}
+            >
+              해소 대기 / 미연결
+            </span>
+          ) : (
+            <div
+            style={{
+              display: "grid",
+              gap: 4,
+              padding: 10,
+              border: "1px solid var(--border)",
+              borderRadius: 10,
+              background: "var(--surface-2)",
+            }}
+          >
+            <div
+              style={{ fontSize: 12, color: "var(--fg-2)", fontWeight: 800 }}
+            >
+              학습 루프
+            </div>
+            {(forecastLinks ?? []).map((f) => (
+              <div
+                key={f.forecastId}
+                data-testid={`item-loop-forecast-${f.forecastId}`}
+                style={{ fontSize: 12, color: "var(--fg-2)" }}
+              >
+                <span>
+                  {f.status === "closed"
+                    ? f.outcome
+                      ? "적중"
+                      : "빗나감"
+                    : "해소 대기"}
+                </span>
+                {f.brierScore != null ? (
+                  <span> · Brier {f.brierScore.toFixed(2)}</span>
+                ) : null}
+                {f.reviewDate ? <span> · {f.reviewDate}</span> : null}
+              </div>
+            ))}
+            {(retrospectiveLinks ?? []).map((r) => (
+              <div
+                key={r.retrospectiveId}
+                data-testid={`item-loop-retro-${r.retrospectiveId}`}
+                style={{ fontSize: 12, color: "var(--fg-2)" }}
+              >
+                <span>회고: {r.outcome}</span>
+                {r.lesson ? <span> — {r.lesson}</span> : null}
+              </div>
+            ))}
+          </div>
+          )}
+        </div>
+      )}
       {item.watchCondition ? (
         <div
           style={{
@@ -602,10 +752,14 @@ function ReviewSectionsView({
   review,
   items,
   decisionsByItemUuid,
+  forecastsByItemUuid,
+  retrospectivesByItemUuid,
 }: {
   review: ReportReviewSections;
   items: InvestmentReportItem[];
   decisionsByItemUuid: Record<string, InvestmentReportItemDecision[]>;
+  forecastsByItemUuid: Record<string, ForecastLink[]>;
+  retrospectivesByItemUuid: Record<string, RetrospectiveLink[]>;
 }) {
   const projectedUuids = new Set(
     review.sections.flatMap((section) => section.items.map((it) => it.itemUuid)),
@@ -630,6 +784,10 @@ function ReviewSectionsView({
                   key={item.itemUuid}
                   item={item}
                   decisions={decisionsByItemUuid[item.itemUuid] ?? []}
+                  forecastLinks={forecastsByItemUuid[item.itemUuid] ?? []}
+                  retrospectiveLinks={
+                    retrospectivesByItemUuid[item.itemUuid] ?? []
+                  }
                 />
               ))
             ) : (
@@ -648,6 +806,10 @@ function ReviewSectionsView({
               key={item.itemUuid}
               item={item}
               decisions={decisionsByItemUuid[item.itemUuid] ?? []}
+              forecastLinks={forecastsByItemUuid[item.itemUuid] ?? []}
+              retrospectiveLinks={
+                retrospectivesByItemUuid[item.itemUuid] ?? []
+              }
             />
           ))}
         </section>
@@ -779,6 +941,8 @@ export function InvestmentReportBundleContent({
           review={review}
           items={bundle.items}
           decisionsByItemUuid={bundle.decisionsByItemUuid}
+          forecastsByItemUuid={bundle.forecastsByItemUuid ?? {}}
+          retrospectivesByItemUuid={bundle.retrospectivesByItemUuid ?? {}}
         />
       ) : (
         (["action", "watch", "risk"] as const).map((kind) =>
@@ -792,6 +956,12 @@ export function InvestmentReportBundleContent({
                   key={item.itemUuid}
                   item={item}
                   decisions={bundle.decisionsByItemUuid[item.itemUuid] ?? []}
+                  forecastLinks={
+                    bundle.forecastsByItemUuid?.[item.itemUuid] ?? []
+                  }
+                  retrospectiveLinks={
+                    bundle.retrospectivesByItemUuid?.[item.itemUuid] ?? []
+                  }
                 />
               ))}
             </section>

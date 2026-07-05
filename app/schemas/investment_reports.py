@@ -791,6 +791,33 @@ class LinkedOrderView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ForecastLinkResponse(BaseModel):
+    """ROB-715 — an item's own forecast, projected for the audit surface."""
+
+    forecast_id: str
+    status: str
+    outcome: bool | None = None
+    review_date: str | None = None
+    direction: str | None = None
+    target_price: float | None = None
+    probability: float
+    brier_score: float | None = None
+    resolution_source: str | None = None
+
+
+class RetrospectiveLinkResponse(BaseModel):
+    """ROB-715 — an item's own retrospective, projected for the audit surface."""
+
+    retrospective_id: int
+    outcome: str
+    lesson: str | None = None
+    result_summary: str | None = None
+    root_cause_class: str | None = None
+    trigger_type: str | None = None
+    pnl_pct: float | None = None
+    created_at: str | None = None
+
+
 class StockDetailOrderLedgerResponse(BaseModel):
     """ROB-559 — per-symbol live order history for the stock-detail page.
 
@@ -847,6 +874,9 @@ class InvestmentReportItemResponse(BaseModel):
     # with reconcile-written fill rollup. None when the item has no linked orders;
     # set post-validation by the bundle serializers, not read from the ORM row.
     linked_orders: list[LinkedOrderView] | None = None
+    # ROB-715 — backend-derived one-line summary of evidence_snapshot's
+    # structured_evidence (frontend never parses the nested structure).
+    structured_evidence_summary: str | None = None
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -1102,6 +1132,13 @@ class InvestmentReportBundle(BaseModel):
     # Empty for reports with no Hermes-marked news.
     news_citations: list[InvestmentReportNewsCitationResponse] = Field(
         default_factory=list
+    )
+    # ROB-715 — item→forecast/retrospective exact-join maps keyed by item UUID.
+    forecasts_by_item_uuid: dict[str, list[ForecastLinkResponse]] = Field(
+        default_factory=dict
+    )
+    retrospectives_by_item_uuid: dict[str, list[RetrospectiveLinkResponse]] = Field(
+        default_factory=dict
     )
 
 
