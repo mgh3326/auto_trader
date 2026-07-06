@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 
+from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -50,3 +51,18 @@ class OrderSendIntentService:
         rid = row.id
         await self._db.commit()
         return rid
+
+    async def release(
+        self,
+        *,
+        account_scope: str,
+        idempotency_key: str,
+    ) -> int:
+        result = await self._db.execute(
+            delete(OrderSendIntent).where(
+                OrderSendIntent.account_scope == account_scope,
+                OrderSendIntent.idempotency_key == idempotency_key,
+            )
+        )
+        await self._db.commit()
+        return int(result.rowcount or 0)
