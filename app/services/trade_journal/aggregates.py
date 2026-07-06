@@ -839,6 +839,76 @@ def _pair_by_entry_provenance(
     return paired
 
 
+def _key_set(trade: ClosedTrade) -> set[tuple[str, str]]:
+    return set(_entry_pair_keys(trade))
+
+
+def _pairing_diagnostics(
+    live_trades: list[ClosedTrade],
+    mock_trades: list[ClosedTrade],
+    paired: list[tuple[ClosedTrade, ClosedTrade]],
+) -> dict[str, Any]:
+    paired_live_ids = {id(live) for live, _ in paired}
+    paired_mock_ids = {id(mock) for _, mock in paired}
+    live_item_keys = {
+        key[1]
+        for trade in live_trades
+        for key in _entry_pair_keys(trade)
+        if key[0] == "report_item_uuid"
+    }
+    mock_item_keys = {
+        key[1]
+        for trade in mock_trades
+        for key in _entry_pair_keys(trade)
+        if key[0] == "report_item_uuid"
+    }
+    unpaired_mock = [trade for trade in mock_trades if id(trade) not in paired_mock_ids]
+    unpaired_live = [trade for trade in live_trades if id(trade) not in paired_live_ids]
+    return {
+        "live_closed_count": len(live_trades),
+        "mock_closed_count": len(mock_trades),
+        "live_pair_key_count": sum(len(_key_set(t)) for t in live_trades),
+        "mock_pair_key_count": sum(len(_key_set(t)) for t in mock_trades),
+        "paired_count": len(paired),
+        "unpaired_live_count": len(unpaired_live),
+        "unpaired_mock_count": len(unpaired_mock),
+        "live_trades_without_report_item_uuid": sum(
+            1 for trade in live_trades if not trade.entry_item_uuids
+        ),
+        "mock_report_item_keys_without_live_match": sorted(
+            mock_item_keys - live_item_keys
+        )[:20],
+    }
+
+
+def _pairing_health(
+    diagnostics: dict[str, Any],
+    *,
+    min_pair_threshold: int,
+) -> dict[str, Any]:
+    observed = min(
+        int(diagnostics["live_closed_count"]),
+        int(diagnostics["mock_closed_count"]),
+    )
+    paired_count = int(diagnostics["paired_count"])
+    if paired_count >= min_pair_threshold:
+        status = "ok"
+        reason = None
+    elif observed >= min_pair_threshold:
+        status = "needs_design_review"
+        reason = "closed_samples_available_but_pairing_below_threshold"
+    else:
+        status = "warming_up"
+        reason = "below_min_pair_threshold"
+    return {
+        "status": status,
+        "min_pair_threshold": min_pair_threshold,
+        "observed_closed_trade_floor": observed,
+        "paired_count": paired_count,
+        "reason": reason,
+    }
+
+
 async def _filter_pairs_for_delta(
     db: AsyncSession,
     paired: list[tuple[ClosedTrade, ClosedTrade]],
@@ -909,6 +979,7 @@ async def build_counterfactual_delta_scoreboard(
     date_to: date | None = None,
     setup_tag: str | None = None,
     min_sample: int = 1,
+    min_pair_threshold: int = 20,
     include_excursions: bool = False,
     use_cache: bool = True,
 ) -> dict[str, Any]:
@@ -954,11 +1025,24 @@ async def build_counterfactual_delta_scoreboard(
     paired = await _filter_pairs_for_delta(
         db, paired, setup_tag=setup_tag, min_sample=min_sample
     )
+    diagnostics = _pairing_diagnostics(live_trades, mock_trades, paired)
+    health = _pairing_health(
+        diagnostics, min_pair_threshold=max(1, int(min_pair_threshold))
+    )
+    caveats = [
+        "KIS mock fills do not model queue priority, liquidity, slippage, or market impact; mock performance is upward biased."
+    ]
+    if health["status"] == "needs_design_review":
+        caveats.append(
+            "Counterfactual closed samples exist but paired_count is below min_pair_threshold; verify live report_item_uuid tagging from investment report items."
+        )
     return {
         "live_gated": board_live,
         "mock_counterfactual": board_mock,
         "paired_count": len(paired),
         "overall_delta": _paired_delta(paired),
+        "pairing_diagnostics": diagnostics,
+        "pairing_health": health,
         "filters": {
             "market": market,
             "account_mode": account_mode,
@@ -966,8 +1050,7 @@ async def build_counterfactual_delta_scoreboard(
             "date_to": date_to.isoformat() if date_to else None,
             "setup_tag": setup_tag,
             "min_sample": min_sample,
+            "min_pair_threshold": max(1, int(min_pair_threshold)),
         },
-        "caveats": [
-            "KIS mock fills do not model queue priority, liquidity, slippage, or market impact; mock performance is upward biased."
-        ],
+        "caveats": caveats,
     }
