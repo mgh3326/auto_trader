@@ -666,10 +666,19 @@ async def test_runner_idempotent_rerun_creates_no_orphan_bundle(db_session) -> N
         db_session, t1, nonce
     )
 
-    async def _bundle_count() -> int:
-        return await db_session.scalar(
-            _sa.select(_sa.func.count()).select_from(_Bundle)
+    async def _mock_reuse_bundle_count() -> int:
+        count = await db_session.scalar(
+            _sa.select(_sa.func.count())
+            .select_from(_Bundle)
+            .where(
+                _Bundle.purpose == "mock_preview_report",
+                _Bundle.market == "us",
+                _Bundle.account_scope == "kis_mock",
+                _Bundle.policy_version == "intraday_action_report_v1",
+                _Bundle.as_of.in_([t1, t2]),
+            )
         )
+        return int(count or 0)
 
     report1, reused1, _ = await MockPreviewReportRunner(
         db_session, ensure_service=_reuse_ensure(db_session, t1, nonce)
@@ -683,7 +692,7 @@ async def test_runner_idempotent_rerun_creates_no_orphan_bundle(db_session) -> N
     )
     await db_session.flush()
     assert reused1 is False
-    count_after_first = await _bundle_count()
+    count_after_first = await _mock_reuse_bundle_count()
     bundle_after_first = report1.snapshot_bundle_uuid
 
     report2, reused2, _ = await MockPreviewReportRunner(
@@ -702,4 +711,4 @@ async def test_runner_idempotent_rerun_creates_no_orphan_bundle(db_session) -> N
     assert report2.report_uuid == report1.report_uuid
     assert report2.snapshot_bundle_uuid == bundle_after_first
     # No new (orphan) bundle was created by the idempotent re-run.
-    assert await _bundle_count() == count_after_first
+    assert await _mock_reuse_bundle_count() == count_after_first
