@@ -82,6 +82,9 @@ from app.mcp_server.tooling.market_brief_registration import (
     register_market_brief_tools,
 )
 from app.mcp_server.tooling.market_data_registration import register_market_data_tools
+from app.mcp_server.tooling.mirror_counterfactual_registration import (
+    register_mirror_counterfactual_tools,
+)
 from app.mcp_server.tooling.mock_loop_retro_registration import (
     register_mock_loop_retro_tools,
 )
@@ -128,9 +131,6 @@ from app.mcp_server.tooling.trading_policy_registration import (
 )
 from app.mcp_server.tooling.trading_scoreboard_registration import (
     register_trading_scoreboard_tools,
-)
-from app.mcp_server.tooling.mirror_counterfactual_registration import (
-    register_mirror_counterfactual_tools,
 )
 from app.mcp_server.tooling.us_dual_paper import register_us_dual_paper_tools
 from app.mcp_server.tooling.user_settings_registration import (

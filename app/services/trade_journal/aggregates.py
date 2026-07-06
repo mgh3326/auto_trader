@@ -9,6 +9,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from statistics import fmean, median
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,10 +18,12 @@ from app.core.symbol import to_db_symbol
 from app.models.investment_reports import InvestmentReportItem
 from app.models.review import (
     KISLiveOrderLedger,
+    KISMockOrderLedger,
     LiveOrderLedger,
     TossLiveOrderLedger,
     TradeRetrospective,
 )
+from app.models.trading import InstrumentType
 from app.services.market_data import get_ohlcv
 from app.services.trade_journal.forecast_service import _normalize_symbol_for_filter
 
@@ -78,6 +81,8 @@ class Fill:
     item_uuid: str | None
     correlation_id: str | None
     source: str
+    cohort: str = "live_gated"
+    source_bucket: str | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +102,8 @@ class ClosedTrade:
     exit_item_uuid: str | None
     entry_correlation_ids: tuple[str, ...]
     exit_correlation_id: str | None
+    cohort: str = "live_gated"
+    source_bucket: str | None = None
 
 
 @dataclass
@@ -108,6 +115,8 @@ class _Lot:
     ts: datetime
     item_uuid: str | None
     correlation_id: str | None
+    cohort: str = "live_gated"
+    source_bucket: str | None = None
 
 
 @dataclass(frozen=True)
@@ -124,6 +133,7 @@ async def load_fills(
     account_mode: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
+    cohort: str = "live_gated",
 ) -> list[Fill]:
     """Read filled rows from the three live order ledgers and normalize to ``Fill``.
 
@@ -133,15 +143,66 @@ async def load_fills(
     downstream already segregates lots per account label.
     """
     fills: list[Fill] = []
-    for source, model in (
-        ("kis", KISLiveOrderLedger),
-        ("live", LiveOrderLedger),
-        ("toss", TossLiveOrderLedger),
-    ):
-        stmt = select(model).where(model.filled_qty.isnot(None), model.filled_qty > 0)
+
+    if cohort in ("live_gated", "all"):
+        for source, model in (
+            ("kis", KISLiveOrderLedger),
+            ("live", LiveOrderLedger),
+            ("toss", TossLiveOrderLedger),
+        ):
+            stmt = select(model).where(model.filled_qty.isnot(None), model.filled_qty > 0)
+            rows = (await db.execute(stmt)).scalars().all()
+            for r in rows:
+                row_market = _market_for(source, r)
+                if market and row_market != market:
+                    continue
+                if r.trade_date is not None:
+                    d = r.trade_date.date()
+                    if date_from and d < date_from:
+                        continue
+                    if date_to and d > date_to:
+                        continue
+
+                if _is_smoke(
+                    getattr(r, "correlation_id", None),
+                    getattr(r, "status", None),
+                    getattr(r, "reason", None),
+                    getattr(r, "thesis", None),
+                    getattr(r, "strategy", None),
+                    getattr(r, "notes", None),
+                ):
+                    continue
+                corr = getattr(r, "correlation_id", None)
+                item_uuid = getattr(r, "report_item_uuid", None)
+                fills.append(
+                    Fill(
+                        market=row_market,
+                        symbol=to_db_symbol(r.symbol),
+                        account=_account_of(source, r),
+                        side=r.side,
+                        qty=float(r.filled_qty),
+                        price=float(r.avg_fill_price)
+                        if r.avg_fill_price is not None
+                        else 0.0,
+                        fee=_fee_of(r),
+                        ts=r.trade_date,
+                        item_uuid=str(item_uuid) if item_uuid else None,
+                        correlation_id=corr,
+                        source=source,
+                        cohort="live_gated",
+                    )
+                )
+
+    if cohort in ("mock_counterfactual", "all") and account_mode in (None, "kis_mock"):
+        from app.mcp_server.tooling.kis_mock_ledger import _derive_shadow_fill
+
+        stmt = select(KISMockOrderLedger).where(
+            KISMockOrderLedger.mirror_cohort == "mock_counterfactual",
+            KISMockOrderLedger.lifecycle_state == "fill",
+        )
         rows = (await db.execute(stmt)).scalars().all()
         for r in rows:
-            row_market = _market_for(source, r)
+            row_market = "kr" if r.instrument_type == InstrumentType.equity_kr else "us"
             if market and row_market != market:
                 continue
             if r.trade_date is not None:
@@ -150,34 +211,29 @@ async def load_fills(
                     continue
                 if date_to and d > date_to:
                     continue
-            if _is_smoke(
-                getattr(r, "correlation_id", None),
-                getattr(r, "status", None),
-                getattr(r, "reason", None),
-                getattr(r, "thesis", None),
-                getattr(r, "strategy", None),
-                getattr(r, "notes", None),
-            ):
+
+            filled_qty, _remaining, status = _derive_shadow_fill(r, float(r.quantity))
+            if status not in {"filled", "partial"} or filled_qty <= 0:
                 continue
-            corr = getattr(r, "correlation_id", None)
-            item_uuid = getattr(r, "report_item_uuid", None)
+
             fills.append(
                 Fill(
                     market=row_market,
                     symbol=to_db_symbol(r.symbol),
-                    account=_account_of(source, r),
+                    account="kis_mock",
                     side=r.side,
-                    qty=float(r.filled_qty),
-                    price=float(r.avg_fill_price)
-                    if r.avg_fill_price is not None
-                    else 0.0,
-                    fee=_fee_of(r),
+                    qty=filled_qty,
+                    price=float(r.price),
+                    fee=float(r.fee or 0),
                     ts=r.trade_date,
-                    item_uuid=str(item_uuid) if item_uuid else None,
-                    correlation_id=corr,
-                    source=source,
+                    item_uuid=str(r.report_item_uuid) if r.report_item_uuid else None,
+                    correlation_id=r.correlation_id,
+                    source="kis_mock",
+                    cohort="mock_counterfactual",
+                    source_bucket=r.mirror_source_bucket,
                 )
             )
+
     return [f for f in fills if f.price > 0 and f.ts is not None]
 
 
@@ -201,6 +257,8 @@ def pair_fills_fifo(fills: list[Fill]) -> list[ClosedTrade]:
                         f.ts,
                         f.item_uuid,
                         f.correlation_id,
+                        f.cohort,
+                        f.source_bucket,
                     )
                 )
                 continue
@@ -225,6 +283,13 @@ def pair_fills_fifo(fills: list[Fill]) -> list[ClosedTrade]:
             exit_fee = f.fee * (matched_qty / f.qty) if f.qty else 0.0
             fees = entry_fee + exit_fee
             gross = (f.price - entry_price) * matched_qty
+
+            entry_cohorts = {lot.cohort for _, lot in consumed}
+            resolved_cohort = entry_cohorts.pop() if len(entry_cohorts) == 1 else "mixed"
+
+            entry_source_buckets = {lot.source_bucket for _, lot in consumed if lot.source_bucket}
+            resolved_source_bucket = entry_source_buckets.pop() if len(entry_source_buckets) == 1 else None
+
             closed.append(
                 ClosedTrade(
                     market=market,
@@ -254,6 +319,8 @@ def pair_fills_fifo(fills: list[Fill]) -> list[ClosedTrade]:
                         )
                     ),
                     exit_correlation_id=f.correlation_id,
+                    cohort=resolved_cohort,
+                    source_bucket=resolved_source_bucket,
                 )
             )
     return closed
@@ -281,6 +348,7 @@ async def resolve_setup_tag(
                 .where(
                     TradeRetrospective.correlation_id.in_(corr_ids),
                     TradeRetrospective.strategy_key.isnot(None),
+                    TradeRetrospective.account_mode == trade.account,
                 )
                 .order_by(TradeRetrospective.created_at.desc())
                 .limit(1)
@@ -499,6 +567,7 @@ async def build_trading_scoreboard(
     include_excursions: bool = True,
     use_cache: bool = True,
     now: datetime | None = None,
+    cohort: str = "live_gated",
 ) -> dict:
     """Compute per-tag setup aggregates from live-ledger fills.
 
@@ -513,6 +582,7 @@ async def build_trading_scoreboard(
         setup_tag,
         min_sample,
         include_excursions,
+        cohort,
     )
     stamp = (now or datetime.now(UTC)).timestamp()
     if use_cache:
@@ -526,6 +596,7 @@ async def build_trading_scoreboard(
         account_mode=account_mode,
         date_from=date_from,
         date_to=date_to,
+        cohort=cohort,
     )
     trades = pair_fills_fifo(fills)
     rows: list[TradeMetrics] = []
@@ -562,3 +633,98 @@ async def build_trading_scoreboard(
     if use_cache:
         _scoreboard_cache[key] = (stamp, copy.deepcopy(result))
     return result
+
+
+def _pair_by_entry_correlation(
+    live_trades: list[ClosedTrade],
+    mock_trades: list[ClosedTrade],
+) -> list[tuple[ClosedTrade, ClosedTrade]]:
+    live_by_corr = {}
+    for t in live_trades:
+        corr_id = next((c for c in t.entry_correlation_ids if c), None)
+        if corr_id:
+            live_by_corr[corr_id] = t
+
+    paired = []
+    for t in mock_trades:
+        corr_id = next((c for c in t.entry_correlation_ids if c), None)
+        if corr_id and corr_id in live_by_corr:
+            paired.append((live_by_corr[corr_id], t))
+
+    return paired
+
+
+def _paired_delta(paired: list[tuple[ClosedTrade, ClosedTrade]]) -> dict[str, Any]:
+    n = len(paired)
+    if n == 0:
+        return {
+            "mock_minus_live_expectancy_pct": 0.0,
+            "mock_minus_live_hit_rate": 0.0,
+            "paired_n": 0,
+        }
+
+    mock_pnl_pcts = [mock.pnl_pct for _, mock in paired]
+    live_pnl_pcts = [live.pnl_pct for live, _ in paired]
+
+    mock_avg_pnl = sum(mock_pnl_pcts) / n
+    live_avg_pnl = sum(live_pnl_pcts) / n
+    mock_minus_live_expectancy_pct = mock_avg_pnl - live_avg_pnl
+
+    mock_wins = sum(1 for _, mock in paired if mock.pnl_abs > 0)
+    live_wins = sum(1 for live, _ in paired if live.pnl_abs > 0)
+
+    mock_hit_rate = mock_wins / n
+    live_hit_rate = live_wins / n
+    mock_minus_live_hit_rate = mock_hit_rate - live_hit_rate
+
+    return {
+        "mock_minus_live_expectancy_pct": float(mock_minus_live_expectancy_pct),
+        "mock_minus_live_hit_rate": float(mock_minus_live_hit_rate),
+        "paired_n": n,
+    }
+
+
+async def build_counterfactual_delta_scoreboard(
+    db: AsyncSession,
+    *,
+    market: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    include_excursions: bool = False,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    board_live = await build_trading_scoreboard(
+        db,
+        market=market,
+        date_from=date_from,
+        date_to=date_to,
+        include_excursions=include_excursions,
+        cohort="live_gated",
+        use_cache=use_cache,
+    )
+    board_mock = await build_trading_scoreboard(
+        db,
+        market=market,
+        account_mode="kis_mock",
+        date_from=date_from,
+        date_to=date_to,
+        include_excursions=include_excursions,
+        cohort="mock_counterfactual",
+        use_cache=use_cache,
+    )
+    live_trades = pair_fills_fifo(
+        await load_fills(db, market=market, date_from=date_from, date_to=date_to, cohort="live_gated")
+    )
+    mock_trades = pair_fills_fifo(
+        await load_fills(db, market=market, date_from=date_from, date_to=date_to, cohort="mock_counterfactual")
+    )
+    paired = _pair_by_entry_correlation(live_trades, mock_trades)
+    return {
+        "live_gated": board_live,
+        "mock_counterfactual": board_mock,
+        "paired_count": len(paired),
+        "overall_delta": _paired_delta(paired),
+        "caveats": [
+            "KIS mock fills do not model queue priority, liquidity, slippage, or market impact; mock performance is upward biased."
+        ],
+    }

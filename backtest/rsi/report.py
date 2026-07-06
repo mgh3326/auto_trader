@@ -50,7 +50,7 @@ def export_equity_csv(result: BacktestResult, path: Path) -> None:
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["datetime", "equity"])
-        for ts, eq in zip(result.timestamps, result.equity_curve):
+        for ts, eq in zip(result.timestamps, result.equity_curve, strict=False):
             writer.writerow([ts, f"{eq:.2f}"])
     print(f"  Equity curve saved to {path}")
 
@@ -77,7 +77,7 @@ def export_monthly_returns(result: BacktestResult, path: Path) -> None:
 
     # Group equity by month
     monthly: dict[str, tuple[float, float]] = {}  # "YYYY-MM" -> (first_equity, last_equity)
-    for ts, eq in zip(result.timestamps, result.equity_curve):
+    for ts, eq in zip(result.timestamps, result.equity_curve, strict=False):
         month = ts[:7]  # "YYYY-MM"
         if month not in monthly:
             monthly[month] = (eq, eq)

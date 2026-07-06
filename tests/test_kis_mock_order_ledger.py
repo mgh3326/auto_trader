@@ -913,9 +913,11 @@ async def test_place_order_impl_threads_correlation_id(db_session, monkeypatch):
 @pytest.mark.asyncio
 async def test_save_kis_mock_order_ledger_persists_report_item_uuid(db_session):
     from uuid import uuid4
+
     from sqlalchemy import select
-    from app.models.review import KISMockOrderLedger
+
     from app.mcp_server.tooling.kis_mock_ledger import _save_kis_mock_order_ledger
+    from app.models.review import KISMockOrderLedger
 
     item_uuid = uuid4()
     order_no = f"ROB734-{uuid4().hex[:10]}"

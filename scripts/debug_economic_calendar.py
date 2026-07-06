@@ -53,7 +53,7 @@ async def main() -> None:
                 print(json.dumps(e, indent=2, default=str))
         else:
             print("\nNo US events found. Showing all countries:")
-            countries = set(str(e.get("country", "?")) for e in events[:50])
+            countries = {str(e.get("country", "?")) for e in events[:50]}
             print(f"Countries in response: {countries}")
             if events:
                 print(f"\nFirst event sample: {json.dumps(events[0], indent=2, default=str)}")

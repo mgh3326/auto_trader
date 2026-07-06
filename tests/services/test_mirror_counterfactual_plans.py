@@ -1,5 +1,5 @@
 # tests/services/test_mirror_counterfactual_plans.py
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
@@ -22,7 +22,7 @@ async def _report(db, *, market="kr", account_scope="kis_live") -> InvestmentRep
         execution_mode="advisory_only",
         status="draft",
         created_by_profile="CLAUDE_ADVISOR",
-        valid_until=datetime(2026, 7, 6, tzinfo=timezone.utc),
+        valid_until=datetime(2026, 7, 6, tzinfo=UTC),
     )
     db.add(row)
     await db.flush()
@@ -84,7 +84,7 @@ async def test_watch_item_uses_watch_threshold_price(db_session):
             "operator": "below",
             "threshold": "69000",
         },
-        valid_until=datetime(2026, 7, 7, tzinfo=timezone.utc),
+        valid_until=datetime(2026, 7, 7, tzinfo=UTC),
         max_action={"side": "buy", "quantity": "2", "account_mode": "kis_mock"},
     )
     await db_session.commit()
@@ -100,7 +100,7 @@ async def test_watch_item_uses_watch_threshold_price(db_session):
 @pytest.mark.asyncio
 async def test_deferred_no_action_gets_minimum_rung(db_session):
     report = await _report(db_session)
-    item = await _item(
+    await _item(
         db_session,
         report,
         item_kind="action",

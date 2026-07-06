@@ -1,5 +1,5 @@
 # tests/services/test_mirror_counterfactual_execution.py
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
@@ -61,7 +61,7 @@ async def test_execute_dry_run_calls_place_order_without_metadata_write(db_sessi
 async def test_execute_apply_stamps_mock_ledger_metadata(db_session):
     plan = _plan()
     row = KISMockOrderLedger(
-        trade_date=datetime(2026, 7, 6, tzinfo=timezone.utc),
+        trade_date=datetime(2026, 7, 6, tzinfo=UTC),
         symbol=plan.symbol,
         instrument_type="equity_kr",
         side="buy",

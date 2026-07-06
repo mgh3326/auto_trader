@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 from uuid import UUID
-from collections.abc import Awaitable, Callable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -89,7 +89,7 @@ def _side_from_item(item: InvestmentReportItem) -> str | None:
 
 def _price_from_item(item: InvestmentReportItem) -> Decimal | None:
     max_action = item.max_action or {}
-    
+
     limit_price = max_action.get("limit_price")
     if limit_price not in (None, ""):
         val = _decimal(limit_price)
@@ -144,12 +144,12 @@ def _quantity_from_item(
 ) -> Decimal | None:
     if source_bucket == "deferred_min_rung":
         return min_rung_quantity
-    
+
     max_action = item.max_action or {}
     qty = max_action.get("quantity")
     if qty not in (None, ""):
         return _decimal(qty)
-    
+
     return None
 
 
@@ -159,20 +159,20 @@ def _amount_from_item(
 ) -> Decimal | None:
     if source_bucket == "deferred_min_rung":
         return None
-    
+
     max_action = item.max_action or {}
     side = _side_from_item(item)
     if side != "buy":
         return None
-        
+
     notional = max_action.get("notional")
     if notional not in (None, ""):
         return _decimal(notional)
-        
+
     amount_krw = max_action.get("amount_krw")
     if amount_krw not in (None, ""):
         return _decimal(amount_krw)
-        
+
     return None
 
 
@@ -230,10 +230,10 @@ def _plan_for_item(
 ) -> tuple[MirrorOrderPlan | None, str | None]:
     if not item.symbol:
         return None, "missing_symbol"
-    
+
     source_bucket: MirrorSourceBucket | None = None
     side = _side_from_item(item)
-    
+
     if item.decision_bucket == "deferred_no_action":
         source_bucket = "deferred_min_rung"
         if side is None:
@@ -245,21 +245,21 @@ def _plan_for_item(
 
     if source_bucket is None:
         return None, "unsupported_item_kind_or_bucket"
-        
+
     if not side:
         return None, "missing_side"
-        
+
     price = _price_from_item(item)
     if price is None:
         return None, "missing_limit_price"
-        
+
     qty = _quantity_from_item(item, min_rung_quantity, source_bucket)
     amount = _amount_from_item(item, source_bucket)
     if qty is None and amount is None:
         return None, "missing_quantity_or_amount"
-        
+
     correlation_id = f"mirror:{item.item_uuid}"
-    
+
     plan = MirrorOrderPlan(
         report_uuid=report_uuid,
         item_uuid=item.item_uuid,
@@ -402,7 +402,7 @@ async def execute_mirror_order_plans(
                 correlation_id=plan.correlation_id,
                 report_item_uuid=str(plan.item_uuid),
             )
-            
+
             success = result.get("success", False)
             if success:
                 if dry_run:
