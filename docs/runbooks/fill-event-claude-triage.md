@@ -133,20 +133,26 @@ echo "$fills" | jq -c '.[]' | while read -r fill; do
   if [[ "$DRY_RUN" == "1" ]]; then
     echo "[dry-run] claude -p \"/fill-event-triage $payload\" --permission-mode bypassPermissions --settings $SETTINGS --output-format json"
   else
+    # Claude 시도 — 실패 시 break(배치 중단, 다음 폴에서 재시도).
+    # fills는 execution_ledger.id 오름차순으로 들어오므로 break로 배치를 끊어
+    # 워터마크가 실패 fill을 건너뛰고 후속 fill을 처리하는 일을 막는다 (at-least-once).
     res="$(claude -p "/fill-event-triage $payload" \
             --permission-mode bypassPermissions \
             --settings "$SETTINGS" \
-            --output-format json)" || { echo "claude 실패: $lid" >&2; continue; }
+            --output-format json)" || { echo "claude 실패(배치 중단, 다음 폴에서 재시도): $lid" >&2; break; }
     text="$(jq -r '.result' <<<"$res")"
-    # Q3 검증 로그 (claude 성공 직후, Discord 시도 전 기록.
-    # Discord 실패 후 재시도 시 동일 id가 중복 기록될 수 있음 — 허용(집계 시 dedup 가능).
-    jq -nc --arg lid "$lid" --argjson r "$res" \
-      '{ledger_id:$lid, session_id:$r.session_id, cost_usd:$r.cost_usd, duration_ms:$r.duration_ms, num_turns:$r.num_turns}' >> "$VLOG"
-    # Discord 회신 — 실패 시 seen 기록·워터마크 전진 없이 continue (at-least-once)
+    # Discord POST — 성공해야만 Q3 로그·seen·워터마크를 갱신한다.
+    # 실패 시 break로 배치 중단 (at-least-once).
     curl -fsS -H 'Content-Type: application/json' \
       -d "$(jq -nc --arg c "**[fill triage] $(jq -r .symbol <<<"$fill")**"$'\n'"$text" '{content:$c}')" \
       "$DISCORD_WEBHOOK" >/dev/null \
-      || { echo "discord post 실패(재시도 예정): $lid" >&2; continue; }
+      || { echo "discord post 실패(배치 중단, 다음 폴에서 재시도): $lid" >&2; break; }
+    # Q3 검증 로그 — Discord 성공 "직후"에만 기록.
+    # Claude는 성공했으나 Discord가 실패한 채로 재시도되면 동일 ledger_id가 중복
+    # 기록되는 것을 막기 위함(§6.1 집계는 ledger_id 기준 합산만 하므로 중복이
+    # 들어가면 비용/시간 평균이 부풀어진다).
+    jq -nc --arg lid "$lid" --argjson r "$res" \
+      '{ledger_id:$lid, session_id:$r.session_id, cost_usd:$r.cost_usd, duration_ms:$r.duration_ms, num_turns:$r.num_turns}' >> "$VLOG"
   fi
 
   # 디듀프 + 워터마크 전진 (claude + Discord 모두 성공한 이벤트만)
