@@ -139,7 +139,7 @@ jobs:
             tail -n 200 pytest-output.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          message=$(uv run python -c 'from pathlib import Path; tail="\n".join(Path("pytest-output.log").read_text(errors="replace").splitlines()[-80:]); print(tail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"))')
+          message=$(uv run python -c 'from pathlib import Path; lines=Path("pytest-output.log").read_text(errors="replace").splitlines(); keys=("FAILURES","ERRORS","FAILED ","ERROR ","short test summary","Required test coverage","===="); selected=[line for line in lines if any(key in line for key in keys)]; body="\n".join(selected[-40:]+["","--- tail ---"]+lines[-25:]); print(body.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"))')
           echo "::error title=pytest shard failed::$message"
         fi
         exit "$status"
