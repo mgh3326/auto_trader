@@ -155,3 +155,33 @@ async def test_cache_returns_isolated_copies(db_session, monkeypatch):
     second = await agg.build_trading_scoreboard(db_session, now=stamp)  # cache hit
     assert second["groups"] == []
     assert second["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_counterfactual_delta_loads_fills_once(db_session, monkeypatch):
+    calls = []
+
+    async def fake_load_fills(db, **kw):
+        calls.append(kw)
+        return []
+
+    monkeypatch.setattr(agg, "load_fills", fake_load_fills)
+
+    result = await agg.build_counterfactual_delta_scoreboard(
+        db_session,
+        market="kr",
+        setup_tag="breakout",
+        min_sample=2,
+        use_cache=False,
+    )
+
+    assert result["paired_count"] == 0
+    assert calls == [
+        {
+            "market": "kr",
+            "account_mode": None,
+            "date_from": None,
+            "date_to": None,
+            "cohort": "all",
+        }
+    ]

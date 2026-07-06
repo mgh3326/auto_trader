@@ -600,6 +600,7 @@ async def build_trading_scoreboard(
     use_cache: bool = True,
     now: datetime | None = None,
     cohort: str = "live_gated",
+    fills_override: list[Fill] | None = None,
 ) -> dict:
     """Compute per-tag setup aggregates from live-ledger fills.
 
@@ -617,19 +618,23 @@ async def build_trading_scoreboard(
         cohort,
     )
     stamp = (now or datetime.now(UTC)).timestamp()
-    if use_cache:
+    if use_cache and fills_override is None:
         cached = _scoreboard_cache.get(key)
         if cached and stamp - cached[0] < _SCOREBOARD_TTL_SECONDS:
             return copy.deepcopy(cached[1])
 
-    fills = await load_fills(
-        db,
-        market=market,
-        account_mode=account_mode,
-        date_from=date_from,
-        date_to=date_to,
-        cohort=cohort,
-    )
+    if fills_override is None:
+        fills = await load_fills(
+            db,
+            market=market,
+            account_mode=account_mode,
+            date_from=date_from,
+            date_to=date_to,
+            cohort=cohort,
+        )
+    else:
+        fills = [f for f in fills_override if f.cohort == cohort]
+
     trades = pair_fills_fifo(fills)
     rows: list[TradeMetrics] = []
     for t in trades:
@@ -662,7 +667,7 @@ async def build_trading_scoreboard(
         "as_of": (now or datetime.now(UTC)).isoformat(),
         "count": len(rows),
     }
-    if use_cache:
+    if use_cache and fills_override is None:
         _scoreboard_cache[key] = (stamp, copy.deepcopy(result))
     return result
 
@@ -734,50 +739,64 @@ async def build_counterfactual_delta_scoreboard(
     db: AsyncSession,
     *,
     market: str | None = None,
+    account_mode: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
+    setup_tag: str | None = None,
+    min_sample: int = 1,
     include_excursions: bool = False,
     use_cache: bool = True,
 ) -> dict[str, Any]:
+    fills = await load_fills(
+        db,
+        market=market,
+        account_mode=account_mode,
+        date_from=date_from,
+        date_to=date_to,
+        cohort="all",
+    )
     board_live = await build_trading_scoreboard(
         db,
         market=market,
+        account_mode=account_mode,
         date_from=date_from,
         date_to=date_to,
+        setup_tag=setup_tag,
+        min_sample=min_sample,
         include_excursions=include_excursions,
         cohort="live_gated",
-        use_cache=use_cache,
+        use_cache=False,
+        fills_override=fills,
     )
     board_mock = await build_trading_scoreboard(
         db,
         market=market,
-        account_mode="kis_mock",
+        account_mode="kis_mock" if account_mode is None else account_mode,
         date_from=date_from,
         date_to=date_to,
+        setup_tag=setup_tag,
+        min_sample=min_sample,
         include_excursions=include_excursions,
         cohort="mock_counterfactual",
-        use_cache=use_cache,
+        use_cache=False,
+        fills_override=fills,
     )
-    live_trades = pair_fills_fifo(
-        await load_fills(
-            db, market=market, date_from=date_from, date_to=date_to, cohort="live_gated"
-        )
-    )
-    mock_trades = pair_fills_fifo(
-        await load_fills(
-            db,
-            market=market,
-            date_from=date_from,
-            date_to=date_to,
-            cohort="mock_counterfactual",
-        )
-    )
+    live_trades = pair_fills_fifo([f for f in fills if f.cohort == "live_gated"])
+    mock_trades = pair_fills_fifo([f for f in fills if f.cohort == "mock_counterfactual"])
     paired = _pair_by_entry_provenance(live_trades, mock_trades)
     return {
         "live_gated": board_live,
         "mock_counterfactual": board_mock,
         "paired_count": len(paired),
         "overall_delta": _paired_delta(paired),
+        "filters": {
+            "market": market,
+            "account_mode": account_mode,
+            "date_from": date_from.isoformat() if date_from else None,
+            "date_to": date_to.isoformat() if date_to else None,
+            "setup_tag": setup_tag,
+            "min_sample": min_sample,
+        },
         "caveats": [
             "KIS mock fills do not model queue priority, liquidity, slippage, or market impact; mock performance is upward biased."
         ],
