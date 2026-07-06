@@ -718,6 +718,120 @@ async def test_shadow_exposure_unknown_on_db_error(monkeypatch):
     assert "db unavailable" in result["error"]
 
 
+# ---------------------------------------------------------------------------
+# ROB-730: place-time provenance spine — mint correlation_id + emit forecast
+# ---------------------------------------------------------------------------
+
+
+def _mock_exec_result(rt_cd: str = "0", odno: str = "0001234567") -> dict:
+    return {"odno": odno, "ord_tmd": "091500", "msg": "정상처리", "rt_cd": rt_cd}
+
+
+def _mock_preview() -> dict:
+    return {"price": 70000, "quantity": 10, "estimated_value": 700000}
+
+
+@pytest.mark.asyncio
+async def test_record_mints_correlation_id_and_publishes_forecast(monkeypatch):
+    """ROB-730: the tool path passes no correlation_id, so the mock record path
+    mints a deterministic namespaced id, stores it on the ledger row, and emits a
+    place-time forecast for an accepted buy with a target — mirroring kis_live."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    save = AsyncMock(return_value=5)
+    monkeypatch.setattr(kis_mock_ledger, "_save_kis_mock_order_ledger", save)
+    pub = AsyncMock(return_value="fc-1")
+    monkeypatch.setattr(kis_mock_ledger, "publish_place_time_forecast", pub)
+
+    result = await kis_mock_ledger._record_kis_mock_order(
+        normalized_symbol="005930",
+        market_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        dry_run_result=_mock_preview(),
+        execution_result=_mock_exec_result(),
+        reason="t",
+        thesis=None,
+        strategy=None,
+        notes=None,
+        target_price=80000.0,
+        min_hold_days=5,
+    )
+
+    cid = result["correlation_id"]
+    assert cid is not None
+    assert cid.startswith("live:kis_mock:")
+    # stored on the ledger row
+    assert save.await_args.kwargs["correlation_id"] == cid
+    # forecast published for the accepted buy, tagged for mock provenance
+    pub.assert_awaited_once()
+    assert pub.await_args.kwargs["correlation_id"] == cid
+    assert pub.await_args.kwargs["session_label"] == "kis_mock_place"
+    assert pub.await_args.kwargs["created_by"] == "auto_place_mock"
+    assert pub.await_args.kwargs["target_price"] == 80000.0
+
+
+@pytest.mark.asyncio
+async def test_record_preserves_explicit_correlation_id(monkeypatch):
+    """ROB-730: an explicit correlation_id (ROB-402 scalping entry/exit pairing)
+    must be preserved, never overwritten by a freshly minted one."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    save = AsyncMock(return_value=5)
+    monkeypatch.setattr(kis_mock_ledger, "_save_kis_mock_order_ledger", save)
+    pub = AsyncMock(return_value="fc-1")
+    monkeypatch.setattr(kis_mock_ledger, "publish_place_time_forecast", pub)
+
+    result = await kis_mock_ledger._record_kis_mock_order(
+        normalized_symbol="005930",
+        market_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        dry_run_result=_mock_preview(),
+        execution_result=_mock_exec_result(),
+        reason="t",
+        thesis=None,
+        strategy=None,
+        notes=None,
+        correlation_id="scalp-pair-1",
+    )
+
+    assert result["correlation_id"] == "scalp-pair-1"
+    assert save.await_args.kwargs["correlation_id"] == "scalp-pair-1"
+    assert pub.await_args.kwargs["correlation_id"] == "scalp-pair-1"
+
+
+@pytest.mark.asyncio
+async def test_record_rejected_order_mints_but_does_not_publish(monkeypatch):
+    """ROB-730: a rejected order still gets a correlation_id (spine), but no
+    place-time forecast is emitted (mirrors live: publish only when accepted)."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    save = AsyncMock(return_value=5)
+    monkeypatch.setattr(kis_mock_ledger, "_save_kis_mock_order_ledger", save)
+    pub = AsyncMock(return_value=None)
+    monkeypatch.setattr(kis_mock_ledger, "publish_place_time_forecast", pub)
+
+    result = await kis_mock_ledger._record_kis_mock_order(
+        normalized_symbol="005930",
+        market_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        dry_run_result=_mock_preview(),
+        execution_result=_mock_exec_result(rt_cd="40", odno=""),
+        reason="t",
+        thesis=None,
+        strategy=None,
+        notes=None,
+        target_price=80000.0,
+    )
+
+    assert result["status"] == "rejected"
+    assert result["correlation_id"] is not None
+    assert save.await_args.kwargs["correlation_id"] == result["correlation_id"]
+    pub.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_place_order_impl_threads_correlation_id(db_session, monkeypatch):
     from unittest.mock import AsyncMock

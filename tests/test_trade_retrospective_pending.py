@@ -15,6 +15,7 @@ from app.core.timezone import now_kst
 from app.models.paper_trading import PaperTrade
 from app.models.review import (
     KISLiveOrderLedger,
+    KISMockOrderLedger,
     LiveOrderLedger,
     TossLiveOrderLedger,
     TradeRetrospective,
@@ -37,6 +38,9 @@ async def _cleanup(
         LiveOrderLedger,
         TossLiveOrderLedger,
         PaperTrade,
+        # ROB-730: the pending scan now also reads the kis_mock ledger, so this
+        # exact-equality suite must clear it too or leaked mock rows pollute it.
+        KISMockOrderLedger,
     ):
         await db_session.execute(delete(model))
     await db_session.commit()

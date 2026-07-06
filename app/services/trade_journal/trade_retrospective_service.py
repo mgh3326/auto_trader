@@ -22,6 +22,7 @@ from app.core.timezone import now_kst
 from app.models.paper_trading import PaperTrade
 from app.models.review import (
     KISLiveOrderLedger,
+    KISMockOrderLedger,
     LiveOrderLedger,
     TossLiveOrderLedger,
     TradeRetrospective,
@@ -830,16 +831,27 @@ _GENERIC_LIVE_DEFAULT_TERMINAL = frozenset({"filled", "rejected", "anomaly"})
 _GENERIC_LIVE_CANCEL_TERMINAL = frozenset({"cancelled"})
 _TOSS_DEFAULT_TERMINAL = frozenset({"filled", "rejected", "anomaly"})
 _TOSS_CANCEL_TERMINAL = frozenset({"cancelled", "cancel_rejected", "replace_rejected"})
+# ROB-730: kis_mock terminality lives in `lifecycle_state` (not `status`, which is
+# constrained to accepted/rejected/unknown). A holdings-delta fill lands as
+# `fill`/`reconciled`; a send reject as `failed`; ambiguity as `anomaly`.
+# `cancelled`/`stale` (never-confirmed timeout / operator cancel) are cancel-family
+# churn, hidden by default like live expiry.
+_KIS_MOCK_DEFAULT_TERMINAL = frozenset({"fill", "reconciled", "failed", "anomaly"})
+_KIS_MOCK_CANCEL_TERMINAL = frozenset({"cancelled", "stale"})
 
 _KIS_LIVE_TERMINAL = _KIS_LIVE_DEFAULT_TERMINAL | _KIS_LIVE_CANCEL_TERMINAL
 _GENERIC_LIVE_TERMINAL = _GENERIC_LIVE_DEFAULT_TERMINAL | _GENERIC_LIVE_CANCEL_TERMINAL
 _TOSS_TERMINAL = _TOSS_DEFAULT_TERMINAL | _TOSS_CANCEL_TERMINAL
+_KIS_MOCK_TERMINAL = _KIS_MOCK_DEFAULT_TERMINAL | _KIS_MOCK_CANCEL_TERMINAL
 
 # Statuses hidden from `pending` unless include_cancelled=True. Disjoint from the
 # DEFAULT statuses (note: `rejected` is DEFAULT; `cancel_rejected` /
 # `replace_rejected` are cancel-family).
 _CANCEL_FAMILY_STATUSES = (
-    _KIS_LIVE_CANCEL_TERMINAL | _GENERIC_LIVE_CANCEL_TERMINAL | _TOSS_CANCEL_TERMINAL
+    _KIS_LIVE_CANCEL_TERMINAL
+    | _GENERIC_LIVE_CANCEL_TERMINAL
+    | _TOSS_CANCEL_TERMINAL
+    | _KIS_MOCK_CANCEL_TERMINAL
 )
 # Bound per-ledger scan so a wide window cannot load unbounded rows.
 _PENDING_LEDGER_FETCH_CAP = 1000
@@ -913,13 +925,16 @@ async def build_retrospective_pending(
     limit: int = 100,
     include_cancelled: bool = False,
 ) -> dict[str, Any]:
-    """List terminal live-ledger orders (3 ledgers) lacking a retrospective.
+    """List terminal ledger orders lacking a retrospective.
 
     Read-only. Scans review.{kis_live_order_ledger, live_order_ledger,
-    toss_live_order_ledger} for lifecycle-terminal rows in the KST trade_date
-    window, then subtracts rows already covered by a retrospective (matched on
-    report_item_uuid or the suggested correlation_id). Mirrors the ROB-120
-    coverage pattern (terminal-without-artifact).
+    toss_live_order_ledger, kis_mock_order_ledger} plus paper_trades for
+    lifecycle-terminal rows in the KST trade_date window, then subtracts rows
+    already covered by a retrospective (matched on report_item_uuid or the
+    suggested correlation_id). Mirrors the ROB-120 coverage pattern
+    (terminal-without-artifact). Filter to one source with account_mode
+    (e.g. "kis_mock" for the counterfactual mock loop, "kis_live"/"toss_live"/
+    "upbit_live"/"paper" otherwise); None scans all.
 
     Cancel-family rows (cancelled / cancel_rejected / replace_rejected) are
     hidden unless include_cancelled=True; the hidden count is reported in
@@ -1071,6 +1086,42 @@ async def build_retrospective_pending(
                 row_id=r.id,
                 suggested_correlation_id=(r.correlation_id or f"paper_trade:{r.id}"),
                 suggested_trigger_type=trig,
+            )
+            if not _is_covered(entry, covered_cids, covered_uuids):
+                pending.append(entry)
+
+    # 5. KIS mock ledger (ROB-730) — counterfactual learning loop. Terminality is
+    # keyed on lifecycle_state (the mock `status` column only holds the send-time
+    # accepted/rejected/unknown). No report_item_uuid column: coverage matches on
+    # the place-time correlation_id (ROB-730 spine) only.
+    if account_mode in (None, "kis_mock"):
+        stmt = (
+            select(KISMockOrderLedger)
+            .where(
+                KISMockOrderLedger.lifecycle_state.in_(_KIS_MOCK_TERMINAL),
+                KISMockOrderLedger.trade_date >= window_start,
+                KISMockOrderLedger.trade_date <= window_end,
+            )
+            .order_by(KISMockOrderLedger.trade_date.desc())
+            .limit(_PENDING_LEDGER_FETCH_CAP)
+        )
+        for row in (await db.execute(stmt)).scalars().all():
+            scanned += 1
+            itype = row.instrument_type.value
+            market = "crypto" if itype == "crypto" else itype.removeprefix("equity_")
+            entry = _pending_entry(
+                ledger="kis_mock",
+                account_mode="kis_mock",
+                market=market,
+                instrument_type=itype,
+                symbol=row.symbol,
+                side=row.side,
+                status=row.lifecycle_state,
+                order_ref=row.order_no,
+                report_item_uuid=None,
+                trade_date=row.trade_date,
+                row_id=row.id,
+                suggested_correlation_id=row.correlation_id,
             )
             if not _is_covered(entry, covered_cids, covered_uuids):
                 pending.append(entry)

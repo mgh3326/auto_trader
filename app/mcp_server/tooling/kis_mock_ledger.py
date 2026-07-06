@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from typing import cast as typing_cast
@@ -17,6 +18,8 @@ from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
 from app.models.review import KISMockOrderLedger
 from app.services.kis_mock_lifecycle_service import KISMockLifecycleService
+from app.services.live_correlation import live_correlation_id
+from app.services.live_place_provenance import publish_place_time_forecast
 
 KIS_MOCK_SHADOW_PENDING_SOURCE = "kis_mock_ledger_shadow"
 KIS_MOCK_SHADOW_PENDING_CONFIDENCE = "db_shadow_pending"
@@ -322,6 +325,9 @@ async def _record_kis_mock_order(
     notes: str | None,
     holdings_baseline_qty: Decimal | None = None,
     correlation_id: str | None = None,
+    target_price: float | None = None,
+    min_hold_days: int | None = None,
+    report_item_uuid: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Build ledger row from execution result and return the mock-order response dict."""
     price_val = _to_float(dry_run_result.get("price"), default=0.0)
@@ -344,6 +350,21 @@ async def _record_kis_mock_order(
         status = "rejected"
     else:
         status = "accepted" if order_no else "unknown"
+
+    # ROB-730 provenance spine: mint a deterministic place-time correlation_id so
+    # this mock order joins forecast → fill → journal → retrospective, mirroring
+    # the kis_live path verbatim. Preserve an explicit id (ROB-402 scalping
+    # entry/exit pairing passes one) rather than overwriting it.
+    if correlation_id is None:
+        correlation_id = live_correlation_id(
+            account_scope="kis_mock",
+            symbol=normalized_symbol,
+            side=side,
+            price=Decimal(str(price_val)),
+            quantity=Decimal(str(qty_val)),
+            kst_trade_day=now_kst().strftime("%Y-%m-%d"),
+            rung=0,
+        )
 
     ledger_id = await _save_kis_mock_order_ledger(
         symbol=normalized_symbol,
@@ -370,6 +391,23 @@ async def _record_kis_mock_order(
         correlation_id=correlation_id,
     )
 
+    # ROB-730: emit the place-time forecast only for accepted orders (mirrors
+    # kis_live). publish_place_time_forecast is itself buy+target-gated and runs
+    # in its own isolated session, swallowing errors — a forecast hiccup never
+    # affects the recorded order.
+    if status == "accepted":
+        await publish_place_time_forecast(
+            correlation_id=correlation_id,
+            symbol=normalized_symbol,
+            instrument_type=market_type,
+            side=side,
+            target_price=target_price,
+            min_hold_days=min_hold_days,
+            session_label="kis_mock_place",
+            created_by="auto_place_mock",
+            report_item_uuid=str(report_item_uuid) if report_item_uuid else None,
+        )
+
     return {
         "success": True,
         "dry_run": False,
@@ -386,6 +424,7 @@ async def _record_kis_mock_order(
         "status": status,
         "response_code": rt_cd,
         "response_message": msg,
+        "correlation_id": correlation_id,
         "fill_recorded": False,
         "journal_created": False,
         "message": (
