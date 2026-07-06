@@ -55,8 +55,28 @@ def _market_for(source: str, row: object) -> str:
     return "crypto" if raw == "crypto" else "us"  # live ledger
 
 
+_ACCOUNT_MODE_ALIASES = {
+    "kis": "kis_live",
+    "toss": "toss_live",
+    "upbit": "upbit_live",
+}
+
+
+def _canonical_account_mode(value: str | None) -> str | None:
+    if value is None:
+        return None
+    raw = str(value)
+    return _ACCOUNT_MODE_ALIASES.get(raw, raw)
+
+
 def _account_of(source: str, row: object) -> str:
-    return getattr(row, "account_scope", None) or getattr(row, "broker", None) or source
+    raw = (
+        getattr(row, "account_scope", None)
+        or getattr(row, "account_mode", None)
+        or getattr(row, "broker", None)
+        or source
+    )
+    return _canonical_account_mode(str(raw)) or str(raw)
 
 
 def _coerce_uuid(value: str | None) -> uuid.UUID | None:
@@ -345,6 +365,7 @@ async def resolve_setup_tag(
     instrument = _MARKET_TO_INSTRUMENT.get(trade.market)
     norm = _normalize_symbol_for_filter(trade.symbol, instrument)
     window_start = trade.entry_ts - timedelta(days=window_days)
+    account_mode = _canonical_account_mode(trade.account)
 
     corr_ids = [
         c for c in (*trade.entry_correlation_ids, trade.exit_correlation_id) if c
@@ -356,7 +377,7 @@ async def resolve_setup_tag(
                 .where(
                     TradeRetrospective.correlation_id.in_(corr_ids),
                     TradeRetrospective.strategy_key.isnot(None),
-                    TradeRetrospective.account_mode == trade.account,
+                    TradeRetrospective.account_mode == account_mode,
                 )
                 .order_by(TradeRetrospective.created_at.desc())
                 .limit(1)
@@ -365,15 +386,18 @@ async def resolve_setup_tag(
         if row and not _is_smoke(row):
             return TagInfo(row, "strategy_key", "exact")
 
+    retro_filters = [
+        TradeRetrospective.symbol == norm,
+        TradeRetrospective.strategy_key.isnot(None),
+        TradeRetrospective.created_at <= trade.exit_ts,
+        TradeRetrospective.created_at >= window_start,
+    ]
+    if account_mode is not None:
+        retro_filters.append(TradeRetrospective.account_mode == account_mode)
     retro_key = (
         await db.execute(
             select(TradeRetrospective.strategy_key)
-            .where(
-                TradeRetrospective.symbol == norm,
-                TradeRetrospective.strategy_key.isnot(None),
-                TradeRetrospective.created_at <= trade.exit_ts,
-                TradeRetrospective.created_at >= window_start,
-            )
+            .where(*retro_filters)
             .order_by(TradeRetrospective.created_at.desc())
             .limit(1)
         )

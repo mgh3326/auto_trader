@@ -353,3 +353,89 @@ async def test_decision_history_supports_kis_mock_account_mode(
 
     assert len(ctx["realized_outcomes"]) == 1
     assert ctx["realized_outcomes"][0]["pnl_pct"] == 0.02
+
+
+@pytest.mark.asyncio
+async def test_default_decision_history_keeps_legacy_kis_mock_lessons(
+    db_session: AsyncSession,
+) -> None:
+    raw = _uniq_symbol()
+    sym = _normalize_symbol_for_filter(raw, "equity_kr")
+    await _add_retro(
+        db_session,
+        symbol=sym,
+        account_mode="kis_mock",
+        correlation_id=f"legacy-mock:{uuid.uuid4()}",
+        lesson="ROB-705 mock stop lesson remains visible",
+        created_at=datetime(2026, 7, 6, tzinfo=UTC),
+    )
+
+    ctx = await build_decision_context(db_session, symbol=raw, market="kr")
+
+    assert ctx is not None
+    assert "ROB-705 mock stop lesson remains visible" in ctx["prior_lessons"]
+
+
+@pytest.mark.asyncio
+async def test_default_decision_history_excludes_mock_counterfactual_by_cohort(
+    db_session: AsyncSession,
+) -> None:
+    from app.models.review import KISMockOrderLedger
+    from app.models.trading import InstrumentType
+
+    raw = _uniq_symbol()
+    sym = _normalize_symbol_for_filter(raw, "equity_kr")
+    keep_corr = f"legacy-mock:{uuid.uuid4()}"
+    drop_corr = f"mirror-mock:{uuid.uuid4()}"
+
+    db_session.add(
+        KISMockOrderLedger(
+            trade_date=datetime(2026, 7, 6, tzinfo=UTC),
+            symbol=sym,
+            instrument_type=InstrumentType.equity_kr,
+            side="buy",
+            order_type="limit",
+            quantity=Decimal("5"),
+            price=Decimal("1500"),
+            amount=Decimal("7500"),
+            fee=Decimal("0"),
+            currency="KRW",
+            order_no=f"MIRROR-{uuid.uuid4().hex[:8]}",
+            account_mode="kis_mock",
+            broker="kis",
+            status="accepted",
+            lifecycle_state="fill",
+            last_reconcile_detail={"attributed_fill_qty": "5"},
+            mirror_cohort="mock_counterfactual",
+            mirror_source_bucket="place_original",
+            correlation_id=drop_corr,
+        )
+    )
+    await _add_retro(
+        db_session,
+        symbol=sym,
+        account_mode="kis_mock",
+        correlation_id=keep_corr,
+        pnl_pct=Decimal("5.0"),
+        lesson="legacy mock lesson",
+        created_at=datetime(2026, 7, 6, 10, tzinfo=UTC),
+    )
+    await _add_retro(
+        db_session,
+        symbol=sym,
+        account_mode="kis_mock",
+        correlation_id=drop_corr,
+        lesson="mirror counterfactual lesson",
+        created_at=datetime(2026, 7, 6, 11, tzinfo=UTC),
+    )
+    await db_session.flush()
+
+    ctx = await build_decision_context(db_session, symbol=raw, market="kr")
+
+    assert ctx is not None
+    assert "legacy mock lesson" in ctx["prior_lessons"]
+    assert "mirror counterfactual lesson" not in ctx["prior_lessons"]
+    assert all(
+        outcome["pnl_pct"] != 11.9 or outcome["date"] != "2026-07-06"
+        for outcome in ctx["realized_outcomes"]
+    )

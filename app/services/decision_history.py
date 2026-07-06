@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.investment_reports import InvestmentReportItem
 from app.models.review import (
     KISLiveOrderLedger,
+    KISMockOrderLedger,
     LiveOrderLedger,
     TossLiveOrderLedger,
     TradeForecast,
@@ -195,6 +196,17 @@ async def _prior_decisions(db: AsyncSession, symbol: str) -> list[dict[str, Any]
     return out
 
 
+def _is_mock_counterfactual_retrospective_clause():
+    return (TradeRetrospective.account_mode == "kis_mock") & (
+        select(KISMockOrderLedger.id)
+        .where(
+            KISMockOrderLedger.correlation_id == TradeRetrospective.correlation_id,
+            KISMockOrderLedger.mirror_cohort == "mock_counterfactual",
+        )
+        .exists()
+    )
+
+
 async def _retrospectives(
     db: AsyncSession, symbol: str, account_mode: str | None = None
 ) -> tuple[list[str], list[dict[str, Any]]]:
@@ -202,10 +214,7 @@ async def _retrospectives(
     if account_mode == "kis_mock":
         stmt = stmt.where(TradeRetrospective.account_mode == "kis_mock")
     else:
-        stmt = stmt.where(
-            (TradeRetrospective.account_mode != "kis_mock")
-            | (TradeRetrospective.account_mode.is_(None))
-        )
+        stmt = stmt.where(~_is_mock_counterfactual_retrospective_clause())
     rows = (
         (await db.execute(stmt.order_by(TradeRetrospective.created_at.desc())))
         .scalars()

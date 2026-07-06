@@ -225,7 +225,11 @@ def register_analysis_tools(
             "non-stale analysis_artifact already covers a symbol, that compact "
             "summary also carries fresh_artifact_exists {artifact_uuid, as_of, "
             "kind} — a soft reuse hint (fetch via analysis_artifact_get); the "
-            "analysis still runs (ROB-648)."
+            "analysis still runs (ROB-648). "
+            "decision_history_account_mode='kis_mock' switches the advisory "
+            "decision_history block to the explicit mock/counterfactual branch; "
+            "the default keeps the live/default lesson corpus and excludes mirror "
+            "counterfactual rows."
         ),
     )
     async def analyze_stock_batch(
@@ -235,6 +239,7 @@ def register_analysis_tools(
         quick: bool = True,
         include_position: bool = True,
         refresh: bool = False,
+        decision_history_account_mode: Literal["kis_mock"] | None = None,
     ) -> dict[str, Any]:
         return await analyze_stock_batch_impl(
             symbols=symbols,
@@ -243,6 +248,7 @@ def register_analysis_tools(
             quick=quick,
             include_position=include_position,
             refresh=refresh,
+            decision_history_account_mode=decision_history_account_mode,
         )
 
     @mcp.tool(
