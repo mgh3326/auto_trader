@@ -255,6 +255,18 @@ class Settings(BaseSettings):
     toss_sellable_cache_enabled: bool = True
     toss_sellable_cache_ttl_seconds: float = 45.0
 
+    # ROB-710: per-market layer-order flip for /invest batch current-price reads.
+    # False (default) => today's KIS → Toss → snapshot order, byte-identical.
+    # True => TOSS batch → KIS per-symbol → snapshot (reserve KIS app-key TPS for
+    # OHLCV/US-intraday/live-orders; Toss MARKET_DATA batch stayed up through the
+    # 2026-07-04 KIS maintenance). Data gate CLEARED 2026-07-06: ROB-709 A/B go bars
+    # passed BOTH markets (KR 0-tick exact; US median 0 bps / max ~1.45 bps) and
+    # ROB-708 (US live-last endpoint) is merged. Remaining discipline is canary
+    # sequencing: flip KR first, observe, then US — both shipped False. Instantly
+    # revertible: set back to False and the next /invest load is KIS-first again.
+    invest_quotes_toss_first_kr: bool = False
+    invest_quotes_toss_first_us: bool = False
+
     # ROB-576 — Toss fill notifications are inert until explicitly enabled by
     # the operator. Toss auto-reconcile gates live with the task flags below.
     toss_fill_notify_enabled: bool = False
