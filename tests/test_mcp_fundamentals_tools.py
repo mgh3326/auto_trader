@@ -2167,8 +2167,9 @@ def _naver_basic_json(
     high="2,498.00",
     low="2,440.00",
     volume="450,000,000",
+    traded_at=None,
 ):
-    return {
+    payload = {
         "closePrice": close,
         "compareToPreviousClosePrice": change,
         "fluctuationsRatio": change_pct,
@@ -2177,6 +2178,9 @@ def _naver_basic_json(
         "lowPrice": low,
         "accumulatedTradingVolume": volume,
     }
+    if traded_at is not None:
+        payload["localTradedAt"] = traded_at
+    return payload
 
 
 def _naver_price_history(n=3):
@@ -2358,6 +2362,119 @@ class TestGetMarketIndex:
         assert idx["data_state"] == "stale"
         assert idx["data_state_reason"] == "kr_index_fresh_clock_payload_lagging"
         assert "as_of" in idx
+
+    async def test_kr_index_surfaces_quote_asof_from_basic(self, monkeypatch):
+        """ROB-731: the Naver basic `localTradedAt` (quote timestamp) is surfaced
+        as `quote_asof` so callers can see the freshness of the signed change_pct."""
+        import datetime as _dt
+
+        from app.mcp_server.tooling.fundamentals import _market_index
+
+        tools = build_tools()
+        basic = _naver_basic_json(traded_at="2026-07-06T11:19:00+09:00")
+        history = _naver_price_history(3)
+        self._patch_naver(monkeypatch, basic, history)
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.fundamentals._market_index.kr_market_data_state",
+            lambda *a, **k: "fresh",
+        )
+        monkeypatch.setattr(
+            _market_index,
+            "now_kst",
+            lambda: _dt.datetime(2026, 7, 6, 11, 19, 30, tzinfo=_market_index.KST),
+        )
+
+        result = await tools["get_market_index"](symbol="KOSDAQ")
+
+        idx = result["indices"][0]
+        assert idx["quote_asof"] == "2026-07-06T11:19:00+09:00"
+        # 30s lag during an open session is fresh.
+        assert idx["data_state"] == "fresh"
+
+    async def test_kr_index_downgrades_fresh_when_quote_lags_realtime(
+        self, monkeypatch
+    ):
+        """ROB-731: during an OPEN session, a Naver basic payload whose quote
+        timestamp lags real time by more than the threshold is tagged stale — the
+        near-flat sign of change_pct can be inverted vs live (KOSDAQ +0.18 vs
+        −0.46 at 09:10 KST 2026-07-06)."""
+        import datetime as _dt
+
+        from app.mcp_server.tooling.fundamentals import _market_index
+
+        tools = build_tools()
+        # basic still reports a stale +0.18% while the market has crossed to red.
+        basic = _naver_basic_json(
+            close="880.50",
+            change="1.60",
+            change_pct="0.18",
+            traded_at="2026-07-06T09:05:00+09:00",
+        )
+        history = _naver_price_history(3)
+        self._patch_naver(monkeypatch, basic, history)
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.fundamentals._market_index.kr_market_data_state",
+            lambda *a, **k: "fresh",
+        )
+        # now is 09:10 → 5 min lag.
+        monkeypatch.setattr(
+            _market_index,
+            "now_kst",
+            lambda: _dt.datetime(2026, 7, 6, 9, 10, 0, tzinfo=_market_index.KST),
+        )
+
+        result = await tools["get_market_index"](symbol="KOSDAQ")
+
+        idx = result["indices"][0]
+        assert idx["quote_asof"] == "2026-07-06T09:05:00+09:00"
+        assert idx["data_state"] == "stale"
+        assert idx["data_state_reason"] == "kr_index_quote_lagging"
+        assert idx["quote_lag_seconds"] == 300
+
+    async def test_kr_index_missing_quote_asof_stays_fresh(self, monkeypatch):
+        """ROB-731: a Naver payload without a quote timestamp cannot be assessed
+        for lag — leave it fresh (do not fabricate a stale tag)."""
+        tools = build_tools()
+        basic = _naver_basic_json()  # no localTradedAt
+        history = _naver_price_history(3)
+        self._patch_naver(monkeypatch, basic, history)
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.fundamentals._market_index.kr_market_data_state",
+            lambda *a, **k: "fresh",
+        )
+
+        result = await tools["get_market_index"](symbol="KOSDAQ")
+
+        idx = result["indices"][0]
+        assert idx["quote_asof"] is None
+        assert idx["data_state"] == "fresh"
+        assert "quote_lag_seconds" not in idx
+
+    async def test_kr_index_future_quote_skew_not_stale(self, monkeypatch):
+        """ROB-731: a quote timestamped ahead of now (clock skew) is not lag —
+        never tag stale on a negative lag."""
+        import datetime as _dt
+
+        from app.mcp_server.tooling.fundamentals import _market_index
+
+        tools = build_tools()
+        basic = _naver_basic_json(traded_at="2026-07-06T11:20:00+09:00")
+        history = _naver_price_history(3)
+        self._patch_naver(monkeypatch, basic, history)
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.fundamentals._market_index.kr_market_data_state",
+            lambda *a, **k: "fresh",
+        )
+        monkeypatch.setattr(
+            _market_index,
+            "now_kst",
+            lambda: _dt.datetime(2026, 7, 6, 11, 19, 0, tzinfo=_market_index.KST),
+        )
+
+        result = await tools["get_market_index"](symbol="KOSDAQ")
+
+        idx = result["indices"][0]
+        assert idx["data_state"] == "fresh"
 
     async def test_single_us_index(self, monkeypatch):
         """Test fetching a single US index (NASDAQ)."""
