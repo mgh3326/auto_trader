@@ -8,8 +8,15 @@ import httpx
 
 from app.services.social_sentiment_probe.models import source_result, truncate_preview
 
+HttpPost = Callable[..., Awaitable[Any]]
 HttpGet = Callable[..., Awaitable[Any]]
-_SEARCH_URL = "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts"
+_SESSION_URL = "https://bsky.social/xrpc/com.atproto.server.createSession"
+_SEARCH_URL = "https://bsky.social/xrpc/app.bsky.feed.searchPosts"
+
+
+async def _default_post(url: str, **kwargs: Any) -> httpx.Response:
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        return await client.post(url, **kwargs)
 
 
 async def _default_get(url: str, **kwargs: Any) -> httpx.Response:
@@ -17,20 +24,49 @@ async def _default_get(url: str, **kwargs: Any) -> httpx.Response:
         return await client.get(url, **kwargs)
 
 
+async def _access_jwt(handle: str, app_password: str, post: HttpPost) -> str:
+    response = await post(
+        _SESSION_URL,
+        json={"identifier": handle, "password": app_password},
+    )
+    response.raise_for_status()
+    payload = response.json()
+    token = payload.get("accessJwt")
+    if not isinstance(token, str) or not token:
+        raise RuntimeError("Bluesky accessJwt missing")
+    return token
+
+
 async def fetch_bluesky_posts(
     query: str,
     market: str,
+    handle: str | None = None,
+    app_password: str | None = None,
     *,
     limit: int = 10,
     now: dt.datetime | None = None,
-    http_get: HttpGet | None = None,
+    post: HttpPost | None = None,
+    get: HttpGet | None = None,
 ) -> dict[str, Any]:
     observed_at = now or dt.datetime.now(dt.UTC)
+    if not handle or not app_password:
+        return source_result(
+            source="bluesky",
+            market=market,
+            query=query,
+            status="missing_credentials",
+            items=[],
+            observed_at=observed_at,
+            error_reason="BSKY_HANDLE and BSKY_APP_PASSWORD are required",
+        )
     try:
-        get = http_get or _default_get
-        response = await get(
+        post_fn = post or _default_post
+        get_fn = get or _default_get
+        token = await _access_jwt(handle, app_password, post_fn)
+        response = await get_fn(
             _SEARCH_URL,
             params={"q": query, "limit": max(1, min(limit, 100)), "sort": "latest"},
+            headers={"Authorization": f"Bearer {token}"},
         )
         response.raise_for_status()
         payload = response.json()
