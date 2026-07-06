@@ -1,7 +1,7 @@
 """ROB-745 allow codex created_by labels.
 
 Revision ID: 20260706_rob745_codex_created_by
-Revises: 20260706_rob734
+Revises: 20260706_rob743
 Create Date: 2026-07-06
 """
 
@@ -11,7 +11,7 @@ from alembic import op
 
 
 revision = "20260706_rob745_codex_created_by"
-down_revision = "20260706_rob734"
+down_revision = "20260706_rob743"
 branch_labels = None
 depends_on = None
 
