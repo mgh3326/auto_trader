@@ -30,6 +30,10 @@ class MarketDashboardMetric(BaseModel):
     href: str | None = None
     stale: bool = False
     warning: str | None = None
+    dataState: str | None = None
+    dataStateReason: str | None = None
+    quoteAsOf: datetime | None = None
+    quoteLagSeconds: int | None = None
 
 
 class MarketDashboardSection(BaseModel):
