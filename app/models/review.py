@@ -206,6 +206,15 @@ class KISMockOrderLedger(Base):
         Index(
             "ix_kis_mock_ledger_mirror_cohort_created", "mirror_cohort", "created_at"
         ),
+        Index(
+            "ux_kis_mock_mirror_report_item_once",
+            "mirror_cohort",
+            "report_item_uuid",
+            unique=True,
+            postgresql_where=text(
+                "mirror_cohort = 'mock_counterfactual' AND report_item_uuid IS NOT NULL"
+            ),
+        ),
         CheckConstraint(
             "mirror_cohort IS NULL OR mirror_cohort IN ('mock_counterfactual')",
             name="ck_kis_mock_ledger_mirror_cohort",
