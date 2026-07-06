@@ -1,9 +1,31 @@
 # tests/services/test_trade_retrospective_mirror_correlation.py
 import pytest
+import pytest_asyncio
+from sqlalchemy import delete
 
+from app.models.review import TradeRetrospective
 from app.services.trade_journal.trade_retrospective_service import (
     save_retrospective,
 )
+
+_CORRELATION_IDS = ("mirror:item-1", "mirror:item-2")
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_trade_retrospective_rows(db_session):
+    await db_session.execute(
+        delete(TradeRetrospective).where(
+            TradeRetrospective.correlation_id.in_(_CORRELATION_IDS)
+        )
+    )
+    await db_session.commit()
+    yield
+    await db_session.execute(
+        delete(TradeRetrospective).where(
+            TradeRetrospective.correlation_id.in_(_CORRELATION_IDS)
+        )
+    )
+    await db_session.commit()
 
 
 @pytest.mark.asyncio

@@ -677,7 +677,8 @@ def _duplicate_order_intent_message(account_scope: str) -> str:
     if account_scope == "kis_mock":
         return (
             "이 미러 아이템은 이미 KIS mock 미러 전송 intent가 있어 "
-            "중복 전송을 차단했습니다 (duplicate mock mirror intent). "
+            "중복 전송을 차단했습니다 "
+            "(duplicate mock mirror intent; duplicate order intent). "
             "kis_mock_order_ledger의 report_item_uuid/mirror_cohort 상태를 "
             "확인하세요."
         )
