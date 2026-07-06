@@ -687,20 +687,44 @@ async def get_ohlcv(
                         source="db",
                         period=resolved_period,
                     )
-            frame = await kis.inquire_daily_itemchartprice(
-                code=resolved_symbol,
-                market="J",
-                n=capped_count,
-                period=period_map[resolved_period],
-                end_date=(pd.Timestamp(end.date()) if end is not None else None),
-            )
+            try:
+                frame = await kis.inquire_daily_itemchartprice(
+                    code=resolved_symbol,
+                    market="J",
+                    n=capped_count,
+                    period=period_map[resolved_period],
+                    end_date=(pd.Timestamp(end.date()) if end is not None else None),
+                )
+                source = "kis"
+            except Exception as kis_exc:
+                # ROB-706: KIS is the authoritative adjusted KR daily source but a
+                # single point of failure on cache miss (2026-07-04 maintenance
+                # blanked /invest). Only `day` has a Toss 1d equivalent; week/month
+                # re-raise (same UpstreamUnavailableError as today). Toss 1d is
+                # adjusted=True — matches KIS adj=True already stored as source="kis".
+                if resolved_period != "day":
+                    raise
+                logger.warning(
+                    "KIS KR daily failed symbol=%s; Toss 1d fallback: %s",
+                    safe_log_value(resolved_symbol),
+                    kis_exc,
+                )
+                frame = await fetch_daily_toss_frame(
+                    symbol=resolved_symbol,
+                    count=capped_count,
+                    end_date=end,
+                )
+                source = "toss"
             if resolved_period == "day":
-                await write_back_kr(frame, symbol=resolved_symbol)
+                if source == "toss":
+                    await write_back_kr(frame, symbol=resolved_symbol, source="toss")
+                else:
+                    await write_back_kr(frame, symbol=resolved_symbol)
             return _to_candle_rows(
                 frame,
                 symbol=resolved_symbol,
                 market=resolved_market,
-                source="kis",
+                source=source,
                 period=resolved_period,
             )
 
