@@ -82,9 +82,10 @@ async def test_mock_mirror_intent_released_after_send_request_error(
 
     monkeypatch.setattr(oe, "_execute_order", fail_send)
 
-    with pytest.raises(oe.OrderSendOutcomeUnknown):
+    with pytest.raises(oe.OrderSendOutcomeUnknown) as excinfo:
         await oe._execute_and_record(**_execute_kwargs(key=key, is_mock=True))
 
+    assert excinfo.value.retry_allowed is True
     # A retry must be able to reserve the same mirror key again; before ROB-750
     # this raised DuplicateOrderIntent because the first reservation was permanent.
     rid = await OrderSendIntentService(db_session).reserve(
@@ -106,9 +107,10 @@ async def test_live_intent_is_not_released_after_unknown_send_outcome(
 
     monkeypatch.setattr(oe, "_execute_order", fail_send)
 
-    with pytest.raises(oe.OrderSendOutcomeUnknown):
+    with pytest.raises(oe.OrderSendOutcomeUnknown) as excinfo:
         await oe._execute_and_record(**_execute_kwargs(key=key, is_mock=False))
 
+    assert getattr(excinfo.value, "retry_allowed", False) is False
     with pytest.raises(DuplicateOrderIntent):
         await OrderSendIntentService(db_session).reserve(
             account_scope="kis_live",
@@ -142,3 +144,35 @@ async def test_mock_mirror_duplicate_message_does_not_claim_next_day_retry(
     assert "미러" in result["error"]
     assert "익일" not in result["error"]
     assert sent["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_mock_mirror_unknown_outcome_message_allows_retry(monkeypatch):
+    _stub_kis_mock_baseline(monkeypatch)
+    key = "mirror:rob750-retry-message"
+
+    async def fail_send(**kwargs):
+        raise httpx.ConnectError("temporary mock broker outage")
+
+    monkeypatch.setattr(oe, "_execute_order", fail_send)
+
+    with pytest.raises(oe.OrderSendOutcomeUnknown) as excinfo:
+        await oe._execute_and_record(**_execute_kwargs(key=key, is_mock=True))
+
+    result = oe._augment_error_for_unknown_outcome(
+        {
+            "success": False,
+            "error": "ConnectError",
+            "source": "kis",
+            "symbol": "005930",
+            "instrument_type": "equity_kr",
+        },
+        excinfo.value,
+        market_type="equity_kr",
+        is_mock=True,
+    )
+
+    assert result["outcome_unknown"] is True
+    assert result["retry_allowed"] is True
+    assert "재시도" in result["error"]
+    assert "재전송하지 말고" not in result["error"]

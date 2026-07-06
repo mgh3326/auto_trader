@@ -783,14 +783,14 @@ async def _execute_and_record(
 
     async def _release_reserved_mock_mirror_intent_after_send_failure(
         exc: BaseException,
-    ) -> None:
+    ) -> bool:
         if (
             not intent_reserved
             or intent_account_scope != "kis_mock"
             or intent_key is None
             or mirror_cohort != "mock_counterfactual"
         ):
-            return
+            return False
 
         try:
             async with _order_session_factory()() as release_db:
@@ -808,7 +808,7 @@ async def _execute_and_record(
                 describe_exception(exc),
                 describe_exception(release_exc),
             )
-            return
+            return False
 
         if deleted:
             logger.info(
@@ -819,6 +819,8 @@ async def _execute_and_record(
                 intent_key,
                 describe_exception(exc),
             )
+            return True
+        return False
 
     try:
         execution_result = await _execute_order(
@@ -832,7 +834,9 @@ async def _execute_and_record(
             identifier=idempotency_key if market_type == "crypto" else None,
         )
     except httpx.RequestError as send_exc:
-        await _release_reserved_mock_mirror_intent_after_send_failure(send_exc)
+        retry_allowed = await _release_reserved_mock_mirror_intent_after_send_failure(
+            send_exc
+        )
         # ROB-645: the order POST itself timed out / failed with no broker response.
         # Outcome is UNKNOWN for live orders (may have been accepted) — never re-send live; reconcile.
         # ROB-750: mock mirror has no live broker risk, so its scoped intent is released for retry.
@@ -844,7 +848,16 @@ async def _execute_and_record(
             side,
             describe_exception(send_exc),
         )
-        raise OrderSendOutcomeUnknown(send_exc) from send_exc
+        raise OrderSendOutcomeUnknown(
+            send_exc,
+            retry_allowed=retry_allowed,
+            retry_hint=(
+                "KIS mock mirror pre-send intent를 해제했습니다. "
+                "동일 미러 아이템은 재시도할 수 있습니다."
+            )
+            if retry_allowed
+            else None,
+        ) from send_exc
     except Exception as exec_exc:
         await _release_reserved_mock_mirror_intent_after_send_failure(exec_exc)
         logger.error(
@@ -1091,9 +1104,17 @@ class OrderSendOutcomeUnknown(Exception):
     must NOT be treated as outcome-unknown. Wraps the original transport exception.
     """
 
-    def __init__(self, original: BaseException) -> None:
+    def __init__(
+        self,
+        original: BaseException,
+        *,
+        retry_allowed: bool = False,
+        retry_hint: str | None = None,
+    ) -> None:
         super().__init__(describe_exception(original))
         self.original = original
+        self.retry_allowed = retry_allowed
+        self.retry_hint = retry_hint
 
 
 # ROB-645: reconcile tool to consult when an order's send outcome is unknown.
@@ -1142,6 +1163,13 @@ def _augment_error_for_unknown_outcome(
     enriched = dict(base_error)
     enriched["outcome_unknown"] = True
     enriched["reconcile_tool"] = reconcile_tool
+    if getattr(exc, "retry_allowed", False):
+        enriched["retry_allowed"] = True
+        retry_hint = getattr(exc, "retry_hint", None) or (
+            "전송 intent가 해제되어 재시도할 수 있습니다."
+        )
+        enriched["error"] = f"주문 전송 실패: {reason}. {retry_hint}"
+        return enriched
     enriched["error"] = (
         f"주문 접수 여부 불확실 (전송 실패: {reason}). 재전송하지 말고 {confirm_hint}"
     )
