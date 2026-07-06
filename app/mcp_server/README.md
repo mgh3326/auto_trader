@@ -306,7 +306,7 @@ full payload, by numeric `id` or `artifact_uuid` string. Missing ids return
 
 - `investment_report_add_items(report_uuid, items, actor=None)` - Append new proposal items to an existing draft investment report. The item payload contract matches `investment_report_create`. Duplicate `client_item_key` rows are returned as existing items and are not rewritten. Non-draft reports return `error="not_draft"`. No broker, order, or watch mutation is performed.
 - `investment_report_update(report_uuid, title=None, summary=None, risk_summary=None, thesis_text=None, no_action_note=None, market_snapshot=None, portfolio_snapshot=None, metadata=None, valid_until=None, actor=None, reason=None)` - Update draft report header fields without changing report identity, lifecycle status, predecessor chain, account scope, generator version, or items. Each successful update appends an audit entry to `report.metadata.draft_updates`. Non-draft reports return `error="not_draft"`.
-- `kis_mock_mirror_execute_report(report_uuid, dry_run=True, min_rung_quantity=1.0)` - Execute ROB-734 mirror counterfactual orders through KIS mock only. The planner mirrors only KR report items with `target_kind="asset"` and a six-digit numeric symbol. Non-KR, US, crypto, index, and FX items are skipped with `reason="non_kr_equity_out_of_mirror_scope"` and counted in `plan_skipped_count`; they are never submitted to `place_order`.
+- `kis_mock_mirror_execute_report(report_uuid, dry_run=True, min_rung_quantity=1.0, confirm=False)` - Execute ROB-734 mirror counterfactual orders through KIS mock only. `dry_run=True` returns per-item `plan` previews including symbol, side, quantity/amount, limit price, target/stop, correlation id, source bucket, and WATCH approximation notes. `dry_run=False` requires `confirm=True`; otherwise the tool fails closed with `error_code="mirror_confirm_required"`. The planner mirrors only KR report items with `target_kind="asset"` and a six-digit numeric symbol. Non-KR, US, crypto, index, and FX items are skipped with `reason="non_kr_equity_out_of_mirror_scope"` and counted in `plan_skipped_count`; they are never submitted to `place_order`. WATCH thresholds are used as prices only when `watch_condition.metric == "price"`; non-price metrics such as RSI are skipped with `reason="unsupported_watch_metric_for_limit_price"`. Breakout/above WATCH conditions are labeled as `watch_approximation=limit_at_threshold`.
 
 ### Alpaca paper read-only smoke tools
 
@@ -890,7 +890,7 @@ Parameters:
 - `setup_tag`: optional tag filter.
 - `min_sample`: default `1`.
 - `cohort`: default `live_gated`. Realized trade-journal cohort to load (e.g., `live_gated`, `mock_counterfactual`).
-- `include_counterfactual_delta`: default `false`. When `true`, returns aggregates delta scoreboard comparing `live_gated` and `mock_counterfactual` paired by entry correlation ID, falling back to `report_item_uuid` for report-linked mirror orders.
+- `include_counterfactual_delta`: default `false`. When `true`, returns aggregates delta scoreboard comparing `live_gated` and `mock_counterfactual` paired by entry correlation ID, falling back to `report_item_uuid` for report-linked mirror orders. When `include_counterfactual_delta=True`, `market`, `account_mode`, `date_from`, `date_to`, `setup_tag`, and `min_sample` are passed into the delta builder and echoed under `filters`.
 
 Returns Win-rate, expectancy (% and R-multiple), profit factor, average/worst MAE and MFE.
 

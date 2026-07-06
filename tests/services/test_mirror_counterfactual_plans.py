@@ -209,3 +209,54 @@ async def test_crypto_report_item_is_skipped_before_dry_run_false_submit(db_sess
         }
     ]
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_watch_item_with_non_price_metric_threshold_is_skipped(db_session):
+    report = await _report(db_session)
+    item = await _item(
+        db_session,
+        report,
+        item_kind="watch",
+        operation="create",
+        watch_condition={"metric": "rsi", "operator": "below", "threshold": "30"},
+        valid_until=datetime(2026, 7, 7, tzinfo=UTC),
+        max_action={"side": "buy", "quantity": "2", "account_mode": "kis_mock"},
+        evidence_snapshot={"price": "70000"},
+    )
+    await db_session.commit()
+
+    result = await build_mirror_order_plans(db_session, report_uuid=report.report_uuid)
+
+    assert result["plans"] == []
+    assert result["skipped"] == [
+        {
+            "item_uuid": str(item.item_uuid),
+            "reason": "unsupported_watch_metric_for_limit_price",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_watch_breakout_price_threshold_is_labeled_as_limit_approximation(
+    db_session,
+):
+    report = await _report(db_session)
+    await _item(
+        db_session,
+        report,
+        item_kind="watch",
+        operation="create",
+        watch_condition={"metric": "price", "operator": "above", "threshold": "72000"},
+        valid_until=datetime(2026, 7, 7, tzinfo=UTC),
+        max_action={"side": "buy", "quantity": "2", "account_mode": "kis_mock"},
+    )
+    await db_session.commit()
+
+    result = await build_mirror_order_plans(db_session, report_uuid=report.report_uuid)
+    [plan] = result["plans"]
+
+    assert plan.price == Decimal("72000")
+    assert "watch_metric=price" in plan.notes
+    assert "watch_operator=above" in plan.notes
+    assert "watch_approximation=limit_at_threshold" in plan.notes

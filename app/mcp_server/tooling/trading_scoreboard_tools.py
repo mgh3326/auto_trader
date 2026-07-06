@@ -41,8 +41,11 @@ async def get_trading_scoreboard(
                 return await build_counterfactual_delta_scoreboard(
                     db,
                     market=market,
+                    account_mode=account_mode,
                     date_from=_parse_date(date_from),
                     date_to=_parse_date(date_to),
+                    setup_tag=setup_tag,
+                    min_sample=min_sample,
                 )
             return await build_trading_scoreboard(
                 db,

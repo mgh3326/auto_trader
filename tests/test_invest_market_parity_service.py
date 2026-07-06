@@ -220,3 +220,32 @@ async def test_default_provider_index_quote_uses_current_only(monkeypatch) -> No
     assert quote is not None
     assert quote.price == Decimal("2450.5")
     called.assert_awaited_once_with("KOSPI")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_default_provider_index_quote_uses_quote_asof_and_data_state(
+    monkeypatch,
+) -> None:
+    import app.services.invest_view_model.market_parity_service as svc
+
+    called = AsyncMock(
+        return_value={
+            "indices": [
+                {
+                    "symbol": "KOSPI",
+                    "current": 2450.5,
+                    "source": "naver",
+                    "quote_asof": "2026-07-06T09:05:00+09:00",
+                    "data_state": "stale",
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(svc, "handle_get_market_index_current_only", called)
+
+    quote = await svc.DefaultMarketParityProvider().get_index_quote("KOSPI")
+
+    assert quote is not None
+    assert quote.stale is True
+    assert quote.as_of == datetime.fromisoformat("2026-07-06T09:05:00+09:00")

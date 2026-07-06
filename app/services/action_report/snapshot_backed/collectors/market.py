@@ -150,12 +150,13 @@ class MarketEventsSnapshotCollector:
     async def _collect_indices(self, market: str) -> dict[str, dict[str, Any]]:
         """Fetch market-conditioned index quotes and adapt to the stage's shape.
 
-        Returns a ``{symbol: {change_percent, name, current}}`` dict — the shape
-        MarketStage reads. Fail-open: any fetch error (or absent source) yields
-        ``{}`` so the events payload is still emitted (the stage then reports the
-        market dimension as unavailable rather than the whole snapshot failing).
-        An index whose ``change_pct`` is ``None`` is omitted, never coerced to a
-        fabricated 0.0%.
+        Returns a ``{symbol: {change_percent, name, current, ...}}`` dict (with
+        optional freshness metadata like quote_asof, data_state, etc. passed
+        through when present) — the shape MarketStage reads. Fail-open: any fetch
+        error (or absent source) yields ``{}`` so the events payload is still
+        emitted (the stage then reports the market dimension as unavailable rather
+        than the whole snapshot failing). An index whose ``change_pct`` is ``None``
+        is omitted, never coerced to a fabricated 0.0%.
         """
         if self._index_quote_fn is None:
             return {}
@@ -180,11 +181,22 @@ class MarketEventsSnapshotCollector:
                 change_percent = float(change)
             except (TypeError, ValueError):
                 continue
-            indices[str(symbol)] = {
+            adapted = {
                 "change_percent": change_percent,
                 "name": row.get("name"),
                 "current": row.get("current"),
             }
+            for key in (
+                "quote_asof",
+                "data_state",
+                "data_state_reason",
+                "quote_lag_seconds",
+                "as_of",
+            ):
+                value = row.get(key)
+                if value is not None:
+                    adapted[key] = value
+            indices[str(symbol)] = adapted
         return indices
 
     async def _collect_altseason(self, market: str) -> dict[str, Any] | None:

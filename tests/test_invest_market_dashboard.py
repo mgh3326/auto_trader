@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 
 import pytest
 from fastapi import FastAPI
@@ -50,6 +51,41 @@ class _StubMarketProvider:
 
     async def get_kimchi_premium(self) -> dict:
         return {"symbol": "BTC", "premium_pct": 2.41}
+
+
+class _StaleIndexProvider(_StubMarketProvider):
+    async def get_indices(self) -> dict:
+        return {
+            "indices": [
+                {
+                    "symbol": "KOSPI",
+                    "name": "KOSPI",
+                    "current": 2875.25,
+                    "change": -10.0,
+                    "change_pct": -0.46,
+                    "source": "naver",
+                    "quote_asof": "2026-07-06T09:05:00+09:00",
+                    "data_state": "stale",
+                    "data_state_reason": "kr_index_quote_lagging",
+                    "quote_lag_seconds": 300,
+                }
+            ]
+        }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_market_dashboard_marks_data_state_stale_index() -> None:
+    response = await build_market_dashboard(_StaleIndexProvider())
+
+    kr_section = response.sections[0]
+    metric = kr_section.metrics[0]
+    assert kr_section.state == "partial"
+    assert metric.stale is True
+    assert metric.dataState == "stale"
+    assert metric.dataStateReason == "kr_index_quote_lagging"
+    assert metric.quoteLagSeconds == 300
+    assert metric.quoteAsOf == datetime.fromisoformat("2026-07-06T09:05:00+09:00")
 
 
 class _FailingMarketProvider(_StubMarketProvider):
@@ -192,6 +228,8 @@ def test_get_market_dashboard_returns_read_only_payload(client: TestClient) -> N
         "crypto_market",
     ]
     assert body["sections"][0]["metrics"][0]["symbol"] == "KOSPI"
+    assert "dataState" in body["sections"][0]["metrics"][0]
+    assert "quoteAsOf" in body["sections"][0]["metrics"][0]
     notes = " ".join(body["notes"]).lower()
     assert "mutations" in notes
     assert all(

@@ -19,6 +19,10 @@ class TestOverseasOrdersTransientRetry:
         parent = MagicMock()
         parent._hdr_base = {"content-type": "application/json"}
         parent._ensure_token = AsyncMock()
+        token_manager = MagicMock()
+        token_manager.clear_token = AsyncMock()
+        parent._token_manager = token_manager
+        parent._kis_url = lambda path: f"https://host{path}"
 
         settings = MagicMock()
         settings.kis_account_no = "1234567890"
@@ -210,3 +214,47 @@ class TestOverseasOrdersTransientRetry:
                 end_date="20260208",
                 max_pages=2,
             )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error_code", ["EGW00123", "EGW00121"])
+    async def test_pending_inquiry_token_expiry_repeated_is_bounded(
+        self, _mock_overseas_orders, error_code
+    ):
+        instance, parent = _mock_overseas_orders
+        parent._request_with_rate_limit = AsyncMock(
+            return_value={
+                "rt_cd": "1",
+                "msg_cd": error_code,
+                "msg1": "token expired",
+            }
+        )
+
+        with pytest.raises(RuntimeError, match=error_code):
+            await instance.inquire_overseas_orders("NASD")
+
+        assert parent._request_with_rate_limit.call_count == 2
+        assert parent._token_manager.clear_token.await_count == 1
+        assert parent._ensure_token.await_count == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error_code", ["EGW00123", "EGW00121"])
+    async def test_daily_inquiry_token_expiry_repeated_is_bounded(
+        self, _mock_overseas_orders, error_code
+    ):
+        instance, parent = _mock_overseas_orders
+        parent._request_with_rate_limit = AsyncMock(
+            return_value={
+                "rt_cd": "1",
+                "msg_cd": error_code,
+                "msg1": "token expired",
+            }
+        )
+
+        with pytest.raises(RuntimeError, match=error_code):
+            await instance.inquire_daily_order_overseas(
+                start_date="20260317", end_date="20260317"
+            )
+
+        assert parent._request_with_rate_limit.call_count == 2
+        assert parent._token_manager.clear_token.await_count == 1
+        assert parent._ensure_token.await_count == 2

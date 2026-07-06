@@ -39,6 +39,10 @@ _EXCHANGE_ALIAS_MAP = {
 _MAX_TOKEN_REFRESH_RESUBMITS = 1
 
 
+def _is_token_expiry(js: dict[str, Any]) -> bool:
+    return js.get("msg_cd") in ["EGW00123", "EGW00121"]
+
+
 def _normalize_kis_exchange_code(code: str) -> str:
     """Normalize exchange code to KIS format.
 
@@ -367,6 +371,7 @@ class OverseasOrderClient:
         tr_cont = ""  # 연속조회 구분: 최초 조회 시 공백, 연속 조회 시 "N"
         page = 1
         max_pages = 10  # 최대 페이지 수 제한
+        token_refresh_resubmits = 0
 
         logging.info(f"해외주식 미체결 주문 조회 시작 - exchange: {exchange_code}")
 
@@ -401,7 +406,12 @@ class OverseasOrderClient:
             )
 
             if js.get("rt_cd") != "0":
-                if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                if _is_token_expiry(js):
+                    if token_refresh_resubmits >= _MAX_TOKEN_REFRESH_RESUBMITS:
+                        error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
+                        logging.error(f"미체결 주문 조회 실패: {error_msg}")
+                        raise RuntimeError(error_msg)
+                    token_refresh_resubmits += 1
                     await self._parent._token_manager.clear_token()
                     await self._parent._ensure_token()
                     continue
@@ -649,6 +659,7 @@ class OverseasOrderClient:
         page_limit = max(1, int(max_pages))
         truncated = False
         transient_retry_count = 0
+        token_refresh_resubmits = 0
 
         logging.info(f"해외주식 체결조회 시작 - {start_date} ~ {end_date}")
 
@@ -691,7 +702,12 @@ class OverseasOrderClient:
             )
 
             if js.get("rt_cd") != "0":
-                if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                if _is_token_expiry(js):
+                    if token_refresh_resubmits >= _MAX_TOKEN_REFRESH_RESUBMITS:
+                        error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
+                        logging.error(f"해외주식 체결조회 실패: {error_msg}")
+                        raise RuntimeError(error_msg)
+                    token_refresh_resubmits += 1
                     await self._parent._token_manager.clear_token()
                     await self._parent._ensure_token()
                     continue
