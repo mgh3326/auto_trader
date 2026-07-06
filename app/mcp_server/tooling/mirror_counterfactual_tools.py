@@ -16,14 +16,21 @@ async def kis_mock_mirror_execute_report(
     try:
         rid = UUID(str(report_uuid))
     except ValueError:
-        return {"success": False, "error": "invalid_report_uuid", "report_uuid": report_uuid}
+        return {
+            "success": False,
+            "error": "invalid_report_uuid",
+            "report_uuid": report_uuid,
+        }
     async with AsyncSessionLocal() as db:
         try:
-            return await execute_mirror_for_report(
+            result = await execute_mirror_for_report(
                 db,
                 report_uuid=rid,
                 dry_run=dry_run,
                 min_rung_quantity=Decimal(str(min_rung_quantity)),
             )
+            if not dry_run:
+                await db.commit()
+            return result
         except ValueError as exc:
             return {"success": False, "error": str(exc), "report_uuid": report_uuid}

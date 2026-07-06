@@ -137,7 +137,10 @@ def _fold_brier(agg: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _realized_r_by_tag(
-    db: AsyncSession, market: str, setup_tag: str | None, account_mode: str | None = None
+    db: AsyncSession,
+    market: str,
+    setup_tag: str | None,
+    account_mode: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Bounded per-tag map for the ROB-713 scoreboard — portfolio-wide, not per-symbol.
 
@@ -203,7 +206,11 @@ async def _retrospectives(
             (TradeRetrospective.account_mode != "kis_mock")
             | (TradeRetrospective.account_mode.is_(None))
         )
-    rows = (await db.execute(stmt.order_by(TradeRetrospective.created_at.desc()))).scalars().all()
+    rows = (
+        (await db.execute(stmt.order_by(TradeRetrospective.created_at.desc())))
+        .scalars()
+        .all()
+    )
 
     lessons: list[str] = []
     outcomes: list[dict[str, Any]] = []
@@ -260,13 +267,15 @@ async def _recent_fills(
         from app.models.review import KISMockOrderLedger
 
         rows = (
-            (await db.execute(
-                select(KISMockOrderLedger).where(
-                    KISMockOrderLedger.symbol == symbol,
-                    KISMockOrderLedger.mirror_cohort == "mock_counterfactual",
-                    KISMockOrderLedger.lifecycle_state == "fill",
+            (
+                await db.execute(
+                    select(KISMockOrderLedger).where(
+                        KISMockOrderLedger.symbol == symbol,
+                        KISMockOrderLedger.mirror_cohort == "mock_counterfactual",
+                        KISMockOrderLedger.lifecycle_state == "fill",
+                    )
                 )
-            ))
+            )
             .scalars()
             .all()
         )
@@ -279,16 +288,22 @@ async def _recent_fills(
                     r.trade_date,
                     "kis_mock",
                     {
-                        "date": r.trade_date.date().isoformat() if r.trade_date else None,
+                        "date": r.trade_date.date().isoformat()
+                        if r.trade_date
+                        else None,
                         "side": r.side,
                         "status": status,
                         "qty": float(r.quantity) if r.quantity is not None else None,
                         "filled_qty": filled_qty,
                         "avg_fill_price": float(r.price),
-                        "target_price": float(r.target_price) if getattr(r, "target_price", None) is not None else None,
-                        "stop_loss": float(r.stop_loss) if getattr(r, "stop_loss", None) is not None else None,
+                        "target_price": float(r.target_price)
+                        if getattr(r, "target_price", None) is not None
+                        else None,
+                        "stop_loss": float(r.stop_loss)
+                        if getattr(r, "stop_loss", None) is not None
+                        else None,
                         "source": "kis_mock",
-                    }
+                    },
                 )
             )
     else:

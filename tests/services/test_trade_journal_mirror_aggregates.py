@@ -69,13 +69,15 @@ async def test_load_fills_can_isolate_mock_counterfactual(db_session):
 
 
 @pytest.mark.asyncio
-async def test_delta_scoreboard_pairs_by_correlation_and_account(db_session, monkeypatch):
+async def test_delta_scoreboard_pairs_by_report_item_when_correlation_differs(
+    db_session, monkeypatch
+):
     async def no_excursions(trade):
         return None, None, False
 
     monkeypatch.setattr(agg, "compute_excursions", no_excursions)
     when = datetime(2026, 7, 6, tzinfo=UTC)
-    common = {"correlation_id": "mirror:item-2", "report_item_uuid": uuid4()}
+    common = {"report_item_uuid": uuid4()}
     db_session.add_all(
         [
             KISLiveOrderLedger(
@@ -93,6 +95,7 @@ async def test_delta_scoreboard_pairs_by_correlation_and_account(db_session, mon
                 avg_fill_price=Decimal("100"),
                 account_mode="kis_live",
                 broker="kis",
+                correlation_id="live-entry",
                 **common,
             ),
             KISLiveOrderLedger(
@@ -132,6 +135,7 @@ async def test_delta_scoreboard_pairs_by_correlation_and_account(db_session, mon
                 last_reconcile_detail={"attributed_fill_qty": "1"},
                 mirror_cohort="mock_counterfactual",
                 mirror_source_bucket="place_original",
+                correlation_id="mirror:item-2",
                 **common,
             ),
             KISMockOrderLedger(
@@ -164,6 +168,7 @@ async def test_delta_scoreboard_pairs_by_correlation_and_account(db_session, mon
         db_session, market="kr", include_excursions=False, use_cache=False
     )
     assert result["paired_count"] >= 1
-    assert result["overall_delta"]["mock_minus_live_expectancy_pct"] == pytest.approx(0.05)
+    assert result["overall_delta"]["mock_minus_live_expectancy_pct"] == pytest.approx(
+        0.05
+    )
     assert result["caveats"]
-

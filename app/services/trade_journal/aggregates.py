@@ -150,7 +150,9 @@ async def load_fills(
             ("live", LiveOrderLedger),
             ("toss", TossLiveOrderLedger),
         ):
-            stmt = select(model).where(model.filled_qty.isnot(None), model.filled_qty > 0)
+            stmt = select(model).where(
+                model.filled_qty.isnot(None), model.filled_qty > 0
+            )
             rows = (await db.execute(stmt)).scalars().all()
             for r in rows:
                 row_market = _market_for(source, r)
@@ -285,10 +287,16 @@ def pair_fills_fifo(fills: list[Fill]) -> list[ClosedTrade]:
             gross = (f.price - entry_price) * matched_qty
 
             entry_cohorts = {lot.cohort for _, lot in consumed}
-            resolved_cohort = entry_cohorts.pop() if len(entry_cohorts) == 1 else "mixed"
+            resolved_cohort = (
+                entry_cohorts.pop() if len(entry_cohorts) == 1 else "mixed"
+            )
 
-            entry_source_buckets = {lot.source_bucket for _, lot in consumed if lot.source_bucket}
-            resolved_source_bucket = entry_source_buckets.pop() if len(entry_source_buckets) == 1 else None
+            entry_source_buckets = {
+                lot.source_bucket for _, lot in consumed if lot.source_bucket
+            }
+            resolved_source_bucket = (
+                entry_source_buckets.pop() if len(entry_source_buckets) == 1 else None
+            )
 
             closed.append(
                 ClosedTrade(
@@ -635,21 +643,35 @@ async def build_trading_scoreboard(
     return result
 
 
-def _pair_by_entry_correlation(
+def _entry_pair_keys(trade: ClosedTrade) -> tuple[tuple[str, str], ...]:
+    keys: list[tuple[str, str]] = []
+    keys.extend(("correlation_id", c) for c in trade.entry_correlation_ids if c)
+    keys.extend(("report_item_uuid", u) for u in trade.entry_item_uuids if u)
+    return tuple(keys)
+
+
+def _pair_by_entry_provenance(
     live_trades: list[ClosedTrade],
     mock_trades: list[ClosedTrade],
 ) -> list[tuple[ClosedTrade, ClosedTrade]]:
-    live_by_corr = {}
-    for t in live_trades:
-        corr_id = next((c for c in t.entry_correlation_ids if c), None)
-        if corr_id:
-            live_by_corr[corr_id] = t
+    live_by_key: dict[tuple[str, str], tuple[int, ClosedTrade]] = {}
+    for idx, trade in enumerate(live_trades):
+        for key in _entry_pair_keys(trade):
+            live_by_key.setdefault(key, (idx, trade))
 
-    paired = []
-    for t in mock_trades:
-        corr_id = next((c for c in t.entry_correlation_ids if c), None)
-        if corr_id and corr_id in live_by_corr:
-            paired.append((live_by_corr[corr_id], t))
+    paired: list[tuple[ClosedTrade, ClosedTrade]] = []
+    used_live_indexes: set[int] = set()
+    for mock_trade in mock_trades:
+        for key in _entry_pair_keys(mock_trade):
+            match = live_by_key.get(key)
+            if match is None:
+                continue
+            live_idx, live_trade = match
+            if live_idx in used_live_indexes:
+                continue
+            paired.append((live_trade, mock_trade))
+            used_live_indexes.add(live_idx)
+            break
 
     return paired
 
@@ -713,12 +735,20 @@ async def build_counterfactual_delta_scoreboard(
         use_cache=use_cache,
     )
     live_trades = pair_fills_fifo(
-        await load_fills(db, market=market, date_from=date_from, date_to=date_to, cohort="live_gated")
+        await load_fills(
+            db, market=market, date_from=date_from, date_to=date_to, cohort="live_gated"
+        )
     )
     mock_trades = pair_fills_fifo(
-        await load_fills(db, market=market, date_from=date_from, date_to=date_to, cohort="mock_counterfactual")
+        await load_fills(
+            db,
+            market=market,
+            date_from=date_from,
+            date_to=date_to,
+            cohort="mock_counterfactual",
+        )
     )
-    paired = _pair_by_entry_correlation(live_trades, mock_trades)
+    paired = _pair_by_entry_provenance(live_trades, mock_trades)
     return {
         "live_gated": board_live,
         "mock_counterfactual": board_mock,

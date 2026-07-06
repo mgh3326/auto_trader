@@ -120,7 +120,9 @@ async def test_deferred_no_action_gets_minimum_rung(db_session):
 @pytest.mark.asyncio
 async def test_item_without_price_is_skipped_with_reason(db_session):
     report = await _report(db_session)
-    item = await _item(db_session, report, max_action={"quantity": "1"}, evidence_snapshot={})
+    item = await _item(
+        db_session, report, max_action={"quantity": "1"}, evidence_snapshot={}
+    )
     await db_session.commit()
 
     result = await build_mirror_order_plans(db_session, report_uuid=report.report_uuid)

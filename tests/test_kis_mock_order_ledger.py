@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 
@@ -535,6 +536,7 @@ async def test_kis_live_kr_path_records_to_live_ledger_not_save_fill(monkeypatch
         account_mode="kis_live",
         thesis="t",
         strategy="s",
+        rung=f"test-{uuid4().hex}",
     )
 
     assert result["success"] is True, result
@@ -951,4 +953,3 @@ async def test_save_kis_mock_order_ledger_persists_report_item_uuid(db_session):
         )
     ).scalar_one()
     assert row.report_item_uuid == item_uuid
-

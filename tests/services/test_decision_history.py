@@ -264,7 +264,9 @@ async def test_brier_insufficient_sample_and_empty_returns_none(
 
 
 @pytest.mark.asyncio
-async def test_decision_history_supports_kis_mock_account_mode(db_session: AsyncSession) -> None:
+async def test_decision_history_supports_kis_mock_account_mode(
+    db_session: AsyncSession,
+) -> None:
     from app.models.review import KISMockOrderLedger
     from app.models.trading import InstrumentType
 
@@ -337,7 +339,9 @@ async def test_decision_history_supports_kis_mock_account_mode(db_session: Async
     await db_session.flush()
 
     # Query with account_mode='kis_mock'
-    ctx = await build_decision_context(db_session, symbol=raw, market="kr", account_mode="kis_mock")
+    ctx = await build_decision_context(
+        db_session, symbol=raw, market="kr", account_mode="kis_mock"
+    )
     assert ctx is not None
 
     assert len(ctx["recent_fills"]) == 1
@@ -349,4 +353,3 @@ async def test_decision_history_supports_kis_mock_account_mode(db_session: Async
 
     assert len(ctx["realized_outcomes"]) == 1
     assert ctx["realized_outcomes"][0]["pnl_pct"] == 0.02
-

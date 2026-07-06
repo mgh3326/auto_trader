@@ -293,12 +293,18 @@ async def build_mirror_order_plans(
     if report is None:
         raise ValueError(f"report not found: {report_uuid}")
     rows = (
-        await db.execute(
-            select(InvestmentReportItem)
-            .where(InvestmentReportItem.report_id == report.id)
-            .order_by(InvestmentReportItem.created_at.asc(), InvestmentReportItem.id.asc())
+        (
+            await db.execute(
+                select(InvestmentReportItem)
+                .where(InvestmentReportItem.report_id == report.id)
+                .order_by(
+                    InvestmentReportItem.created_at.asc(), InvestmentReportItem.id.asc()
+                )
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     plans: list[MirrorOrderPlan] = []
     skipped: list[dict[str, str]] = []
     for item in rows:
@@ -308,7 +314,9 @@ async def build_mirror_order_plans(
             min_rung_quantity=min_rung_quantity,
         )
         if plan is None:
-            skipped.append({"item_uuid": str(item.item_uuid), "reason": reason or "unknown"})
+            skipped.append(
+                {"item_uuid": str(item.item_uuid), "reason": reason or "unknown"}
+            )
         else:
             plans.append(plan)
     return {
@@ -331,12 +339,16 @@ async def _existing_mirror_item_uuids(
     if not item_uuids:
         return set()
     rows = (
-        await db.execute(
-            select(KISMockOrderLedger.report_item_uuid)
-            .where(KISMockOrderLedger.report_item_uuid.in_(item_uuids))
-            .where(KISMockOrderLedger.mirror_cohort == "mock_counterfactual")
+        (
+            await db.execute(
+                select(KISMockOrderLedger.report_item_uuid)
+                .where(KISMockOrderLedger.report_item_uuid.in_(item_uuids))
+                .where(KISMockOrderLedger.mirror_cohort == "mock_counterfactual")
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return {row for row in rows if row is not None}
 
 
@@ -373,12 +385,14 @@ async def execute_mirror_order_plans(
 
     for plan in plans:
         if plan.item_uuid in existing:
-            results.append({
-                "item_uuid": str(plan.item_uuid),
-                "symbol": plan.symbol,
-                "success": False,
-                "reason": "already_mirrored",
-            })
+            results.append(
+                {
+                    "item_uuid": str(plan.item_uuid),
+                    "symbol": plan.symbol,
+                    "success": False,
+                    "reason": "already_mirrored",
+                }
+            )
             skipped_count += 1
             continue
 
@@ -394,7 +408,9 @@ async def execute_mirror_order_plans(
                 reason=plan.reason,
                 thesis=plan.thesis,
                 strategy=plan.strategy,
-                target_price=float(plan.target_price) if plan.target_price is not None else None,
+                target_price=float(plan.target_price)
+                if plan.target_price is not None
+                else None,
                 stop_loss=float(plan.stop_loss) if plan.stop_loss is not None else None,
                 min_hold_days=plan.min_hold_days,
                 notes=plan.notes,
@@ -407,48 +423,58 @@ async def execute_mirror_order_plans(
             if success:
                 if dry_run:
                     dry_run_count += 1
-                    results.append({
-                        "item_uuid": str(plan.item_uuid),
-                        "symbol": plan.symbol,
-                        "success": True,
-                        "dry_run": True,
-                        "approval_hash": result.get("approval_hash"),
-                    })
+                    results.append(
+                        {
+                            "item_uuid": str(plan.item_uuid),
+                            "symbol": plan.symbol,
+                            "success": True,
+                            "dry_run": True,
+                            "approval_hash": result.get("approval_hash"),
+                        }
+                    )
                 else:
                     ledger_id = result.get("ledger_id")
                     if ledger_id is not None:
                         await _stamp_mirror_ledger(db, ledger_id=ledger_id, plan=plan)
                         submitted_count += 1
-                        results.append({
-                            "item_uuid": str(plan.item_uuid),
-                            "symbol": plan.symbol,
-                            "success": True,
-                            "ledger_id": ledger_id,
-                        })
+                        results.append(
+                            {
+                                "item_uuid": str(plan.item_uuid),
+                                "symbol": plan.symbol,
+                                "success": True,
+                                "ledger_id": ledger_id,
+                            }
+                        )
                     else:
                         failed_count += 1
-                        results.append({
-                            "item_uuid": str(plan.item_uuid),
-                            "symbol": plan.symbol,
-                            "success": False,
-                            "error": "missing_ledger_id",
-                        })
+                        results.append(
+                            {
+                                "item_uuid": str(plan.item_uuid),
+                                "symbol": plan.symbol,
+                                "success": False,
+                                "error": "missing_ledger_id",
+                            }
+                        )
             else:
                 failed_count += 1
-                results.append({
+                results.append(
+                    {
+                        "item_uuid": str(plan.item_uuid),
+                        "symbol": plan.symbol,
+                        "success": False,
+                        "error": result.get("error") or "place_order_failed",
+                    }
+                )
+        except Exception as exc:
+            failed_count += 1
+            results.append(
+                {
                     "item_uuid": str(plan.item_uuid),
                     "symbol": plan.symbol,
                     "success": False,
-                    "error": result.get("error") or "place_order_failed",
-                })
-        except Exception as exc:
-            failed_count += 1
-            results.append({
-                "item_uuid": str(plan.item_uuid),
-                "symbol": plan.symbol,
-                "success": False,
-                "error": str(exc),
-            })
+                    "error": str(exc),
+                }
+            )
 
     return {
         "success": True,

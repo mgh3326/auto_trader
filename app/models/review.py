@@ -203,7 +203,9 @@ class KISMockOrderLedger(Base):
         Index("ix_kis_mock_ledger_lifecycle_state", "lifecycle_state"),
         Index("ix_kis_mock_ledger_correlation_id", "correlation_id"),
         Index("ix_kis_mock_ledger_report_item_uuid", "report_item_uuid"),
-        Index("ix_kis_mock_ledger_mirror_cohort_created", "mirror_cohort", "created_at"),
+        Index(
+            "ix_kis_mock_ledger_mirror_cohort_created", "mirror_cohort", "created_at"
+        ),
         CheckConstraint(
             "mirror_cohort IS NULL OR mirror_cohort IN ('mock_counterfactual')",
             name="ck_kis_mock_ledger_mirror_cohort",

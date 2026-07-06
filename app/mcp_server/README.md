@@ -882,7 +882,7 @@ Parameters:
 - `setup_tag`: optional tag filter.
 - `min_sample`: default `1`.
 - `cohort`: default `live_gated`. Realized trade-journal cohort to load (e.g., `live_gated`, `mock_counterfactual`).
-- `include_counterfactual_delta`: default `false`. When `true`, returns aggregates delta scoreboard comparing `live_gated` and `mock_counterfactual` paired by entry correlation ID.
+- `include_counterfactual_delta`: default `false`. When `true`, returns aggregates delta scoreboard comparing `live_gated` and `mock_counterfactual` paired by entry correlation ID, falling back to `report_item_uuid` for report-linked mirror orders.
 
 Returns Win-rate, expectancy (% and R-multiple), profit factor, average/worst MAE and MFE.
 

@@ -744,7 +744,13 @@ async def test_operating_briefing_supports_trading_scoreboards(monkeypatch) -> N
     import app.mcp_server.tooling.operating_briefing as ob
 
     async def fake_holdings(**kwargs):
-        return {"filters": {}, "total_accounts": 0, "total_positions": 0, "summary": {}, "accounts": []}
+        return {
+            "filters": {},
+            "total_accounts": 0,
+            "total_positions": 0,
+            "summary": {},
+            "accounts": [],
+        }
 
     async def fake_pending(db, *, market, account_scope):
         return SimpleNamespace(
@@ -764,7 +770,12 @@ async def test_operating_briefing_supports_trading_scoreboards(monkeypatch) -> N
         return {"count": 0, "entries": []}
 
     async def fake_board(db, **kwargs):
-        return {"groups": [], "overall": None, "count": 0, "cohort": kwargs.get("cohort")}
+        return {
+            "groups": [],
+            "overall": None,
+            "count": 0,
+            "cohort": kwargs.get("cohort"),
+        }
 
     async def fake_delta(db, **kwargs):
         return {"paired_count": 42, "overall_delta": {}, "caveats": []}
@@ -776,16 +787,20 @@ async def test_operating_briefing_supports_trading_scoreboards(monkeypatch) -> N
     monkeypatch.setattr(ob, "_recent_session_context", fake_session_context)
 
     from app.services.trade_journal import aggregates as agg
+
     monkeypatch.setattr(agg, "build_trading_scoreboard", fake_board)
     monkeypatch.setattr(agg, "build_counterfactual_delta_scoreboard", fake_delta)
 
     # 1. Standard call
-    res = await ob.get_operating_briefing_impl(market="kr", cohort="mock_counterfactual")
+    res = await ob.get_operating_briefing_impl(
+        market="kr", cohort="mock_counterfactual"
+    )
     assert res["trading_scoreboards"] is not None
     assert res["trading_scoreboards"]["cohort"] == "mock_counterfactual"
 
     # 2. Delta call
-    res_delta = await ob.get_operating_briefing_impl(market="kr", include_counterfactual_delta=True)
+    res_delta = await ob.get_operating_briefing_impl(
+        market="kr", include_counterfactual_delta=True
+    )
     assert res_delta["trading_scoreboards"] is not None
     assert res_delta["trading_scoreboards"]["paired_count"] == 42
-
