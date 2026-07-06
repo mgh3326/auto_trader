@@ -2910,3 +2910,94 @@ async def test_place_order_readtimeout_surfaces_class_name(monkeypatch):
     assert result["source"] == "kis"
     # :1128 — order-history record also gets the concrete reason, not ""
     assert recorded.await_args.kwargs["error"] == "ReadTimeout"
+
+
+@pytest.mark.asyncio
+async def test_execute_order_rejects_mock_crypto_before_upbit_send(monkeypatch):
+    from app.mcp_server.tooling import order_execution
+
+    place_buy = AsyncMock()
+    market_buy = AsyncMock()
+    place_sell = AsyncMock()
+    market_sell = AsyncMock()
+    monkeypatch.setattr(order_execution.upbit_service, "place_buy_order", place_buy)
+    monkeypatch.setattr(
+        order_execution.upbit_service,
+        "place_market_buy_order",
+        market_buy,
+    )
+    monkeypatch.setattr(order_execution.upbit_service, "place_sell_order", place_sell)
+    monkeypatch.setattr(
+        order_execution.upbit_service,
+        "place_market_sell_order",
+        market_sell,
+    )
+
+    with pytest.raises(ValueError, match="crypto has no mock venue"):
+        await order_execution._execute_order(
+            symbol="KRW-BTC",
+            side="buy",
+            order_type="limit",
+            quantity=0.001,
+            price=50000000.0,
+            market_type="crypto",
+            is_mock=True,
+        )
+
+    place_buy.assert_not_awaited()
+    market_buy.assert_not_awaited()
+    place_sell.assert_not_awaited()
+    market_sell.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_place_order_impl_rejects_mock_crypto_before_upbit_reads(monkeypatch):
+    from app.mcp_server.tooling import order_execution
+
+    fetch_prices = AsyncMock()
+    fetch_coins = AsyncMock()
+    place_buy = AsyncMock()
+    market_buy = AsyncMock()
+    place_sell = AsyncMock()
+    market_sell = AsyncMock()
+    monkeypatch.setattr(
+        order_execution.upbit_service,
+        "fetch_multiple_current_prices",
+        fetch_prices,
+    )
+    monkeypatch.setattr(order_execution.upbit_service, "fetch_my_coins", fetch_coins)
+    monkeypatch.setattr(order_execution.upbit_service, "place_buy_order", place_buy)
+    monkeypatch.setattr(
+        order_execution.upbit_service,
+        "place_market_buy_order",
+        market_buy,
+    )
+    monkeypatch.setattr(order_execution.upbit_service, "place_sell_order", place_sell)
+    monkeypatch.setattr(
+        order_execution.upbit_service,
+        "place_market_sell_order",
+        market_sell,
+    )
+
+    result = await order_execution._place_order_impl(
+        symbol="KRW-BTC",
+        side="buy",
+        order_type="limit",
+        quantity=0.001,
+        price=50000000.0,
+        dry_run=False,
+        is_mock=True,
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "crypto has no mock venue"
+    assert result["source"] == "upbit"
+    assert result["symbol"] == "KRW-BTC"
+    assert result["instrument_type"] == "crypto"
+    fetch_prices.assert_not_awaited()
+    fetch_coins.assert_not_awaited()
+    place_buy.assert_not_awaited()
+    market_buy.assert_not_awaited()
+    place_sell.assert_not_awaited()
+    market_sell.assert_not_awaited()
+
