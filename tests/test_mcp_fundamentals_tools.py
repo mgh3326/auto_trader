@@ -755,17 +755,36 @@ class TestAnalyzeStockBatch:
     """Test analyze_stock_batch tool."""
 
     @pytest.fixture(autouse=True)
-    def _no_earnings_injection(self, monkeypatch):
-        # ROB-722 fix made the earnings attach actually fire for equity rows
-        # (the old {"kr","us"} gate never matched real equity_kr/equity_us
-        # market_type values). Left unstubbed it would mutate every compact
-        # contract here and reach live Finnhub for equity_us rows. Injection
-        # behavior is covered by tests/mcp_server/test_earnings_context.py and
+    def _no_advisory_db_injection(self, monkeypatch):
+        # These compact-contract tests assert exact per-symbol dicts, so the
+        # advisory attach steps that hit the shared DB must be stubbed or they
+        # leak state between tests (a prior test committing rows for the same
+        # symbol makes the block appear, ordering-dependent under xdist).
+        #
+        # ROB-722 earnings: the fix made the earnings attach actually fire for
+        # equity rows (the old {"kr","us"} gate never matched real
+        # equity_kr/equity_us market_type values). Left unstubbed it would
+        # mutate every compact contract here and reach live Finnhub for
+        # equity_us rows. Behavior is covered by
+        # tests/mcp_server/test_earnings_context.py and
         # test_analyze_stock_batch_earnings.py.
         async def _none(symbol, market, *, today=None, kr_freshness=None):
             return None
 
         _patch_runtime_attr(monkeypatch, "build_earnings_context", _none)
+
+        # ROB-711 decision_history: _attach_decision_history runs a real
+        # build_decision_context DB query per symbol and injects a
+        # "decision_history" key. Behavior is covered by
+        # tests/mcp_server/test_analyze_stock_batch_decision_history.py.
+        async def _no_decision_history(results, *, market=None):
+            return None
+
+        monkeypatch.setattr(
+            analysis_tool_handlers,
+            "_attach_decision_history",
+            _no_decision_history,
+        )
 
     async def test_analyze_stock_batch_registration(self):
         """Test that analyze_stock_batch is registered as an MCP tool."""
