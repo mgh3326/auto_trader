@@ -10,12 +10,13 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 Lane = Literal["buy", "sell", "discovery"]
 Market = Literal["kr", "us", "crypto"]
 
 ThresholdValue = int | float | str | list[int | float]
+RuleConditionValue = int | float | str | bool | list[int | float | str | bool]
 
 
 class PolicyThreshold(BaseModel):
@@ -26,6 +27,25 @@ class PolicyThreshold(BaseModel):
     unit: str
     semantics: str
     of: int | None = None
+
+
+class PolicyDecisionRuleTier(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    conditions: dict[str, RuleConditionValue]
+    action: str
+    sizing: str
+
+
+class PolicyDecisionRule(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lanes: list[Lane]
+    semantics: str
+    tiers: list[PolicyDecisionRuleTier]
+    tie_breaks: dict[str, str] = Field(default_factory=dict)
+    exclusions: list[str] = Field(default_factory=list)
 
 
 class PolicyAuthority(BaseModel):
@@ -45,4 +65,5 @@ class TradingPolicyDocument(BaseModel):
     authority: PolicyAuthority
     sector_clusters: dict[str, list[str]]
     thresholds: dict[str, PolicyThreshold]
+    decision_rules: dict[str, PolicyDecisionRule] = Field(default_factory=dict)
     market_overrides: dict[Market, dict[str, ThresholdValue]]

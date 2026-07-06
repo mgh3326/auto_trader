@@ -51,5 +51,5 @@ async def test_briefing_includes_policy_version(monkeypatch):
 
     resp = await ob.get_operating_briefing_impl(market="kr")
     assert "policy_version" in resp
-    assert resp["policy_version"]["version"] == "2026-07-02.1"
+    assert resp["policy_version"]["version"] == "2026-07-07.1"
     assert resp["policy_version"]["content_hash"]

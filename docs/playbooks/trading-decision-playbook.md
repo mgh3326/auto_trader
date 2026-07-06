@@ -170,6 +170,13 @@ lanes:
      `sell.watch_upside_min_pct` (let it run).
    - **HOLD** = underwater (loss guard unmet) ∨ just bought ∨ averaging-down main
      leg.
+   - **Tie-break (ROB-751)** = when resistance-near points to PLACE but
+     upside-rich points to WATCH, use
+     `decision_rules.sell.trim_preplace`: RSI-confirmed resistance or
+     ultra-near resistance (≤2%) permits only a small pre-placed trim ladder;
+     RSI-neutral 2-6% resistance becomes a system watch. In this conflict,
+     `sell.upside_place_max_pct` limits trim size rather than blocking
+     pre-placement eligibility.
 4. Execute from the **holding account**: Toss holdings via `toss_place_order`, KIS
    holdings via `kis_live_place_order` (`dry_run` preview → live). Sell-into-strength
    **split ladder** just under resistance;
@@ -299,12 +306,14 @@ these values are the seed, not a second source of truth.
 
 > **Authority (ROB-646, landed):** `config/trading_policy.yaml` is now the
 > single authoritative source of these values; this block is the historical
-> seed. The policy governs **judgment thresholds + the sector-cluster
-> concentration cap only** — NOT the fail-closed code guards (loss guard,
+> seed. The policy governs **judgment thresholds, decision rules, and the
+> sector-cluster concentration cap only** — NOT the fail-closed code guards (loss guard,
 > ladder near-market, RSI scoring bands), NOT `symbol_trade_settings` (live
 > sizing), and it does not revive `trade_profile` (dead since ROB-488). Lane
 > `sell` = "profit_taking" (same lane, human alias). Read it via
-> `get_trading_policy(market, lane)`.
+> `get_trading_policy(market, lane)`. Decision-rule blocks such as
+> `decision_rules.sell.trim_preplace` are policy guidance that resolves
+> threshold conflicts without changing execution guards.
 
 
 ```yaml
