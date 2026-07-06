@@ -24,7 +24,24 @@ _PRICE_RE = re.compile(
     r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*원"
 )
 
+_KR_EQUITY_SYMBOL_RE = re.compile(r"^\d{6}$")
+_NON_KR_EQUITY_REASON = "non_kr_equity_out_of_mirror_scope"
+
 PlaceOrderCallable = Callable[..., Awaitable[dict[str, Any]]]
+
+
+def _mirror_scope_skip_reason(
+    report_market: str,
+    item: InvestmentReportItem,
+) -> str | None:
+    symbol = str(item.symbol or "").strip()
+    if report_market != "kr":
+        return _NON_KR_EQUITY_REASON
+    if item.target_kind != "asset":
+        return _NON_KR_EQUITY_REASON
+    if _KR_EQUITY_SYMBOL_RE.fullmatch(symbol) is None:
+        return _NON_KR_EQUITY_REASON
+    return None
 
 
 @dataclass(frozen=True)
@@ -224,12 +241,18 @@ def _min_hold_days_from_item(item: InvestmentReportItem) -> int | None:
 
 
 def _plan_for_item(
+    report_market: str,
     report_uuid: UUID,
     item: InvestmentReportItem,
     min_rung_quantity: Decimal,
 ) -> tuple[MirrorOrderPlan | None, str | None]:
     if not item.symbol:
         return None, "missing_symbol"
+
+    symbol = item.symbol.strip()
+    scope_skip_reason = _mirror_scope_skip_reason(report_market, item)
+    if scope_skip_reason is not None:
+        return None, scope_skip_reason
 
     source_bucket: MirrorSourceBucket | None = None
     side = _side_from_item(item)
@@ -265,7 +288,7 @@ def _plan_for_item(
         item_uuid=item.item_uuid,
         source_bucket=source_bucket,
         correlation_id=correlation_id,
-        symbol=item.symbol,
+        symbol=symbol,
         side=side,
         quantity=qty,
         amount=amount,
@@ -309,6 +332,7 @@ async def build_mirror_order_plans(
     skipped: list[dict[str, str]] = []
     for item in rows:
         plan, reason = _plan_for_item(
+            report_market=report.market,
             report_uuid=report.report_uuid,
             item=item,
             min_rung_quantity=min_rung_quantity,
@@ -508,4 +532,5 @@ async def execute_mirror_for_report(
         db, plans=plans, dry_run=dry_run, place_order=place_order
     )
     exec_res["skipped_plans"] = plans_res["skipped"]
+    exec_res["plan_skipped_count"] = len(plans_res["skipped"])
     return exec_res

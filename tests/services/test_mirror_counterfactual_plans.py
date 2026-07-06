@@ -6,7 +6,11 @@ from uuid import uuid4
 import pytest
 
 from app.models.investment_reports import InvestmentReport, InvestmentReportItem
-from app.services.trade_journal.mirror_counterfactual import build_mirror_order_plans
+from app.services.trade_journal.mirror_counterfactual import (
+    build_mirror_order_plans,
+    execute_mirror_for_report,
+)
+from unittest.mock import AsyncMock
 
 pytestmark = [pytest.mark.usefixtures("investment_reports_cleanup_lock")]
 
@@ -131,3 +135,79 @@ async def test_item_without_price_is_skipped_with_reason(db_session):
     assert result["plans"] == []
     assert result["skipped"][0]["item_uuid"] == str(item.item_uuid)
     assert result["skipped"][0]["reason"] == "missing_limit_price"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("market", "symbol", "account_scope"),
+    [
+        ("crypto", "KRW-BTC", "upbit_live"),
+        ("kr", "KRW-BTC", "kis_live"),
+        ("us", "AAPL", "kis_live"),
+    ],
+)
+async def test_non_kr_equity_items_are_skipped_with_scope_reason(
+    db_session, market, symbol, account_scope
+):
+    report = await _report(db_session, market=market, account_scope=account_scope)
+    item = await _item(
+        db_session,
+        report,
+        symbol=symbol,
+        max_action={"quantity": "1", "limit_price": "50000000"},
+        evidence_snapshot={"price": "50000000"},
+    )
+    await db_session.commit()
+
+    result = await build_mirror_order_plans(db_session, report_uuid=report.report_uuid)
+
+    assert result["plans"] == []
+    assert result["count"] == 0
+    assert result["skipped"] == [
+        {
+            "item_uuid": str(item.item_uuid),
+            "reason": "non_kr_equity_out_of_mirror_scope",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_crypto_report_item_is_skipped_before_dry_run_false_submit(db_session):
+    report = await _report(
+        db_session,
+        market="crypto",
+        account_scope="upbit_live",
+    )
+    item = await _item(
+        db_session,
+        report,
+        symbol="KRW-BTC",
+        max_action={"quantity": "0.001", "limit_price": "50000000"},
+        evidence_snapshot={"price": "50000000"},
+    )
+    await db_session.commit()
+    calls: list[dict[str, object]] = []
+
+    async def fake_place_order(**kwargs):
+        calls.append(kwargs)
+        return {"success": True, "dry_run": False, "ledger_id": 123}
+
+    result = await execute_mirror_for_report(
+        db_session,
+        report_uuid=report.report_uuid,
+        dry_run=False,
+        place_order=fake_place_order,
+    )
+
+    assert result["success"] is True
+    assert result["planned_count"] == 0
+    assert result["submitted_count"] == 0
+    assert result["plan_skipped_count"] == 1
+    assert result["skipped_plans"] == [
+        {
+            "item_uuid": str(item.item_uuid),
+            "reason": "non_kr_equity_out_of_mirror_scope",
+        }
+    ]
+    assert calls == []
+
