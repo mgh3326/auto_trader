@@ -199,19 +199,21 @@ class TradeRetrospectiveRepository:
         self.db = db
 
     async def get_by_correlation_id(
-        self, correlation_id: str
+        self, correlation_id: str, account_mode: str | None = None
     ) -> TradeRetrospective | None:
-        result = await self.db.execute(
-            select(TradeRetrospective).where(
-                TradeRetrospective.correlation_id == correlation_id
-            )
+        stmt = select(TradeRetrospective).where(
+            TradeRetrospective.correlation_id == correlation_id
         )
+        if account_mode is not None:
+            stmt = stmt.where(TradeRetrospective.account_mode == account_mode)
+        result = await self.db.execute(stmt.limit(1))
         return result.scalar_one_or_none()
 
     async def upsert(self, payload: dict[str, Any]) -> tuple[str, TradeRetrospective]:
         cid = payload.get("correlation_id")
+        account_mode = payload.get("account_mode")
         if cid is not None:
-            existing = await self.get_by_correlation_id(cid)
+            existing = await self.get_by_correlation_id(cid, account_mode)
             if existing is not None:
                 for key, value in payload.items():
                     setattr(existing, key, value)
@@ -857,18 +859,23 @@ _CANCEL_FAMILY_STATUSES = (
 _PENDING_LEDGER_FETCH_CAP = 1000
 
 
-async def _covered_keys(db: AsyncSession) -> tuple[set[str], set[str]]:
-    """(correlation_ids, report_item_uuids) already carrying a retrospective."""
+async def _covered_keys(db: AsyncSession) -> tuple[set[tuple[str, str]], set[str]]:
+    """((correlation_id, account_mode), report_item_uuids) already carrying a retrospective."""
     rows = (
         await db.execute(
             select(
                 TradeRetrospective.correlation_id,
+                TradeRetrospective.account_mode,
                 TradeRetrospective.report_item_uuid,
             )
         )
     ).all()
-    covered_cids = {str(cid) for cid, _ in rows if cid}
-    covered_uuids = {str(uid) for _, uid in rows if uid}
+    covered_cids = {
+        (str(cid), str(account_mode))
+        for cid, account_mode, _ in rows
+        if cid and account_mode
+    }
+    covered_uuids = {str(uid) for _, _, uid in rows if uid}
     return covered_cids, covered_uuids
 
 
@@ -909,11 +916,14 @@ def _pending_entry(
 
 
 def _is_covered(
-    entry: dict[str, Any], covered_cids: set[str], covered_uuids: set[str]
+    entry: dict[str, Any],
+    covered_cids: set[tuple[str, str]],
+    covered_uuids: set[str],
 ) -> bool:
     if entry["report_item_uuid"] and entry["report_item_uuid"] in covered_uuids:
         return True
-    return entry["suggested_correlation_id"] in covered_cids
+    key = (entry["suggested_correlation_id"], entry["account_mode"])
+    return key in covered_cids
 
 
 async def build_retrospective_pending(
