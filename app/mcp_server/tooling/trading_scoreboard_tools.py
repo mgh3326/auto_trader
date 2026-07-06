@@ -33,6 +33,7 @@ async def get_trading_scoreboard(
     setup_tag: str | None = None,
     min_sample: int = 1,
     cohort: str = "live_gated",
+    min_pair_threshold: int = 20,
     include_counterfactual_delta: bool = False,
 ) -> dict[str, Any]:
     try:
@@ -46,6 +47,7 @@ async def get_trading_scoreboard(
                     date_to=_parse_date(date_to),
                     setup_tag=setup_tag,
                     min_sample=min_sample,
+                    min_pair_threshold=max(1, int(min_pair_threshold)),
                 )
             return await build_trading_scoreboard(
                 db,

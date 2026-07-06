@@ -19,7 +19,9 @@ def register_trading_scoreboard_tools(mcp: Any) -> None:
             "R-multiple), profit factor, average/worst MAE and MFE. Tags with "
             "n<10 are flagged insufficient_sample. Filters: market, "
             "account_mode, date_from/date_to (YYYY-MM-DD), setup_tag, "
-            "min_sample. Read-only; deterministic."
+            "min_sample. When include_counterfactual_delta=true, also accepts "
+            "min_pair_threshold (default 20, only affects pairing_health; it "
+            "does not filter rows). Read-only; deterministic."
         ),
     )(get_trading_scoreboard)
 
