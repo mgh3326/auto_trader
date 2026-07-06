@@ -379,6 +379,36 @@ Read-only smoke helper: `scripts/smoke/alpaca_paper_readonly_smoke.py` (argument
 Dev submit/cancel smoke runbook: [`docs/runbooks/alpaca-paper-dev-smoke.md`](../../docs/runbooks/alpaca-paper-dev-smoke.md)
 Dev submit/cancel smoke helper: `scripts/smoke/alpaca_paper_dev_smoke.py` (preview-only by default, side effects require dual explicit gates)
 
+### Execution Ledger Fill Event Tools (ROB-755)
+
+ROB-755 exposes the same fill-event triage surface that powers the operator-host
+alert poller (`scripts/list_recent_fill_events.py`) over MCP. Read-only; no broker
+mutation; no order mutation; no watch mutation. Registered in the "Always" block
+of `register_all_tools` so every profile (including `analysis_readonly`) sees it.
+
+- `execution_ledger_fill_events_list_recent(after_id=None, market=None, side=None, source="websocket", broker=None, account_mode=None, limit=50)`
+  - Read-only. Returns recent fills from `execution_ledger` rows newer than
+    `after_id`, optionally filtered by `market` (`kr`|`us`|`crypto`),
+    `side` (`buy`|`sell`), `source` (`websocket`|`reconciler`|`manual_import`),
+    `broker`, and `account_mode` (`live`|`mock`).
+  - `source` defaults to `websocket` so triagers don't accidentally ingest
+    reconciler/manual_import backfills; pass `source=None` to read every source.
+  - `limit` is clamped to `1..500` by the repo.
+  - Response: `{"success": True, "count": int, "fills": [sanitized_fill, ...]}`
+    on success; `{"success": False, "error": str}` on failure.
+  - **No broker mutation.** No order mutation. No DB write.
+
+**Sanitized fill shape (20 keys, identical to the CLI output):**
+`ledger_id`, `event_key`, `broker`, `account_mode`, `venue`, `instrument_type`,
+`market`, `symbol`, `raw_symbol`, `side`, `filled_qty`, `filled_price`,
+`filled_notional`, `currency`, `broker_order_id`, `fill_seq`, `correlation_id`,
+`source`, `filled_at`, `created_at`. **`raw_payload_json` is never emitted**
+(security constraint — same as the CLI).
+
+**Validation errors:**
+- `source="invalid"` (or any string outside `websocket`/`reconciler`/`manual_import`/`None`)
+  → `{"success": False, "error": "invalid_source"}` immediately, no DB call.
+
 ### Alpaca paper order preview
 
 ROB-70 adds `alpaca_paper_preview_order`: a side-effect-free validator + echo tool.
