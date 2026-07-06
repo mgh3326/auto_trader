@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed (ROB-744 — Mirror pairing cohort closure; migration 0)
+- **Read-time mirror cohort closure.** Unstamped `kis_mock` sell rows now project onto open mirror buy lots via conservative FIFO ownership rule in `load_fills`, so counterfactual paired samples accumulate even when the exit sell is an ordinary mock sell without `mirror_cohort` stamping. Non-mirror lots keep FIFO priority over later mirror lots.
+- **Pairability diagnostics.** `build_counterfactual_delta_scoreboard` now returns `pairing_diagnostics` (closed-trade counts, key coverage, unpaired counts, missing `report_item_uuid`) and `pairing_health` (`ok` / `warming_up` / `needs_design_review`) keyed off a `min_pair_threshold` (default 20). `paired_count == 0` can no longer masquerade as a valid neutral result when closed samples exist.
+- **MCP contract.** `get_trading_scoreboard` forwards `min_pair_threshold` into the delta builder when `include_counterfactual_delta=True`. README documents that report-originated live orders must pass `report_item_uuid` for counterfactual pairing.
+
 ## [0.3.6] - 2026-07-06
 
 ### Added (ROB-734 — KIS Mock Mirror Counterfactual implementation; migration 1)
