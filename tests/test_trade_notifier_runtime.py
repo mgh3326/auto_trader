@@ -63,6 +63,34 @@ def test_configure_trade_notifier_passes_discord_and_telegram(monkeypatch):
 
 
 @pytest.mark.unit
+def test_configure_trade_notifier_uses_plural_chat_ids_without_singular_chat_id(
+    monkeypatch,
+):
+    notifier = SimpleNamespace(configure=Mock())
+    monkeypatch.setattr(runtime, "get_trade_notifier", Mock(return_value=notifier))
+
+    configured = runtime.configure_trade_notifier_from_settings(
+        log_context="Unit notifier",
+        settings_obj=_settings(
+            telegram_token="telegram-token",
+            telegram_chat_id=None,
+            telegram_chat_ids=["primary-chat", "secondary-chat"],
+        ),
+    )
+
+    assert configured is True
+    notifier.configure.assert_called_once_with(
+        bot_token="telegram-token",
+        chat_ids=["primary-chat", "secondary-chat"],
+        enabled=True,
+        discord_webhook_us=None,
+        discord_webhook_kr=None,
+        discord_webhook_crypto=None,
+        discord_webhook_alerts=None,
+    )
+
+
+@pytest.mark.unit
 def test_configure_trade_notifier_fail_open_on_configure_error(monkeypatch):
     notifier = SimpleNamespace(configure=Mock(side_effect=RuntimeError("boom")))
     monkeypatch.setattr(runtime, "get_trade_notifier", Mock(return_value=notifier))

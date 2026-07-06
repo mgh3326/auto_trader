@@ -286,6 +286,26 @@ class TestConfigLoading:
 
         assert cfg.kis_api_rate_limits == custom_limits
 
+    def test_telegram_chat_ids_str_splits_multiple_ids(self):
+        cfg = Settings(
+            telegram_token="token",
+            telegram_chat_id="legacy",
+            telegram_chat_ids_str="111, 222,,333 ",
+        )
+
+        assert cfg.telegram_chat_ids == ["111", "222", "333"]
+
+    def test_telegram_chat_ids_falls_back_to_single_chat_id(self):
+        # conftest가 TELEGRAM_CHAT_IDS_STR 전역 기본값을 심으므로 명시적으로
+        # 비워야 legacy 폴백 경로가 검증된다 (env/dotenv 무관 밀폐형).
+        cfg = Settings(
+            telegram_token="token",
+            telegram_chat_id="legacy",
+            telegram_chat_ids_str=None,
+        )
+
+        assert cfg.telegram_chat_ids == ["legacy"]
+
 
 def test_runbook_exists() -> None:
     assert Path("docs/runbooks/freqtrade-research-pipeline.md").exists()

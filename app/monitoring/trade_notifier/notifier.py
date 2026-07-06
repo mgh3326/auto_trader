@@ -227,6 +227,69 @@ class TradeNotifier:
             logger.exception("Notification dispatch failed")
             return False
 
+    async def _dispatch_mirror(
+        self,
+        discord_embed: DiscordEmbed | None,
+        telegram_message: str,
+        market_type: str | None = None,
+        *,
+        context: str,
+    ) -> bool:
+        """Attempt Discord and Telegram independently for mirror notifications."""
+        if not self._enabled:
+            logger.info(
+                "Notification mirror result: context=%s market_type=%s discord=%s telegram=%s",
+                context,
+                market_type,
+                "skipped(notifier_disabled)",
+                "skipped(notifier_disabled)",
+            )
+            return False
+
+        delivered = False
+        discord_result = "skipped(no_discord_webhook)"
+        telegram_result = "skipped(no_telegram_config)"
+
+        if market_type and discord_embed:
+            webhook_url = self._get_webhook_for_market_type(market_type)
+            if webhook_url:
+                try:
+                    discord_success = await self._send_to_discord_embed_single(
+                        discord_embed, webhook_url
+                    )
+                    discord_result = "success" if discord_success else "failed"
+                    delivered = delivered or discord_success
+                except Exception:
+                    discord_result = "failed(exception)"
+                    logger.exception(
+                        "Notification mirror Discord send failed: context=%s market_type=%s",
+                        context,
+                        market_type,
+                    )
+
+        if telegram_message:
+            if self._has_telegram_delivery_config():
+                try:
+                    telegram_success = await self._send_to_telegram(telegram_message)
+                    telegram_result = "success" if telegram_success else "failed"
+                    delivered = delivered or telegram_success
+                except Exception:
+                    telegram_result = "failed(exception)"
+                    logger.exception(
+                        "Notification mirror Telegram send failed: context=%s market_type=%s",
+                        context,
+                        market_type,
+                    )
+
+        logger.info(
+            "Notification mirror result: context=%s market_type=%s discord=%s telegram=%s",
+            context,
+            market_type,
+            discord_result,
+            telegram_result,
+        )
+        return delivered
+
     # ── public notify methods ──────────────────────────────────────────
 
     async def notify_buy_order(
@@ -301,7 +364,9 @@ class TradeNotifier:
         telegram_msg = fmt_telegram.format_investment_watch_trigger_telegram(
             payload, display_name=display_name, base_url=base_url
         )
-        return await self._dispatch(embed, telegram_msg, payload.market)
+        return await self._dispatch_mirror(
+            embed, telegram_msg, payload.market, context="investment_watch"
+        )
 
     async def notify_sell_order(
         self,
@@ -584,6 +649,7 @@ class TradeNotifier:
         correlation_id: str | None = None,
         market_type: str | None = None,
         skip_discord: bool = False,
+        mirror_telegram: bool = False,
     ) -> bool:
         """Forward an agent-gateway outbound message to Discord or Telegram."""
         discord_result = "skipped(no_discord_webhook)"
@@ -617,15 +683,17 @@ class TradeNotifier:
                 )
                 if discord_success:
                     discord_result = "success"
-                    telegram_result = "skipped(fallback_not_needed)"
-                    logger.info(
-                        "Agent gateway mirror result: correlation_id=%s discord=%s telegram=%s",
-                        correlation_id,
-                        discord_result,
-                        telegram_result,
-                    )
-                    return True
-                discord_result = "failed"
+                    if not mirror_telegram:
+                        telegram_result = "skipped(fallback_not_needed)"
+                        logger.info(
+                            "Agent gateway mirror result: correlation_id=%s discord=%s telegram=%s",
+                            correlation_id,
+                            discord_result,
+                            telegram_result,
+                        )
+                        return True
+                else:
+                    discord_result = "failed"
 
             # Fall back to Telegram
             if not self._has_telegram_delivery_config():
@@ -636,7 +704,7 @@ class TradeNotifier:
                     discord_result,
                     telegram_result,
                 )
-                return False
+                return discord_result == "success"
 
             telegram_success = await self._send_to_telegram(
                 message, parse_mode=parse_mode
@@ -648,7 +716,7 @@ class TradeNotifier:
                 discord_result,
                 telegram_result,
             )
-            return telegram_success
+            return telegram_success or discord_result == "success"
         except Exception as e:
             logger.error(f"Failed to forward agent-gateway message: {e}")
             logger.info(
