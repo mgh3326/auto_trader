@@ -106,9 +106,7 @@ def us_market_session(now: Any = None) -> str:
 
     open_local = open_utc.astimezone(_ET)
     close_local = close_utc.astimezone(_ET)
-    pre_open = local.replace(
-        hour=_US_PRE_OPEN.hour, minute=0, second=0, microsecond=0
-    )
+    pre_open = local.replace(hour=_US_PRE_OPEN.hour, minute=0, second=0, microsecond=0)
     after_close = local.replace(
         hour=_US_AFTER_CLOSE.hour, minute=0, second=0, microsecond=0
     )

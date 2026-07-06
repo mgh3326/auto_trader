@@ -1137,7 +1137,9 @@ async def test_get_quote_us_yahoo_fallback_tags_session_and_price_source(monkeyp
 
     class DummyKISClient:
         async def inquire_overseas_price(self, symbol, exchange_code="NASD"):
-            return pd.DataFrame(columns=["close", "previous_close", "volume", "quote_asof"])
+            return pd.DataFrame(
+                columns=["close", "previous_close", "volume", "quote_asof"]
+            )
 
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
     monkeypatch.setattr(
