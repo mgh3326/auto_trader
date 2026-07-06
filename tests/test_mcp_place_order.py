@@ -3000,4 +3000,3 @@ async def test_place_order_impl_rejects_mock_crypto_before_upbit_reads(monkeypat
     market_buy.assert_not_awaited()
     place_sell.assert_not_awaited()
     market_sell.assert_not_awaited()
-

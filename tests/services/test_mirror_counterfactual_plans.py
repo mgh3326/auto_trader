@@ -10,7 +10,6 @@ from app.services.trade_journal.mirror_counterfactual import (
     build_mirror_order_plans,
     execute_mirror_for_report,
 )
-from unittest.mock import AsyncMock
 
 pytestmark = [pytest.mark.usefixtures("investment_reports_cleanup_lock")]
 
@@ -210,4 +209,3 @@ async def test_crypto_report_item_is_skipped_before_dry_run_false_submit(db_sess
         }
     ]
     assert calls == []
-
