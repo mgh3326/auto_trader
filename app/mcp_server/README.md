@@ -303,6 +303,7 @@ full payload, by numeric `id` or `artifact_uuid` string. Missing ids return
 
 - `investment_report_add_items(report_uuid, items, actor=None)` - Append new proposal items to an existing draft investment report. The item payload contract matches `investment_report_create`. Duplicate `client_item_key` rows are returned as existing items and are not rewritten. Non-draft reports return `error="not_draft"`. No broker, order, or watch mutation is performed.
 - `investment_report_update(report_uuid, title=None, summary=None, risk_summary=None, thesis_text=None, no_action_note=None, market_snapshot=None, portfolio_snapshot=None, metadata=None, valid_until=None, actor=None, reason=None)` - Update draft report header fields without changing report identity, lifecycle status, predecessor chain, account scope, generator version, or items. Each successful update appends an audit entry to `report.metadata.draft_updates`. Non-draft reports return `error="not_draft"`.
+- `kis_mock_mirror_execute_report(report_uuid, dry_run=True, min_rung_quantity=1.0)` - Execute ROB-734 mirror counterfactual orders through KIS mock only. The planner mirrors only KR report items with `target_kind="asset"` and a six-digit numeric symbol. Non-KR, US, crypto, index, and FX items are skipped with `reason="non_kr_equity_out_of_mirror_scope"` and counted in `plan_skipped_count`; they are never submitted to `place_order`.
 
 ### Alpaca paper read-only smoke tools
 
@@ -456,6 +457,10 @@ official KIS mock, and KIS live account paths:
   `KIS_MOCK_APP_SECRET`, or `KIS_MOCK_ACCOUNT_NO` are missing. HTTP requests
   use `KIS_MOCK_BASE_URL`, which defaults to the official KIS mock host
   `https://openapivts.koreainvestment.com:29443`.
+  KIS mock is a KIS venue only. It does not simulate Upbit crypto orders:
+  symbols that resolve to crypto, such as `KRW-BTC`, fail closed with
+  `error: "crypto has no mock venue"` before Upbit balance reads or order
+  mutation calls.
 - `account_mode="kis_live"` or omitted: existing live KIS behavior. For
   `place_order`, `dry_run=True` remains the default. KR live buy paths query
   Toss stock warnings before order submission; active `LIQUIDATION_TRADING`
