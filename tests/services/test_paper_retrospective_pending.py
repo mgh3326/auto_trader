@@ -83,13 +83,14 @@ async def test_paper_fill_surfaces_as_pending(db_session: Any) -> None:
     acct = await pts.create_account(
         name=_uniq("rob705-pend"), initial_capital_krw=Decimal("100000000")
     )
+    correlation_id = _uniq("paper:rob705:buy")
     await _make_paper_trade(
         db_session,
         account_id=acct.id,
         symbol="KRW-BTC",
         side="buy",
         price=Decimal("50000000"),
-        correlation_id="paper:1:buyabc",
+        correlation_id=correlation_id,
     )
     today = now_kst().strftime("%Y-%m-%d")
     result = await _pending_with_retry(
@@ -101,7 +102,11 @@ async def test_paper_fill_surfaces_as_pending(db_session: Any) -> None:
         if e.get("account_mode") == "paper" and e.get("symbol") == "KRW-BTC"
     ]
     assert paper, result["pending"]
-    assert paper[0]["suggested_correlation_id"] == "paper:1:buyabc"
+    row = next(
+        (e for e in paper if e.get("suggested_correlation_id") == correlation_id),
+        None,
+    )
+    assert row is not None, result["pending"]
 
 
 @pytest.mark.asyncio
@@ -110,6 +115,7 @@ async def test_loss_sell_surfaces_with_stop_loss_suggestion(db_session: Any) -> 
     acct = await pts.create_account(
         name=_uniq("rob705-stop"), initial_capital_krw=Decimal("100000000")
     )
+    correlation_id = _uniq("paper:rob705:stop")
     await _make_paper_trade(
         db_session,
         account_id=acct.id,
@@ -117,7 +123,7 @@ async def test_loss_sell_surfaces_with_stop_loss_suggestion(db_session: Any) -> 
         side="sell",
         price=Decimal("45000000"),
         realized_pnl=Decimal("-50000"),
-        correlation_id="paper:1:stopxyz",
+        correlation_id=correlation_id,
     )
     today = now_kst().strftime("%Y-%m-%d")
     result = await _pending_with_retry(
@@ -131,7 +137,12 @@ async def test_loss_sell_surfaces_with_stop_loss_suggestion(db_session: Any) -> 
         and e.get("side") == "sell"
     ]
     assert sells, result["pending"]
-    assert sells[0]["suggested_trigger_type"] == "stop_loss"
+    row = next(
+        (e for e in sells if e.get("suggested_correlation_id") == correlation_id),
+        None,
+    )
+    assert row is not None, result["pending"]
+    assert row["suggested_trigger_type"] == "stop_loss"
 
 
 @pytest.mark.asyncio
@@ -140,6 +151,7 @@ async def test_profitable_sell_has_no_stop_loss_suggestion(db_session: Any) -> N
     acct = await pts.create_account(
         name=_uniq("rob705-win"), initial_capital_krw=Decimal("100000000")
     )
+    correlation_id = _uniq("paper:rob705:win")
     await _make_paper_trade(
         db_session,
         account_id=acct.id,
@@ -147,7 +159,7 @@ async def test_profitable_sell_has_no_stop_loss_suggestion(db_session: Any) -> N
         side="sell",
         price=Decimal("55000000"),
         realized_pnl=Decimal("50000"),
-        correlation_id="paper:1:win123",
+        correlation_id=correlation_id,
     )
     today = now_kst().strftime("%Y-%m-%d")
     result = await _pending_with_retry(
@@ -159,4 +171,9 @@ async def test_profitable_sell_has_no_stop_loss_suggestion(db_session: Any) -> N
         if e.get("account_mode") == "paper" and e.get("symbol") == "KRW-SOL"
     ]
     assert sol, result["pending"]
-    assert sol[0].get("suggested_trigger_type") is None
+    row = next(
+        (e for e in sol if e.get("suggested_correlation_id") == correlation_id),
+        None,
+    )
+    assert row is not None, result["pending"]
+    assert row.get("suggested_trigger_type") is None
