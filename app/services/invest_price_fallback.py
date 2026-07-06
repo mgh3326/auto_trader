@@ -13,6 +13,10 @@ logger = logging.getLogger(__name__)
 PriceMap = dict[str, float | None]
 Fetcher = Callable[[list[str]], Awaitable[PriceMap]]
 
+KIS_FIRST_ORDER: tuple[str, ...] = ("kis", "toss", "snapshot")
+TOSS_FIRST_ORDER: tuple[str, ...] = ("toss", "kis", "snapshot")
+_KNOWN_LAYERS = frozenset(KIS_FIRST_ORDER)
+
 
 class PriceFallbackResolver:
     """Pure orchestration: run injected fetchers KIS → Toss → snapshot, merge
@@ -26,29 +30,37 @@ class PriceFallbackResolver:
         toss_fetch: Fetcher | None,
         snapshot_fetch: Fetcher,
         market: str,
+        order: tuple[str, ...] = KIS_FIRST_ORDER,
     ) -> None:
+        if len(order) != len(_KNOWN_LAYERS) or set(order) != _KNOWN_LAYERS:
+            # Fail-loud: a typo must not silently drop a fallback layer.
+            raise ValueError(
+                f"order must be a permutation of {sorted(_KNOWN_LAYERS)}, got {order!r}"
+            )
         self._kis_fetch = kis_fetch
         self._toss_fetch = toss_fetch
         self._snapshot_fetch = snapshot_fetch
         self._market = market
+        self._order = order
 
     async def resolve(self, symbols: list[str]) -> PriceMap:
         if not symbols:
             return {}
         results: PriceMap = dict.fromkeys(symbols, None)
-
-        await self._apply_layer("kis", self._kis_fetch, symbols, results)
-        missing = self._missing(symbols, results)
-        if not missing:
-            return results
-
-        if self._toss_fetch is not None:
-            await self._apply_layer("toss", self._toss_fetch, missing, results)
+        layers: dict[str, Fetcher | None] = {
+            "kis": self._kis_fetch,
+            "toss": self._toss_fetch,
+            "snapshot": self._snapshot_fetch,
+        }
+        missing = symbols  # first layer runs on the full list
+        for name in self._order:
+            fetch = layers[name]
+            if fetch is None:  # e.g. Toss disabled -> skip this layer
+                continue
+            await self._apply_layer(name, fetch, missing, results)
             missing = self._missing(symbols, results)
             if not missing:
                 return results
-
-        await self._apply_layer("snapshot", self._snapshot_fetch, missing, results)
         return results
 
     async def _apply_layer(
