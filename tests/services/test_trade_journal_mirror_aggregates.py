@@ -114,7 +114,6 @@ async def test_delta_scoreboard_pairs_by_report_item_when_correlation_differs(
                 account_mode="kis_live",
                 broker="kis",
                 correlation_id="live-exit",
-                report_item_uuid=common["report_item_uuid"],
             ),
             KISMockOrderLedger(
                 trade_date=when,
@@ -158,7 +157,6 @@ async def test_delta_scoreboard_pairs_by_report_item_when_correlation_differs(
                 mirror_cohort="mock_counterfactual",
                 mirror_source_bucket="place_original",
                 correlation_id="mock-exit",
-                report_item_uuid=common["report_item_uuid"],
             ),
         ]
     )
