@@ -453,8 +453,7 @@ async def test_list_recent_fills_for_triage_orders_by_id_asc_and_clamps_limit(
 ) -> None:
     """Results are returned in id ASC order and limit clamps to the [1, 500] range."""
     seeded_rows = [
-        _triage_row(broker_order_id=f"ROB755-C{i:03d}", fill_seq=i)
-        for i in range(7)
+        _triage_row(broker_order_id=f"ROB755-C{i:03d}", fill_seq=i) for i in range(7)
     ]
     db_session.add_all(seeded_rows)
     await db_session.commit()

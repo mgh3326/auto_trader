@@ -2,6 +2,7 @@
 
 live DB 없이 monkeypatch로 검증한다 (CLI test 패턴과 동일).
 """
+
 from __future__ import annotations
 
 import types

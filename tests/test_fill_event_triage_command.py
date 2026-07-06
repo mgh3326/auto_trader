@@ -41,7 +41,9 @@ def test_command_does_not_reference_denied_tools():
     )
     denied = set(settings.get("permissions", {}).get("deny", []))
     # Check every mcp__auto_trader_local__* tool name mentioned in the command
-    mentioned_tools: set[str] = set(re.findall(r"mcp__auto_trader_local__(\w+)", cmd_body))
+    mentioned_tools: set[str] = set(
+        re.findall(r"mcp__auto_trader_local__(\w+)", cmd_body)
+    )
     # Also check bare tool names that appear in the deny list
     for tool_suffix in re.findall(
         r"\b(buy_ladder_fill_preview|sell_ladder_fill_preview|place_order|cancel_order|modify_order|reconcile_orders)\b",

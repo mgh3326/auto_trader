@@ -13,6 +13,7 @@ function never reads that attribute). The shape is intentionally fixed and
 documented as a contract — adding/removing keys must come with a contract
 review because both surfaces' tests pin the key set.
 """
+
 from __future__ import annotations
 
 from typing import Any
