@@ -382,6 +382,18 @@ class TestAnalysisReadonlyProfile:
         assert result["tool"] == "session_context_append"
         assert result["entry_indexes"] == [0]
 
+    @pytest.mark.asyncio
+    async def test_session_context_append_preserves_validation_for_non_dict_entry(
+        self,
+    ) -> None:
+        mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
+        tool = mcp.tools["session_context_append"]
+
+        result = await tool(entries=["not-a-dict"])
+
+        assert result["success"] is False
+        assert result["error"] == "invalid_request"
+
     def test_persistence_tools_are_registered_but_list_resolve_are_not(self) -> None:
         mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
         assert {"analysis_artifact_save", "analysis_artifact_get", "forecast_save"} <= mcp.tools.keys()

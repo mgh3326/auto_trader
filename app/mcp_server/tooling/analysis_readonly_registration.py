@@ -203,7 +203,8 @@ def _register_persistence_tools(mcp: FastMCP) -> None:
             missing = [
                 idx
                 for idx, entry in enumerate(entries)
-                if not _clean_created_by(str(entry.get("created_by", "")))
+                if isinstance(entry, dict)
+                and not _clean_created_by(str(entry.get("created_by", "")))
             ]
             if missing:
                 return {

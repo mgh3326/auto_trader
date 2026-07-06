@@ -1691,13 +1691,11 @@ Here is an example Codex config file to connect to the analysis-readonly MCP ser
 # ~/.codex/config.toml
 # Relaxed approval is scoped to the analysis-readonly MCP server only.
 [mcp_servers.auto_trader_analysis_readonly]
-type = "streamable_http"
 url = "http://127.0.0.1:8768/mcp"
-default_tools_approval_mode = "never"
+bearer_token_env_var = "MCP_ANALYSIS_READONLY_AUTH_TOKEN"
+default_tools_approval_mode = "auto"
 
-[mcp_servers.auto_trader_analysis_readonly.headers]
-Authorization = "Bearer ${MCP_ANALYSIS_READONLY_AUTH_TOKEN}"
-x-paperclip-agent-id = "codex-analysis-readonly"
+http_headers = { "x-paperclip-agent-id" = "codex-analysis-readonly" }
 ```
 
 ### Typed KIS order tools
