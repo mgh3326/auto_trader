@@ -394,3 +394,19 @@ async def test_stale_artifact_flagged_and_filtered(db_session: AsyncSession) -> 
     )
     assert with_stale["count"] == 1
     assert with_stale["artifacts"][0]["is_stale"] is True
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_save_accepts_codex_created_by(db_session: AsyncSession) -> None:
+    response = await analysis_artifact_save(
+        market="kr",
+        kind="session_summary",
+        title="Codex summary",
+        payload={"source": "analysis_readonly"},
+        as_of="2026-07-06T00:00:00+09:00",
+        created_by="codex",
+    )
+
+    assert response["success"] is True
+    assert response["artifact"]["created_by"] == "codex"

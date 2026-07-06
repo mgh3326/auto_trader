@@ -39,6 +39,13 @@ Profile → tool surface mapping
   validity guard so a headless replay session cannot leak live market data or
   persist anything.
 
+"analysis_readonly" (McpProfile.ANALYSIS_READONLY):
+  Codex/headless read/analysis allowlist only. Registers operating briefing,
+  policy/route, selected market/fundamental/analysis/holdings tools,
+  toss_get_positions, and explicitly labeled analysis persistence. No order,
+  cancel, modify, reconcile, preview, settings, watch mutation, admin, or manual
+  holdings mutation tools are registered.
+
 See app/mcp_server/profiles.py and docs in app/mcp_server/README.md.
 """
 
@@ -64,6 +71,9 @@ from app.mcp_server.tooling.alpaca_paper_preview import (
 )
 from app.mcp_server.tooling.analysis_artifact_registration import (
     register_analysis_artifact_tools,
+)
+from app.mcp_server.tooling.analysis_readonly_registration import (
+    register_analysis_readonly_tools,
 )
 from app.mcp_server.tooling.analysis_registration import register_analysis_tools
 from app.mcp_server.tooling.forecast_registration import register_forecast_tools
@@ -158,6 +168,13 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_hermes_context_read_only(mcp)  # investment_report_get_hermes_context
         register_trading_policy_tools(mcp)  # get_trading_policy (versioned thresholds)
         register_route_request_tools(mcp)  # route_request (lane procedure)
+        return
+
+    if profile is McpProfile.ANALYSIS_READONLY:
+        # ROB-745 — Codex/headless analysis surface. Allowlist-only and returns
+        # before the normal "Always" block so unlisted research, account,
+        # settings, watch, report-write, and order tools are physically absent.
+        register_analysis_readonly_tools(mcp)
         return
 
     # Always: side-effect-free research + read-only tools

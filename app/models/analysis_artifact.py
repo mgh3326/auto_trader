@@ -46,7 +46,7 @@ class AnalysisArtifact(Base):
             name="kind",
         ),
         CheckConstraint(
-            "created_by IN ('claude','operator','system')",
+            "created_by IN ('claude','operator','system','codex')",
             name="created_by",
         ),
         CheckConstraint(
