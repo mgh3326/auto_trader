@@ -777,7 +777,9 @@ class TestAnalyzeStockBatch:
         # build_decision_context DB query per symbol and injects a
         # "decision_history" key. Behavior is covered by
         # tests/mcp_server/test_analyze_stock_batch_decision_history.py.
-        async def _no_decision_history(results, *, market=None):
+        async def _no_decision_history(
+            results, *, market=None, decision_history_account_mode=None
+        ):
             return None
 
         monkeypatch.setattr(
