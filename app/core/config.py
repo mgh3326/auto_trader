@@ -33,6 +33,18 @@ DEFAULT_KIS_API_RATE_LIMITS: ApiRateLimitMap = {
         "rate": 20,
         "period": 1.0,
     },
+    # ROB-753: batch /invest KIS fallback uses these current-price endpoints.
+    # Live measurement showed same-endpoint concurrent bursts can fail most US
+    # symbols, while sequential calls succeed. Keep the default process-local
+    # limiter conservative; operators can override with KIS_API_RATE_LIMITS.
+    "FHKST01010100|/uapi/domestic-stock/v1/quotations/inquire-price": {
+        "rate": 1,
+        "period": 0.2,
+    },
+    "HHDFS00000300|/uapi/overseas-price/v1/quotations/price": {
+        "rate": 1,
+        "period": 0.2,
+    },
     "TTTC8434R|/uapi/domestic-stock/v1/trading/inquire-balance": {
         "rate": 10,
         "period": 1.0,

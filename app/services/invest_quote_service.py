@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -112,41 +112,43 @@ class InvestQuoteService:
             return {}
         return dict(found)
 
-    async def _kis_fetch_kr(self, symbols: list[str]) -> dict[str, float | None]:
+    async def _kis_fetch_serial(
+        self,
+        symbols: list[str],
+        fetch_one: Callable[[str], Awaitable[float | None]],
+        *,
+        market_label: str,
+    ) -> dict[str, float | None]:
         results: dict[str, float | None] = {}
-
-        async def _fetch(symbol: str) -> None:
+        for symbol in symbols:
             try:
-                df = await self._market_data.inquire_price(symbol, market="J")
-                results[symbol] = float(df.iloc[0]["close"]) if not df.empty else None
-            except Exception as exc:  # noqa: BLE001 — summarized by the resolver
-                logger.debug("KIS KR price miss %s: %s", symbol, exc)
+                results[symbol] = await fetch_one(symbol)
+            except Exception as exc:  # noqa: BLE001 - fail-open per symbol
+                logger.debug("KIS %s price miss %s: %s", market_label, symbol, exc)
                 results[symbol] = None
-
-        await asyncio.gather(*(_fetch(s) for s in symbols))
         return results
+
+    async def _kis_fetch_kr(self, symbols: list[str]) -> dict[str, float | None]:
+        async def _fetch(symbol: str) -> float | None:
+            df = await self._market_data.inquire_price(symbol, market="J")
+            return float(df.iloc[0]["close"]) if not df.empty else None
+
+        return await self._kis_fetch_serial(symbols, _fetch, market_label="KR")
 
     async def _kis_fetch_us(self, symbols: list[str]) -> dict[str, float | None]:
-        results: dict[str, float | None] = {}
+        async def _fetch(symbol: str) -> float | None:
+            exchange = await get_us_exchange_by_symbol(symbol, self._db)
+            # ROB-708: live last (HHDFS00000300), mirroring get_quote US, so
+            # KIS-resolved US prices agree with Toss-resolved live-last prices
+            # instead of silently mixing in a settled daily close (HHDFS76240000).
+            # _build_overseas_price_frame returns empty when last is None/<=0,
+            # so an empty frame -> None -> resolver falls through to Toss/snapshot.
+            df = await self._market_data.inquire_overseas_price(
+                symbol, exchange_code=exchange
+            )
+            return float(df.iloc[0]["close"]) if not df.empty else None
 
-        async def _fetch(symbol: str) -> None:
-            try:
-                exchange = await get_us_exchange_by_symbol(symbol, self._db)
-                # ROB-708: live last (HHDFS00000300), mirroring get_quote US, so
-                # KIS-resolved US prices agree with Toss-resolved live-last prices
-                # instead of silently mixing in a settled daily close (HHDFS76240000).
-                # _build_overseas_price_frame returns empty when last is None/<=0,
-                # so an empty frame -> None -> resolver falls through to Toss/snapshot.
-                df = await self._market_data.inquire_overseas_price(
-                    symbol, exchange_code=exchange
-                )
-                results[symbol] = float(df.iloc[0]["close"]) if not df.empty else None
-            except Exception as exc:  # noqa: BLE001 — summarized by the resolver
-                logger.debug("KIS US price miss %s: %s", symbol, exc)
-                results[symbol] = None
-
-        await asyncio.gather(*(_fetch(s) for s in symbols))
-        return results
+        return await self._kis_fetch_serial(symbols, _fetch, market_label="US")
 
     async def kis_only_kr_prices(self, symbols: list[str]) -> dict[str, float | None]:
         """ROB-709 shadow: RAW KIS KR batch layer (no fallback chain). Read-only."""

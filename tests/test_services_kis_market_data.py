@@ -1171,6 +1171,16 @@ class TestKISRateLimitLookup:
                 1.0,
             ),
             (
+                "FHKST01010100|/uapi/domestic-stock/v1/quotations/inquire-price",
+                1,
+                0.2,
+            ),
+            (
+                "HHDFS00000300|/uapi/overseas-price/v1/quotations/price",
+                1,
+                0.2,
+            ),
+            (
                 "TTTC8434R|/uapi/domestic-stock/v1/trading/inquire-balance",
                 10,
                 1.0,
