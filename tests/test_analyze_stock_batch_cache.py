@@ -881,3 +881,28 @@ def test_summarize_omits_price_provenance_when_absent():
     assert summary["current_price"] == 168300.0
     assert "price_source" not in summary
     assert "session" not in summary
+
+
+def test_intraday_sr_reanchors_on_nxt_overlay_price():
+    from app.mcp_server.tooling.analysis_analyze import (
+        _recompute_intraday_support_resistance,
+    )
+
+    analysis = {
+        "quote": {"price": 173500.0, "price_source": "nxt_expected_price"},
+        "support_resistance": {
+            # EOD levels computed against the stale 168300 close
+            "supports": [{"price": 170000.0, "distance_pct": 1.01}],
+            "resistances": [{"price": 171387.0, "distance_pct": 1.83}],
+        },
+    }
+
+    _recompute_intraday_support_resistance(analysis, "equity_kr")
+
+    sr = analysis["support_resistance"]
+    assert sr["distance_basis_price"] == 173500.0
+    assert sr["distance_basis"] == "live_quote"
+    # 170000 and 171387 are BELOW the 173500 NXT price → both become supports
+    support_prices = {s["price"] for s in sr["supports"]}
+    assert support_prices == {170000.0, 171387.0}
+    assert sr["resistances"] == []
