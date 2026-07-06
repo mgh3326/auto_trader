@@ -1029,6 +1029,75 @@ async def test_notify_agent_message_fill_discord_failure_falls_back_to_telegram(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_notify_agent_message_mirror_telegram_sends_both_on_discord_success(
+    trade_notifier,
+):
+    trade_notifier.configure(
+        bot_token="t",
+        chat_ids=["1"],
+        enabled=True,
+        discord_webhook_crypto="https://discord.com/api/webhooks/crypto",
+    )
+
+    with (
+        patch.object(
+            trade_notifier,
+            "_send_to_discord_content_single",
+            new=AsyncMock(return_value=True),
+        ) as md,
+        patch.object(
+            trade_notifier,
+            "_send_to_telegram",
+            new=AsyncMock(return_value=True),
+        ) as mt,
+    ):
+        ok = await trade_notifier.notify_agent_message(
+            "알림 요약\n제안 verdict\n결정 필요",
+            correlation_id="event-1",
+            market_type="crypto",
+            mirror_telegram=True,
+        )
+
+    assert ok is True
+    md.assert_awaited_once_with(
+        "알림 요약\n제안 verdict\n결정 필요",
+        "https://discord.com/api/webhooks/crypto",
+    )
+    mt.assert_awaited_once_with(
+        "알림 요약\n제안 verdict\n결정 필요", parse_mode="Markdown"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_agent_message_mirror_returns_true_when_telegram_unconfigured(
+    trade_notifier,
+):
+    trade_notifier.configure(
+        bot_token="",
+        chat_ids=[],
+        enabled=True,
+        discord_webhook_crypto="https://discord.com/api/webhooks/crypto",
+    )
+
+    with patch.object(
+        trade_notifier,
+        "_send_to_discord_content_single",
+        new=AsyncMock(return_value=True),
+    ) as md:
+        ok = await trade_notifier.notify_agent_message(
+            "triage text",
+            correlation_id="event-2",
+            market_type="crypto",
+            mirror_telegram=True,
+        )
+
+    assert ok is True
+    md.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_notify_agent_message_success(trade_notifier):
     """Test successful Agent message forwarding."""
     trade_notifier.configure(
@@ -2122,5 +2191,63 @@ async def test_notify_investment_watch_routes_by_market(trade_notifier):
         ok = await trade_notifier.notify_investment_watch(payload)
     assert ok is True
     md.assert_awaited_once()
-    mt.assert_not_awaited()
+    mt.assert_awaited_once()
     assert md.await_args.args[0]["title"].startswith("🔔 워치 트리거")
+    assert "워치 트리거" in mt.await_args.args[0]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_investment_watch_delivers_to_telegram_without_discord_webhook(
+    trade_notifier,
+):
+    from decimal import Decimal
+    from uuid import uuid4
+
+    from app.services.hermes_client import ReviewTriggerPayload
+
+    payload = ReviewTriggerPayload(
+        event_uuid=uuid4(),
+        alert_uuid=uuid4(),
+        source_report_uuid=uuid4(),
+        source_item_uuid=uuid4(),
+        correlation_id="c-telegram-only",
+        kst_date="2026-07-07",
+        market="kr",
+        target_kind="asset",
+        symbol="005930",
+        metric="price",
+        operator="below",
+        threshold=Decimal("68000"),
+        threshold_key="k",
+        intent="buy_review",
+        action_mode="notify_only",
+        current_value=Decimal("67500"),
+        scanner_snapshot={},
+        outcome="notified",
+        invest_links=None,
+        operator_action_guidance=None,
+        price_guidance=None,
+        planned_action=None,
+        trigger_checklist=None,
+    )
+
+    trade_notifier.configure(bot_token="t", chat_ids=["1"], enabled=True)
+    with (
+        patch.object(
+            trade_notifier,
+            "_send_to_discord_embed_single",
+            new=AsyncMock(return_value=True),
+        ) as md,
+        patch.object(
+            trade_notifier,
+            "_send_to_telegram",
+            new=AsyncMock(return_value=True),
+        ) as mt,
+    ):
+        ok = await trade_notifier.notify_investment_watch(payload)
+
+    assert ok is True
+    md.assert_not_awaited()
+    mt.assert_awaited_once()
+    assert "005930" in mt.await_args.args[0]

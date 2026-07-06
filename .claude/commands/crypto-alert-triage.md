@@ -34,11 +34,17 @@ watch 알림이 발화해 너를 깨웠다. 너는 **신선한 세션**이지만
 ## 4. 출력 (둘 다 수행)
 
 1. `session_context_append(entries=[{ "market": "<market>", "entry_type": "decision", "title": "<symbol> watch 트리아지", "body": "<핵심 판단 + 제안 dry_run + 다음 액션>", "refs": { "report_uuid": "<source_report_uuid>", "event_uuid": "<event_uuid>", "symbols": ["<symbol>"] }, "created_by": "crypto-alert-triage", "session_label": "alert-triage" }])` — 다음 신선 런이 읽을 핸드오프.
-2. 마지막 assistant 메시지로 **Discord용 간결 요약**을 낸다(이게 `--output-format json`의 `.result`로 회신된다):
-   - 한 줄 결론(예: "BTC 매수 트리거 유효 — 1차 트랜치 dry_run 권장"),
-   - 핵심 근거 2~3개,
-   - 제안 dry_run 실행안(side/수량/지정가),
-   - 운영자 확인 필요 사항(실주문은 사람이 확정).
+2. 마지막 assistant 메시지로 Discord와 Telegram 양쪽에 그대로 전달 가능한 간결 요약을 낸다(이게 `--output-format json`의 `.result`로 회신된다). 아래 섹션 제목을 유지한다:
+   - `## 알림 요약`
+     - 발화 symbol/market/조건/current_value를 한 줄로 요약.
+     - 트리거가 여전히 유효한지 한 줄로 요약.
+   - `## 제안 verdict`
+     - `approve_dry_run`, `wait`, `reject`, `needs_human_review` 중 하나.
+     - 핵심 근거 2~3개.
+     - 제안 dry_run 실행안(side/수량/지정가)이 있으면 적고, 없으면 `dry_run 제안 없음`으로 적는다.
+   - `## 결정 필요`
+     - 운영자 확인이 필요한 경우에만 이 섹션을 포함한다.
+     - 섹션을 포함할 때 마지막 줄에 ``operator 세션에서: `session_context 최근 제안 승인 검토` ``를 포함한다.
 
 ## 안전 계약
 

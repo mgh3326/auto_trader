@@ -375,6 +375,7 @@ class Settings(BaseSettings):
     # Telegram
     telegram_token: str | None = None
     telegram_chat_id: str | None = None
+    telegram_chat_ids_str: str | None = None
 
     # Discord Webhooks
     discord_webhook_us: str | None = None
@@ -409,7 +410,17 @@ class Settings(BaseSettings):
 
     @property
     def telegram_chat_ids(self) -> list[str]:
-        """단일 chat_id를 리스트로 변환 (하위 호환성 유지)"""
+        """Return configured Telegram chat IDs.
+
+        `TELEGRAM_CHAT_IDS_STR` supports comma-separated multi-chat delivery.
+        `TELEGRAM_CHAT_ID` remains supported as the legacy single-chat form.
+        """
+        if self.telegram_chat_ids_str:
+            return [
+                chat_id.strip()
+                for chat_id in self.telegram_chat_ids_str.split(",")
+                if chat_id.strip()
+            ]
         if not self.telegram_chat_id:
             return []
         return [self.telegram_chat_id.strip()]
