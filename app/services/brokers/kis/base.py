@@ -688,33 +688,3 @@ class BaseKISClient:
             )
             self._unmapped_rate_limit_keys_logged.add(api_key)
         return default_rate, default_period
-
-    async def _handle_token_expiry_and_retry(
-        self,
-        js: dict[str, Any],
-        retry_func: Any,
-        *args: Any,
-        **kwargs: Any,
-    ) -> Any:
-        """Handle token expiry by clearing cache and retrying.
-
-        Args:
-            js: API response JSON
-            retry_func: Async function to retry
-            *args: Positional args for retry_func
-            **kwargs: Keyword args for retry_func
-
-        Returns:
-            Result from retry_func
-
-        Raises:
-            RuntimeError: If not a token expiry error
-        """
-        msg_cd = js.get("msg_cd", "")
-        if msg_cd in ("EGW00123", "EGW00121"):
-            await self._token_manager.clear_token()
-            await self._ensure_token()
-            return await retry_func(*args, **kwargs)
-        raise RuntimeError(
-            js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
-        )
