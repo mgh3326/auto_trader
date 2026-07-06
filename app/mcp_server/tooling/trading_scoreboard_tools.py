@@ -9,7 +9,10 @@ from typing import Any, cast
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
-from app.services.trade_journal.aggregates import build_trading_scoreboard
+from app.services.trade_journal.aggregates import (
+    build_counterfactual_delta_scoreboard,
+    build_trading_scoreboard,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +32,18 @@ async def get_trading_scoreboard(
     date_to: str | None = None,
     setup_tag: str | None = None,
     min_sample: int = 1,
+    cohort: str = "live_gated",
+    include_counterfactual_delta: bool = False,
 ) -> dict[str, Any]:
     try:
         async with _session_factory()() as db:
+            if include_counterfactual_delta:
+                return await build_counterfactual_delta_scoreboard(
+                    db,
+                    market=market,
+                    date_from=_parse_date(date_from),
+                    date_to=_parse_date(date_to),
+                )
             return await build_trading_scoreboard(
                 db,
                 market=market,
@@ -40,6 +52,7 @@ async def get_trading_scoreboard(
                 date_to=_parse_date(date_to),
                 setup_tag=setup_tag,
                 min_sample=min_sample,
+                cohort=cohort,
             )
     except Exception as exc:  # noqa: BLE001
         logger.exception("get_trading_scoreboard failed")

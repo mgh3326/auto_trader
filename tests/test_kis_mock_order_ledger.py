@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -560,6 +561,7 @@ async def test_kis_live_kr_path_records_to_live_ledger_not_save_fill(monkeypatch
         account_mode="kis_live",
         thesis="t",
         strategy="s",
+        rung=f"test-{uuid4().hex}",
     )
 
     assert result["success"] is True, result
@@ -933,3 +935,46 @@ async def test_place_order_impl_threads_correlation_id(db_session, monkeypatch):
         )
     ).scalar_one_or_none()
     assert row is not None
+
+
+@pytest.mark.asyncio
+async def test_save_kis_mock_order_ledger_persists_report_item_uuid(db_session):
+    from uuid import uuid4
+
+    from sqlalchemy import select
+
+    from app.mcp_server.tooling.kis_mock_ledger import _save_kis_mock_order_ledger
+    from app.models.review import KISMockOrderLedger
+
+    item_uuid = uuid4()
+    order_no = f"ROB734-{uuid4().hex[:10]}"
+    ledger_id = await _save_kis_mock_order_ledger(
+        symbol="005930",
+        instrument_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        quantity=1,
+        price=70000,
+        amount=70000,
+        currency="KRW",
+        order_no=order_no,
+        order_time="090000",
+        krx_fwdg_ord_orgno=None,
+        status="accepted",
+        response_code="0",
+        response_message="ok",
+        raw_response={"rt_cd": "0"},
+        reason="ROB-734 mirror",
+        thesis="counterfactual",
+        strategy="mirror_counterfactual",
+        notes=None,
+        report_item_uuid=item_uuid,
+    )
+    assert ledger_id is not None
+
+    row = (
+        await db_session.execute(
+            select(KISMockOrderLedger).where(KISMockOrderLedger.order_no == order_no)
+        )
+    ).scalar_one()
+    assert row.report_item_uuid == item_uuid

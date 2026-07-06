@@ -855,6 +855,8 @@ Parameters:
 - `account_scope`: optional. Defaults are `kr/us -> kis_live`, `crypto -> upbit_live`.
 - `session_context_limit`: default `10`, clamped by the session context service.
 - `include_current_price`: default `true`.
+- `cohort`: optional, default `live_gated`. Realized trade-journal cohort to load (e.g., `live_gated`, `mock_counterfactual`).
+- `include_counterfactual_delta`: default `false`. When `true`, returns aggregates delta scoreboard comparing `live_gated` and `mock_counterfactual` cohorts.
 
 Response sections:
 - `holdings`: summary and top movers derived from `get_holdings`.
@@ -863,8 +865,26 @@ Response sections:
 - `latest_report`: latest report summary and item status counts, or `null`.
 - `session_context`: recent ROB-516 handoff entries.
 - `staleness`: per-section `as_of`, freshness, and unavailable reason where available. If an optional DB-backed section (`active_watches`, `latest_report`, or `session_context`) raises, the tool still returns `success=true`; that section is returned as an empty or null fallback and `staleness.<section>.freshness_status` is `unavailable` with `unavailable_reason`.
+- `trading_scoreboards`: trading scoreboard or counterfactual delta metrics, depending on `include_counterfactual_delta` parameter.
 
 The tool never submits, modifies, cancels, reconciles, activates, expires, or mutates orders/watches/session context.
+
+
+### `get_trading_scoreboard`
+
+Query setup-tagged trade-journal aggregates over closed round-trips reconstructed from fills.
+
+Parameters:
+- `market`: optional `kr`, `us`, or `crypto`.
+- `account_mode`: optional.
+- `date_from`: optional date (YYYY-MM-DD).
+- `date_to`: optional date (YYYY-MM-DD).
+- `setup_tag`: optional tag filter.
+- `min_sample`: default `1`.
+- `cohort`: default `live_gated`. Realized trade-journal cohort to load (e.g., `live_gated`, `mock_counterfactual`).
+- `include_counterfactual_delta`: default `false`. When `true`, returns aggregates delta scoreboard comparing `live_gated` and `mock_counterfactual` paired by entry correlation ID, falling back to `report_item_uuid` for report-linked mirror orders.
+
+Returns Win-rate, expectancy (% and R-multiple), profit factor, average/worst MAE and MFE.
 
 
 ### `screen_stocks` spec

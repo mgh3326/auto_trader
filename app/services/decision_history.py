@@ -76,6 +76,7 @@ async def build_decision_context(
     symbol: str,
     market: str,
     setup_tag: str | None = None,
+    account_mode: str | None = None,
 ) -> dict[str, Any] | None:
     """Build the decision_history payload for one symbol, or None if no signal.
 
@@ -87,8 +88,8 @@ async def build_decision_context(
 
     prior_decisions = await _prior_decisions(db, norm)
 
-    lessons, outcomes = await _retrospectives(db, norm)
-    fills = await _recent_fills(db, norm)
+    lessons, outcomes = await _retrospectives(db, norm, account_mode)
+    fills = await _recent_fills(db, norm, account_mode)
     open_claims = await _open_claims(db, norm)
 
     if not (prior_decisions or lessons or outcomes or fills or open_claims):
@@ -100,7 +101,7 @@ async def build_decision_context(
         )
     )
     brier_global = _fold_brier(await build_forecast_calibration_aggregate(db))
-    realized_r = await _realized_r_by_tag(db, market, setup_tag)
+    realized_r = await _realized_r_by_tag(db, market, setup_tag, account_mode)
 
     ctx: dict[str, Any] = {
         "symbol": norm,
@@ -136,7 +137,10 @@ def _fold_brier(agg: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _realized_r_by_tag(
-    db: AsyncSession, market: str, setup_tag: str | None
+    db: AsyncSession,
+    market: str,
+    setup_tag: str | None,
+    account_mode: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Bounded per-tag map for the ROB-713 scoreboard — portfolio-wide, not per-symbol.
 
@@ -147,7 +151,14 @@ async def _realized_r_by_tag(
     """
     from app.services.trade_journal.aggregates import build_trading_scoreboard
 
-    board = await build_trading_scoreboard(db, market=market, include_excursions=False)
+    cohort = "mock_counterfactual" if account_mode == "kis_mock" else "live_gated"
+    board = await build_trading_scoreboard(
+        db,
+        market=market,
+        account_mode=account_mode,
+        include_excursions=False,
+        cohort=cohort,
+    )
     groups = [g for g in board.get("groups", []) if g["tag"] != "untagged"]
     ordered = sorted(groups, key=lambda g: (g["tag"] != setup_tag, -int(g["n"])))
     return {g["tag"]: {k: g.get(k) for k in _R_KEYS} for g in ordered[:_MAX_TAGS]}
@@ -185,19 +196,22 @@ async def _prior_decisions(db: AsyncSession, symbol: str) -> list[dict[str, Any]
 
 
 async def _retrospectives(
-    db: AsyncSession, symbol: str
+    db: AsyncSession, symbol: str, account_mode: str | None = None
 ) -> tuple[list[str], list[dict[str, Any]]]:
-    rows = (
-        (
-            await db.execute(
-                select(TradeRetrospective)
-                .where(TradeRetrospective.symbol == symbol)
-                .order_by(TradeRetrospective.created_at.desc())
-            )
+    stmt = select(TradeRetrospective).where(TradeRetrospective.symbol == symbol)
+    if account_mode == "kis_mock":
+        stmt = stmt.where(TradeRetrospective.account_mode == "kis_mock")
+    else:
+        stmt = stmt.where(
+            (TradeRetrospective.account_mode != "kis_mock")
+            | (TradeRetrospective.account_mode.is_(None))
         )
+    rows = (
+        (await db.execute(stmt.order_by(TradeRetrospective.created_at.desc())))
         .scalars()
         .all()
     )
+
     lessons: list[str] = []
     outcomes: list[dict[str, Any]] = []
     for r in rows:
@@ -243,23 +257,71 @@ def _fill_row(source: str, r: Any) -> dict[str, Any]:
     }
 
 
-async def _recent_fills(db: AsyncSession, symbol: str) -> list[dict[str, Any]]:
+async def _recent_fills(
+    db: AsyncSession, symbol: str, account_mode: str | None = None
+) -> list[dict[str, Any]]:
     collected: list[tuple[Any, str, Any]] = []
-    for source, model in (
-        ("kis", KISLiveOrderLedger),
-        ("live", LiveOrderLedger),
-        ("toss", TossLiveOrderLedger),
-    ):
+
+    if account_mode == "kis_mock":
+        from app.mcp_server.tooling.kis_mock_ledger import _derive_shadow_fill
+        from app.models.review import KISMockOrderLedger
+
         rows = (
-            (await db.execute(select(model).where(model.symbol == symbol)))
+            (
+                await db.execute(
+                    select(KISMockOrderLedger).where(
+                        KISMockOrderLedger.symbol == symbol,
+                        KISMockOrderLedger.mirror_cohort == "mock_counterfactual",
+                        KISMockOrderLedger.lifecycle_state == "fill",
+                    )
+                )
+            )
             .scalars()
             .all()
         )
         for r in rows:
-            collected.append((r.trade_date, source, r))
-    # newest first across all three ledgers; None trade_date sorts last
+            filled_qty, _remaining, status = _derive_shadow_fill(r, float(r.quantity))
+            if status not in {"filled", "partial"} or filled_qty <= 0:
+                continue
+            collected.append(
+                (
+                    r.trade_date,
+                    "kis_mock",
+                    {
+                        "date": r.trade_date.date().isoformat()
+                        if r.trade_date
+                        else None,
+                        "side": r.side,
+                        "status": status,
+                        "qty": float(r.quantity) if r.quantity is not None else None,
+                        "filled_qty": filled_qty,
+                        "avg_fill_price": float(r.price),
+                        "target_price": float(r.target_price)
+                        if getattr(r, "target_price", None) is not None
+                        else None,
+                        "stop_loss": float(r.stop_loss)
+                        if getattr(r, "stop_loss", None) is not None
+                        else None,
+                        "source": "kis_mock",
+                    },
+                )
+            )
+    else:
+        for source, model in (
+            ("kis", KISLiveOrderLedger),
+            ("live", LiveOrderLedger),
+            ("toss", TossLiveOrderLedger),
+        ):
+            rows = (
+                (await db.execute(select(model).where(model.symbol == symbol)))
+                .scalars()
+                .all()
+            )
+            for r in rows:
+                collected.append((r.trade_date, source, _fill_row(source, r)))
+
     collected.sort(key=lambda t: (t[0] is not None, t[0]), reverse=True)
-    return [_fill_row(source, r) for (_dt, source, r) in collected[:MAX_FILLS]]
+    return [item for (_dt, source, item) in collected[:MAX_FILLS]]
 
 
 async def _open_claims(db: AsyncSession, symbol: str) -> list[dict[str, Any]]:

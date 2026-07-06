@@ -82,6 +82,9 @@ from app.mcp_server.tooling.market_brief_registration import (
     register_market_brief_tools,
 )
 from app.mcp_server.tooling.market_data_registration import register_market_data_tools
+from app.mcp_server.tooling.mirror_counterfactual_registration import (
+    register_mirror_counterfactual_tools,
+)
 from app.mcp_server.tooling.mock_loop_retro_registration import (
     register_mock_loop_retro_tools,
 )
@@ -201,6 +204,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     register_trade_retrospective_tools(mcp)
     register_forecast_tools(mcp)
     register_trading_scoreboard_tools(mcp)
+    register_mirror_counterfactual_tools(mcp)
     # ROB-713 — setup-tagged trade-journal aggregates; read-only, registered
     # unconditionally like the forecast tools it parallels.
 

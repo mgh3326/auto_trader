@@ -199,19 +199,21 @@ class TradeRetrospectiveRepository:
         self.db = db
 
     async def get_by_correlation_id(
-        self, correlation_id: str
+        self, correlation_id: str, account_mode: str | None = None
     ) -> TradeRetrospective | None:
-        result = await self.db.execute(
-            select(TradeRetrospective).where(
-                TradeRetrospective.correlation_id == correlation_id
-            )
+        stmt = select(TradeRetrospective).where(
+            TradeRetrospective.correlation_id == correlation_id
         )
+        if account_mode is not None:
+            stmt = stmt.where(TradeRetrospective.account_mode == account_mode)
+        result = await self.db.execute(stmt.limit(1))
         return result.scalar_one_or_none()
 
     async def upsert(self, payload: dict[str, Any]) -> tuple[str, TradeRetrospective]:
         cid = payload.get("correlation_id")
+        account_mode = payload.get("account_mode")
         if cid is not None:
-            existing = await self.get_by_correlation_id(cid)
+            existing = await self.get_by_correlation_id(cid, account_mode)
             if existing is not None:
                 for key, value in payload.items():
                     setattr(existing, key, value)
@@ -857,19 +859,30 @@ _CANCEL_FAMILY_STATUSES = (
 _PENDING_LEDGER_FETCH_CAP = 1000
 
 
-async def _covered_keys(db: AsyncSession) -> tuple[set[str], set[str]]:
-    """(correlation_ids, report_item_uuids) already carrying a retrospective."""
+async def _covered_keys(
+    db: AsyncSession,
+) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+    """Account-scoped provenance keys already carrying a retrospective."""
     rows = (
         await db.execute(
             select(
                 TradeRetrospective.correlation_id,
+                TradeRetrospective.account_mode,
                 TradeRetrospective.report_item_uuid,
             )
         )
     ).all()
-    covered_cids = {str(cid) for cid, _ in rows if cid}
-    covered_uuids = {str(uid) for _, uid in rows if uid}
-    return covered_cids, covered_uuids
+    covered_cids = {
+        (str(cid), str(account_mode))
+        for cid, account_mode, _ in rows
+        if cid and account_mode
+    }
+    covered_item_uuids = {
+        (str(uid), str(account_mode))
+        for _, account_mode, uid in rows
+        if uid and account_mode
+    }
+    return covered_cids, covered_item_uuids
 
 
 def _pending_entry(
@@ -909,11 +922,21 @@ def _pending_entry(
 
 
 def _is_covered(
-    entry: dict[str, Any], covered_cids: set[str], covered_uuids: set[str]
+    entry: dict[str, Any],
+    covered_cids: set[tuple[str, str]],
+    covered_item_uuids: set[tuple[str, str]],
 ) -> bool:
-    if entry["report_item_uuid"] and entry["report_item_uuid"] in covered_uuids:
+    if (
+        entry["report_item_uuid"]
+        and (
+            entry["report_item_uuid"],
+            entry["account_mode"],
+        )
+        in covered_item_uuids
+    ):
         return True
-    return entry["suggested_correlation_id"] in covered_cids
+    key = (entry["suggested_correlation_id"], entry["account_mode"])
+    return key in covered_cids
 
 
 async def build_retrospective_pending(
@@ -942,7 +965,7 @@ async def build_retrospective_pending(
     """
     window_start = _kst_day_start(kst_date_from)
     window_end = _kst_day_end(kst_date_to)
-    covered_cids, covered_uuids = await _covered_keys(db)
+    covered_cids, covered_item_uuids = await _covered_keys(db)
 
     pending: list[dict[str, Any]] = []
     scanned = 0
@@ -974,7 +997,7 @@ async def build_retrospective_pending(
                 trade_date=row.trade_date,
                 row_id=row.id,
             )
-            if not _is_covered(entry, covered_cids, covered_uuids):
+            if not _is_covered(entry, covered_cids, covered_item_uuids):
                 pending.append(entry)
 
     # 2. Generic live ledger (US KIS + crypto Upbit)
@@ -1008,7 +1031,7 @@ async def build_retrospective_pending(
                 trade_date=row.trade_date,
                 row_id=row.id,
             )
-            if not _is_covered(entry, covered_cids, covered_uuids):
+            if not _is_covered(entry, covered_cids, covered_item_uuids):
                 pending.append(entry)
 
     # 3. Toss live ledger (place operations only; modify/cancel are follow-ups)
@@ -1040,7 +1063,7 @@ async def build_retrospective_pending(
                 trade_date=row.trade_date,
                 row_id=row.id,
             )
-            if not _is_covered(entry, covered_cids, covered_uuids):
+            if not _is_covered(entry, covered_cids, covered_item_uuids):
                 pending.append(entry)
 
     # 4. Paper trades (ROB-705) — every paper_trades row is a fill (no status
@@ -1087,13 +1110,12 @@ async def build_retrospective_pending(
                 suggested_correlation_id=(r.correlation_id or f"paper_trade:{r.id}"),
                 suggested_trigger_type=trig,
             )
-            if not _is_covered(entry, covered_cids, covered_uuids):
+            if not _is_covered(entry, covered_cids, covered_item_uuids):
                 pending.append(entry)
 
-    # 5. KIS mock ledger (ROB-730) — counterfactual learning loop. Terminality is
-    # keyed on lifecycle_state (the mock `status` column only holds the send-time
-    # accepted/rejected/unknown). No report_item_uuid column: coverage matches on
-    # the place-time correlation_id (ROB-730 spine) only.
+    # 5. KIS mock ledger (ROB-730/ROB-734) — counterfactual learning loop.
+    # Terminality is keyed on lifecycle_state (the mock `status` column only holds
+    # the send-time accepted/rejected/unknown).
     if account_mode in (None, "kis_mock"):
         stmt = (
             select(KISMockOrderLedger)
@@ -1118,12 +1140,12 @@ async def build_retrospective_pending(
                 side=row.side,
                 status=row.lifecycle_state,
                 order_ref=row.order_no,
-                report_item_uuid=None,
+                report_item_uuid=row.report_item_uuid,
                 trade_date=row.trade_date,
                 row_id=row.id,
                 suggested_correlation_id=row.correlation_id,
             )
-            if not _is_covered(entry, covered_cids, covered_uuids):
+            if not _is_covered(entry, covered_cids, covered_item_uuids):
                 pending.append(entry)
 
     excluded_cancelled = 0
