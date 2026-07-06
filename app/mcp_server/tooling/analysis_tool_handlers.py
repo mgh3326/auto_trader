@@ -793,7 +793,15 @@ def _summarize_analysis_result(
 
     # ROB-725: surface NXT price provenance so the agent knows current_price is
     # an NXT-derived quote (not the stale KRX regular-session close).
-    for _px_key in ("price_source", "session", "data_state", "venue"):
+    for _px_key in (
+        "price_source",
+        "session",
+        "data_state",
+        "data_state_reason",
+        "venue",
+        "quote_asof",
+        "delayed",
+    ):
         if _px_key in quote:
             summary[_px_key] = quote[_px_key]
 
