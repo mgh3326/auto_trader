@@ -1657,7 +1657,13 @@ class TestKISOverseasPrice:
         mock_response.status_code = 200
         mock_response.json.return_value = {
             "rt_cd": "0",
-            "output": {"last": "150.25", "base": "148.00", "tvol": "1234567"},
+            "output": {
+                "last": "150.25",
+                "base": "148.00",
+                "tvol": "1234567",
+                "xymd": "20260706",
+                "xhms": "084512",
+            },
         }
         mock_client.get.return_value = mock_response
 
@@ -1673,6 +1679,7 @@ class TestKISOverseasPrice:
         assert float(result.iloc[0]["close"]) == pytest.approx(150.25)
         assert float(result.iloc[0]["previous_close"]) == pytest.approx(148.00)
         assert int(result.iloc[0]["volume"]) == 1234567
+        assert result.iloc[0]["quote_asof"] == "2026-07-06T08:45:12-04:00"
 
         params = mock_client.get.call_args.kwargs["params"]
         assert params["EXCD"] == "NAS"
@@ -1733,7 +1740,12 @@ class TestKISOverseasPrice:
 
         result = await client.inquire_overseas_price(symbol="AAPL")
         assert result.empty
-        assert list(result.columns) == ["close", "previous_close", "volume"]
+        assert list(result.columns) == [
+            "close",
+            "previous_close",
+            "volume",
+            "quote_asof",
+        ]
 
     @pytest.mark.parametrize("last_val", ["0", "0.0", "-1.5", ""])
     @pytest.mark.asyncio
@@ -1764,4 +1776,21 @@ class TestKISOverseasPrice:
 
         result = await client.inquire_overseas_price(symbol="AAPL")
         assert result.empty
-        assert list(result.columns) == ["close", "previous_close", "volume"]
+        assert list(result.columns) == [
+            "close",
+            "previous_close",
+            "volume",
+            "quote_asof",
+        ]
+
+    def test_build_overseas_price_frame_omits_quote_asof_when_time_missing(self):
+        from app.services.brokers.kis.overseas_market_data import (
+            OverseasMarketDataMixin,
+        )
+
+        result = OverseasMarketDataMixin._build_overseas_price_frame(
+            {"last": "402.10", "base": "400.00", "tvol": "9000"}
+        )
+
+        assert not result.empty
+        assert result.iloc[0]["quote_asof"] is None
