@@ -202,6 +202,17 @@ class KISMockOrderLedger(Base):
         Index("ix_kis_mock_ledger_symbol", "symbol"),
         Index("ix_kis_mock_ledger_lifecycle_state", "lifecycle_state"),
         Index("ix_kis_mock_ledger_correlation_id", "correlation_id"),
+        Index("ix_kis_mock_ledger_report_item_uuid", "report_item_uuid"),
+        Index("ix_kis_mock_ledger_mirror_cohort_created", "mirror_cohort", "created_at"),
+        CheckConstraint(
+            "mirror_cohort IS NULL OR mirror_cohort IN ('mock_counterfactual')",
+            name="ck_kis_mock_ledger_mirror_cohort",
+        ),
+        CheckConstraint(
+            "mirror_source_bucket IS NULL OR mirror_source_bucket IN "
+            "('place_original','watch_trigger','deferred_min_rung')",
+            name="ck_kis_mock_ledger_mirror_source_bucket",
+        ),
         {"schema": "review"},
     )
 
@@ -258,6 +269,10 @@ class KISMockOrderLedger(Base):
     )  # stop_loss|take_profit|time_stop
     gross_pnl: Mapped[float | None] = mapped_column(Numeric(20, 4))
     net_pnl: Mapped[float | None] = mapped_column(Numeric(20, 4))
+
+    report_item_uuid: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    mirror_cohort: Mapped[str | None] = mapped_column(Text)
+    mirror_source_bucket: Mapped[str | None] = mapped_column(Text)
 
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
@@ -979,7 +994,9 @@ class TradeRetrospective(Base):
     __tablename__ = "trade_retrospectives"
     __table_args__ = (
         UniqueConstraint(
-            "correlation_id", name="uq_trade_retrospectives_correlation_id"
+            "correlation_id",
+            "account_mode",
+            name="uq_trade_retrospectives_correlation_account",
         ),
         CheckConstraint(
             "account_mode IN ('kis_mock','kiwoom_mock','kis_live','toss_live','alpaca_paper','upbit_live','paper')",

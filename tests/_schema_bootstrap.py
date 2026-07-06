@@ -17,7 +17,7 @@ from sqlalchemy import text
 # Bump when adding an ORM table that has NO mirrored ALTER string below, so the
 # content hash changes and a persistent local DB re-bootstraps once. Adding a
 # mirrored ALTER already changes the hash automatically.
-SCHEMA_BOOTSTRAP_VERSION = 1
+SCHEMA_BOOTSTRAP_VERSION = 2
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -443,6 +443,19 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ALTER TABLE paper.paper_pending_orders ADD COLUMN IF NOT EXISTS forecast_id TEXT",
     # ---- benchmark_return_bps on scalping_daily_reviews (B-1) ----
     "ALTER TABLE scalping_daily_reviews ADD COLUMN IF NOT EXISTS benchmark_return_bps NUMERIC(12, 4)",
+    # ---- ROB-734 mirror counterfactual metadata ----
+    "ALTER TABLE review.kis_mock_order_ledger ADD COLUMN IF NOT EXISTS report_item_uuid UUID",
+    "ALTER TABLE review.kis_mock_order_ledger ADD COLUMN IF NOT EXISTS mirror_cohort TEXT",
+    "ALTER TABLE review.kis_mock_order_ledger ADD COLUMN IF NOT EXISTS mirror_source_bucket TEXT",
+    "CREATE INDEX IF NOT EXISTS ix_kis_mock_ledger_report_item_uuid ON review.kis_mock_order_ledger (report_item_uuid)",
+    "CREATE INDEX IF NOT EXISTS ix_kis_mock_ledger_mirror_cohort_created ON review.kis_mock_order_ledger (mirror_cohort, created_at)",
+    "ALTER TABLE review.kis_mock_order_ledger DROP CONSTRAINT IF EXISTS ck_kis_mock_ledger_mirror_cohort",
+    "ALTER TABLE review.kis_mock_order_ledger ADD CONSTRAINT ck_kis_mock_ledger_mirror_cohort CHECK (mirror_cohort IS NULL OR mirror_cohort IN ('mock_counterfactual'))",
+    "ALTER TABLE review.kis_mock_order_ledger DROP CONSTRAINT IF EXISTS ck_kis_mock_ledger_mirror_source_bucket",
+    "ALTER TABLE review.kis_mock_order_ledger ADD CONSTRAINT ck_kis_mock_ledger_mirror_source_bucket CHECK (mirror_source_bucket IS NULL OR mirror_source_bucket IN ('place_original','watch_trigger','deferred_min_rung'))",
+    "ALTER TABLE review.trade_retrospectives DROP CONSTRAINT IF EXISTS uq_trade_retrospectives_correlation_id",
+    "ALTER TABLE review.trade_retrospectives DROP CONSTRAINT IF EXISTS uq_trade_retrospectives_correlation_account",
+    "ALTER TABLE review.trade_retrospectives ADD CONSTRAINT uq_trade_retrospectives_correlation_account UNIQUE (correlation_id, account_mode)",
 )
 
 
