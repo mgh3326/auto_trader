@@ -155,3 +155,201 @@ async def test_cache_returns_isolated_copies(db_session, monkeypatch):
     second = await agg.build_trading_scoreboard(db_session, now=stamp)  # cache hit
     assert second["groups"] == []
     assert second["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_counterfactual_delta_loads_fills_once(db_session, monkeypatch):
+    calls = []
+
+    async def fake_load_fills(db, **kw):
+        calls.append(kw)
+        return []
+
+    monkeypatch.setattr(agg, "load_fills", fake_load_fills)
+
+    result = await agg.build_counterfactual_delta_scoreboard(
+        db_session,
+        market="kr",
+        setup_tag="breakout",
+        min_sample=2,
+        use_cache=False,
+    )
+
+    assert result["paired_count"] == 0
+    assert calls == [
+        {
+            "market": "kr",
+            "account_mode": None,
+            "date_from": None,
+            "date_to": None,
+            "cohort": "all",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_counterfactual_delta_setup_tag_filters_pairing(db_session, monkeypatch):
+    ts1 = datetime(2026, 7, 1, tzinfo=UTC)
+    ts2 = datetime(2026, 7, 2, tzinfo=UTC)
+
+    async def fake_load_fills(db, **kw):
+        return [
+            agg.Fill(
+                market="kr",
+                symbol="005930",
+                account="kis_live",
+                side="buy",
+                qty=1,
+                price=100,
+                fee=0,
+                ts=ts1,
+                item_uuid="item-1",
+                correlation_id="mirror:item-1",
+                source="kis",
+                cohort="live_gated",
+            ),
+            agg.Fill(
+                market="kr",
+                symbol="005930",
+                account="kis_live",
+                side="sell",
+                qty=1,
+                price=110,
+                fee=0,
+                ts=ts2,
+                item_uuid="item-1",
+                correlation_id="mirror:item-1",
+                source="kis",
+                cohort="live_gated",
+            ),
+            agg.Fill(
+                market="kr",
+                symbol="005930",
+                account="kis_mock",
+                side="buy",
+                qty=1,
+                price=100,
+                fee=0,
+                ts=ts1,
+                item_uuid="item-1",
+                correlation_id="mirror:item-1",
+                source="kis_mock",
+                cohort="mock_counterfactual",
+            ),
+            agg.Fill(
+                market="kr",
+                symbol="005930",
+                account="kis_mock",
+                side="sell",
+                qty=1,
+                price=120,
+                fee=0,
+                ts=ts2,
+                item_uuid="item-1",
+                correlation_id="mirror:item-1",
+                source="kis_mock",
+                cohort="mock_counterfactual",
+            ),
+        ]
+
+    async def fake_resolve_setup_tag(db, trade):
+        return TagInfo("mean_revert", "strategy_key", "exact")
+
+    monkeypatch.setattr(agg, "load_fills", fake_load_fills)
+    monkeypatch.setattr(agg, "resolve_setup_tag", fake_resolve_setup_tag)
+
+    result = await agg.build_counterfactual_delta_scoreboard(
+        db_session,
+        market="kr",
+        setup_tag="breakout",
+        min_sample=1,
+        use_cache=False,
+    )
+
+    assert result["live_gated"]["groups"] == []
+    assert result["mock_counterfactual"]["groups"] == []
+    assert result["paired_count"] == 0
+    assert result["overall_delta"]["paired_n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_counterfactual_delta_min_sample_filters_pairing(db_session, monkeypatch):
+    ts1 = datetime(2026, 7, 1, tzinfo=UTC)
+    ts2 = datetime(2026, 7, 2, tzinfo=UTC)
+
+    async def fake_load_fills(db, **kw):
+        return [
+            agg.Fill(
+                "kr",
+                "005930",
+                "kis_live",
+                "buy",
+                1,
+                100,
+                0,
+                ts1,
+                "item-1",
+                "mirror:item-1",
+                "kis",
+                "live_gated",
+            ),
+            agg.Fill(
+                "kr",
+                "005930",
+                "kis_live",
+                "sell",
+                1,
+                110,
+                0,
+                ts2,
+                "item-1",
+                "mirror:item-1",
+                "kis",
+                "live_gated",
+            ),
+            agg.Fill(
+                "kr",
+                "005930",
+                "kis_mock",
+                "buy",
+                1,
+                100,
+                0,
+                ts1,
+                "item-1",
+                "mirror:item-1",
+                "kis_mock",
+                "mock_counterfactual",
+            ),
+            agg.Fill(
+                "kr",
+                "005930",
+                "kis_mock",
+                "sell",
+                1,
+                120,
+                0,
+                ts2,
+                "item-1",
+                "mirror:item-1",
+                "kis_mock",
+                "mock_counterfactual",
+            ),
+        ]
+
+    async def fake_resolve_setup_tag(db, trade):
+        return TagInfo("breakout", "strategy_key", "exact")
+
+    monkeypatch.setattr(agg, "load_fills", fake_load_fills)
+    monkeypatch.setattr(agg, "resolve_setup_tag", fake_resolve_setup_tag)
+
+    result = await agg.build_counterfactual_delta_scoreboard(
+        db_session,
+        market="kr",
+        setup_tag="breakout",
+        min_sample=2,
+        use_cache=False,
+    )
+
+    assert result["paired_count"] == 0
+    assert result["overall_delta"]["paired_n"] == 0

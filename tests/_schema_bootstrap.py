@@ -453,6 +453,7 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ALTER TABLE review.kis_mock_order_ledger ADD CONSTRAINT ck_kis_mock_ledger_mirror_cohort CHECK (mirror_cohort IS NULL OR mirror_cohort IN ('mock_counterfactual'))",
     "ALTER TABLE review.kis_mock_order_ledger DROP CONSTRAINT IF EXISTS ck_kis_mock_ledger_mirror_source_bucket",
     "ALTER TABLE review.kis_mock_order_ledger ADD CONSTRAINT ck_kis_mock_ledger_mirror_source_bucket CHECK (mirror_source_bucket IS NULL OR mirror_source_bucket IN ('place_original','watch_trigger','deferred_min_rung'))",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_kis_mock_mirror_report_item_once ON review.kis_mock_order_ledger (mirror_cohort, report_item_uuid) WHERE mirror_cohort = 'mock_counterfactual' AND report_item_uuid IS NOT NULL",
     "ALTER TABLE review.trade_retrospectives DROP CONSTRAINT IF EXISTS uq_trade_retrospectives_correlation_id",
     "ALTER TABLE review.trade_retrospectives DROP CONSTRAINT IF EXISTS uq_trade_retrospectives_correlation_account",
     "ALTER TABLE review.trade_retrospectives ADD CONSTRAINT uq_trade_retrospectives_correlation_account UNIQUE (correlation_id, account_mode)",

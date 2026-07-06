@@ -240,6 +240,38 @@ def _min_hold_days_from_item(item: InvestmentReportItem) -> int | None:
     return None
 
 
+def _watch_metric(value: Any) -> str | None:
+    token = str(value or "").strip().lower()
+    return token or None
+
+
+def _watch_price_skip_reason(item: InvestmentReportItem) -> str | None:
+    if item.item_kind != "watch":
+        return None
+    watch_cond = item.watch_condition or {}
+    threshold = watch_cond.get("threshold")
+    if threshold in (None, ""):
+        return None
+    metric = _watch_metric(watch_cond.get("metric") or "price")
+    if metric != "price":
+        return "unsupported_watch_metric_for_limit_price"
+    return None
+
+
+def _watch_notes(item: InvestmentReportItem) -> list[str]:
+    if item.item_kind != "watch":
+        return []
+    watch_cond = item.watch_condition or {}
+    metric = _watch_metric(watch_cond.get("metric") or "price")
+    operator = str(watch_cond.get("operator") or "").strip().lower()
+    notes = [f"watch_metric={metric or 'unknown'}"]
+    if operator:
+        notes.append(f"watch_operator={operator}")
+    if metric == "price" and operator not in {"below", "at_or_below", "lte", "<="}:
+        notes.append("watch_approximation=limit_at_threshold")
+    return notes
+
+
 def _plan_for_item(
     report_market: str,
     report_uuid: UUID,
@@ -272,6 +304,10 @@ def _plan_for_item(
     if not side:
         return None, "missing_side"
 
+    watch_skip = _watch_price_skip_reason(item)
+    if watch_skip is not None:
+        return None, watch_skip
+
     price = _price_from_item(item)
     if price is None:
         return None, "missing_limit_price"
@@ -299,7 +335,7 @@ def _plan_for_item(
         reason=f"ROB-734 mirror counterfactual: {source_bucket}",
         thesis=item.rationale or "counterfactual mirror",
         strategy="mirror_counterfactual",
-        notes=f"source_bucket={source_bucket}",
+        notes=";".join([f"source_bucket={source_bucket}", *_watch_notes(item)]),
     )
     return plan, None
 
@@ -388,6 +424,43 @@ async def _stamp_mirror_ledger(
     await db.flush()
 
 
+def _decimal_str(value: Decimal | None) -> str | None:
+    return None if value is None else str(value)
+
+
+def _plan_summary(plan: MirrorOrderPlan) -> dict[str, Any]:
+    return {
+        "item_uuid": str(plan.item_uuid),
+        "source_bucket": plan.source_bucket,
+        "correlation_id": plan.correlation_id,
+        "symbol": plan.symbol,
+        "side": plan.side,
+        "quantity": _decimal_str(plan.quantity),
+        "amount": _decimal_str(plan.amount),
+        "price": _decimal_str(plan.price),
+        "target_price": _decimal_str(plan.target_price),
+        "stop_loss": _decimal_str(plan.stop_loss),
+        "min_hold_days": plan.min_hold_days,
+        "notes": plan.notes,
+    }
+
+
+def _execution_status(
+    *,
+    planned_count: int,
+    dry_run_count: int,
+    submitted_count: int,
+    skipped_count: int,
+    failed_count: int,
+) -> str:
+    if failed_count == 0:
+        return "ok"
+    non_failed = dry_run_count + submitted_count + skipped_count
+    if planned_count > 0 and non_failed == 0:
+        return "failed"
+    return "partial_failure"
+
+
 async def execute_mirror_order_plans(
     db: AsyncSession,
     *,
@@ -415,6 +488,7 @@ async def execute_mirror_order_plans(
                     "symbol": plan.symbol,
                     "success": False,
                     "reason": "already_mirrored",
+                    "plan": _plan_summary(plan),
                 }
             )
             skipped_count += 1
@@ -441,6 +515,8 @@ async def execute_mirror_order_plans(
                 is_mock=True,
                 correlation_id=plan.correlation_id,
                 report_item_uuid=str(plan.item_uuid),
+                mirror_cohort="mock_counterfactual",
+                mirror_source_bucket=plan.source_bucket,
             )
 
             success = result.get("success", False)
@@ -454,12 +530,21 @@ async def execute_mirror_order_plans(
                             "success": True,
                             "dry_run": True,
                             "approval_hash": result.get("approval_hash"),
+                            "plan": _plan_summary(plan),
                         }
                     )
                 else:
                     ledger_id = result.get("ledger_id")
                     if ledger_id is not None:
-                        await _stamp_mirror_ledger(db, ledger_id=ledger_id, plan=plan)
+                        row = await db.get(KISMockOrderLedger, ledger_id)
+                        if row and (
+                            row.report_item_uuid != plan.item_uuid
+                            or row.mirror_cohort != "mock_counterfactual"
+                            or row.mirror_source_bucket != plan.source_bucket
+                        ):
+                            await _stamp_mirror_ledger(
+                                db, ledger_id=ledger_id, plan=plan
+                            )
                         submitted_count += 1
                         results.append(
                             {
@@ -467,6 +552,7 @@ async def execute_mirror_order_plans(
                                 "symbol": plan.symbol,
                                 "success": True,
                                 "ledger_id": ledger_id,
+                                "plan": _plan_summary(plan),
                             }
                         )
                     else:
@@ -477,6 +563,7 @@ async def execute_mirror_order_plans(
                                 "symbol": plan.symbol,
                                 "success": False,
                                 "error": "missing_ledger_id",
+                                "plan": _plan_summary(plan),
                             }
                         )
             else:
@@ -487,6 +574,7 @@ async def execute_mirror_order_plans(
                         "symbol": plan.symbol,
                         "success": False,
                         "error": result.get("error") or "place_order_failed",
+                        "plan": _plan_summary(plan),
                     }
                 )
         except Exception as exc:
@@ -497,11 +585,20 @@ async def execute_mirror_order_plans(
                     "symbol": plan.symbol,
                     "success": False,
                     "error": str(exc),
+                    "plan": _plan_summary(plan),
                 }
             )
 
+    status = _execution_status(
+        planned_count=len(plans),
+        dry_run_count=dry_run_count,
+        submitted_count=submitted_count,
+        skipped_count=skipped_count,
+        failed_count=failed_count,
+    )
     return {
-        "success": True,
+        "success": failed_count == 0,
+        "status": status,
         "dry_run": dry_run,
         "cohort": "mock_counterfactual",
         "planned_count": len(plans),

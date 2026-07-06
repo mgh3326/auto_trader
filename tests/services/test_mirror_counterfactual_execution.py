@@ -100,3 +100,119 @@ async def test_execute_apply_stamps_mock_ledger_metadata(db_session):
     assert refreshed.report_item_uuid == plan.item_uuid
     assert refreshed.mirror_cohort == "mock_counterfactual"
     assert refreshed.mirror_source_bucket == "place_original"
+
+
+@pytest.mark.asyncio
+async def test_retry_after_crash_skips_existing_atomically_stamped_mirror_row(
+    db_session,
+):
+    plan = _plan()
+    calls = {"n": 0}
+
+    async def crash_after_committed_mock_ledger(**kwargs):
+        calls["n"] += 1
+        row = KISMockOrderLedger(
+            trade_date=datetime(2026, 7, 6, tzinfo=UTC),
+            symbol=kwargs["symbol"],
+            instrument_type="equity_kr",
+            side=kwargs["side"],
+            order_type="limit",
+            quantity=Decimal(str(kwargs["quantity"])),
+            price=Decimal(str(kwargs["price"])),
+            amount=Decimal("70000"),
+            fee=Decimal("0"),
+            currency="KRW",
+            order_no=f"ROB743-{calls['n']}-{uuid4().hex[:6]}",
+            account_mode="kis_mock",
+            broker="kis",
+            status="accepted",
+            lifecycle_state="accepted",
+            correlation_id=kwargs["correlation_id"],
+            report_item_uuid=plan.item_uuid,
+            mirror_cohort=kwargs["mirror_cohort"],
+            mirror_source_bucket=kwargs["mirror_source_bucket"],
+        )
+        db_session.add(row)
+        await db_session.commit()
+        raise RuntimeError("crash after ledger commit")
+
+    first = await execute_mirror_order_plans(
+        db_session,
+        plans=[plan],
+        dry_run=False,
+        place_order=crash_after_committed_mock_ledger,
+    )
+
+    await db_session.rollback()
+
+    async def should_not_be_called(**kwargs):
+        raise AssertionError("retry should skip already mirrored item")
+
+    second = await execute_mirror_order_plans(
+        db_session,
+        plans=[plan],
+        dry_run=False,
+        place_order=should_not_be_called,
+    )
+
+    assert first["failed_count"] == 1
+    assert first["success"] is False
+    assert second["skipped_count"] == 1
+    assert second["results"][0]["reason"] == "already_mirrored"
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_execute_dry_run_result_includes_full_plan_summary(db_session):
+    plan = _plan()
+
+    async def fake_place_order(**kwargs):
+        return {"success": True, "dry_run": True, "approval_hash": "p6a1.x"}
+
+    result = await execute_mirror_order_plans(
+        db_session,
+        plans=[plan],
+        dry_run=True,
+        place_order=fake_place_order,
+    )
+
+    item = result["results"][0]
+    assert item["plan"] == {
+        "item_uuid": str(plan.item_uuid),
+        "source_bucket": "place_original",
+        "correlation_id": plan.correlation_id,
+        "symbol": "005930",
+        "side": "buy",
+        "quantity": "2",
+        "amount": None,
+        "price": "70000",
+        "target_price": "76000",
+        "stop_loss": "68000",
+        "min_hold_days": 10,
+        "notes": "source_bucket=place_original",
+    }
+    assert result["status"] == "ok"
+    assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_execute_reports_partial_failure_as_unsuccessful(db_session):
+    good = _plan()
+    bad = _plan()
+
+    async def fake_place_order(**kwargs):
+        if kwargs["correlation_id"] == bad.correlation_id:
+            return {"success": False, "error": "broker rejected"}
+        return {"success": True, "dry_run": True, "approval_hash": "p6a1.x"}
+
+    result = await execute_mirror_order_plans(
+        db_session,
+        plans=[good, bad],
+        dry_run=True,
+        place_order=fake_place_order,
+    )
+
+    assert result["dry_run_count"] == 1
+    assert result["failed_count"] == 1
+    assert result["success"] is False
+    assert result["status"] == "partial_failure"
