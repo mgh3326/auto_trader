@@ -673,6 +673,21 @@ def _build_dry_run_blocked_response(
     }
 
 
+def _duplicate_order_intent_message(account_scope: str) -> str:
+    if account_scope == "kis_mock":
+        return (
+            "이 미러 아이템은 이미 KIS mock 미러 전송 intent가 있어 "
+            "중복 전송을 차단했습니다 (duplicate mock mirror intent). "
+            "kis_mock_order_ledger의 report_item_uuid/mirror_cohort 상태를 "
+            "확인하세요."
+        )
+    return (
+        "동일 주문이 오늘 이미 전송되어 중복 전송을 차단했습니다 "
+        "(duplicate order intent). 재전송하지 말고 reconcile로 접수 여부를 "
+        "확인하세요. 익일 재배치는 허용됩니다."
+    )
+
+
 async def _execute_and_record(
     *,
     normalized_symbol: str,
@@ -723,6 +738,7 @@ async def _execute_and_record(
     # Crypto/Upbit is excluded (it uses the broker-side content identifier).
     intent_account_scope: str | None = None
     intent_key: str | None = None
+    intent_reserved = False
     if (
         not is_mock
         and idempotency_key is not None
@@ -752,6 +768,7 @@ async def _execute_and_record(
                     symbol=normalized_symbol,
                     side=side,
                 )
+                intent_reserved = True
             except DuplicateOrderIntent:
                 logger.warning(
                     "KIS duplicate order intent blocked: scope=%s symbol=%s side=%s key=%s",
@@ -761,10 +778,47 @@ async def _execute_and_record(
                     intent_key,
                 )
                 return order_error_fn(
-                    "동일 주문이 오늘 이미 전송되어 중복 전송을 차단했습니다 "
-                    "(duplicate order intent). 재전송하지 말고 reconcile로 접수 여부를 "
-                    "확인하세요. 익일 재배치는 허용됩니다."
+                    _duplicate_order_intent_message(intent_account_scope)
                 )
+
+    async def _release_reserved_mock_mirror_intent_after_send_failure(
+        exc: BaseException,
+    ) -> None:
+        if (
+            not intent_reserved
+            or intent_account_scope != "kis_mock"
+            or intent_key is None
+            or mirror_cohort != "mock_counterfactual"
+        ):
+            return
+
+        try:
+            async with _order_session_factory()() as release_db:
+                deleted = await OrderSendIntentService(release_db).release(
+                    account_scope=intent_account_scope,
+                    idempotency_key=intent_key,
+                )
+        except Exception as release_exc:  # noqa: BLE001
+            logger.warning(
+                "KIS mock mirror intent release failed after send failure: "
+                "symbol=%s side=%s key=%s send_error=%s release_error=%s",
+                normalized_symbol,
+                side,
+                intent_key,
+                describe_exception(exc),
+                describe_exception(release_exc),
+            )
+            return
+
+        if deleted:
+            logger.info(
+                "KIS mock mirror intent released after send failure: "
+                "symbol=%s side=%s key=%s send_error=%s",
+                normalized_symbol,
+                side,
+                intent_key,
+                describe_exception(exc),
+            )
 
     try:
         execution_result = await _execute_order(
@@ -778,8 +832,10 @@ async def _execute_and_record(
             identifier=idempotency_key if market_type == "crypto" else None,
         )
     except httpx.RequestError as send_exc:
+        await _release_reserved_mock_mirror_intent_after_send_failure(send_exc)
         # ROB-645: the order POST itself timed out / failed with no broker response.
-        # Outcome is UNKNOWN (may have been accepted) — never re-send; reconcile.
+        # Outcome is UNKNOWN for live orders (may have been accepted) — never re-send live; reconcile.
+        # ROB-750: mock mirror has no live broker risk, so its scoped intent is released for retry.
         logger.error(
             "execute_order 실패(outcome unknown): stage=execute_order, "
             "market_type=%s, symbol=%s, side=%s, error=%s",
@@ -790,6 +846,7 @@ async def _execute_and_record(
         )
         raise OrderSendOutcomeUnknown(send_exc) from send_exc
     except Exception as exec_exc:
+        await _release_reserved_mock_mirror_intent_after_send_failure(exec_exc)
         logger.error(
             "execute_order 실패: stage=execute_order, market_type=%s, "
             "symbol=%s, side=%s, error=%s",
