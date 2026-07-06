@@ -835,3 +835,49 @@ async def test_batch_error_row_carries_cache_metadata(monkeypatch):
     assert "error" in row
     assert row["cache_hit"] is False
     assert row["derived_as_of"] is None
+
+
+def test_summarize_surfaces_nxt_price_provenance():
+    from app.mcp_server.tooling.analysis_tool_handlers import (
+        _summarize_analysis_result,
+    )
+
+    analysis = {
+        "market_type": "equity_kr",
+        "source": "kis",
+        "quote": {
+            "price": 173500.0,
+            "price_source": "nxt_expected_price",
+            "session": "nxt_premarket",
+            "data_state": "fresh",
+            "venue": "nxt",
+        },
+        "support_resistance": {"supports": [], "resistances": []},
+    }
+
+    summary = _summarize_analysis_result("192820", analysis)
+
+    assert summary["current_price"] == 173500.0
+    assert summary["price_source"] == "nxt_expected_price"
+    assert summary["session"] == "nxt_premarket"
+    assert summary["data_state"] == "fresh"
+    assert summary["venue"] == "nxt"
+
+
+def test_summarize_omits_price_provenance_when_absent():
+    from app.mcp_server.tooling.analysis_tool_handlers import (
+        _summarize_analysis_result,
+    )
+
+    analysis = {
+        "market_type": "equity_kr",
+        "source": "kis",
+        "quote": {"price": 168300.0},
+        "support_resistance": {"supports": [], "resistances": []},
+    }
+
+    summary = _summarize_analysis_result("192820", analysis)
+
+    assert summary["current_price"] == 168300.0
+    assert "price_source" not in summary
+    assert "session" not in summary
