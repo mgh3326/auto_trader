@@ -13,6 +13,30 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
+from sqlalchemy import delete
+
+from app.models.review import OrderSendIntent
+
+
+@pytest_asyncio.fixture
+async def clean_kis_live_order_send_intents(db_session):
+    """Clear KIS live send reservations around tests that exercise live send.
+
+    The production path commits review.order_send_intents through its own
+    session before broker send. Local shared test_db keeps those rows across
+    pytest invocations, while the idempotency key is deterministic for the same
+    canonical order and trading day.
+    """
+
+    async def _delete_intents() -> None:
+        await db_session.execute(delete(OrderSendIntent))
+        await db_session.commit()
+
+    await _delete_intents()
+    yield
+    await _delete_intents()
+
 
 # ---------------------------------------------------------------------------
 # Task 1: model shape
@@ -440,6 +464,7 @@ async def test_kis_mock_buy_does_not_require_thesis_strategy(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("clean_kis_live_order_send_intents")
 async def test_kis_live_kr_path_records_to_live_ledger_not_save_fill(monkeypatch):
     # ROB-395: KR live no longer books a fill/journal at send. It records the
     # order accepted-only to review.kis_live_order_ledger; _save_order_fill must
