@@ -10,6 +10,23 @@ from app.mcp_server.tooling import analysis_analyze
 KST = ZoneInfo("Asia/Seoul")
 
 
+@pytest.fixture(autouse=True)
+def _no_nxt_overlay_by_default(monkeypatch):
+    """ROB-725: keep _resolve_kr_quote tests hermetic.
+
+    Without this guard, tests that don't mock the overlay would trigger the REAL
+    _apply_nxt_quote_overlay during the 15:30–20:00 KST NXT-after wall-clock
+    window (session detection is wall-clock gated, not data_state gated), firing
+    a live get_orderbook network call that can overwrite the mocked price. Tests
+    that exercise the overlay set their own fake, which overrides this default.
+    """
+
+    async def _noop(symbol, quote, *, data_state):
+        return False
+
+    monkeypatch.setattr(analysis_analyze, "_apply_nxt_quote_overlay", _noop)
+
+
 def _ohlcv():
     # 전일 일봉(어제 날짜) — fallback 경로용
     yesterday = pd.Timestamp(datetime.now(KST).date() - timedelta(days=1))
