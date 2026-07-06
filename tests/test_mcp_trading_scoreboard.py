@@ -26,7 +26,13 @@ async def test_scoreboard_tool_calls_counterfactual_delta(monkeypatch):
 
     async def fake_delta(db, **kw):
         seen.update(kw)
-        return {"paired_count": 5, "overall_delta": {}, "caveats": []}
+        return {
+            "paired_count": 5,
+            "overall_delta": {},
+            "pairing_health": {"status": "ok"},
+            "pairing_diagnostics": {},
+            "caveats": [],
+        }
 
     monkeypatch.setattr(tool, "build_counterfactual_delta_scoreboard", fake_delta)
     result = await tool.get_trading_scoreboard(
@@ -34,6 +40,7 @@ async def test_scoreboard_tool_calls_counterfactual_delta(monkeypatch):
         account_mode="kis_mock",
         setup_tag="breakout",
         min_sample=3,
+        min_pair_threshold=7,
         include_counterfactual_delta=True,
     )
 
@@ -42,3 +49,4 @@ async def test_scoreboard_tool_calls_counterfactual_delta(monkeypatch):
     assert seen["account_mode"] == "kis_mock"
     assert seen["setup_tag"] == "breakout"
     assert seen["min_sample"] == 3
+    assert seen["min_pair_threshold"] == 7

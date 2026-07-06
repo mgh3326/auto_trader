@@ -890,9 +890,17 @@ Parameters:
 - `setup_tag`: optional tag filter.
 - `min_sample`: default `1`.
 - `cohort`: default `live_gated`. Realized trade-journal cohort to load (e.g., `live_gated`, `mock_counterfactual`).
-- `include_counterfactual_delta`: default `false`. When `true`, returns aggregates delta scoreboard comparing `live_gated` and `mock_counterfactual` paired by entry correlation ID, falling back to `report_item_uuid` for report-linked mirror orders. When `include_counterfactual_delta=True`, `market`, `account_mode`, `date_from`, `date_to`, `setup_tag`, and `min_sample` are passed into the delta builder and echoed under `filters`.
+- `include_counterfactual_delta`: default `false`. When `true`, returns aggregates delta scoreboard comparing `live_gated` and `mock_counterfactual` paired by shared `report_item_uuid` where available. `correlation_id` is still considered for legacy rows, but live place-time IDs are account-scoped and should not be expected to equal `mirror:{item_uuid}`.
+- `min_pair_threshold`: default `20`. Only affects `pairing_health`; it does not filter rows.
+- When `include_counterfactual_delta=True`, `market`, `account_mode`, `date_from`, `date_to`, `setup_tag`, `min_sample`, and `min_pair_threshold` are passed into the delta builder and echoed under `filters`.
 
 Returns Win-rate, expectancy (% and R-multiple), profit factor, average/worst MAE and MFE.
+
+When `include_counterfactual_delta=true`, the response additionally carries:
+- `pairing_diagnostics`: closed-trade and key-coverage counts used to explain why pairs did or did not form.
+- `pairing_health`: `ok`, `warming_up`, or `needs_design_review` based on `paired_count`, closed sample availability, and `min_pair_threshold`.
+
+**Order linkage note**: For report-originated live orders, passing `report_item_uuid` is required for counterfactual pairing; without it, `paired_count` can remain zero even when both live and mock cohorts have closed trades.
 
 
 ### `screen_stocks` spec
