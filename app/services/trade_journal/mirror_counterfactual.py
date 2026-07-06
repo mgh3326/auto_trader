@@ -542,7 +542,9 @@ async def execute_mirror_order_plans(
                             or row.mirror_cohort != "mock_counterfactual"
                             or row.mirror_source_bucket != plan.source_bucket
                         ):
-                            await _stamp_mirror_ledger(db, ledger_id=ledger_id, plan=plan)
+                            await _stamp_mirror_ledger(
+                                db, ledger_id=ledger_id, plan=plan
+                            )
                         submitted_count += 1
                         results.append(
                             {

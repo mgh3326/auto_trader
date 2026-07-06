@@ -103,7 +103,9 @@ async def test_execute_apply_stamps_mock_ledger_metadata(db_session):
 
 
 @pytest.mark.asyncio
-async def test_retry_after_crash_skips_existing_atomically_stamped_mirror_row(db_session):
+async def test_retry_after_crash_skips_existing_atomically_stamped_mirror_row(
+    db_session,
+):
     plan = _plan()
     calls = {"n": 0}
 
@@ -214,5 +216,3 @@ async def test_execute_reports_partial_failure_as_unsuccessful(db_session):
     assert result["failed_count"] == 1
     assert result["success"] is False
     assert result["status"] == "partial_failure"
-
-

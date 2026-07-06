@@ -101,4 +101,3 @@ async def test_mirror_counterfactual_tool_requires_confirm_for_apply(monkeypatch
     assert called is False
     assert result["success"] is False
     assert result["error_code"] == "mirror_confirm_required"
-

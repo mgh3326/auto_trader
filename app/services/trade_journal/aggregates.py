@@ -782,7 +782,9 @@ async def build_counterfactual_delta_scoreboard(
         fills_override=fills,
     )
     live_trades = pair_fills_fifo([f for f in fills if f.cohort == "live_gated"])
-    mock_trades = pair_fills_fifo([f for f in fills if f.cohort == "mock_counterfactual"])
+    mock_trades = pair_fills_fifo(
+        [f for f in fills if f.cohort == "mock_counterfactual"]
+    )
     paired = _pair_by_entry_provenance(live_trades, mock_trades)
     return {
         "live_gated": board_live,

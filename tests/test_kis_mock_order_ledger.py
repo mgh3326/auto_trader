@@ -1016,4 +1016,3 @@ async def test_record_kis_mock_order_threads_mirror_metadata(monkeypatch):
     assert save.await_args.kwargs["report_item_uuid"] == item_uuid
     assert save.await_args.kwargs["mirror_cohort"] == "mock_counterfactual"
     assert save.await_args.kwargs["mirror_source_bucket"] == "place_original"
-

@@ -238,7 +238,9 @@ async def test_watch_item_with_non_price_metric_threshold_is_skipped(db_session)
 
 
 @pytest.mark.asyncio
-async def test_watch_breakout_price_threshold_is_labeled_as_limit_approximation(db_session):
+async def test_watch_breakout_price_threshold_is_labeled_as_limit_approximation(
+    db_session,
+):
     report = await _report(db_session)
     await _item(
         db_session,
@@ -258,4 +260,3 @@ async def test_watch_breakout_price_threshold_is_labeled_as_limit_approximation(
     assert "watch_metric=price" in plan.notes
     assert "watch_operator=above" in plan.notes
     assert "watch_approximation=limit_at_threshold" in plan.notes
-
