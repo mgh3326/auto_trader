@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import Any
 
-from app.core.timezone import now_kst
+from app.core.timezone import KST, now_kst
 from app.mcp_server.tooling.fundamentals_sources_indices import (
     _DEFAULT_INDICES,
     _INDEX_META,
@@ -23,6 +24,48 @@ from app.mcp_server.tooling.market_session import (
 from app.mcp_server.tooling.shared import error_payload as _error_payload
 
 _KR_INDEX_LAGGING_REASON = "kr_index_fresh_clock_payload_lagging"
+
+# ROB-731: during an OPEN KRX session the Naver basic payload can lag real time.
+# Near flat, a stale quote inverts the sign of change_pct vs live (KOSDAQ +0.18
+# vs −0.46 at 09:10 KST 2026-07-06). Naver stamps the quote it derives the
+# change from at minute granularity, so allow one minute of natural granularity
+# plus a small margin before calling the quote stale. Tunable pending live
+# measurement of the real intraday lag distribution.
+_KR_INDEX_QUOTE_LAG_STALE_SECONDS = 120
+_KR_INDEX_QUOTE_LAG_REASON = "kr_index_quote_lagging"
+
+
+def _parse_quote_asof(value: Any) -> datetime | None:
+    """Parse a Naver ``localTradedAt`` quote timestamp into a tz-aware datetime.
+
+    Naver returns a full ISO timestamp with a ``+09:00`` offset during the
+    session (e.g. ``2026-07-06T11:19:00+09:00``). Date-only strings (the daily
+    price rows) and unparseable values yield ``None`` — a missing timestamp
+    cannot be used to assess lag.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    # A bare date carries no intraday time → not usable for lag detection.
+    if len(value) <= 10:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=KST)
+    return parsed
+
+
+def _kr_index_quote_lag_seconds(quote_asof: Any) -> int | None:
+    """Seconds the Naver quote lags ``now_kst`` (None if unknown/in the future)."""
+    parsed = _parse_quote_asof(quote_asof)
+    if parsed is None:
+        return None
+    lag = (now_kst() - parsed).total_seconds()
+    if lag < 0:
+        return None
+    return int(lag)
 
 
 def _is_zero(value: Any) -> bool:
@@ -51,10 +94,21 @@ def _tag_kr_index_data_state(index: Any) -> Any:
     """
     if isinstance(index, dict) and "error" not in index:
         data_state = kr_market_data_state()
-        if data_state == DATA_STATE_FRESH and _is_fresh_clock_lagging_kr_index(index):
-            data_state = DATA_STATE_STALE
-            index["data_state_reason"] = _KR_INDEX_LAGGING_REASON
-            index["as_of"] = now_kst().isoformat()
+        if data_state == DATA_STATE_FRESH:
+            if _is_fresh_clock_lagging_kr_index(index):
+                # ROB-464: all-zero change frozen at the prior close.
+                data_state = DATA_STATE_STALE
+                index["data_state_reason"] = _KR_INDEX_LAGGING_REASON
+                index["as_of"] = now_kst().isoformat()
+            else:
+                # ROB-731: minute-granular quote lag. The signed change_pct is
+                # only as fresh as the quote it was derived from; when that lags
+                # real time the near-flat sign can be inverted vs live.
+                lag = _kr_index_quote_lag_seconds(index.get("quote_asof"))
+                if lag is not None and lag > _KR_INDEX_QUOTE_LAG_STALE_SECONDS:
+                    data_state = DATA_STATE_STALE
+                    index["data_state_reason"] = _KR_INDEX_QUOTE_LAG_REASON
+                    index["quote_lag_seconds"] = lag
         index["data_state"] = data_state
     return index
 

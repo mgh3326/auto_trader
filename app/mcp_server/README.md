@@ -190,7 +190,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `get_upbit_altseason(include_constituents=false, constituents_limit=50)` - Upbit altseason ratio and 24h breadth. With constituents enabled, `breadth.constituents` lists KRW alts beating BTC with 24h change, vs-BTC relative strength, volume, and traded value.
 - ~~`recommend_stocks(...)`~~ — **DEPRECATED / registry-hidden (ROB-359).** No longer registered on the MCP tool surface. Use `screen_stocks` for candidate discovery. The implementation is retained in `analysis_tool_handlers.recommend_stocks_impl` for a possible future narrow `build_buy_plan` tool; do not call it from active report/operator prompts.
 
-- `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True)`
+- `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True, decision_history_account_mode=None)`
   - Legacy/deep-dive batch analysis for up to 10 symbols.
   - Do not use it as the routine follow-up after `screen_stocks_snapshot`; snapshot
     rows now expose consensus and RSI context directly.
@@ -203,6 +203,9 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
     (`{artifact_uuid, as_of, kind}`) so you can choose to reuse the persisted
     artifact via `analysis_artifact_get` instead of re-deriving. This is a soft
     hint only — the analysis still runs and is returned.
+  - `decision_history_account_mode="kis_mock"` switches only the advisory
+    `decision_history` block to the explicit mock/counterfactual branch. Leave it
+    unset for default live/default lesson context.
 
 ### Snapshot-backed report generation
 
@@ -303,6 +306,7 @@ full payload, by numeric `id` or `artifact_uuid` string. Missing ids return
 
 - `investment_report_add_items(report_uuid, items, actor=None)` - Append new proposal items to an existing draft investment report. The item payload contract matches `investment_report_create`. Duplicate `client_item_key` rows are returned as existing items and are not rewritten. Non-draft reports return `error="not_draft"`. No broker, order, or watch mutation is performed.
 - `investment_report_update(report_uuid, title=None, summary=None, risk_summary=None, thesis_text=None, no_action_note=None, market_snapshot=None, portfolio_snapshot=None, metadata=None, valid_until=None, actor=None, reason=None)` - Update draft report header fields without changing report identity, lifecycle status, predecessor chain, account scope, generator version, or items. Each successful update appends an audit entry to `report.metadata.draft_updates`. Non-draft reports return `error="not_draft"`.
+- `kis_mock_mirror_execute_report(report_uuid, dry_run=True, min_rung_quantity=1.0)` - Execute ROB-734 mirror counterfactual orders through KIS mock only. The planner mirrors only KR report items with `target_kind="asset"` and a six-digit numeric symbol. Non-KR, US, crypto, index, and FX items are skipped with `reason="non_kr_equity_out_of_mirror_scope"` and counted in `plan_skipped_count`; they are never submitted to `place_order`.
 
 ### Alpaca paper read-only smoke tools
 
@@ -456,6 +460,10 @@ official KIS mock, and KIS live account paths:
   `KIS_MOCK_APP_SECRET`, or `KIS_MOCK_ACCOUNT_NO` are missing. HTTP requests
   use `KIS_MOCK_BASE_URL`, which defaults to the official KIS mock host
   `https://openapivts.koreainvestment.com:29443`.
+  KIS mock is a KIS venue only. It does not simulate Upbit crypto orders:
+  symbols that resolve to crypto, such as `KRW-BTC`, fail closed with
+  `error: "crypto has no mock venue"` before Upbit balance reads or order
+  mutation calls.
 - `account_mode="kis_live"` or omitted: existing live KIS behavior. For
   `place_order`, `dry_run=True` remains the default. KR live buy paths query
   Toss stock warnings before order submission; active `LIQUIDATION_TRADING`
@@ -855,6 +863,8 @@ Parameters:
 - `account_scope`: optional. Defaults are `kr/us -> kis_live`, `crypto -> upbit_live`.
 - `session_context_limit`: default `10`, clamped by the session context service.
 - `include_current_price`: default `true`.
+- `cohort`: optional, default `live_gated`. Realized trade-journal cohort to load (e.g., `live_gated`, `mock_counterfactual`).
+- `include_counterfactual_delta`: default `false`. When `true`, returns aggregates delta scoreboard comparing `live_gated` and `mock_counterfactual` cohorts.
 
 Response sections:
 - `holdings`: summary and top movers derived from `get_holdings`.
@@ -863,8 +873,26 @@ Response sections:
 - `latest_report`: latest report summary and item status counts, or `null`.
 - `session_context`: recent ROB-516 handoff entries.
 - `staleness`: per-section `as_of`, freshness, and unavailable reason where available. If an optional DB-backed section (`active_watches`, `latest_report`, or `session_context`) raises, the tool still returns `success=true`; that section is returned as an empty or null fallback and `staleness.<section>.freshness_status` is `unavailable` with `unavailable_reason`.
+- `trading_scoreboards`: trading scoreboard or counterfactual delta metrics, depending on `include_counterfactual_delta` parameter.
 
 The tool never submits, modifies, cancels, reconciles, activates, expires, or mutates orders/watches/session context.
+
+
+### `get_trading_scoreboard`
+
+Query setup-tagged trade-journal aggregates over closed round-trips reconstructed from fills.
+
+Parameters:
+- `market`: optional `kr`, `us`, or `crypto`.
+- `account_mode`: optional.
+- `date_from`: optional date (YYYY-MM-DD).
+- `date_to`: optional date (YYYY-MM-DD).
+- `setup_tag`: optional tag filter.
+- `min_sample`: default `1`.
+- `cohort`: default `live_gated`. Realized trade-journal cohort to load (e.g., `live_gated`, `mock_counterfactual`).
+- `include_counterfactual_delta`: default `false`. When `true`, returns aggregates delta scoreboard comparing `live_gated` and `mock_counterfactual` paired by entry correlation ID, falling back to `report_item_uuid` for report-linked mirror orders.
+
+Returns Win-rate, expectancy (% and R-multiple), profit factor, average/worst MAE and MFE.
 
 
 ### `screen_stocks` spec

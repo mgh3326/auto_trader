@@ -537,7 +537,12 @@ def _register_fundamentals_tools_impl(
             "(SPX/NASDAQ/DJI/VIX), and crypto market regime "
             "(CRYPTO=total market cap, BTC.D=BTC dominance via CoinGecko). "
             "Without symbol returns current major equity indices, with symbol "
-            "adds OHLCV history (crypto has no history)."
+            "adds OHLCV history (crypto has no history). KR (KOSPI/KOSDAQ) rows "
+            "carry `quote_asof` (Naver quote timestamp) and a `data_state`; when "
+            "the quote lags real time during the open session it is tagged "
+            "data_state='stale' (reason kr_index_quote_lagging, with "
+            "quote_lag_seconds) — near flat, a lagging quote can invert the sign "
+            "of change_pct vs live, so do not trust a 'stale' change_pct sign."
         ),
     )
     async def get_market_index(

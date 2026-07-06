@@ -12,7 +12,7 @@ from typing import override
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from blog.tools.components.base import FONT_FAMILY, SVGComponent
+from blog.tools.components.base import SVGComponent
 from blog.tools.components.thumbnail import ThumbnailTemplate
 from blog.tools.image_generator import BlogImageGenerator
 

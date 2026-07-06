@@ -42,7 +42,7 @@ def _build_price_index(all_data: dict[str, pd.DataFrame]) -> PriceIndex:
     """Pre-build a price lookup dict for O(1) access per (market, timestamp)."""
     index: PriceIndex = {}
     for market, df in all_data.items():
-        index[market] = dict(zip(df["datetime"], df["close"].astype(float)))
+        index[market] = dict(zip(df["datetime"], df["close"].astype(float), strict=False))
     return index
 
 

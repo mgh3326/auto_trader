@@ -396,6 +396,87 @@ def test_already_fill_pair_only_one_reconciles_other_anomaly():
 
 
 @pytest.mark.unit
+def test_apportioned_budget_without_own_evidence_fails_closed():
+    """ROB-730: a lower-priority order can be handed apportioned budget while its
+    OWN directional holdings delta shows no fill (mis-attribution / spillover).
+    The per-order fill-evidence gate must veto that fill and keep it pending —
+    fail-closed, no fabricated fill.
+    """
+    orders = [
+        # A: aggressive price, own baseline 0 -> snapshot 15 = +15 (real fill)
+        _buy(ledger_id=80, price=Decimal("15900"), baseline=Decimal("0")),
+        # B: own baseline 20 -> snapshot 15 = -5 (holdings DROPPED, no own fill)
+        _buy(ledger_id=81, price=Decimal("15500"), baseline=Decimal("20")),
+    ]
+    proposals = classify_orders(
+        orders=orders,
+        holdings={
+            "0148J0": HoldingsSnapshot(
+                symbol="0148J0", quantity=Decimal("15"), taken_at=_now()
+            )
+        },  # reference=min(0,20)=0, budget=15: A takes 10, B would take 5
+        thresholds=ReconcilerThresholds(),
+        now=_now(),
+    )
+    by_id = {p.ledger_id: p for p in proposals}
+    # A has own-evidence -> books full fill
+    assert by_id[80].next_state == "fill"
+    assert by_id[80].reason_code == "fill_detected"
+    assert by_id[80].attributed_fill_qty == Decimal("10")
+    # B lacks own-evidence -> vetoed, stays pending with attributed 0
+    assert by_id[81].next_state == "pending"
+    assert by_id[81].reason_code == "attribution_unconfirmed"
+    assert by_id[81].attributed_fill_qty == Decimal("0")
+
+
+@pytest.mark.unit
+def test_own_evidence_veto_downgrades_to_stale_when_old():
+    """The evidence veto respects age: an old order without own-evidence becomes
+    stale (not pending), still with the attribution_unconfirmed reason."""
+    orders = [
+        _buy(ledger_id=90, price=Decimal("15900"), baseline=Decimal("0")),
+        _buy(
+            ledger_id=91,
+            price=Decimal("15500"),
+            baseline=Decimal("20"),
+            accepted_age_sec=3600,
+        ),
+    ]
+    proposals = classify_orders(
+        orders=orders,
+        holdings={
+            "0148J0": HoldingsSnapshot(
+                symbol="0148J0", quantity=Decimal("15"), taken_at=_now()
+            )
+        },
+        thresholds=ReconcilerThresholds(
+            pending_threshold_sec=60, stale_threshold_sec=1800
+        ),
+        now=_now(),
+    )
+    by_id = {p.ledger_id: p for p in proposals}
+    assert by_id[91].next_state == "stale"
+    assert by_id[91].reason_code == "attribution_unconfirmed"
+    assert by_id[91].attributed_fill_qty == Decimal("0")
+
+
+@pytest.mark.unit
+def test_partial_own_evidence_still_books_partial():
+    """Positive control: when the order's OWN delta confirms a partial fill (not
+    just apportioned budget), the partial is still booked (partial-booked-like-live).
+    """
+    proposals = classify_orders(
+        orders=[_order(baseline=Decimal("5"))],  # ordered 10
+        holdings={"005930": _snap(Decimal("9"))},  # own delta +4 -> partial
+        thresholds=ReconcilerThresholds(),
+        now=_now(),
+    )
+    assert proposals[0].next_state == "fill"
+    assert proposals[0].reason_code == "partial_fill_detected"
+    assert proposals[0].attributed_fill_qty == Decimal("4")
+
+
+@pytest.mark.unit
 def test_sell_lower_price_wins_budget():
     def _sell(ledger_id, price):
         return LedgerOrderInput(

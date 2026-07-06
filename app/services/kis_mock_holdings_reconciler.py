@@ -29,6 +29,7 @@ ReasonCode = Literal[
     "holdings_mismatch",
     "holdings_snapshot_missing",
     "baseline_missing",
+    "attribution_unconfirmed",
 ]
 
 
@@ -210,6 +211,22 @@ def _proposal_for(
     # is the authoritative apportioned quantity.
     per_order_delta = snapshot.quantity - order.holdings_baseline_qty  # type: ignore[operator]
 
+    # ROB-730 per-order fill-evidence gate: apportionment can hand budget to a
+    # lower-priority order whose OWN directional holdings delta shows no fill
+    # (a same-symbol sibling's fill spilled over). Before booking any fill/partial
+    # from apportioned ``take``, require the order's own baseline-vs-snapshot delta
+    # to independently confirm a fill in its direction — the exact evidence kernel
+    # ROB-341's synchronous confirm uses. No own-evidence ⇒ fail-closed: veto the
+    # fill and keep the order pending/stale with attributed_fill_qty=0. This never
+    # fabricates a fill and never weakens the existing zero/wrong-direction guard.
+    own_evidence = classify_fill_by_delta(
+        side=order.side,
+        ordered_qty=order.ordered_qty,
+        baseline_qty=order.holdings_baseline_qty,  # type: ignore[arg-type]
+        observed_qty=snapshot.quantity,
+    )
+
+    attributed = take
     if order.lifecycle_state == "fill":
         if take >= order.ordered_qty:
             next_state: OrderLifecycleState = "reconciled"
@@ -217,6 +234,13 @@ def _proposal_for(
         else:
             next_state = "anomaly"
             reason = "holdings_mismatch"
+    elif take > 0 and own_evidence.verdict == "none":
+        # Apportioned budget but this order's own holdings did not move in its
+        # direction — fail-closed, do not book the fill. Keep the age-based
+        # pending/stale target but flag the distinct cause for observability.
+        next_state, _ = _pending_or_stale(order, now, thresholds)
+        reason = "attribution_unconfirmed"
+        attributed = Decimal("0")
     elif take >= order.ordered_qty:
         next_state, reason = "fill", "fill_detected"
     elif take > 0:
@@ -232,7 +256,7 @@ def _proposal_for(
         reason_code=reason,
         observed_holdings_qty=snapshot.quantity,
         observed_delta=per_order_delta,
-        attributed_fill_qty=take,
+        attributed_fill_qty=attributed,
     )
 
 

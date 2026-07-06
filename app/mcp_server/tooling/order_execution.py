@@ -78,6 +78,7 @@ def _coerce_report_item_uuid(value: str | None) -> uuid.UUID | None:
 
 # Phase 2 strategy constants
 CRYPTO_STOP_LOSS_PCT = 0.045
+_MOCK_CRYPTO_ERROR = "crypto has no mock venue"
 
 # Crypto trade cooldown service singleton
 _order_cooldown_service: CryptoTradeCooldownService | None = None
@@ -138,6 +139,8 @@ async def _execute_order(
     identifier: str | None = None,
 ) -> dict[str, Any]:
     if market_type == "crypto":
+        if is_mock:
+            raise ValueError(_MOCK_CRYPTO_ERROR)
         return await _execute_crypto_order(
             symbol, side, order_type, quantity, price, identifier=identifier
         )
@@ -812,6 +815,9 @@ async def _execute_and_record(
             notes=notes,
             holdings_baseline_qty=kis_mock_baseline_qty,
             correlation_id=correlation_id,
+            target_price=target_price,
+            min_hold_days=min_hold_days,
+            report_item_uuid=report_item_uuid,
         )
 
     # ROB-395: live KR orders record accepted-only to the live ledger; fills,
@@ -1127,6 +1133,9 @@ async def _place_order_impl(
 
     def _order_error(message: str) -> dict[str, Any]:
         return _build_order_error(message, source, normalized_symbol, market_type)
+
+    if market_type == "crypto" and is_mock:
+        return _order_error(_MOCK_CRYPTO_ERROR)
 
     try:
         defensive_trim_ctx = await _validate_defensive_trim_preconditions(

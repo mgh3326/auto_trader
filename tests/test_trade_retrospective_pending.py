@@ -15,10 +15,12 @@ from app.core.timezone import now_kst
 from app.models.paper_trading import PaperTrade
 from app.models.review import (
     KISLiveOrderLedger,
+    KISMockOrderLedger,
     LiveOrderLedger,
     TossLiveOrderLedger,
     TradeRetrospective,
 )
+from app.models.trading import InstrumentType
 from app.services.trade_journal import trade_retrospective_service as svc
 
 pytestmark = [
@@ -37,6 +39,9 @@ async def _cleanup(
         LiveOrderLedger,
         TossLiveOrderLedger,
         PaperTrade,
+        # ROB-730: the pending scan now also reads the kis_mock ledger, so this
+        # exact-equality suite must clear it too or leaked mock rows pollute it.
+        KISMockOrderLedger,
     ):
         await db_session.execute(delete(model))
     await db_session.commit()
@@ -55,6 +60,27 @@ def _kis_row(*, order_no, status="filled", report_item_uuid=None):
         lifecycle_state=status,
         order_no=order_no,
         quantity=Decimal("1"),
+        report_item_uuid=report_item_uuid,
+    )
+
+
+def _kis_mock_row(*, order_no, report_item_uuid=None):
+    return KISMockOrderLedger(
+        trade_date=now_kst(),
+        symbol="005930",
+        instrument_type=InstrumentType.equity_kr,
+        side="buy",
+        order_type="limit",
+        account_mode="kis_mock",
+        broker="kis",
+        status="accepted",
+        lifecycle_state="fill",
+        order_no=order_no,
+        quantity=Decimal("1"),
+        price=Decimal("70000"),
+        amount=Decimal("70000"),
+        fee=Decimal("0"),
+        currency="KRW",
         report_item_uuid=report_item_uuid,
     )
 
@@ -170,6 +196,51 @@ async def test_covered_by_report_item_uuid(db_session: AsyncSession):
         db_session, kst_date_from="2000-01-01", kst_date_to="2100-01-01"
     )
     assert result["total_pending"] == 0
+
+
+@pytest.mark.asyncio
+async def test_kis_mock_report_item_uuid_coverage_is_account_scoped(
+    db_session: AsyncSession,
+):
+    rid = uuid.uuid4()
+    db_session.add(_kis_mock_row(order_no="M1", report_item_uuid=rid))
+    await db_session.commit()
+
+    await svc.save_retrospective(
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_live",
+        outcome="filled",
+        report_item_uuid=str(rid),
+    )
+    await db_session.commit()
+
+    result = await svc.build_retrospective_pending(
+        db_session,
+        kst_date_from="2000-01-01",
+        kst_date_to="2100-01-01",
+        account_mode="kis_mock",
+    )
+    assert result["total_pending"] == 1
+
+    await svc.save_retrospective(
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        report_item_uuid=str(rid),
+    )
+    await db_session.commit()
+
+    covered = await svc.build_retrospective_pending(
+        db_session,
+        kst_date_from="2000-01-01",
+        kst_date_to="2100-01-01",
+        account_mode="kis_mock",
+    )
+    assert covered["total_pending"] == 0
 
 
 @pytest.mark.asyncio

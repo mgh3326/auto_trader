@@ -11,8 +11,33 @@ Covers:
 from __future__ import annotations
 
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
+import pytest_asyncio
+from sqlalchemy import delete
+
+from app.models.review import OrderSendIntent
+
+
+@pytest_asyncio.fixture
+async def clean_kis_live_order_send_intents(db_session):
+    """Clear KIS live send reservations around tests that exercise live send.
+
+    The production path commits review.order_send_intents through its own
+    session before broker send. Local shared test_db keeps those rows across
+    pytest invocations, while the idempotency key is deterministic for the same
+    canonical order and trading day.
+    """
+
+    async def _delete_intents() -> None:
+        await db_session.execute(delete(OrderSendIntent))
+        await db_session.commit()
+
+    await _delete_intents()
+    yield
+    await _delete_intents()
+
 
 # ---------------------------------------------------------------------------
 # Task 1: model shape
@@ -440,6 +465,7 @@ async def test_kis_mock_buy_does_not_require_thesis_strategy(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("clean_kis_live_order_send_intents")
 async def test_kis_live_kr_path_records_to_live_ledger_not_save_fill(monkeypatch):
     # ROB-395: KR live no longer books a fill/journal at send. It records the
     # order accepted-only to review.kis_live_order_ledger; _save_order_fill must
@@ -535,6 +561,7 @@ async def test_kis_live_kr_path_records_to_live_ledger_not_save_fill(monkeypatch
         account_mode="kis_live",
         thesis="t",
         strategy="s",
+        rung=f"test-{uuid4().hex}",
     )
 
     assert result["success"] is True, result
@@ -718,6 +745,120 @@ async def test_shadow_exposure_unknown_on_db_error(monkeypatch):
     assert "db unavailable" in result["error"]
 
 
+# ---------------------------------------------------------------------------
+# ROB-730: place-time provenance spine — mint correlation_id + emit forecast
+# ---------------------------------------------------------------------------
+
+
+def _mock_exec_result(rt_cd: str = "0", odno: str = "0001234567") -> dict:
+    return {"odno": odno, "ord_tmd": "091500", "msg": "정상처리", "rt_cd": rt_cd}
+
+
+def _mock_preview() -> dict:
+    return {"price": 70000, "quantity": 10, "estimated_value": 700000}
+
+
+@pytest.mark.asyncio
+async def test_record_mints_correlation_id_and_publishes_forecast(monkeypatch):
+    """ROB-730: the tool path passes no correlation_id, so the mock record path
+    mints a deterministic namespaced id, stores it on the ledger row, and emits a
+    place-time forecast for an accepted buy with a target — mirroring kis_live."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    save = AsyncMock(return_value=5)
+    monkeypatch.setattr(kis_mock_ledger, "_save_kis_mock_order_ledger", save)
+    pub = AsyncMock(return_value="fc-1")
+    monkeypatch.setattr(kis_mock_ledger, "publish_place_time_forecast", pub)
+
+    result = await kis_mock_ledger._record_kis_mock_order(
+        normalized_symbol="005930",
+        market_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        dry_run_result=_mock_preview(),
+        execution_result=_mock_exec_result(),
+        reason="t",
+        thesis=None,
+        strategy=None,
+        notes=None,
+        target_price=80000.0,
+        min_hold_days=5,
+    )
+
+    cid = result["correlation_id"]
+    assert cid is not None
+    assert cid.startswith("live:kis_mock:")
+    # stored on the ledger row
+    assert save.await_args.kwargs["correlation_id"] == cid
+    # forecast published for the accepted buy, tagged for mock provenance
+    pub.assert_awaited_once()
+    assert pub.await_args.kwargs["correlation_id"] == cid
+    assert pub.await_args.kwargs["session_label"] == "kis_mock_place"
+    assert pub.await_args.kwargs["created_by"] == "auto_place_mock"
+    assert pub.await_args.kwargs["target_price"] == 80000.0
+
+
+@pytest.mark.asyncio
+async def test_record_preserves_explicit_correlation_id(monkeypatch):
+    """ROB-730: an explicit correlation_id (ROB-402 scalping entry/exit pairing)
+    must be preserved, never overwritten by a freshly minted one."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    save = AsyncMock(return_value=5)
+    monkeypatch.setattr(kis_mock_ledger, "_save_kis_mock_order_ledger", save)
+    pub = AsyncMock(return_value="fc-1")
+    monkeypatch.setattr(kis_mock_ledger, "publish_place_time_forecast", pub)
+
+    result = await kis_mock_ledger._record_kis_mock_order(
+        normalized_symbol="005930",
+        market_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        dry_run_result=_mock_preview(),
+        execution_result=_mock_exec_result(),
+        reason="t",
+        thesis=None,
+        strategy=None,
+        notes=None,
+        correlation_id="scalp-pair-1",
+    )
+
+    assert result["correlation_id"] == "scalp-pair-1"
+    assert save.await_args.kwargs["correlation_id"] == "scalp-pair-1"
+    assert pub.await_args.kwargs["correlation_id"] == "scalp-pair-1"
+
+
+@pytest.mark.asyncio
+async def test_record_rejected_order_mints_but_does_not_publish(monkeypatch):
+    """ROB-730: a rejected order still gets a correlation_id (spine), but no
+    place-time forecast is emitted (mirrors live: publish only when accepted)."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    save = AsyncMock(return_value=5)
+    monkeypatch.setattr(kis_mock_ledger, "_save_kis_mock_order_ledger", save)
+    pub = AsyncMock(return_value=None)
+    monkeypatch.setattr(kis_mock_ledger, "publish_place_time_forecast", pub)
+
+    result = await kis_mock_ledger._record_kis_mock_order(
+        normalized_symbol="005930",
+        market_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        dry_run_result=_mock_preview(),
+        execution_result=_mock_exec_result(rt_cd="40", odno=""),
+        reason="t",
+        thesis=None,
+        strategy=None,
+        notes=None,
+        target_price=80000.0,
+    )
+
+    assert result["status"] == "rejected"
+    assert result["correlation_id"] is not None
+    assert save.await_args.kwargs["correlation_id"] == result["correlation_id"]
+    pub.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_place_order_impl_threads_correlation_id(db_session, monkeypatch):
     from unittest.mock import AsyncMock
@@ -794,3 +935,46 @@ async def test_place_order_impl_threads_correlation_id(db_session, monkeypatch):
         )
     ).scalar_one_or_none()
     assert row is not None
+
+
+@pytest.mark.asyncio
+async def test_save_kis_mock_order_ledger_persists_report_item_uuid(db_session):
+    from uuid import uuid4
+
+    from sqlalchemy import select
+
+    from app.mcp_server.tooling.kis_mock_ledger import _save_kis_mock_order_ledger
+    from app.models.review import KISMockOrderLedger
+
+    item_uuid = uuid4()
+    order_no = f"ROB734-{uuid4().hex[:10]}"
+    ledger_id = await _save_kis_mock_order_ledger(
+        symbol="005930",
+        instrument_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        quantity=1,
+        price=70000,
+        amount=70000,
+        currency="KRW",
+        order_no=order_no,
+        order_time="090000",
+        krx_fwdg_ord_orgno=None,
+        status="accepted",
+        response_code="0",
+        response_message="ok",
+        raw_response={"rt_cd": "0"},
+        reason="ROB-734 mirror",
+        thesis="counterfactual",
+        strategy="mirror_counterfactual",
+        notes=None,
+        report_item_uuid=item_uuid,
+    )
+    assert ledger_id is not None
+
+    row = (
+        await db_session.execute(
+            select(KISMockOrderLedger).where(KISMockOrderLedger.order_no == order_no)
+        )
+    ).scalar_one()
+    assert row.report_item_uuid == item_uuid

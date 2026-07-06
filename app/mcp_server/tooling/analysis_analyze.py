@@ -34,11 +34,13 @@ from app.mcp_server.tooling.market_data_indicators import (
     _split_support_resistance_levels,
 )
 from app.mcp_server.tooling.market_data_quotes import (
+    _apply_nxt_quote_overlay,
     _fetch_kr_live_quote,
     _fetch_quote_crypto,
     _fetch_quote_equity_kr,
     _fetch_quote_equity_us,
 )
+from app.mcp_server.tooling.market_session import kr_market_data_state
 from app.mcp_server.tooling.shared import (
     build_recommendation_for_equity as _build_recommendation_for_equity,
 )
@@ -114,6 +116,14 @@ async def _resolve_kr_quote(
         tradability = (await get_kr_nxt_tradability([symbol])).get(symbol)
         if tradability is not None:
             quote.update(tradability.public_fields())
+        # ROB-725: during NXT premarket/after-hours the KRX regular quote is the
+        # prior close — overlay the live NXT price so current_price + S/R
+        # distance_pct track the real market.
+        if await _apply_nxt_quote_overlay(
+            symbol, quote, data_state=kr_market_data_state()
+        ):
+            quote["is_stale_price"] = False
+            quote["price_as_of"] = now_kst().isoformat()
         return quote
 
     live = await _fetch_kr_live_quote(symbol)

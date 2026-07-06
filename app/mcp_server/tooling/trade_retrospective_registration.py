@@ -68,18 +68,20 @@ def register_trade_retrospective_tools(mcp: Any) -> None:
     _ = mcp.tool(
         name="trade_retrospective_pending",
         description=(
-            "List lifecycle-terminal live orders across the 3 live ledgers "
-            "(kis_live KR, generic live US/crypto, toss_live) that still lack a "
-            "trade retrospective, over a KST trade_date window (default: last 14 "
-            "days). Defaults to actionable terminals only: filled / rejected / "
-            "anomaly. Cancel-family rows (cancelled — which includes DAY expiry "
-            "and strategic cancels — plus toss cancel_rejected/replace_rejected) "
-            "are hidden by default and their count is reported in "
-            "excluded_by_filter; pass include_cancelled=true to surface them. "
-            "Each row carries a suggested_correlation_id to pass to "
-            "save_trade_retrospective so it is marked covered next scan. Optional "
-            "account_mode filter in {kis_live, upbit_live, toss_live}. Read-only "
-            "due-list — no broker/order mutation. (ROB-647, ROB-661)"
+            "List lifecycle-terminal orders across the live ledgers (kis_live KR, "
+            "generic live US/crypto, toss_live), paper_trades, and the kis_mock "
+            "ledger (ROB-730 counterfactual loop) that still lack a trade "
+            "retrospective, over a KST trade_date window (default: last 14 days). "
+            "Defaults to actionable terminals only: filled / rejected / anomaly "
+            "(kis_mock: fill/reconciled/failed/anomaly). Cancel-family rows "
+            "(cancelled — which includes DAY expiry and strategic cancels — plus "
+            "toss cancel_rejected/replace_rejected and kis_mock stale) are hidden "
+            "by default and their count is reported in excluded_by_filter; pass "
+            "include_cancelled=true to surface them. Each row carries a "
+            "suggested_correlation_id to pass to save_trade_retrospective so it is "
+            "marked covered next scan. Optional account_mode filter in "
+            "{kis_live, upbit_live, toss_live, paper, kis_mock}. Read-only "
+            "due-list — no broker/order mutation. (ROB-647, ROB-661, ROB-730)"
         ),
     )(trade_retrospective_pending)
 

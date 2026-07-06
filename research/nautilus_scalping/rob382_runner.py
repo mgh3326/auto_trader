@@ -104,7 +104,7 @@ def simulate_candidate(module, symbols: Sequence[str] = DEFAULT_SYMBOLS):
 def _build_baselines(module, per_symbol: dict) -> tuple[list[Trade], list[Trade]]:
     breakout: list[Trade] = []
     rnd: list[Trade] = []
-    for idx, (sym, d) in enumerate(sorted(per_symbol.items())):
+    for idx, (_sym, d) in enumerate(sorted(per_symbol.items())):
         bars = d.get("bars")
         if not bars:
             continue

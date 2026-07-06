@@ -408,6 +408,29 @@ async def _fetch_nxt_quote_overlay(
     return overlay
 
 
+async def _apply_nxt_quote_overlay(
+    symbol: str, quote: dict[str, Any], *, data_state: str
+) -> bool:
+    """Overlay an NXT-derived price onto ``quote`` during NXT sessions (ROB-725).
+
+    In-place mutation: ``price`` becomes the NXT expected/mid/best price and
+    ``price_source``/``session``/``venue``/``data_state`` are tagged. Returns
+    ``True`` when applied. Returns ``False`` (no mutation) when not in an NXT
+    session or the NXT orderbook is empty. Never raises — fail-open to the base
+    quote.
+    """
+    session = await _nxt_quote_session(data_state)
+    if session is None:
+        return False
+    overlay = await _fetch_nxt_quote_overlay(symbol, session=session)
+    if overlay is None:
+        return False
+    quote.update(overlay)
+    quote["regular_session_data_state"] = data_state
+    quote["data_state"] = DATA_STATE_FRESH
+    return True
+
+
 def _build_orderbook_walls_for_side(
     levels: list[market_data_service.OrderbookLevel],
 ) -> list[dict[str, Any]]:
@@ -1227,14 +1250,8 @@ async def _get_quote_impl(
         tradability = (await get_kr_nxt_tradability([symbol])).get(symbol)
         if tradability is not None:
             quote.update(tradability.public_fields())
-        session = await _nxt_quote_session(data_state)
-        if session is not None:
-            overlay = await _fetch_nxt_quote_overlay(symbol, session=session)
-            if overlay is not None:
-                quote.update(overlay)
-                quote["regular_session_data_state"] = data_state
-                quote["data_state"] = DATA_STATE_FRESH
-                return quote
+        if await _apply_nxt_quote_overlay(symbol, quote, data_state=data_state):
+            return quote
 
         quote["data_state"] = data_state
         return quote

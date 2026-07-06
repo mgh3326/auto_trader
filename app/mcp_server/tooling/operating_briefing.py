@@ -273,6 +273,8 @@ async def get_operating_briefing_impl(
     account_scope: str | None = None,
     session_context_limit: int = 10,
     include_current_price: bool = True,
+    cohort: str = "live_gated",
+    include_counterfactual_delta: bool = False,
 ) -> dict[str, Any]:
     as_of = now_kst()
     effective_scope = _default_account_scope(market, account_scope)
@@ -328,6 +330,7 @@ async def get_operating_briefing_impl(
             analysis_artifacts = await _recent_analysis_artifacts(
                 db,
                 market=market,
+                limit=10,
             )
             analysis_artifacts_staleness = {
                 "freshness_status": "db_read",
@@ -343,6 +346,26 @@ async def get_operating_briefing_impl(
                 "freshness_status": "unavailable",
                 "unavailable_reason": reason,
             }
+
+        try:
+            from app.services.trade_journal.aggregates import (
+                build_counterfactual_delta_scoreboard,
+                build_trading_scoreboard,
+            )
+
+            if include_counterfactual_delta:
+                trading_scoreboards = await build_counterfactual_delta_scoreboard(
+                    db,
+                    market=market,
+                )
+            else:
+                trading_scoreboards = await build_trading_scoreboard(
+                    db,
+                    market=market,
+                    cohort=cohort,
+                )
+        except Exception as exc:  # noqa: BLE001
+            trading_scoreboards = {"error": str(exc)}
 
     try:
         active_watches = await list_active_watches_impl(market=market)
@@ -431,6 +454,7 @@ async def get_operating_briefing_impl(
         "session_context": session_context,
         "analysis_artifacts": analysis_artifacts,
         "policy_version": policy_version,
+        "trading_scoreboards": trading_scoreboards,
     }
     return OperatingBriefingResponse.model_validate(response).model_dump(mode="json")
 

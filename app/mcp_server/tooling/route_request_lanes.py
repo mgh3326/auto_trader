@@ -12,6 +12,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.mcp_server.tooling.mirror_counterfactual_registration import (
+    MIRROR_COUNTERFACTUAL_TOOL_NAMES,
+)
 from app.mcp_server.tooling.orders_kis_variants import (
     KIS_LIVE_ORDER_TOOL_NAMES,
     KIS_MOCK_ORDER_TOOL_NAMES,
@@ -174,6 +177,7 @@ MUTATION_TOOLS: frozenset[str] = frozenset(
     | LIVE_RECONCILE_TOOL_NAMES
     | TOSS_LIVE_ORDER_TOOL_NAMES
     | KIWOOM_MOCK_TOOL_NAMES
+    | MIRROR_COUNTERFACTUAL_TOOL_NAMES
     | frozenset(
         {
             # ROB-703: paper resting-limit sim mutations (paper-table writes only,

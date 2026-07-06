@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-07-06
+
+### Added (ROB-734 — KIS Mock Mirror Counterfactual implementation; migration 1)
+- **Mirror Order Plan Generation:** Created `build_mirror_order_plans` service to derive target quantities/prices from `InvestmentReportItem` using original sizing and KIS priority rules.
+- **Mock Execution & Idempotency:** Implemented `execute_mirror_order_plans` and `execute_mirror_for_report` to route and stamp orders under `account_mode="kis_mock"`.
+- **MCP Execution Tool:** Exposed `kis_mock_mirror_execute_report` to allow counterfactual execution from Model Context Protocol.
+- **Delta Scoreboard:** Added cohort-scoped fill loader and pairing logic (`build_counterfactual_delta_scoreboard`) to compute paired expectancy PnL %/hit-rate differences between `live_gated` and `mock_counterfactual` cohorts.
+- **Operating Briefing & Decision History:** Embedded the scoreboard metrics into `get_operating_briefing` response and updated `build_decision_context` to handle mock account mode and cohorts.
+
 ### Added (ROB-662 — `/invest` 회고 read-only browser; migration 0)
 - **Read-only GET surface for trade retrospectives.** Two new session-cookie-authed endpoints mirror the ROB-591 watch router: `GET /trading/api/invest/retrospectives` (filterable by `market`/`trigger_type`/`root_cause_class`/`symbol`/`days`, with `limit`/`offset` pagination and a `total` filtered-count echo) and `GET /trading/api/invest/retrospectives/next-actions` (bounded-scan incomplete-action checklist with `scan_limit` echo). `trigger_type`/`root_cause_class` are validated against `VALID_TRIGGER_TYPES`/`VALID_ROOT_CAUSE_CLASSES` (invalid → 422); US symbols normalize via `to_db_symbol` in the router, not the service. No writes, no migrations — all reads go through the existing `trade_retrospective_service`.
 - **Service helpers.** `get_retrospectives` gains `trigger_type`/`root_cause_class`/`offset` kwargs + a `total` filtered count (existing callers unaffected — all new kwargs are optional, `total` is additive). New `get_open_next_actions` flattens incomplete next_actions (`status != "done"`) across the `limit` most-recent retrospectives, enriching each with parent context (symbol/market/trigger/realized_pnl/correlation_id). The bounded scan is made explicit via the `scan_limit` echo and a guard against malformed entries.

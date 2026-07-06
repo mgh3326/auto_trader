@@ -1194,6 +1194,8 @@ class OperatingBriefingResponse(BaseModel):
     # ROB-646 — lightweight policy version pin ({version, content_hash}) so a
     # session records which policy it ran under. Defaulted for back-compat.
     policy_version: dict[str, Any] | None = None
+    # ROB-734 — realized trading scoreboards/delta. Defaulted for back-compat.
+    trading_scoreboards: dict[str, Any] | None = None
 
 
 class InvestmentReportCreateResponse(BaseModel):
