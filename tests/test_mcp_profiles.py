@@ -285,7 +285,9 @@ class TestOrderSurfaceMatrix:
 # tool (crypto research included). ``TestShadowReplayIsResearchSurfaceException``
 # pins that omission explicitly.
 _PROFILES_WITH_RESEARCH_SURFACE = [
-    p for p in McpProfile if p not in (McpProfile.SHADOW_REPLAY, McpProfile.ANALYSIS_READONLY)
+    p
+    for p in McpProfile
+    if p not in (McpProfile.SHADOW_REPLAY, McpProfile.ANALYSIS_READONLY)
 ]
 
 
@@ -396,7 +398,11 @@ class TestAnalysisReadonlyProfile:
 
     def test_persistence_tools_are_registered_but_list_resolve_are_not(self) -> None:
         mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
-        assert {"analysis_artifact_save", "analysis_artifact_get", "forecast_save"} <= mcp.tools.keys()
+        assert {
+            "analysis_artifact_save",
+            "analysis_artifact_get",
+            "forecast_save",
+        } <= mcp.tools.keys()
         assert "analysis_artifact_list" not in mcp.tools
         assert "forecast_resolve" not in mcp.tools
         assert "get_forecasts" not in mcp.tools
