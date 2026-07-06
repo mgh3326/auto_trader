@@ -62,8 +62,12 @@ async def test_send_reply_uses_trade_notifier_mirror(monkeypatch) -> None:
 
 
 def test_main_reads_stdin_and_returns_zero(monkeypatch, capsys) -> None:
+    def fake_asyncio_run(coro):
+        coro.close()
+        return True
+
     monkeypatch.setattr(cli.sys, "stdin", SimpleNamespace(read=lambda: "## 알림 요약"))
-    monkeypatch.setattr(cli, "asyncio", SimpleNamespace(run=lambda coro: True))
+    monkeypatch.setattr(cli.asyncio, "run", fake_asyncio_run)
 
     rc = cli.main(
         [

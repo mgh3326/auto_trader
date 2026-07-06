@@ -25,7 +25,7 @@ def _has_discord(settings_obj: Any) -> bool:
 def _has_telegram(settings_obj: Any) -> bool:
     return bool(
         getattr(settings_obj, "telegram_token", None)
-        and getattr(settings_obj, "telegram_chat_id", None)
+        and getattr(settings_obj, "telegram_chat_ids", [])
     )
 
 
@@ -71,9 +71,7 @@ def configure_trade_notifier_from_settings(
             )
             configured_systems.append(f"Discord ({webhook_count} webhook(s))")
         if has_telegram:
-            configured_systems.append(
-                f"Telegram (chat_id={getattr(settings_obj, 'telegram_chat_id', '')})"
-            )
+            configured_systems.append(f"Telegram ({len(chat_ids)} chat(s))")
 
         logger.info("%s initialized: %s", log_context, ", ".join(configured_systems))
         return True
