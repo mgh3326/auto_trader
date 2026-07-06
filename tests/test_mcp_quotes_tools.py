@@ -420,6 +420,77 @@ def _nxt_quote_book(
 
 
 @pytest.mark.asyncio
+async def test_apply_nxt_quote_overlay_applies_in_premarket(monkeypatch):
+    from app.mcp_server.tooling import market_data_quotes
+
+    async def fake_session(data_state, *, now=None):
+        return "nxt_premarket"
+
+    async def fake_overlay(symbol, *, session):
+        return {
+            "price": 173500.0,
+            "session": session,
+            "venue": "nxt",
+            "price_source": "nxt_expected_price",
+        }
+
+    monkeypatch.setattr(market_data_quotes, "_nxt_quote_session", fake_session)
+    monkeypatch.setattr(market_data_quotes, "_fetch_nxt_quote_overlay", fake_overlay)
+
+    quote = {"symbol": "192820", "price": 168300.0, "source": "kis"}
+    applied = await market_data_quotes._apply_nxt_quote_overlay(
+        "192820", quote, data_state="premarket_unavailable"
+    )
+
+    assert applied is True
+    assert quote["price"] == 173500.0
+    assert quote["price_source"] == "nxt_expected_price"
+    assert quote["session"] == "nxt_premarket"
+    assert quote["data_state"] == "fresh"
+    assert quote["regular_session_data_state"] == "premarket_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_apply_nxt_quote_overlay_noop_outside_session(monkeypatch):
+    from app.mcp_server.tooling import market_data_quotes
+
+    async def fake_session(data_state, *, now=None):
+        return None
+
+    monkeypatch.setattr(market_data_quotes, "_nxt_quote_session", fake_session)
+
+    quote = {"symbol": "192820", "price": 168300.0, "source": "kis"}
+    applied = await market_data_quotes._apply_nxt_quote_overlay(
+        "192820", quote, data_state="fresh"
+    )
+
+    assert applied is False
+    assert quote == {"symbol": "192820", "price": 168300.0, "source": "kis"}
+
+
+@pytest.mark.asyncio
+async def test_apply_nxt_quote_overlay_noop_on_empty_book(monkeypatch):
+    from app.mcp_server.tooling import market_data_quotes
+
+    async def fake_session(data_state, *, now=None):
+        return "nxt_premarket"
+
+    async def fake_overlay(symbol, *, session):
+        return None  # empty orderbook → _fetch_nxt_quote_overlay returns None
+
+    monkeypatch.setattr(market_data_quotes, "_nxt_quote_session", fake_session)
+    monkeypatch.setattr(market_data_quotes, "_fetch_nxt_quote_overlay", fake_overlay)
+
+    quote = {"symbol": "192820", "price": 168300.0}
+    applied = await market_data_quotes._apply_nxt_quote_overlay(
+        "192820", quote, data_state="premarket_unavailable"
+    )
+
+    assert applied is False
+    assert quote == {"symbol": "192820", "price": 168300.0}
+
+
+@pytest.mark.asyncio
 async def test_get_quote_korean_equity_premarket_routes_to_nxt_expected_price(
     monkeypatch,
 ):

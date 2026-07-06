@@ -791,6 +791,12 @@ def _summarize_analysis_result(
         if _nxt_key in quote:
             summary[_nxt_key] = quote[_nxt_key]
 
+    # ROB-725: surface NXT price provenance so the agent knows current_price is
+    # an NXT-derived quote (not the stale KRX regular-session close).
+    for _px_key in ("price_source", "session", "data_state", "venue"):
+        if _px_key in quote:
+            summary[_px_key] = quote[_px_key]
+
     if position_index is not None:
         summary["position"] = _lookup_position_for_symbol(
             symbol=symbol,
