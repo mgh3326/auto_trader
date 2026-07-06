@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pandas as pd
@@ -64,6 +65,96 @@ async def test_fetch_us_prices_uses_live_last_endpoint(
     )
     # The daily-close endpoint must no longer be used for a "current price".
     service._market_data.inquire_overseas_daily_price.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_fetch_us_serializes_current_price_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.invest_quote_service.settings.toss_api_enabled",
+        False,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.services.invest_quote_service.settings.invest_quotes_toss_first_us",
+        False,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.services.invest_quote_service.get_us_exchange_by_symbol",
+        AsyncMock(return_value="NASD"),
+    )
+
+    service = InvestQuoteService(MagicMock(), MagicMock())
+    service._snapshot_latest = AsyncMock(return_value={})
+    service._market_data = AsyncMock()
+
+    active = 0
+    max_active = 0
+    call_order: list[str] = []
+
+    async def _inquire(symbol: str, exchange_code: str = "NASD") -> pd.DataFrame:
+        nonlocal active, max_active
+        assert exchange_code == "NASD"
+        active += 1
+        max_active = max(max_active, active)
+        call_order.append(symbol)
+        await asyncio.sleep(0)
+        active -= 1
+        return pd.DataFrame([{"close": float(len(call_order))}])
+
+    service._market_data.inquire_overseas_price.side_effect = _inquire
+
+    out = await service.fetch_us_prices(["AAPL", "NVDA", "MSFT"])
+
+    assert out == pytest.approx({"AAPL": 1.0, "NVDA": 2.0, "MSFT": 3.0})
+    assert call_order == ["AAPL", "NVDA", "MSFT"]
+    assert max_active == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_fetch_kr_serializes_current_price_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.invest_quote_service.settings.toss_api_enabled",
+        False,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.services.invest_quote_service.settings.invest_quotes_toss_first_kr",
+        False,
+        raising=False,
+    )
+
+    service = InvestQuoteService(MagicMock(), MagicMock())
+    service._snapshot_latest = AsyncMock(return_value={})
+    service._market_data = AsyncMock()
+
+    active = 0
+    max_active = 0
+    call_order: list[str] = []
+
+    async def _inquire(symbol: str, market: str = "J") -> pd.DataFrame:
+        nonlocal active, max_active
+        assert market == "J"
+        active += 1
+        max_active = max(max_active, active)
+        call_order.append(symbol)
+        await asyncio.sleep(0)
+        active -= 1
+        return pd.DataFrame([{"close": float(len(call_order) * 10)}])
+
+    service._market_data.inquire_price.side_effect = _inquire
+
+    out = await service.fetch_kr_prices(["005930", "000660", "035420"])
+
+    assert out == pytest.approx({"005930": 10.0, "000660": 20.0, "035420": 30.0})
+    assert call_order == ["005930", "000660", "035420"]
+    assert max_active == 1
 
 
 @pytest.mark.asyncio
