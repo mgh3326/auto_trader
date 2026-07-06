@@ -88,6 +88,40 @@ def _coerce_uuid(value: str | None) -> uuid.UUID | None:
         return None
 
 
+def _mock_market_for(row: KISMockOrderLedger) -> str:
+    return "kr" if row.instrument_type == InstrumentType.equity_kr else "us"
+
+
+def _mock_fill_from_row(
+    row: KISMockOrderLedger,
+    *,
+    qty: float,
+    fee: float,
+    side: str,
+    cohort: str,
+    source_bucket: str | None,
+    item_uuid: str | None,
+    correlation_id: str | None,
+) -> Fill | None:
+    if qty <= _EPS or row.trade_date is None or float(row.price) <= _EPS:
+        return None
+    return Fill(
+        market=_mock_market_for(row),
+        symbol=to_db_symbol(row.symbol),
+        account="kis_mock",
+        side=side,
+        qty=qty,
+        price=float(row.price),
+        fee=fee,
+        ts=row.trade_date,
+        item_uuid=item_uuid,
+        correlation_id=correlation_id,
+        source="kis_mock",
+        cohort=cohort,
+        source_bucket=source_bucket,
+    )
+
+
 @dataclass(frozen=True)
 class Fill:
     market: str
@@ -139,11 +173,142 @@ class _Lot:
     source_bucket: str | None = None
 
 
+@dataclass
+class _MockAttributionLot:
+    qty: float
+    orig_qty: float
+    is_mirror: bool
+    source_bucket: str | None
+    item_uuid: str | None
+    correlation_id: str | None
+
+
 @dataclass(frozen=True)
 class TagInfo:
     tag: str
     tag_source: str
     link_quality: str
+
+
+async def _load_mock_counterfactual_fills(
+    db: AsyncSession,
+    *,
+    market: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> list[Fill]:
+    from app.mcp_server.tooling.kis_mock_ledger import _derive_shadow_fill
+
+    stmt = (
+        select(KISMockOrderLedger)
+        .where(KISMockOrderLedger.lifecycle_state == "fill")
+        .order_by(KISMockOrderLedger.trade_date.asc(), KISMockOrderLedger.id.asc())
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    open_lots: dict[tuple[str, str, str], deque[_MockAttributionLot]] = defaultdict(
+        deque
+    )
+    fills: list[Fill] = []
+
+    def in_requested_window(row: KISMockOrderLedger) -> bool:
+        if row.trade_date is None:
+            return False
+        d = row.trade_date.date()
+        if date_from and d < date_from:
+            return False
+        if date_to and d > date_to:
+            return False
+        return True
+
+    for row in rows:
+        row_market = _mock_market_for(row)
+        if market and row_market != market:
+            continue
+
+        filled_qty, _remaining, status = _derive_shadow_fill(row, float(row.quantity))
+        if status not in {"filled", "partial"} or filled_qty <= _EPS:
+            continue
+
+        key = (row_market, "kis_mock", to_db_symbol(row.symbol))
+        is_mirror = row.mirror_cohort == "mock_counterfactual"
+        item_uuid = str(row.report_item_uuid) if row.report_item_uuid else None
+        row_fee = float(row.fee or 0)
+
+        if row.side == "buy":
+            open_lots[key].append(
+                _MockAttributionLot(
+                    qty=filled_qty,
+                    orig_qty=filled_qty,
+                    is_mirror=is_mirror,
+                    source_bucket=row.mirror_source_bucket if is_mirror else None,
+                    item_uuid=item_uuid if is_mirror else None,
+                    correlation_id=row.correlation_id if is_mirror else None,
+                )
+            )
+            if is_mirror and in_requested_window(row):
+                fill = _mock_fill_from_row(
+                    row,
+                    qty=filled_qty,
+                    fee=row_fee,
+                    side="buy",
+                    cohort="mock_counterfactual",
+                    source_bucket=row.mirror_source_bucket,
+                    item_uuid=item_uuid,
+                    correlation_id=row.correlation_id,
+                )
+                if fill is not None:
+                    fills.append(fill)
+            continue
+
+        if row.side != "sell":
+            continue
+
+        remaining = filled_qty
+        attributed_qty = 0.0
+        attributed_fee = 0.0
+
+        if is_mirror:
+            mirror_lots = open_lots[key]
+            for lot in list(mirror_lots):
+                if remaining <= _EPS:
+                    break
+                if not lot.is_mirror:
+                    continue
+                take = min(remaining, lot.qty)
+                lot.qty -= take
+                remaining -= take
+                attributed_qty += take
+                attributed_fee += row_fee * (take / filled_qty)
+            while mirror_lots and mirror_lots[0].qty <= _EPS:
+                mirror_lots.popleft()
+        else:
+            lots = open_lots[key]
+            while remaining > _EPS and lots:
+                lot = lots[0]
+                take = min(remaining, lot.qty)
+                lot.qty -= take
+                remaining -= take
+                if lot.is_mirror:
+                    attributed_qty += take
+                    attributed_fee += row_fee * (take / filled_qty)
+                if lot.qty <= _EPS:
+                    lots.popleft()
+
+        if attributed_qty > _EPS and in_requested_window(row):
+            fill = _mock_fill_from_row(
+                row,
+                qty=attributed_qty,
+                fee=attributed_fee,
+                side="sell",
+                cohort="mock_counterfactual",
+                source_bucket=row.mirror_source_bucket if is_mirror else None,
+                item_uuid=item_uuid if is_mirror else None,
+                correlation_id=row.correlation_id,
+            )
+            if fill is not None:
+                fills.append(fill)
+
+    return fills
 
 
 async def load_fills(
@@ -216,45 +381,14 @@ async def load_fills(
                 )
 
     if cohort in ("mock_counterfactual", "all") and account_mode in (None, "kis_mock"):
-        from app.mcp_server.tooling.kis_mock_ledger import _derive_shadow_fill
-
-        stmt = select(KISMockOrderLedger).where(
-            KISMockOrderLedger.mirror_cohort == "mock_counterfactual",
-            KISMockOrderLedger.lifecycle_state == "fill",
-        )
-        rows = (await db.execute(stmt)).scalars().all()
-        for r in rows:
-            row_market = "kr" if r.instrument_type == InstrumentType.equity_kr else "us"
-            if market and row_market != market:
-                continue
-            if r.trade_date is not None:
-                d = r.trade_date.date()
-                if date_from and d < date_from:
-                    continue
-                if date_to and d > date_to:
-                    continue
-
-            filled_qty, _remaining, status = _derive_shadow_fill(r, float(r.quantity))
-            if status not in {"filled", "partial"} or filled_qty <= 0:
-                continue
-
-            fills.append(
-                Fill(
-                    market=row_market,
-                    symbol=to_db_symbol(r.symbol),
-                    account="kis_mock",
-                    side=r.side,
-                    qty=filled_qty,
-                    price=float(r.price),
-                    fee=float(r.fee or 0),
-                    ts=r.trade_date,
-                    item_uuid=str(r.report_item_uuid) if r.report_item_uuid else None,
-                    correlation_id=r.correlation_id,
-                    source="kis_mock",
-                    cohort="mock_counterfactual",
-                    source_bucket=r.mirror_source_bucket,
-                )
+        fills.extend(
+            await _load_mock_counterfactual_fills(
+                db,
+                market=market,
+                date_from=date_from,
+                date_to=date_to,
             )
+        )
 
     return [f for f in fills if f.price > 0 and f.ts is not None]
 
