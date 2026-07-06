@@ -37,6 +37,7 @@ async def clean_kis_live_order_send_intents(db_session):
     yield
     await _delete_intents()
 
+
 # ---------------------------------------------------------------------------
 # Task 1: model shape
 # ---------------------------------------------------------------------------
