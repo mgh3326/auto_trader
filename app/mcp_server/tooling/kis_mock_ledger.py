@@ -257,6 +257,7 @@ async def _save_kis_mock_order_ledger(
     exit_reason: str | None = None,
     gross_pnl: Decimal | None = None,
     net_pnl: Decimal | None = None,
+    report_item_uuid: uuid.UUID | None = None,
 ) -> int | None:
     """Insert one row into review.kis_mock_order_ledger.
 
@@ -298,6 +299,7 @@ async def _save_kis_mock_order_ledger(
                     exit_reason=exit_reason,
                     gross_pnl=gross_pnl,
                     net_pnl=net_pnl,
+                    report_item_uuid=report_item_uuid,
                 )
                 .on_conflict_do_nothing(constraint="uq_kis_mock_ledger_order_no")
             )
@@ -389,6 +391,7 @@ async def _record_kis_mock_order(
         lifecycle_state=_status_to_lifecycle_state(status),
         holdings_baseline_qty=holdings_baseline_qty,
         correlation_id=correlation_id,
+        report_item_uuid=report_item_uuid,
     )
 
     # ROB-730: emit the place-time forecast only for accepted orders (mirrors
