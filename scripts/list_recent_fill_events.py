@@ -20,6 +20,7 @@ from app.core.db import AsyncSessionLocal
 from app.services.execution_ledger.fill_event_sanitizer import sanitize_fill
 from app.services.execution_ledger.repository import ExecutionLedgerRepository
 
+VALID_MARKETS: set[str] = {"kr", "us", "crypto"}
 VALID_SOURCES: set[str] = {"websocket", "reconciler", "manual_import", "all"}
 
 
@@ -88,6 +89,18 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "success": False,
                 "error": f"invalid --source {args.source!r}; expected one of {sorted(VALID_SOURCES)}",
+            },
+            sys.stdout,
+        )
+        sys.stdout.write("\n")
+        return 1
+
+    if args.market is not None and args.market not in VALID_MARKETS:
+        # DB에 닿기 전에 거부 — market typo가 전체 market 조회로 번지는 것을 막는다.
+        json.dump(
+            {
+                "success": False,
+                "error": f"invalid --market {args.market!r}; expected one of {sorted(VALID_MARKETS)}",
             },
             sys.stdout,
         )

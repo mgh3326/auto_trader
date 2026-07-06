@@ -133,7 +133,7 @@ def _install_monkeypatched_session(
     return fake_repo
 
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
 
 async def test_tool_returns_sanitized_fills_with_expected_shape(
@@ -198,3 +198,30 @@ async def test_tool_rejects_invalid_source_without_touching_db(
     assert out["error"] == "invalid_source"
     # DB/Repo 호출 없음 — 잘못된 source는 즉시 차단
     assert repo_marker.calls == []
+
+
+async def test_tool_returns_generic_error_and_logs_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Unexpected DB/repo failures are logged server-side without leaking details."""
+
+    class _RaisingRepo:
+        async def list_recent_fills_for_triage(self, **_kwargs: Any) -> list[Any]:
+            raise RuntimeError("postgresql://secret@example.internal/db")
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.execution_ledger_events.AsyncSessionLocal",
+        lambda: _FakeSessionCtx(_RaisingRepo()),
+    )
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.execution_ledger_events.ExecutionLedgerRepository",
+        lambda _db: _RaisingRepo(),
+    )
+
+    with caplog.at_level("ERROR"):
+        out = await execution_ledger_fill_events_list_recent_impl(source="websocket")
+
+    assert out == {"success": False, "error": "internal_error"}
+    assert "secret@example.internal" not in str(out)
+    assert "execution_ledger_fill_events_list_recent failed" in caplog.text

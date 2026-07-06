@@ -473,8 +473,9 @@ async def test_list_recent_fills_for_triage_orders_by_id_asc_and_clamps_limit(
         assert len(our_clamped_high) == len(seeded_ids)
 
         clamped_low = await repo.list_recent_fills_for_triage(limit=0)
-        assert len(clamped_low) >= 1
-        assert clamped_low[0].id in seeded_id_set
+        our_clamped_low = [r for r in clamped_low if r.id in seeded_id_set]
+        assert len(our_clamped_low) == 1
+        assert our_clamped_low[0].id == seeded_ids[0]
 
         limited = await repo.list_recent_fills_for_triage(limit=3)
         our_limited = [r for r in limited if r.id in seeded_id_set]

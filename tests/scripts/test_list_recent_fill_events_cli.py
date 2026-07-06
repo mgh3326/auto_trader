@@ -12,6 +12,8 @@ import pytest
 
 from scripts import list_recent_fill_events as cli
 
+pytestmark = pytest.mark.unit
+
 EXPECTED_FILL_KEYS: set[str] = {
     "ledger_id",
     "event_key",
@@ -270,6 +272,17 @@ def test_main_invalid_source_emits_error_json_and_returns_1(
     assert "error" in payload
     # 잘못된 source는 DB에 닿기 전에 거부되어야 한다 → repo 호출 없음.
     # (monkeypatch 미적용이지만 asyncio.run이 실행되지 않는 것만 확인해도 OK)
+
+
+def test_main_invalid_market_emits_error_json_and_returns_1(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc = cli.main(["--market", "crypto1", "--limit", "5"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+    assert payload["success"] is False
+    assert "invalid --market" in payload["error"]
 
 
 def test_main_happy_path_returns_zero_and_valid_json(

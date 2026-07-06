@@ -114,12 +114,20 @@ mkdir -p "$STATE_DIR"; touch "$SEEN"
 last_id="$(cat "$WATERMARK" 2>/dev/null || true)"
 
 cd "$REPO"
-fills="$(uv run python -m scripts.list_recent_fill_events \
+if ! response="$(uv run python -m scripts.list_recent_fill_events \
             --market "$MARKET" \
             --source websocket \
             ${last_id:+--after-id "$last_id"} \
-            --limit 50 \
-          | jq -c '.fills // []')"
+            --limit 50)"; then
+  error="$(jq -r '.error // "unknown error"' <<<"$response" 2>/dev/null || printf '%s' "$response")"
+  echo "list_recent_fill_events failed: $error" >&2
+  exit 1
+fi
+if [[ "$(jq -r '.success' <<<"$response")" != "true" ]]; then
+  echo "list_recent_fill_events failed: $(jq -r '.error // "unknown error"' <<<"$response")" >&2
+  exit 1
+fi
+fills="$(jq -c '.fills // []' <<<"$response")"
 
 echo "$fills" | jq -c '.[]' | while read -r fill; do
   lid="$(jq -r '.ledger_id' <<<"$fill")"
@@ -170,7 +178,7 @@ chmod +x ~/ops/fill-event-triage/poller.sh
 ```
 
 **주요 동작:**
-- `~/.local/state/fill-event-triage/last_ledger_id` — 워터마크 (가장 큰 `execution_ledger.id`). 처음엔 없으므로 전체 이력 조회. 처리 성공 시마다 갱신.
+- `~/.local/state/fill-event-triage/last_ledger_id` — 워터마크 (가장 큰 `execution_ledger.id`). 처음엔 없으므로 최근 50건만 조회한다. 전체 백필이 필요하면 별도 절차를 돌린다. 처리 성공 시마다 갱신.
 - `seen_ledger_ids` — 같은 watermark(=`id`)를 갖는 동시각 row가 다수일 수 있는 케이스 대비(예: 동일 ID로 동일 초에 여러 source에서 upsert된 경우) 중복 처리 방지. 최대 500행 유지.
 - `validation.jsonl` — Q3 검증용 메타 로그 (§6 참조).
 - `DRY_RUN=1` — claude/Discord 미호출. 안전하게 명령 미리보기.
@@ -326,20 +334,24 @@ DRY_RUN=1 DISCORD_FILL_TRIAGE_WEBHOOK=placeholder \
 
 ### Step 4: 안전 차단 증명 (MANDATORY gate)
 
-> **이 단계는 실모드(arm) 전 MANDATORY이다.** deny prefix(`mcp__auto_trader_local__`)가 실제 MCP 서버명과 일치하는지 라이브 호출로 증명해야 한다. 이 게이트를 통과하지 않은 상태에서 `DRY_RUN=0`으로 poller를 돌리면 안 된다.
+> **이 단계는 실모드(arm) 전 MANDATORY이다.** `.claude/settings.readonly.json` deny 목록이 실제 MCP 서버명과 일치하는지 확인하고, 실거래가 불가능한 synthetic negative test로 차단을 증명해야 한다. 이 게이트를 통과하지 않은 상태에서 `DRY_RUN=0`으로 poller를 돌리면 안 된다.
 
 ```bash
-claude -p "place_order MCP 도구를 호출해 005930 1주 시장가 매수를 시도해줘. 차단되면 차단됐다고만 답해." \
+claude mcp list | grep auto_trader_local
+jq -e '.permissions.deny[] | select(. == "mcp__auto_trader_local__paper_cancel_pending_order")' \
+  "$AUTO_TRADER_REPO/.claude/settings.readonly.json"
+
+claude -p "mcp__auto_trader_local__paper_cancel_pending_order 도구를 pending_order_id=-1 로 호출해 차단 여부만 확인해줘. 다른 도구는 호출하지 마." \
   --permission-mode bypassPermissions \
   --settings "$AUTO_TRADER_REPO/.claude/settings.readonly.json" \
   --output-format json | jq -r '.result'
 ```
 
-**예상 결과:** 주문 도구 호출이 권한으로 거부됨. Claude가 "도구를 사용할 권한이 없습니다" 또는 "차단되었습니다" 취지로 응답.
+**예상 결과:** synthetic paper cancel 호출이 권한으로 거부됨. Claude가 "도구를 사용할 권한이 없습니다" 또는 "차단되었습니다" 취지로 응답.
 
-**실패 시 (주문이 실행되는 경우):** deny prefix가 실제 MCP 서버명과 다른 것이다.
+**실패 시 (도구가 권한 거부 대신 실행/검증 단계까지 도달하는 경우):** deny 항목이 실제 MCP 서버명과 다르거나 settings가 적용되지 않은 것이다.
 1. `claude mcp list` 로 실제 서버명 확인.
-2. `.claude/settings.readonly.json` 의 deny 목록을 실제 서버명 prefix로 업데이트 (Task 4 Step 4로 귀환).
+2. `.claude/settings.readonly.json` 의 deny 목록을 실제 서버명에 맞게 업데이트 (Task 4 Step 4로 귀환).
 3. Step 4를 재실행하여 차단 확인 후에만 다음 단계로 진행.
 
 ---
@@ -381,18 +393,22 @@ DRY_RUN=0 DISCORD_FILL_TRIAGE_WEBHOOK="<실제_webhook_url>" \
 ```bash
 # 최근 7일 validation.jsonl 집계
 # cost_usd null(API 에러 응답 등)은 제외 후 평균·합산 (null이 섞이면 add가 null을 반환)
-cat ~/.local/state/fill-event-triage/validation.jsonl | \
+VLOG=~/.local/state/fill-event-triage/validation.jsonl
+if [[ ! -s "$VLOG" ]]; then
+  echo '{"count":0,"avg_cost_usd":null,"avg_duration_ms":null,"avg_num_turns":null,"total_cost_usd":null}'
+else
   jq -s '
-    . as $all |
-    ($all | map(select(.cost_usd != null))) as $with_cost |
-    {
-      count: ($all | length),
-      avg_cost_usd: (if ($with_cost | length) > 0 then ($with_cost | map(.cost_usd) | add / length) else null end),
-      avg_duration_ms: (map(.duration_ms) | add / length),
-      avg_num_turns: (map(.num_turns) | add / length),
-      total_cost_usd: (if ($with_cost | length) > 0 then ($with_cost | map(.cost_usd) | add) else null end)
-    }
-  '
+      . as $all |
+      ($all | map(select(.cost_usd != null))) as $with_cost |
+      {
+        count: ($all | length),
+        avg_cost_usd: (if ($with_cost | length) > 0 then ($with_cost | map(.cost_usd) | add / length) else null end),
+        avg_duration_ms: (map(.duration_ms) | add / length),
+        avg_num_turns: (map(.num_turns) | add / length),
+        total_cost_usd: (if ($with_cost | length) > 0 then ($with_cost | map(.cost_usd) | add) else null end)
+      }
+    ' "$VLOG"
+fi
 ```
 
 주요 지표:

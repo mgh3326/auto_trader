@@ -11,6 +11,7 @@ CLI (``scripts/list_recent_fill_events.py``)와 동일한 20-키 sanitized 출�
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from app.core.db import AsyncSessionLocal
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
 VALID_SOURCES: frozenset[str | None] = frozenset(
     {None, "websocket", "reconciler", "manual_import"}
 )
+logger = logging.getLogger(__name__)
 
 
 async def execution_ledger_fill_events_list_recent_impl(
@@ -73,8 +75,9 @@ async def execution_ledger_fill_events_list_recent_impl(
             "count": len(rows),
             "fills": [sanitize_fill(row) for row in rows],
         }
-    except Exception as exc:  # noqa: BLE001 — 운영자/agent 표면은 모든 예외를 JSON으로 감싼다
-        return {"success": False, "error": str(exc)}
+    except Exception:  # noqa: BLE001 — 운영자/agent 표면은 모든 예외를 JSON으로 감싼다
+        logger.exception("execution_ledger_fill_events_list_recent failed")
+        return {"success": False, "error": "internal_error"}
 
 
 def register_execution_ledger_event_tools(mcp: FastMCP) -> None:

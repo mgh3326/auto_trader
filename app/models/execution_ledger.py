@@ -60,6 +60,7 @@ class ExecutionLedger(Base):
         Index("ix_execution_ledger_filled_at", FILLED_AT_DESC),
         Index("ix_execution_ledger_symbol_filled_at", "symbol", FILLED_AT_DESC),
         Index("ix_execution_ledger_broker_filled_at", "broker", FILLED_AT_DESC),
+        Index("ix_execution_ledger_source_id", "source", "id"),
         Index("ix_execution_ledger_source_run_id", "source_run_id"),
         {"schema": "review"},
     )

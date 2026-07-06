@@ -2,8 +2,11 @@ import json
 import pathlib
 import re
 
+import pytest
+
 REPO = pathlib.Path(__file__).resolve().parents[1]
 CMD = REPO / ".claude" / "commands" / "fill-event-triage.md"
+pytestmark = pytest.mark.unit
 
 
 def test_command_exists():
