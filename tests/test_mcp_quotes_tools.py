@@ -1058,6 +1058,114 @@ async def test_get_quote_us_flag_off_yahoo_no_price_is_unavailable(monkeypatch):
         await tools["get_quote"]("AAPL")
 
 
+@pytest.mark.asyncio
+async def test_get_quote_us_kis_tags_premarket_session_and_quote_asof(monkeypatch):
+    tools = build_tools()
+
+    _patch_runtime_attr(
+        monkeypatch, "get_us_exchange_by_symbol", AsyncMock(return_value="NASD")
+    )
+    _patch_runtime_attr(monkeypatch, "us_market_session", lambda *a, **k: "premarket")
+
+    price_df = pd.DataFrame(
+        [
+            {
+                "close": 195.29,
+                "previous_close": 194.83,
+                "volume": 123456,
+                "quote_asof": "2026-07-06T08:45:12-04:00",
+            }
+        ]
+    )
+
+    class DummyKISClient:
+        async def inquire_overseas_price(self, symbol, exchange_code="NASD"):
+            return price_df
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_fast_info",
+        AsyncMock(side_effect=AssertionError("Yahoo should not be called")),
+    )
+
+    result = await tools["get_quote"]("NVDA", market="us")
+
+    assert result["source"] == "kis_overseas"
+    assert result["price"] == pytest.approx(195.29)
+    assert result["session"] == "premarket"
+    assert result["data_state"] == "fresh"
+    assert result["quote_asof"] == "2026-07-06T08:45:12-04:00"
+    assert result["price_source"] == "kis_overseas_last"
+    assert result["venue"] == "NASD"
+    assert result["delayed"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_quote_us_closed_session_is_stale(monkeypatch):
+    tools = build_tools()
+
+    _patch_runtime_attr(
+        monkeypatch, "get_us_exchange_by_symbol", AsyncMock(return_value="NYSE")
+    )
+    _patch_runtime_attr(monkeypatch, "us_market_session", lambda *a, **k: "closed")
+
+    class DummyKISClient:
+        async def inquire_overseas_price(self, symbol, exchange_code="NASD"):
+            return pd.DataFrame(
+                [{"close": 205.0, "previous_close": 201.5, "volume": 100}]
+            )
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+
+    result = await tools["get_quote"]("AAPL", market="us")
+
+    assert result["session"] == "closed"
+    assert result["data_state"] == "stale"
+    assert result["data_state_reason"] == "us_market_closed"
+    assert result["price_source"] == "kis_overseas_last"
+
+
+@pytest.mark.asyncio
+async def test_get_quote_us_yahoo_fallback_tags_session_and_price_source(monkeypatch):
+    tools = build_tools()
+
+    _patch_runtime_attr(
+        monkeypatch, "get_us_exchange_by_symbol", AsyncMock(return_value="NASD")
+    )
+    _patch_runtime_attr(monkeypatch, "us_market_session", lambda *a, **k: "regular")
+
+    class DummyKISClient:
+        async def inquire_overseas_price(self, symbol, exchange_code="NASD"):
+            return pd.DataFrame(
+                columns=["close", "previous_close", "volume", "quote_asof"]
+            )
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_fast_info",
+        AsyncMock(
+            return_value={
+                "close": 205.0,
+                "previous_close": 201.5,
+                "open": 202.0,
+                "high": 206.2,
+                "low": 200.8,
+                "volume": 123456789,
+            }
+        ),
+    )
+
+    result = await tools["get_quote"]("AAPL", market="us")
+
+    assert result["source"] == "yahoo"
+    assert result["session"] == "regular"
+    assert result["data_state"] == "fresh"
+    assert result["price_source"] == "yahoo_fast_info_close"
+    assert "quote_asof" not in result
+
+
 # ---------------------------------------------------------------------------
 # get_quote Tests - Error Handling
 # ---------------------------------------------------------------------------

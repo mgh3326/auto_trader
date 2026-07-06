@@ -71,10 +71,11 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Default thresholds: KR 25 bps, US 40 bps. US is stricter because FX basis and overseas tax lots split by account.
   - Always returns `cost_comparison` for both candidate accounts and `position_consolidation` with either `foregone_savings_krw` or `distribution_warning`.
 - `get_orderbook(symbol, market="kr")`
-- US equity quote price resolution uses KIS overseas current price first when `settings.us_quote_kis_primary` is enabled, then falls back to Yahoo `fast_info`
-  - US quote response keeps `source: "kis_overseas"` or `source: "yahoo"` and includes `previous_close/open/high/low/volume` when the provider supplies them
-  - US quote failures are propagated as tool-level errors (exceptions), not returned as in-band error payload dicts
-  - Explicit provider not-found errors remain `Symbol '<ticker>' not found`; successful Yahoo `fast_info` responses with no usable price are reported as temporarily unavailable instead of symbol-not-found
+- US equity quote price resolution uses KIS overseas current price first when `settings.us_quote_kis_primary` is enabled, then falls back to Yahoo `fast_info`.
+  - US quote response keeps `source: "kis_overseas"` or `source: "yahoo"` and includes `previous_close/open/high/low/volume` when the provider supplies them.
+  - US quote response includes `session` (`premarket`, `regular`, `afterhours`, `closed`), `data_state` (`fresh` during the extended-hours envelope, `stale` when closed), `price_source` (`kis_overseas_last` or `yahoo_fast_info_close`), `delayed: true`, and optional `quote_asof` when KIS supplies parseable quote date/time fields.
+  - KIS-backed US quote response includes `venue` with the DB-resolved KIS exchange code (`NASD`, `NYSE`, `AMEX`) used for the upstream request.
+  - US quote failures are propagated as tool-level errors (exceptions), not returned as in-band error payload dicts.
 - `get_holdings(account=None, market=None, include_current_price=True, minimum_value=None, account_mode=None)`
   - Crypto positions may include optional `strategy_signal` field when Phase 2 exit logic triggers (4.5% stop-loss or RSI > 46 mean-reversion on profitable positions)
 - `get_position(symbol, market=None, account_mode=None)`
@@ -206,6 +207,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - `decision_history_account_mode="kis_mock"` switches only the advisory
     `decision_history` block to the explicit mock/counterfactual branch. Leave it
     unset for default live/default lesson context.
+  - Compact US rows carry the same quote provenance fields as `get_quote` when present: `session`, `data_state`, `data_state_reason`, `price_source`, `venue`, `quote_asof`, and `delayed`.
 
 ### Snapshot-backed report generation
 
