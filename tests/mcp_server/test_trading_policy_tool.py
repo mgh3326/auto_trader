@@ -12,9 +12,20 @@ from tests._mcp_tooling_support import DummyMCP
 async def test_get_trading_policy_returns_thresholds_and_version():
     out = await get_trading_policy(market="kr", lane="buy")
     assert out["success"] is True
-    assert out["version"] == "2026-07-02.1"
+    assert out["version"] == "2026-07-07.1"
     assert out["content_hash"]
     assert out["thresholds"]["portfolio.sector_cluster_cap_pct"]["value"] == 10
+    assert out["decision_rules"] == {}
+
+
+@pytest.mark.asyncio
+async def test_get_trading_policy_returns_sell_trim_preplace_rule():
+    out = await get_trading_policy(market="kr", lane="sell")
+    assert out["success"] is True
+    rule = out["decision_rules"]["sell.trim_preplace"]
+    assert rule["tiers"][0]["action"] == "preplace_small_trim_ladder"
+    assert rule["tiers"][1]["conditions"]["resistance_near_pct_max"] == 2
+    assert rule["tiers"][2]["action"] == "register_watch"
 
 
 @pytest.mark.asyncio

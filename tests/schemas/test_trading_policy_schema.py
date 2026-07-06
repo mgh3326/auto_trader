@@ -15,7 +15,7 @@ def _raw() -> dict:
 
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-07-02.1"
+    assert doc.version == "2026-07-07.1"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -23,6 +23,46 @@ def test_shipped_config_validates():
     assert doc.thresholds["buy.deep_limit_pct_range"].value == [-12, -3]
     assert set(doc.market_overrides.keys()) == {"kr", "us", "crypto"}
     assert "semis_memory" in doc.sector_clusters
+    assert "sell.trim_preplace" in doc.decision_rules
+    trim_rule = doc.decision_rules["sell.trim_preplace"]
+    assert trim_rule.lanes == ["sell"]
+    assert [tier.id for tier in trim_rule.tiers] == [
+        "rsi_confirmed_resistance",
+        "ultra_near_resistance",
+        "watch_zone",
+    ]
+    assert trim_rule.tiers[1].conditions["resistance_near_pct_max"] == 2
+    assert trim_rule.tie_breaks["sell.upside_place_max_pct"] == "size_limit_only"
+
+
+def test_decision_rule_schema_accepts_sell_trim_preplace_block():
+    raw = _raw()
+    raw["decision_rules"] = {
+        "sell.trim_preplace": {
+            "lanes": ["sell"],
+            "semantics": "Tie-break resistance-near vs upside-rich sell signals.",
+            "tiers": [
+                {
+                    "id": "rsi_confirmed_resistance",
+                    "conditions": {
+                        "rsi_min_policy_key": "sell.rsi_place_min",
+                        "resistance_near_pct_max_policy_key": (
+                            "sell.resistance_near_pct"
+                        ),
+                    },
+                    "action": "preplace_small_trim_ladder",
+                    "sizing": "small_trim_only",
+                }
+            ],
+            "tie_breaks": {
+                "sell.upside_place_max_pct": "size_limit_only",
+            },
+            "exclusions": ["single_share_position"],
+        }
+    }
+    doc = TradingPolicyDocument.model_validate(raw)
+    rule = doc.decision_rules["sell.trim_preplace"]
+    assert rule.tiers[0].action == "preplace_small_trim_ladder"
 
 
 def test_extra_key_rejected():

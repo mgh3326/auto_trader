@@ -2,13 +2,13 @@
 # Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
 # (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
 # Repo is public; exposing these values is an accepted decision.
-version: "2026-07-02.1"
-captured_as_of: "2026-07-02"
-source: "ROB-643 playbook policy_keys (seed); this file is now authoritative"
+version: "2026-07-07.1"
+captured_as_of: "2026-07-07"
+source: "ROB-643 playbook policy_keys (seed); ROB-751 sell.trim_preplace tie-break promoted"
 
 authority:
-  scope: judgment_thresholds_only
-  governs: "advisory judgment thresholds + the sector-cluster concentration cap"
+  scope: judgment_policy_only
+  governs: "advisory judgment thresholds, decision rules, and the sector-cluster concentration cap"
   does_not_govern:
     - "loss_guard code guard (order_validation.py avg*1.01) — stays fail-closed in code"
     - "ladder near-market guard (ladder_fill_safety.py 0.3%) — code"
@@ -111,6 +111,37 @@ thresholds:
     value: 40
     unit: percent
     semantics: minimum honest upside for a candidate
+
+decision_rules:
+  sell.trim_preplace:
+    lanes: [sell]
+    semantics: "Tie-break when resistance-near favors PLACE but upside-rich would otherwise allow WATCH: resistance proximity can pre-place only a small trim; upside richness limits size, not eligibility."
+    tiers:
+      - id: rsi_confirmed_resistance
+        conditions:
+          rsi_min_policy_key: sell.rsi_place_min
+          resistance_near_pct_max_policy_key: sell.resistance_near_pct
+        action: preplace_small_trim_ladder
+        sizing: small_trim_only
+      - id: ultra_near_resistance
+        conditions:
+          rsi_below_policy_key: sell.rsi_place_min
+          resistance_near_pct_max: 2
+        action: preplace_small_trim_ladder
+        sizing: small_trim_only
+      - id: watch_zone
+        conditions:
+          rsi_below_policy_key: sell.rsi_place_min
+          resistance_near_pct_min_exclusive: 2
+          resistance_near_pct_max_policy_key: sell.resistance_near_pct
+        action: register_watch
+        sizing: no_preplaced_trim
+    tie_breaks:
+      sell.upside_place_max_pct: size_limit_only
+    exclusions:
+      - single_share_position
+      - no_resistance_reference
+      - composite_gates
 
 market_overrides:
   kr: {}

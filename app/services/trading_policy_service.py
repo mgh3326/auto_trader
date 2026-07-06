@@ -82,12 +82,18 @@ def get_policy_for(market: str, lane: str) -> dict[str, Any]:
             "of": spec.of,
             "source": source,
         }
+    decision_rules = {
+        key: spec.model_dump(exclude={"lanes"})
+        for key, spec in doc.decision_rules.items()
+        if lane in spec.lanes
+    }
     return {
         "market": market,
         "lane": lane,
         "version": doc.version,
         "content_hash": content_hash,
         "thresholds": thresholds,
+        "decision_rules": decision_rules,
     }
 
 

@@ -5,7 +5,7 @@ from app.services import trading_policy_service as svc
 
 def test_version_stamp_has_version_and_hash():
     stamp = svc.policy_version_stamp()
-    assert stamp["version"] == "2026-07-02.1"
+    assert stamp["version"] == "2026-07-07.1"
     assert len(stamp["content_hash"]) == 12
 
 
@@ -15,7 +15,7 @@ def test_content_hash_stable_across_calls():
 
 def test_get_policy_for_buy_kr_includes_cap_and_version():
     view = svc.get_policy_for("kr", "buy")
-    assert view["version"] == "2026-07-02.1"
+    assert view["version"] == "2026-07-07.1"
     assert view["content_hash"]
     t = view["thresholds"]
     # buy lane references these (playbook lane tags)
@@ -25,12 +25,22 @@ def test_get_policy_for_buy_kr_includes_cap_and_version():
     assert t["sell.loss_guard_min_multiple"]["value"] == 1.01
     # sell-only threshold must NOT appear in the buy lane
     assert "sell.rsi_place_min" not in t
+    assert view["decision_rules"] == {}
 
 
 def test_get_policy_for_sell_lane_has_sell_keys():
-    t = svc.get_policy_for("kr", "sell")["thresholds"]
+    view = svc.get_policy_for("kr", "sell")
+    t = view["thresholds"]
     assert t["sell.rsi_place_min"]["value"] == 58
     assert "screen.rsi_max" not in t
+    rule = view["decision_rules"]["sell.trim_preplace"]
+    assert rule["tiers"][0]["id"] == "rsi_confirmed_resistance"
+    assert rule["tiers"][0]["conditions"]["rsi_min_policy_key"] == (
+        "sell.rsi_place_min"
+    )
+    assert rule["tiers"][1]["conditions"]["resistance_near_pct_max"] == 2
+    assert rule["tiers"][2]["action"] == "register_watch"
+    assert rule["tie_breaks"]["sell.upside_place_max_pct"] == "size_limit_only"
 
 
 def test_unknown_market_raises():
