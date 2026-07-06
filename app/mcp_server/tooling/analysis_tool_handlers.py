@@ -862,6 +862,7 @@ async def _attach_decision_history(
     results: dict[str, Any],
     *,
     market: str | None,
+    decision_history_account_mode: str | None = None,
 ) -> None:
     """ROB-711: inject per-symbol decision_history (past judgment→outcome).
 
@@ -882,7 +883,10 @@ async def _attach_decision_history(
                     continue
                 mkt = result.get("market_type") or market
                 ctx = await build_decision_context(
-                    db, symbol=str(sym), market=str(mkt or "")
+                    db,
+                    symbol=str(sym),
+                    market=str(mkt or ""),
+                    account_mode=decision_history_account_mode,
                 )
                 if ctx is not None:
                     result["decision_history"] = ctx
@@ -942,6 +946,7 @@ async def analyze_stock_batch_impl(
     quick: bool = True,
     include_position: bool = True,
     refresh: bool = False,
+    decision_history_account_mode: str | None = None,
 ) -> dict[str, Any]:
     """Analyze multiple symbols and return compact per-symbol summaries.
     Args:
@@ -955,6 +960,8 @@ async def analyze_stock_batch_impl(
         refresh: ROB-638 — when True, bypass the fetch-layer provider cache
             read (consensus/valuation/profile are re-fetched fresh and the
             fresh values are written back to the cache).
+        decision_history_account_mode: switches the advisory decision_history
+            block to the explicit mock/counterfactual branch.
     Returns:
         Dict with 'results' (symbol -> summary) and 'summary' keys
     """
@@ -995,7 +1002,11 @@ async def analyze_stock_batch_impl(
     # (soft reuse hint, fail-open). Only for the compact contract.
     if quick:
         await _attach_fresh_artifact_hints(response.get("results", {}), market=market)
-        await _attach_decision_history(response.get("results", {}), market=market)
+        await _attach_decision_history(
+            response.get("results", {}),
+            market=market,
+            decision_history_account_mode=decision_history_account_mode,
+        )
         await _attach_earnings(response.get("results", {}), market=market)
     return response
 

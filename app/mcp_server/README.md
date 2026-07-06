@@ -190,7 +190,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `get_upbit_altseason(include_constituents=false, constituents_limit=50)` - Upbit altseason ratio and 24h breadth. With constituents enabled, `breadth.constituents` lists KRW alts beating BTC with 24h change, vs-BTC relative strength, volume, and traded value.
 - ~~`recommend_stocks(...)`~~ — **DEPRECATED / registry-hidden (ROB-359).** No longer registered on the MCP tool surface. Use `screen_stocks` for candidate discovery. The implementation is retained in `analysis_tool_handlers.recommend_stocks_impl` for a possible future narrow `build_buy_plan` tool; do not call it from active report/operator prompts.
 
-- `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True)`
+- `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True, decision_history_account_mode=None)`
   - Legacy/deep-dive batch analysis for up to 10 symbols.
   - Do not use it as the routine follow-up after `screen_stocks_snapshot`; snapshot
     rows now expose consensus and RSI context directly.
@@ -203,6 +203,9 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
     (`{artifact_uuid, as_of, kind}`) so you can choose to reuse the persisted
     artifact via `analysis_artifact_get` instead of re-deriving. This is a soft
     hint only — the analysis still runs and is returned.
+  - `decision_history_account_mode="kis_mock"` switches only the advisory
+    `decision_history` block to the explicit mock/counterfactual branch. Leave it
+    unset for default live/default lesson context.
 
 ### Snapshot-backed report generation
 
