@@ -812,6 +812,9 @@ async def _execute_and_record(
             notes=notes,
             holdings_baseline_qty=kis_mock_baseline_qty,
             correlation_id=correlation_id,
+            target_price=target_price,
+            min_hold_days=min_hold_days,
+            report_item_uuid=report_item_uuid,
         )
 
     # ROB-395: live KR orders record accepted-only to the live ledger; fills,
