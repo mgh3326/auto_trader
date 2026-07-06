@@ -82,9 +82,26 @@ async def test_naver_openapi_ignores_malformed_text_fields() -> None:
 
 
 @pytest.mark.asyncio
-async def test_bluesky_parses_public_search_posts() -> None:
+async def test_bluesky_missing_credentials_is_fail_open() -> None:
+    out = await fetch_bluesky_posts("AAPL", "us", now=_now())
+    assert out["status"] == "missing_credentials"
+    assert out["items"] == []
+    assert out["error_reason"] == "BSKY_HANDLE and BSKY_APP_PASSWORD are required"
+
+
+@pytest.mark.asyncio
+async def test_bluesky_authenticates_before_searching_posts() -> None:
+    async def fake_post(url: str, **kwargs: Any) -> FakeResponse:
+        assert url == "https://bsky.social/xrpc/com.atproto.server.createSession"
+        assert kwargs["json"] == {
+            "identifier": "trader.bsky.social",
+            "password": "app-pass",
+        }
+        return FakeResponse({"accessJwt": "jwt-token"})
+
     async def fake_get(url: str, **kwargs: Any) -> FakeResponse:
-        assert url == "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts"
+        assert url == "https://bsky.social/xrpc/app.bsky.feed.searchPosts"
+        assert kwargs["headers"]["Authorization"] == "Bearer jwt-token"
         assert kwargs["params"]["q"] == "AAPL"
         return FakeResponse(
             {
@@ -105,7 +122,15 @@ async def test_bluesky_parses_public_search_posts() -> None:
             }
         )
 
-    out = await fetch_bluesky_posts("AAPL", "us", now=_now(), http_get=fake_get)
+    out = await fetch_bluesky_posts(
+        "AAPL",
+        "us",
+        "trader.bsky.social",
+        "app-pass",
+        now=_now(),
+        post=fake_post,
+        get=fake_get,
+    )
     assert out["status"] == "ok"
     assert out["items"][0]["author"] == "trader.example"
     assert out["items"][0]["metrics"]["like_count"] == 3
@@ -116,7 +141,18 @@ async def test_bluesky_ignores_malformed_text_fields() -> None:
     async def fake_get(url: str, **kwargs: Any) -> FakeResponse:
         return FakeResponse({"posts": [{"record": {"text": ["bad"]}, "author": {}}]})
 
-    out = await fetch_bluesky_posts("AAPL", "us", now=_now(), http_get=fake_get)
+    async def fake_post(url: str, **kwargs: Any) -> FakeResponse:
+        return FakeResponse({"accessJwt": "jwt-token"})
+
+    out = await fetch_bluesky_posts(
+        "AAPL",
+        "us",
+        "trader.bsky.social",
+        "app-pass",
+        now=_now(),
+        post=fake_post,
+        get=fake_get,
+    )
     assert out["status"] == "ok"
     assert out["items"][0]["text_preview"] is None
 

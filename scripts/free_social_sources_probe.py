@@ -126,7 +126,14 @@ async def _run_source(
             now=now,
         )
     if source == "bluesky":
-        return await fetch_bluesky_posts(query, market, limit=limit, now=now)
+        return await fetch_bluesky_posts(
+            query,
+            market,
+            os.getenv("BSKY_HANDLE"),
+            os.getenv("BSKY_APP_PASSWORD"),
+            limit=limit,
+            now=now,
+        )
     if source == "stocktwits":
         return probe_stocktwits_firestream(
             symbol,
