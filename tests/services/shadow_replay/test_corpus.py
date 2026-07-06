@@ -21,8 +21,11 @@ from app.models.investment_reports import InvestmentReport, InvestmentReportItem
 from app.services.shadow_replay.corpus import (
     CorpusItem,
     _bundle_items_for_profile,
+    _claude_family_extra,
+    _claude_family_items,
     _covers_kinds,
     _non_autoemit,
+    select_replay_corpus,
 )
 
 
@@ -153,3 +156,60 @@ def test_covers_kinds_action_and_watch_present():
 def test_covers_kinds_action_only_is_false():
     items = [_corpus_item("action"), _corpus_item("action")]
     assert _covers_kinds(items, min_per_kind=1) is False
+
+
+@pytest.mark.unit
+def test_claude_family_extra_default_and_env(monkeypatch):
+    monkeypatch.delenv("SHADOW_REPLAY_CLAUDE_PROFILES", raising=False)
+    assert "파이리" in _claude_family_extra()
+    monkeypatch.setenv("SHADOW_REPLAY_CLAUDE_PROFILES", " foo , bar ")
+    got = _claude_family_extra()
+    assert {"파이리", "foo", "bar"} <= got
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("investment_reports_cleanup_lock")
+async def test_claude_family_matches_variants_excludes_hermes(db_session):
+    """ROB-697 P0 census fix: the literal CLAUDE_ADVISOR is empty; real Claude
+    decisions live under names like ``claude_code`` and custom labels like
+    ``파이리``. The family matcher must catch those (case-insensitive %claude%
+    + the extra label) and must NOT catch HERMES_ADVISOR.
+    """
+    seeded: dict[str, str] = {}
+    for profile, kind in (
+        ("claude_code", "action"),
+        ("파이리", "watch"),
+        ("HERMES_ADVISOR", "action"),
+    ):
+        report = InvestmentReport(**_report_payload(created_by_profile=profile))
+        db_session.add(report)
+        await db_session.flush()
+        item = InvestmentReportItem(**_item_payload(report.id, item_kind=kind))
+        db_session.add(item)
+        await db_session.flush()
+        seeded[profile] = str(item.item_uuid)
+    await db_session.commit()
+
+    items = await _claude_family_items(db_session, limit=200)
+    found = {i.item_uuid for i in items}
+
+    assert seeded["claude_code"] in found  # %claude% (lowercase)
+    assert seeded["파이리"] in found  # explicit extra label
+    assert seeded["HERMES_ADVISOR"] not in found  # hermes excluded
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("investment_reports_cleanup_lock")
+async def test_select_replay_corpus_prefers_claude_family(db_session):
+    """With Claude-family action+watch coverage, the source is ``claude_family``."""
+    for profile, kind in (("claude_code", "action"), ("파이리", "watch")):
+        report = InvestmentReport(**_report_payload(created_by_profile=profile))
+        db_session.add(report)
+        await db_session.flush()
+        db_session.add(InvestmentReportItem(**_item_payload(report.id, item_kind=kind)))
+    await db_session.commit()
+
+    selection = await select_replay_corpus(db_session, min_per_kind=1, limit=200)
+    assert selection.source == "claude_family"

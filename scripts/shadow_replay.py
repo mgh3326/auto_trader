@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import subprocess
 import sys
 from decimal import Decimal
@@ -89,6 +90,44 @@ def _to_item_shape(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# Greedy ``\{.*\}`` (first "{" to last "}") so NESTED objects (max_action /
+# trade_setup) are captured whole; the agent's reply contains a single JSON
+# object, so greedy is correct here (non-greedy would truncate at the first
+# nested "}").
+_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*\})\s*```", re.DOTALL)
+_BARE_OBJ_RE = re.compile(r"(\{.*\})", re.DOTALL)
+
+
+def _extract_decision_json(text: str) -> dict[str, Any] | None:
+    """Pull the decision JSON object out of the replayed agent's reply text.
+
+    The `claude --output-format json` envelope's ``result`` field is the
+    agent's full assistant text, NOT guaranteed to be raw JSON: despite the
+    "Output ONLY a JSON object" instruction, the model frequently prepends a
+    reasoning paragraph and wraps the object in a ```json ... ``` fence
+    (verified at operator run-time — the smoke happened to get a raw object,
+    the batch got prose+fence). Try, in order: (1) the whole text as JSON,
+    (2) a ```json fenced object, (3) the last bare ``{...}`` object. Returns
+    None if nothing parses (a discarded sample). Pure function.
+    """
+    text = text.strip()
+    try:
+        obj = json.loads(text)
+        return obj if isinstance(obj, dict) else None
+    except json.JSONDecodeError:
+        pass
+    for pattern in (_FENCE_RE, _BARE_OBJ_RE):
+        m = pattern.search(text)
+        if m:
+            try:
+                obj = json.loads(m.group(1))
+                if isinstance(obj, dict):
+                    return obj
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
 def _one_run(uuid: str, model: str) -> dict[str, Any] | None:
     """Invoke one headless `claude -p` replay call for `uuid`.
 
@@ -133,19 +172,17 @@ def _one_run(uuid: str, model: str) -> dict[str, Any] | None:
     if proc.returncode != 0 or any(m in proc.stderr.lower() for m in _RESET_MARKERS):
         return None  # discarded sample (MCP reset / error) — NOT a data point
 
+    # `claude --output-format json` wraps the assistant text in an envelope;
+    # the decision contract lives in the `result` field, which is FREE TEXT
+    # (may be prose + a ```json fence, not raw JSON) — see
+    # `_extract_decision_json`. Fall back to the whole stdout if the CLI ever
+    # emits the contract un-enveloped.
     try:
-        # `claude --output-format json` wraps the assistant text in an
-        # envelope; the decision contract JSON lives in the `result` field.
-        # Fall back to parsing stdout directly in case the CLI ever emits
-        # the contract JSON un-enveloped (verified only at operator run-time).
         outer = json.loads(proc.stdout)
-        return (
-            json.loads(outer["result"])
-            if isinstance(outer, dict)
-            else json.loads(proc.stdout)
-        )
-    except (json.JSONDecodeError, KeyError, TypeError):
-        return None
+    except json.JSONDecodeError:
+        return _extract_decision_json(proc.stdout)
+    text = outer.get("result") if isinstance(outer, dict) else proc.stdout
+    return _extract_decision_json(text) if isinstance(text, str) else None
 
 
 def _run_one_item(

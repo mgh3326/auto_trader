@@ -346,3 +346,41 @@ async def test_amain_with_confirm_returns_3_when_all_samples_discarded(
     )
 
     assert await sr._amain(args) == 3
+
+
+@pytest.mark.unit
+def test_extract_decision_json_raw_object():
+    got = sr._extract_decision_json(
+        '{"side": "buy", "max_action": {"notional": 300000}}'
+    )
+    assert got == {"side": "buy", "max_action": {"notional": 300000}}
+
+
+@pytest.mark.unit
+def test_extract_decision_json_prose_plus_json_fence_with_nesting():
+    # The real operator-run failure mode: opus prepends reasoning and wraps a
+    # NESTED object in a ```json fence instead of emitting raw JSON.
+    text = (
+        "Based on the frozen evidence, correct call is no action.\n\n"
+        "```json\n"
+        '{"side": null, "max_action": {"notional": null, "limit_price": null}, '
+        '"trade_setup": {"headline": {"entry": null}}, "trigger_checklist": ["a", "b"]}\n'
+        "```"
+    )
+    got = sr._extract_decision_json(text)
+    assert got is not None
+    assert got["side"] is None
+    assert got["max_action"] == {"notional": None, "limit_price": None}
+    assert got["trade_setup"] == {"headline": {"entry": None}}
+    assert got["trigger_checklist"] == ["a", "b"]
+
+
+@pytest.mark.unit
+def test_extract_decision_json_bare_object_in_prose():
+    text = 'Reasoning. Decision: {"side": "sell", "trigger_checklist": []} — done.'
+    assert sr._extract_decision_json(text) == {"side": "sell", "trigger_checklist": []}
+
+
+@pytest.mark.unit
+def test_extract_decision_json_no_json_returns_none():
+    assert sr._extract_decision_json("no json object here at all") is None
