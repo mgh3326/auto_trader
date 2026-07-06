@@ -27,6 +27,16 @@ EXPECTED_KIS_API_RATE_LIMITS = {
         "rate": 20,
         "period": 1.0,
     },
+    # ROB-753: current-price endpoints reject bursty same-endpoint fanout.
+    # Keep them serialized by default; operators can loosen via KIS_API_RATE_LIMITS.
+    "FHKST01010100|/uapi/domestic-stock/v1/quotations/inquire-price": {
+        "rate": 1,
+        "period": 0.2,
+    },
+    "HHDFS00000300|/uapi/overseas-price/v1/quotations/price": {
+        "rate": 1,
+        "period": 0.2,
+    },
     "TTTC8434R|/uapi/domestic-stock/v1/trading/inquire-balance": {
         "rate": 10,
         "period": 1.0,
