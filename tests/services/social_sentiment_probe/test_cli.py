@@ -115,7 +115,9 @@ async def test_run_probe_keeps_envelope_when_source_runner_raises() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_probe_reports_invalid_naver_discussion_symbol_without_crashing() -> None:
+async def test_run_probe_reports_invalid_naver_discussion_symbol_without_crashing() -> (
+    None
+):
     args = argparse.Namespace(
         market="kr",
         symbol="삼성전자",
