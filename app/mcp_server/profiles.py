@@ -17,6 +17,7 @@ class McpProfile(StrEnum):
     DB_PAPER = "db-paper"
     KIWOOM = "kiwoom"
     SHADOW_REPLAY = "shadow-replay"
+    ANALYSIS_READONLY = "analysis_readonly"
 
 
 def resolve_mcp_profile(env: str | None) -> McpProfile:

@@ -19,7 +19,7 @@ AnalysisArtifactKindLiteral = Literal[
     "session_summary",
     "briefing",
 ]
-AnalysisArtifactCreatedByLiteral = Literal["claude", "operator", "system"]
+AnalysisArtifactCreatedByLiteral = Literal["claude", "operator", "system", "codex"]
 # ROB-648 reduced advisory readiness enum. tradingcodex-lane labels are
 # excluded; server-derived readiness gating is deferred (needs per-kind payload
 # schemas, P5+). Caller declares this; it is not a hard short-circuit gate.

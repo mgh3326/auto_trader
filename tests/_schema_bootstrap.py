@@ -17,7 +17,7 @@ from sqlalchemy import text
 # Bump when adding an ORM table that has NO mirrored ALTER string below, so the
 # content hash changes and a persistent local DB re-bootstraps once. Adding a
 # mirrored ALTER already changes the hash automatically.
-SCHEMA_BOOTSTRAP_VERSION = 2
+SCHEMA_BOOTSTRAP_VERSION = 3
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -541,6 +541,64 @@ async def _maybe_add_unique_constraint(
     )
 
 
+async def _ensure_analysis_artifacts_created_by_constraint(conn) -> None:
+    constraints = await conn.execute(
+        text(
+            "SELECT conname, pg_get_constraintdef(oid) AS definition "
+            "FROM pg_constraint "
+            "WHERE conrelid = 'review.analysis_artifacts'::regclass "
+            "AND conname = 'ck_analysis_artifacts_created_by' "
+            "AND contype = 'c'"
+        )
+    )
+    rows = list(constraints)
+    if rows and "codex" in (rows[0][1] or ""):
+        return
+
+    await conn.execute(
+        text(
+            "ALTER TABLE review.analysis_artifacts "
+            "DROP CONSTRAINT IF EXISTS ck_analysis_artifacts_created_by"
+        )
+    )
+    await conn.execute(
+        text(
+            "ALTER TABLE review.analysis_artifacts "
+            "ADD CONSTRAINT ck_analysis_artifacts_created_by "
+            "CHECK (created_by IN ('claude', 'operator', 'system', 'codex'))"
+        )
+    )
+
+
+async def _ensure_operator_session_context_created_by_constraint(conn) -> None:
+    constraints = await conn.execute(
+        text(
+            "SELECT conname, pg_get_constraintdef(oid) AS definition "
+            "FROM pg_constraint "
+            "WHERE conrelid = 'review.operator_session_context'::regclass "
+            "AND conname = 'ck_operator_session_context_created_by' "
+            "AND contype = 'c'"
+        )
+    )
+    rows = list(constraints)
+    if rows and "codex" in (rows[0][1] or ""):
+        return
+
+    await conn.execute(
+        text(
+            "ALTER TABLE review.operator_session_context "
+            "DROP CONSTRAINT IF EXISTS ck_operator_session_context_created_by"
+        )
+    )
+    await conn.execute(
+        text(
+            "ALTER TABLE review.operator_session_context "
+            "ADD CONSTRAINT ck_operator_session_context_created_by "
+            "CHECK (created_by IN ('claude', 'operator', 'system', 'codex'))"
+        )
+    )
+
+
 def schema_content_hash() -> str:
     """SHA256 hex of the bootstrap version + the DDL tuple.
 
@@ -638,6 +696,8 @@ async def apply_test_schema(conn) -> None:
 
     await _ensure_market_valuation_source_constraint(conn)
     await _ensure_investment_snapshot_kind_constraint(conn)
+    await _ensure_analysis_artifacts_created_by_constraint(conn)
+    await _ensure_operator_session_context_created_by_constraint(conn)
 
     for stmt in _DDL_STATEMENTS:
         await conn.execute(text(stmt))

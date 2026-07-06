@@ -20,7 +20,7 @@ SessionContextEntryTypeLiteral = Literal[
     "next_action",
     "handoff_note",
 ]
-SessionContextCreatedByLiteral = Literal["claude", "operator", "system"]
+SessionContextCreatedByLiteral = Literal["claude", "operator", "system", "codex"]
 
 
 class SessionContextRefs(BaseModel):

@@ -68,3 +68,10 @@ def test_analysis_artifact_model_contract() -> None:
         and index.dialect_options["postgresql"]["using"] == "gin"
         for index in indexes
     )
+
+    created_by_constraint = next(
+        constraint
+        for constraint in AnalysisArtifact.__table__.constraints
+        if constraint.name == "ck_analysis_artifacts_created_by"
+    )
+    assert "codex" in str(created_by_constraint.sqltext)

@@ -1628,6 +1628,7 @@ The `MCP_PROFILE` env var selects which tool subset is registered at startup.
 | US paper | `us-paper` | Default read-only/research surface plus Alpaca paper and `us_dual_paper_*` tools; no KIS/generic order tools |
 | DB paper simulator | `db-paper` | Default read-only/research surface plus internal `paper.paper_*` simulator account, analytics, and journal bridge tools; no KIS/generic order tools |
 | Kiwoom mock | `kiwoom` | Default read-only/research surface plus typed `kiwoom_mock_*` variants only (no KIS/generic order tools) |
+| Analysis readonly | `analysis_readonly` | Codex/headless read/analysis allowlist only: `get_operating_briefing`, `route_request`, `get_trading_policy`, selected quote/fundamental/analysis tools, `suggest_order_account`, `get_holdings`, `toss_get_positions`, and explicitly labeled analysis persistence. No order/cancel/modify/reconcile/preview/settings/watch/admin/manual-holdings mutation tools are registered. |
 
 ### Profile: `hermes-paper-kis`
 
@@ -1639,6 +1640,64 @@ Set `MCP_PROFILE=hermes-paper-kis` on paper-only deployments (e.g., where `KIS_M
 - Shared read-only research and portfolio tools remain available; split-profile-only tools such as Alpaca paper, crypto-only, and Kiwoom are absent.
 
 **Operator validation:** after deploying with `hermes-paper-kis`, check the MCP `/mcp` listing and confirm that none of `kis_live_*` or the legacy ambiguous order tools appear.
+
+### Profile: `analysis_readonly` (ROB-745)
+
+Use `MCP_PROFILE=analysis_readonly` for Codex/headless consumers that need market analysis tools but must not see the operator's full order-capable MCP surface.
+
+Allowed tools:
+- `get_operating_briefing`
+- `route_request`
+- `get_trading_policy`
+- `get_market_index`
+- `get_quote`
+- `analyze_stock_batch`
+- `get_support_resistance`
+- `get_indicators`
+- `screen_stocks`
+- `screen_stocks_snapshot`
+- `get_top_stocks`
+- `get_news`
+- `get_fx_rate`
+- `suggest_order_account`
+- `get_holdings`
+- `toss_get_positions`
+- `get_intraday_investor_flow`
+- `analysis_artifact_save`
+- `analysis_artifact_get`
+- `forecast_save`
+- `session_context_append`
+- `session_context_get_recent`
+
+Forbidden by physical non-registration:
+- order placement, cancel, modify, history, reconcile, and preview tools
+- KIS live/mock order variants
+- Kiwoom order variants
+- Alpaca/DB paper order surfaces
+- Toss place/modify/cancel/history/orderable-cash/reconcile/preview
+- manual holdings mutation
+- user settings tools
+- watch/admin/report-writing surfaces
+
+Persistence tools on this profile require explicit provenance:
+- pass `created_by="codex"` for `analysis_artifact_save`
+- pass `created_by="codex"` in every `session_context_append` entry
+- pass `created_by="codex"` to `forecast_save`
+
+### Codex Config Example
+
+Here is an example Codex config file to connect to the analysis-readonly MCP server with relaxed approval:
+
+```toml
+# ~/.codex/config.toml
+# Relaxed approval is scoped to the analysis-readonly MCP server only.
+[mcp_servers.auto_trader_analysis_readonly]
+url = "http://127.0.0.1:8768/mcp"
+bearer_token_env_var = "MCP_ANALYSIS_READONLY_AUTH_TOKEN"
+default_tools_approval_mode = "auto"
+
+http_headers = { "x-paperclip-agent-id" = "codex-analysis-readonly" }
+```
 
 ### Typed KIS order tools
 

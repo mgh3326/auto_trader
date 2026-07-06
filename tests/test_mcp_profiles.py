@@ -18,6 +18,10 @@ from app.mcp_server.tooling.alpaca_paper_orders import (
     ALPACA_PAPER_MUTATING_TOOL_NAMES,
 )
 from app.mcp_server.tooling.alpaca_paper_preview import ALPACA_PAPER_PREVIEW_TOOL_NAMES
+from app.mcp_server.tooling.analysis_readonly_registration import (
+    ANALYSIS_READONLY_FORBIDDEN_TOOL_NAMES,
+    ANALYSIS_READONLY_TOOL_NAMES,
+)
 from app.mcp_server.tooling.orders_kis_variants import (
     KIS_LIVE_ORDER_TOOL_NAMES,
     KIS_MOCK_ORDER_TOOL_NAMES,
@@ -242,6 +246,7 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     # ROB-697 M1 — shadow-replay registers zero order/mutation tools by design
     # (frozen-context read + policy + route_request only, early-return).
     McpProfile.SHADOW_REPLAY: set(),
+    McpProfile.ANALYSIS_READONLY: {"toss_get_positions"},
 }
 _ALL_ORDER_TOOL_NAMES = (
     _LEGACY_ORDER_TOOL_NAMES
@@ -280,7 +285,9 @@ class TestOrderSurfaceMatrix:
 # tool (crypto research included). ``TestShadowReplayIsResearchSurfaceException``
 # pins that omission explicitly.
 _PROFILES_WITH_RESEARCH_SURFACE = [
-    p for p in McpProfile if p is not McpProfile.SHADOW_REPLAY
+    p
+    for p in McpProfile
+    if p not in (McpProfile.SHADOW_REPLAY, McpProfile.ANALYSIS_READONLY)
 ]
 
 
@@ -318,6 +325,90 @@ class TestShadowReplayIsResearchSurfaceException:
         assert _CRYPTO_RESEARCH_TOOL_NAMES.isdisjoint(mcp.tools.keys())
 
 
+class TestAnalysisReadonlyProfile:
+    def test_registers_exact_analysis_readonly_allowlist(self) -> None:
+        mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
+        assert set(mcp.tools) == ANALYSIS_READONLY_TOOL_NAMES
+
+    def test_does_not_register_forbidden_surfaces(self) -> None:
+        mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
+        leaked = ANALYSIS_READONLY_FORBIDDEN_TOOL_NAMES & mcp.tools.keys()
+        assert not leaked, f"analysis_readonly leaked forbidden tools: {sorted(leaked)}"
+
+    def test_keeps_route_request_inside_registered_surface(self) -> None:
+        mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
+        assert "route_request" in mcp.tools
+        assert "get_trading_policy" in mcp.tools
+        assert "get_quote" in mcp.tools
+        assert "place_order" not in mcp.tools
+        assert "toss_place_order" not in mcp.tools
+        assert "toss_get_positions" in mcp.tools
+
+    @pytest.mark.asyncio
+    async def test_analysis_artifact_save_requires_explicit_created_by(self) -> None:
+        mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
+        tool = mcp.tools["analysis_artifact_save"]
+
+        result = await tool(
+            market="kr",
+            kind="session_summary",
+            title="missing label",
+            payload={},
+        )
+
+        assert result == {
+            "success": False,
+            "error": "created_by_required",
+            "tool": "analysis_artifact_save",
+            "detail": "analysis_readonly persistence calls must pass an explicit created_by label such as 'codex'.",
+        }
+
+    @pytest.mark.asyncio
+    async def test_session_context_append_requires_created_by_per_entry(self) -> None:
+        mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
+        tool = mcp.tools["session_context_append"]
+
+        result = await tool(
+            entries=[
+                {
+                    "market": "kr",
+                    "entry_type": "handoff_note",
+                    "title": "missing label",
+                    "body": "body",
+                }
+            ]
+        )
+
+        assert result["success"] is False
+        assert result["error"] == "created_by_required"
+        assert result["tool"] == "session_context_append"
+        assert result["entry_indexes"] == [0]
+
+    @pytest.mark.asyncio
+    async def test_session_context_append_preserves_validation_for_non_dict_entry(
+        self,
+    ) -> None:
+        mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
+        tool = mcp.tools["session_context_append"]
+
+        result = await tool(entries=["not-a-dict"])
+
+        assert result["success"] is False
+        assert result["error"] == "invalid_request"
+
+    def test_persistence_tools_are_registered_but_list_resolve_are_not(self) -> None:
+        mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
+        assert {
+            "analysis_artifact_save",
+            "analysis_artifact_get",
+            "forecast_save",
+        } <= mcp.tools.keys()
+        assert "analysis_artifact_list" not in mcp.tools
+        assert "forecast_resolve" not in mcp.tools
+        assert "get_forecasts" not in mcp.tools
+        assert "get_forecast_calibration" not in mcp.tools
+
+
 class TestResolveMcpProfile:
     def test_none_returns_default(self) -> None:
         assert resolve_mcp_profile(None) is McpProfile.DEFAULT
@@ -348,6 +439,9 @@ class TestResolveMcpProfile:
 
     def test_shadow_replay(self) -> None:
         assert resolve_mcp_profile("shadow-replay") is McpProfile.SHADOW_REPLAY
+
+    def test_analysis_readonly(self) -> None:
+        assert resolve_mcp_profile("analysis_readonly") is McpProfile.ANALYSIS_READONLY
 
     def test_invalid_string_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="Unknown MCP_PROFILE"):
