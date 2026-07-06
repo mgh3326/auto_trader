@@ -176,6 +176,41 @@ class ExecutionLedgerRepository:
             return stmt.where(ExecutionLedger.instrument_type == "crypto")
         return stmt
 
+    async def list_recent_fills_for_triage(
+        self,
+        *,
+        after_id: int | None = None,
+        market: str | None = None,
+        side: str | None = None,
+        source: str | None = "websocket",
+        broker: str | None = None,
+        account_mode: str | None = None,
+        limit: int = 50,
+    ) -> list[ExecutionLedger]:
+        """Return fills newer than ``after_id`` for fill-event auto-triage (ROB-755).
+
+        Defaults to ``source='websocket'`` so triagers don't accidentally ingest
+        reconciler/manual_import backfills; pass ``source=None`` explicitly to
+        override and read every source. ``limit`` is clamped to the [1, 500]
+        range to keep pollers safe against bad input.
+        """
+        stmt = select(ExecutionLedger)
+        if after_id is not None:
+            stmt = stmt.where(ExecutionLedger.id > after_id)
+        if side is not None:
+            stmt = stmt.where(ExecutionLedger.side == side)
+        if source is not None:
+            stmt = stmt.where(ExecutionLedger.source == source)
+        if broker is not None:
+            stmt = stmt.where(ExecutionLedger.broker == broker)
+        if account_mode is not None:
+            stmt = stmt.where(ExecutionLedger.account_mode == account_mode)
+        stmt = self.apply_market_filter(stmt, market)
+        clamped_limit = max(1, min(int(limit), 500))
+        stmt = stmt.order_by(ExecutionLedger.id.asc()).limit(clamped_limit)
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
     async def net_quantity_by_match_key_since(
         self, *, cutover: datetime
     ) -> dict[tuple[str, str, str, str, str, str], Decimal]:

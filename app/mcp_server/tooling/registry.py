@@ -76,6 +76,9 @@ from app.mcp_server.tooling.analysis_readonly_registration import (
     register_analysis_readonly_tools,
 )
 from app.mcp_server.tooling.analysis_registration import register_analysis_tools
+from app.mcp_server.tooling.execution_ledger_events import (
+    register_execution_ledger_event_tools,
+)
 from app.mcp_server.tooling.forecast_registration import register_forecast_tools
 from app.mcp_server.tooling.fundamentals_registration import register_fundamentals_tools
 from app.mcp_server.tooling.investment_hermes_handlers import (
@@ -217,6 +220,8 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     register_portfolio_tools(mcp)
     register_account_routing_tools(mcp)
     register_trade_journal_tools(mcp)
+    # ROB-755 — execution ledger fill event read tool; read-only, always registered.
+    register_execution_ledger_event_tools(mcp)
     register_mock_loop_retro_tools(mcp)
     register_trade_retrospective_tools(mcp)
     register_forecast_tools(mcp)

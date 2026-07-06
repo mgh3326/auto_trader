@@ -263,6 +263,7 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "analyze_portfolio",
         "analyze_stock",
         "analyze_stock_batch",
+        "execution_ledger_fill_events_list_recent",
         "forecast_resolve",
         "forecast_save",
         "get_analyst_consensus",

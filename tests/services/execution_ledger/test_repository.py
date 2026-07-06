@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from sqlalchemy import delete
 
 from app.models.execution_ledger import ExecutionLedger
 from app.models.trading import InstrumentType
@@ -255,4 +256,267 @@ async def test_latest_run_per_broker_ignores_dry_run_audit_rows(db_session) -> N
     finally:
         for row in rows:
             await db_session.delete(row)
+        await db_session.commit()
+
+
+# --- ROB-755: fill-event auto-triage (Task 1: read method) ---
+
+
+def _triage_row(**overrides) -> ExecutionLedger:
+    """Build an ExecutionLedger row satisfying all DB CHECK constraints.
+
+    Defaults produce a valid KIS KR equity websocket fill; overrides allow
+    each test to vary broker/side/source/etc while keeping constraint-safe
+    values.
+    """
+    base: dict[str, Any] = {
+        "broker": "kis",
+        "account_mode": "live",
+        "venue": "kis_kr",
+        "instrument_type": InstrumentType.equity_kr,
+        "symbol": "005930",
+        "raw_symbol": "005930",
+        "side": "buy",
+        "broker_order_id": "ROB755-0001",
+        "fill_seq": 0,
+        "filled_qty": Decimal("1.0000000000"),
+        "filled_price": Decimal("70000.0000000000"),
+        "filled_notional": Decimal("70000.0000000000"),
+        "fee_amount": Decimal("0.0000000000"),
+        "fee_currency": "KRW",
+        "filled_at": datetime(2026, 5, 13, 0, 0, tzinfo=UTC),
+        "currency": "KRW",
+        "source": "websocket",
+        "raw_payload_json": None,
+    }
+    base.update(overrides)
+    return ExecutionLedger(**base)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_list_recent_fills_for_triage_after_id_and_default_source(
+    db_session,
+) -> None:
+    """after_id watermark excludes older rows AND default source='websocket'
+    excludes reconciler / manual_import rows.
+    """
+    ws_a = _triage_row(broker_order_id="ROB755-A1")
+    ws_b = _triage_row(broker_order_id="ROB755-A2")
+    ws_c = _triage_row(broker_order_id="ROB755-A3")
+    reconciler_row = _triage_row(
+        broker_order_id="ROB755-AR",
+        source="reconciler",
+    )
+    manual_row = _triage_row(
+        broker_order_id="ROB755-AM",
+        source="manual_import",
+    )
+    rows = [ws_a, ws_b, ws_c, reconciler_row, manual_row]
+    db_session.add_all(rows)
+    await db_session.commit()
+
+    try:
+        repo = ExecutionLedgerRepository(db_session)
+        all_ids = {r.id for r in rows}
+
+        websocket_only = await repo.list_recent_fills_for_triage()
+        returned_ids = {r.id for r in websocket_only}
+        assert ws_a.id in returned_ids
+        assert ws_b.id in returned_ids
+        assert ws_c.id in returned_ids
+        assert reconciler_row.id not in returned_ids
+        assert manual_row.id not in returned_ids
+
+        after_ws = await repo.list_recent_fills_for_triage(after_id=ws_a.id)
+        after_ids = {r.id for r in after_ws}
+        assert ws_a.id not in after_ids
+        assert ws_b.id in after_ids
+        assert ws_c.id in after_ids
+        assert reconciler_row.id not in after_ids
+        assert manual_row.id not in after_ids
+
+        assert after_ids.issubset(all_ids)
+    finally:
+        await db_session.execute(
+            delete(ExecutionLedger).where(
+                ExecutionLedger.broker_order_id.like("ROB755-%")
+            )
+        )
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_list_recent_fills_for_triage_filters_by_market_side_broker_account_mode(
+    db_session,
+) -> None:
+    """market/side/broker/account_mode filters narrow the result set."""
+    crypto_buy_kis_live = _triage_row(
+        broker_order_id="ROB755-B1",
+        instrument_type=InstrumentType.crypto,
+        side="buy",
+        broker="kis",
+        account_mode="live",
+        venue="upbit_krw",
+        symbol="BTC",
+        raw_symbol="KRW-BTC",
+        currency="KRW",
+    )
+    crypto_sell_kis_live = _triage_row(
+        broker_order_id="ROB755-B2",
+        instrument_type=InstrumentType.crypto,
+        side="sell",
+        broker="kis",
+        account_mode="live",
+        venue="upbit_krw",
+        symbol="ETH",
+        raw_symbol="KRW-ETH",
+        currency="KRW",
+    )
+    kr_buy_kis_live = _triage_row(
+        broker_order_id="ROB755-B3",
+        instrument_type=InstrumentType.equity_kr,
+        side="buy",
+        broker="kis",
+        account_mode="live",
+        symbol="005930",
+        raw_symbol="005930",
+    )
+    us_sell_upbit_mock = _triage_row(
+        broker_order_id="ROB755-B4",
+        instrument_type=InstrumentType.equity_us,
+        side="sell",
+        broker="upbit",
+        account_mode="mock",
+        venue="upbit_usdt",
+        symbol="AAPL",
+        raw_symbol="AAPL",
+        currency="USD",
+        filled_qty=Decimal("0.5000000000"),
+        filled_price=Decimal("200.0000000000"),
+        filled_notional=Decimal("100.0000000000"),
+        fee_currency="USD",
+    )
+    rows = [
+        crypto_buy_kis_live,
+        crypto_sell_kis_live,
+        kr_buy_kis_live,
+        us_sell_upbit_mock,
+    ]
+    db_session.add_all(rows)
+    await db_session.commit()
+
+    try:
+        repo = ExecutionLedgerRepository(db_session)
+
+        crypto_results = await repo.list_recent_fills_for_triage(market="crypto")
+        crypto_ids = {r.id for r in crypto_results}
+        assert crypto_buy_kis_live.id in crypto_ids
+        assert crypto_sell_kis_live.id in crypto_ids
+        assert kr_buy_kis_live.id not in crypto_ids
+        assert us_sell_upbit_mock.id not in crypto_ids
+
+        sell_results = await repo.list_recent_fills_for_triage(side="sell")
+        sell_ids = {r.id for r in sell_results}
+        assert crypto_sell_kis_live.id in sell_ids
+        assert us_sell_upbit_mock.id in sell_ids
+        assert crypto_buy_kis_live.id not in sell_ids
+        assert kr_buy_kis_live.id not in sell_ids
+
+        kis_results = await repo.list_recent_fills_for_triage(broker="kis")
+        kis_ids = {r.id for r in kis_results}
+        assert crypto_buy_kis_live.id in kis_ids
+        assert crypto_sell_kis_live.id in kis_ids
+        assert kr_buy_kis_live.id in kis_ids
+        assert us_sell_upbit_mock.id not in kis_ids
+
+        mock_results = await repo.list_recent_fills_for_triage(account_mode="mock")
+        mock_ids = {r.id for r in mock_results}
+        assert us_sell_upbit_mock.id in mock_ids
+        assert crypto_buy_kis_live.id not in mock_ids
+        assert crypto_sell_kis_live.id not in mock_ids
+        assert kr_buy_kis_live.id not in mock_ids
+    finally:
+        await db_session.execute(
+            delete(ExecutionLedger).where(
+                ExecutionLedger.broker_order_id.like("ROB755-%")
+            )
+        )
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_list_recent_fills_for_triage_orders_by_id_asc_and_clamps_limit(
+    db_session,
+) -> None:
+    """Results are returned in id ASC order and limit clamps to the [1, 500] range."""
+    seeded_rows = [
+        _triage_row(broker_order_id=f"ROB755-C{i:03d}", fill_seq=i) for i in range(7)
+    ]
+    db_session.add_all(seeded_rows)
+    await db_session.commit()
+
+    try:
+        repo = ExecutionLedgerRepository(db_session)
+        seeded_ids = [r.id for r in seeded_rows]
+        seeded_id_set = set(seeded_ids)
+
+        all_results = await repo.list_recent_fills_for_triage(limit=500)
+        our_results = [r for r in all_results if r.id in seeded_id_set]
+        assert our_results == sorted(our_results, key=lambda r: r.id)
+        assert [r.id for r in our_results] == seeded_ids
+
+        clamped_high = await repo.list_recent_fills_for_triage(limit=10000)
+        our_clamped_high = [r for r in clamped_high if r.id in seeded_id_set]
+        assert len(our_clamped_high) == len(seeded_ids)
+
+        clamped_low = await repo.list_recent_fills_for_triage(limit=0)
+        our_clamped_low = [r for r in clamped_low if r.id in seeded_id_set]
+        assert len(our_clamped_low) == 1
+        assert our_clamped_low[0].id == seeded_ids[0]
+
+        limited = await repo.list_recent_fills_for_triage(limit=3)
+        our_limited = [r for r in limited if r.id in seeded_id_set]
+        assert len(our_limited) == 3
+        assert [r.id for r in our_limited] == seeded_ids[:3]
+    finally:
+        await db_session.execute(
+            delete(ExecutionLedger).where(
+                ExecutionLedger.broker_order_id.like("ROB755-%")
+            )
+        )
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_list_recent_fills_for_triage_explicit_source_none_returns_all_sources(
+    db_session,
+) -> None:
+    """Passing source=None explicitly overrides the default and includes
+    reconciler/manual_import rows (this matches the brief's documented
+    contract: "A caller may explicitly pass source=None to mean 'all sources'").
+    """
+    ws_row = _triage_row(broker_order_id="ROB755-D1", source="websocket")
+    rec_row = _triage_row(broker_order_id="ROB755-D2", source="reconciler")
+    manual_row = _triage_row(broker_order_id="ROB755-D3", source="manual_import")
+    rows = [ws_row, rec_row, manual_row]
+    db_session.add_all(rows)
+    await db_session.commit()
+
+    try:
+        repo = ExecutionLedgerRepository(db_session)
+        all_sources = await repo.list_recent_fills_for_triage(source=None)
+        returned_ids = {r.id for r in all_sources}
+        assert ws_row.id in returned_ids
+        assert rec_row.id in returned_ids
+        assert manual_row.id in returned_ids
+    finally:
+        await db_session.execute(
+            delete(ExecutionLedger).where(
+                ExecutionLedger.broker_order_id.like("ROB755-%")
+            )
+        )
         await db_session.commit()
