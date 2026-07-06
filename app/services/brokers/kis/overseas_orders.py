@@ -32,6 +32,12 @@ _EXCHANGE_ALIAS_MAP = {
     "NYSEMKT": "AMEX",
 }
 
+# ROB-733: token-expiry (EGW00123/EGW00121) 재전송 캡. 이 값을 넘으면 재-POST 대신
+# fail-closed(RuntimeError). "정확히 1회 재전송"이 응답이 아니라 코드로 강제되도록
+# 세 mutation 경로(order/cancel/modify)가 공유한다. 무한 재-POST → 실 자금 다중
+# 제출 리스크를 차단한다.
+_MAX_TOKEN_REFRESH_RESUBMITS = 1
+
 
 def _normalize_kis_exchange_code(code: str) -> str:
     """Normalize exchange code to KIS format.
@@ -77,6 +83,8 @@ class OverseasOrderClient:
         quantity: int,
         price: float = 0.0,  # 0이면 시장가
         is_mock: bool = False,
+        *,
+        _token_retry_depth: int = 0,
     ) -> dict:
         """
         해외주식 주문 (매수/매도)
@@ -192,10 +200,39 @@ class OverseasOrderClient:
 
         if js.get("rt_cd") != "0":
             if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                if _token_retry_depth >= _MAX_TOKEN_REFRESH_RESUBMITS:
+                    # ROB-733: 캡 초과 → 재-POST 대신 fail-closed. 실 자금 다중 제출 차단.
+                    error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
+                    logging.error(
+                        "해외주식 주문 토큰 재발급 재전송 캡(%d) 초과 - fail-closed: %s "
+                        "(symbol=%s, exchange=%s, order_type=%s)",
+                        _MAX_TOKEN_REFRESH_RESUBMITS,
+                        error_msg,
+                        symbol,
+                        exchange_code,
+                        order_type,
+                    )
+                    raise RuntimeError(error_msg)
+                logging.warning(
+                    "해외주식 주문 토큰 만료(%s) - 토큰 재발급 후 재전송(%d/%d) "
+                    "(symbol=%s, exchange=%s, order_type=%s)",
+                    js.get("msg_cd"),
+                    _token_retry_depth + 1,
+                    _MAX_TOKEN_REFRESH_RESUBMITS,
+                    symbol,
+                    exchange_code,
+                    order_type,
+                )
                 await self._parent._token_manager.clear_token()
                 await self._parent._ensure_token()
                 return await self.order_overseas_stock(
-                    symbol, exchange_code, order_type, quantity, price, is_mock
+                    symbol,
+                    exchange_code,
+                    order_type,
+                    quantity,
+                    price,
+                    is_mock,
+                    _token_retry_depth=_token_retry_depth + 1,
                 )
 
             error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
@@ -420,6 +457,8 @@ class OverseasOrderClient:
         exchange_code: str,
         quantity: int,
         is_mock: bool = False,
+        *,
+        _token_retry_depth: int = 0,
     ) -> dict:
         """
         해외주식 주문 취소
@@ -499,10 +538,38 @@ class OverseasOrderClient:
 
         if js.get("rt_cd") != "0":
             if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                if _token_retry_depth >= _MAX_TOKEN_REFRESH_RESUBMITS:
+                    # ROB-733: 캡 초과 → 재-POST 대신 fail-closed.
+                    error_msg = (
+                        f"KIS cancel order failed: {js.get('msg_cd')} "
+                        f"{js.get('msg1')} (order_id={order_number}, "
+                        f"symbol={symbol}, exchange={normalized_exchange_code})"
+                    )
+                    logging.error(
+                        "해외주식 취소 토큰 재발급 재전송 캡(%d) 초과 - fail-closed: %s",
+                        _MAX_TOKEN_REFRESH_RESUBMITS,
+                        error_msg,
+                    )
+                    raise RuntimeError(error_msg)
+                logging.warning(
+                    "해외주식 취소 토큰 만료(%s) - 토큰 재발급 후 재전송(%d/%d) "
+                    "(order_id=%s, symbol=%s, exchange=%s)",
+                    js.get("msg_cd"),
+                    _token_retry_depth + 1,
+                    _MAX_TOKEN_REFRESH_RESUBMITS,
+                    order_number,
+                    symbol,
+                    normalized_exchange_code,
+                )
                 await self._parent._token_manager.clear_token()
                 await self._parent._ensure_token()
                 return await self.cancel_overseas_order(
-                    order_number, symbol, exchange_code, quantity, is_mock
+                    order_number,
+                    symbol,
+                    exchange_code,
+                    quantity,
+                    is_mock,
+                    _token_retry_depth=_token_retry_depth + 1,
                 )
 
             error_msg = (
@@ -705,6 +772,8 @@ class OverseasOrderClient:
         quantity: int,
         new_price: float,
         is_mock: bool = False,
+        *,
+        _token_retry_depth: int = 0,
     ) -> dict:
         """
         해외주식 주문 정정 (가격/수량 변경)
@@ -780,10 +849,39 @@ class OverseasOrderClient:
 
         if js.get("rt_cd") != "0":
             if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                if _token_retry_depth >= _MAX_TOKEN_REFRESH_RESUBMITS:
+                    # ROB-733: 캡 초과 → 재-POST 대신 fail-closed.
+                    error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
+                    logging.error(
+                        "해외주식 정정 토큰 재발급 재전송 캡(%d) 초과 - fail-closed: %s "
+                        "(order_id=%s, symbol=%s, exchange=%s)",
+                        _MAX_TOKEN_REFRESH_RESUBMITS,
+                        error_msg,
+                        order_number,
+                        symbol,
+                        exchange_code,
+                    )
+                    raise RuntimeError(error_msg)
+                logging.warning(
+                    "해외주식 정정 토큰 만료(%s) - 토큰 재발급 후 재전송(%d/%d) "
+                    "(order_id=%s, symbol=%s, exchange=%s)",
+                    js.get("msg_cd"),
+                    _token_retry_depth + 1,
+                    _MAX_TOKEN_REFRESH_RESUBMITS,
+                    order_number,
+                    symbol,
+                    exchange_code,
+                )
                 await self._parent._token_manager.clear_token()
                 await self._parent._ensure_token()
                 return await self.modify_overseas_order(
-                    order_number, symbol, exchange_code, quantity, new_price, is_mock
+                    order_number,
+                    symbol,
+                    exchange_code,
+                    quantity,
+                    new_price,
+                    is_mock,
+                    _token_retry_depth=_token_retry_depth + 1,
                 )
 
             error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"

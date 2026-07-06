@@ -63,17 +63,43 @@ async def test_order_non_token_error_raises_no_resubmit(overseas):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_order_egw00123_unbounded_recursion_is_a_known_gap(overseas):
-    """가드 부재 문서화: EGW00123가 계속 반환되면 재귀가 무한(RecursionError).
+async def test_order_egw00123_repeated_is_bounded_fail_closed(overseas):
+    """ROB-733: EGW00123가 계속 반환돼도 재전송은 캡을 넘지 않고 fail-closed.
 
-    소스에 재귀 깊이 캡이 없어 '정확히 1회'는 코드가 아니라 응답에 의존한다.
-    이 테스트는 이중전송/스택오버플로 리스크를 표면화하며, 실제 가드 추가는
-    별도 (behavior-change) 이슈로 분리한다.
+    이전(ROB-727)에는 재귀 깊이 캡이 없어 무한 재-POST(RecursionError)로 실
+    자금 다중 제출 리스크가 있었다. 이제 토큰 재발급 재전송은 정확히 1회로
+    바운드되고, 그 뒤에도 토큰 만료가 이어지면 재-POST 대신 RuntimeError로
+    fail-closed 한다. 실제 POST는 최초 1 + 재전송 1 = 2회를 넘지 않는다.
     """
     instance, parent = overseas
     parent._request_with_rate_limit = AsyncMock(return_value=_EGW)
-    with pytest.raises(RecursionError):
+    with pytest.raises(RuntimeError, match="EGW00123"):
         await instance.order_overseas_stock("AAPL", "NASD", "buy", 1, 100.0)
+    # 최초 POST + 재전송 1회 = 정확히 2회 (무한 재-POST 아님)
+    assert parent._request_with_rate_limit.call_count == 2
+    assert parent._token_manager.clear_token.await_count == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancel_egw00123_repeated_is_bounded_fail_closed(overseas):
+    instance, parent = overseas
+    parent._request_with_rate_limit = AsyncMock(return_value=_EGW)
+    with pytest.raises(RuntimeError, match="EGW00123"):
+        await instance.cancel_overseas_order("0001", "AAPL", "NASD", 1)
+    assert parent._request_with_rate_limit.call_count == 2
+    assert parent._token_manager.clear_token.await_count == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_modify_egw00123_repeated_is_bounded_fail_closed(overseas):
+    instance, parent = overseas
+    parent._request_with_rate_limit = AsyncMock(return_value=_EGW)
+    with pytest.raises(RuntimeError, match="EGW00123"):
+        await instance.modify_overseas_order("0001", "AAPL", "NASD", 1, 123.45)
+    assert parent._request_with_rate_limit.call_count == 2
+    assert parent._token_manager.clear_token.await_count == 1
 
 
 def _sent(parent):
