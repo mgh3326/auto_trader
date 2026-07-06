@@ -139,4 +139,3 @@ async def test_symbol_window_uses_matching_live_account_not_kis_mock(
     assert info.tag == "live_pullback_tag"
     assert info.tag_source == "strategy_key"
     assert info.link_quality == "symbol_window"
-

@@ -439,4 +439,3 @@ async def test_default_decision_history_excludes_mock_counterfactual_by_cohort(
         outcome["pnl_pct"] != 11.9 or outcome["date"] != "2026-07-06"
         for outcome in ctx["realized_outcomes"]
     )
-

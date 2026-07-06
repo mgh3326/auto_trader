@@ -67,4 +67,3 @@ async def test_attach_decision_history_passes_mock_account_mode(monkeypatch):
 
     assert seen == ["kis_mock"]
     assert results["005930"]["decision_history"]["account_mode"] == "kis_mock"
-
