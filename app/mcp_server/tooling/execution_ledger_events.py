@@ -13,15 +13,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from app.core.db import AsyncSessionLocal
+from app.services.execution_ledger.fill_event_sanitizer import sanitize_fill
 from app.services.execution_ledger.repository import ExecutionLedgerRepository
-from scripts.list_recent_fill_events import _sanitize
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
-
-# ``_sanitize``는 scripts.list_recent_fill_events에서 정의된 private 헬퍼지만
-# 출력 셰이프 단일 출처로 고정하기 위해 그대로 import해서 재사용한다.
-# 같은 모듈을 import하는 두 호출자(CLI, MCP)는 같은 함수 객체를 공유한다.
 
 VALID_SOURCES: frozenset[str | None] = frozenset(
     {None, "websocket", "reconciler", "manual_import"}
@@ -71,14 +67,13 @@ async def execution_ledger_fill_events_list_recent_impl(
                 account_mode=account_mode,
                 limit=limit,
             )
+        return {
+            "success": True,
+            "count": len(rows),
+            "fills": [sanitize_fill(row) for row in rows],
+        }
     except Exception as exc:  # noqa: BLE001 — 운영자/agent 표면은 모든 예외를 JSON으로 감싼다
         return {"success": False, "error": str(exc)}
-
-    return {
-        "success": True,
-        "count": len(rows),
-        "fills": [_sanitize(row) for row in rows],
-    }
 
 
 def register_execution_ledger_event_tools(mcp: FastMCP) -> None:

@@ -384,7 +384,9 @@ Dev submit/cancel smoke helper: `scripts/smoke/alpaca_paper_dev_smoke.py` (previ
 ROB-755 exposes the same fill-event triage surface that powers the operator-host
 alert poller (`scripts/list_recent_fill_events.py`) over MCP. Read-only; no broker
 mutation; no order mutation; no watch mutation. Registered in the "Always" block
-of `register_all_tools` so every profile (including `analysis_readonly`) sees it.
+of `register_all_tools` (default, crypto, hermes-paper-kis, us-paper, db-paper,
+kiwoom profiles). Not on `analysis_readonly`, which uses its own curated
+allowlist.
 
 - `execution_ledger_fill_events_list_recent(after_id=None, market=None, side=None, source="websocket", broker=None, account_mode=None, limit=50)`
   - Read-only. Returns recent fills from `execution_ledger` rows newer than
