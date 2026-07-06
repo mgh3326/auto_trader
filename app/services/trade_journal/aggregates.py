@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import copy
 import uuid
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from statistics import fmean, median
@@ -705,6 +705,37 @@ def _pair_by_entry_provenance(
     return paired
 
 
+async def _filter_pairs_for_delta(
+    db: AsyncSession,
+    paired: list[tuple[ClosedTrade, ClosedTrade]],
+    *,
+    setup_tag: str | None,
+    min_sample: int,
+) -> list[tuple[ClosedTrade, ClosedTrade]]:
+    if not setup_tag and min_sample <= 1:
+        return paired
+
+    tagged_pairs: list[tuple[str, tuple[ClosedTrade, ClosedTrade]]] = []
+    tag_counts: Counter[str] = Counter()
+    for live_trade, mock_trade in paired:
+        try:
+            tag = await resolve_setup_tag(db, live_trade)
+        except Exception:
+            try:
+                tag = await resolve_setup_tag(db, mock_trade)
+            except Exception:
+                tag = TagInfo("untagged", "untagged", "symbol_window")
+
+        if setup_tag and tag.tag != setup_tag:
+            continue
+        tagged_pairs.append((tag.tag, (live_trade, mock_trade)))
+        tag_counts[tag.tag] += 1
+
+    if min_sample <= 1:
+        return [pair for _, pair in tagged_pairs]
+    return [pair for tag, pair in tagged_pairs if tag_counts[tag] >= min_sample]
+
+
 def _paired_delta(paired: list[tuple[ClosedTrade, ClosedTrade]]) -> dict[str, Any]:
     n = len(paired)
     if n == 0:
@@ -786,6 +817,9 @@ async def build_counterfactual_delta_scoreboard(
         [f for f in fills if f.cohort == "mock_counterfactual"]
     )
     paired = _pair_by_entry_provenance(live_trades, mock_trades)
+    paired = await _filter_pairs_for_delta(
+        db, paired, setup_tag=setup_tag, min_sample=min_sample
+    )
     return {
         "live_gated": board_live,
         "mock_counterfactual": board_mock,

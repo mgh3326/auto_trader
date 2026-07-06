@@ -721,25 +721,44 @@ async def _execute_and_record(
     # ROB-653 P6-B — KIS has no broker idempotency key; reserve a local intent
     # row before the send. A same-key send the same trading day fails closed.
     # Crypto/Upbit is excluded (it uses the broker-side content identifier).
+    intent_account_scope: str | None = None
+    intent_key: str | None = None
     if (
         not is_mock
         and idempotency_key is not None
+        and market_type
+        in (
+            "equity_kr",
+            "equity_us",
+        )
+    ):
+        intent_account_scope = "kis_live"
+        intent_key = idempotency_key
+    elif (
+        is_mock
+        and mirror_cohort == "mock_counterfactual"
+        and correlation_id is not None
         and market_type in ("equity_kr", "equity_us")
     ):
+        intent_account_scope = "kis_mock"
+        intent_key = correlation_id
+
+    if intent_account_scope is not None and intent_key is not None:
         async with _order_session_factory()() as intent_db:
             try:
                 await OrderSendIntentService(intent_db).reserve(
-                    account_scope="kis_live",
-                    idempotency_key=idempotency_key,
+                    account_scope=intent_account_scope,
+                    idempotency_key=intent_key,
                     symbol=normalized_symbol,
                     side=side,
                 )
             except DuplicateOrderIntent:
                 logger.warning(
-                    "KIS duplicate order intent blocked: symbol=%s side=%s key=%s",
+                    "KIS duplicate order intent blocked: scope=%s symbol=%s side=%s key=%s",
+                    intent_account_scope,
                     normalized_symbol,
                     side,
-                    idempotency_key,
+                    intent_key,
                 )
                 return order_error_fn(
                     "동일 주문이 오늘 이미 전송되어 중복 전송을 차단했습니다 "

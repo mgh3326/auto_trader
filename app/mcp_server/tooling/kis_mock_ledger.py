@@ -406,7 +406,7 @@ async def _record_kis_mock_order(
     # kis_live). publish_place_time_forecast is itself buy+target-gated and runs
     # in its own isolated session, swallowing errors — a forecast hiccup never
     # affects the recorded order.
-    if status == "accepted":
+    if status == "accepted" and ledger_id is not None:
         await publish_place_time_forecast(
             correlation_id=correlation_id,
             symbol=normalized_symbol,

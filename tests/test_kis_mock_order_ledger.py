@@ -1016,3 +1016,121 @@ async def test_record_kis_mock_order_threads_mirror_metadata(monkeypatch):
     assert save.await_args.kwargs["report_item_uuid"] == item_uuid
     assert save.await_args.kwargs["mirror_cohort"] == "mock_counterfactual"
     assert save.await_args.kwargs["mirror_source_bucket"] == "place_original"
+
+
+@pytest.mark.asyncio
+async def test_record_kis_mock_order_does_not_publish_forecast_without_ledger_id(
+    monkeypatch,
+):
+    from uuid import uuid4
+
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    save = AsyncMock(return_value=None)
+    pub = AsyncMock(return_value="forecast-orphan")
+    monkeypatch.setattr(kis_mock_ledger, "_save_kis_mock_order_ledger", save)
+    monkeypatch.setattr(kis_mock_ledger, "publish_place_time_forecast", pub)
+
+    item_uuid = uuid4()
+    result = await kis_mock_ledger._record_kis_mock_order(
+        normalized_symbol="005930",
+        market_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        dry_run_result={"price": 70000, "quantity": 1, "estimated_value": 70000},
+        execution_result={"rt_cd": "0", "odno": "ROB743-duplicate"},
+        reason="ROB-743",
+        thesis="mirror",
+        strategy="mirror_counterfactual",
+        notes="source_bucket=place_original",
+        correlation_id=f"mirror:{item_uuid}",
+        target_price=76000,
+        min_hold_days=10,
+        report_item_uuid=item_uuid,
+        mirror_cohort="mock_counterfactual",
+        mirror_source_bucket="place_original",
+    )
+
+    assert result["ledger_id"] is None
+    pub.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mirror_mock_duplicate_intent_blocks_second_broker_send(
+    db_session,
+    monkeypatch,
+):
+    from unittest.mock import AsyncMock
+    from uuid import uuid4
+
+    from sqlalchemy import delete
+
+    from app.mcp_server.tooling import order_execution
+    from app.models.review import OrderSendIntent
+
+    await db_session.execute(delete(OrderSendIntent))
+    await db_session.commit()
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.orders_registration.validate_kis_mock_config",
+        lambda *_, **__: [],
+    )
+    execute_order = AsyncMock(
+        return_value={
+            "odno": "ROB743-accepted",
+            "ord_tmd": "091500",
+            "msg": "정상처리",
+            "rt_cd": "0",
+        }
+    )
+    monkeypatch.setattr(order_execution, "_execute_order", execute_order)
+    monkeypatch.setattr(
+        order_execution,
+        "_fetch_current_price",
+        AsyncMock(return_value=70000.0),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_build_preview",
+        AsyncMock(
+            return_value={
+                "symbol": "005930",
+                "side": "buy",
+                "order_type": "limit",
+                "price": 70000.0,
+                "quantity": 1,
+                "estimated_value": 70000.0,
+                "fee": 0,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_check_balance_and_warn",
+        AsyncMock(return_value=(None, None)),
+    )
+    monkeypatch.setattr(order_execution, "_record_order_history", AsyncMock())
+
+    item_uuid = uuid4()
+    kwargs = {
+        "symbol": "005930",
+        "side": "buy",
+        "order_type": "limit",
+        "quantity": 1,
+        "price": 70000,
+        "dry_run": False,
+        "reason": "ROB-743 mirror",
+        "is_mock": True,
+        "correlation_id": f"mirror:{item_uuid}",
+        "report_item_uuid": str(item_uuid),
+        "mirror_cohort": "mock_counterfactual",
+        "mirror_source_bucket": "place_original",
+    }
+
+    first = await order_execution._place_order_impl(**kwargs)
+    second = await order_execution._place_order_impl(**kwargs)
+
+    assert first["success"] is True, first
+    assert second["success"] is False
+    assert "duplicate order intent" in second["error"]
+    assert execute_order.await_count == 1
