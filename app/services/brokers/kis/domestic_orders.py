@@ -15,6 +15,12 @@ if TYPE_CHECKING:
     from .protocols import KISClientProtocol
 
 
+# ROB-739: token-expiry (EGW00123/EGW00121) 재전송 캡. 이 값을 넘으면 재-POST 대신
+# fail-closed(RuntimeError). KR live mutation 경로(order/cancel/modify)의 무한 재-POST
+# 및 실 주문 다중 제출 리스크를 차단한다.
+_MAX_TOKEN_REFRESH_RESUBMITS = 1
+
+
 class DomesticOrderClient:
     """Client for KIS domestic (Korean) stock order operations.
 
@@ -229,6 +235,8 @@ class DomesticOrderClient:
         quantity: int,
         price: int = 0,  # 0이면 시장가
         is_mock: bool = False,
+        *,
+        _token_retry_depth: int = 0,
     ) -> dict:
         """
         국내주식 주문 (매수/매도)
@@ -334,10 +342,35 @@ class DomesticOrderClient:
                 msg1=msg1,
             )
             if msg_cd in ["EGW00123", "EGW00121"]:
+                if _token_retry_depth >= _MAX_TOKEN_REFRESH_RESUBMITS:
+                    error_msg = f"{msg_cd} {msg1}"
+                    logging.error(
+                        "국내주식 주문 토큰 재발급 재전송 캡(%d) 초과 - fail-closed: %s "
+                        "(stock_code=%s, order_type=%s)",
+                        _MAX_TOKEN_REFRESH_RESUBMITS,
+                        error_msg,
+                        stock_code,
+                        order_type,
+                    )
+                    raise RuntimeError(error_msg)
+                logging.warning(
+                    "국내주식 주문 토큰 만료(%s) - 토큰 재발급 후 재전송(%d/%d) "
+                    "(stock_code=%s, order_type=%s)",
+                    msg_cd,
+                    _token_retry_depth + 1,
+                    _MAX_TOKEN_REFRESH_RESUBMITS,
+                    stock_code,
+                    order_type,
+                )
                 await self._parent._token_manager.clear_token()
                 await self._parent._ensure_token()
                 return await self.order_korea_stock(
-                    stock_code, order_type, quantity, price, is_mock
+                    stock_code,
+                    order_type,
+                    quantity,
+                    price,
+                    is_mock,
+                    _token_retry_depth=_token_retry_depth + 1,
                 )
 
             error_msg = f"{msg_cd} {msg1}"
@@ -389,6 +422,8 @@ class DomesticOrderClient:
         order_type: str,  # "buy" 또는 "sell"
         is_mock: bool = False,
         krx_fwdg_ord_orgno: str | None = None,
+        *,
+        _token_retry_depth: int = 0,
     ) -> dict:
         """
         국내주식 주문 취소
@@ -493,7 +528,29 @@ class DomesticOrderClient:
         )
 
         if js.get("rt_cd") != "0":
-            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+            msg_cd = js.get("msg_cd", "")
+            msg1 = js.get("msg1", "")
+            if msg_cd in ["EGW00123", "EGW00121"]:
+                if _token_retry_depth >= _MAX_TOKEN_REFRESH_RESUBMITS:
+                    error_msg = f"{msg_cd} {msg1}"
+                    logging.error(
+                        "국내주식 취소 토큰 재발급 재전송 캡(%d) 초과 - fail-closed: %s "
+                        "(order_number=%s, stock_code=%s)",
+                        _MAX_TOKEN_REFRESH_RESUBMITS,
+                        error_msg,
+                        order_number,
+                        stock_code,
+                    )
+                    raise RuntimeError(error_msg)
+                logging.warning(
+                    "국내주식 취소 토큰 만료(%s) - 토큰 재발급 후 재전송(%d/%d) "
+                    "(order_number=%s, stock_code=%s)",
+                    msg_cd,
+                    _token_retry_depth + 1,
+                    _MAX_TOKEN_REFRESH_RESUBMITS,
+                    order_number,
+                    stock_code,
+                )
                 await self._parent._token_manager.clear_token()
                 await self._parent._ensure_token()
                 return await self.cancel_korea_order(
@@ -504,9 +561,10 @@ class DomesticOrderClient:
                     order_type,
                     is_mock,
                     resolved_kis_orgno,
+                    _token_retry_depth=_token_retry_depth + 1,
                 )
 
-            error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
+            error_msg = f"{msg_cd} {msg1}"
             logging.error(f"주문 취소 실패: {error_msg}")
             raise RuntimeError(error_msg)
 
@@ -720,6 +778,8 @@ class DomesticOrderClient:
         new_price: int,
         is_mock: bool = False,
         krx_fwdg_ord_orgno: str | None = None,
+        *,
+        _token_retry_depth: int = 0,
     ) -> dict:
         """
         국내주식 주문 정정 (가격/수량 변경)
@@ -813,7 +873,29 @@ class DomesticOrderClient:
         )
 
         if js.get("rt_cd") != "0":
-            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+            msg_cd = js.get("msg_cd", "")
+            msg1 = js.get("msg1", "")
+            if msg_cd in ["EGW00123", "EGW00121"]:
+                if _token_retry_depth >= _MAX_TOKEN_REFRESH_RESUBMITS:
+                    error_msg = f"{msg_cd} {msg1}"
+                    logging.error(
+                        "국내주식 정정 토큰 재발급 재전송 캡(%d) 초과 - fail-closed: %s "
+                        "(order_number=%s, stock_code=%s)",
+                        _MAX_TOKEN_REFRESH_RESUBMITS,
+                        error_msg,
+                        order_number,
+                        stock_code,
+                    )
+                    raise RuntimeError(error_msg)
+                logging.warning(
+                    "국내주식 정정 토큰 만료(%s) - 토큰 재발급 후 재전송(%d/%d) "
+                    "(order_number=%s, stock_code=%s)",
+                    msg_cd,
+                    _token_retry_depth + 1,
+                    _MAX_TOKEN_REFRESH_RESUBMITS,
+                    order_number,
+                    stock_code,
+                )
                 await self._parent._token_manager.clear_token()
                 await self._parent._ensure_token()
                 return await self.modify_korea_order(
@@ -823,9 +905,10 @@ class DomesticOrderClient:
                     new_price,
                     is_mock,
                     resolved_kis_orgno,
+                    _token_retry_depth=_token_retry_depth + 1,
                 )
 
-            error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
+            error_msg = f"{msg_cd} {msg1}"
             logging.error(f"주문 정정 실패: {error_msg}")
             raise RuntimeError(error_msg)
 
