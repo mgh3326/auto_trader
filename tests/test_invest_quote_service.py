@@ -208,3 +208,132 @@ async def test_fetch_us_prices_empty_live_last_falls_through_to_snapshot(
 
     assert out == pytest.approx({"AAPL": 199.0})  # from snapshot, not KIS daily
     service._snapshot_latest.assert_awaited_once_with("us", ["AAPL"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kr_flag_off_is_kis_first_toss_untouched(monkeypatch):
+    # Default (flag off): KIS resolves everything => Toss must NOT be consulted.
+    monkeypatch.setattr(
+        "app.services.invest_quote_service.settings.invest_quotes_toss_first_kr",
+        False,
+        raising=False,
+    )
+
+    class _FakeToss:
+        def __init__(self):
+            self.called = False
+
+        async def prices(self, symbols):
+            self.called = True
+            return []
+
+    toss = _FakeToss()
+    service = InvestQuoteService(MagicMock(), MagicMock(), toss_client=toss)
+    service._market_data = AsyncMock()
+    service._market_data.inquire_price.return_value = pd.DataFrame(
+        [{"close": 70000.0}], index=["005930"]
+    )
+
+    out = await service.fetch_kr_prices(["005930"])
+    assert out == pytest.approx({"005930": 70000.0})
+    assert toss.called is False  # KIS-first: Toss never reached when KIS healthy
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kr_flag_on_is_toss_first_kis_skipped_when_toss_resolves(monkeypatch):
+    from decimal import Decimal
+
+    from app.services.brokers.toss.dto import TossPrice
+
+    monkeypatch.setattr(
+        "app.services.invest_quote_service.settings.invest_quotes_toss_first_kr",
+        True,
+        raising=False,
+    )
+
+    class _FakeToss:
+        async def prices(self, symbols):
+            return [
+                TossPrice(
+                    symbol=s, timestamp=None, last_price=Decimal("123"), currency="KRW"
+                )
+                for s in symbols
+            ]
+
+    service = InvestQuoteService(MagicMock(), MagicMock(), toss_client=_FakeToss())
+    service._market_data = AsyncMock()  # KIS present but must NOT be called
+
+    out = await service.fetch_kr_prices(["005930", "000660"])
+    assert out == pytest.approx({"005930": 123.0, "000660": 123.0})
+    service._market_data.inquire_price.assert_not_called()  # Toss-first won
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_flags_are_per_market_independent(monkeypatch):
+    from decimal import Decimal
+
+    from app.services.brokers.toss.dto import TossPrice
+
+    # KR flipped, US NOT flipped.
+    monkeypatch.setattr(
+        "app.services.invest_quote_service.settings.invest_quotes_toss_first_kr",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.services.invest_quote_service.settings.invest_quotes_toss_first_us",
+        False,
+        raising=False,
+    )
+
+    class _FakeToss:
+        def __init__(self):
+            self.calls = 0
+
+        async def prices(self, symbols):
+            self.calls += 1
+            return [
+                TossPrice(
+                    symbol=s, timestamp=None, last_price=Decimal("5"), currency="KRW"
+                )
+                for s in symbols
+            ]
+
+    toss = _FakeToss()
+    service = InvestQuoteService(MagicMock(), MagicMock(), toss_client=toss)
+    service._market_data = AsyncMock()
+    # KR KIS resolves a DISTINCT price (70000). This makes the case a real RED
+    # discriminator: pre-impl (KIS-first) KR takes KIS's 70000 and NEVER reaches
+    # Toss (kr == {"005930": 70000.0}, toss.calls == 0), so the kr == {5.0} and
+    # toss.calls == 1 assertions both FAIL. Post-impl with the KR flag ON
+    # (Toss-first) KIS is skipped for KR, so kr == {5.0} (Toss's price) PROVES the
+    # flip and toss.calls == 1. (If KR KIS were left un-resolved it would MISS and
+    # fall through to Toss even pre-impl -> toss.calls == 1 and kr == {5.0} in RED
+    # too -> the test would pass before impl and prove nothing. The distinct KIS
+    # price is what forces a genuine pre-impl failure.)
+    service._market_data.inquire_price.return_value = pd.DataFrame(
+        [{"close": 70000.0}], index=["005930"]
+    )
+    # US KIS path resolves (flag off => KIS-first => Toss not reached for US).
+    # ROB-708 landed: _kis_fetch_us now reads the LIVE-LAST endpoint
+    # (inquire_overseas_price / HHDFS00000300), NOT inquire_overseas_daily_price. The
+    # US KIS mock MUST therefore be on inquire_overseas_price — otherwise US misses
+    # KIS, falls through to Toss, and the toss.calls == 1 / us == {150.0} assertions
+    # both break.
+    service._market_data.inquire_overseas_price.return_value = pd.DataFrame(
+        [{"close": 150.0, "previous_close": 148.0, "volume": 1000}]
+    )
+    monkeypatch.setattr(
+        "app.services.invest_quote_service.get_us_exchange_by_symbol",
+        AsyncMock(return_value="NASD"),
+    )
+
+    kr = await service.fetch_kr_prices(["005930"])  # Toss-first
+    us = await service.fetch_us_prices(["AAPL"])  # KIS-first
+
+    assert kr == pytest.approx({"005930": 5.0})
+    assert us == pytest.approx({"AAPL": 150.0})
+    assert toss.calls == 1  # Toss consulted for KR only, not US (US flag off)

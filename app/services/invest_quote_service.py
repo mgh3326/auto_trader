@@ -12,6 +12,8 @@ from app.core.config import settings
 from app.services.brokers.kis.market_data import MarketDataClient
 from app.services.brokers.toss.client import TossReadClient
 from app.services.invest_price_fallback import (
+    KIS_FIRST_ORDER,
+    TOSS_FIRST_ORDER,
     Fetcher,
     PriceFallbackResolver,
     fetch_toss_batch_prices,
@@ -59,11 +61,23 @@ class InvestQuoteService:
                 toss_fetch=toss_fetch,
                 snapshot_fetch=lambda syms: self._snapshot_latest(market, syms),
                 market=market,
+                order=self._layer_order(market),
             )
             return await resolver.resolve(symbols)
         finally:
             if owned is not None:
                 await owned.aclose()
+
+    def _layer_order(self, market: str) -> tuple[str, ...]:
+        # ROB-710: per-market flag flips KIS→Toss→snapshot to Toss→KIS→snapshot.
+        # Default (both flags False) == today's KIS-first, byte-identical.
+        if market == "kr":
+            toss_first = bool(getattr(settings, "invest_quotes_toss_first_kr", False))
+        elif market == "us":
+            toss_first = bool(getattr(settings, "invest_quotes_toss_first_us", False))
+        else:
+            toss_first = False
+        return TOSS_FIRST_ORDER if toss_first else KIS_FIRST_ORDER
 
     def _build_toss_fetch(self) -> tuple[Fetcher | None, TossReadClient | None]:
         if self._toss_client is not None:
