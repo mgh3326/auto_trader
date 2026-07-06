@@ -701,6 +701,8 @@ async def _execute_and_record(
     report_item_uuid: uuid.UUID | None = None,
     approval_hash_digest: str | None = None,
     idempotency_key: str | None = None,
+    mirror_cohort: str | None = None,
+    mirror_source_bucket: str | None = None,
 ) -> dict[str, Any]:
     """Execute a live order, record history, fills, and journals."""
     # ROB-102: capture pre-order KIS mock holdings as the reconciler baseline.
@@ -818,6 +820,8 @@ async def _execute_and_record(
             target_price=target_price,
             min_hold_days=min_hold_days,
             report_item_uuid=report_item_uuid,
+            mirror_cohort=mirror_cohort,
+            mirror_source_bucket=mirror_source_bucket,
         )
 
     # ROB-395: live KR orders record accepted-only to the live ledger; fills,
@@ -1096,6 +1100,8 @@ async def _place_order_impl(
     report_item_uuid: str | None = None,
     approval_hash: str | None = None,
     rung: str | int | None = None,
+    mirror_cohort: str | None = None,
+    mirror_source_bucket: str | None = None,
 ) -> dict[str, Any]:
     symbol, side_lower, order_type_lower = _validate_inputs(
         symbol,
@@ -1367,6 +1373,8 @@ async def _place_order_impl(
             report_item_uuid=_coerce_report_item_uuid(report_item_uuid),
             approval_hash_digest=approval_digest,
             idempotency_key=idempotency_key,
+            mirror_cohort=mirror_cohort,
+            mirror_source_bucket=mirror_source_bucket,
         )
     except Exception as exc:
         logger.exception(

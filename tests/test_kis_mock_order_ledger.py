@@ -978,3 +978,42 @@ async def test_save_kis_mock_order_ledger_persists_report_item_uuid(db_session):
         )
     ).scalar_one()
     assert row.report_item_uuid == item_uuid
+
+
+@pytest.mark.asyncio
+async def test_record_kis_mock_order_threads_mirror_metadata(monkeypatch):
+    from unittest.mock import AsyncMock
+    from uuid import uuid4
+
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    save = AsyncMock(return_value=123)
+    pub = AsyncMock(return_value="forecast-1")
+    monkeypatch.setattr(kis_mock_ledger, "_save_kis_mock_order_ledger", save)
+    monkeypatch.setattr(kis_mock_ledger, "publish_place_time_forecast", pub)
+
+    item_uuid = uuid4()
+    result = await kis_mock_ledger._record_kis_mock_order(
+        normalized_symbol="005930",
+        market_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        dry_run_result={"price": 70000, "quantity": 1, "estimated_value": 70000},
+        execution_result={"rt_cd": "0", "odno": "ROB743-1"},
+        reason="ROB-743",
+        thesis="mirror",
+        strategy="mirror_counterfactual",
+        notes="source_bucket=place_original",
+        correlation_id=f"mirror:{item_uuid}",
+        target_price=76000,
+        min_hold_days=10,
+        report_item_uuid=item_uuid,
+        mirror_cohort="mock_counterfactual",
+        mirror_source_bucket="place_original",
+    )
+
+    assert result["ledger_id"] == 123
+    assert save.await_args.kwargs["report_item_uuid"] == item_uuid
+    assert save.await_args.kwargs["mirror_cohort"] == "mock_counterfactual"
+    assert save.await_args.kwargs["mirror_source_bucket"] == "place_original"
+

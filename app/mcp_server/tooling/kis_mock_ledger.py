@@ -258,6 +258,8 @@ async def _save_kis_mock_order_ledger(
     gross_pnl: Decimal | None = None,
     net_pnl: Decimal | None = None,
     report_item_uuid: uuid.UUID | None = None,
+    mirror_cohort: str | None = None,
+    mirror_source_bucket: str | None = None,
 ) -> int | None:
     """Insert one row into review.kis_mock_order_ledger.
 
@@ -300,6 +302,8 @@ async def _save_kis_mock_order_ledger(
                     gross_pnl=gross_pnl,
                     net_pnl=net_pnl,
                     report_item_uuid=report_item_uuid,
+                    mirror_cohort=mirror_cohort,
+                    mirror_source_bucket=mirror_source_bucket,
                 )
                 .on_conflict_do_nothing(constraint="uq_kis_mock_ledger_order_no")
             )
@@ -330,6 +334,8 @@ async def _record_kis_mock_order(
     target_price: float | None = None,
     min_hold_days: int | None = None,
     report_item_uuid: uuid.UUID | None = None,
+    mirror_cohort: str | None = None,
+    mirror_source_bucket: str | None = None,
 ) -> dict[str, Any]:
     """Build ledger row from execution result and return the mock-order response dict."""
     price_val = _to_float(dry_run_result.get("price"), default=0.0)
@@ -392,6 +398,8 @@ async def _record_kis_mock_order(
         holdings_baseline_qty=holdings_baseline_qty,
         correlation_id=correlation_id,
         report_item_uuid=report_item_uuid,
+        mirror_cohort=mirror_cohort,
+        mirror_source_bucket=mirror_source_bucket,
     )
 
     # ROB-730: emit the place-time forecast only for accepted orders (mirrors

@@ -73,7 +73,32 @@ async def test_mirror_counterfactual_tool_commits_apply_results(monkeypatch):
     result = await tool.kis_mock_mirror_execute_report(
         report_uuid="11111111-1111-1111-1111-111111111111",
         dry_run=False,
+        confirm=True,
     )
 
     assert result["success"] is True
     assert fake_db.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_mirror_counterfactual_tool_requires_confirm_for_apply(monkeypatch):
+    from app.mcp_server.tooling import mirror_counterfactual_tools as tool
+
+    called = False
+
+    async def fake_execute(db, **kwargs):
+        nonlocal called
+        called = True
+        return {"success": True}
+
+    monkeypatch.setattr(tool, "execute_mirror_for_report", fake_execute)
+
+    result = await tool.kis_mock_mirror_execute_report(
+        report_uuid="11111111-1111-1111-1111-111111111111",
+        dry_run=False,
+    )
+
+    assert called is False
+    assert result["success"] is False
+    assert result["error_code"] == "mirror_confirm_required"
+
