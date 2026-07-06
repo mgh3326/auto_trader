@@ -8,6 +8,8 @@ import pytest
 from app.models.investment_reports import InvestmentReport, InvestmentReportItem
 from app.services.trade_journal.mirror_counterfactual import build_mirror_order_plans
 
+pytestmark = [pytest.mark.usefixtures("investment_reports_cleanup_lock")]
+
 
 async def _report(db, *, market="kr", account_scope="kis_live") -> InvestmentReport:
     row = InvestmentReport(
