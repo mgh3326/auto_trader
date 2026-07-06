@@ -40,3 +40,41 @@ async def test_reserve_allows_distinct_key(db_session):
     # a different key (e.g. next trading-day salt) is allowed
     rid = await svc.reserve(account_scope="kis_live", idempotency_key="p6a-day2")
     assert isinstance(rid, int)
+
+
+@pytest.mark.asyncio
+async def test_release_deletes_matching_intent_and_allows_re_reserve(db_session):
+    svc = OrderSendIntentService(db_session)
+    key = "mirror:rob750-release"
+
+    await svc.reserve(account_scope="kis_mock", idempotency_key=key)
+    deleted = await svc.release(account_scope="kis_mock", idempotency_key=key)
+
+    assert deleted == 1
+    rid = await svc.reserve(account_scope="kis_mock", idempotency_key=key)
+    assert isinstance(rid, int)
+
+
+@pytest.mark.asyncio
+async def test_release_is_idempotent_for_missing_intent(db_session):
+    svc = OrderSendIntentService(db_session)
+
+    deleted = await svc.release(
+        account_scope="kis_mock",
+        idempotency_key="mirror:missing",
+    )
+
+    assert deleted == 0
+
+
+@pytest.mark.asyncio
+async def test_release_is_scoped_by_account_scope(db_session):
+    svc = OrderSendIntentService(db_session)
+    key = "mirror:same-key"
+
+    await svc.reserve(account_scope="kis_live", idempotency_key=key)
+    deleted = await svc.release(account_scope="kis_mock", idempotency_key=key)
+
+    assert deleted == 0
+    with pytest.raises(DuplicateOrderIntent):
+        await svc.reserve(account_scope="kis_live", idempotency_key=key)
