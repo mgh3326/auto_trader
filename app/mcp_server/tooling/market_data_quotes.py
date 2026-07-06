@@ -30,8 +30,11 @@ from app.mcp_server.tooling.market_data_indicators import (
 from app.mcp_server.tooling.market_session import (
     DATA_STATE_FRESH,
     DATA_STATE_PREMARKET_UNAVAILABLE,
+    DATA_STATE_STALE,
+    US_SESSION_CLOSED,
     is_kr_session_day,
     kr_market_data_state,
+    us_market_session,
 )
 from app.mcp_server.tooling.shared import (
     error_payload as _error_payload,
@@ -675,7 +678,7 @@ async def _fetch_us_quote_from_kis(normalized_symbol: str) -> dict[str, Any] | N
     price = _to_float_or_none(row.get("close"))
     if price is None or price <= 0:
         return None
-    return {
+    quote = {
         "symbol": normalized_symbol,
         "instrument_type": "equity_us",
         "price": price,
@@ -686,7 +689,13 @@ async def _fetch_us_quote_from_kis(normalized_symbol: str) -> dict[str, Any] | N
         "volume": _to_int_or_none(row.get("volume")),
         "source": "kis_overseas",
         "delayed": True,
+        "venue": exchange_code,
+        "price_source": "kis_overseas_last",
     }
+    quote_asof = _optional_text(row.get("quote_asof"))
+    if quote_asof is not None:
+        quote["quote_asof"] = quote_asof
+    return quote
 
 
 def _is_yahoo_symbol_not_found_error(exc: BaseException) -> bool:
@@ -699,6 +708,36 @@ def _is_yahoo_symbol_not_found_error(exc: BaseException) -> bool:
             "not found for symbol",
         )
     )
+
+
+_US_MARKET_CLOSED_REASON = "us_market_closed"
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _tag_us_quote_session(
+    quote: dict[str, Any], *, now: datetime.datetime | None = None
+) -> dict[str, Any]:
+    session = us_market_session(now)
+    quote["session"] = session
+    if session == US_SESSION_CLOSED:
+        quote["data_state"] = DATA_STATE_STALE
+        quote["data_state_reason"] = _US_MARKET_CLOSED_REASON
+    else:
+        quote["data_state"] = DATA_STATE_FRESH
+        quote.pop("data_state_reason", None)
+    if "price_source" not in quote:
+        quote["price_source"] = (
+            "kis_overseas_last"
+            if quote.get("source") == "kis_overseas"
+            else "yahoo_fast_info_close"
+        )
+    return quote
 
 
 async def _fetch_quote_equity_us(symbol: str) -> dict[str, Any]:
@@ -726,7 +765,7 @@ async def _fetch_quote_equity_us(symbol: str) -> dict[str, Any]:
             )
         else:
             if kis_quote is not None:
-                return kis_quote
+                return _tag_us_quote_session(kis_quote)
 
     # FALLBACK: Yahoo fast_info
     try:
@@ -746,18 +785,21 @@ async def _fetch_quote_equity_us(symbol: str) -> dict[str, Any]:
             )
         raise RuntimeError(f"{unavailable_message} (yahoo returned no price)")
 
-    return {
-        "symbol": normalized_symbol,
-        "instrument_type": "equity_us",
-        "price": price,
-        "previous_close": _to_float_or_none(fast_info.get("previous_close")),
-        "open": _to_float_or_none(fast_info.get("open")),
-        "high": _to_float_or_none(fast_info.get("high")),
-        "low": _to_float_or_none(fast_info.get("low")),
-        "volume": _to_int_or_none(fast_info.get("volume")),
-        "source": "yahoo",
-        "delayed": True,
-    }
+    return _tag_us_quote_session(
+        {
+            "symbol": normalized_symbol,
+            "instrument_type": "equity_us",
+            "price": price,
+            "previous_close": _to_float_or_none(fast_info.get("previous_close")),
+            "open": _to_float_or_none(fast_info.get("open")),
+            "high": _to_float_or_none(fast_info.get("high")),
+            "low": _to_float_or_none(fast_info.get("low")),
+            "volume": _to_int_or_none(fast_info.get("volume")),
+            "source": "yahoo",
+            "delayed": True,
+            "price_source": "yahoo_fast_info_close",
+        }
+    )
 
 
 async def fetch_us_live_last_price(symbol: str) -> float | None:
