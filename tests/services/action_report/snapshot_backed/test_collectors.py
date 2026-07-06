@@ -1037,6 +1037,35 @@ async def test_market_collector_kr_populates_kospi():
 
 
 @pytest.mark.asyncio
+async def test_market_collector_preserves_index_freshness_metadata():
+    async def fake_index_fn(symbols):
+        return [
+            {
+                "symbol": "KOSPI",
+                "name": "KOSPI",
+                "current": 2700.0,
+                "change_pct": -0.46,
+                "quote_asof": "2026-07-06T09:05:00+09:00",
+                "data_state": "stale",
+                "data_state_reason": "kr_index_quote_lagging",
+                "quote_lag_seconds": 300,
+            }
+        ]
+
+    collector = MarketEventsSnapshotCollector(
+        MagicMock(), query_service=_empty_events_query(), index_quote_fn=fake_index_fn
+    )
+    results = await collector.collect(_request(market="kr"))
+
+    kospi = results[0].payload_json["indices"]["KOSPI"]
+    assert kospi["change_percent"] == -0.46
+    assert kospi["quote_asof"] == "2026-07-06T09:05:00+09:00"
+    assert kospi["data_state"] == "stale"
+    assert kospi["data_state_reason"] == "kr_index_quote_lagging"
+    assert kospi["quote_lag_seconds"] == 300
+
+
+@pytest.mark.asyncio
 async def test_market_collector_omits_index_with_none_change_pct():
     # yfinance previous_close missing → change_pct None must be omitted, never 0.0.
     async def fake_index_fn(symbols):

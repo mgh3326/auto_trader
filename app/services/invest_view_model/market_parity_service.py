@@ -85,12 +85,15 @@ class DefaultMarketParityProvider:
         price = _decimal_or_none(row.get("current") or row.get("price"))
         if price is None:
             return None
+        data_state = str(row.get("data_state")) if row.get("data_state") else None
         return ParityQuote(
             symbol=symbol,
             price=price,
             source=str(row.get("source") or "market_index"),
-            as_of=_parse_datetime(row.get("as_of") or row.get("timestamp")),
-            stale=bool(row.get("stale", False)),
+            as_of=_parse_datetime(
+                row.get("quote_asof") or row.get("as_of") or row.get("timestamp")
+            ),
+            stale=data_state == "stale",
             warnings=tuple([str(row["error"])] if row.get("error") else []),
         )
 

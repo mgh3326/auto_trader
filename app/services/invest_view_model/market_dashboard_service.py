@@ -67,12 +67,37 @@ def _format_number(value: Any, *, digits: int = 2) -> str | None:
     return f"{num:.{digits}f}"
 
 
+def _as_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed
+
+
 def _metric_from_index(
     row: dict[str, Any], *, href: str | None = None
 ) -> MarketDashboardMetric:
     warning = str(row.get("error")) if row.get("error") else None
     change_pct = _as_float(row.get("change_pct"))
     change = _as_float(row.get("change"))
+    data_state = str(row.get("data_state")) if row.get("data_state") else None
+    is_stale_state = data_state == "stale"
     return MarketDashboardMetric(
         label=str(row.get("name") or row.get("symbol") or "지수"),
         value=_format_number(row.get("current")),
@@ -82,8 +107,14 @@ def _metric_from_index(
         source=str(row.get("source") or "market_index"),
         symbol=str(row.get("symbol")) if row.get("symbol") else None,
         href=href,
-        stale=warning is not None or row.get("current") is None,
+        stale=warning is not None or row.get("current") is None or is_stale_state,
         warning=warning,
+        dataState=data_state,
+        dataStateReason=(
+            str(row.get("data_state_reason")) if row.get("data_state_reason") else None
+        ),
+        quoteAsOf=_parse_datetime(row.get("quote_asof")),
+        quoteLagSeconds=_as_int(row.get("quote_lag_seconds")),
     )
 
 
@@ -102,7 +133,7 @@ def _section_state(
     if not metrics:
         return "missing"
     usable = [m for m in metrics if m.value is not None and not m.warning]
-    if warnings or len(usable) < len(metrics):
+    if warnings or any(m.stale for m in metrics) or len(usable) < len(metrics):
         return "partial" if usable else "error"
     return "fresh"
 
