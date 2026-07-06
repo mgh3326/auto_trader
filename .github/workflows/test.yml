@@ -129,7 +129,20 @@ jobs:
       # Coverage gating lives in Codecov (uploads from all shards are merged
       # per commit).
       run: |
-        uv run pytest tests/ -m "not live" --splits 4 --group ${{ matrix.group }} --durations-path .test_durations -n auto --dist=loadfile -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120 --cov=app --cov-report=xml
+        set +e
+        uv run pytest tests/ -m "not live" --splits 4 --group ${{ matrix.group }} --durations-path .test_durations -n auto --dist=loadfile -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120 --cov=app --cov-report=xml 2>&1 | tee pytest-output.log
+        status=${PIPESTATUS[0]}
+        if [ "$status" -ne 0 ]; then
+          {
+            echo "### Pytest failure tail: shard ${{ matrix.group }}"
+            echo '```text'
+            tail -n 200 pytest-output.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          message=$(uv run python -c 'from pathlib import Path; tail="\n".join(Path("pytest-output.log").read_text(errors="replace").splitlines()[-80:]); print(tail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"))')
+          echo "::error title=pytest shard failed::$message"
+        fi
+        exit "$status"
 
     - name: Upload coverage reports to Codecov
       uses: codecov/codecov-action@v6
