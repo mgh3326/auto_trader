@@ -173,17 +173,42 @@ async def run_probe(
     runner = source_runner or _run_source
     results = []
     for source in _parse_sources(args.sources, market):
-        results.append(
-            await runner(
-                source,
-                market=market,
-                symbol=symbol,
-                query=query,
-                limit=args.limit,
-                include_x_cdp=args.include_x_cdp,
-                now=observed_at,
+        try:
+            results.append(
+                await runner(
+                    source,
+                    market=market,
+                    symbol=symbol,
+                    query=query,
+                    limit=args.limit,
+                    include_x_cdp=args.include_x_cdp,
+                    now=observed_at,
+                )
             )
-        )
+        except ValueError as exc:
+            results.append(
+                source_result(
+                    source=source,
+                    market=market,
+                    query=query,
+                    status="invalid_input",
+                    items=[],
+                    observed_at=observed_at,
+                    error_reason=str(exc),
+                )
+            )
+        except Exception as exc:
+            results.append(
+                source_result(
+                    source=source,
+                    market=market,
+                    query=query,
+                    status="unavailable",
+                    items=[],
+                    observed_at=observed_at,
+                    error_reason=f"{type(exc).__name__}: {exc}",
+                )
+            )
     return build_social_sentiment_evidence(
         market=market,
         symbol=symbol,

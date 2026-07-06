@@ -18,10 +18,20 @@ def test_strip_markup_removes_naver_b_tags_and_unescapes_entities() -> None:
     assert strip_markup("<b>삼성전자</b> &amp; SK하이닉스") == "삼성전자 & SK하이닉스"
 
 
+def test_strip_markup_ignores_non_string_values() -> None:
+    assert strip_markup(123) is None
+    assert strip_markup(["bad"]) is None
+
+
 def test_truncate_preview_preserves_short_values_and_caps_long_values() -> None:
     assert truncate_preview("abc", limit=3) == "abc"
     assert truncate_preview("abcdef", limit=3) == "abc"
     assert truncate_preview(None) is None
+
+
+def test_truncate_preview_ignores_non_string_values() -> None:
+    assert truncate_preview(["bad"]) is None
+    assert truncate_preview({"text": "bad"}) is None
 
 
 def test_source_result_counts_items_and_omits_empty_error() -> None:

@@ -69,6 +69,19 @@ async def test_naver_openapi_parses_items_without_html_markup() -> None:
 
 
 @pytest.mark.asyncio
+async def test_naver_openapi_ignores_malformed_text_fields() -> None:
+    async def fake_get(url: str, **kwargs: Any) -> FakeResponse:
+        return FakeResponse({"items": [{"title": 123, "description": ["bad"]}]})
+
+    out = await fetch_naver_openapi(
+        "news", "삼성전자", "kr", "cid", "secret", now=_now(), http_get=fake_get
+    )
+    assert out["status"] == "ok"
+    assert out["items"][0]["title"] is None
+    assert out["items"][0]["text_preview"] is None
+
+
+@pytest.mark.asyncio
 async def test_bluesky_parses_public_search_posts() -> None:
     async def fake_get(url: str, **kwargs: Any) -> FakeResponse:
         assert url == "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts"
@@ -96,6 +109,16 @@ async def test_bluesky_parses_public_search_posts() -> None:
     assert out["status"] == "ok"
     assert out["items"][0]["author"] == "trader.example"
     assert out["items"][0]["metrics"]["like_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_bluesky_ignores_malformed_text_fields() -> None:
+    async def fake_get(url: str, **kwargs: Any) -> FakeResponse:
+        return FakeResponse({"posts": [{"record": {"text": ["bad"]}, "author": {}}]})
+
+    out = await fetch_bluesky_posts("AAPL", "us", now=_now(), http_get=fake_get)
+    assert out["status"] == "ok"
+    assert out["items"][0]["text_preview"] is None
 
 
 @pytest.mark.asyncio
@@ -151,6 +174,42 @@ async def test_reddit_parses_listing_children() -> None:
     assert out["status"] == "ok"
     assert out["items"][0]["url"] == "https://www.reddit.com/r/stocks/comments/1/nvda/"
     assert out["items"][0]["metrics"] == {"score": 12, "comment_count": 4}
+
+
+@pytest.mark.asyncio
+async def test_reddit_ignores_malformed_text_fields() -> None:
+    async def fake_post(url: str, **kwargs: Any) -> FakeResponse:
+        return FakeResponse({"access_token": "tok", "token_type": "bearer"})
+
+    async def fake_get(url: str, **kwargs: Any) -> FakeResponse:
+        return FakeResponse(
+            {
+                "data": {
+                    "children": [
+                        {
+                            "data": {
+                                "title": "NVDA earnings",
+                                "selftext": ["bad"],
+                            }
+                        }
+                    ]
+                }
+            }
+        )
+
+    out = await fetch_reddit_search(
+        "NVDA",
+        "us",
+        "cid",
+        "secret",
+        "script:auto_trader.rob729:v0.1 (by /u/example)",
+        subreddits=("stocks",),
+        now=_now(),
+        post=fake_post,
+        get=fake_get,
+    )
+    assert out["status"] == "ok"
+    assert out["items"][0]["text_preview"] is None
 
 
 def test_stocktwits_without_credentials_reports_requires_credentials() -> None:

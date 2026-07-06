@@ -8,15 +8,15 @@ from typing import Any
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
-def strip_markup(value: str | None) -> str | None:
-    if value is None:
+def strip_markup(value: Any) -> str | None:
+    if not isinstance(value, str):
         return None
     text = html.unescape(_TAG_RE.sub("", value))
     return " ".join(text.split())
 
 
-def truncate_preview(value: str | None, limit: int = 280) -> str | None:
-    if value is None:
+def truncate_preview(value: Any, limit: int = 280) -> str | None:
+    if not isinstance(value, str):
         return None
     clean = " ".join(value.split())
     return clean[: max(0, limit)]
