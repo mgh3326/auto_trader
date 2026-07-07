@@ -8,7 +8,33 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.review import TossLiveOrderLedger
+from app.models.review import TossFillPollState, TossLiveOrderLedger
+
+
+def _external_order_raw(order: Any) -> dict[str, Any]:
+    execution = dict(getattr(order, "execution", {}) or {})
+    return {
+        "orderId": getattr(order, "order_id", None),
+        "symbol": getattr(order, "symbol", None),
+        "side": getattr(order, "side", None),
+        "orderType": getattr(order, "order_type", None),
+        "timeInForce": getattr(order, "time_in_force", None),
+        "status": getattr(order, "status", None),
+        "price": str(getattr(order, "price", None))
+        if getattr(order, "price", None) is not None
+        else None,
+        "quantity": str(getattr(order, "quantity", None))
+        if getattr(order, "quantity", None) is not None
+        else None,
+        "orderAmount": str(getattr(order, "order_amount", None))
+        if getattr(order, "order_amount", None) is not None
+        else None,
+        "currency": getattr(order, "currency", None),
+        "orderedAt": getattr(order, "ordered_at", None),
+        "canceledAt": getattr(order, "canceled_at", None),
+        "execution": {key: str(value) for key, value in execution.items()},
+        "discoveredBy": "ROB-757 toss fill poller",
+    }
 
 
 def parse_report_item_uuid(value: str | uuid.UUID | None) -> uuid.UUID | None:
@@ -390,6 +416,66 @@ class TossLiveOrderLedgerService:
             "rows": candidates,  # ORM rows folded into the reconcile work-list
             "candidates": candidate_meta,
         }
+
+    async def existing_broker_order_ids(self, order_ids: set[str]) -> set[str]:
+        if not order_ids:
+            return set()
+        result = await self._db.execute(
+            select(TossLiveOrderLedger.broker_order_id).where(
+                TossLiveOrderLedger.broker_order_id.in_(order_ids)
+            )
+        )
+        return {str(value) for value in result.scalars().all() if value}
+
+    async def record_external_order(
+        self, order: Any, *, market: str
+    ) -> TossLiveOrderLedger:
+        client_order_id = f"toss-external:{order.order_id}"
+        return await self.record_send(
+            operation_kind="place",
+            market=market,
+            symbol=order.symbol,
+            side=str(order.side).lower(),
+            order_type=str(order.order_type).lower(),
+            time_in_force=order.time_in_force,
+            quantity=order.quantity,
+            price=order.price,
+            order_amount=order.order_amount,
+            currency=order.currency,
+            client_order_id=client_order_id,
+            broker_order_id=order.order_id,
+            original_order_id=None,
+            status="accepted",
+            broker_status=order.status,
+            response_code="external",
+            response_message="discovered from Toss GET /orders",
+            raw_response=_external_order_raw(order),
+            notes="ROB-757 app-direct Toss order discovered by fill poller",
+        )
+
+    async def get_poll_state(self, scope: str) -> TossFillPollState | None:
+        return await self._db.get(TossFillPollState, scope)
+
+    async def mark_poll_success(self, scope: str, *, at: datetime) -> None:
+        row = await self._db.get(TossFillPollState, scope)
+        if row is None:
+            self._db.add(
+                TossFillPollState(scope=scope, last_success_at=at, last_error=None)
+            )
+        else:
+            row.last_success_at = at
+            row.last_error = None
+        await self._db.commit()
+
+    async def mark_poll_error(self, scope: str, *, error: dict[str, Any]) -> None:
+        row = await self._db.get(TossFillPollState, scope)
+        if row is None:
+            self._db.add(
+                TossFillPollState(scope=scope, last_success_at=None, last_error=error)
+            )
+        else:
+            row.last_error = error
+        await self._db.commit()
 
 
 # ROB-669 — anomaly rows are only auto-reopenable when the recorded error is a
