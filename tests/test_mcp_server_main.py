@@ -31,7 +31,9 @@ def _load_env_utils_module() -> ModuleType:
 
 def _load_main_module(
     monkeypatch: pytest.MonkeyPatch,
-) -> tuple[ModuleType, _FakeFastMCP, MagicMock]:
+    *,
+    account_read: bool = False,
+) -> tuple[ModuleType, _FakeFastMCP, MagicMock, object]:
     main_path = Path(__file__).resolve().parents[1] / "app" / "mcp_server" / "main.py"
 
     fake_fastmcp = ModuleType("fastmcp")
@@ -69,11 +71,15 @@ def _load_main_module(
     fake_monitoring.__dict__["capture_exception"] = MagicMock()
     fake_monitoring.__dict__["init_sentry"] = MagicMock()
 
-    # Pre-existing dependency of main.py (line 5). Previously relied on being
-    # already cached in sys.modules by an earlier test, so this harness failed
-    # in isolation; stub it explicitly so the isolation is real.
+    account_read_profile = object()
+    resolved_profile = account_read_profile if account_read else "profile"
     fake_profiles = ModuleType("app.mcp_server.profiles")
-    fake_profiles.__dict__["resolve_mcp_profile"] = MagicMock(return_value="profile")
+    fake_profiles.__dict__["McpProfile"] = SimpleNamespace(
+        ACCOUNT_READ=account_read_profile
+    )
+    fake_profiles.__dict__["resolve_mcp_profile"] = MagicMock(
+        return_value=resolved_profile
+    )
 
     # ROB-469: main.py now imports the lifecycle module (unauth /health route +
     # startup/shutdown lifespan logging). Stub it like the other dependencies so
@@ -83,6 +89,16 @@ def _load_main_module(
         return_value="server-lifespan"
     )
     fake_lifecycle.__dict__["register_health_route"] = MagicMock()
+
+    # ROB-469 PR2: main.py imports ToolTimeoutMiddleware. The fake
+    # app.mcp_server package has __path__ = [], so without this stub the
+    # import fails in isolation (it previously relied on sys.modules caching
+    # from an earlier test file). Use the real class so the middleware-ordering
+    # assertion (type(calls[2]).__name__ == "ToolTimeoutMiddleware") still holds.
+    from app.mcp_server.timeout_middleware import ToolTimeoutMiddleware as _RealTTM
+
+    fake_timeout_middleware = ModuleType("app.mcp_server.timeout_middleware")
+    fake_timeout_middleware.__dict__["ToolTimeoutMiddleware"] = _RealTTM
 
     env_utils_module = _load_env_utils_module()
 
@@ -103,6 +119,9 @@ def _load_main_module(
     monkeypatch.setitem(sys.modules, "app.monitoring.sentry", fake_monitoring)
     monkeypatch.setitem(sys.modules, "app.mcp_server.profiles", fake_profiles)
     monkeypatch.setitem(sys.modules, "app.mcp_server.lifecycle", fake_lifecycle)
+    monkeypatch.setitem(
+        sys.modules, "app.mcp_server.timeout_middleware", fake_timeout_middleware
+    )
 
     spec = importlib.util.spec_from_file_location("app.mcp_server.main", main_path)
     assert spec is not None
@@ -114,7 +133,7 @@ def _load_main_module(
     # session, poisoning other tests that import the real app.mcp_server.main.
     monkeypatch.setitem(sys.modules, "app.mcp_server.main", module)
     spec.loader.exec_module(module)
-    return module, module.mcp, fake_monitoring.capture_exception
+    return module, module.mcp, fake_monitoring.capture_exception, account_read_profile
 
 
 @pytest.mark.unit
@@ -122,7 +141,7 @@ class TestMcpServerMain:
     def test_registers_caller_identity_middleware_after_sentry(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _, mcp, _ = _load_main_module(monkeypatch)
+        _, mcp, _, _ = _load_main_module(monkeypatch)
 
         calls = [call.args[0] for call in mcp.add_middleware.call_args_list]
         # Sentry (outermost) then CallerIdentity, then ROB-469 PR2's
@@ -135,7 +154,7 @@ class TestMcpServerMain:
     def test_non_integer_log_level_falls_back_to_info(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        module, mcp, _ = _load_main_module(monkeypatch)
+        module, mcp, _, _ = _load_main_module(monkeypatch)
         module.settings.LOG_LEVEL = "BASIC_FORMAT"
 
         module.main()
@@ -154,7 +173,7 @@ class TestMcpServerMain:
         monkeypatch.setenv("MCP_TYPE", "streamable-http")
         monkeypatch.delenv("MCP_GRACEFUL_SHUTDOWN_TIMEOUT", raising=False)
 
-        module, mcp, _ = _load_main_module(monkeypatch)
+        module, mcp, _, _ = _load_main_module(monkeypatch)
 
         module.main()
 
@@ -172,7 +191,7 @@ class TestMcpServerMain:
         monkeypatch.setenv("MCP_TYPE", "sse")
         monkeypatch.setenv("MCP_GRACEFUL_SHUTDOWN_TIMEOUT", "27")
 
-        module, mcp, _ = _load_main_module(monkeypatch)
+        module, mcp, _, _ = _load_main_module(monkeypatch)
 
         module.main()
 
@@ -190,7 +209,7 @@ class TestMcpServerMain:
         monkeypatch.setenv("MCP_TYPE", "stdio")
         monkeypatch.setenv("MCP_GRACEFUL_SHUTDOWN_TIMEOUT", "33")
 
-        module, mcp, _ = _load_main_module(monkeypatch)
+        module, mcp, _, _ = _load_main_module(monkeypatch)
 
         module.main()
 
@@ -202,7 +221,7 @@ class TestMcpServerMain:
         monkeypatch.setenv("MCP_TYPE", "stdio")
         monkeypatch.setenv("MCP_GRACEFUL_SHUTDOWN_TIMEOUT", "invalid")
 
-        module, _, _ = _load_main_module(monkeypatch)
+        module, _, _, _ = _load_main_module(monkeypatch)
 
         module.main()
 
@@ -211,7 +230,7 @@ class TestMcpServerMain:
     ) -> None:
         monkeypatch.setenv("MCP_TYPE", "invalid")
 
-        module, _, capture_exception = _load_main_module(monkeypatch)
+        module, _, capture_exception, _ = _load_main_module(monkeypatch)
 
         with pytest.raises(ValueError, match="Unsupported MCP_TYPE: invalid"):
             module.main()
@@ -224,7 +243,7 @@ class TestMcpServerMain:
     ) -> None:
         monkeypatch.setenv("MCP_TYPE", transport)
 
-        module, mcp, capture_exception = _load_main_module(monkeypatch)
+        module, mcp, capture_exception, _ = _load_main_module(monkeypatch)
         module.settings.mcp_caller_agent_id_fallback = "trader-agent-id"
 
         with pytest.raises(
@@ -243,7 +262,7 @@ class TestMcpServerMain:
     ) -> None:
         monkeypatch.setenv("MCP_TYPE", "sse")
 
-        module, mcp, capture_exception = _load_main_module(monkeypatch)
+        module, mcp, capture_exception, _ = _load_main_module(monkeypatch)
         module.settings.mcp_caller_agent_id_fallback = None
 
         module.main()
@@ -262,10 +281,29 @@ class TestMcpServerMain:
     ) -> None:
         monkeypatch.setenv("MCP_TYPE", "stdio")
 
-        module, mcp, capture_exception = _load_main_module(monkeypatch)
+        module, mcp, capture_exception, _ = _load_main_module(monkeypatch)
         module.settings.mcp_caller_agent_id_fallback = "trader-agent-id"
 
         module.main()
 
         mcp.run.assert_called_once_with(transport="stdio")
         capture_exception.assert_not_called()
+
+    def test_account_read_profile_requires_auth_token(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+
+        with pytest.raises(
+            RuntimeError,
+            match="MCP_PROFILE=account_read requires non-empty MCP_AUTH_TOKEN",
+        ):
+            _load_main_module(monkeypatch, account_read=True)
+
+    def test_account_read_profile_accepts_auth_token(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MCP_AUTH_TOKEN", "account-read-token")
+        module, _, _, _ = _load_main_module(monkeypatch, account_read=True)
+
+        module.main()

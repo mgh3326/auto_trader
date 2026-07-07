@@ -13,6 +13,10 @@ from typing import Any, cast
 import pytest
 
 from app.mcp_server.profiles import McpProfile, resolve_mcp_profile
+from app.mcp_server.tooling.account_read_registration import (
+    ACCOUNT_READ_FORBIDDEN_TOOL_NAMES,
+    ACCOUNT_READ_TOOL_NAMES,
+)
 from app.mcp_server.tooling.alpaca_paper import ALPACA_PAPER_READONLY_TOOL_NAMES
 from app.mcp_server.tooling.alpaca_paper_orders import (
     ALPACA_PAPER_MUTATING_TOOL_NAMES,
@@ -247,6 +251,17 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     # (frozen-context read + policy + route_request only, early-return).
     McpProfile.SHADOW_REPLAY: set(),
     McpProfile.ANALYSIS_READONLY: {"toss_get_positions"},
+    # ROB-760 — account_read exposes read-only order-history tools (they are
+    # in _ALL_ORDER_TOOL_NAMES via ORDER/KIS_LIVE/TOSS_LIVE sets), so they must
+    # be listed here; separate forbidden-surface tests below prove the
+    # mutation/write tools stay absent.
+    McpProfile.ACCOUNT_READ: {
+        "get_order_history",
+        "kis_live_get_order_history",
+        "toss_get_order_history",
+        "toss_get_positions",
+        "toss_get_orderable_cash",
+    },
 }
 _ALL_ORDER_TOOL_NAMES = (
     _LEGACY_ORDER_TOOL_NAMES
@@ -287,7 +302,12 @@ class TestOrderSurfaceMatrix:
 _PROFILES_WITH_RESEARCH_SURFACE = [
     p
     for p in McpProfile
-    if p not in (McpProfile.SHADOW_REPLAY, McpProfile.ANALYSIS_READONLY)
+    if p
+    not in (
+        McpProfile.SHADOW_REPLAY,
+        McpProfile.ANALYSIS_READONLY,
+        McpProfile.ACCOUNT_READ,
+    )
 ]
 
 
@@ -409,6 +429,64 @@ class TestAnalysisReadonlyProfile:
         assert "get_forecast_calibration" not in mcp.tools
 
 
+class TestAccountReadProfile:
+    def test_registers_exact_account_read_allowlist(self) -> None:
+        mcp = _build_mcp(McpProfile.ACCOUNT_READ)
+        assert set(mcp.tools) == ACCOUNT_READ_TOOL_NAMES
+
+    def test_does_not_register_forbidden_surfaces(self) -> None:
+        mcp = _build_mcp(McpProfile.ACCOUNT_READ)
+        leaked = ACCOUNT_READ_FORBIDDEN_TOOL_NAMES & mcp.tools.keys()
+        assert not leaked, f"account_read leaked forbidden tools: {sorted(leaked)}"
+
+    def test_has_no_write_or_persistence_tools(self) -> None:
+        mcp = _build_mcp(McpProfile.ACCOUNT_READ)
+        write_or_persistence = {
+            "place_order",
+            "cancel_order",
+            "modify_order",
+            "kis_live_place_order",
+            "kis_live_cancel_order",
+            "kis_live_modify_order",
+            "kis_live_reconcile_orders",
+            "kis_mock_place_order",
+            "kis_mock_cancel_order",
+            "kis_mock_modify_order",
+            "live_reconcile_orders",
+            "toss_preview_order",
+            "toss_place_order",
+            "toss_modify_order",
+            "toss_cancel_order",
+            "toss_reconcile_orders",
+            "update_manual_holdings",
+            "get_available_capital",
+            "get_position",
+            "analysis_artifact_save",
+            "analysis_artifact_get",
+            "forecast_save",
+            "session_context_append",
+            "session_context_get_recent",
+            "get_user_setting",
+            "list_active_watches",
+        }
+        leaked = write_or_persistence & mcp.tools.keys()
+        assert not leaked, (
+            f"account_read leaked write/persistence tools: {sorted(leaked)}"
+        )
+
+    def test_expected_account_read_tools_are_present(self) -> None:
+        mcp = _build_mcp(McpProfile.ACCOUNT_READ)
+        assert {
+            "get_holdings",
+            "toss_get_positions",
+            "get_cash_balance",
+            "toss_get_orderable_cash",
+            "get_order_history",
+            "kis_live_get_order_history",
+            "toss_get_order_history",
+        } <= mcp.tools.keys()
+
+
 class TestResolveMcpProfile:
     def test_none_returns_default(self) -> None:
         assert resolve_mcp_profile(None) is McpProfile.DEFAULT
@@ -442,6 +520,9 @@ class TestResolveMcpProfile:
 
     def test_analysis_readonly(self) -> None:
         assert resolve_mcp_profile("analysis_readonly") is McpProfile.ANALYSIS_READONLY
+
+    def test_account_read(self) -> None:
+        assert resolve_mcp_profile("account_read") is McpProfile.ACCOUNT_READ
 
     def test_invalid_string_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="Unknown MCP_PROFILE"):

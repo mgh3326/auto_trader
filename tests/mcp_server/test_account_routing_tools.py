@@ -40,7 +40,19 @@ def test_account_routing_tool_names_register():
 # registers suggest_order_account, so it is deliberately excluded here (its
 # validity guard is that it carries ONLY the frozen-context read + policy +
 # route_request tools; see tests/mcp_server/test_shadow_replay_profile.py).
-_READ_PROFILES = [p for p in McpProfile if p is not McpProfile.SHADOW_REPLAY]
+#
+# ROB-760 — account_read is also a physical allowlist profile: it must expose
+# exactly the account-sync read surface pinned in tests/test_mcp_profiles.py,
+# without route/advisory tools.
+_READ_PROFILES = [
+    p
+    for p in McpProfile
+    if p
+    not in (
+        McpProfile.SHADOW_REPLAY,
+        McpProfile.ACCOUNT_READ,
+    )
+]
 
 
 @pytest.mark.parametrize("profile", _READ_PROFILES)

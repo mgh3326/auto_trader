@@ -17,6 +17,8 @@ PLISTS = [
     "com.robinco.auto-trader.api-green.plist",
     "com.robinco.auto-trader.mcp-blue.plist",
     "com.robinco.auto-trader.mcp-green.plist",
+    "com.robinco.auto-trader.mcp-analysis-readonly.plist",
+    "com.robinco.auto-trader.mcp-account-read.plist",
     "com.robinco.auto-trader.worker.plist",
     "com.robinco.auto-trader.scheduler.plist",
     "com.robinco.auto-trader.kis-websocket.plist",
@@ -77,3 +79,23 @@ def test_mcp_green_plist_port() -> None:
     assert "<string>green</string>" in body
     assert "<string>8767</string>" in body
     assert "current-green" in body
+
+
+def test_mcp_account_read_plist_profile_port_and_token_env() -> None:
+    body = (PLIST_DIR / "com.robinco.auto-trader.mcp-account-read.plist").read_text()
+    assert "scripts/run-mcp-profile.sh" in body
+    assert "<string>account_read</string>" in body
+    assert "<string>8769</string>" in body
+    assert "<string>MCP_ACCOUNT_READ_AUTH_TOKEN</string>" in body
+    assert "current</string>" in body
+
+
+def test_mcp_analysis_readonly_plist_profile_port_and_token_env() -> None:
+    body = (
+        PLIST_DIR / "com.robinco.auto-trader.mcp-analysis-readonly.plist"
+    ).read_text()
+    assert "scripts/run-mcp-profile.sh" in body
+    assert "<string>analysis_readonly</string>" in body
+    assert "<string>8768</string>" in body
+    assert "<string>MCP_ANALYSIS_READONLY_AUTH_TOKEN</string>" in body
+    assert "current</string>" in body
