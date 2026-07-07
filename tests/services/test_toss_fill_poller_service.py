@@ -15,8 +15,19 @@ pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
 
 def _order(
-    order_id: str, *, currency: str = "KRW", status: str = "FILLED"
+    order_id: str,
+    *,
+    currency: str = "KRW",
+    status: str = "FILLED",
+    execution: dict | None = None,
 ) -> TossOrder:
+    if execution is None:
+        execution = {
+            "filledQuantity": Decimal("3") if currency == "KRW" else Decimal("2"),
+            "averageFilledPrice": Decimal("85000")
+            if currency == "KRW"
+            else Decimal("190"),
+        }
     return TossOrder(
         order_id=order_id,
         symbol="034020" if currency == "KRW" else "AAPL",
@@ -30,12 +41,7 @@ def _order(
         currency=currency,
         ordered_at="2026-07-07T00:30:00Z",
         canceled_at=None,
-        execution={
-            "filledQuantity": Decimal("3") if currency == "KRW" else Decimal("2"),
-            "averageFilledPrice": Decimal("85000")
-            if currency == "KRW"
-            else Decimal("190"),
-        },
+        execution=execution,
     )
 
 
@@ -190,3 +196,71 @@ async def test_discovery_records_error_on_failure(db_session):
     assert state.last_error["type"] == "RuntimeError"
     assert "toss api down" in state.last_error["message"]
     assert state.last_success_at is None
+
+
+async def test_discovery_seeds_filled_closed_order_without_list_execution_summary(
+    db_session,
+):
+    class _FilledWithoutSummaryClient:
+        async def list_orders(self, *, status, **kwargs):
+            if status == "OPEN":
+                return TossOrdersPage(orders=[], next_cursor=None, has_next=False)
+            return TossOrdersPage(
+                orders=[_order("filled-no-summary", status="FILLED", execution={})],
+                next_cursor=None,
+                has_next=False,
+            )
+
+    result = await TossFillPollerService(
+        db_session, client=_FilledWithoutSummaryClient()
+    ).discover_external_orders(
+        dry_run=False,
+        lookback_days=7,
+        closed_page_cap=5,
+    )
+
+    row = (
+        await db_session.execute(
+            select(TossLiveOrderLedger).where(
+                TossLiveOrderLedger.broker_order_id == "filled-no-summary"
+            )
+        )
+    ).scalar_one()
+    assert result["seeded"] == 1
+    assert row.status == "accepted"
+
+
+async def test_discovery_incomplete_scan_records_error_without_advancing_success(
+    db_session,
+):
+    class _CappedClient:
+        async def list_orders(self, *, status, **kwargs):
+            if status == "OPEN":
+                return TossOrdersPage(orders=[], next_cursor=None, has_next=False)
+            return TossOrdersPage(
+                orders=[_order("cap-page-filled", status="FILLED")],
+                next_cursor="next-page",
+                has_next=True,
+            )
+
+    with pytest.raises(RuntimeError, match="incomplete Toss order scan"):
+        await TossFillPollerService(db_session, client=_CappedClient()).discover_external_orders(
+            dry_run=False,
+            lookback_days=7,
+            closed_page_cap=1,
+        )
+
+    state = await db_session.get(TossFillPollState, "orders")
+    assert state is not None
+    assert state.last_success_at is None
+    assert state.last_error is not None
+    assert state.last_error["type"] == "TossFillPollIncompleteScanError"
+
+    row = (
+        await db_session.execute(
+            select(TossLiveOrderLedger).where(
+                TossLiveOrderLedger.broker_order_id == "cap-page-filled"
+            )
+        )
+    ).scalar_one()
+    assert row.status == "accepted"

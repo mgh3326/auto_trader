@@ -12,6 +12,10 @@ from app.services.toss_live_order_ledger_service import TossLiveOrderLedgerServi
 logger = logging.getLogger(__name__)
 
 
+class TossFillPollIncompleteScanError(RuntimeError):
+    """Raised when a closed-order scan cannot prove it consumed every page."""
+
+
 def _market_from_order(order: Any) -> str | None:
     currency = str(getattr(order, "currency", "") or "").upper()
     if currency == "KRW":
@@ -31,7 +35,17 @@ def _has_fill_evidence(order: Any) -> bool:
 
 def _should_seed(order: Any) -> bool:
     status = str(getattr(order, "status", "") or "").upper()
-    return status in {"PENDING", "PARTIAL_FILLED"} or _has_fill_evidence(order)
+    return status in {"PENDING", "PARTIAL_FILLED", "FILLED"} or _has_fill_evidence(
+        order
+    )
+
+
+def _incomplete_scan_reason(scan: dict[str, Any]) -> str | None:
+    if scan.get("closed_pages_capped"):
+        return "closed page cap reached"
+    if scan.get("repeated_cursor"):
+        return "repeated closed page cursor"
+    return None
 
 
 class TossFillPollerService:
@@ -122,6 +136,11 @@ class TossFillPollerService:
                         continue
                     await service.record_external_order(order, market=market)
                     seeded += 1
+                incomplete_reason = _incomplete_scan_reason(scan)
+                if incomplete_reason is not None:
+                    raise TossFillPollIncompleteScanError(
+                        f"incomplete Toss order scan: {incomplete_reason}"
+                    )
                 await service.mark_poll_success("orders", at=now)
         except Exception as exc:
             if not dry_run:

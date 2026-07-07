@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import delete
 
 from app.models.execution_ledger import ExecutionLedger
 from app.models.trading import InstrumentType
-from app.schemas.execution_ledger import ExecutionLedgerUpsert
+from app.schemas.execution_ledger import ExecutionLedgerUpsert, ReconcileRunRecord
 from app.services.execution_ledger.repository import (
     ExecutionLedgerRepository,
     _values_differ,
@@ -44,6 +46,17 @@ def _fill(**overrides) -> ExecutionLedgerUpsert:  # noqa: ANN003
 
 def _row(fill: ExecutionLedgerUpsert) -> ExecutionLedger:
     return ExecutionLedger(**fill.model_dump())
+
+
+def test_reconcile_run_record_rejects_toss_broker() -> None:
+    with pytest.raises(ValidationError):
+        ReconcileRunRecord(
+            run_id=uuid.uuid4(),
+            broker="toss",
+            window_start=datetime(2026, 7, 7, 0, 0, tzinfo=UTC),
+            window_end=datetime(2026, 7, 7, 1, 0, tzinfo=UTC),
+            dry_run=False,
+        )
 
 
 class _AggregateResult:

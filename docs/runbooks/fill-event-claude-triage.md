@@ -46,6 +46,9 @@ export DISCORD_FILL_TRIAGE_WEBHOOK="https://discord.com/api/webhooks/..."   # �
 
 ```bash
 export FILL_TRIAGE_STATE_DIR="$HOME/.local/state/fill-event-triage"   # 기본
+export FILL_TRIAGE_SOURCE="websocket"                                  # Toss REST poller: reconciler
+export FILL_TRIAGE_BROKER=""                                           # Toss REST poller: toss
+export FILL_TRIAGE_ACCOUNT_MODE=""                                     # Toss REST poller: live
 export DRY_RUN="0"                                                   # 1이면 claude/Discord 미호출
 ```
 
@@ -54,11 +57,11 @@ export DRY_RUN="0"                                                   # 1이면 c
 ## 2. 구성 요소 개요
 
 ```
-[execution_ledger 테이블]  source='websocket' 인 신규 row
+[execution_ledger 테이블]  source='websocket' 또는 지정 source/broker 신규 row
           │
           ▼
 scripts/list_recent_fill_events.py  (레포 내, read-only DB 조회)
-          │  --market crypto --source websocket --after-id <watermark> --limit 50
+          │  --market <market> --source <source> [--broker <broker>] --after-id <watermark> --limit 50
           │  → {"success": true, "fills": [...]}
           ▼
 ~/ops/fill-event-triage/poller.sh   (레포밖 운영자-호스트)
@@ -103,6 +106,9 @@ set -euo pipefail
 REPO="${AUTO_TRADER_REPO:-$HOME/work/auto_trader}"
 SETTINGS="$REPO/.claude/settings.readonly.json"
 MARKET="${FILL_TRIAGE_MARKET:-crypto}"
+SOURCE="${FILL_TRIAGE_SOURCE:-websocket}"
+BROKER="${FILL_TRIAGE_BROKER:-}"
+ACCOUNT_MODE="${FILL_TRIAGE_ACCOUNT_MODE:-}"
 DISCORD_WEBHOOK="${DISCORD_FILL_TRIAGE_WEBHOOK:?DISCORD_FILL_TRIAGE_WEBHOOK 미설정}"
 STATE_DIR="${FILL_TRIAGE_STATE_DIR:-$HOME/.local/state/fill-event-triage}"
 WATERMARK="$STATE_DIR/last_ledger_id"          # execution_ledger.id 워터마크
@@ -114,11 +120,11 @@ mkdir -p "$STATE_DIR"; touch "$SEEN"
 last_id="$(cat "$WATERMARK" 2>/dev/null || true)"
 
 cd "$REPO"
-if ! response="$(uv run python -m scripts.list_recent_fill_events \
-            --market "$MARKET" \
-            --source websocket \
-            ${last_id:+--after-id "$last_id"} \
-            --limit 50)"; then
+args=(--market "$MARKET" --source "$SOURCE" --limit 50)
+[ -n "$BROKER" ] && args+=(--broker "$BROKER")
+[ -n "$ACCOUNT_MODE" ] && args+=(--account-mode "$ACCOUNT_MODE")
+[ -n "$last_id" ] && args+=(--after-id "$last_id")
+if ! response="$(uv run python -m scripts.list_recent_fill_events "${args[@]}")"; then
   error="$(jq -r '.error // "unknown error"' <<<"$response" 2>/dev/null || printf '%s' "$response")"
   echo "list_recent_fill_events failed: $error" >&2
   exit 1
@@ -328,8 +334,21 @@ uv run python -m scripts.list_recent_fill_events \
   --limit 50
 ```
 
-Use `--market us` for Toss US. Use `--source all --broker toss` only when
-auditing every Toss execution-ledger row regardless of source.
+For the operator-host poller, run Toss as a separate stream so its
+`execution_ledger.id` watermark does not collide with the websocket poller:
+
+```bash
+export FILL_TRIAGE_MARKET="kr"
+export FILL_TRIAGE_SOURCE="reconciler"
+export FILL_TRIAGE_BROKER="toss"
+export FILL_TRIAGE_ACCOUNT_MODE="live"
+export FILL_TRIAGE_STATE_DIR="$HOME/.local/state/fill-event-triage-toss-kr"
+bash ~/ops/fill-event-triage/poller.sh
+```
+
+Use `FILL_TRIAGE_MARKET=us` and a distinct state dir for Toss US. Use
+`--source all --broker toss` only when auditing every Toss execution-ledger row
+regardless of source.
 
 ---
 

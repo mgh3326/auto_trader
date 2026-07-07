@@ -10,6 +10,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Broker = Literal["kis", "upbit", "toss"]
+ReconcileRunBroker = Literal["kis", "upbit"]
 AccountMode = Literal["live", "mock"]
 Side = Literal["buy", "sell"]
 Currency = Literal["KRW", "USD"]
@@ -142,7 +143,7 @@ class ReconcileRunRecord(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     run_id: uuid.UUID
-    broker: Broker
+    broker: ReconcileRunBroker
     window_start: datetime
     window_end: datetime
     started_at: datetime | None = None

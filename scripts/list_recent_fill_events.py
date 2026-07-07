@@ -7,6 +7,8 @@
     uv run python -m scripts.list_recent_fill_events --source websocket --limit 50
     uv run python -m scripts.list_recent_fill_events --after-id 1234 --side buy --market kr
     uv run python -m scripts.list_recent_fill_events --source all --broker upbit --limit 100
+    FILL_TRIAGE_SOURCE=reconciler FILL_TRIAGE_BROKER=toss \
+      uv run python -m scripts.list_recent_fill_events --market kr
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 
 from app.core.db import AsyncSessionLocal
@@ -22,6 +25,13 @@ from app.services.execution_ledger.repository import ExecutionLedgerRepository
 
 VALID_MARKETS: set[str] = {"kr", "us", "crypto"}
 VALID_SOURCES: set[str] = {"websocket", "reconciler", "manual_import", "all"}
+
+
+def _env_default(name: str, fallback: str | None = None) -> str | None:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return fallback
+    return value
 
 
 async def collect(
@@ -62,18 +72,33 @@ def main(argv: list[str] | None = None) -> int:
         description="최근 체결(fill) 이벤트 read-only JSON (triage용)",
     )
     parser.add_argument("--after-id", type=int, default=None)
-    parser.add_argument("--market", default=None, help="kr|us|crypto (기본 전체)")
-    parser.add_argument("--side", default=None, help="buy|sell (기본 전체)")
+    parser.add_argument(
+        "--market",
+        default=_env_default("FILL_TRIAGE_MARKET"),
+        help="kr|us|crypto (기본 전체; env FILL_TRIAGE_MARKET)",
+    )
+    parser.add_argument(
+        "--side",
+        default=_env_default("FILL_TRIAGE_SIDE"),
+        help="buy|sell (기본 전체; env FILL_TRIAGE_SIDE)",
+    )
     parser.add_argument(
         "--source",
-        default="websocket",
-        help="websocket|reconciler|manual_import|all (기본 websocket)",
+        default=_env_default("FILL_TRIAGE_SOURCE", "websocket"),
+        help=(
+            "websocket|reconciler|manual_import|all "
+            "(기본 websocket; env FILL_TRIAGE_SOURCE)"
+        ),
     )
-    parser.add_argument("--broker", default=None, help="kis|upbit|toss (default all)")
+    parser.add_argument(
+        "--broker",
+        default=_env_default("FILL_TRIAGE_BROKER"),
+        help="kis|upbit|toss (default all; env FILL_TRIAGE_BROKER)",
+    )
     parser.add_argument(
         "--account-mode",
-        default=None,
-        help="live|mock (기본 전체)",
+        default=_env_default("FILL_TRIAGE_ACCOUNT_MODE"),
+        help="live|mock (기본 전체; env FILL_TRIAGE_ACCOUNT_MODE)",
     )
     parser.add_argument("--limit", type=int, default=50)
 
