@@ -8,7 +8,7 @@ from app.mcp_server.env_utils import (
     get_mcp_tool_timeout_default,
     get_mcp_tool_timeout_enabled,
 )
-from app.mcp_server.profiles import resolve_mcp_profile
+from app.mcp_server.profiles import McpProfile, resolve_mcp_profile
 from app.monitoring.sentry import capture_exception, init_sentry
 
 # ──────────────────────────────────────────────────────────────────────
@@ -47,6 +47,17 @@ from app.mcp_server.timeout_middleware import ToolTimeoutMiddleware  # noqa: E40
 from app.mcp_server.tooling import register_all_tools  # noqa: E402
 
 _auth_token = _env("MCP_AUTH_TOKEN", "")
+_mcp_profile = resolve_mcp_profile(_env("MCP_PROFILE"))
+
+
+def _validate_profile_auth_token(profile: McpProfile, token: str | None) -> None:
+    if profile is McpProfile.ACCOUNT_READ and not (token or "").strip():
+        raise RuntimeError(
+            "MCP_PROFILE=account_read requires non-empty MCP_AUTH_TOKEN"
+        )
+
+
+_validate_profile_auth_token(_mcp_profile, _auth_token)
 auth_provider = build_auth_provider(_auth_token)
 mcp = FastMCP(
     name="auto_trader-mcp",
@@ -76,7 +87,6 @@ mcp.add_middleware(
         enabled=get_mcp_tool_timeout_enabled(),
     )
 )
-_mcp_profile = resolve_mcp_profile(_env("MCP_PROFILE"))
 register_all_tools(mcp, profile=_mcp_profile)
 # ROB-469: unauthenticated, dependency-free liveness probe for HAProxy / native
 # healthcheck / docker healthcheck. Registered after tools so the count is final.
