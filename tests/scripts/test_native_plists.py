@@ -110,5 +110,8 @@ def test_mcp_tradingcodex_execution_plist_profile_port_and_token_env() -> None:
     assert "<string>tradingcodex_execution</string>" in body
     assert "<string>8770</string>" in body
     assert "<string>MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN</string>" in body
-    assert "<string>required</string>" in body
+    assert (
+        "<key>ORDER_APPROVAL_HASH_MODE</key>\n    <string>required</string>"
+    ) in body
+    assert ("<key>TOSS_APPROVAL_HASH_MODE</key>\n    <string>required</string>") in body
     assert "current</string>" in body

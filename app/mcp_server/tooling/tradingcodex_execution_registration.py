@@ -9,6 +9,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 from app.mcp_server.tooling.account_read_registration import ACCOUNT_READ_TOOL_NAMES
+from app.mcp_server.tooling.account_routing_registration import (
+    register_account_routing_tools,
+)
 from app.mcp_server.tooling.analysis_artifact_registration import (
     ANALYSIS_ARTIFACT_TOOL_NAMES,
 )
@@ -52,6 +55,7 @@ TRADINGCODEX_EXECUTION_TOOL_NAMES: set[str] = ACCOUNT_READ_TOOL_NAMES | {
     "toss_cancel_order",
     "sell_ladder_fill_preview",
     "buy_ladder_fill_preview",
+    "suggest_order_account",
 }
 
 TRADINGCODEX_EXECUTION_FORBIDDEN_TOOL_NAMES: set[str] = (
@@ -82,6 +86,7 @@ def register_tradingcodex_execution_tools(mcp: FastMCP) -> None:
     register_order_tools(filtered)
     register_kis_live_order_tools(filtered)
     register_toss_live_order_tools(filtered)
+    register_account_routing_tools(filtered)
 
 
 __all__ = [

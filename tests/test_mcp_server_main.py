@@ -369,6 +369,8 @@ class TestMcpServerMain:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+
         with pytest.raises(
             RuntimeError,
             match=(
