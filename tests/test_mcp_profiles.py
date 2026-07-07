@@ -538,6 +538,7 @@ class TestTradingCodexExecutionProfile:
             "sell_ladder_fill_preview",
             "buy_ladder_fill_preview",
             "suggest_order_account",
+            "get_fx_rate",
         } <= mcp.tools.keys()
 
     def test_does_not_register_modify_reconcile_or_persistence_tools(self) -> None:

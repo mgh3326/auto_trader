@@ -17,6 +17,7 @@ from app.mcp_server.tooling.analysis_artifact_registration import (
 )
 from app.mcp_server.tooling.analysis_readonly_registration import _AllowlistedMCP
 from app.mcp_server.tooling.forecast_registration import FORECAST_TOOL_NAMES
+from app.mcp_server.tooling.fundamentals_registration import register_fundamentals_tools
 from app.mcp_server.tooling.orders_kis_variants import (
     KIS_LIVE_ORDER_TOOL_NAMES,
     KIS_MOCK_ORDER_TOOL_NAMES,
@@ -56,6 +57,7 @@ TRADINGCODEX_EXECUTION_TOOL_NAMES: set[str] = ACCOUNT_READ_TOOL_NAMES | {
     "sell_ladder_fill_preview",
     "buy_ladder_fill_preview",
     "suggest_order_account",
+    "get_fx_rate",
 }
 
 TRADINGCODEX_EXECUTION_FORBIDDEN_TOOL_NAMES: set[str] = (
@@ -87,6 +89,7 @@ def register_tradingcodex_execution_tools(mcp: FastMCP) -> None:
     register_kis_live_order_tools(filtered)
     register_toss_live_order_tools(filtered)
     register_account_routing_tools(filtered)
+    register_fundamentals_tools(filtered)
 
 
 __all__ = [
