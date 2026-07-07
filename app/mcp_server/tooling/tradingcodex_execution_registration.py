@@ -37,8 +37,14 @@ from app.mcp_server.tooling.paper_limit_order_handler import (
     PAPER_LIMIT_ORDER_TOOL_NAMES,
 )
 from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
+from app.mcp_server.tooling.route_request_registration import (
+    register_route_request_tools,
+)
 from app.mcp_server.tooling.session_context_registration import (
     SESSION_CONTEXT_TOOL_NAMES,
+)
+from app.mcp_server.tooling.trading_policy_registration import (
+    register_trading_policy_tools,
 )
 from app.mcp_server.tooling.user_settings_registration import USER_SETTINGS_TOOL_NAMES
 
@@ -58,6 +64,8 @@ TRADINGCODEX_EXECUTION_TOOL_NAMES: set[str] = ACCOUNT_READ_TOOL_NAMES | {
     "buy_ladder_fill_preview",
     "suggest_order_account",
     "get_fx_rate",
+    "route_request",
+    "get_trading_policy",
 }
 
 TRADINGCODEX_EXECUTION_FORBIDDEN_TOOL_NAMES: set[str] = (
@@ -90,6 +98,8 @@ def register_tradingcodex_execution_tools(mcp: FastMCP) -> None:
     register_toss_live_order_tools(filtered)
     register_account_routing_tools(filtered)
     register_fundamentals_tools(filtered)
+    register_trading_policy_tools(filtered)
+    register_route_request_tools(filtered)
 
 
 __all__ = [
