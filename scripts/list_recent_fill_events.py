@@ -69,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         default="websocket",
         help="websocket|reconciler|manual_import|all (기본 websocket)",
     )
-    parser.add_argument("--broker", default=None, help="kis|upbit (기본 전체)")
+    parser.add_argument("--broker", default=None, help="kis|upbit|toss (default all)")
     parser.add_argument(
         "--account-mode",
         default=None,

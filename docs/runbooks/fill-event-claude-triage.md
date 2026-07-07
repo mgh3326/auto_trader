@@ -311,6 +311,28 @@ uv run python -m scripts.list_recent_fill_events --market crypto --source websoc
 
 ---
 
+### Toss REST Poller Fills
+
+Toss fills are written by `toss_live.poll_fills_periodic` through the reconcile
+path, so they land in `execution_ledger` with `broker="toss"` and
+`source="reconciler"`, not `source="websocket"`.
+
+Use this query for Toss KR:
+
+```bash
+uv run python -m scripts.list_recent_fill_events \
+  --market kr \
+  --source reconciler \
+  --broker toss \
+  --account-mode live \
+  --limit 50
+```
+
+Use `--market us` for Toss US. Use `--source all --broker toss` only when
+auditing every Toss execution-ledger row regardless of source.
+
+---
+
 ### Step 3: Poller dry-run (claude 미호출)
 
 **목적:** 워터마크/디듀프 로직과 claude 호출 명령 조립이 올바른지 확인 (실 claude/Discord 호출 없음).

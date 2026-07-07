@@ -45,7 +45,7 @@ async def execution_ledger_fill_events_list_recent_impl(
         source: websocket|reconciler|manual_import|None. 기본 ``websocket`` —
             triager가 reconciler/manual_import backfill을 실수로 흡입하지 않도록.
             ``None`` 명시 시 모든 source.
-        broker: kis|upbit 필터 (선택).
+        broker: kis|upbit|toss filter (optional).
         account_mode: live|mock 필터 (선택).
         limit: 최대 row 수 (1..500, repo 단에서 clamp).
 
@@ -87,7 +87,7 @@ def register_execution_ledger_event_tools(mcp: FastMCP) -> None:
         description=(
             "최근 체결(fill) 이벤트 목록(운영자 poller/수동 조회용). "
             "after_id 워터마크 + market/side/source/broker/account_mode 필터 + "
-            "limit(1..500). source 기본값 websocket. raw_payload 미노출. "
+            "limit(1..500). source default websocket; use source='reconciler' + broker='toss' for Toss REST poller fills. raw_payload hidden. "
             "Read-only. 브로커/주문 mutation 없음."
         ),
     )(execution_ledger_fill_events_list_recent_impl)

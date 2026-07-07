@@ -217,3 +217,20 @@ The optional TaskIQ task `toss_live.reconcile_periodic` is shipped without an in
 When enabled, the task calls `toss_reconcile_orders_impl(dry_run=False)`. This still does not place, modify, or cancel live orders; it only books confirmed broker evidence into local trades/journals and triggers fill notifications if `TOSS_FILL_NOTIFY_ENABLED=true`.
 
 Recommended initial external cadence: 1-5 minutes. Start at 5 minutes unless there is an operator need for faster Discord latency, then tighten after watching Toss API rate-limit and OAuth behavior.
+
+## Fill Poller (ROB-757)
+
+`toss_live.poll_fills_periodic` is the default-off TaskIQ poller that closes the
+Toss websocket gap. It performs a read-only Toss order scan, seeds app-direct
+orders missing from `review.toss_live_order_ledger`, then calls
+`toss_reconcile_orders_impl(dry_run=False)`.
+
+Activation gates:
+
+- `TOSS_FILL_POLL_ENABLED=true`
+- `TOSS_API_ENABLED=true`
+- existing Toss API credentials
+
+The task never places, modifies, or cancels broker orders. Confirmed fill deltas
+are written to `review.execution_ledger` with `broker="toss"` and
+`source="reconciler"`; ROB-755 triage should query `--source reconciler --broker toss`.
