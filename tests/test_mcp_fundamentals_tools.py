@@ -2120,8 +2120,20 @@ class TestGetFxRateToolRegistration:
     # ROB-697 M1 — shadow-replay early-returns before the "Always" block that
     # registers get_fx_rate (fundamentals tools), so it is deliberately
     # excluded here; see tests/mcp_server/test_shadow_replay_profile.py.
+    #
+    # ROB-760 — account_read is a physical account-sync allowlist and must not
+    # inherit fundamentals tools.
     @pytest.mark.parametrize(
-        "profile", [p for p in McpProfile if p is not McpProfile.SHADOW_REPLAY]
+        "profile",
+        [
+            p
+            for p in McpProfile
+            if p
+            not in (
+                McpProfile.SHADOW_REPLAY,
+                McpProfile.ACCOUNT_READ,
+            )
+        ],
     )
     def test_get_fx_rate_registered_on_all_profiles(self, profile: McpProfile):
         tools = _build_tools(profile=profile)

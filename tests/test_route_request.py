@@ -138,7 +138,11 @@ def test_executing_lane_surfaces_toss_preview_precursor():
 
 
 class TestRouteRequestRegisteredEveryProfile:
-    @pytest.mark.parametrize("profile", list(McpProfile))
+    # ROB-760: account_read is a physical account-sync allowlist and must not
+    # inherit route/advisory tools.
+    @pytest.mark.parametrize(
+        "profile", [p for p in McpProfile if p is not McpProfile.ACCOUNT_READ]
+    )
     def test_route_request_present(self, profile: McpProfile) -> None:
         tools = build_tools(profile=profile)
         assert "route_request" in tools
