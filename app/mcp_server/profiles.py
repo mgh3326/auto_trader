@@ -18,6 +18,7 @@ class McpProfile(StrEnum):
     KIWOOM = "kiwoom"
     SHADOW_REPLAY = "shadow-replay"
     ANALYSIS_READONLY = "analysis_readonly"
+    ACCOUNT_READ = "account_read"
 
 
 def resolve_mcp_profile(env: str | None) -> McpProfile:

@@ -46,6 +46,12 @@ Profile → tool surface mapping
   cancel, modify, reconcile, preview, settings, watch mutation, admin, or manual
   holdings mutation tools are registered.
 
+"account_read" (McpProfile.ACCOUNT_READ):
+  TradingCodex adapter account-read allowlist only. Registers holdings, cash,
+  and read-only order-history tools needed for account synchronization. No
+  order placement, cancel, modify, preview, reconcile, persistence, settings,
+  watch, admin, report-write, or manual-holdings mutation tools are registered.
+
 See app/mcp_server/profiles.py and docs in app/mcp_server/README.md.
 """
 
@@ -56,6 +62,9 @@ from typing import TYPE_CHECKING
 from app.core.config import settings
 from app.mcp_server.profiles import McpProfile
 from app.mcp_server.tooling import orders_kiwoom_variants
+from app.mcp_server.tooling.account_read_registration import (
+    register_account_read_tools,
+)
 from app.mcp_server.tooling.account_routing_registration import (
     register_account_routing_tools,
 )
@@ -178,6 +187,13 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         # before the normal "Always" block so unlisted research, account,
         # settings, watch, report-write, and order tools are physically absent.
         register_analysis_readonly_tools(mcp)
+        return
+
+    if profile is McpProfile.ACCOUNT_READ:
+        # ROB-760 — TradingCodex account adapter surface. Allowlist-only and
+        # returns before the normal "Always" block so research, persistence,
+        # settings, watch, preview, reconcile, and mutation tools are absent.
+        register_account_read_tools(mcp)
         return
 
     # Always: side-effect-free research + read-only tools
