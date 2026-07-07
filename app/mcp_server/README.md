@@ -1678,6 +1678,7 @@ The `MCP_PROFILE` env var selects which tool subset is registered at startup.
 | DB paper simulator | `db-paper` | Default read-only/research surface plus internal `paper.paper_*` simulator account, analytics, and journal bridge tools; no KIS/generic order tools |
 | Kiwoom mock | `kiwoom` | Default read-only/research surface plus typed `kiwoom_mock_*` variants only (no KIS/generic order tools) |
 | Analysis readonly | `analysis_readonly` | Codex/headless read/analysis allowlist only: `get_operating_briefing`, `route_request`, `get_trading_policy`, selected quote/fundamental/analysis tools, `suggest_order_account`, `get_holdings`, `toss_get_positions`, and explicitly labeled analysis persistence. No order/cancel/modify/reconcile/preview/settings/watch/admin/manual-holdings mutation tools are registered. |
+| Account read | `account_read` | TradingCodex account adapter allowlist only: `get_holdings`, `toss_get_positions`, `get_cash_balance`, `toss_get_orderable_cash`, `get_order_history`, `kis_live_get_order_history`, and `toss_get_order_history`. No order placement/cancel/modify/preview/reconcile, persistence, settings, watch, admin, report-writing, or manual-holdings mutation tools are registered. |
 
 ### Profile: `hermes-paper-kis`
 
@@ -1746,6 +1747,42 @@ bearer_token_env_var = "MCP_ANALYSIS_READONLY_AUTH_TOKEN"
 default_tools_approval_mode = "auto"
 
 http_headers = { "x-paperclip-agent-id" = "codex-analysis-readonly" }
+```
+
+### Profile: `account_read` (ROB-760)
+
+Use `MCP_PROFILE=account_read` for TradingCodex or other account-sync consumers that need broker account reads without any trading or persistence surface.
+
+Allowed tools:
+- `get_holdings`
+- `toss_get_positions`
+- `get_cash_balance`
+- `toss_get_orderable_cash`
+- `get_order_history`
+- `kis_live_get_order_history`
+- `toss_get_order_history`
+
+Forbidden by physical non-registration:
+- order placement, cancel, modify, preview, and reconcile tools
+- KIS mock order variants
+- Kiwoom order variants
+- Alpaca/DB paper order surfaces
+- manual holdings mutation
+- user settings tools
+- watch/admin/report-writing surfaces
+- analysis persistence and session context write/read tools
+
+Authentication is mandatory for this profile. `MCP_PROFILE=account_read` fails at startup unless `MCP_AUTH_TOKEN` is non-empty. Deployment wrappers must source that value from `MCP_ACCOUNT_READ_AUTH_TOKEN`; do not fall back to the operator `MCP_AUTH_TOKEN`.
+
+TradingCodex config example:
+
+```toml
+[mcp_servers.auto_trader_account_read]
+url = "http://127.0.0.1:8769/mcp"
+bearer_token_env_var = "MCP_ACCOUNT_READ_AUTH_TOKEN"
+default_tools_approval_mode = "auto"
+
+http_headers = { "x-paperclip-agent-id" = "tradingcodex-account-read" }
 ```
 
 ### Typed KIS order tools
