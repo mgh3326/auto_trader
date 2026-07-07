@@ -164,3 +164,29 @@ async def test_discovery_dry_run_does_not_seed_or_update_state(db_session):
     assert result["would_seed"] == 3
     assert (await db_session.execute(select(TossLiveOrderLedger))).scalars().all() == []
     assert await db_session.get(TossFillPollState, "orders") is None
+
+
+async def test_discovery_records_error_on_failure(db_session):
+    class _FailingClient:
+        async def list_orders(self, **kwargs):
+            raise RuntimeError("toss api down")
+
+    try:
+        await TossFillPollerService(
+            db_session, client=_FailingClient()
+        ).discover_external_orders(
+            dry_run=False,
+            lookback_days=7,
+            closed_page_cap=5,
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("expected RuntimeError to propagate")
+
+    state = await db_session.get(TossFillPollState, "orders")
+    assert state is not None
+    assert state.last_error is not None
+    assert state.last_error["type"] == "RuntimeError"
+    assert "toss api down" in state.last_error["message"]
+    assert state.last_success_at is None

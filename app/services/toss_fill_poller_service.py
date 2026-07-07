@@ -97,29 +97,42 @@ class TossFillPollerService:
             start = state.last_success_at.astimezone(UTC).date() - timedelta(days=1)
         else:
             start = (now - timedelta(days=lookback_days)).date()
-        orders, scan = await self._collect_orders(
-            from_date=start.isoformat(),
-            to_date=now.date().isoformat(),
-            closed_page_cap=closed_page_cap,
-        )
+        try:
+            orders, scan = await self._collect_orders(
+                from_date=start.isoformat(),
+                to_date=now.date().isoformat(),
+                closed_page_cap=closed_page_cap,
+            )
 
-        candidates = [order for order in orders if _should_seed(order)]
-        existing = await service.existing_broker_order_ids(
-            {str(order.order_id) for order in candidates}
-        )
-        missing = [order for order in candidates if str(order.order_id) not in existing]
+            candidates = [order for order in orders if _should_seed(order)]
+            existing = await service.existing_broker_order_ids(
+                {str(order.order_id) for order in candidates}
+            )
+            missing = [
+                order for order in candidates if str(order.order_id) not in existing
+            ]
 
-        seeded = 0
-        skipped_unsupported_market = 0
-        if not dry_run:
-            for order in missing:
-                market = _market_from_order(order)
-                if market is None:
-                    skipped_unsupported_market += 1
-                    continue
-                await service.record_external_order(order, market=market)
-                seeded += 1
-            await service.mark_poll_success("orders", at=now)
+            seeded = 0
+            skipped_unsupported_market = 0
+            if not dry_run:
+                for order in missing:
+                    market = _market_from_order(order)
+                    if market is None:
+                        skipped_unsupported_market += 1
+                        continue
+                    await service.record_external_order(order, market=market)
+                    seeded += 1
+                await service.mark_poll_success("orders", at=now)
+        except Exception as exc:
+            if not dry_run:
+                try:
+                    await service.mark_poll_error(
+                        "orders",
+                        error={"type": type(exc).__name__, "message": str(exc)},
+                    )
+                except Exception:
+                    pass  # best-effort: don't mask the original error
+            raise
 
         return {
             "success": True,
