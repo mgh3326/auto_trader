@@ -67,3 +67,17 @@ def test_toss_live_order_ledger_has_approval_hash_column():
 
     col = TossLiveOrderLedger.__table__.columns["approval_hash"]
     assert col.nullable is True
+
+
+def test_toss_fill_poll_state_model_shape():
+    from app.models.review import TossFillPollState
+
+    assert TossFillPollState.__tablename__ == "toss_fill_poll_state"
+    columns = {column.name for column in TossFillPollState.__table__.columns}
+    assert {
+        "scope",
+        "last_success_at",
+        "last_error",
+        "created_at",
+        "updated_at",
+    } <= columns

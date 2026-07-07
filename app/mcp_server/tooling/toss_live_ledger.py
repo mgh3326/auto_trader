@@ -33,6 +33,7 @@ from app.services.fill_notification import (
 )
 from app.services.live_correlation import live_correlation_id
 from app.services.live_place_provenance import publish_place_time_forecast
+from app.services.toss_execution_ledger import upsert_toss_execution_fill
 from app.services.toss_live_order_ledger_service import TossLiveOrderLedgerService
 
 _TOSS_MARKET_TO_INSTRUMENT = {"kr": "equity_kr", "us": "equity_us"}
@@ -415,6 +416,14 @@ async def _reconcile_one_toss_row(
 
     async with _order_session_factory()() as db:
         svc = TossLiveOrderLedgerService(db)
+        execution_status, execution_ledger_id = await upsert_toss_execution_fill(
+            db,
+            row,
+            evidence,
+            previous_filled_qty=already,
+            delta=delta,
+            avg_price=avg_price,
+        )
         if fx_summary:
             await svc.update_reconcile_outcome(
                 ledger_id=row.id,
@@ -476,6 +485,10 @@ async def _reconcile_one_toss_row(
                 base["fx_rate_source"] = fx_capture.fx_rate_source
                 base["fx_pnl_accuracy"] = fx_capture.fx_pnl_accuracy
 
+    base["execution_ledger"] = {
+        "status": execution_status,
+        "id": execution_ledger_id,
+    }
     base["action"] = "booked"
     base["trade_id"] = trade_id
     base["journal_id"] = journal_id
