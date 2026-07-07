@@ -645,6 +645,31 @@ class TossLiveOrderLedger(Base):
     )
 
 
+class TossFillPollState(Base):
+    """ROB-757 state for Toss REST fill polling.
+
+    One row per scan scope. The cursor is intentionally a timestamp, not Toss's
+    opaque page cursor, because Toss cursors are page-local and not stable across
+    scheduled runs.
+    """
+
+    __tablename__ = "toss_fill_poll_state"
+    __table_args__ = ({"schema": "review"},)
+
+    scope: Mapped[str] = mapped_column(Text, primary_key=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    last_error: Mapped[dict | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 # ---------------------------------------------------------------------------
 # review.alpaca_paper_order_ledger — Alpaca Paper execution lifecycle ledger (ROB-84/ROB-90)
 # Records plan → preview → validation → submit → fill → position → close → final reconcile.

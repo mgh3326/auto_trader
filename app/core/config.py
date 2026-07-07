@@ -696,6 +696,14 @@ class Settings(BaseSettings):
     # operator automation layer; unattended booking requires both gates.
     TOSS_LIVE_AUTO_RECONCILE_ENABLED: bool = False
     TOSS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED: bool = False
+    # ROB-757 — Toss REST fill poller. Default off; read-only broker scan plus
+    # evidence-gated local booking only after operator activation.
+    TOSS_FILL_POLL_ENABLED: bool = False
+    TOSS_FILL_POLL_CRON: str = "*/2 * * * *"
+    TOSS_FILL_POLL_LOOKBACK_DAYS: int = 7
+    TOSS_FILL_POLL_CLOSED_PAGE_CAP: int = 20
+    TOSS_FILL_POLL_RECONCILE_LIMIT: int = 100
+    TOSS_FILL_POLL_MARKET_GATE_ENABLED: bool = True
     # ROB-402 — watch auto_execute_mock. Default off: the merged PR is inert
     # (no real mock orders) until an operator flips this.
     WATCH_AUTO_EXECUTE_MOCK_ENABLED: bool = False

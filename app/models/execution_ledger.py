@@ -42,7 +42,9 @@ class ExecutionLedger(Base):
             "fill_seq",
             name="uq_execution_ledger_fill",
         ),
-        CheckConstraint("broker IN ('kis','upbit')", name="execution_ledger_broker"),
+        CheckConstraint(
+            "broker IN ('kis','upbit','toss')", name="execution_ledger_broker"
+        ),
         CheckConstraint(
             "account_mode IN ('live','mock')", name="execution_ledger_account_mode"
         ),

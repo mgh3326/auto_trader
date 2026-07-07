@@ -7,6 +7,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete
 
+from app.models.execution_ledger import ExecutionLedger
 from app.models.review import TossLiveOrderLedger
 from app.services.toss_live_order_ledger_service import TossLiveOrderLedgerService
 
@@ -16,6 +17,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 @pytest_asyncio.fixture(autouse=True)
 async def _clean(db_session):
     await db_session.execute(delete(TossLiveOrderLedger))
+    await db_session.execute(delete(ExecutionLedger))
     await db_session.commit()
     yield
 
@@ -896,3 +898,103 @@ async def test_reconcile_buy_journal_backfills_correlation_id(db_session):
 
     m_journal.assert_awaited_once()
     assert m_journal.await_args.kwargs["correlation_id"] == "live:toss_live:reconcileKR"
+
+
+async def test_reconcile_books_toss_fill_into_execution_ledger(db_session):
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.mcp_server.tooling.toss_live_evidence import TossFillEvidence
+
+    row = await _accepted(db_session, side="buy", market="kr")
+    evidence = TossFillEvidence(
+        verdict="filled",
+        local_status="filled",
+        broker_status="FILLED",
+        filled_qty=Decimal("3"),
+        avg_price=Decimal("85000"),
+        commission=Decimal("100"),
+        tax=Decimal("50"),
+        fee_total=Decimal("150"),
+        settlement_date=None,
+        raw_order={
+            "orderId": row.broker_order_id,
+            "orderedAt": "2026-07-07T00:30:00Z",
+            "status": "FILLED",
+            "execution": {"filledQuantity": "3", "averageFilledPrice": "85000"},
+        },
+        reason="filled",
+    )
+
+    class _Adapter:
+        fetch_evidence = AsyncMock(return_value=evidence)
+
+    with (
+        patch.object(mod.settings, "toss_fill_notify_enabled", False),
+        patch.object(mod, "TossEvidenceAdapter", return_value=_Adapter()),
+        patch.object(mod, "_save_order_fill", new=AsyncMock(return_value=101)),
+        patch.object(
+            mod,
+            "_create_trade_journal_for_buy",
+            new=AsyncMock(return_value={"journal_created": True, "journal_id": 202}),
+        ),
+        patch.object(mod, "_link_journal_to_fill", new=AsyncMock()),
+    ):
+        out = await mod._reconcile_one_toss_row(row, dry_run=False)
+
+    assert out["action"] == "booked"
+    assert out["execution_ledger"]["status"] == "inserted"
+    assert out["execution_ledger"]["id"] > 0
+
+
+def test_toss_execution_ledger_fill_seq_changes_by_delta():
+    from app.mcp_server.tooling.toss_live_evidence import TossFillEvidence
+    from app.services.toss_execution_ledger import build_toss_execution_ledger_upsert
+
+    row = type(
+        "Row",
+        (),
+        {
+            "id": 1,
+            "market": "us",
+            "symbol": "AAPL",
+            "side": "buy",
+            "broker_order_id": "ord-partial",
+            "currency": "USD",
+            "correlation_id": "corr-1",
+        },
+    )()
+    evidence = TossFillEvidence(
+        verdict="partial",
+        local_status="partial",
+        broker_status="PARTIAL_FILLED",
+        filled_qty=Decimal("1.5"),
+        avg_price=Decimal("191.25"),
+        commission=Decimal("0.05"),
+        tax=Decimal("0.01"),
+        fee_total=Decimal("0.06"),
+        settlement_date=None,
+        raw_order={"orderedAt": "2026-07-07T00:30:00Z", "execution": {}},
+        reason="partial",
+    )
+
+    first = build_toss_execution_ledger_upsert(
+        row,
+        evidence,
+        previous_filled_qty=Decimal("0"),
+        delta=Decimal("1"),
+        avg_price=Decimal("191.25"),
+    )
+    second = build_toss_execution_ledger_upsert(
+        row,
+        evidence,
+        previous_filled_qty=Decimal("1"),
+        delta=Decimal("0.5"),
+        avg_price=Decimal("191.25"),
+    )
+
+    assert first.broker == "toss"
+    assert first.account_mode == "live"
+    assert first.source == "reconciler"
+    assert first.venue == "toss_us"
+    assert first.filled_qty == Decimal("1")
+    assert second.filled_qty == Decimal("0.5")
+    assert first.fill_seq != second.fill_seq

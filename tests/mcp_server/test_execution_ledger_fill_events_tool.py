@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from app.mcp_server.tooling import execution_ledger_events as tool_mod
 from app.mcp_server.tooling.execution_ledger_events import (
     execution_ledger_fill_events_list_recent_impl,
 )
@@ -225,3 +226,40 @@ async def test_tool_returns_generic_error_and_logs_exception(
     assert out == {"success": False, "error": "internal_error"}
     assert "secret@example.internal" not in str(out)
     assert "execution_ledger_fill_events_list_recent failed" in caplog.text
+
+
+async def test_fill_events_tool_accepts_toss_broker_with_reconciler_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-757: Toss REST poller writes broker='toss' + source='reconciler'.
+
+    Passthrough verification: the MCP tool must forward both values to the repo
+    unchanged so ROB-755 triage can query ``broker='toss', source='reconciler'``.
+    """
+    calls: list[dict[str, Any]] = []
+
+    class _Repo:
+        def __init__(self, db: object) -> None:
+            pass
+
+        async def list_recent_fills_for_triage(self, **kwargs: Any) -> list[Any]:
+            calls.append(kwargs)
+            return []
+
+    fake_repo = _Repo(None)
+    monkeypatch.setattr(
+        tool_mod,
+        "AsyncSessionLocal",
+        lambda: _FakeSessionCtx(fake_repo),
+    )
+    monkeypatch.setattr(tool_mod, "ExecutionLedgerRepository", lambda _db: fake_repo)
+
+    out = await execution_ledger_fill_events_list_recent_impl(
+        source="reconciler",
+        broker="toss",
+        account_mode="live",
+    )
+
+    assert out == {"success": True, "count": 0, "fills": []}
+    assert calls[0]["broker"] == "toss"
+    assert calls[0]["source"] == "reconciler"

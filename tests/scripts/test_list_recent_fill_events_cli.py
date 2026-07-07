@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import types
 from datetime import UTC, datetime
@@ -138,6 +139,49 @@ def _install_monkeypatched_session(
         fake_repo_factory,
     )
     return fake_repo
+
+
+def test_collect_accepts_toss_broker_and_reconciler_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-757: Toss REST poller writes broker='toss' + source='reconciler'.
+
+    Passthrough verification: the CLI must forward both values to the repo
+    unchanged so ROB-755 triage can query ``--source reconciler --broker toss``.
+    """
+    captured: dict[str, object] = {}
+
+    class _Repo:
+        def __init__(self, db: object) -> None:
+            pass
+
+        async def list_recent_fills_for_triage(self, **kwargs: object) -> list[object]:
+            captured.update(kwargs)
+            return []
+
+    fake_repo = _Repo(None)
+    monkeypatch.setattr(
+        cli,
+        "AsyncSessionLocal",
+        lambda: _FakeSessionCtx(fake_repo),
+    )
+    monkeypatch.setattr(cli, "ExecutionLedgerRepository", lambda _db: fake_repo)
+
+    out = asyncio.run(
+        cli.collect(
+            after_id=None,
+            market="kr",
+            side=None,
+            source="reconciler",
+            broker="toss",
+            account_mode="live",
+            limit=50,
+        )
+    )
+
+    assert out == {"success": True, "count": 0, "fills": []}
+    assert captured["source"] == "reconciler"
+    assert captured["broker"] == "toss"
 
 
 @pytest.mark.asyncio
@@ -302,6 +346,29 @@ def test_main_happy_path_returns_zero_and_valid_json(
     # websocket 명시 → repo에는 "websocket"
     assert fake_repo.calls[0]["source"] == "websocket"
     assert fake_repo.calls[0]["limit"] == 5
+
+
+def test_main_uses_fill_triage_env_defaults_for_toss_reconciler(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    row = _mk_fill_row(ledger_id=100, broker="toss", source="reconciler")
+    fake_repo = _install_monkeypatched_session(monkeypatch, [row])
+    monkeypatch.setenv("FILL_TRIAGE_MARKET", "kr")
+    monkeypatch.setenv("FILL_TRIAGE_SOURCE", "reconciler")
+    monkeypatch.setenv("FILL_TRIAGE_BROKER", "toss")
+    monkeypatch.setenv("FILL_TRIAGE_ACCOUNT_MODE", "live")
+
+    rc = cli.main(["--limit", "5"])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["success"] is True
+    call = fake_repo.calls[0]
+    assert call["market"] == "kr"
+    assert call["source"] == "reconciler"
+    assert call["broker"] == "toss"
+    assert call["account_mode"] == "live"
 
 
 def test_main_source_all_passes_none_to_repo(
