@@ -52,9 +52,7 @@ _mcp_profile = resolve_mcp_profile(_env("MCP_PROFILE"))
 
 def _validate_profile_auth_token(profile: McpProfile, token: str | None) -> None:
     if profile is McpProfile.ACCOUNT_READ and not (token or "").strip():
-        raise RuntimeError(
-            "MCP_PROFILE=account_read requires non-empty MCP_AUTH_TOKEN"
-        )
+        raise RuntimeError("MCP_PROFILE=account_read requires non-empty MCP_AUTH_TOKEN")
 
 
 _validate_profile_auth_token(_mcp_profile, _auth_token)

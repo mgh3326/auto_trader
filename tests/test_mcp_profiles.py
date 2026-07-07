@@ -470,7 +470,9 @@ class TestAccountReadProfile:
             "list_active_watches",
         }
         leaked = write_or_persistence & mcp.tools.keys()
-        assert not leaked, f"account_read leaked write/persistence tools: {sorted(leaked)}"
+        assert not leaked, (
+            f"account_read leaked write/persistence tools: {sorted(leaked)}"
+        )
 
     def test_expected_account_read_tools_are_present(self) -> None:
         mcp = _build_mcp(McpProfile.ACCOUNT_READ)
