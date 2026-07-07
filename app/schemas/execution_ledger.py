@@ -9,7 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-Broker = Literal["kis", "upbit"]
+Broker = Literal["kis", "upbit", "toss"]
 AccountMode = Literal["live", "mock"]
 Side = Literal["buy", "sell"]
 Currency = Literal["KRW", "USD"]

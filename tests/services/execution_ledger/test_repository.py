@@ -520,3 +520,19 @@ async def test_list_recent_fills_for_triage_explicit_source_none_returns_all_sou
             )
         )
         await db_session.commit()
+
+
+def test_execution_ledger_upsert_accepts_toss_broker() -> None:
+    fill = _fill(
+        broker="toss",
+        account_mode="live",
+        venue="toss_kr",
+        instrument_type="equity_kr",
+        symbol="034020",
+        raw_symbol="034020",
+        broker_order_id="toss-order-1",
+        currency="KRW",
+    )
+
+    assert fill.broker == "toss"
+    assert fill.venue == "toss_kr"
