@@ -41,3 +41,18 @@ Expected: HTTP 200 with `service=auto-trader-mcp`.
 
 Mutation smoke must use TradingCodex `submit_approved_order`; do not call live
 place tools directly except in fake/test fixtures.
+
+## TradingCodex Smoke
+
+```bash
+cd /Users/mgh3326/services/tradingcodex-desk
+./tcx connectors providers
+./tcx connectors validate auto-trader
+./tcx mcp call preview_order_translation '{"broker":"auto-trader","symbol":"005930","side":"buy","quantity":1,"limit_price":70000,"thesis":"smoke thesis","strategy":"smoke strategy"}'
+```
+
+Expected: preview response includes `approval_hash`, `approval_expires_at`,
+`idempotency_key`, and no mutation was sent.
+
+Live smoke must be done only with a real approved order ticket and exact
+`live_confirmation` through `submit_approved_order`.
