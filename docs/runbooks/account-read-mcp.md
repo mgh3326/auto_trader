@@ -29,9 +29,12 @@ Do not reuse `MCP_AUTH_TOKEN`. Do not commit the token. Rotate by writing a new 
 Docker:
 
 ```bash
-MCP_ACCOUNT_READ_AUTH_TOKEN="$MCP_ACCOUNT_READ_AUTH_TOKEN" \
-docker compose -f docker-compose.prod.yml up -d mcp-account-read
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d mcp-account-read
 ```
+
+`--env-file .env.prod` is required when `MCP_ACCOUNT_READ_AUTH_TOKEN` is stored
+there because compose variable interpolation happens before service-level
+`env_file:` values are applied.
 
 Native launchd:
 

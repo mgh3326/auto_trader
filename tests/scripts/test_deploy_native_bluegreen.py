@@ -12,6 +12,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LIB = REPO_ROOT / "ops" / "native" / "scripts" / "native_deploy_lib.sh"
+DEPLOY_NATIVE = REPO_ROOT / "scripts" / "deploy-native.sh"
 
 
 def _stub_dir(tmp_path: Path) -> Path:
@@ -116,6 +117,13 @@ def _run_bash(
     )
     proc.launchctl_log = log.read_text()  # type: ignore[attr-defined]
     return proc
+
+
+def test_deploy_native_restarts_fixed_profile_mcp_services() -> None:
+    body = DEPLOY_NATIVE.read_text()
+
+    assert '"com.robinco.auto-trader.mcp-analysis-readonly"' in body
+    assert '"com.robinco.auto-trader.mcp-account-read"' in body
 
 
 def test_sync_release_to_color_symlink_creates(tmp_path: Path) -> None:
