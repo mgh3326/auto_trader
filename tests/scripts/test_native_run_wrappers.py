@@ -201,3 +201,22 @@ def test_run_mcp_profile_fails_without_dedicated_token(tmp_path: Path) -> None:
     )
     assert proc.returncode == 78
     assert "MCP_ACCOUNT_READ_AUTH_TOKEN is required" in proc.stderr
+
+
+def test_run_mcp_profile_exports_tradingcodex_execution_profile(tmp_path: Path) -> None:
+    proc = _run_profile(
+        RUN_MCP_PROFILE,
+        {
+            "AUTO_TRADER_MCP_PROFILE": "tradingcodex_execution",
+            "AUTO_TRADER_MCP_PORT": "8770",
+            "AUTO_TRADER_MCP_AUTH_TOKEN_ENV": "MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN",
+            "MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN": "execution-token",
+            "ORDER_APPROVAL_HASH_MODE": "required",
+            "TOSS_APPROVAL_HASH_MODE": "required",
+        },
+        tmp_path,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "MCP_PROFILE=tradingcodex_execution" in proc.stdout
+    assert "MCP_PORT=8770" in proc.stdout
+    assert "MCP_AUTH_TOKEN=execution-token" in proc.stdout

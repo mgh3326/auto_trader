@@ -178,6 +178,38 @@ services:
           memory: 256M
           cpus: '0.1'
 
+  mcp-tradingcodex-execution:
+    image: ghcr.io/${GITHUB_REPOSITORY}:production
+    container_name: auto_trader_mcp_tradingcodex_execution_prod
+    env_file:
+      - .env.prod
+    environment:
+      MCP_TYPE: ${MCP_TRADINGCODEX_EXECUTION_TYPE:-streamable-http}
+      MCP_HOST: ${MCP_TRADINGCODEX_EXECUTION_HOST:-0.0.0.0}
+      MCP_PORT: ${MCP_TRADINGCODEX_EXECUTION_PORT:-8770}
+      MCP_PATH: ${MCP_TRADINGCODEX_EXECUTION_PATH:-/mcp}
+      MCP_PROFILE: tradingcodex_execution
+      MCP_AUTH_TOKEN: ${MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN:?MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN is required}
+      ORDER_APPROVAL_HASH_MODE: required
+      TOSS_APPROVAL_HASH_MODE: required
+    restart: unless-stopped
+    network_mode: host
+    command: ["python", "-m", "app.mcp_server.main"]
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import os,sys,urllib.request; port=os.environ.get('MCP_PORT','8770'); sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{port}/health', timeout=5).status == 200 else 1)" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.1'
+
   upbit_websocket:
     image: ghcr.io/${GITHUB_REPOSITORY}:production
     container_name: auto_trader_upbit_ws_prod

@@ -56,6 +56,8 @@ SINGLE_ACTIVE_LABELS=(
   # ROB-760: fixed-profile readonly MCP services outside the blue/green pair.
   "com.robinco.auto-trader.mcp-analysis-readonly"
   "com.robinco.auto-trader.mcp-account-read"
+  # ROB-762: TradingCodex execution MCP service outside the blue/green pair.
+  "com.robinco.auto-trader.mcp-tradingcodex-execution"
   # ROB-469 PR3: single non-color-specific watchdog that restarts a wedged MCP color.
   "com.robinco.auto-trader.mcp-watchdog"
 )
