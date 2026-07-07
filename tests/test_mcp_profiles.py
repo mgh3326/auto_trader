@@ -45,6 +45,10 @@ from app.mcp_server.tooling.paper_limit_order_handler import (
     PAPER_LIMIT_ORDER_TOOL_NAMES,
 )
 from app.mcp_server.tooling.registry import register_all_tools
+from app.mcp_server.tooling.tradingcodex_execution_registration import (
+    TRADINGCODEX_EXECUTION_FORBIDDEN_TOOL_NAMES,
+    TRADINGCODEX_EXECUTION_TOOL_NAMES,
+)
 from app.mcp_server.tooling.us_dual_paper import US_DUAL_PAPER_TOOL_NAMES
 from tests._mcp_tooling_support import DummyMCP
 
@@ -262,6 +266,22 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
         "toss_get_positions",
         "toss_get_orderable_cash",
     },
+    McpProfile.TRADINGCODEX_EXECUTION: {
+        "place_order",
+        "cancel_order",
+        "get_order_history",
+        "sell_ladder_fill_preview",
+        "buy_ladder_fill_preview",
+        "kis_live_place_order",
+        "kis_live_cancel_order",
+        "kis_live_get_order_history",
+        "toss_preview_order",
+        "toss_place_order",
+        "toss_cancel_order",
+        "toss_get_order_history",
+        "toss_get_positions",
+        "toss_get_orderable_cash",
+    },
 }
 _ALL_ORDER_TOOL_NAMES = (
     _LEGACY_ORDER_TOOL_NAMES
@@ -307,6 +327,7 @@ _PROFILES_WITH_RESEARCH_SURFACE = [
         McpProfile.SHADOW_REPLAY,
         McpProfile.ANALYSIS_READONLY,
         McpProfile.ACCOUNT_READ,
+        McpProfile.TRADINGCODEX_EXECUTION,
     )
 ]
 
@@ -487,6 +508,65 @@ class TestAccountReadProfile:
         } <= mcp.tools.keys()
 
 
+class TestTradingCodexExecutionProfile:
+    def test_registers_exact_tradingcodex_execution_allowlist(self) -> None:
+        mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
+        assert set(mcp.tools) == TRADINGCODEX_EXECUTION_TOOL_NAMES
+
+    def test_does_not_register_forbidden_execution_surfaces(self) -> None:
+        mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
+        leaked = TRADINGCODEX_EXECUTION_FORBIDDEN_TOOL_NAMES & mcp.tools.keys()
+        assert not leaked, (
+            f"tradingcodex_execution leaked forbidden tools: {sorted(leaked)}"
+        )
+
+    def test_expected_execution_tools_are_present(self) -> None:
+        mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
+        assert {
+            "get_holdings",
+            "get_cash_balance",
+            "get_order_history",
+            "kis_live_get_order_history",
+            "toss_get_order_history",
+            "place_order",
+            "cancel_order",
+            "kis_live_place_order",
+            "kis_live_cancel_order",
+            "toss_preview_order",
+            "toss_place_order",
+            "toss_cancel_order",
+            "sell_ladder_fill_preview",
+            "buy_ladder_fill_preview",
+            "suggest_order_account",
+            "get_fx_rate",
+            "route_request",
+            "get_trading_policy",
+        } <= mcp.tools.keys()
+
+    def test_does_not_register_modify_reconcile_or_persistence_tools(self) -> None:
+        mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
+        forbidden = {
+            "modify_order",
+            "kis_live_modify_order",
+            "kis_live_reconcile_orders",
+            "live_reconcile_orders",
+            "toss_modify_order",
+            "toss_reconcile_orders",
+            "analysis_artifact_save",
+            "analysis_artifact_get",
+            "forecast_save",
+            "session_context_append",
+            "session_context_get_recent",
+            "update_manual_holdings",
+            "get_user_setting",
+            "list_active_watches",
+        }
+        leaked = forbidden & mcp.tools.keys()
+        assert not leaked, (
+            f"tradingcodex_execution leaked unsafe tools: {sorted(leaked)}"
+        )
+
+
 class TestResolveMcpProfile:
     def test_none_returns_default(self) -> None:
         assert resolve_mcp_profile(None) is McpProfile.DEFAULT
@@ -523,6 +603,12 @@ class TestResolveMcpProfile:
 
     def test_account_read(self) -> None:
         assert resolve_mcp_profile("account_read") is McpProfile.ACCOUNT_READ
+
+    def test_tradingcodex_execution(self) -> None:
+        assert (
+            resolve_mcp_profile("tradingcodex_execution")
+            is McpProfile.TRADINGCODEX_EXECUTION
+        )
 
     def test_invalid_string_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="Unknown MCP_PROFILE"):

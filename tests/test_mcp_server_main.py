@@ -1,6 +1,7 @@
 import importlib
 import importlib.util
 import sys
+import types
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
@@ -13,6 +14,28 @@ class _FakeFastMCP:
         self.init_kwargs = kwargs
         self.run = MagicMock()
         self.add_middleware = MagicMock()
+
+
+class _FakeProfileMember:
+    """Hashable stand-in for a McpProfile enum member used in tests.
+
+    The main.py validators build a set of members and access ``.value`` for the
+    error message, so the fake must support both.
+    """
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _FakeProfileMember) and self.value == other.value
+
+    def __hash__(self) -> int:
+        return hash(self.value)
+
+    def __repr__(self) -> str:
+        return f"_FakeProfileMember({self.value!r})"
 
 
 def _load_env_utils_module() -> ModuleType:
@@ -32,8 +55,10 @@ def _load_env_utils_module() -> ModuleType:
 def _load_main_module(
     monkeypatch: pytest.MonkeyPatch,
     *,
+    auth_token: str = "",
     account_read: bool = False,
-) -> tuple[ModuleType, _FakeFastMCP, MagicMock, object]:
+    tradingcodex_execution: bool = False,
+) -> tuple[ModuleType, _FakeFastMCP, MagicMock, object, object]:
     main_path = Path(__file__).resolve().parents[1] / "app" / "mcp_server" / "main.py"
 
     fake_fastmcp = ModuleType("fastmcp")
@@ -42,11 +67,27 @@ def _load_main_module(
     fake_mcp_package = ModuleType("app.mcp_server")
     fake_mcp_package.__path__ = []
 
-    fake_config = ModuleType("app.core.config")
-    fake_config.__dict__["settings"] = SimpleNamespace(
-        LOG_LEVEL="INFO",
-        mcp_caller_agent_id_fallback=None,
-    )
+    # ROB-762: tests may pre-set sys.modules["app.core.config"] to drive the
+    # fail-closed runtime validator (e.g. force order_approval_hash_mode to a
+    # non-required value). If a pre-set module with a `.settings` attribute is
+    # present, reuse it; otherwise install the default settings the helper has
+    # used since ROB-760. Without this branch, a pre-set module would be
+    # overwritten by the helper's own monkeypatch.setitem below.
+    pre_set_config = sys.modules.get("app.core.config")
+    if (
+        pre_set_config is not None
+        and hasattr(pre_set_config, "settings")
+        and isinstance(getattr(pre_set_config, "settings", None), SimpleNamespace)
+    ):
+        fake_config = pre_set_config
+    else:
+        fake_config = ModuleType("app.core.config")
+        fake_config.__dict__["settings"] = SimpleNamespace(
+            LOG_LEVEL="INFO",
+            mcp_caller_agent_id_fallback=None,
+            order_approval_hash_mode="required",
+            toss_approval_hash_mode="required",
+        )
 
     fake_auth = ModuleType("app.mcp_server.auth")
     fake_auth.__dict__["build_auth_provider"] = MagicMock(return_value="auth-provider")
@@ -71,11 +112,18 @@ def _load_main_module(
     fake_monitoring.__dict__["capture_exception"] = MagicMock()
     fake_monitoring.__dict__["init_sentry"] = MagicMock()
 
-    account_read_profile = object()
-    resolved_profile = account_read_profile if account_read else "profile"
+    account_read_profile = _FakeProfileMember("account_read")
+    tradingcodex_execution_profile = _FakeProfileMember("tradingcodex_execution")
+    if tradingcodex_execution:
+        resolved_profile = tradingcodex_execution_profile
+    elif account_read:
+        resolved_profile = account_read_profile
+    else:
+        resolved_profile = "profile"
     fake_profiles = ModuleType("app.mcp_server.profiles")
     fake_profiles.__dict__["McpProfile"] = SimpleNamespace(
-        ACCOUNT_READ=account_read_profile
+        ACCOUNT_READ=account_read_profile,
+        TRADINGCODEX_EXECUTION=tradingcodex_execution_profile,
     )
     fake_profiles.__dict__["resolve_mcp_profile"] = MagicMock(
         return_value=resolved_profile
@@ -123,6 +171,9 @@ def _load_main_module(
         sys.modules, "app.mcp_server.timeout_middleware", fake_timeout_middleware
     )
 
+    if auth_token:
+        monkeypatch.setenv("MCP_AUTH_TOKEN", auth_token)
+
     spec = importlib.util.spec_from_file_location("app.mcp_server.main", main_path)
     assert spec is not None
     assert spec.loader is not None
@@ -133,7 +184,13 @@ def _load_main_module(
     # session, poisoning other tests that import the real app.mcp_server.main.
     monkeypatch.setitem(sys.modules, "app.mcp_server.main", module)
     spec.loader.exec_module(module)
-    return module, module.mcp, fake_monitoring.capture_exception, account_read_profile
+    return (
+        module,
+        module.mcp,
+        fake_monitoring.capture_exception,
+        account_read_profile,
+        tradingcodex_execution_profile,
+    )
 
 
 @pytest.mark.unit
@@ -141,7 +198,7 @@ class TestMcpServerMain:
     def test_registers_caller_identity_middleware_after_sentry(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _, mcp, _, _ = _load_main_module(monkeypatch)
+        _, mcp, _, _, _ = _load_main_module(monkeypatch)
 
         calls = [call.args[0] for call in mcp.add_middleware.call_args_list]
         # Sentry (outermost) then CallerIdentity, then ROB-469 PR2's
@@ -154,7 +211,7 @@ class TestMcpServerMain:
     def test_non_integer_log_level_falls_back_to_info(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        module, mcp, _, _ = _load_main_module(monkeypatch)
+        module, mcp, _, _, _ = _load_main_module(monkeypatch)
         module.settings.LOG_LEVEL = "BASIC_FORMAT"
 
         module.main()
@@ -173,7 +230,7 @@ class TestMcpServerMain:
         monkeypatch.setenv("MCP_TYPE", "streamable-http")
         monkeypatch.delenv("MCP_GRACEFUL_SHUTDOWN_TIMEOUT", raising=False)
 
-        module, mcp, _, _ = _load_main_module(monkeypatch)
+        module, mcp, _, _, _ = _load_main_module(monkeypatch)
 
         module.main()
 
@@ -191,7 +248,7 @@ class TestMcpServerMain:
         monkeypatch.setenv("MCP_TYPE", "sse")
         monkeypatch.setenv("MCP_GRACEFUL_SHUTDOWN_TIMEOUT", "27")
 
-        module, mcp, _, _ = _load_main_module(monkeypatch)
+        module, mcp, _, _, _ = _load_main_module(monkeypatch)
 
         module.main()
 
@@ -209,7 +266,7 @@ class TestMcpServerMain:
         monkeypatch.setenv("MCP_TYPE", "stdio")
         monkeypatch.setenv("MCP_GRACEFUL_SHUTDOWN_TIMEOUT", "33")
 
-        module, mcp, _, _ = _load_main_module(monkeypatch)
+        module, mcp, _, _, _ = _load_main_module(monkeypatch)
 
         module.main()
 
@@ -221,7 +278,7 @@ class TestMcpServerMain:
         monkeypatch.setenv("MCP_TYPE", "stdio")
         monkeypatch.setenv("MCP_GRACEFUL_SHUTDOWN_TIMEOUT", "invalid")
 
-        module, _, _, _ = _load_main_module(monkeypatch)
+        module, _, _, _, _ = _load_main_module(monkeypatch)
 
         module.main()
 
@@ -230,7 +287,7 @@ class TestMcpServerMain:
     ) -> None:
         monkeypatch.setenv("MCP_TYPE", "invalid")
 
-        module, _, capture_exception, _ = _load_main_module(monkeypatch)
+        module, _, capture_exception, _, _ = _load_main_module(monkeypatch)
 
         with pytest.raises(ValueError, match="Unsupported MCP_TYPE: invalid"):
             module.main()
@@ -243,7 +300,7 @@ class TestMcpServerMain:
     ) -> None:
         monkeypatch.setenv("MCP_TYPE", transport)
 
-        module, mcp, capture_exception, _ = _load_main_module(monkeypatch)
+        module, mcp, capture_exception, _, _ = _load_main_module(monkeypatch)
         module.settings.mcp_caller_agent_id_fallback = "trader-agent-id"
 
         with pytest.raises(
@@ -262,7 +319,7 @@ class TestMcpServerMain:
     ) -> None:
         monkeypatch.setenv("MCP_TYPE", "sse")
 
-        module, mcp, capture_exception, _ = _load_main_module(monkeypatch)
+        module, mcp, capture_exception, _, _ = _load_main_module(monkeypatch)
         module.settings.mcp_caller_agent_id_fallback = None
 
         module.main()
@@ -281,7 +338,7 @@ class TestMcpServerMain:
     ) -> None:
         monkeypatch.setenv("MCP_TYPE", "stdio")
 
-        module, mcp, capture_exception, _ = _load_main_module(monkeypatch)
+        module, mcp, capture_exception, _, _ = _load_main_module(monkeypatch)
         module.settings.mcp_caller_agent_id_fallback = "trader-agent-id"
 
         module.main()
@@ -304,6 +361,56 @@ class TestMcpServerMain:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("MCP_AUTH_TOKEN", "account-read-token")
-        module, _, _, _ = _load_main_module(monkeypatch, account_read=True)
+        module, _, _, _, _ = _load_main_module(monkeypatch, account_read=True)
 
         module.main()
+
+    def test_tradingcodex_execution_profile_requires_auth_token(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                "MCP_PROFILE=tradingcodex_execution requires non-empty MCP_AUTH_TOKEN"
+            ),
+        ):
+            _load_main_module(monkeypatch, tradingcodex_execution=True)
+
+    def test_tradingcodex_execution_profile_requires_hash_modes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fake_settings = types.SimpleNamespace(
+            mcp_caller_agent_id_fallback="",
+            order_approval_hash_mode="optional",
+            toss_approval_hash_mode="required",
+            LOG_LEVEL="INFO",
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "app.core.config",
+            types.SimpleNamespace(settings=fake_settings),
+        )
+        with pytest.raises(
+            RuntimeError,
+            match="ORDER_APPROVAL_HASH_MODE=required",
+        ):
+            _load_main_module(
+                monkeypatch,
+                auth_token="execution-token",
+                tradingcodex_execution=True,
+            )
+
+    def test_tradingcodex_execution_profile_accepts_required_hash_modes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        module, _, _, _, execution_profile = _load_main_module(
+            monkeypatch,
+            auth_token="execution-token",
+            tradingcodex_execution=True,
+        )
+        assert module._mcp_profile is execution_profile

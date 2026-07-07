@@ -52,6 +52,14 @@ Profile → tool surface mapping
   order placement, cancel, modify, preview, reconcile, persistence, settings,
   watch, admin, report-write, or manual-holdings mutation tools are registered.
 
+"tradingcodex_execution" (McpProfile.TRADINGCODEX_EXECUTION):
+  TradingCodex broker execution allowlist only. Registers account reads,
+  policy/route advisory reads, account-routing suggestion, USD/KRW FX read,
+  dry-run/preview, live place, cancel, and ladder fill-preview tools required
+  by the reviewed BrokerAdapter. No modify, reconcile, persistence, settings,
+  watch, admin, report-write, KIS mock, Kiwoom, Alpaca, or paper simulator
+  tools are registered.
+
 See app/mcp_server/profiles.py and docs in app/mcp_server/README.md.
 """
 
@@ -154,6 +162,9 @@ from app.mcp_server.tooling.trading_policy_registration import (
 from app.mcp_server.tooling.trading_scoreboard_registration import (
     register_trading_scoreboard_tools,
 )
+from app.mcp_server.tooling.tradingcodex_execution_registration import (
+    register_tradingcodex_execution_tools,
+)
 from app.mcp_server.tooling.us_dual_paper import register_us_dual_paper_tools
 from app.mcp_server.tooling.user_settings_registration import (
     register_user_settings_tools,
@@ -194,6 +205,13 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         # returns before the normal "Always" block so research, persistence,
         # settings, watch, preview, reconcile, and mutation tools are absent.
         register_account_read_tools(mcp)
+        return
+
+    if profile is McpProfile.TRADINGCODEX_EXECUTION:
+        # ROB-762 — TradingCodex broker execution surface. Allowlist-only and
+        # returns before the normal default block so broad research, settings,
+        # watch, modify, reconcile, and persistence tools are physically absent.
+        register_tradingcodex_execution_tools(mcp)
         return
 
     # Always: side-effect-free research + read-only tools

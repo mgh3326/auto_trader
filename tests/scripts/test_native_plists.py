@@ -19,6 +19,7 @@ PLISTS = [
     "com.robinco.auto-trader.mcp-green.plist",
     "com.robinco.auto-trader.mcp-analysis-readonly.plist",
     "com.robinco.auto-trader.mcp-account-read.plist",
+    "com.robinco.auto-trader.mcp-tradingcodex-execution.plist",
     "com.robinco.auto-trader.worker.plist",
     "com.robinco.auto-trader.scheduler.plist",
     "com.robinco.auto-trader.kis-websocket.plist",
@@ -98,4 +99,19 @@ def test_mcp_analysis_readonly_plist_profile_port_and_token_env() -> None:
     assert "<string>analysis_readonly</string>" in body
     assert "<string>8768</string>" in body
     assert "<string>MCP_ANALYSIS_READONLY_AUTH_TOKEN</string>" in body
+    assert "current</string>" in body
+
+
+def test_mcp_tradingcodex_execution_plist_profile_port_and_token_env() -> None:
+    body = (
+        PLIST_DIR / "com.robinco.auto-trader.mcp-tradingcodex-execution.plist"
+    ).read_text()
+    assert "scripts/run-mcp-profile.sh" in body
+    assert "<string>tradingcodex_execution</string>" in body
+    assert "<string>8770</string>" in body
+    assert "<string>MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN</string>" in body
+    assert (
+        "<key>ORDER_APPROVAL_HASH_MODE</key>\n    <string>required</string>"
+    ) in body
+    assert ("<key>TOSS_APPROVAL_HASH_MODE</key>\n    <string>required</string>") in body
     assert "current</string>" in body

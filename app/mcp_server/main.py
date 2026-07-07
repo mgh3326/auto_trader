@@ -51,11 +51,33 @@ _mcp_profile = resolve_mcp_profile(_env("MCP_PROFILE"))
 
 
 def _validate_profile_auth_token(profile: McpProfile, token: str | None) -> None:
-    if profile is McpProfile.ACCOUNT_READ and not (token or "").strip():
-        raise RuntimeError("MCP_PROFILE=account_read requires non-empty MCP_AUTH_TOKEN")
+    token_required_profiles = {
+        McpProfile.ACCOUNT_READ,
+        McpProfile.TRADINGCODEX_EXECUTION,
+    }
+    if profile in token_required_profiles and not (token or "").strip():
+        raise RuntimeError(
+            f"MCP_PROFILE={profile.value} requires non-empty MCP_AUTH_TOKEN"
+        )
+
+
+def _validate_profile_runtime_settings(profile: McpProfile) -> None:
+    if profile is not McpProfile.TRADINGCODEX_EXECUTION:
+        return
+    if settings.order_approval_hash_mode != "required":
+        raise RuntimeError(
+            "MCP_PROFILE=tradingcodex_execution requires "
+            "ORDER_APPROVAL_HASH_MODE=required"
+        )
+    if settings.toss_approval_hash_mode != "required":
+        raise RuntimeError(
+            "MCP_PROFILE=tradingcodex_execution requires "
+            "TOSS_APPROVAL_HASH_MODE=required"
+        )
 
 
 _validate_profile_auth_token(_mcp_profile, _auth_token)
+_validate_profile_runtime_settings(_mcp_profile)
 auth_provider = build_auth_provider(_auth_token)
 mcp = FastMCP(
     name="auto_trader-mcp",

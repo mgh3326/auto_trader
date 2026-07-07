@@ -1680,6 +1680,7 @@ The `MCP_PROFILE` env var selects which tool subset is registered at startup.
 | Kiwoom mock | `kiwoom` | Default read-only/research surface plus typed `kiwoom_mock_*` variants only (no KIS/generic order tools) |
 | Analysis readonly | `analysis_readonly` | Codex/headless read/analysis allowlist only: `get_operating_briefing`, `route_request`, `get_trading_policy`, selected quote/fundamental/analysis tools, `suggest_order_account`, `get_holdings`, `toss_get_positions`, and explicitly labeled analysis persistence. No order/cancel/modify/reconcile/preview/settings/watch/admin/manual-holdings mutation tools are registered. |
 | Account read | `account_read` | TradingCodex account adapter allowlist only: `get_holdings`, `toss_get_positions`, `get_cash_balance`, `toss_get_orderable_cash`, `get_order_history`, `kis_live_get_order_history`, and `toss_get_order_history`. No order placement/cancel/modify/preview/reconcile, persistence, settings, watch, admin, report-writing, or manual-holdings mutation tools are registered. |
+| TradingCodex execution | `tradingcodex_execution` | Reviewed TradingCodex BrokerAdapter allowlist: account reads, `route_request`, `get_trading_policy`, `suggest_order_account`, `get_fx_rate`, preview/dry-run, live place, cancel, and ladder fill-preview tools. Requires dedicated auth token and required approval-hash modes. |
 
 ### Profile: `hermes-paper-kis`
 

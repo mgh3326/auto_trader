@@ -19,6 +19,7 @@ class McpProfile(StrEnum):
     SHADOW_REPLAY = "shadow-replay"
     ANALYSIS_READONLY = "analysis_readonly"
     ACCOUNT_READ = "account_read"
+    TRADINGCODEX_EXECUTION = "tradingcodex_execution"
 
 
 def resolve_mcp_profile(env: str | None) -> McpProfile:
