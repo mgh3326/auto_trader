@@ -244,7 +244,9 @@ async def test_discovery_incomplete_scan_records_error_without_advancing_success
             )
 
     with pytest.raises(RuntimeError, match="incomplete Toss order scan"):
-        await TossFillPollerService(db_session, client=_CappedClient()).discover_external_orders(
+        await TossFillPollerService(
+            db_session, client=_CappedClient()
+        ).discover_external_orders(
             dry_run=False,
             lookback_days=7,
             closed_page_cap=1,
