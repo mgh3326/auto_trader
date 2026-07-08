@@ -1680,7 +1680,7 @@ The `MCP_PROFILE` env var selects which tool subset is registered at startup.
 | Kiwoom mock | `kiwoom` | Default read-only/research surface plus typed `kiwoom_mock_*` variants only (no KIS/generic order tools) |
 | Analysis readonly | `analysis_readonly` | Codex/headless read/analysis allowlist only: `get_operating_briefing`, `route_request`, `get_trading_policy`, selected quote/fundamental/analysis tools, `suggest_order_account`, `get_holdings`, `toss_get_positions`, and explicitly labeled analysis persistence. No order/cancel/modify/reconcile/preview/settings/watch/admin/manual-holdings mutation tools are registered. |
 | Account read | `account_read` | TradingCodex account adapter allowlist only: `get_holdings`, `toss_get_positions`, `get_cash_balance`, `toss_get_orderable_cash`, `get_order_history`, `kis_live_get_order_history`, and `toss_get_order_history`. No order placement/cancel/modify/preview/reconcile, persistence, settings, watch, admin, report-writing, or manual-holdings mutation tools are registered. |
-| TradingCodex execution | `tradingcodex_execution` | Reviewed TradingCodex BrokerAdapter allowlist: account reads, `route_request`, `get_trading_policy`, `suggest_order_account`, `get_fx_rate`, preview/dry-run, live place, cancel, and ladder fill-preview tools. Requires dedicated auth token and required approval-hash modes. |
+| TradingCodex execution | `tradingcodex_execution` | Reviewed TradingCodex BrokerAdapter allowlist: account reads, `route_request`, `get_trading_policy`, `suggest_order_account`, `get_fx_rate`, watch read tools, `forecast_save`/`get_forecasts`, `save_trade_retrospective`/`get_trade_retrospectives`/`trade_retrospective_pending`, preview/dry-run, live place, cancel, and ladder fill-preview tools. Requires dedicated auth token and required approval-hash modes. |
 
 ### Profile: `hermes-paper-kis`
 
@@ -1786,6 +1786,61 @@ default_tools_approval_mode = "auto"
 
 http_headers = { "x-paperclip-agent-id" = "tradingcodex-account-read" }
 ```
+
+### Profile: `tradingcodex_execution` (ROB-768, ROB-778)
+
+Use `MCP_PROFILE=tradingcodex_execution` for the reviewed TradingCodex BrokerAdapter surface. This profile is order-capable, but still allowlist-only and narrower than `default`.
+
+Allowed read/advisory tools:
+- `get_holdings`
+- `toss_get_positions`
+- `get_cash_balance`
+- `toss_get_orderable_cash`
+- `get_order_history`
+- `kis_live_get_order_history`
+- `toss_get_order_history`
+- `suggest_order_account`
+- `get_fx_rate`
+- `route_request`
+- `get_trading_policy`
+- `list_active_watches`
+- `investment_watch_events_list_recent`
+- `get_forecasts`
+- `get_trade_retrospectives`
+- `trade_retrospective_pending`
+
+Allowed write/order tools:
+- `place_order`
+- `cancel_order`
+- `kis_live_place_order`
+- `kis_live_cancel_order`
+- `toss_preview_order`
+- `toss_place_order`
+- `toss_cancel_order`
+- `sell_ladder_fill_preview`
+- `buy_ladder_fill_preview`
+- `forecast_save`
+- `save_trade_retrospective`
+
+Write provenance requirements:
+- pass `created_by="tradingcodex"` to `forecast_save`
+- pass `created_by_profile="tradingcodex"` to `save_trade_retrospective`
+- missing or blank labels return `{"success": false, "error": "created_by_required", ...}` before any database write
+
+Forbidden by physical non-registration:
+- modify and reconcile tools
+- KIS mock order variants
+- Kiwoom order variants
+- Alpaca/DB paper order surfaces
+- manual holdings mutation
+- user settings tools
+- analysis artifact and session context persistence
+- forecast resolution/calibration
+- retrospective aggregate
+- watch activation/mutation
+- report-writing and report-decision tools
+
+Authentication is mandatory for this profile. `MCP_PROFILE=tradingcodex_execution` fails at startup unless `MCP_AUTH_TOKEN` is non-empty, and the runtime also requires the TradingCodex approval-hash modes configured in `app/mcp_server/main.py`.
 
 ### Typed KIS order tools
 

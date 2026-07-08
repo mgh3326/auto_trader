@@ -55,10 +55,12 @@ Profile → tool surface mapping
 "tradingcodex_execution" (McpProfile.TRADINGCODEX_EXECUTION):
   TradingCodex broker execution allowlist only. Registers account reads,
   policy/route advisory reads, account-routing suggestion, USD/KRW FX read,
-  dry-run/preview, live place, cancel, and ladder fill-preview tools required
-  by the reviewed BrokerAdapter. No modify, reconcile, persistence, settings,
-  watch, admin, report-write, KIS mock, Kiwoom, Alpaca, or paper simulator
-  tools are registered.
+  watch read tools (active watches + delivered watch events), learning-loop
+  reads/writes (forecasts + trade retrospectives with explicit created_by
+  provenance), dry-run/preview, live place, cancel, and ladder fill-preview
+  tools required by the reviewed BrokerAdapter. No modify, reconcile, settings,
+  watch mutation/activation, report-write, KIS mock, Kiwoom, Alpaca, or paper
+  simulator tools are registered.
 
 See app/mcp_server/profiles.py and docs in app/mcp_server/README.md.
 """
