@@ -74,8 +74,9 @@ async def test_direct_watch_create_is_idempotent_for_same_key(
     session: AsyncSession,
 ) -> None:
     service = DirectWatchCreateService(session)
-    first, first_idempotent = await service.create(_request(idempotency_key="tcx:1"))
-    second, second_idempotent = await service.create(_request(idempotency_key="tcx:1"))
+    request = _request(idempotency_key="tcx:1")
+    first, first_idempotent = await service.create(request)
+    second, second_idempotent = await service.create(request)
 
     assert first_idempotent is False
     assert second_idempotent is True
@@ -93,6 +94,27 @@ async def test_direct_watch_create_rejects_idempotency_collision(
     with pytest.raises(ValueError, match="idempotency_key .* already used"):
         await service.create(
             _request(idempotency_key="tcx:collision", symbol="000660")
+        )
+
+
+@pytest.mark.asyncio
+async def test_direct_watch_create_rejects_idempotency_collision_for_different_condition(
+    session: AsyncSession,
+) -> None:
+    service = DirectWatchCreateService(session)
+    await service.create(_request(idempotency_key="tcx:condition-collision"))
+
+    with pytest.raises(ValueError, match="idempotency_key .* already used"):
+        await service.create(
+            _request(
+                idempotency_key="tcx:condition-collision",
+                watch_condition=WatchConditionPayload(
+                    metric="price",
+                    operator="above",
+                    threshold=71000,
+                    action_mode="approval_required",
+                ),
+            )
         )
 
 

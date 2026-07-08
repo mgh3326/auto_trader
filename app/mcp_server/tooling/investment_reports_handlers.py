@@ -1540,4 +1540,3 @@ __all__ = [
     "investment_watch_recommend_impl",
     "register_investment_report_tools",
 ]
-

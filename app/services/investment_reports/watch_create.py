@@ -48,12 +48,12 @@ class DirectWatchCreateService:
             watch_condition=condition,
         )
 
+        fields = _alert_fields(request, normalized_symbol, condition, key)
         existing = await self._repo.get_alert_by_idempotency_key(key)
         if existing is not None:
-            _assert_same_identity(existing, request, normalized_symbol)
+            _assert_same_identity(existing, fields)
             return existing, True
 
-        fields = _alert_fields(request, normalized_symbol, condition, key)
         alert = await self._repo.insert_alert(**fields)
         await self._session.flush()
         return alert, False
@@ -117,14 +117,38 @@ def _alert_fields(
 
 def _assert_same_identity(
     existing: InvestmentWatchAlert,
-    request: CreateInvestmentWatchRequest,
-    symbol: str,
+    expected_fields: dict[str, Any],
 ) -> None:
-    if (
-        existing.market != request.market
-        or existing.symbol != symbol
-        or existing.intent != request.intent
+    mismatched = [
+        field
+        for field in (
+            "market",
+            "target_kind",
+            "symbol",
+            "metric",
+            "operator",
+            "threshold_key",
+            "conditions",
+            "combine",
+            "intent",
+            "action_mode",
+            "rationale",
+            "trigger_checklist",
+            "max_action",
+            "valid_until",
+        )
+        if getattr(existing, field) != expected_fields[field]
+    ]
+    if _decimal_or_none(existing.threshold) != _decimal_or_none(
+        expected_fields["threshold"]
     ):
+        mismatched.append("threshold")
+    if _decimal_or_none(existing.threshold_high) != _decimal_or_none(
+        expected_fields["threshold_high"]
+    ):
+        mismatched.append("threshold_high")
+
+    if mismatched:
         raise ValueError(
             f"idempotency_key {existing.idempotency_key!r} already used for "
             "a different watch identity"
@@ -140,4 +164,12 @@ def _to_decimal(value: Any) -> Decimal:
         return value
     if value is None:
         raise ValueError("threshold is required in watch_condition")
+    return Decimal(str(value))
+
+
+def _decimal_or_none(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return value
     return Decimal(str(value))
