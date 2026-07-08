@@ -20,6 +20,7 @@ from app.core.db import AsyncSessionLocal
 from app.schemas.investment_reports import (
     ActivateWatchRequest,
     AddReportItemsRequest,
+    CreateInvestmentWatchRequest,
     IngestReportItem,
     IngestReportRequest,
     InvestmentReportActivateWatchResponse,
@@ -30,6 +31,7 @@ from app.schemas.investment_reports import (
     InvestmentReportItemResponse,
     InvestmentReportResponse,
     InvestmentWatchAlertResponse,
+    InvestmentWatchCreateResponse,
     InvestmentWatchEventResponse,
     PreviousReportContextResponse,
     RecordDecisionRequest,
@@ -54,6 +56,7 @@ from app.services.investment_reports.query_service import (
 )
 from app.services.investment_reports.repository import InvestmentReportsRepository
 from app.services.investment_reports.watch_activation import WatchActivationService
+from app.services.investment_reports.watch_create import DirectWatchCreateService
 from app.services.investment_reports.watch_recommendation_policy import (
     ATR_PERIOD,
     LOOKBACK_DAYS,
@@ -77,6 +80,8 @@ INVESTMENT_REPORT_TOOL_NAMES: set[str] = {
     "investment_report_set_status",
     "investment_report_add_items",
     "investment_report_update",
+    # ROB-768 — direct watch create (independent of report flow).
+    "investment_watch_create",
 }
 
 # ROB-352 — mirror of the generator's canonical market/account_scope pairs.
@@ -982,6 +987,54 @@ async def investment_watch_recommend_impl(
 
 
 # ---------------------------------------------------------------------------
+# investment_watch_create (ROB-768)
+# ---------------------------------------------------------------------------
+async def investment_watch_create_impl(
+    created_by: str,
+    market: str,
+    symbol: str,
+    intent: str,
+    rationale: str,
+    watch_condition: dict,
+    valid_until: str,
+    trigger_checklist: list[str] | None = None,
+    max_action: dict | None = None,
+    metadata: dict | None = None,
+    idempotency_key: str | None = None,
+) -> dict[str, Any]:
+    """ROB-768 — create an active watch alert directly, bypassing the
+    investment_report_create / investment_report_activate_watch flow.
+
+    Requires explicit ``created_by`` provenance; ``valid_until`` must be a
+    future timezone-aware ISO8601 string. The persisted alert is a
+    notify/approval watch only — never an automatic order instruction.
+    """
+    request = CreateInvestmentWatchRequest.model_validate(
+        {
+            "created_by": created_by,
+            "market": market,
+            "symbol": symbol,
+            "intent": intent,
+            "rationale": rationale,
+            "watch_condition": watch_condition,
+            "valid_until": valid_until,
+            "trigger_checklist": trigger_checklist or [],
+            "max_action": max_action or {},
+            "metadata": metadata or {},
+            "idempotency_key": idempotency_key,
+        }
+    )
+    async with AsyncSessionLocal() as db:
+        alert, idempotent = await DirectWatchCreateService(db).create(request)
+        await db.commit()
+        response = InvestmentWatchCreateResponse(
+            idempotent=idempotent,
+            alert=InvestmentWatchAlertResponse.model_validate(alert),
+        )
+    return response.model_dump(mode="json", by_alias=True)
+
+
+# ---------------------------------------------------------------------------
 # investment_report_context_get
 # ---------------------------------------------------------------------------
 async def investment_report_context_get_impl(
@@ -1457,6 +1510,16 @@ def register_investment_report_tools(
             "Read-only. 브로커/주문/감시 mutation 없음."
         ),
     )(investment_watch_events_list_recent_impl)
+    mcp.tool(
+        name="investment_watch_create",
+        description=(
+            "Create an active investment watch alert directly, without "
+            "investment_report_create or investment_report_activate_watch. "
+            "Requires explicit created_by provenance; valid_until must be "
+            "future timezone-aware ISO8601. This registers a notify/approval "
+            "watch only and never submits orders."
+        ),
+    )(investment_watch_create_impl)
 
 
 __all__ = [
@@ -1472,6 +1535,7 @@ __all__ = [
     "investment_report_list_impl",
     "investment_report_set_status_impl",
     "investment_report_update_impl",
+    "investment_watch_create_impl",
     "investment_watch_events_list_recent_impl",
     "investment_watch_recommend_impl",
     "register_investment_report_tools",

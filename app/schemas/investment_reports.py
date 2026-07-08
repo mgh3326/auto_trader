@@ -65,7 +65,8 @@ ItemStatusLiteral = Literal[
 ]
 
 WatchMetricLiteral = Literal["price", "rsi", "trade_value"]
-WatchOperatorLiteral = Literal["above", "below"]
+WatchOperatorLiteral = Literal["above", "below", "between"]
+WatchFlatOperatorLiteral = Literal["above", "below"]
 WatchClauseOpLiteral = Literal["above", "below", "between"]
 WatchCombineLiteral = Literal["and"]
 WatchActionModeLiteral = Literal[
@@ -140,7 +141,7 @@ class WatchConditionPayload(BaseModel):
 
     # legacy flat (optional)
     metric: WatchMetricLiteral | None = None
-    operator: WatchOperatorLiteral | None = None
+    operator: WatchFlatOperatorLiteral | None = None
     threshold: Decimal | None = None
     threshold_key: str | None = None
     target_kind: TargetKindLiteral = "asset"
@@ -707,6 +708,47 @@ class ActivateWatchRequest(BaseModel):
     watch_condition: WatchConditionPayload | None = None
     valid_until: datetime | None = None
     attach_recommendation: bool = False
+
+
+class CreateInvestmentWatchRequest(BaseModel):
+    """Create an active watch alert without an investment_report/item source."""
+
+    market: MarketLiteral
+    symbol: str = Field(min_length=1)
+    intent: ItemIntentLiteral
+    watch_condition: WatchConditionPayload
+    rationale: str = Field(min_length=1)
+    valid_until: datetime
+    created_by: str = Field(min_length=1)
+    trigger_checklist: list[str] = Field(default_factory=list)
+    max_action: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("created_by", "symbol", "rationale")
+    @classmethod
+    def _strip_non_empty(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("value must not be blank")
+        return cleaned
+
+    @field_validator("valid_until")
+    @classmethod
+    def _valid_until_must_be_aware(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("valid_until must be timezone-aware")
+        return value
+
+
+class InvestmentWatchCreateResponse(BaseModel):
+    """``investment_watch_create`` MCP return shape."""
+
+    success: bool = True
+    idempotent: bool
+    alert: InvestmentWatchAlertResponse
 
 
 # ---------------------------------------------------------------------------

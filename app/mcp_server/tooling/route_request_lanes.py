@@ -338,6 +338,7 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "investment_report_list",
         "investment_report_set_status",
         "investment_report_update",
+        "investment_watch_create",
         "investment_watch_recommend",
         "list_active_journals",
         "list_active_watches",
