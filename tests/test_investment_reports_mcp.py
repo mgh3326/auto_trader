@@ -28,6 +28,7 @@ from app.mcp_server.tooling.investment_reports_handlers import (
     investment_report_list_impl,
     investment_report_set_status_impl,
     investment_report_update_impl,
+    investment_watch_create_impl,
     investment_watch_recommend_impl,
 )
 from app.services.investment_reports.ingestion import InvestmentReportIngestionService
@@ -130,7 +131,42 @@ def test_tool_names_match_registered_set() -> None:
         "investment_report_set_status",
         "investment_report_add_items",
         "investment_report_update",
+        # ROB-768 — direct watch create (independent of report flow).
+        "investment_watch_create",
     }
+
+
+# --------------------------------------------------------------------------- #
+# ROB-768 Task 2 — direct watch create MCP handler
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_investment_watch_create_direct_persists_active_alert(
+    session: AsyncSession,
+) -> None:
+    response = await investment_watch_create_impl(
+        created_by="tradingcodex",
+        market="kr",
+        symbol="005930",
+        intent="trend_recovery_review",
+        rationale="support reclaimed",
+        watch_condition={
+            "metric": "price",
+            "operator": "above",
+            "threshold": 70000,
+            "action_mode": "approval_required",
+        },
+        valid_until=future_datetime().isoformat(),
+        trigger_checklist=["confirm fresh L1"],
+        max_action={"side": "buy"},
+        metadata={"source": "tcx-smoke"},
+    )
+
+    assert response["success"] is True
+    assert response["idempotent"] is False
+    assert response["alert"]["symbol"] == "005930"
+    assert response["alert"]["metadata"]["created_by"] == "tradingcodex"
+    assert response["alert"]["metadata"]["source_tool"] == "investment_watch_create"
+    assert response["alert"]["metadata"]["source"] == "tcx-smoke"
 
 
 @pytest.mark.asyncio

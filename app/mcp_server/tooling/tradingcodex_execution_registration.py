@@ -26,6 +26,9 @@ from app.mcp_server.tooling.investment_reports_handlers import (
     INVESTMENT_REPORT_TOOL_NAMES,
     register_investment_report_tools,
 )
+from app.mcp_server.tooling.investment_reports_handlers import (
+    investment_watch_create_impl as _investment_watch_create,
+)
 from app.mcp_server.tooling.operating_briefing_registration import (
     OPERATING_BRIEFING_TOOL_NAMES,
     register_operating_briefing_tools,
@@ -95,6 +98,10 @@ _TRADINGCODEX_EXECUTION_WATCH_READ_TOOL_NAMES: set[str] = {
     "investment_watch_events_list_recent",
 }
 
+_TRADINGCODEX_EXECUTION_WATCH_WRITE_TOOL_NAMES: set[str] = {
+    "investment_watch_create",
+}
+
 _TRADINGCODEX_EXECUTION_LEARNING_READ_TOOL_NAMES: set[str] = {
     "get_forecasts",
     "get_trade_retrospectives",
@@ -111,6 +118,7 @@ TRADINGCODEX_EXECUTION_TOOL_NAMES: set[str] = (
     | _TRADINGCODEX_EXECUTION_ORDER_TOOL_NAMES
     | _TRADINGCODEX_EXECUTION_ADVISORY_TOOL_NAMES
     | _TRADINGCODEX_EXECUTION_WATCH_READ_TOOL_NAMES
+    | _TRADINGCODEX_EXECUTION_WATCH_WRITE_TOOL_NAMES
     | _TRADINGCODEX_EXECUTION_LEARNING_READ_TOOL_NAMES
     | _TRADINGCODEX_EXECUTION_LEARNING_WRITE_TOOL_NAMES
 )
@@ -118,6 +126,15 @@ TRADINGCODEX_EXECUTION_TOOL_NAMES: set[str] = (
 _INVESTMENT_REPORT_REGISTERED_TOOL_NAMES: set[str] = INVESTMENT_REPORT_TOOL_NAMES | {
     "investment_watch_events_list_recent",
 }
+
+# Narrow allowlist passed to register_investment_report_tools so the raw
+# investment_watch_create (no created_by guard) is NEVER registered through
+# the filtered pathway. Only watch read tools survive the filter — the
+# guarded investment_watch_create wrapper is registered directly on the
+# unfiltered mcp via _register_watch_write_tools below.
+_TRADINGCODEX_EXECUTION_INVESTMENT_REPORT_FILTER_TOOL_NAMES: set[str] = (
+    _TRADINGCODEX_EXECUTION_WATCH_READ_TOOL_NAMES
+)
 
 TRADINGCODEX_EXECUTION_FORBIDDEN_TOOL_NAMES: set[str] = (
     (ORDER_TOOL_NAMES - TRADINGCODEX_EXECUTION_TOOL_NAMES)
@@ -319,6 +336,57 @@ def _register_learning_write_tools(mcp: FastMCP) -> None:
         )
 
 
+def _register_watch_write_tools(mcp: FastMCP) -> None:
+    """Direct watch-create wrapper: ``created_by`` guard BEFORE DB write.
+
+    The underlying ``investment_watch_create_impl`` is a base MCP surface tool
+    (no guard). Registering it through the filtered pathway would leak the raw
+    impl onto ``tradingcodex_execution`` and defeat the write provenance gate.
+    This wrapper rejects missing/blank ``created_by`` and only then forwards to
+    the base impl.
+    """
+
+    @mcp.tool(
+        name="investment_watch_create",
+        description=(
+            "tradingcodex_execution: create an active support/resistance watch "
+            "without report-flow coupling. Requires explicit created_by such "
+            "as 'tradingcodex'."
+        ),
+    )
+    async def investment_watch_create(
+        created_by: str | None = None,
+        market: str = "",
+        symbol: str = "",
+        intent: str = "",
+        rationale: str = "",
+        watch_condition: dict | None = None,
+        valid_until: str = "",
+        trigger_checklist: list[str] | None = None,
+        max_action: dict | None = None,
+        metadata: dict | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        label = _clean_label(created_by)
+        if label is None:
+            return _created_by_required(
+                "investment_watch_create", parameter="created_by"
+            )
+        return await _investment_watch_create(
+            created_by=label,
+            market=market,
+            symbol=symbol,
+            intent=intent,
+            rationale=rationale,
+            watch_condition=watch_condition or {},
+            valid_until=valid_until,
+            trigger_checklist=trigger_checklist,
+            max_action=max_action,
+            metadata=metadata,
+            idempotency_key=idempotency_key,
+        )
+
+
 def register_tradingcodex_execution_tools(mcp: FastMCP) -> None:
     """Register only the TradingCodex broker execution allowlist."""
     filtered = cast("FastMCP", _AllowlistedMCP(mcp, TRADINGCODEX_EXECUTION_TOOL_NAMES))
@@ -331,9 +399,21 @@ def register_tradingcodex_execution_tools(mcp: FastMCP) -> None:
     register_trading_policy_tools(filtered)
     register_route_request_tools(filtered)
     register_operating_briefing_tools(filtered)
-    register_investment_report_tools(filtered, include_snapshot_generator=False)
+    # Narrow allowlist so the raw (unguarded) investment_watch_create impl is
+    # NOT registered through the filtered pathway. The guarded wrapper is
+    # registered directly on ``mcp`` via _register_watch_write_tools below.
+    investment_report_filtered = cast(
+        "FastMCP",
+        _AllowlistedMCP(
+            mcp, _TRADINGCODEX_EXECUTION_INVESTMENT_REPORT_FILTER_TOOL_NAMES
+        ),
+    )
+    register_investment_report_tools(
+        investment_report_filtered, include_snapshot_generator=False
+    )
     _register_learning_read_tools(mcp)
     _register_learning_write_tools(mcp)
+    _register_watch_write_tools(mcp)
 
 
 __all__ = [

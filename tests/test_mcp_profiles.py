@@ -543,6 +543,7 @@ class TestTradingCodexExecutionProfile:
             "get_trading_policy",
             "list_active_watches",
             "investment_watch_events_list_recent",
+            "investment_watch_create",
             "forecast_save",
             "get_forecasts",
             "save_trade_retrospective",
@@ -628,6 +629,31 @@ class TestTradingCodexExecutionProfile:
             "error": "created_by_required",
             "tool": "save_trade_retrospective",
             "detail": "tradingcodex_execution write calls must pass explicit created_by_profile such as 'tradingcodex'.",
+        }
+
+    # ROB-768 Task 2 — direct watch create needs explicit created_by on the
+    # tradingcodex_execution profile. Blank/missing must fail closed BEFORE
+    # touching the DB.
+    @pytest.mark.asyncio
+    async def test_investment_watch_create_requires_explicit_created_by(self) -> None:
+        mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
+        tool = mcp.tools["investment_watch_create"]
+
+        result = await tool(
+            created_by=" ",
+            market="kr",
+            symbol="005930",
+            intent="trend_recovery_review",
+            rationale="missing provenance",
+            watch_condition={"metric": "price", "operator": "above", "threshold": 70000},
+            valid_until="2026-07-15T09:00:00+09:00",
+        )
+
+        assert result == {
+            "success": False,
+            "error": "created_by_required",
+            "tool": "investment_watch_create",
+            "detail": "tradingcodex_execution write calls must pass explicit created_by such as 'tradingcodex'.",
         }
 
 
