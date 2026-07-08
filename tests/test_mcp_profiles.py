@@ -645,7 +645,11 @@ class TestTradingCodexExecutionProfile:
             symbol="005930",
             intent="trend_recovery_review",
             rationale="missing provenance",
-            watch_condition={"metric": "price", "operator": "above", "threshold": 70000},
+            watch_condition={
+                "metric": "price",
+                "operator": "above",
+                "threshold": 70000,
+            },
             valid_until="2026-07-15T09:00:00+09:00",
         )
 

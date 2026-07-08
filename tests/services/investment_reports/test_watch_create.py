@@ -92,9 +92,7 @@ async def test_direct_watch_create_rejects_idempotency_collision(
     await service.create(_request(idempotency_key="tcx:collision"))
 
     with pytest.raises(ValueError, match="idempotency_key .* already used"):
-        await service.create(
-            _request(idempotency_key="tcx:collision", symbol="000660")
-        )
+        await service.create(_request(idempotency_key="tcx:collision", symbol="000660"))
 
 
 @pytest.mark.asyncio
