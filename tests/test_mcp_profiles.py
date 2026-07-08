@@ -541,9 +541,18 @@ class TestTradingCodexExecutionProfile:
             "get_fx_rate",
             "route_request",
             "get_trading_policy",
+            "list_active_watches",
+            "investment_watch_events_list_recent",
+            "forecast_save",
+            "get_forecasts",
+            "save_trade_retrospective",
+            "get_trade_retrospectives",
+            "trade_retrospective_pending",
         } <= mcp.tools.keys()
 
-    def test_does_not_register_modify_reconcile_or_persistence_tools(self) -> None:
+    def test_does_not_register_modify_reconcile_or_unsafe_persistence_tools(
+        self,
+    ) -> None:
         mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
         forbidden = {
             "modify_order",
@@ -554,17 +563,72 @@ class TestTradingCodexExecutionProfile:
             "toss_reconcile_orders",
             "analysis_artifact_save",
             "analysis_artifact_get",
-            "forecast_save",
+            "analysis_artifact_list",
+            "forecast_resolve",
+            "get_forecast_calibration",
+            "get_retrospective_aggregate",
             "session_context_append",
             "session_context_get_recent",
             "update_manual_holdings",
             "get_user_setting",
-            "list_active_watches",
+            "set_user_setting",
+            "investment_report_create",
+            "investment_report_add_items",
+            "investment_report_update",
+            "investment_report_decide_item",
+            "investment_report_activate_watch",
+            "investment_report_set_status",
+            "investment_watch_recommend",
         }
         leaked = forbidden & mcp.tools.keys()
         assert not leaked, (
             f"tradingcodex_execution leaked unsafe tools: {sorted(leaked)}"
         )
+
+    @pytest.mark.asyncio
+    async def test_forecast_save_requires_explicit_created_by(self) -> None:
+        mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
+        tool = mcp.tools["forecast_save"]
+
+        result = await tool(
+            created_by=" ",
+            symbol="005930",
+            instrument_type="equity_kr",
+            forecast_target={
+                "kind": "price_target",
+                "direction": "at_or_above",
+                "target_price": 75000.0,
+            },
+            probability=0.55,
+            review_date="2026-07-15",
+        )
+
+        assert result == {
+            "success": False,
+            "error": "created_by_required",
+            "tool": "forecast_save",
+            "detail": "tradingcodex_execution write calls must pass explicit created_by such as 'tradingcodex'.",
+        }
+
+    @pytest.mark.asyncio
+    async def test_save_trade_retrospective_requires_created_by_profile(self) -> None:
+        mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
+        tool = mcp.tools["save_trade_retrospective"]
+
+        result = await tool(
+            symbol="005930",
+            instrument_type="equity_kr",
+            account_mode="kis_live",
+            outcome="filled",
+            created_by_profile=" ",
+        )
+
+        assert result == {
+            "success": False,
+            "error": "created_by_required",
+            "tool": "save_trade_retrospective",
+            "detail": "tradingcodex_execution write calls must pass explicit created_by_profile such as 'tradingcodex'.",
+        }
 
 
 class TestResolveMcpProfile:
