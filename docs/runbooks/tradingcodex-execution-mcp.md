@@ -56,3 +56,28 @@ Expected: preview response includes `approval_hash`, `approval_expires_at`,
 
 Live smoke must be done only with a real approved order ticket and exact
 `live_confirmation` through `submit_approved_order`.
+
+## Watch Create Smoke
+
+Use this only against a test/staging database or with a deliberately harmless
+far-future paper watch.
+
+```bash
+./tcx mcp call auto-trader investment_watch_create '{
+  "created_by": "tradingcodex",
+  "market": "kr",
+  "symbol": "005930",
+  "intent": "trend_recovery_review",
+  "rationale": "smoke watch for TradingCodex direct watch surface",
+  "watch_condition": {"metric": "price", "operator": "above", "threshold": 1},
+  "valid_until": "2026-12-31T23:59:59+09:00",
+  "trigger_checklist": ["ignore smoke watch"],
+  "metadata": {"smoke": true}
+}'
+```
+
+Expected: `success=true`, `idempotent=false` on first call, and an `alert`
+payload whose `metadata.created_by` is `tradingcodex`.
+
+Forbidden provenance smoke: call the same tool with `created_by` omitted or
+blank. Expected: `success=false`, `error=created_by_required`, and no DB write.
