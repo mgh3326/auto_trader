@@ -62,9 +62,12 @@ See the full design in
 - **Nonce replay defense.** Every Telegram button click must present the
   `approval_nonce` currently stored on the group row; `consume_approval_nonce`
   (`app/services/order_proposals/service.py`) takes a `for_update=True` row
-  lock and raises `OrderProposalError("nonce_replay")` on a stale/mismatched
-  nonce — so a double-tap, a stale cached message, or a replayed callback can
-  never re-trigger approval/deny.
+  lock and raises `OrderProposalError("nonce_mismatch")` on a stale nonce (a
+  newer message already minted a different one) or `OrderProposalError(
+  "nonce_replay")` on an already-consumed nonce (a double-tap or replayed
+  callback) — so neither a stale cached message nor a duplicate callback can
+  ever re-trigger approval/deny. See Troubleshooting for the two error
+  strings.
 - **Chat allowlist (authz, separate from the webhook secret).**
   `handle_callback_update` rejects any callback whose `chat.id` is not in
   `settings.order_proposals_telegram_chat_allowlist`
@@ -400,8 +403,10 @@ submitted blind would defeat the entire point of a human-approval gate.
    matches → unresolved) rather than guessing.
 3. **Nonce replay guard.** `consume_approval_nonce` takes a row lock
    (`for_update=True`) and marks the nonce used; a second click with the
-   same nonce, or a click after a fresh nonce has already been minted (e.g.
-   a `NEEDS_RECONFIRM` cycle), raises `nonce_replay`.
+   same already-consumed nonce raises `nonce_replay`, and a click after a
+   fresh nonce has already been minted for a newer message (e.g. a
+   `NEEDS_RECONFIRM` cycle) raises `nonce_mismatch` — see Troubleshooting
+   for the distinction.
 4. **Commit lease.** For approve only, `acquire_commit_lease` takes a
    short-lived (`lease_seconds=10` default) in-flight lock on the group row
    — this is what prevents a double-tap on the approve button (two Telegram
@@ -665,19 +670,30 @@ because the callback's `chat.id` is not in
 failure — the webhook secret token check already passed by the time this
 fires.
 
+### `nonce_mismatch`
+
+`consume_approval_nonce` raised `OrderProposalError("nonce_mismatch")` — the
+`nonce` embedded in the clicked button's callback data does not equal the
+row's *current* `order_proposals.approval_nonce` value. Expected and correct
+when clicking a button on a Telegram message that has since been superseded
+by a fresh message minting a new nonce — either a `NEEDS_RECONFIRM` resend
+(`telegram_callback.py`'s reconfirm branch) or a brand-new
+`send_proposal_for_approval` dispatch (`dispatch.py`) for the same proposal.
+The old message's buttons are stale by design; approve/deny only the most
+recent message for a given proposal.
+
 ### `nonce_replay`
 
 `consume_approval_nonce` raised `OrderProposalError("nonce_replay")` — the
-`nonce` embedded in the clicked button's callback data no longer matches
-`order_proposals.approval_nonce` on that row. Expected and correct in three
-cases: (1) a genuine double-tap/duplicate Telegram update for the same
-click, (2) clicking a button on a Telegram message that has since been
-superseded by a fresh `NEEDS_RECONFIRM` message (which mints a new nonce —
-the old message's buttons are now stale by design), (3) clicking an already-
-approved/denied proposal's old message again. If none of those explain it,
-check whether something outside the Telegram flow called
-`set_approval_nonce`/`consume_approval_nonce` directly (should never happen
-outside `dispatch.py`/`telegram_callback.py`).
+clicked nonce *does* match `order_proposals.approval_nonce`, but
+`approval_nonce_used_at` is already set (that nonce was already consumed).
+Expected and correct in two cases: (1) a genuine double-tap/duplicate
+Telegram update delivery for the same click, (2) clicking an already-
+approved/denied proposal's message again (approve/deny does not mint a new
+nonce on that message, so its buttons remain clickable but inert). If
+neither explains it, check whether something outside the Telegram flow
+called `set_approval_nonce`/`consume_approval_nonce` directly (should never
+happen outside `dispatch.py`/`telegram_callback.py`).
 
 ### `NEEDS_RECONFIRM` loop (a rung keeps coming back needs_reconfirm)
 
