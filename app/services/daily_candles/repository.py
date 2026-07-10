@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 from sqlalchemy import text
@@ -54,6 +54,42 @@ class DailyCandleRow:
 
 class _RowcountResult:
     rowcount: int | None
+
+
+def _recent_time_floor(count: int, *, now: datetime) -> datetime:
+    """Lower time bound for chunk exclusion on daily-candle reads.
+
+    Sized generously (>= 400 days, or count*3 calendar days) so the bounded
+    window never returns fewer rows than the unbounded LIMIT would for
+    realistic history — chunk exclusion is a speed hint, not a data filter.
+    """
+    window_days = max(400, int(count) * 3)
+    return now - timedelta(days=window_days)
+
+
+def _build_kr_us_recent_sql(partition_col: str, adj_close_select: str) -> str:
+    return f"""
+        SELECT time, symbol, {partition_col} AS partition,
+               open, high, low, close, {adj_close_select}volume, value, source
+        FROM public.{{table_name}}
+        WHERE symbol = :symbol AND {partition_col} = :partition
+          AND time >= :time_floor
+        ORDER BY time DESC
+        LIMIT :count
+    """
+
+
+_CRYPTO_RECENT_SQL = """
+    SELECT time, :symbol AS symbol, :partition AS partition,
+           open, high, low, close,
+           NULL::numeric AS adj_close,
+           base_volume AS volume, quote_volume AS value, source
+    FROM public.crypto_candles_1d
+    WHERE instrument_id = :iid
+      AND time >= :time_floor
+    ORDER BY time DESC
+    LIMIT :count
+"""
 
 
 class DailyCandlesRepository:
@@ -400,18 +436,7 @@ class DailyCandlesRepository:
                 )
             except LookupError:
                 return []
-            sql = text(
-                """
-                SELECT time, :symbol AS symbol, :partition AS partition,
-                       open, high, low, close,
-                       NULL::numeric AS adj_close,
-                       base_volume AS volume, quote_volume AS value, source
-                FROM public.crypto_candles_1d
-                WHERE instrument_id = :iid
-                ORDER BY time DESC
-                LIMIT :count
-                """
-            )
+            sql = text(_CRYPTO_RECENT_SQL)
             result = await self._session.execute(
                 sql,
                 {
@@ -419,6 +444,7 @@ class DailyCandlesRepository:
                     "symbol": symbol,
                     "partition": partition,
                     "count": int(count),
+                    "time_floor": _recent_time_floor(int(count), now=datetime.now(UTC)),
                 },
             )
             out: list[DailyCandleRow] = []
@@ -447,17 +473,18 @@ class DailyCandlesRepository:
             "adj_close, " if self._supports_adj_close(market) else "NULL AS adj_close, "
         )
         sql = text(
-            f"""
-            SELECT time, symbol, {cfg.partition_col} AS partition,
-                   open, high, low, close, {adj_close_select}volume, value, source
-            FROM public.{cfg.table_name}
-            WHERE symbol = :symbol AND {cfg.partition_col} = :partition
-            ORDER BY time DESC
-            LIMIT :count
-            """
+            _build_kr_us_recent_sql(cfg.partition_col, adj_close_select).format(
+                table_name=cfg.table_name
+            )
         )
         result = await self._session.execute(
-            sql, {"symbol": symbol, "partition": partition, "count": int(count)}
+            sql,
+            {
+                "symbol": symbol,
+                "partition": partition,
+                "count": int(count),
+                "time_floor": _recent_time_floor(int(count), now=datetime.now(UTC)),
+            },
         )
         out = []
         for row in result.mappings().all():
