@@ -546,6 +546,16 @@ async def get_retrospectives(
     }
 
 
+async def get_retrospective_by_id(
+    db: AsyncSession, retro_id: int
+) -> TradeRetrospective | None:
+    """ROB-800 — fetch a single retrospective by primary key (read-only)."""
+    result = await db.execute(
+        select(TradeRetrospective).where(TradeRetrospective.id == retro_id).limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_open_next_actions(
     db: AsyncSession,
     *,

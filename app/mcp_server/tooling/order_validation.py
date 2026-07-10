@@ -533,6 +533,146 @@ async def _validate_defensive_trim_preconditions(
     )
 
 
+_LOSS_CUT_EXIT_REASONS = frozenset({"stop_loss", "thesis_change"})
+_LOSS_CUT_RETRO_TRIGGER_TYPES = frozenset({"stop_loss", "thesis_change"})
+_LOSS_CUT_RETRO_MAX_AGE_HOURS = 72
+
+
+async def _get_retrospective_by_id_for_loss_cut(retrospective_id: int):
+    """Open a read-only session and fetch the retrospective row (ROB-800)."""
+    from app.core.db import AsyncSessionLocal
+    from app.services.trade_journal.trade_retrospective_service import (
+        get_retrospective_by_id,
+    )
+
+    async with AsyncSessionLocal() as db:
+        return await get_retrospective_by_id(db, retrospective_id)
+
+
+async def _validate_loss_cut_preconditions(
+    *,
+    exit_intent: str | None,
+    retrospective_id: int | None,
+    exit_reason: str | None,
+    approval_issue_id: str | None,
+    side: str,
+    order_type: str,
+    is_mock: bool,
+    symbol: str,
+) -> tuple[LossCutContext | None, list[str]]:
+    """ROB-800 — fail-closed loss_cut gate. Collects EVERY violation so a
+    dry_run preview can return them all in one response. Returns (None, []) when
+    not a loss_cut request.
+    """
+    if exit_intent != "loss_cut":
+        return None, []
+
+    errors: list[str] = []
+
+    if side != "sell":
+        errors.append("loss_cut requires side='sell'")
+    if order_type != "limit":
+        errors.append("loss_cut requires order_type='limit' (market orders blocked)")
+    if is_mock:
+        errors.append("loss_cut is live-only; use allow_loss_sell for mock practice")
+
+    resolved_exit_reason = (exit_reason or "").strip()
+    if resolved_exit_reason not in _LOSS_CUT_EXIT_REASONS:
+        errors.append(
+            "loss_cut requires structured exit_reason in "
+            f"{sorted(_LOSS_CUT_EXIT_REASONS)}"
+        )
+
+    caller_agent_id = get_caller_agent_id()
+    allowlist = getattr(
+        settings, "loss_cut_allowed_agent_ids", [_TRADER_AGENT_ID_DEFAULT]
+    )
+    if not caller_agent_id:
+        errors.append(
+            "caller identity unavailable — loss_cut requires authenticated caller"
+        )
+    elif caller_agent_id not in allowlist:
+        errors.append(
+            f"caller agent {caller_agent_id} not permitted for loss_cut "
+            "(add to LOSS_CUT_ALLOWED_AGENT_IDS)"
+        )
+
+    approval_status: str | None = None
+    if not approval_issue_id:
+        errors.append("loss_cut requires approval_issue_id")
+    elif not _DEFENSIVE_TRIM_APPROVAL_REGEX.match(approval_issue_id):
+        errors.append("approval_issue_id format invalid (expected e.g. 'ROB-800')")
+    else:
+        if _is_cached_approved(approval_issue_id):
+            approval_status = "done"
+        else:
+            try:
+                approval_status = await _fetch_approval_issue_status(approval_issue_id)
+            except Exception:
+                approval_status = None
+            if approval_status == "done":
+                _cache_approved(approval_issue_id)
+        if approval_status != "done":
+            errors.append(
+                f"approval_issue_id {approval_issue_id} not found or not in 'done' status"
+            )
+
+    retro = None
+    if retrospective_id is None:
+        errors.append(
+            "loss_cut requires retrospective_id (no retrospective, no loss_cut)"
+        )
+    else:
+        try:
+            retro = await _get_retrospective_by_id_for_loss_cut(retrospective_id)
+        except Exception:
+            retro = None
+        if retro is None:
+            errors.append(f"retrospective_id {retrospective_id} not found")
+        else:
+            if (retro.symbol or "").strip().upper() != symbol.strip().upper():
+                errors.append(
+                    f"retrospective_id {retrospective_id} symbol {retro.symbol} "
+                    f"does not match order symbol {symbol}"
+                )
+            if retro.trigger_type not in _LOSS_CUT_RETRO_TRIGGER_TYPES:
+                errors.append(
+                    f"retrospective trigger_type {retro.trigger_type} not in "
+                    f"{sorted(_LOSS_CUT_RETRO_TRIGGER_TYPES)}"
+                )
+            created = retro.created_at
+            if created is not None:
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=datetime.UTC)
+                age = datetime.datetime.now(datetime.UTC) - created
+                if age > datetime.timedelta(hours=_LOSS_CUT_RETRO_MAX_AGE_HOURS):
+                    errors.append(
+                        f"retrospective_id {retrospective_id} is stale "
+                        f"(> {_LOSS_CUT_RETRO_MAX_AGE_HOURS}h old)"
+                    )
+
+    if errors:
+        return None, errors
+
+    return (
+        LossCutContext(
+            retrospective_id=retrospective_id,  # type: ignore[arg-type]
+            exit_reason=resolved_exit_reason,
+            approval_issue_id=approval_issue_id,  # type: ignore[arg-type]
+            requester_agent_id=caller_agent_id,  # type: ignore[arg-type]
+            max_slip=_loss_cut_max_slip_value(),
+            approval_verified_at=datetime.datetime.now(datetime.UTC),
+        ),
+        [],
+    )
+
+
+def _loss_cut_max_slip_value() -> float:
+    from app.services.trading_policy_service import loss_cut_max_slip
+
+    return loss_cut_max_slip()
+
+
 _SCALPING_EXIT_REASONS = frozenset({"stop_loss", "take_profit", "time_stop"})
 
 
