@@ -764,6 +764,21 @@ class Settings(BaseSettings):
     # ORDER PROPOSALS (ROB-816) — default-off SOT ledger + read/create MCP tools.
     # Gates MCP tool registration; the Telegram approval surface has its own gate (PR 2).
     ORDER_PROPOSALS_ENABLED: bool = False
+    # ROB-816 PR 2 — Telegram approval flow (default off)
+    ORDER_PROPOSALS_TELEGRAM_ENABLED: bool = False
+    ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN: str = ""
+    ORDER_PROPOSALS_TELEGRAM_TOKEN: str = ""
+    ORDER_PROPOSALS_TELEGRAM_TOKEN_HEADER: str = "X-Telegram-Bot-Api-Secret-Token"
+    ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR: str = ""
+
+    @property
+    def order_proposals_telegram_chat_allowlist(self) -> list[str]:
+        return [
+            chat_id.strip()
+            for chat_id in self.ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR.split(",")
+            if chat_id.strip()
+        ]
+
     # ROB-214 — recurring reconciliation scheduler remains disabled unless explicitly enabled.
     execution_ledger_reconcile_scheduler_enabled: bool = False
     execution_ledger_reconcile_scheduler_cron: str = "*/30 * * * *"
