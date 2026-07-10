@@ -726,6 +726,12 @@ class Settings(BaseSettings):
     # advisory 프로필을 운영자가 확장(default {HERMES_ADVISOR, CLAUDE_ADVISOR}와 UNION).
     # 빈 값이면 기본만. 스모크/테스트 프로필은 명시하지 않는 한 제외(fail-closed).
     INVESTMENT_ADVISORY_DRAFT_PROFILES: Annotated[list[str], NoDecode] = []
+    # ROB-800 — allowlist of MCP caller agent ids permitted to place a
+    # sanctioned loss_cut exit intent. Default = single Trader agent
+    # (backcompat with prior implicit policy).
+    LOSS_CUT_ALLOWED_AGENT_IDS: Annotated[list[str], NoDecode] = [
+        "6b2192cc-14fa-4335-b572-2fe1e0cb54a7"
+    ]
     # ROB-269 Phase 3 — gates service-side stale-gate enforcement on report
     # ingestion when account_scope='kis_live' + snapshot_bundle_uuid present.
     # DB CHECK ck_investment_reports_no_published_on_hard_stale is always live
@@ -882,6 +888,32 @@ class Settings(BaseSettings):
                 return [p.strip() for p in parsed if p.strip()]
             return [p.strip() for p in value.split(",") if p.strip()]
         return v or []
+
+    @field_validator("LOSS_CUT_ALLOWED_AGENT_IDS", mode="before")
+    @classmethod
+    def _parse_loss_cut_allowlist(cls, v: list[str] | str) -> list[str]:
+        """Parse comma-separated or JSON-list env into a clean agent-id list.
+
+        ROB-800 — allowlist of MCP caller agent ids permitted to place a
+        sanctioned loss_cut. Defaults to the single Trader agent (backcompat).
+        """
+        if isinstance(v, list):
+            return [str(p).strip() for p in v if str(p).strip()]
+        value = (v or "").strip()
+        if not value:
+            return []
+        if value.startswith("["):
+            try:
+                parsed = json.loads(value)
+            except ValueError:
+                parsed = []
+            if isinstance(parsed, list):
+                return [str(p).strip() for p in parsed if str(p).strip()]
+        return [p.strip() for p in value.split(",") if p.strip()]
+
+    @property
+    def loss_cut_allowed_agent_ids(self) -> list[str]:
+        return self.LOSS_CUT_ALLOWED_AGENT_IDS
 
     @field_validator("SENTRY_TRACES_SAMPLE_RATE", "SENTRY_PROFILES_SAMPLE_RATE")
     @classmethod
