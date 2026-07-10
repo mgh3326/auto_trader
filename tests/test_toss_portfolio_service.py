@@ -268,3 +268,32 @@ async def test_snapshot_need_sellable_false_ignores_cache() -> None:
     # ROB-685 skip path is untouched: no fanout, no cache read/write.
     assert client.sellable_calls == []
     assert snap.positions[0].sellable_quantity is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_toss_portfolio_snapshot_skips_cash_when_not_needed() -> None:
+    client = _FakeTossClient()
+
+    snapshot = await fetch_toss_portfolio_snapshot(client=client, need_cash=False)
+
+    # ROB-810: the ACCOUNT-limited buying_power fanout is skipped entirely.
+    assert client.buying_power_calls == []
+    assert snapshot.cash_krw is None
+    assert snapshot.cash_usd is None
+    # Holdings + sellable still resolve normally.
+    assert len(snapshot.positions) == 1
+    assert snapshot.positions[0].symbol == "BRK.B"
+    assert snapshot.positions[0].sellable_quantity == Decimal("1.25")
+    assert snapshot.errors == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_toss_portfolio_snapshot_default_still_fetches_cash() -> None:
+    client = _FakeTossClient()
+
+    snapshot = await fetch_toss_portfolio_snapshot(client=client)
+
+    # Default unchanged: buying_power still fetched (invest_home regression guard).
+    assert client.buying_power_calls == ["KRW", "USD"]
+    assert snapshot.cash_krw == Decimal("123456")
+    assert snapshot.cash_usd == Decimal("789.01")

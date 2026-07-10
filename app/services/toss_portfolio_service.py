@@ -134,6 +134,7 @@ async def fetch_toss_cash_snapshot(
 async def fetch_toss_portfolio_snapshot(
     *,
     need_sellable: bool = True,
+    need_cash: bool = True,
     sellable_cache: TossSellableCache | None = None,
     client: TossPortfolioClient | None = None,
 ) -> TossPortfolioSnapshot:
@@ -145,7 +146,13 @@ async def fetch_toss_portfolio_snapshot(
     # awaiting it serially after the position loop. Output is unchanged; only
     # the wall-clock overlap changes. Drained/cancelled in the finally if the
     # holdings chain raises before we await it.
-    cash_task = asyncio.ensure_future(fetch_toss_cash_snapshot(client=active_client))
+    # ROB-810: callers that discard cash (MCP get_holdings) pass need_cash=False
+    # so the ACCOUNT 1-TPS buying_power fanout (~3.1s) is skipped entirely.
+    cash_task: asyncio.Future | None = (
+        asyncio.ensure_future(fetch_toss_cash_snapshot(client=active_client))
+        if need_cash
+        else None
+    )
 
     try:
         with sentry_sdk.start_span(
@@ -265,13 +272,19 @@ async def fetch_toss_portfolio_snapshot(
                 )
             )
 
-        cash_snapshot = await cash_task
-        errors.extend(cash_snapshot.errors)
+        if cash_task is not None:
+            cash_snapshot = await cash_task
+            errors.extend(cash_snapshot.errors)
+            cash_krw = cash_snapshot.cash_krw
+            cash_usd = cash_snapshot.cash_usd
+        else:
+            cash_krw = None
+            cash_usd = None
 
         return TossPortfolioSnapshot(
             positions=positions,
-            cash_krw=cash_snapshot.cash_krw,
-            cash_usd=cash_snapshot.cash_usd,
+            cash_krw=cash_krw,
+            cash_usd=cash_usd,
             errors=errors,
         )
     finally:
@@ -280,7 +293,7 @@ async def fetch_toss_portfolio_snapshot(
         # (and never leaks a pending task). fetch_toss_cash_snapshot swallows
         # per-currency errors internally, so this only fires on holdings-chain
         # failure.
-        if not cash_task.done():
+        if cash_task is not None and not cash_task.done():
             cash_task.cancel()
             with contextlib.suppress(BaseException):
                 await cash_task
