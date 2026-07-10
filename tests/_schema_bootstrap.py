@@ -177,6 +177,9 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ALTER TABLE review.kis_live_order_ledger ADD COLUMN IF NOT EXISTS idempotency_key TEXT",
     "ALTER TABLE review.live_order_ledger ADD COLUMN IF NOT EXISTS approval_hash TEXT",
     "ALTER TABLE review.live_order_ledger ADD COLUMN IF NOT EXISTS idempotency_key TEXT",
+    # ---- ROB-800: send-time exit_intent (loss_cut) on live/kis-live ledgers ----
+    "ALTER TABLE review.kis_live_order_ledger ADD COLUMN IF NOT EXISTS exit_intent TEXT",
+    "ALTER TABLE review.live_order_ledger ADD COLUMN IF NOT EXISTS exit_intent TEXT",
     # ---- invest_kr_fundamentals_snapshots (ROB-430) ----
     "ALTER TABLE invest_kr_fundamentals_snapshots ADD COLUMN IF NOT EXISTS week_high_52_date DATE",
     # ---- report snapshot metadata + diagnostics (review.investment_reports) ----

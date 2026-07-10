@@ -262,6 +262,8 @@ async def _place_order_variant(
     indicators_snapshot: dict[str, Any] | None,
     defensive_trim: bool,
     approval_issue_id: str | None,
+    exit_intent: str | None = None,
+    retrospective_id: int | None = None,
     account_mode: str | None,
     account_type: str | None,
     report_item_uuid: str | None = None,
@@ -311,6 +313,8 @@ async def _place_order_variant(
             indicators_snapshot=indicators_snapshot,
             defensive_trim=defensive_trim,
             approval_issue_id=approval_issue_id,
+            exit_intent=exit_intent,
+            retrospective_id=retrospective_id,
             is_mock=_is_mock_mode(pinned_mode),
             report_item_uuid=report_item_uuid,
             approval_hash=approval_hash,
@@ -489,6 +493,15 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             "live send; required=mandatory (this live tool must supply a hash). "
             "account_mode='kis_live' is accepted but redundant; "
             "any other account_mode value is rejected."
+            'ROB-800 exit_intent: Optional[str] — set to "loss_cut" (live sell-only '
+            "sanctioned path; mutually exclusive with defensive_trim=True). When set, "
+            "the caller must also provide retrospective_id (≤72h, symbol match, "
+            "trigger_type ∈ {stop_loss, thesis_change}), approval_issue_id (Paperclip "
+            "status=done), and an approval_hash (independent of "
+            "ORDER_APPROVAL_HASH_MODE). The four preconditions are aggregated: a "
+            "dry_run preview returns ALL violations in one response. exit_intent is "
+            "recorded on the live order ledger. loss_cut is LIVE-ONLY — mock "
+            "callers will receive a precondition violation."
         ),
     )
     async def kis_live_place_order(  # NOSONAR - public MCP order schema mirrors legacy tool.
@@ -510,6 +523,8 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
         indicators_snapshot: dict[str, Any] | None = None,
         defensive_trim: bool = False,
         approval_issue_id: str | None = None,
+        exit_intent: str | None = None,
+        retrospective_id: int | None = None,
         venue: str | None = None,
         order_validity: str | None = None,
         reserved_time: str | None = None,
@@ -549,6 +564,8 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             indicators_snapshot=indicators_snapshot,
             defensive_trim=defensive_trim,
             approval_issue_id=approval_issue_id,
+            exit_intent=exit_intent,
+            retrospective_id=retrospective_id,
             account_mode=account_mode,
             account_type=account_type,
             report_item_uuid=report_item_uuid,

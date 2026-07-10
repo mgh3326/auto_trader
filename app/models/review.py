@@ -348,6 +348,7 @@ class KISLiveOrderLedger(Base):
     min_hold_days: Mapped[int | None] = mapped_column(SmallInteger)
     notes: Mapped[str | None] = mapped_column(Text)
     exit_reason: Mapped[str | None] = mapped_column(Text)
+    exit_intent: Mapped[str | None] = mapped_column(Text)  # ROB-800: 'loss_cut'
     indicators_snapshot: Mapped[dict | None] = mapped_column(JSONB)
 
     # ROB-473 — audit linkage to the report item that drove this order.
@@ -445,6 +446,7 @@ class LiveOrderLedger(Base):
     min_hold_days: Mapped[int | None] = mapped_column(SmallInteger)
     notes: Mapped[str | None] = mapped_column(Text)
     exit_reason: Mapped[str | None] = mapped_column(Text)
+    exit_intent: Mapped[str | None] = mapped_column(Text)  # ROB-800: 'loss_cut'
     indicators_snapshot: Mapped[dict | None] = mapped_column(JSONB)
 
     # ROB-473 — audit linkage to the report item that drove this order (see

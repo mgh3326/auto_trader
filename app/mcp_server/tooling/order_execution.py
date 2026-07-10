@@ -22,6 +22,7 @@ from app.core.timezone import KST, now_kst
 from app.mcp_server.caller_identity import get_caller_source
 from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
 from app.mcp_server.tooling import order_approval
+from app.mcp_server.tooling import order_validation as ov
 from app.mcp_server.tooling.order_journal import (
     _append_journal_warning,
     _close_journals_on_sell,
@@ -360,6 +361,7 @@ async def _build_preview(
     defensive_trim_ctx: DefensiveTrimContext | None,
     is_mock: bool = False,
     scalping_exit_ctx: ScalpingExitContext | None = None,
+    loss_cut_ctx: ov.LossCutContext | None = None,
 ) -> dict[str, Any]:
     """Run preview and enrich result with defaults."""
     dry_run_result = await _preview_order(
@@ -373,6 +375,7 @@ async def _build_preview(
         defensive_trim_ctx=defensive_trim_ctx,
         is_mock=is_mock,
         scalping_exit_ctx=scalping_exit_ctx,
+        loss_cut_ctx=loss_cut_ctx,
     )
     if not isinstance(dry_run_result, dict):
         raise ValueError("Order preview returned invalid result")
@@ -703,6 +706,7 @@ async def _execute_and_record(
     order_amount: float,
     reason: str,
     exit_reason: str | None,
+    exit_intent: str | None = None,
     thesis: str | None,
     strategy: str | None,
     target_price: float | None,
@@ -929,6 +933,7 @@ async def _execute_and_record(
             execution_result=execution_result,
             reason=reason,
             exit_reason=exit_reason,
+            exit_intent=exit_intent,
             thesis=thesis,
             strategy=strategy,
             target_price=target_price,
@@ -968,6 +973,7 @@ async def _execute_and_record(
             execution_result=execution_result,
             reason=reason,
             exit_reason=exit_reason,
+            exit_intent=exit_intent,
             thesis=thesis,
             strategy=strategy,
             target_price=target_price,
@@ -1027,6 +1033,7 @@ async def _execute_and_record(
             execution_result=execution_result,
             reason=reason,
             exit_reason=exit_reason,
+            exit_intent=exit_intent,
             thesis=thesis,
             strategy=strategy,
             target_price=target_price,
@@ -1197,6 +1204,8 @@ async def _place_order_impl(
     indicators_snapshot: dict[str, Any] | None = None,
     defensive_trim: bool = False,
     approval_issue_id: str | None = None,
+    exit_intent: str | None = None,
+    retrospective_id: int | None = None,
     is_mock: bool = False,
     scalping_exit: bool = False,
     scalping_strategy_id: str | None = None,
@@ -1247,6 +1256,33 @@ async def _place_order_impl(
 
     if market_type == "crypto" and is_mock:
         return _order_error(_MOCK_CRYPTO_ERROR)
+
+    if exit_intent is not None and exit_intent != "loss_cut":
+        return _order_error(f"unknown exit_intent {exit_intent!r} (only 'loss_cut')")
+    if exit_intent == "loss_cut" and defensive_trim:
+        return _order_error("loss_cut and defensive_trim are mutually exclusive")
+
+    loss_cut_ctx: ov.LossCutContext | None = None
+    if exit_intent == "loss_cut":
+        loss_cut_ctx, loss_cut_errors = await ov._validate_loss_cut_preconditions(
+            exit_intent=exit_intent,
+            retrospective_id=retrospective_id,
+            exit_reason=exit_reason,
+            approval_issue_id=approval_issue_id,
+            side=side_lower,
+            order_type=order_type_lower,
+            is_mock=is_mock,
+            symbol=normalized_symbol,
+        )
+        if loss_cut_errors:
+            return {
+                "success": False,
+                "error": "loss_cut_preconditions_failed",
+                "violations": loss_cut_errors,
+                "source": source,
+                "symbol": normalized_symbol,
+                "instrument_type": market_type,
+            }
 
     try:
         defensive_trim_ctx = await _validate_defensive_trim_preconditions(
@@ -1315,6 +1351,7 @@ async def _place_order_impl(
                 is_mock=is_mock,
                 dry_run=dry_run,
                 scalping_exit_ctx=scalping_exit_ctx,
+                loss_cut_ctx=loss_cut_ctx,
             )
             if sell_error is not None:
                 return sell_error
@@ -1332,6 +1369,7 @@ async def _place_order_impl(
                 defensive_trim_ctx=defensive_trim_ctx,
                 is_mock=is_mock,
                 scalping_exit_ctx=scalping_exit_ctx,
+                loss_cut_ctx=loss_cut_ctx,
             )
         except ValueError as preview_exc:
             preview_error = str(preview_exc) or preview_exc.__class__.__name__
@@ -1415,7 +1453,30 @@ async def _place_order_impl(
 
         # Live send — approval-hash gate (valid hash = confirm).
         mode = getattr(settings, "order_approval_hash_mode", "optional")
-        if mode != "off":
+
+        # ROB-800 — loss_cut is fail-closed on the approval hash regardless of
+        # ORDER_APPROVAL_HASH_MODE. The operator must preview the exact order
+        # (dry_run=True) and pass the returned hash back: a missing hash is
+        # rejected, and a present-but-invalid/expired hash is verified and
+        # rejected even when mode="off" (which would otherwise skip verification).
+        if loss_cut_ctx is not None:
+            if approval_hash is None:
+                err = _order_error(
+                    "loss_cut live send requires approval_hash "
+                    "(re-run dry_run=True and pass the returned approval_hash)"
+                )
+                err["error_code"] = "loss_cut_approval_hash_required"
+                return err
+            verdict = order_approval.verify_approval_token(
+                approval_hash, canonical, now=now
+            )
+            if not verdict.ok:
+                err = _order_error(verdict.message or "approval_hash invalid")
+                err["error_code"] = verdict.error_code
+                if verdict.diff is not None:
+                    err["diff"] = verdict.diff
+                return err
+        elif mode != "off":
             if approval_hash is not None:
                 verdict = order_approval.verify_approval_token(
                     approval_hash, canonical, now=now
@@ -1447,7 +1508,9 @@ async def _place_order_impl(
                 )
 
         approval_digest = (
-            order_approval.derive_approval_digest(canonical) if mode != "off" else None
+            order_approval.derive_approval_digest(canonical)
+            if (mode != "off" or loss_cut_ctx is not None)
+            else None
         )
 
         # Real execution
@@ -1464,6 +1527,7 @@ async def _place_order_impl(
             order_amount=order_amount,
             reason=reason,
             exit_reason=exit_reason,
+            exit_intent=exit_intent,
             thesis=thesis,
             strategy=strategy,
             target_price=target_price,

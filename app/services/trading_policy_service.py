@@ -112,3 +112,27 @@ def sector_cluster_for(label: str | None) -> str | None:
             if m and m in needle:
                 return cluster
     return None
+
+
+_LOSS_CUT_MAX_SLIP_KEY = "sell.loss_cut_max_slip"
+_LOSS_CUT_MAX_SLIP_DEFAULT = 0.02
+
+
+def loss_cut_max_slip() -> float:
+    """ROB-800 — max downward slip fraction for a sanctioned loss_cut limit sell.
+
+    Code-enforced band magnitude sourced from config/trading_policy.yaml
+    (sell.loss_cut_max_slip). Falls back to 0.02 if the key is absent so the
+    guard stays fail-closed (a small band) rather than fail-open.
+    """
+    doc = load_trading_policy()
+    spec = doc.thresholds.get(_LOSS_CUT_MAX_SLIP_KEY)
+    if spec is None:
+        return _LOSS_CUT_MAX_SLIP_DEFAULT
+    try:
+        value = float(spec.value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return _LOSS_CUT_MAX_SLIP_DEFAULT
+    if not (0.0 < value < 0.5):
+        return _LOSS_CUT_MAX_SLIP_DEFAULT
+    return value

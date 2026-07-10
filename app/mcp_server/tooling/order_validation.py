@@ -80,6 +80,24 @@ class ScalpingExitContext:
     reason: str  # "stop_loss" | "take_profit" | "time_stop"
 
 
+@dataclass(frozen=True)
+class LossCutContext:
+    """ROB-800 — sanctioned live loss-cut authorization.
+
+    Constructed only by _validate_loss_cut_preconditions after ALL four
+    preconditions pass. When present, evaluate_sell_price_guards exempts the
+    avg*1.01 floor and relaxes the current-price guard to a band
+    (price >= current * (1 - max_slip)). Never threaded from any other path.
+    """
+
+    retrospective_id: int
+    exit_reason: str
+    approval_issue_id: str
+    requester_agent_id: str
+    max_slip: float
+    approval_verified_at: datetime.datetime
+
+
 def evaluate_sell_price_guards(
     *,
     price: float,
@@ -88,6 +106,7 @@ def evaluate_sell_price_guards(
     defensive_trim_ctx: DefensiveTrimContext | None,
     scalping_exit_ctx: ScalpingExitContext | None,
     allow_loss_sell: bool = False,
+    loss_cut_ctx: LossCutContext | None = None,
 ) -> str | None:
     """Single source of truth for limit-sell price guards.
 
@@ -99,6 +118,13 @@ def evaluate_sell_price_guards(
                                        practice: 손절 / stop-loss / loss rebalancing).
       - defensive_trim_ctx present -> floor bypassed, current-price guard enforced.
       - neither                    -> both guards enforced.
+
+    loss_cut_ctx  - When present: floor exempt; current-price guard relaxed to band
+                    price >= current * (1 - max_slip). Aggregated from all four
+                    preconditions (exit_reason, retrospective_id, approval_issue_id,
+                    caller allowlist). Mutual exclusion with defensive_trim_ctx is
+                    NOT enforced here — that's the caller's contract in
+                    _place_order_impl.
     """
     if scalping_exit_ctx is not None:
         return None
@@ -107,6 +133,17 @@ def evaluate_sell_price_guards(
     # scopes this to is_mock AND equity (never crypto/live); see _preview_sell /
     # _validate_sell_side. Operator-requested: mock must let 손절/스톱로스 be practiced.
     if allow_loss_sell:
+        return None
+    if loss_cut_ctx is not None:
+        # ROB-800 — sanctioned loss_cut: floor exempt, current-price guard
+        # relaxed to a downward slip band. Fat-finger deep discounts stay blocked.
+        band_floor = current_price * (1.0 - loss_cut_ctx.max_slip)
+        if current_price > 0 and price < band_floor:
+            return (
+                f"loss_cut sell price {price} below slip band floor "
+                f"{band_floor:.4f} (current {current_price} * "
+                f"(1 - {loss_cut_ctx.max_slip}))"
+            )
         return None
     min_sell_price = avg_price * 1.01
     if price < min_sell_price and defensive_trim_ctx is None:
@@ -494,6 +531,146 @@ async def _validate_defensive_trim_preconditions(
         requester_agent_id=caller_agent_id,
         approval_verified_at=datetime.datetime.now(datetime.UTC),
     )
+
+
+_LOSS_CUT_EXIT_REASONS = frozenset({"stop_loss", "thesis_change"})
+_LOSS_CUT_RETRO_TRIGGER_TYPES = frozenset({"stop_loss", "thesis_change"})
+_LOSS_CUT_RETRO_MAX_AGE_HOURS = 72
+
+
+async def _get_retrospective_by_id_for_loss_cut(retrospective_id: int):
+    """Open a read-only session and fetch the retrospective row (ROB-800)."""
+    from app.core.db import AsyncSessionLocal
+    from app.services.trade_journal.trade_retrospective_service import (
+        get_retrospective_by_id,
+    )
+
+    async with AsyncSessionLocal() as db:
+        return await get_retrospective_by_id(db, retrospective_id)
+
+
+async def _validate_loss_cut_preconditions(
+    *,
+    exit_intent: str | None,
+    retrospective_id: int | None,
+    exit_reason: str | None,
+    approval_issue_id: str | None,
+    side: str,
+    order_type: str,
+    is_mock: bool,
+    symbol: str,
+) -> tuple[LossCutContext | None, list[str]]:
+    """ROB-800 — fail-closed loss_cut gate. Collects EVERY violation so a
+    dry_run preview can return them all in one response. Returns (None, []) when
+    not a loss_cut request.
+    """
+    if exit_intent != "loss_cut":
+        return None, []
+
+    errors: list[str] = []
+
+    if side != "sell":
+        errors.append("loss_cut requires side='sell'")
+    if order_type != "limit":
+        errors.append("loss_cut requires order_type='limit' (market orders blocked)")
+    if is_mock:
+        errors.append("loss_cut is live-only; use allow_loss_sell for mock practice")
+
+    resolved_exit_reason = (exit_reason or "").strip()
+    if resolved_exit_reason not in _LOSS_CUT_EXIT_REASONS:
+        errors.append(
+            "loss_cut requires structured exit_reason in "
+            f"{sorted(_LOSS_CUT_EXIT_REASONS)}"
+        )
+
+    caller_agent_id = get_caller_agent_id()
+    allowlist = getattr(
+        settings, "loss_cut_allowed_agent_ids", [_TRADER_AGENT_ID_DEFAULT]
+    )
+    if not caller_agent_id:
+        errors.append(
+            "caller identity unavailable — loss_cut requires authenticated caller"
+        )
+    elif caller_agent_id not in allowlist:
+        errors.append(
+            f"caller agent {caller_agent_id} not permitted for loss_cut "
+            "(add to LOSS_CUT_ALLOWED_AGENT_IDS)"
+        )
+
+    approval_status: str | None = None
+    if not approval_issue_id:
+        errors.append("loss_cut requires approval_issue_id")
+    elif not _DEFENSIVE_TRIM_APPROVAL_REGEX.match(approval_issue_id):
+        errors.append("approval_issue_id format invalid (expected e.g. 'ROB-800')")
+    else:
+        if _is_cached_approved(approval_issue_id):
+            approval_status = "done"
+        else:
+            try:
+                approval_status = await _fetch_approval_issue_status(approval_issue_id)
+            except Exception:
+                approval_status = None
+            if approval_status == "done":
+                _cache_approved(approval_issue_id)
+        if approval_status != "done":
+            errors.append(
+                f"approval_issue_id {approval_issue_id} not found or not in 'done' status"
+            )
+
+    retro = None
+    if retrospective_id is None:
+        errors.append(
+            "loss_cut requires retrospective_id (no retrospective, no loss_cut)"
+        )
+    else:
+        try:
+            retro = await _get_retrospective_by_id_for_loss_cut(retrospective_id)
+        except Exception:
+            retro = None
+        if retro is None:
+            errors.append(f"retrospective_id {retrospective_id} not found")
+        else:
+            if (retro.symbol or "").strip().upper() != symbol.strip().upper():
+                errors.append(
+                    f"retrospective_id {retrospective_id} symbol {retro.symbol} "
+                    f"does not match order symbol {symbol}"
+                )
+            if retro.trigger_type not in _LOSS_CUT_RETRO_TRIGGER_TYPES:
+                errors.append(
+                    f"retrospective trigger_type {retro.trigger_type} not in "
+                    f"{sorted(_LOSS_CUT_RETRO_TRIGGER_TYPES)}"
+                )
+            created = retro.created_at
+            if created is not None:
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=datetime.UTC)
+                age = datetime.datetime.now(datetime.UTC) - created
+                if age > datetime.timedelta(hours=_LOSS_CUT_RETRO_MAX_AGE_HOURS):
+                    errors.append(
+                        f"retrospective_id {retrospective_id} is stale "
+                        f"(> {_LOSS_CUT_RETRO_MAX_AGE_HOURS}h old)"
+                    )
+
+    if errors:
+        return None, errors
+
+    return (
+        LossCutContext(
+            retrospective_id=retrospective_id,  # type: ignore[arg-type]
+            exit_reason=resolved_exit_reason,
+            approval_issue_id=approval_issue_id,  # type: ignore[arg-type]
+            requester_agent_id=caller_agent_id,  # type: ignore[arg-type]
+            max_slip=_loss_cut_max_slip_value(),
+            approval_verified_at=datetime.datetime.now(datetime.UTC),
+        ),
+        [],
+    )
+
+
+def _loss_cut_max_slip_value() -> float:
+    from app.services.trading_policy_service import loss_cut_max_slip
+
+    return loss_cut_max_slip()
 
 
 _SCALPING_EXIT_REASONS = frozenset({"stop_loss", "take_profit", "time_stop"})
@@ -945,6 +1122,7 @@ async def _preview_sell(
     defensive_trim_ctx: DefensiveTrimContext | None = None,
     is_mock: bool = False,
     scalping_exit_ctx: ScalpingExitContext | None = None,
+    loss_cut_ctx: LossCutContext | None = None,
 ) -> dict[str, Any]:
     """Build a dry-run preview dict for a sell order."""
     result: dict[str, Any] = {
@@ -1001,6 +1179,7 @@ async def _preview_sell(
             defensive_trim_ctx=defensive_trim_ctx,
             scalping_exit_ctx=scalping_exit_ctx,
             allow_loss_sell=allow_loss_sell,
+            loss_cut_ctx=loss_cut_ctx,
         )
         if guard_error is not None:
             result["error"] = guard_error
@@ -1056,6 +1235,11 @@ async def _preview_sell(
         result["defensive_trim"] = True
         result["approval_issue_id"] = defensive_trim_ctx.approval_issue_id
 
+    if loss_cut_ctx is not None:
+        result["exit_intent"] = "loss_cut"
+        result["loss_cut_slip_band"] = current_price * (1.0 - loss_cut_ctx.max_slip)
+        result["retrospective_id"] = loss_cut_ctx.retrospective_id
+
     estimated_value = execution_price * order_quantity
     realized_pnl = (execution_price - avg_price) * order_quantity
 
@@ -1078,6 +1262,7 @@ async def _preview_order(
     defensive_trim_ctx: DefensiveTrimContext | None = None,
     is_mock: bool = False,
     scalping_exit_ctx: ScalpingExitContext | None = None,
+    loss_cut_ctx: LossCutContext | None = None,
 ) -> dict[str, Any]:
     """Validate order and return a dry-run simulation dict.
 
@@ -1102,6 +1287,7 @@ async def _preview_order(
         defensive_trim_ctx=defensive_trim_ctx,
         is_mock=is_mock,
         scalping_exit_ctx=scalping_exit_ctx,
+        loss_cut_ctx=loss_cut_ctx,
     )
 
 
@@ -1168,6 +1354,7 @@ async def _validate_sell_side(
     is_mock: bool = False,
     dry_run: bool = False,
     scalping_exit_ctx: ScalpingExitContext | None = None,
+    loss_cut_ctx: LossCutContext | None = None,
 ) -> tuple[float, float, dict[str, Any] | None]:
     """Validate sell-side: check holdings, locked, price constraints.
 
@@ -1255,6 +1442,7 @@ async def _validate_sell_side(
             defensive_trim_ctx=defensive_trim_ctx,
             scalping_exit_ctx=scalping_exit_ctx,
             allow_loss_sell=allow_loss_sell,
+            loss_cut_ctx=loss_cut_ctx,
         )
         if guard_error is not None:
             return 0.0, 0.0, order_error_fn(guard_error)
