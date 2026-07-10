@@ -1048,6 +1048,7 @@ async def _get_holdings_impl(
     account_name: str | None = None,
     is_mock: bool = False,
     routing_account_mode: str = "kis_live",
+    fresh_sellable: bool = False,
 ) -> dict[str, Any]:
     """Implementation for get_holdings tool."""
     if minimum_value is not None and minimum_value < 0:
@@ -1064,6 +1065,7 @@ async def _get_holdings_impl(
         include_current_price=include_current_price,
         account_name=account_name,
         is_mock=is_mock,
+        fresh_sellable=fresh_sellable,
     )
 
     filtered_count = 0
@@ -1378,7 +1380,9 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             "price lookup errors, and broker-level API errors (potentially "
             "marked degraded=true during outages). "
             "Use account_mode={'db_simulated','kis_mock','kis_live'} "
-            "(preferred); account_type aliases are deprecated and emit warnings."
+            "(preferred); account_type aliases are deprecated and emit warnings. "
+            "fresh_sellable=True bypasses the 45s Toss sellable-quantity cache "
+            "and re-fetches per-symbol (default False reuses the shared cache). "
         ),
     )
     async def get_holdings(
@@ -1389,6 +1393,7 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
         account_name: str | None = None,
         account_mode: str | None = None,
         account_type: str | None = None,
+        fresh_sellable: bool = False,
     ) -> dict[str, Any]:
         routing = normalize_account_mode(
             account_mode=account_mode,
@@ -1412,6 +1417,7 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
                 account_name=account_name,
                 is_mock=routing.is_kis_mock,
                 routing_account_mode=routing.account_mode,
+                fresh_sellable=fresh_sellable,
             ),
             routing,
         )

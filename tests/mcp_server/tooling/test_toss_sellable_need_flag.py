@@ -151,3 +151,21 @@ async def test_collect_portfolio_positions_forwards_fresh_sellable(monkeypatch):
     )
 
     assert seen == [False, True]
+
+
+async def test_get_holdings_impl_forwards_fresh_sellable(monkeypatch):
+    seen: dict[str, Any] = {}
+
+    async def fake_collect(**kwargs):
+        seen.update(kwargs)
+        return [], [], None, None
+
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_portfolio_positions", fake_collect
+    )
+
+    await portfolio_holdings._get_holdings_impl()
+    assert seen["fresh_sellable"] is False
+
+    await portfolio_holdings._get_holdings_impl(fresh_sellable=True)
+    assert seen["fresh_sellable"] is True
