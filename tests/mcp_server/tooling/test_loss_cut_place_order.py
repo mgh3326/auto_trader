@@ -1,4 +1,6 @@
+import datetime
 import inspect
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -7,6 +9,8 @@ from app.mcp_server.tooling import order_execution as oe
 from app.mcp_server.tooling import order_validation as ov
 from app.mcp_server.tooling import orders_kis_variants
 from app.models.review import KISLiveOrderLedger, LiveOrderLedger
+
+_TRADER_AGENT_ID = "6b2192cc-14fa-4335-b572-2fe1e0cb54a7"
 
 
 @pytest.mark.unit
@@ -46,6 +50,76 @@ async def test_loss_cut_and_defensive_trim_mutually_exclusive():
     )
     assert resp["success"] is False
     assert "mutually exclusive" in resp["error"].lower()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_loss_cut_live_rejects_invalid_hash_even_when_mode_off(monkeypatch):
+    # ROB-800 hardening: loss_cut is fail-closed on the approval hash regardless
+    # of ORDER_APPROVAL_HASH_MODE. With mode="off" the generic gate would skip
+    # verification, so a present-but-invalid hash must still be rejected by the
+    # loss_cut-specific gate (never reaching _execute_and_record).
+    fake_retro = SimpleNamespace(
+        id=42,
+        symbol="KRW-DOT",
+        trigger_type="stop_loss",
+        created_at=datetime.datetime.now(datetime.UTC),
+    )
+
+    async def _boom(*_a, **_k):
+        raise AssertionError("_execute_and_record must not run on an invalid hash")
+
+    monkeypatch.setattr(oe.settings, "order_approval_hash_mode", "off", raising=False)
+
+    with (
+        patch.object(ov, "get_caller_agent_id", return_value=_TRADER_AGENT_ID),
+        patch.object(
+            ov, "_fetch_approval_issue_status", new=AsyncMock(return_value="done")
+        ),
+        patch.object(
+            ov,
+            "_get_retrospective_by_id_for_loss_cut",
+            new=AsyncMock(return_value=fake_retro),
+        ),
+        patch.object(oe, "_fetch_current_price", new=AsyncMock(return_value=1245.0)),
+        patch.object(
+            oe,
+            "_validate_sell_side",
+            new=AsyncMock(return_value=(10.0, 2000.0, None)),
+        ),
+        patch.object(
+            oe,
+            "_build_preview",
+            new=AsyncMock(
+                return_value={
+                    "symbol": "KRW-DOT",
+                    "side": "sell",
+                    "order_type": "limit",
+                    "price": 1244.0,
+                    "quantity": 10.0,
+                    "estimated_value": 12440.0,
+                }
+            ),
+        ),
+        patch.object(oe, "_execute_and_record", new=_boom),
+    ):
+        resp = await oe._place_order_impl(
+            symbol="KRW-DOT",
+            side="sell",
+            market="crypto",
+            order_type="limit",
+            price=1244.0,
+            quantity=10,
+            dry_run=False,
+            exit_intent="loss_cut",
+            retrospective_id=42,
+            exit_reason="stop_loss",
+            approval_issue_id="ROB-800",
+            approval_hash="not-a-real-token",
+        )
+
+    assert resp["success"] is False
+    assert resp.get("error_code") == "invalid_approval_hash"
 
 
 @pytest.mark.unit

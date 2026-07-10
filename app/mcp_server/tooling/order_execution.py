@@ -1452,18 +1452,31 @@ async def _place_order_impl(
             return preview_resp
 
         # Live send — approval-hash gate (valid hash = confirm).
-        # ROB-800 — loss_cut requires approval_hash regardless of mode; operator
-        # must preview the exact order (dry_run=True) and pass back the hash.
-        if loss_cut_ctx is not None and approval_hash is None:
-            err = _order_error(
-                "loss_cut live send requires approval_hash "
-                "(re-run dry_run=True and pass the returned approval_hash)"
-            )
-            err["error_code"] = "loss_cut_approval_hash_required"
-            return err
-
         mode = getattr(settings, "order_approval_hash_mode", "optional")
-        if mode != "off":
+
+        # ROB-800 — loss_cut is fail-closed on the approval hash regardless of
+        # ORDER_APPROVAL_HASH_MODE. The operator must preview the exact order
+        # (dry_run=True) and pass the returned hash back: a missing hash is
+        # rejected, and a present-but-invalid/expired hash is verified and
+        # rejected even when mode="off" (which would otherwise skip verification).
+        if loss_cut_ctx is not None:
+            if approval_hash is None:
+                err = _order_error(
+                    "loss_cut live send requires approval_hash "
+                    "(re-run dry_run=True and pass the returned approval_hash)"
+                )
+                err["error_code"] = "loss_cut_approval_hash_required"
+                return err
+            verdict = order_approval.verify_approval_token(
+                approval_hash, canonical, now=now
+            )
+            if not verdict.ok:
+                err = _order_error(verdict.message or "approval_hash invalid")
+                err["error_code"] = verdict.error_code
+                if verdict.diff is not None:
+                    err["diff"] = verdict.diff
+                return err
+        elif mode != "off":
             if approval_hash is not None:
                 verdict = order_approval.verify_approval_token(
                     approval_hash, canonical, now=now
@@ -1495,7 +1508,9 @@ async def _place_order_impl(
                 )
 
         approval_digest = (
-            order_approval.derive_approval_digest(canonical) if mode != "off" else None
+            order_approval.derive_approval_digest(canonical)
+            if (mode != "off" or loss_cut_ctx is not None)
+            else None
         )
 
         # Real execution
