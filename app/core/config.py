@@ -761,6 +761,9 @@ class Settings(BaseSettings):
     # automated path against draft reports before activating the
     # stale-gate enforcement for the legacy create path.
     SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED: bool = False
+    # ORDER PROPOSALS (ROB-816) — default-off SOT ledger + read/create MCP tools.
+    # Gates MCP tool registration; the Telegram approval surface has its own gate (PR 2).
+    ORDER_PROPOSALS_ENABLED: bool = False
     # ROB-214 — recurring reconciliation scheduler remains disabled unless explicitly enabled.
     execution_ledger_reconcile_scheduler_enabled: bool = False
     execution_ledger_reconcile_scheduler_cron: str = "*/30 * * * *"
