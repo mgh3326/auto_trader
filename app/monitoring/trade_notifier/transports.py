@@ -18,6 +18,7 @@ async def send_telegram(
     chat_ids: list[str],
     text: str,
     parse_mode: str = "Markdown",
+    reply_markup: dict[str, Any] | None = None,
 ) -> bool:
     """Send a message to multiple Telegram chat IDs.
 
@@ -33,13 +34,99 @@ async def send_telegram(
                 "parse_mode": parse_mode,
                 "disable_web_page_preview": True,
             }
+            if reply_markup is not None:
+                payload["reply_markup"] = reply_markup
             response = await http_client.post(url, json=payload)
             response.raise_for_status()
             any_success = True
-            logger.info(f"Telegram message sent to chat {chat_id}")
+            logger.info("Telegram message sent")
         except Exception:
-            logger.error(f"Failed to send Telegram message to chat {chat_id}")
+            logger.error("Failed to send Telegram message")
     return any_success
+
+
+async def send_telegram_message(
+    *,
+    http_client: httpx.AsyncClient,
+    bot_token: str,
+    chat_id: str,
+    text: str,
+    parse_mode: str = "Markdown",
+    reply_markup: dict[str, Any] | None = None,
+) -> int | None:
+    """Send one Telegram message and return its message ID on success."""
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload: dict[str, Any] = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": parse_mode,
+        "disable_web_page_preview": True,
+    }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+
+    try:
+        response = await http_client.post(url, json=payload)
+        response.raise_for_status()
+        message_id = response.json().get("result", {}).get("message_id")
+        if isinstance(message_id, int):
+            logger.info("Telegram message sent")
+            return message_id
+    except Exception:
+        logger.error("Failed to send Telegram message")
+    return None
+
+
+async def answer_callback_query(
+    *,
+    http_client: httpx.AsyncClient,
+    bot_token: str,
+    callback_query_id: str,
+    text: str | None = None,
+) -> bool:
+    """Acknowledge a Telegram callback query."""
+    url = f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery"
+    payload: dict[str, Any] = {"callback_query_id": callback_query_id}
+    if text is not None:
+        payload["text"] = text
+
+    try:
+        response = await http_client.post(url, json=payload)
+        response.raise_for_status()
+        return True
+    except Exception:
+        logger.error("Failed to answer Telegram callback query")
+        return False
+
+
+async def edit_message_text(
+    *,
+    http_client: httpx.AsyncClient,
+    bot_token: str,
+    chat_id: str,
+    message_id: int,
+    text: str,
+    parse_mode: str = "Markdown",
+    reply_markup: dict[str, Any] | None = None,
+) -> bool:
+    """Edit one Telegram message."""
+    url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
+    payload: dict[str, Any] = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "parse_mode": parse_mode,
+    }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+
+    try:
+        response = await http_client.post(url, json=payload)
+        response.raise_for_status()
+        return True
+    except Exception:
+        logger.error("Failed to edit Telegram message")
+        return False
 
 
 async def send_discord_embed_single(
