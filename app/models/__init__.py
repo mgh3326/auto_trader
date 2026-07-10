@@ -45,6 +45,7 @@ from .manual_holdings import (
 from .market_quote_snapshot import MarketQuoteSnapshot
 from .market_report import MarketReport
 from .market_valuation_snapshot import MarketValuationSnapshot
+from .naver_research_detail_cache import NaverResearchDetailCache
 from .news import NewsAnalysisResult, NewsArticle, NewsIngestionRun, Sentiment
 from .paper_trading import PaperAccount, PaperPendingOrder, PaperPosition, PaperTrade
 from .portfolio_decision_run import PortfolioDecisionRun
@@ -195,6 +196,7 @@ __all__ = [
     "MarketReport",
     "MarketQuoteSnapshot",
     "MarketValuationSnapshot",
+    "NaverResearchDetailCache",
     "FinancialFundamentalsSnapshot",
     "Trade",
     "TossLiveOrderLedger",
