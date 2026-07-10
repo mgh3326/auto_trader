@@ -17,6 +17,7 @@ from app.mcp_server.tooling.fundamentals_sources_finnhub import (
     _fetch_company_profile_finnhub,
 )
 from app.services import naver_finance
+from app.services.naver_finance.detail_cache import get_detail_cache
 
 
 async def _fetch_news_naver(symbol: str, limit: int) -> dict[str, Any]:
@@ -39,6 +40,7 @@ async def _fetch_analysis_snapshot_naver(
         symbol,
         news_limit=news_limit,
         opinion_limit=opinions_limit,
+        detail_cache=get_detail_cache(),
     )
     result: dict[str, Any] = {}
     valuation = snapshot.get("valuation")
@@ -103,7 +105,7 @@ async def _fetch_investment_opinions_naver(
     symbol: str, limit: int, window_months: int = 12
 ) -> dict[str, Any]:
     opinions = await naver_finance.fetch_investment_opinions(
-        symbol, limit=limit, window_months=window_months
+        symbol, limit=limit, window_months=window_months, detail_cache=get_detail_cache()
     )
     return {
         "instrument_type": "equity_kr",

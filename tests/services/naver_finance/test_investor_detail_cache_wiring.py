@@ -115,3 +115,27 @@ async def test_none_cache_matches_legacy_behavior() -> None:
     result = await _build(fetcher, None)  # detail_cache=None → legacy path
     assert result["count"] == 2
     assert all(o["target_price"] == 190000 for o in result["opinions"])
+
+
+from app.mcp_server.tooling import fundamentals_sources_naver
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_wrapper_passes_cache_to_fetch_investment_opinions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    async def fake_fetch(symbol, limit=10, *, window_months=12, detail_cache=None):
+        seen["detail_cache"] = detail_cache
+        return {"symbol": symbol, "count": 0, "opinions": [], "consensus": None}
+
+    monkeypatch.setattr(
+        fundamentals_sources_naver.naver_finance,
+        "fetch_investment_opinions",
+        fake_fetch,
+    )
+    monkeypatch.delenv("NAVER_RESEARCH_DETAIL_CACHE_ENABLED", raising=False)
+    await fundamentals_sources_naver._fetch_investment_opinions_naver("005930", 10)
+    assert seen["detail_cache"] is not None  # injected store
