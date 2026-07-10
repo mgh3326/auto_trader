@@ -6,11 +6,24 @@ from app.mcp_server.tooling import order_proposal_tools as opt
 @pytest.mark.asyncio
 async def test_create_then_get_then_list():
     created = await opt.order_proposal_create(
-        symbol="000660", market="equity_kr", account_mode="kis_live",
-        side="buy", order_type="limit", proposer="operator:sess-x",
-        thesis="t", strategy="ladder",
-        rungs=[{"rung_index": 0, "side": "buy", "quantity": "10",
-                "limit_price": "2226000", "notional": None}])
+        symbol="000660",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="operator:sess-x",
+        thesis="t",
+        strategy="ladder",
+        rungs=[
+            {
+                "rung_index": 0,
+                "side": "buy",
+                "quantity": "10",
+                "limit_price": "2226000",
+                "notional": None,
+            }
+        ],
+    )
     assert created["success"] is True
     pid = created["proposal_id"]
 
@@ -27,8 +40,14 @@ async def test_create_then_get_then_list():
 @pytest.mark.asyncio
 async def test_create_rejects_empty_rungs():
     res = await opt.order_proposal_create(
-        symbol="A", market="equity_kr", account_mode="kis_live", side="buy",
-        order_type="limit", proposer="p", rungs=[])
+        symbol="A",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[],
+    )
     assert res["success"] is False
     assert "rung" in res["error"].lower()
 
@@ -40,4 +59,7 @@ def test_tools_registered_and_names_exported():
     mcp = FastMCP(name="t", on_duplicate="error")
     opt.register_order_proposal_tools(mcp)
     assert opt.ORDER_PROPOSAL_TOOL_NAMES == {
-        "order_proposal_create", "order_proposal_get", "order_proposal_list"}
+        "order_proposal_create",
+        "order_proposal_get",
+        "order_proposal_list",
+    }
