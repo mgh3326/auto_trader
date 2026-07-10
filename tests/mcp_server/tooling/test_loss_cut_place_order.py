@@ -1,5 +1,5 @@
 import inspect
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -59,3 +59,43 @@ def test_kr_variant_forwards_loss_cut_params():
     sig = inspect.signature(orders_kis_variants._place_order_variant)
     assert "exit_intent" in sig.parameters
     assert "retrospective_id" in sig.parameters
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_non_loss_cut_orders_unaffected_by_new_param():
+    # exit_intent=None must behave exactly as before.
+    ctx, errors = await ov._validate_loss_cut_preconditions(
+        exit_intent=None,
+        retrospective_id=None,
+        exit_reason=None,
+        approval_issue_id=None,
+        side="sell",
+        order_type="limit",
+        is_mock=False,
+        symbol="KRW-DOT",
+    )
+    assert ctx is None and errors == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_defensive_trim_path_ignores_loss_cut_plumbing():
+    # A defensive_trim-style call with exit_intent=None resolves no loss_cut context,
+    # and the validator short-circuits without touching any loss_cut-only helpers.
+    with patch.object(
+        ov,
+        "_get_retrospective_by_id_for_loss_cut",
+        new=AsyncMock(side_effect=AssertionError("should not be called")),
+    ):
+        ctx, errors = await ov._validate_loss_cut_preconditions(
+            exit_intent=None,
+            retrospective_id=None,
+            exit_reason=None,
+            approval_issue_id=None,
+            side="sell",
+            order_type="limit",
+            is_mock=False,
+            symbol="KRW-DOT",
+        )
+    assert ctx is None and errors == []
