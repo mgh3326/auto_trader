@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from bs4 import BeautifulSoup
 
+from app.mcp_server.tooling import fundamentals_sources_naver
 from app.services.naver_finance import investor
 
 
@@ -115,9 +116,6 @@ async def test_none_cache_matches_legacy_behavior() -> None:
     result = await _build(fetcher, None)  # detail_cache=None → legacy path
     assert result["count"] == 2
     assert all(o["target_price"] == 190000 for o in result["opinions"])
-
-
-from app.mcp_server.tooling import fundamentals_sources_naver
 
 
 @pytest.mark.unit

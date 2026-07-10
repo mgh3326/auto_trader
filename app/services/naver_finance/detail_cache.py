@@ -47,12 +47,16 @@ class NaverResearchDetailCacheRepository:
         if not nids:
             return {}
         rows = (
-            await self.db.execute(
-                select(NaverResearchDetailCache).where(
-                    NaverResearchDetailCache.nid.in_(nids)
+            (
+                await self.db.execute(
+                    select(NaverResearchDetailCache).where(
+                        NaverResearchDetailCache.nid.in_(nids)
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return {
             row.nid: {
                 "target_price": _coerce_target_price(row.target_price),
@@ -112,6 +116,9 @@ class NaverResearchDetailCacheStore:
 
 def get_detail_cache() -> DetailCachePort | None:
     """Return a store, or None when disabled via env (default enabled)."""
-    if os.getenv("NAVER_RESEARCH_DETAIL_CACHE_ENABLED", "true").strip().lower() != "true":
+    if (
+        os.getenv("NAVER_RESEARCH_DETAIL_CACHE_ENABLED", "true").strip().lower()
+        != "true"
+    ):
         return None
     return NaverResearchDetailCacheStore()

@@ -27,7 +27,7 @@ def test_factory_default_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.asyncio
 async def test_store_swallows_db_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Boom:
-        def __call__(self) -> "_Boom":
+        def __call__(self) -> _Boom:
             return self
 
         async def __aenter__(self) -> None:
