@@ -1,9 +1,11 @@
+import inspect
 from unittest.mock import patch
 
 import pytest
 
 from app.mcp_server.tooling import order_execution as oe
 from app.mcp_server.tooling import order_validation as ov
+from app.mcp_server.tooling import orders_kis_variants
 from app.models.review import KISLiveOrderLedger, LiveOrderLedger
 
 
@@ -50,3 +52,10 @@ async def test_loss_cut_and_defensive_trim_mutually_exclusive():
 def test_live_ledger_models_have_exit_intent_column():
     assert "exit_intent" in LiveOrderLedger.__table__.columns
     assert "exit_intent" in KISLiveOrderLedger.__table__.columns
+
+
+@pytest.mark.unit
+def test_kr_variant_forwards_loss_cut_params():
+    sig = inspect.signature(orders_kis_variants._place_order_variant)
+    assert "exit_intent" in sig.parameters
+    assert "retrospective_id" in sig.parameters
