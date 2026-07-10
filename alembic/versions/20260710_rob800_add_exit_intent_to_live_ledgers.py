@@ -7,7 +7,7 @@ Adds the ``exit_intent`` column to ``review.live_order_ledger`` and
 Additive only: nullable TEXT, default NULL, no NOT NULL, no CHECK, no FK.
 Legacy rows are NULL until the next loss-cut order writes a real value.
 
-Revision ID: rob800_exit_intent_to_live_ledgers
+Revision ID: 20260710_rob800_exit_intent
 Revises: 20260707_rob757_toss_fill_poller
 Create Date: 2026-07-10 12:00:00.000000
 
@@ -21,7 +21,7 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "rob800_exit_intent_to_live_ledgers"
+revision: str = "20260710_rob800_exit_intent"
 down_revision: str | None = "20260707_rob757_toss_fill_poller"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
