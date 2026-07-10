@@ -1122,6 +1122,7 @@ async def _preview_sell(
     defensive_trim_ctx: DefensiveTrimContext | None = None,
     is_mock: bool = False,
     scalping_exit_ctx: ScalpingExitContext | None = None,
+    loss_cut_ctx: LossCutContext | None = None,
 ) -> dict[str, Any]:
     """Build a dry-run preview dict for a sell order."""
     result: dict[str, Any] = {
@@ -1178,6 +1179,7 @@ async def _preview_sell(
             defensive_trim_ctx=defensive_trim_ctx,
             scalping_exit_ctx=scalping_exit_ctx,
             allow_loss_sell=allow_loss_sell,
+            loss_cut_ctx=loss_cut_ctx,
         )
         if guard_error is not None:
             result["error"] = guard_error
@@ -1233,6 +1235,11 @@ async def _preview_sell(
         result["defensive_trim"] = True
         result["approval_issue_id"] = defensive_trim_ctx.approval_issue_id
 
+    if loss_cut_ctx is not None:
+        result["exit_intent"] = "loss_cut"
+        result["loss_cut_slip_band"] = current_price * (1.0 - loss_cut_ctx.max_slip)
+        result["retrospective_id"] = loss_cut_ctx.retrospective_id
+
     estimated_value = execution_price * order_quantity
     realized_pnl = (execution_price - avg_price) * order_quantity
 
@@ -1255,6 +1262,7 @@ async def _preview_order(
     defensive_trim_ctx: DefensiveTrimContext | None = None,
     is_mock: bool = False,
     scalping_exit_ctx: ScalpingExitContext | None = None,
+    loss_cut_ctx: LossCutContext | None = None,
 ) -> dict[str, Any]:
     """Validate order and return a dry-run simulation dict.
 
@@ -1279,6 +1287,7 @@ async def _preview_order(
         defensive_trim_ctx=defensive_trim_ctx,
         is_mock=is_mock,
         scalping_exit_ctx=scalping_exit_ctx,
+        loss_cut_ctx=loss_cut_ctx,
     )
 
 
@@ -1345,6 +1354,7 @@ async def _validate_sell_side(
     is_mock: bool = False,
     dry_run: bool = False,
     scalping_exit_ctx: ScalpingExitContext | None = None,
+    loss_cut_ctx: LossCutContext | None = None,
 ) -> tuple[float, float, dict[str, Any] | None]:
     """Validate sell-side: check holdings, locked, price constraints.
 
@@ -1432,6 +1442,7 @@ async def _validate_sell_side(
             defensive_trim_ctx=defensive_trim_ctx,
             scalping_exit_ctx=scalping_exit_ctx,
             allow_loss_sell=allow_loss_sell,
+            loss_cut_ctx=loss_cut_ctx,
         )
         if guard_error is not None:
             return 0.0, 0.0, order_error_fn(guard_error)
