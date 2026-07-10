@@ -168,6 +168,34 @@ async def test_approval_nonce_replay_blocked(db_session):
 
 
 @pytest.mark.asyncio
+async def test_record_approval_sets_telegram_user_and_timestamp(db_session):
+    service, group = await _create_single_rung(db_session)
+    now = datetime(2026, 7, 10, 9, 1, 30, tzinfo=UTC)
+
+    updated = await service.record_approval(
+        group.proposal_id, telegram_user_id="tg-12345", now=now
+    )
+
+    assert updated.approved_by_telegram_user_id == "tg-12345"
+    assert updated.approved_at == now
+
+    refreshed, _ = await service.get_proposal(group.proposal_id)
+    assert refreshed.approved_by_telegram_user_id == "tg-12345"
+    assert refreshed.approved_at == now
+
+
+@pytest.mark.asyncio
+async def test_record_approval_missing_proposal_raises(db_session):
+    service = OrderProposalsService(db_session)
+    with pytest.raises(OrderProposalNotFound):
+        await service.record_approval(
+            uuid.uuid4(),
+            telegram_user_id="tg-1",
+            now=datetime(2026, 7, 10, 9, 1, 31, tzinfo=UTC),
+        )
+
+
+@pytest.mark.asyncio
 async def test_commit_lease_blocks_active_and_reacquires_expired(db_session):
     service, group = await _create_single_rung(db_session)
     now = datetime(2026, 7, 10, 9, 2, tzinfo=UTC)

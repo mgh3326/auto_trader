@@ -248,6 +248,21 @@ class OrderProposalsService:
             raise OrderProposalError("nonce_replay")
         return await self._repo.update_group(group, approval_nonce_used_at=now)
 
+    async def record_approval(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        telegram_user_id: str,
+        now: datetime,
+    ) -> OrderProposal:
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        return await self._repo.update_group(
+            group, approved_by_telegram_user_id=telegram_user_id, approved_at=now
+        )
+
     async def acquire_commit_lease(
         self,
         proposal_id: uuid.UUID,
