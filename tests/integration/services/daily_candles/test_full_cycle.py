@@ -250,9 +250,7 @@ class TestFullCycle:
         finally:
             await dev_session.rollback()
             await dev_session.execute(
-                text(
-                    "DELETE FROM public.kr_candles_1d WHERE symbol = :symbol"
-                ),
+                text("DELETE FROM public.kr_candles_1d WHERE symbol = :symbol"),
                 {"symbol": _SYMBOL_KR},
             )
             await dev_session.commit()
