@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -592,6 +592,157 @@ async def test_needs_reconfirm_mixed_batch_reports_other_outcome(
     # never surfaced anywhere because the reconfirm branch short-circuited.
     assert "처리 결과" in new_text
     assert "주문 유지" in new_text  # _RESULT_LABELS["submitted_resting"]
+
+
+# ---------------------------------------------------------------------------
+# Final-review Finding 2 — a rung stuck in `needs_reconfirm` must be
+# transitioned back to `pending_approval` before the second `revalidate_fn`
+# call, so a second Approve click on the reconfirm message actually
+# re-submits instead of silently no-op'ing forever.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reconfirm_click_transitions_rung_and_reenters_revalidation(
+    monkeypatch, db_session
+):
+    _allow_chat(monkeypatch)
+    group = await _seed_proposal(db_session, nonce="nonce-cycle1")
+    data = f"op:{str(group.proposal_id)[:8]}:nonce-cycle1"
+    notifier = _FakeNotifier()
+
+    diff = {
+        "before": {"limit_price": "100", "quantity": "10"},
+        "after": {"limit_price": "105", "quantity": "10"},
+    }
+    observed_states: list[str] = []
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        # Spy on the rung's state at the moment revalidate_fn is invoked --
+        # the fix under test transitions needs_reconfirm -> pending_approval
+        # BEFORE this call, so the first call sees pending_approval (initial
+        # create) and the second call must ALSO see pending_approval (post
+        # re-approve transition), never needs_reconfirm. Mimic the real
+        # `revalidate_and_submit`'s own DB transitions (not just a returned
+        # RungOutcome) so the rung's real state after each call matches what
+        # a genuine reconfirm cycle would leave behind.
+        _g, rungs = await service.get_proposal(proposal_id)
+        observed_states.append(rungs[0].state)
+        if len(observed_states) == 1:
+            await service.transition_rung(proposal_id, 0, new_state="revalidating")
+            await service.mark_needs_reconfirm(proposal_id, 0, now=now)
+            return [RungOutcome(0, "needs_reconfirm", diff)]
+        await service.transition_rung(proposal_id, 0, new_state="revalidating")
+        await service.transition_rung(proposal_id, 0, new_state="approved")
+        await service.transition_rung(proposal_id, 0, new_state="submitting")
+        await service.record_resting(
+            proposal_id,
+            0,
+            broker_order_id="B1",
+            correlation_id="corr-1",
+            idempotency_key="idem-1",
+            approval_hash_digest="hash-1",
+            now=now,
+        )
+        return [
+            RungOutcome(0, "submitted_resting", {"submit": {"broker_order_id": "B1"}})
+        ]
+
+    first_now = datetime.now(UTC)
+    first = await handle_callback_update(
+        _make_update(data=data, callback_id="cbq-1st"),
+        now=first_now,
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+    assert first["handled"] is True
+    assert first["reason"] == "needs_reconfirm"
+    assert observed_states == ["pending_approval"]
+
+    service = OrderProposalsService(db_session)
+    _group, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "needs_reconfirm"
+
+    _new_text, new_keyboard, _sent_chat_id = notifier.sent_messages[0]
+    new_callback_data = new_keyboard["inline_keyboard"][0][0]["callback_data"]
+    _new_action, _new_short, new_nonce = parse_callback_data(new_callback_data)
+    second_data = f"op:{str(group.proposal_id)[:8]}:{new_nonce}"
+
+    # `acquire_commit_lease`'s default 10s lease was taken by the first call
+    # -- advance `now` well past it so the second click isn't spuriously
+    # blocked by `lease_held` (a real second click would arrive well after
+    # 10s of human reaction time to the reconfirm message anyway).
+    second_now = first_now + timedelta(seconds=30)
+    second = await handle_callback_update(
+        _make_update(data=second_data, callback_id="cbq-2nd"),
+        now=second_now,
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+
+    # The second click must actually reach revalidate_fn again (not be
+    # skipped because the rung was still parked in needs_reconfirm), and by
+    # the time it runs the rung must already be back in pending_approval.
+    assert observed_states == ["pending_approval", "pending_approval"]
+    assert second["handled"] is True
+    assert second["reason"] == "approved"
+    assert second["results"] == ["submitted_resting"]
+
+    _final_group, final_rungs = await service.get_proposal(group.proposal_id)
+    assert final_rungs[0].state == "resting"
+
+
+# ---------------------------------------------------------------------------
+# Final-review Finding 4 — a reconfirm resend must refresh
+# source_asof.approval_message_id to the NEW message id, not leave it
+# pointing at the original dispatch.py message.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reconfirm_resend_refreshes_approval_message_id(monkeypatch, db_session):
+    _allow_chat(monkeypatch)
+    group = await _seed_proposal(db_session, nonce="nonce-msgid1")
+    seed_service = OrderProposalsService(db_session)
+    await seed_service.record_approval_dispatch(
+        group.proposal_id,
+        message_id=111,
+        chat_id=str(CHAT_ID),
+        now=datetime.now(UTC),
+    )
+    await db_session.commit()
+
+    data = f"op:{str(group.proposal_id)[:8]}:nonce-msgid1"
+    notifier = _FakeNotifier()
+
+    diff = {
+        "before": {"limit_price": "100", "quantity": "10"},
+        "after": {"limit_price": "105", "quantity": "10"},
+    }
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        return [RungOutcome(0, "needs_reconfirm", diff)]
+
+    result = await handle_callback_update(
+        _make_update(data=data),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+
+    assert result["handled"] is True
+    assert result["reason"] == "needs_reconfirm"
+    new_message_id = result["new_message_id"]
+    assert new_message_id is not None
+    assert new_message_id != 111
+
+    service = OrderProposalsService(db_session)
+    refreshed, _rungs = await service.get_proposal(group.proposal_id)
+    assert refreshed.source_asof["approval_message_id"] == new_message_id
+    assert refreshed.source_asof["approval_message_id"] != 111
 
 
 # ---------------------------------------------------------------------------

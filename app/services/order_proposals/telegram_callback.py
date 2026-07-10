@@ -284,6 +284,22 @@ async def _handle_approve(
         proposal_id, telegram_user_id=telegram_user_id, now=now
     )
 
+    # A rung that came back `needs_reconfirm` on a previous approve click is
+    # NOT `pending_approval` -- `revalidate_and_submit` only re-enters rungs
+    # currently in `pending_approval` (see revalidation.py's module
+    # docstring). Without this transition, a second Approve click on the
+    # reconfirm message would find every rung still parked in
+    # `needs_reconfirm`, skip all of them, and silently no-op forever (ROB-816
+    # final-review Finding 2). `needs_reconfirm -> pending_approval` is
+    # already a legal transition in state_machine.py; nothing before this fix
+    # ever triggered it.
+    _current_group, current_rungs = await service.get_proposal(proposal_id)
+    for current_rung in current_rungs:
+        if current_rung.state == "needs_reconfirm":
+            await service.transition_rung(
+                proposal_id, current_rung.rung_index, new_state="pending_approval"
+            )
+
     outcomes: list[RungOutcome] = await revalidate_fn(
         service=service, proposal_id=proposal_id, now=now
     )
@@ -326,6 +342,21 @@ async def _handle_approve(
         new_message_id = await _safe_send_approval_message(
             notifier, text, keyboard, chat_id=str(chat_id)
         )
+        if new_message_id is not None:
+            # Mirror dispatch.py's send_proposal_for_approval: keep
+            # source_asof.approval_message_id pointing at the NEWEST
+            # outstanding Telegram message, not the original one from
+            # dispatch.py -- otherwise a later reader of source_asof would
+            # see a stale/superseded message_id for this reconfirm cycle
+            # (ROB-816 final-review Finding 4). A failed send
+            # (new_message_id is None) has nothing to persist.
+            await service.record_approval_dispatch(
+                proposal_id,
+                message_id=new_message_id,
+                chat_id=str(chat_id),
+                now=now,
+            )
+            await session.commit()
         await _safe_answer(notifier, callback_query_id, "재확인이 필요합니다")
         return {
             "handled": True,

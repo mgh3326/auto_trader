@@ -38,6 +38,25 @@ class RungInput:
     notional: Decimal | None
 
 
+# (account_mode, market) combinations the submit path
+# (revalidation.py's `_default_place_order_fn` -> `_place_order_impl`) actually
+# routes correctly today. `_place_order_impl` has no `account_mode` parameter
+# at all -- it routes purely by `market` (crypto -> upbit, equity_kr/equity_us
+# -> KIS) and always submits with `is_mock=False` (live). Any other
+# account_mode (`kis_mock`, `toss_live`, `db_simulated`) would therefore be
+# silently submitted to LIVE KIS regardless of what the operator intended, or
+# routed to the wrong broker entirely. Reject those combinations at create
+# time rather than let a mock/paper/wrong-broker proposal ever reach the
+# submit path. See ROB-816 final-review Finding 1.
+_SUBMITTABLE_ACCOUNT_MODE_MARKETS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("kis_live", "equity_kr"),
+        ("kis_live", "equity_us"),
+        ("upbit", "crypto"),
+    }
+)
+
+
 class OrderProposalsService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -65,6 +84,12 @@ class OrderProposalsService:
     ) -> OrderProposal:
         if not rungs:
             raise ValueError("at least one rung required")
+        if (account_mode, market) not in _SUBMITTABLE_ACCOUNT_MODE_MARKETS:
+            raise OrderProposalError(
+                f"account_mode {account_mode!r} is not submittable for market "
+                f"{market!r} (submit path only supports kis_live/equity_kr|"
+                "equity_us and upbit/crypto)"
+            )
         proposal_id = uuid.uuid4()
         root_id = proposal_id
         superseded_group: OrderProposal | None = None

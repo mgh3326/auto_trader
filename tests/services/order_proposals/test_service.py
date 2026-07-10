@@ -594,3 +594,151 @@ async def test_record_approval_dispatch_missing_proposal_raises(db_session):
             chat_id="chat-1",
             now=datetime(2026, 7, 10, 9, 15, tzinfo=UTC),
         )
+
+
+# ---------------------------------------------------------------------------
+# Final-review Finding 1 — account_mode/market submit-routing allowlist.
+# `_place_order_impl` (the submit path's default binding) has no
+# `account_mode` param at all: it routes purely by `market` and always
+# submits `is_mock=False`. A proposal created with an account_mode the submit
+# path doesn't actually honor (kis_mock, toss_live, db_simulated) must be
+# rejected at create time -- never persisted -- rather than silently routed
+# to LIVE KIS on approval.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_proposal_allows_kis_live_equity_kr(db_session):
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="A",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("100"), None)],
+    )
+    await db_session.commit()
+    assert group.account_mode == "kis_live"
+    assert group.market == "equity_kr"
+
+
+@pytest.mark.asyncio
+async def test_create_proposal_allows_kis_live_equity_us(db_session):
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="AAPL",
+        market="equity_us",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("100"), None)],
+    )
+    await db_session.commit()
+    assert group.account_mode == "kis_live"
+    assert group.market == "equity_us"
+
+
+@pytest.mark.asyncio
+async def test_create_proposal_allows_upbit_crypto(db_session):
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="BTC/KRW",
+        market="crypto",
+        account_mode="upbit",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("0.01"), Decimal("100000000"), None)],
+    )
+    await db_session.commit()
+    assert group.account_mode == "upbit"
+    assert group.market == "crypto"
+
+
+@pytest.mark.asyncio
+async def test_create_proposal_rejects_kis_mock_equity_kr(db_session):
+    service = OrderProposalsService(db_session)
+    with pytest.raises(OrderProposalError, match="not submittable"):
+        await service.create_proposal(
+            symbol="A",
+            market="equity_kr",
+            account_mode="kis_mock",
+            side="buy",
+            order_type="limit",
+            proposer="p",
+            rungs=[RungInput(0, "buy", Decimal("1"), Decimal("100"), None)],
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_proposal_rejects_toss_live_equity_kr(db_session):
+    service = OrderProposalsService(db_session)
+    with pytest.raises(OrderProposalError, match="not submittable"):
+        await service.create_proposal(
+            symbol="A",
+            market="equity_kr",
+            account_mode="toss_live",
+            side="buy",
+            order_type="limit",
+            proposer="p",
+            rungs=[RungInput(0, "buy", Decimal("1"), Decimal("100"), None)],
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_proposal_rejects_db_simulated_and_upbit_wrong_market(db_session):
+    service = OrderProposalsService(db_session)
+    with pytest.raises(OrderProposalError, match="not submittable"):
+        await service.create_proposal(
+            symbol="A",
+            market="equity_kr",
+            account_mode="db_simulated",
+            side="buy",
+            order_type="limit",
+            proposer="p",
+            rungs=[RungInput(0, "buy", Decimal("1"), Decimal("100"), None)],
+        )
+    with pytest.raises(OrderProposalError, match="not submittable"):
+        await service.create_proposal(
+            symbol="A",
+            market="equity_kr",
+            account_mode="upbit",
+            side="buy",
+            order_type="limit",
+            proposer="p",
+            rungs=[RungInput(0, "buy", Decimal("1"), Decimal("100"), None)],
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_proposal_rejection_leaves_no_partial_rows(db_session):
+    """Airtight: the reject must fire before any group/rung row is written --
+    even flushed-but-uncommitted -- so a query against this same session sees
+    zero matching rows for a rejected create_proposal call.
+    """
+    from sqlalchemy import func, select
+
+    from app.models.order_proposals import OrderProposal
+
+    service = OrderProposalsService(db_session)
+    symbol = f"REJECT-{uuid.uuid4().hex[:8]}"
+    with pytest.raises(OrderProposalError):
+        await service.create_proposal(
+            symbol=symbol,
+            market="equity_kr",
+            account_mode="kis_mock",
+            side="buy",
+            order_type="limit",
+            proposer="p",
+            rungs=[RungInput(0, "buy", Decimal("1"), Decimal("100"), None)],
+        )
+
+    count = await db_session.scalar(
+        select(func.count())
+        .select_from(OrderProposal)
+        .where(OrderProposal.symbol == symbol)
+    )
+    assert count == 0
