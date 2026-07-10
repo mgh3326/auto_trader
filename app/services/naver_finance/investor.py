@@ -29,15 +29,21 @@ from app.services.naver_finance.parser import (
 from app.services.naver_finance.valuation import _parse_valuation_from_soups
 
 
-def _parse_report_detail_soup(soup: BeautifulSoup) -> dict[str, Any]:
+def _parse_report_detail_soup(soup: BeautifulSoup) -> dict[str, Any] | None:
+    info_div = soup.select_one("div.view_info_1")
+    if not info_div:
+        # ROB-814: the parse anchor itself is missing — a page-shape anomaly
+        # (anti-bot interstitial, deleted-post notice, Naver selector rot),
+        # NOT a report with a legitimately-absent target. Return None so the
+        # assembly treats it like a fetch failure: shown as no-detail but
+        # NEVER written to the insert-once ROB-811 cache, which would freeze
+        # the anomaly permanently (no update path) even after a parser fix.
+        return None
+
     result: dict[str, Any] = {
         "target_price": None,
         "rating": None,
     }
-
-    info_div = soup.select_one("div.view_info_1")
-    if not info_div:
-        return result
 
     target_elem = info_div.select_one("em.money strong")
     if target_elem:

@@ -137,3 +137,41 @@ async def test_wrapper_passes_cache_to_fetch_investment_opinions(
     monkeypatch.delenv("NAVER_RESEARCH_DETAIL_CACHE_ENABLED", raising=False)
     await fundamentals_sources_naver._fetch_investment_opinions_naver("005930", 10)
     assert seen["detail_cache"] is not None  # injected store
+
+
+# ---------------------------------------------------------------------------
+# ROB-814 — anchor-missing pages must NOT be cache-worthy
+# ---------------------------------------------------------------------------
+
+
+def test_parse_detail_anchor_missing_returns_none() -> None:
+    """ROB-814: a 200 page WITHOUT div.view_info_1 (anti-bot interstitial,
+    deleted-post notice, selector rot) is a page-shape anomaly, not a report
+    with a legitimately-absent target. The parser must return None so the
+    assembly treats it exactly like a fetch failure — shown as no-detail and
+    NEVER written to the insert-once cache (which would freeze the anomaly
+    permanently, surviving even a parser fix)."""
+    from bs4 import BeautifulSoup
+
+    from app.services.naver_finance.investor import _parse_report_detail_soup
+
+    soup = BeautifulSoup(
+        "<html><body><p>일시적으로 이용할 수 없습니다</p></body></html>",
+        "html.parser",
+    )
+    assert _parse_report_detail_soup(soup) is None
+
+
+def test_parse_detail_anchor_present_without_fields_stays_cacheworthy() -> None:
+    """ROB-814 regression lock: anchor present but money/coment absent is a
+    REAL report without a target — the all-None dict stays cache-worthy
+    (ROB-811 'success-with-no-target' rule preserved)."""
+    from bs4 import BeautifulSoup
+
+    from app.services.naver_finance.investor import _parse_report_detail_soup
+
+    soup = BeautifulSoup(
+        '<html><body><div class="view_info_1">의견 없음</div></body></html>',
+        "html.parser",
+    )
+    assert _parse_report_detail_soup(soup) == {"target_price": None, "rating": None}

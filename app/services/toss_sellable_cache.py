@@ -3,9 +3,14 @@ sellable-quantity fanout on /invest home & account-panel.
 
 The Toss ``GET /api/v1/sellable-quantity`` endpoint is in the ORDER_INFO
 rate-limit group (6 TPS / 3 TPS peak), so fanning it out per holding serializes
-to ~N/6 s. This cache collapses repeated /invest loads to 0 calls within the TTL;
-only the invest_home reader opts in (the MCP / sell-classification path stays
-uncached and fresh). enabled=False => always miss => today's fanout-every-load.
+to ~N/6 s. This cache collapses repeated loads to 0 calls within the TTL.
+
+Opt-in callers (ROB-701 + ROB-810): the invest_home reader (/invest home &
+account-panel) AND the MCP ``get_holdings`` path (default; bypass with
+``fresh_sellable=True``). Display/advisory surfaces only — real sell sizing is
+safe because order tools re-validate sellable at broker submit
+(``orders_toss_variants``), and KIS/Upbit sell validation reads its own broker
+live. enabled=False => always miss => fanout-every-load.
 """
 
 from __future__ import annotations
