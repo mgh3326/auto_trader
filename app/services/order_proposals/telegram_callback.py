@@ -11,6 +11,18 @@ This module owns the DB session it opens via ``service_factory`` (default
 this handler is the top-level caller, same as any MCP tool handler in this
 codebase.
 
+Commit-before-notify ordering (load-bearing): each branch (``_handle_deny``,
+both branches of ``_handle_approve``, and the early-return paths) calls
+``session.commit()`` for its mutating work *before* making any Telegram
+``edit_message``/``send_approval_message`` call. A Telegram API failure
+(rate limit, "message not found", network blip) must never roll back a
+DB-recorded broker-order outcome -- nonce consumption, the commit lease,
+``record_approval``, and any acked/resting/unverified/rejected rung state
+from ``revalidate_and_submit`` are all committed first. All notify calls
+(``edit_message``/``send_approval_message``, in addition to the existing
+``answer_callback``) are themselves best-effort and never raise, as
+belt-and-suspenders on top of the commit ordering.
+
 Every broker/Telegram/DB dependency is injectable (``notifier``,
 ``revalidate_fn``, ``service_factory``) so tests can supply fakes; real
 broker/Telegram/httpx calls are never exercised by this module's test suite.
@@ -32,6 +44,8 @@ import uuid
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
@@ -93,6 +107,38 @@ async def _safe_answer(
         logger.exception("order_proposals telegram answer_callback failed")
 
 
+async def _safe_edit_message(
+    notifier: Any, chat_id: Any, message_id: int, text: str
+) -> None:
+    """Best-effort ``edit_message`` that never raises.
+
+    Belt-and-suspenders alongside the commit-before-notify ordering in
+    ``_handle_deny``/``_handle_approve``: by the time this is called the
+    mutating DB work for this branch is already committed, so a Telegram
+    failure here must not surface as an uncaught exception (which would hit
+    the top-level ``except Exception`` and misreport a successful trade
+    action as ``"internal_error"``).
+    """
+    try:
+        await notifier.edit_message(chat_id, message_id, text)
+    except Exception:  # noqa: BLE001 - best-effort, never propagate
+        logger.exception("order_proposals telegram edit_message failed")
+
+
+async def _safe_send_approval_message(
+    notifier: Any, text: str, keyboard: dict, *, chat_id: str
+) -> int | None:
+    """Best-effort ``send_approval_message`` that never raises.
+
+    See ``_safe_edit_message`` docstring for why this must never propagate.
+    """
+    try:
+        return await notifier.send_approval_message(text, keyboard, chat_id=chat_id)
+    except Exception:  # noqa: BLE001 - best-effort, never propagate
+        logger.exception("order_proposals telegram send_approval_message failed")
+        return None
+
+
 async def _resolve_proposal_id(service: Any, proposal_short: str) -> uuid.UUID | None:
     """Resolve a full ``proposal_id`` from its 8-char callback-data prefix.
 
@@ -127,8 +173,31 @@ def _build_result_summary(outcomes: list[RungOutcome]) -> str:
     return "\n".join(lines)
 
 
+def _build_extra_reconfirm_block(reconfirm_outcomes: list[RungOutcome]) -> str:
+    """Render before/after diffs for reconfirming rungs beyond the first.
+
+    ``build_approval_message`` only accepts a single ``diff`` and renders an
+    explicit before/after highlight for it (see
+    ``app/services/order_proposals/approval_message.py``) -- when more than
+    one rung in the same ``revalidate_and_submit`` batch comes back
+    ``needs_reconfirm``, every rung after the first would otherwise have no
+    visible before/after in the outgoing message. This composes a
+    supplementary block (in ``telegram_callback.py``, not inside
+    ``build_approval_message``, to keep that function's single-diff contract
+    unchanged) listing each remaining reconfirming rung's before/after.
+    """
+    lines = ["*추가 재확인 필요 단계*"]
+    for outcome in reconfirm_outcomes:
+        detail = outcome.detail or {}
+        before = detail.get("before")
+        after = detail.get("after")
+        lines.append(f"- #{outcome.rung_index + 1}: 변경 전 {before} → 변경 후 {after}")
+    return "\n".join(lines)
+
+
 async def _handle_deny(
     *,
+    session: AsyncSession,
     service: OrderProposalsService,
     proposal_id: uuid.UUID,
     nonce: str,
@@ -141,6 +210,11 @@ async def _handle_deny(
     try:
         await service.consume_approval_nonce(proposal_id, nonce, now=now)
     except OrderProposalError as exc:
+        # No mutation happened above (mismatch/replay both raise before any
+        # flush) -- commit anyway to release the row lock taken by
+        # `consume_approval_nonce`'s `for_update=True` SELECT before making
+        # the Telegram call below.
+        await session.commit()
         await _safe_answer(
             notifier, callback_query_id, "이미 처리되었거나 유효하지 않은 요청입니다"
         )
@@ -155,8 +229,12 @@ async def _handle_deny(
             )
             rejected_rungs.append(rung.rung_index)
 
+    # Commit the reject transitions before any Telegram call -- a notify
+    # failure below must never roll back an already-recorded deny.
+    await session.commit()
+
     if message_id is not None:
-        await notifier.edit_message(chat_id, message_id, "❌ 거부됨")
+        await _safe_edit_message(notifier, chat_id, message_id, "❌ 거부됨")
     await _safe_answer(notifier, callback_query_id, "거부되었습니다")
     return {
         "handled": True,
@@ -168,6 +246,7 @@ async def _handle_deny(
 
 async def _handle_approve(
     *,
+    session: AsyncSession,
     service: OrderProposalsService,
     proposal_id: uuid.UUID,
     nonce: str,
@@ -182,6 +261,9 @@ async def _handle_approve(
     try:
         await service.consume_approval_nonce(proposal_id, nonce, now=now)
     except OrderProposalError as exc:
+        # See `_handle_deny`'s matching comment: no mutation happened above,
+        # but commit anyway to release the row lock before the Telegram call.
+        await session.commit()
         await _safe_answer(
             notifier, callback_query_id, "이미 처리되었거나 유효하지 않은 요청입니다"
         )
@@ -189,6 +271,8 @@ async def _handle_approve(
 
     acquired = await service.acquire_commit_lease(proposal_id, now=now)
     if not acquired:
+        # Same rationale -- release the `for_update=True` lock before notify.
+        await session.commit()
         await _safe_answer(notifier, callback_query_id, "처리 중")
         return {
             "handled": False,
@@ -212,12 +296,35 @@ async def _handle_approve(
         text, keyboard = build_approval_message(
             group=group, rungs=rungs, diff=reconfirm_outcomes[0].detail
         )
+        # `build_approval_message` only renders an explicit diff for the
+        # first reconfirming rung -- surface every other reconfirming rung's
+        # before/after here so a multi-rung reconfirm batch never silently
+        # drops a rung's change (Finding 2, gap #1).
+        if len(reconfirm_outcomes) > 1:
+            text = f"{text}\n\n{_build_extra_reconfirm_block(reconfirm_outcomes[1:])}"
+        # Rungs in the same batch that did NOT come back `needs_reconfirm`
+        # (e.g. one rung submitted while another needs reconfirmation) would
+        # otherwise never be reported anywhere, since this branch
+        # short-circuits before `_build_result_summary` runs below (Finding
+        # 2, gap #2).
+        other_outcomes = [o for o in outcomes if o.result != "needs_reconfirm"]
+        if other_outcomes:
+            text = f"{text}\n\n{_build_result_summary(other_outcomes)}"
+
+        # Commit the fresh nonce + record_approval + revalidate_and_submit's
+        # rung-state transitions before any Telegram call -- a notify
+        # failure below must never roll back real broker-order evidence.
+        await session.commit()
+
         if message_id is not None:
-            await notifier.edit_message(
-                chat_id, message_id, "⚠️ 재확인 필요 — 아래 새 메시지를 확인해 주세요."
+            await _safe_edit_message(
+                notifier,
+                chat_id,
+                message_id,
+                "⚠️ 재확인 필요 — 아래 새 메시지를 확인해 주세요.",
             )
-        new_message_id = await notifier.send_approval_message(
-            text, keyboard, chat_id=str(chat_id)
+        new_message_id = await _safe_send_approval_message(
+            notifier, text, keyboard, chat_id=str(chat_id)
         )
         await _safe_answer(notifier, callback_query_id, "재확인이 필요합니다")
         return {
@@ -228,8 +335,14 @@ async def _handle_approve(
         }
 
     summary = _build_result_summary(outcomes)
+
+    # Commit record_approval + revalidate_and_submit's rung-state
+    # transitions (acked/resting/unverified/rejected) before any Telegram
+    # call -- same rationale as the reconfirm branch above.
+    await session.commit()
+
     if message_id is not None:
-        await notifier.edit_message(chat_id, message_id, summary)
+        await _safe_edit_message(notifier, chat_id, message_id, summary)
     await _safe_answer(notifier, callback_query_id, "처리되었습니다")
     return {
         "handled": True,
@@ -291,6 +404,7 @@ async def handle_callback_update(
 
             if action == "dn":
                 result = await _handle_deny(
+                    session=session,
                     service=service,
                     proposal_id=proposal_id,
                     nonce=nonce,
@@ -302,6 +416,7 @@ async def handle_callback_update(
                 )
             else:
                 result = await _handle_approve(
+                    session=session,
                     service=service,
                     proposal_id=proposal_id,
                     nonce=nonce,
@@ -315,7 +430,10 @@ async def handle_callback_update(
                     ),
                     revalidate_fn=revalidate_fn,
                 )
-            await session.commit()
+            # `_handle_deny`/`_handle_approve` each commit their own
+            # mutating work internally before making any Telegram notify
+            # call (see module docstring: commit-before-notify ordering) --
+            # no end-of-function commit here.
             return result
     except Exception:  # noqa: BLE001 - fail-closed webhook contract
         logger.exception("order_proposals telegram callback handling failed")

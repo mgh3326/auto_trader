@@ -8,6 +8,7 @@ from decimal import Decimal
 import pytest
 
 from app.core.config import settings
+from app.core.db import AsyncSessionLocal
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.approval_message import parse_callback_data
 from app.services.order_proposals.revalidation import RungOutcome
@@ -395,6 +396,202 @@ async def test_never_raises_on_internal_error(monkeypatch, db_session):
     assert result["handled"] is False
     assert result["reason"] == "internal_error"
     assert notifier.answered  # best-effort answer still attempted
+
+
+# ---------------------------------------------------------------------------
+# Review Finding 1 — commit-before-notify ordering: a Telegram notify failure
+# must never roll back an already-committed DB mutation, and the returned
+# result must reflect the real outcome (not "internal_error").
+# ---------------------------------------------------------------------------
+
+
+class _EditRaisingNotifier(_FakeNotifier):
+    async def edit_message(self, chat_id, message_id, text, reply_markup=None):
+        raise RuntimeError("telegram edit_message boom")
+
+
+@pytest.mark.asyncio
+async def test_deny_survives_notify_failure_and_stays_committed(
+    monkeypatch, db_session
+):
+    _allow_chat(monkeypatch)
+    group = await _seed_proposal(db_session, nonce="nonce-notifyfail-dn", rungs=2)
+    data = f"dn:{str(group.proposal_id)[:8]}:nonce-notifyfail-dn"
+    notifier = _EditRaisingNotifier()
+
+    async def fake_revalidate(**kwargs):
+        raise AssertionError("deny must not revalidate")
+
+    result = await handle_callback_update(
+        _make_update(data=data),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+
+    # The notify failure must not surface as an uncaught exception / be
+    # mis-reported as "internal_error" -- the real outcome (denied) is
+    # reflected in the result even though edit_message raised.
+    assert result["handled"] is True
+    assert result["reason"] == "denied"
+    assert sorted(result["rejected_rungs"]) == [0, 1]
+
+    # Prove the reject transitions were truly COMMITTED (not merely
+    # flushed-and-then-rolled-back by the notify exception) by reading them
+    # back through a brand-new, independent session against the same DB.
+    async with AsyncSessionLocal() as fresh_session:
+        fresh_service = OrderProposalsService(fresh_session)
+        _fresh_group, fresh_rungs = await fresh_service.get_proposal(group.proposal_id)
+    assert all(r.state == "rejected" for r in fresh_rungs)
+
+
+@pytest.mark.asyncio
+async def test_approve_survives_notify_failure_and_stays_committed(
+    monkeypatch, db_session
+):
+    _allow_chat(monkeypatch)
+    group = await _seed_proposal(db_session, nonce="nonce-notifyfail-op")
+    data = f"op:{str(group.proposal_id)[:8]}:nonce-notifyfail-op"
+    notifier = _EditRaisingNotifier()
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        # Mimic what the real `revalidate_and_submit` does (transition
+        # through the full state chain and record via the service) so this
+        # test proves the rung's real, service-recorded "resting" state
+        # survives -- not just a returned-but-never-persisted RungOutcome.
+        await service.transition_rung(proposal_id, 0, new_state="revalidating")
+        await service.transition_rung(proposal_id, 0, new_state="approved")
+        await service.transition_rung(proposal_id, 0, new_state="submitting")
+        await service.record_resting(
+            proposal_id,
+            0,
+            broker_order_id="B1",
+            correlation_id="corr-1",
+            idempotency_key="idem-1",
+            approval_hash_digest="hash-1",
+            now=now,
+        )
+        return [
+            RungOutcome(
+                0,
+                "submitted_resting",
+                {"submit": {"broker_order_id": "B1"}},
+            )
+        ]
+
+    result = await handle_callback_update(
+        _make_update(data=data),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+
+    assert result["handled"] is True
+    assert result["reason"] == "approved"
+    assert result["results"] == ["submitted_resting"]
+
+    # Prove record_approval + the rung's "resting" transition were truly
+    # committed before the (raising) edit_message call, via an independent
+    # session.
+    async with AsyncSessionLocal() as fresh_session:
+        fresh_service = OrderProposalsService(fresh_session)
+        fresh_group, fresh_rungs = await fresh_service.get_proposal(group.proposal_id)
+    assert fresh_group.approved_by_telegram_user_id == str(USER_ID)
+    assert fresh_group.approval_nonce_used_at is not None
+    assert fresh_rungs[0].state == "resting"
+
+
+# ---------------------------------------------------------------------------
+# Review Finding 2 — multi-rung `needs_reconfirm` must not silently drop
+# information: every reconfirming rung's before/after must be visible, and
+# any non-reconfirming outcome in the same batch must also be reported.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_needs_reconfirm_multi_rung_shows_every_diff(monkeypatch, db_session):
+    _allow_chat(monkeypatch)
+    group = await _seed_proposal(db_session, nonce="nonce-multi-recon", rungs=2)
+    data = f"op:{str(group.proposal_id)[:8]}:nonce-multi-recon"
+    notifier = _FakeNotifier()
+
+    diff0 = {
+        "before": {"limit_price": "100", "quantity": "10"},
+        "after": {"limit_price": "105", "quantity": "10"},
+    }
+    diff1 = {
+        "before": {"limit_price": "200", "quantity": "20"},
+        "after": {"limit_price": "222", "quantity": "20"},
+    }
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        return [
+            RungOutcome(0, "needs_reconfirm", diff0),
+            RungOutcome(1, "needs_reconfirm", diff1),
+        ]
+
+    result = await handle_callback_update(
+        _make_update(data=data),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+
+    assert result["handled"] is True
+    assert result["reason"] == "needs_reconfirm"
+    assert len(notifier.sent_messages) == 1
+    new_text, _new_keyboard, _sent_chat_id = notifier.sent_messages[0]
+
+    # Rung #1's diff (rendered by build_approval_message's base `diff=`).
+    assert "105" in new_text
+    # Rung #2's diff must ALSO be visible -- previously silently dropped.
+    assert "200" in new_text
+    assert "222" in new_text
+    assert "추가 재확인 필요" in new_text
+
+
+@pytest.mark.asyncio
+async def test_needs_reconfirm_mixed_batch_reports_other_outcome(
+    monkeypatch, db_session
+):
+    _allow_chat(monkeypatch)
+    group = await _seed_proposal(db_session, nonce="nonce-mixed-recon", rungs=2)
+    data = f"op:{str(group.proposal_id)[:8]}:nonce-mixed-recon"
+    notifier = _FakeNotifier()
+
+    diff1 = {
+        "before": {"limit_price": "200", "quantity": "20"},
+        "after": {"limit_price": "222", "quantity": "20"},
+    }
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        return [
+            RungOutcome(0, "submitted_resting", {"submit": {"broker_order_id": "B1"}}),
+            RungOutcome(1, "needs_reconfirm", diff1),
+        ]
+
+    result = await handle_callback_update(
+        _make_update(data=data),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+
+    assert result["handled"] is True
+    assert result["reason"] == "needs_reconfirm"
+    assert len(notifier.sent_messages) == 1
+    new_text, _new_keyboard, _sent_chat_id = notifier.sent_messages[0]
+
+    # Rung #2's reconfirm diff (base `diff=` from build_approval_message).
+    assert "222" in new_text
+    # Rung #1's submitted_resting outcome must ALSO be reported -- previously
+    # never surfaced anywhere because the reconfirm branch short-circuited.
+    assert "처리 결과" in new_text
+    assert "주문 유지" in new_text  # _RESULT_LABELS["submitted_resting"]
 
 
 # ---------------------------------------------------------------------------
