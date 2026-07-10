@@ -80,6 +80,24 @@ class ScalpingExitContext:
     reason: str  # "stop_loss" | "take_profit" | "time_stop"
 
 
+@dataclass(frozen=True)
+class LossCutContext:
+    """ROB-800 — sanctioned live loss-cut authorization.
+
+    Constructed only by _validate_loss_cut_preconditions after ALL four
+    preconditions pass. When present, evaluate_sell_price_guards exempts the
+    avg*1.01 floor and relaxes the current-price guard to a band
+    (price >= current * (1 - max_slip)). Never threaded from any other path.
+    """
+
+    retrospective_id: int
+    exit_reason: str
+    approval_issue_id: str
+    requester_agent_id: str
+    max_slip: float
+    approval_verified_at: datetime.datetime
+
+
 def evaluate_sell_price_guards(
     *,
     price: float,
@@ -88,6 +106,7 @@ def evaluate_sell_price_guards(
     defensive_trim_ctx: DefensiveTrimContext | None,
     scalping_exit_ctx: ScalpingExitContext | None,
     allow_loss_sell: bool = False,
+    loss_cut_ctx: LossCutContext | None = None,
 ) -> str | None:
     """Single source of truth for limit-sell price guards.
 
@@ -99,6 +118,13 @@ def evaluate_sell_price_guards(
                                        practice: 손절 / stop-loss / loss rebalancing).
       - defensive_trim_ctx present -> floor bypassed, current-price guard enforced.
       - neither                    -> both guards enforced.
+
+    loss_cut_ctx  - When present: floor exempt; current-price guard relaxed to band
+                    price >= current * (1 - max_slip). Aggregated from all four
+                    preconditions (exit_reason, retrospective_id, approval_issue_id,
+                    caller allowlist). Mutual exclusion with defensive_trim_ctx is
+                    NOT enforced here — that's the caller's contract in
+                    _place_order_impl.
     """
     if scalping_exit_ctx is not None:
         return None
@@ -107,6 +133,17 @@ def evaluate_sell_price_guards(
     # scopes this to is_mock AND equity (never crypto/live); see _preview_sell /
     # _validate_sell_side. Operator-requested: mock must let 손절/스톱로스 be practiced.
     if allow_loss_sell:
+        return None
+    if loss_cut_ctx is not None:
+        # ROB-800 — sanctioned loss_cut: floor exempt, current-price guard
+        # relaxed to a downward slip band. Fat-finger deep discounts stay blocked.
+        band_floor = current_price * (1.0 - loss_cut_ctx.max_slip)
+        if current_price > 0 and price < band_floor:
+            return (
+                f"loss_cut sell price {price} below slip band floor "
+                f"{band_floor:.4f} (current {current_price} * "
+                f"(1 - {loss_cut_ctx.max_slip}))"
+            )
         return None
     min_sell_price = avg_price * 1.01
     if price < min_sell_price and defensive_trim_ctx is None:
