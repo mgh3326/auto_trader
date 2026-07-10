@@ -66,6 +66,15 @@ thresholds:
     value: 1.01
     unit: multiple_of_avg_cost
     semantics: minimum sell price as multiple of average cost (loss guard)
+  sell.loss_cut_max_slip:
+    lanes: [sell]
+    value: 0.02
+    unit: fraction
+    semantics: >-
+      ROB-800 — max downward slip below current price a sanctioned loss_cut
+      limit sell may price at (price >= current * (1 - value)). Code-enforced
+      band inside a resolved loss_cut context only; fat-finger deep discounts
+      stay blocked. Not applied to any other sell path.
   sell.breakeven_near_pct:
     lanes: [sell]
     value: 2
