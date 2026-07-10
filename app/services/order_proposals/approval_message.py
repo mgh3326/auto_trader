@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import uuid
 from collections.abc import Mapping, Sequence
@@ -18,7 +17,6 @@ _CALLBACK_PATTERN = re.compile(
     r"(?P<nonce>[A-Za-z0-9_-]+)$"
 )
 _MAX_CALLBACK_BYTES = 64
-_SENSITIVE_KEY_PARTS = ("hash", "nonce", "digest")
 _CASH_LABELS = (
     ("available_cash", "가용현금"),
     ("required_cash", "필요현금"),
@@ -97,8 +95,9 @@ def build_approval_message(
     title = "*주문 제안 재확인*" if diff else "*주문 제안 승인*"
     lines = [
         title,
-        f"- 종목: `{_escape_markdown(symbol)}`",
-        f"- 시장/방향/유형: `{market} / {side} / {order_type}`",
+        f"- 종목: `{_escape_inline_code(symbol)}`",
+        "- 시장/방향/유형: "
+        f"`{_escape_inline_code(f'{market} / {side} / {order_type}')}`",
         "",
         "*주문 단계*",
     ]
@@ -192,33 +191,24 @@ def _build_time_lines(group: Any) -> list[str]:
 
 def _build_cash_lines(cash_stress: Mapping, *, currency: str | None) -> list[str]:
     lines: list[str] = []
-    rendered_keys: set[str] = set()
-    requested_currency = cash_stress.get("currency") or currency
+    requested_currency = _supported_currency(cash_stress.get("currency")) or currency
 
     for key, label in _CASH_LABELS:
         if key not in cash_stress or cash_stress[key] is None:
             continue
-        rendered_keys.add(key)
         value = cash_stress[key]
-        rendered = (
-            f"{_format_decimal(value)}%"
-            if key.endswith("_pct")
-            else _format_money(value, currency=requested_currency)
-        )
-        lines.append(f"- {label}: {rendered}")
-
-    for raw_key in sorted(cash_stress, key=str):
-        key = str(raw_key)
-        if (
-            key in rendered_keys
-            or key == "currency"
-            or _is_sensitive_key(key)
-            or cash_stress[raw_key] is None
-        ):
+        if key.endswith("_pct"):
+            numeric = _format_numeric(value)
+            rendered = f"{numeric}%" if numeric is not None else None
+        else:
+            rendered = _format_money(
+                value,
+                currency=requested_currency,
+                none_label="",
+            )
+        if not rendered:
             continue
-        lines.append(
-            f"- {_escape_markdown(key)}: {_format_generic(cash_stress[raw_key])}"
-        )
+        lines.append(f"- {label}: {rendered}")
     return lines
 
 
@@ -227,7 +217,6 @@ def _format_diff_side(value: object, *, currency: str | None) -> str:
         return "미기재"
 
     parts: list[str] = []
-    used_keys: set[object] = set()
     for keys, label, formatter in (
         (("quantity", "qty", "normalized_quantity"), "수량", _format_decimal),
         (
@@ -238,14 +227,9 @@ def _format_diff_side(value: object, *, currency: str | None) -> str:
     ):
         key = next((candidate for candidate in keys if candidate in value), None)
         if key is not None:
-            used_keys.add(key)
-            parts.append(f"{label} {formatter(value[key])}")
-
-    for raw_key in sorted(value, key=str):
-        key = str(raw_key)
-        if raw_key in used_keys or _is_sensitive_key(key) or value[raw_key] is None:
-            continue
-        parts.append(f"{_escape_markdown(key)} {_format_generic(value[raw_key])}")
+            rendered = formatter(value[key])
+            if rendered != "미기재":
+                parts.append(f"{label} {rendered}")
     return " / ".join(parts) if parts else "미기재"
 
 
@@ -257,16 +241,21 @@ def _currency_for_market(*, market: str, symbol: str) -> str | None:
     return None
 
 
+def _supported_currency(value: object) -> str | None:
+    normalized = str(value).upper() if isinstance(value, str) else None
+    return normalized if normalized in {"KRW", "USD"} else None
+
+
 def _format_money(
     value: object,
     *,
     currency: object | None,
     none_label: str = "미기재",
 ) -> str:
-    if value is None:
+    amount = _format_numeric(value, grouping=True)
+    if amount is None:
         return none_label
-    amount = _format_decimal(value, grouping=True)
-    normalized_currency = str(currency).upper() if currency else None
+    normalized_currency = _supported_currency(currency)
     if normalized_currency == "KRW":
         return f"₩{amount}"
     if normalized_currency == "USD":
@@ -277,14 +266,18 @@ def _format_money(
 
 
 def _format_decimal(value: object, *, grouping: bool = False) -> str:
-    if value is None:
-        return "미기재"
+    return _format_numeric(value, grouping=grouping) or "미기재"
+
+
+def _format_numeric(value: object, *, grouping: bool = False) -> str | None:
+    if value is None or isinstance(value, bool):
+        return None
     try:
         number = Decimal(str(value))
     except (InvalidOperation, ValueError):
-        return _escape_markdown(value)
+        return None
     if not number.is_finite():
-        return _escape_markdown(value)
+        return None
 
     text = format(number, "f")
     if "." in text:
@@ -327,25 +320,12 @@ def _format_datetime(value: object, *, approximate: bool) -> str:
     return f"{prefix}{parsed:%H:%M} KST ({parsed:%Y-%m-%d})"
 
 
-def _format_generic(value: object) -> str:
-    if isinstance(value, datetime):
-        return _format_datetime(value, approximate=False)
-    if isinstance(value, (Decimal, int, float)) and not isinstance(value, bool):
-        return _format_decimal(value)
-    if isinstance(value, (Mapping, list, tuple)):
-        return _escape_markdown(
-            json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
-        )
-    return _escape_markdown(value)
-
-
-def _is_sensitive_key(key: str) -> bool:
-    normalized = key.casefold()
-    return any(part in normalized for part in _SENSITIVE_KEY_PARTS)
-
-
 def _escape_markdown(value: object) -> str:
     text = str(value)
     for character in ("\\", "`", "*", "_", "[", "]"):
         text = text.replace(character, f"\\{character}")
     return text
+
+
+def _escape_inline_code(value: object) -> str:
+    return str(value).replace("\\", "\\\\").replace("`", "\\`")

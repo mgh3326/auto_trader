@@ -171,6 +171,74 @@ def test_message_includes_times_cash_and_reconfirm_diff_without_secrets():
 
 
 @pytest.mark.unit
+def test_message_omits_nested_and_non_numeric_sensitive_values():
+    group = SimpleNamespace(
+        proposal_id=uuid.uuid4(),
+        symbol="000660",
+        market="equity_kr",
+        side="buy",
+        order_type="limit",
+        thesis=None,
+        strategy=None,
+        valid_until=None,
+        validated_at=None,
+        commit_lease_until=None,
+        source_asof=None,
+        payload_hash=None,
+        approval_nonce="abc123def4560000",
+    )
+    rung = SimpleNamespace(
+        rung_index=0,
+        quantity=Decimal("10"),
+        limit_price=Decimal("70000"),
+        approval_hash_digest=None,
+    )
+    sensitive_values = {
+        "nested-payload-secret",
+        "nested-nonce-secret",
+        "known-cash-field-secret",
+        "nested-digest-secret",
+        "known-diff-field-secret",
+        "nested-approval-secret",
+    }
+    cash_stress = {
+        "available_cash": Decimal("5000000"),
+        "required_cash": {"approval_hash": "known-cash-field-secret"},
+        "details": {
+            "payload_hash": "nested-payload-secret",
+            "items": [{"nonce": "nested-nonce-secret"}],
+        },
+    }
+    diff = {
+        "before": {
+            "quantity": Decimal("10"),
+            "limit_price": Decimal("70000"),
+            "details": {"digest": "nested-digest-secret"},
+        },
+        "after": {
+            "quantity": {"nonce": "known-diff-field-secret"},
+            "limit_price": Decimal("70500"),
+            "metadata": [{"approval_hash": "nested-approval-secret"}],
+        },
+    }
+
+    text, _ = build_approval_message(
+        group=group,
+        rungs=[rung],
+        cash_stress=cash_stress,
+        diff=diff,
+    )
+
+    assert "가용현금: ₩5,000,000" in text
+    assert "변경 전: 수량 10 / 가격 ₩70,000" in text
+    assert "변경 후: 가격 ₩70,500" in text
+    for sensitive_value in sensitive_values:
+        assert sensitive_value not in text
+    for sensitive_key in ("payload_hash", "approval_hash", "nonce", "digest"):
+        assert sensitive_key not in text
+
+
+@pytest.mark.unit
 def test_message_formats_optional_market_order_fields_stably():
     group = SimpleNamespace(
         proposal_id=uuid.uuid4(),
@@ -202,6 +270,30 @@ def test_message_formats_optional_market_order_fields_stably():
     assert "*시간*" not in text
     assert "*현금 스트레스*" not in text
     assert "*재확인 변경사항*" not in text
+
+
+@pytest.mark.unit
+def test_message_escapes_inline_code_delimiters():
+    group = SimpleNamespace(
+        proposal_id=uuid.uuid4(),
+        symbol=r"A`\B",
+        market=r"equity`\kr",
+        side=r"b`\uy",
+        order_type=r"li`\mit",
+        thesis=None,
+        strategy=None,
+        valid_until=None,
+        validated_at=None,
+        commit_lease_until=None,
+        source_asof=None,
+        payload_hash=None,
+        approval_nonce="abc123def4560000",
+    )
+
+    text, _ = build_approval_message(group=group, rungs=[])
+
+    assert r"- 종목: `A\`\\B`" in text
+    assert r"- 시장/방향/유형: `equity\`\\kr / b\`\\uy / li\`\\mit`" in text
 
 
 @pytest.mark.unit
