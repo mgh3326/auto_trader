@@ -6,6 +6,8 @@ sessions and swallows DB errors so a cache fault degrades to uncached scraping.
 
 from __future__ import annotations
 
+import logging
+import os
 from decimal import Decimal
 from typing import Any
 
@@ -13,7 +15,11 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import AsyncSessionLocal
 from app.models.naver_research_detail_cache import NaverResearchDetailCache
+from app.services.naver_finance.detail_cache_port import DetailCachePort
+
+logger = logging.getLogger(__name__)
 
 
 def _coerce_target_price(v: Decimal | int | float | None) -> int | float | None:
@@ -72,3 +78,40 @@ class NaverResearchDetailCacheRepository:
             .on_conflict_do_nothing(index_elements=["nid"])
         )
         await self.db.execute(stmt)
+
+
+class NaverResearchDetailCacheStore:
+    """DetailCachePort backed by naver_research_detail_cache.
+
+    Owns a short-lived session per call. Any DB error is swallowed so analysis
+    degrades to uncached scraping rather than failing.
+    """
+
+    async def get_many(self, nids: list[str]) -> dict[str, Any]:
+        if not nids:
+            return {}
+        try:
+            async with AsyncSessionLocal() as session:
+                repo = NaverResearchDetailCacheRepository(session)
+                return await repo.get_many(nids)
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("naver detail cache get_many failed", exc_info=True)
+            return {}
+
+    async def put_many(self, entries: dict[str, Any]) -> None:
+        if not entries:
+            return
+        try:
+            async with AsyncSessionLocal() as session:
+                repo = NaverResearchDetailCacheRepository(session)
+                await repo.put_many(entries)
+                await session.commit()
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("naver detail cache put_many failed", exc_info=True)
+
+
+def get_detail_cache() -> DetailCachePort | None:
+    """Return a store, or None when disabled via env (default enabled)."""
+    if os.getenv("NAVER_RESEARCH_DETAIL_CACHE_ENABLED", "true").strip().lower() != "true":
+        return None
+    return NaverResearchDetailCacheStore()
