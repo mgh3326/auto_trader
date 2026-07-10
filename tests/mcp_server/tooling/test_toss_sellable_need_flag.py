@@ -128,7 +128,9 @@ async def test_collect_toss_api_positions_uses_shared_cache_and_skips_cash(monke
 async def test_collect_portfolio_positions_forwards_fresh_sellable(monkeypatch):
     seen: list[bool] = []
 
-    async def fake_collect_toss(market_filter, *, need_sellable=True, fresh_sellable=False):
+    async def fake_collect_toss(
+        market_filter, *, need_sellable=True, fresh_sellable=False
+    ):
         seen.append(fresh_sellable)
         return [], [], False
 

@@ -3424,7 +3424,7 @@ async def test_get_holdings_toss_api_enabled_adds_read_only_toss_account(monkeyp
     async def fake_collect_manual_positions(*args, **kwargs):
         return [], []
 
-    async def fake_fetch_toss_snapshot(*, need_sellable: bool = True):
+    async def fake_fetch_toss_snapshot(*, need_sellable: bool = True, **_):
         return TossPortfolioSnapshot(
             positions=[
                 TossPortfolioPosition(
@@ -3491,7 +3491,7 @@ async def test_get_holdings_toss_api_market_filter_keeps_us_position(monkeypatch
     async def fake_collect_manual_positions(*args, **kwargs):
         return [], []
 
-    async def fake_fetch_toss_snapshot(*, need_sellable: bool = True):
+    async def fake_fetch_toss_snapshot(*, need_sellable: bool = True, **_):
         return TossPortfolioSnapshot(
             positions=[
                 TossPortfolioPosition(
@@ -3571,7 +3571,7 @@ async def test_get_holdings_toss_api_success_hides_duplicate_toss_manual(monkeyp
             }
         ], []
 
-    async def fake_fetch_toss_snapshot(*, need_sellable: bool = True):
+    async def fake_fetch_toss_snapshot(*, need_sellable: bool = True, **_):
         return TossPortfolioSnapshot(
             positions=[
                 TossPortfolioPosition(
@@ -3646,7 +3646,7 @@ async def test_get_holdings_toss_api_failure_keeps_manual_fallback(monkeypatch):
             }
         ], []
 
-    async def fake_fetch_toss_snapshot(*, need_sellable: bool = True):
+    async def fake_fetch_toss_snapshot(*, need_sellable: bool = True, **_):
         raise RuntimeError("toss unavailable")
 
     monkeypatch.setattr(portfolio_holdings.settings, "toss_api_enabled", True)
