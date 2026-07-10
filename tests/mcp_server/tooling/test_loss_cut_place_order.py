@@ -4,6 +4,7 @@ import pytest
 
 from app.mcp_server.tooling import order_execution as oe
 from app.mcp_server.tooling import order_validation as ov
+from app.models.review import KISLiveOrderLedger, LiveOrderLedger
 
 
 @pytest.mark.unit
@@ -43,3 +44,9 @@ async def test_loss_cut_and_defensive_trim_mutually_exclusive():
     )
     assert resp["success"] is False
     assert "mutually exclusive" in resp["error"].lower()
+
+
+@pytest.mark.unit
+def test_live_ledger_models_have_exit_intent_column():
+    assert "exit_intent" in LiveOrderLedger.__table__.columns
+    assert "exit_intent" in KISLiveOrderLedger.__table__.columns
