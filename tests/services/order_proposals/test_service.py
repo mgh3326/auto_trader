@@ -552,3 +552,45 @@ async def test_sweep_local_stale_accepts_sync_evidence_callback(db_session):
     assert group.proposal_id in swept
     _, rungs = await service.get_proposal(group.proposal_id)
     assert rungs[0].state == "voided_local_stale"
+
+
+@pytest.mark.asyncio
+async def test_record_approval_dispatch_merges_source_asof(db_session):
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="A",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("100"), None)],
+        source_asof={"resting_deadline": "2026-07-10T15:30:00+09:00"},
+    )
+    await db_session.commit()
+    now = datetime(2026, 7, 10, 9, 15, tzinfo=UTC)
+
+    updated = await service.record_approval_dispatch(
+        group.proposal_id, message_id=4242, chat_id="chat-1", now=now
+    )
+
+    assert updated.source_asof["resting_deadline"] == "2026-07-10T15:30:00+09:00"
+    assert updated.source_asof["approval_message_id"] == 4242
+    assert updated.source_asof["approval_chat_id"] == "chat-1"
+    assert updated.source_asof["approval_sent_at"] == now.isoformat()
+
+    refreshed, _ = await service.get_proposal(group.proposal_id)
+    assert refreshed.source_asof["resting_deadline"] == "2026-07-10T15:30:00+09:00"
+    assert refreshed.source_asof["approval_message_id"] == 4242
+
+
+@pytest.mark.asyncio
+async def test_record_approval_dispatch_missing_proposal_raises(db_session):
+    service = OrderProposalsService(db_session)
+    with pytest.raises(OrderProposalNotFound):
+        await service.record_approval_dispatch(
+            uuid.uuid4(),
+            message_id=1,
+            chat_id="chat-1",
+            now=datetime(2026, 7, 10, 9, 15, tzinfo=UTC),
+        )

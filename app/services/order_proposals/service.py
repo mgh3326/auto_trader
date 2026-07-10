@@ -263,6 +263,37 @@ class OrderProposalsService:
             group, approved_by_telegram_user_id=telegram_user_id, approved_at=now
         )
 
+    async def record_approval_dispatch(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        message_id: int,
+        chat_id: str,
+        now: datetime,
+    ) -> OrderProposal:
+        """Record where the initial Telegram approval message was sent.
+
+        No new column exists for this (see ``dispatch.py``'s module docstring)
+        -- ``message_id``/``chat_id``/``sent_at`` are merged into the existing
+        ``source_asof`` JSONB column so a later Telegram ``edit_message`` call
+        can find them. This merges on top of whatever keys are already there
+        (e.g. ``resting_deadline``, read by
+        ``approval_message.py::_build_time_lines``) rather than overwriting
+        the column outright.
+        """
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        existing = group.source_asof or {}
+        merged = {
+            **existing,
+            "approval_message_id": message_id,
+            "approval_chat_id": chat_id,
+            "approval_sent_at": now.isoformat(),
+        }
+        return await self._repo.update_group(group, source_asof=merged)
+
     async def acquire_commit_lease(
         self,
         proposal_id: uuid.UUID,
