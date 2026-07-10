@@ -89,22 +89,65 @@ def _norm(value: Any) -> str | None:
     return text
 
 
+def _adapt_live_submit_response(
+    submit: dict[str, Any], *, order_type: str
+) -> dict[str, Any]:
+    """Translate a real live-submit response into ``_classify_submit``'s shape.
+
+    The real ``_place_order_impl(dry_run=False)`` response (see
+    ``_record_kis_live_order`` in ``kis_live_ledger.py`` and
+    ``_record_live_order`` in ``live_order_ledger.py``) is accepted-only at
+    send: it carries ``broker_status in ("accepted", "rejected")`` and
+    ``order_id``/``correlation_id`` — never a synchronous acked-vs-resting
+    distinction, because that distinction doesn't exist in the broker's
+    real-time API contract (it's an order_proposals-internal concept; fills
+    are booked later by reconcile from broker evidence, per the KIS Live
+    Order Fill-Evidence Gate / US & Crypto Live Order Fill-Evidence Gate
+    design). Adapt the real shape into ``{status, broker_order_id}`` here so
+    ``_classify_submit``'s existing tested contract stays untouched.
+    """
+    broker_status = submit.get("broker_status")
+    if broker_status == "rejected":
+        adapted = dict(submit)
+        adapted["success"] = False
+        adapted["error"] = (
+            submit.get("response_message") or submit.get("message") or "broker_rejected"
+        )
+        return adapted
+    if broker_status == "accepted":
+        adapted = dict(submit)
+        adapted["broker_order_id"] = submit.get("order_id")
+        adapted["status"] = "acked" if order_type == "market" else "resting"
+        return adapted
+    # Defensive: unknown/missing broker_status shouldn't happen given
+    # `_derive_live_send_status` only ever returns "accepted"/"rejected", but
+    # leave the response untouched rather than raise — `_classify_submit`'s
+    # existing ambiguous-response fallback (`record_unverified`) still
+    # applies to whatever shape falls through here.
+    return submit
+
+
 async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
     """Production binding — delegates to the real order-execution impl.
 
     Not exercised by this task's test suite (every test injects a fake
     ``place_order_fn``; real broker/httpx calls are always mocked in tests
-    per the ROB-816 global constraints). Known gap: the live-submit
-    (``dry_run=False``) response shape returned by ``_execute_and_record``
-    inside ``_place_order_impl`` has not been confirmed to carry the
-    ``{status, broker_order_id, correlation_id, idempotency_key,
-    approval_hash_digest}`` contract this orchestrator classifies against —
-    see the Task 13 report for the follow-up needed before this default
-    binding can be trusted against a real broker response.
+    per the ROB-816 global constraints). The dry-run preview response is
+    passed through unchanged — ``_revalidate_rung`` already reads its real
+    top-level keys (``price``/``quantity``/``success``/``approval_hash``).
+    The live-submit (``dry_run=False``) response is translated via
+    ``_adapt_live_submit_response`` before being handed to
+    ``_classify_submit`` — see that helper's docstring and Task 13 report
+    Finding 1 for why the raw response can't be classified directly.
     """
     from app.mcp_server.tooling.order_execution import _place_order_impl
 
-    return await _place_order_impl(**kwargs)
+    submit = await _place_order_impl(**kwargs)
+    if kwargs.get("dry_run") is False:
+        return _adapt_live_submit_response(
+            submit, order_type=str(kwargs.get("order_type"))
+        )
+    return submit
 
 
 def _default_correlation_mint(
@@ -167,21 +210,31 @@ async def _revalidate_rung(
 
     await service.transition_rung(proposal_id, rung_index, new_state="revalidating")
 
-    preview = await _maybe_await(
-        place_order_fn(
-            dry_run=True,
-            symbol=group.symbol,
-            side=rung.side,
-            market=group.market,
-            order_type=group.order_type,
-            quantity=rung.quantity,
-            price=rung.limit_price,
-            thesis=group.thesis,
-            strategy=group.strategy,
-            reason=_PREVIEW_REASON.format(rung=rung_index),
-            rung=rung_index,
+    try:
+        preview = await _maybe_await(
+            place_order_fn(
+                dry_run=True,
+                symbol=group.symbol,
+                side=rung.side,
+                market=group.market,
+                order_type=group.order_type,
+                quantity=rung.quantity,
+                price=rung.limit_price,
+                thesis=group.thesis,
+                strategy=group.strategy,
+                reason=_PREVIEW_REASON.format(rung=rung_index),
+                rung=rung_index,
+            )
         )
-    )
+    except Exception as exc:  # noqa: BLE001 - preview never reached the broker
+        # Unlike a submit-phase exception, a preview-phase exception carries
+        # no ambiguity about broker state (nothing was sent) — safe and
+        # correct to make this retryable rather than parking it in a
+        # non-revisitable holding state (see Task 13 review Finding 3).
+        await service.transition_rung(
+            proposal_id, rung_index, new_state="pending_approval"
+        )
+        return RungOutcome(rung_index, "error", {"error": str(exc)})
 
     if preview.get("success") is False:
         # Fail-closed: the guard chain (loss-sell / market-sell-loss / sector
@@ -196,14 +249,24 @@ async def _revalidate_rung(
             {"error": preview.get("error"), "preview": preview},
         )
 
-    before = {
-        "limit_price": _norm(rung.limit_price),
-        "quantity": _norm(rung.quantity),
-    }
-    after = {
-        "limit_price": _norm(preview.get("price")),
-        "quantity": _norm(preview.get("quantity")),
-    }
+    # Market-order rungs have no `limit_price` by design (it's always None),
+    # but `_build_preview` always backfills `preview["price"]` with the live
+    # current price for market orders — comparing that against the stored
+    # `None` would deterministically mismatch on every attempt. Degrade the
+    # comparison to quantity-only for market-order rungs (Task 13 review
+    # Finding 2); limit-order rungs keep the full price+quantity comparison.
+    if rung.limit_price is None:
+        before = {"limit_price": None, "quantity": _norm(rung.quantity)}
+        after = {"limit_price": None, "quantity": _norm(preview.get("quantity"))}
+    else:
+        before = {
+            "limit_price": _norm(rung.limit_price),
+            "quantity": _norm(rung.quantity),
+        }
+        after = {
+            "limit_price": _norm(preview.get("price")),
+            "quantity": _norm(preview.get("quantity")),
+        }
     if before != after:
         await service.mark_needs_reconfirm(proposal_id, rung_index, now=now)
         return RungOutcome(
