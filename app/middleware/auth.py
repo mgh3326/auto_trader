@@ -60,6 +60,7 @@ class AuthMiddleware:
     )
     HERMES_INGEST_PATH_PREFIX: ClassVar[str] = "/trading/api/investment-reports/hermes/"
     NEWS_RELEVANCE_PATH_PREFIX: ClassVar[str] = "/trading/api/news-relevance/"
+    TELEGRAM_CALLBACK_PATH_PREFIX: ClassVar[str] = "/trading/api/telegram/"
     LEGACY_DEPRECATED_PREFIXES: ClassVar[tuple[str, ...]] = LEGACY_PREFIXES
 
     def __init__(self, app: ASGIApp):
@@ -237,6 +238,33 @@ class AuthMiddleware:
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "Invalid news relevance ingest token"},
+                )
+            return None
+
+        # ROB-816 PR 2 — Telegram webhook secret-token auth for the
+        # order-proposals approval callback. Same prefix-token shape as the
+        # Hermes / news-relevance branches above: Telegram's webhook
+        # "secret token" mechanism supplies this header on every request,
+        # so an unconfigured token or header name must fail closed (403)
+        # rather than silently accept unauthenticated webhook traffic.
+        if path.startswith(self.TELEGRAM_CALLBACK_PATH_PREFIX):
+            expected_token = settings.ORDER_PROPOSALS_TELEGRAM_TOKEN
+            if not expected_token:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Telegram callback token not configured"},
+                )
+            header_name = settings.ORDER_PROPOSALS_TELEGRAM_TOKEN_HEADER.strip()
+            if not header_name:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Telegram callback token header not configured"},
+                )
+            supplied_token = request.headers.get(header_name, "")
+            if not hmac.compare_digest(supplied_token, expected_token):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid Telegram callback token"},
                 )
             return None
 

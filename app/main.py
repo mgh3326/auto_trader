@@ -64,6 +64,7 @@ from app.routers import (
     screener,
     strategy_events,
     symbol_settings,
+    telegram_callback,
     test,
     trade_journals,
     user_defaults,
@@ -217,6 +218,12 @@ def create_app() -> FastAPI:
     app.include_router(research_reports.router)
     app.include_router(strategy_events.router)
     app.include_router(kospi200.router)
+    # ROB-816 PR 2 — flag-gated, same rationale as investment_snapshots
+    # above: default off keeps the router fully absent so unauthenticated
+    # probes against the Telegram webhook path return 404 at FastAPI's
+    # routing layer, not a 503 that reveals the feature exists.
+    if settings.ORDER_PROPOSALS_TELEGRAM_ENABLED:
+        app.include_router(telegram_callback.router)
     app.include_router(websocket.router)
     if settings.EXPOSE_MONITORING_TEST_ROUTES:
         app.include_router(test.router)
