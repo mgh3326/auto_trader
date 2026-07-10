@@ -1,326 +1,152 @@
 # Auto Trader
 
-자동 거래 시스템으로, 다양한 금융 데이터를 수집하고 분석하여 거래 신호를 제공합니다.
+**LLM 에이전트가 시장 분석부터 주문 실행, 체결 확정, 매매 회고까지 수행하는 AI 자동매매 시스템.**
 
-## 기능
+런타임은 결정론적인 데이터·주문·안전 레이어만 담당하고, 판단(LLM)은 MCP(Model Context Protocol)로 연결된 **프로세스 밖의 에이전트**가 수행합니다. 국내주식·미국주식·암호화폐를 실계좌로 운용 중이며, 같은 도구 표면 위에서 다수의 모의 환경(KIS 모의, 키움 모의, Alpaca Paper, Binance Demo, Upbit shadow-sim)을 함께 지원합니다.
 
-- 주식 및 암호화폐 데이터 수집
-- 기술적 분석 지표 계산
-- **다중 시간대 분석 (일봉 + 분봉)**
-  - 일봉 200개: 장기적 추세 분석
-  - 60분 캔들 12개: 중기적 방향성 (하루 전반적 상승/하락 추세)
-  - 5분 캔들 12개: 단기적 모멘텀과 변동성
-  - 1분 캔들 10개: 초단기 급등락 및 거래량 폭증 포착
-- 자동 거래 신호 생성
-- Telegram 봇을 통한 알림
-- 웹 대시보드
+이 저장소를 관통하는 질문은 하나입니다 — **"AI에게 계좌를 맡기려면 무엇이 필요한가?"** 아래 설계 원칙들은 그 답으로 하나씩 쌓아온 안전장치입니다.
 
-## 설치
+> ⚠️ 개인 프로젝트이며 투자 조언이 아닙니다. 실계좌 연동 기능은 모두 기본 비활성(fail-closed)이며, 명시적인 환경변수 게이트와 주문별 confirm 없이는 동작하지 않습니다.
+
+## 아키텍처
+
+```mermaid
+flowchart LR
+    subgraph Agents["LLM 에이전트 (out-of-process)"]
+        A1["Claude / Hermes"]
+        A2["Codex (TradingCodex)"]
+    end
+
+    subgraph Runtime["auto_trader 런타임 (결정론 레이어)"]
+        MCP["MCP 서버<br/>140+ 도구 · 권한 프로파일 분리"]
+        DATA["시장 데이터<br/>시세 · 차트 · 뉴스 · 공시 · 수급 · 실적"]
+        GATE["주문 안전 게이트<br/>dry-run 기본 · confirm · approval_hash · 멱등키"]
+        LEDGER["주문 레저<br/>accepted-only 기록"]
+        REC["Reconcile<br/>fill-evidence 게이트"]
+        LOOP["학습 루프<br/>forecast · 매매 회고 · decision history"]
+    end
+
+    subgraph Brokers["브로커 / 거래소"]
+        B1["KIS · Toss · Upbit (live)"]
+        B2["Kiwoom 모의 · Alpaca Paper · Binance Demo"]
+    end
+
+    A1 & A2 --> MCP
+    MCP --> DATA
+    MCP --> GATE
+    GATE --> B1 & B2
+    GATE --> LEDGER
+    LEDGER --> REC
+    REC -. "order-id 체결 증거 조회" .-> B1 & B2
+    REC --> LOOP
+    LOOP -. "다음 판단에 재주입" .-> MCP
+```
+
+## 핵심 설계 원칙
+
+### 1. LLM은 프로세스 밖에
+
+런타임 코드는 in-process LLM provider를 import하지 않습니다(정적 가드 테스트가 `app/**` 전체를 스캔해 강제). 판단은 MCP로 연결된 에이전트가, 데이터 수집·주문 실행·검증은 런타임이 맡습니다. 도구 표면은 **권한 프로파일**로 분리되어, 계좌조회 전용 에이전트는 주문 도구에 아예 접근할 수 없습니다.
+
+### 2. 주문은 fail-closed
+
+- 모든 주문 도구는 `dry_run` 기본값 — 실전송은 `confirm=True`를 매번 명시해야 합니다.
+- `preview → approval_hash(정규화된 주문의 해시 토큰, TTL 5분) → place에서 재계산 검증` — 프리뷰와 다른 주문은 전송 자체가 거부됩니다.
+- 결정적 멱등키가 같은 주문의 이중 제출을 차단합니다. 주문 POST의 타임아웃 재시도는 전면 제거했고(재-POST = 이중주문 리스크), 브로커가 멱등을 지원하지 않는 경로는 전송 전 intent 테이블 선점으로 로컬에서 차단합니다.
+- 손실매도 가드, 래더 사이징 캡, 섹터 집중도 경고 등 코드 레벨 가드가 판단 레이어와 독립적으로 동작합니다.
+- 실계좌·모의 어댑터 모두 호스트 allowlist로 엔드포인트를 고정합니다(모의 어댑터에서 live 호스트는 선택 불가).
+
+### 3. 체결은 증거로만 (fill-evidence gate)
+
+주문 전송 시점에는 **accepted-only**만 기록합니다. 체결·손익 장부는 브로커의 order-id 키 체결 증거를 확인한 reconcile을 통해서만 확정됩니다. "보냈으니 체결됐겠지"를 시스템 차원에서 금지한 것으로, KR/US/crypto 전 시장의 라이브 주문 경로에 동일하게 적용되어 있습니다.
+
+### 4. 매매는 학습 루프로
+
+주문→체결→저널→forecast→회고가 `correlation_id`로 연결됩니다. 에이전트는 다음 판단 때 자신의 과거 결정과 회고를 주입받고, forecast는 확률·범위로 기록되어 실제 결과와 대조하는 캘리브레이션 대시보드로 노출됩니다. 예측이 맞았는지 시스템이 기억하고 다시 보여주는 구조입니다.
+
+## 지원 시장 / 브로커
+
+| 시장 | 데이터 | 실주문 | 모의 |
+|---|---|---|---|
+| 국내주식 (KRX/NXT) | KIS · Toss · Naver · KRX | KIS · Toss | KIS 모의 · Kiwoom 모의 |
+| 미국주식 | KIS · Toss · Yahoo · Finnhub · TradingView | KIS · Toss | Alpaca Paper |
+| 암호화폐 | Upbit (REST + WebSocket) | Upbit | Upbit shadow-sim · Binance Spot/Futures Demo |
+
+보조 데이터: DART 공시, Finnhub 실적 캘린더, 네이버/Finnhub 뉴스(관련성 판정 파이프라인), 투자자 수급(외인/기관), 증권사 리서치 리포트 인제스트, 환율.
+
+## MCP 도구 표면
+
+140+ 도구가 streamable-http MCP 서버로 노출됩니다.
+
+- **조회/분석**: 시세, OHLCV(멀티 타임프레임), 스크리너(KR/US/crypto), 뉴스, 공시, 실적, 수급, 밸류에이션, 포트폴리오
+- **주문 계열**: preview / place / modify / cancel + 주문이력 · 주문가능금액 (브로커·계좌모드별 변형)
+- **레저/검증**: 주문 레저 조회, reconcile(fill-evidence), 매매 회고, forecast 기록
+- **정책/운영**: trading policy 조회(버전 스탬핑), 운영 브리핑, watch 조건 관리
+
+도구 상세는 [`app/mcp_server/README.md`](app/mcp_server/README.md)를 참고하세요.
+
+## 웹 대시보드 (`/invest`)
+
+스크리너(KR/US/crypto), 종목 상세(수급·뉴스·실적·리서치), 통합 주문/체결 뷰(주문 provenance 포함), forecast 캘리브레이션 인사이트를 제공하는 React 대시보드입니다.
+
+<!-- TODO(ROB-805): 스크린샷 2~3장 — 스크리너 / 종목 상세 / insights 캘리브레이션 -->
+
+## 기술 스택
+
+Python 3.13 · FastAPI · SQLAlchemy(async) + PostgreSQL · Redis · Alembic · TaskIQ · Prefect · React + TypeScript(invest 프론트엔드) · MCP(streamable-http) · pytest(85%+ 커버리지, xdist 병렬)
+
+## 시작하기
 
 ### 요구사항
 
-- Python 3.13+
-- UV (패키지 관리)
-- PostgreSQL
-- Redis
+- Python 3.13+, UV, PostgreSQL, Redis
 
-### 설치 방법
+### 설치
 
-1. 저장소 클론
 ```bash
 git clone <repository-url>
 cd auto_trader
+
+uv sync --all-groups          # 의존성 설치
+cp env.example .env           # 환경변수 설정 (.env 편집)
+uv run alembic upgrade head   # DB 마이그레이션
+make dev                      # 개발 서버 (uvicorn --reload)
 ```
-
-2. 의존성 설치
-```bash
-uv sync --all-groups
-```
-
-3. 환경 변수 설정
-```bash
-cp env.example .env
-# .env 파일을 편집하여 필요한 설정값 입력
-```
-
-**필수 환경 변수:**
-- `UPBIT_ACCESS_KEY`: 업비트 API 액세스 키
-- `UPBIT_SECRET_KEY`: 업비트 API 시크릿 키
-- `KIS_APP_KEY`: 한국투자증권 API 앱 키
-- `KIS_APP_SECRET`: 한국투자증권 API 시크릿
-- `TELEGRAM_TOKEN`: Telegram 봇 토큰
-- `DATABASE_URL`: PostgreSQL 데이터베이스 연결 URL
-- `REDIS_URL`: Redis 연결 URL
-
-4. 데이터베이스 마이그레이션
-```bash
-uv run alembic upgrade head
-```
-
-5. 애플리케이션 실행
-```bash
-uv run uvicorn app.main:api --reload
-```
-
-## Research Runbook
-
-- Freqtrade research pipeline runbook: `docs/runbooks/freqtrade-research-pipeline.md`
-- Summary ingestion command:
 
 ```bash
-uv run python scripts/ingest_freqtrade_report.py --input /absolute/path/to/summary.json --runner mac
+docker compose up -d          # PostgreSQL / Redis / Adminer
 ```
 
-### MCP 서버 실행
+**주요 환경 변수** (전체는 `env.example` 참고):
 
-### Tools
-- `search_symbol(query, limit=20)`
-- `get_quote(symbol, market=None)`
-- `get_holdings(account=None, market=None, include_current_price=True, minimum_value=None)`
-- `get_position(symbol, market=None)`
-- `get_ohlcv(symbol, count=100, period="day", end_date=None, market=None)`
-- `get_volume_profile(symbol, market=None, period=60, bins=20)`
-- `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters.
-
-### `screen_stocks` 스펙
-
-Parameters:
-- `market`: Market to screen ("kr", "us", "crypto") (default: "kr")
-- `asset_type`: Asset type ("stock", "etf", "etn") - only applicable to KR
-- `category`: Category filter (ETF categories for KR, sector for US)
-- `sector`: Sector filter for KR/US stocks (default: None). Not supported for crypto or KR ETF/ETN requests
-- `sort_by`: Sort criteria ("volume", "trade_amount", "market_cap", "change_rate", "dividend_yield") (default: crypto="trade_amount", KR/US="volume")
-- `sort_order`: Sort order ("asc" or "desc") (default: "desc")
-- `min_market_cap`: Minimum market cap filter (억원 for KR, USD for US; not supported for crypto, warning returned)
-- `max_per`: Maximum P/E ratio filter (not applicable to crypto)
-- `min_dividend_yield`: Minimum dividend yield filter (accepts both decimal, e.g., 0.03, and percentage, e.g., 3.0; values > 1 are treated as percentages) (not applicable to crypto)
-- `min_dividend`: Alias for `min_dividend_yield`. Accepts same format. If both specified, they must be equal
-- `min_analyst_buy`: Minimum analyst buy count filter (default: None). Only supported for KR/US stocks (not ETF/ETN)
-- `max_rsi`: Maximum RSI filter (0-100, filters out overbought)
-- `limit`: Maximum number of results to return (1-50, capped at 50)
-- `sort_by`: Sort criteria ("volume", "trade_amount", "market_cap", "change_rate", "dividend_yield") (default: crypto="trade_amount", KR/US="volume")
-- `sort_order`: Sort order ("asc" or "desc") (default: "desc")
-- `min_market_cap`: Minimum market cap filter (억원 for KR, USD for US; not supported for crypto, warning returned)
-- `max_per`: Maximum P/E ratio filter (not applicable to crypto)
-- `min_dividend_yield`: Minimum dividend yield filter (accepts both decimal, e.g., 0.03, and percentage, e.g., 3.0; values > 1 are treated as percentages) (not applicable to crypto)
-- `max_rsi`: Maximum RSI filter (0-100, filters out overbought)
-- `limit`: Maximum number of results to return (1-50, capped at 50)
-
-Response format:
-```json
-{
-  "results": [...],
-  "total_count": N,  // Total stocks that passed all filters (before sort/limit). If data source provides total, uses that; otherwise uses fetched candidates count.
-  "returned_count": M,  // Actual number of results returned (after limit)
-  "filters_applied": {...},
-  "market": "kr|us|crypto",
-  "timestamp": "ISO timestamp"
-}
-```
-MCP 서버는 시장/보유종목 조회 및 주문 처리 도구를 제공합니다.
-- **조회 도구**: 실시간 시세, 차트(OHLCV), 보조지표, 보유종목/잔고 조회
-- **주문 도구**: 주문 이력 조회(`get_order_history`), 신규 주문(`place_order`), 정정/취소(`modify_order`, `cancel_order`)
-
-Market-specific behavior:
-- **KR market**: Uses KRX API for stocks/ETFs + Naver Finance for valuation metrics.
-  - KRX data cached with 300s TTL (Redis) + in-memory fallback
-  - Trading date auto-fallback (up to 10 days back)
-  - Category filter auto-limits to ETFs if `asset_type=None`
-  - ETN (`asset_type="etn"`) not supported - returns error
-
-- **US market**: Uses tvscreener first for stock requests, then falls back to yfinance when TradingView fields are unavailable or the request needs an unsupported sort.
-  - US `category`/`sector` filters stay on the tvscreener path when TradingView sector metadata is available
-  - Public enrichment fields (`sector`, `analyst_buy`, `analyst_hold`, `analyst_sell`, `avg_target`, `upside_pct`) are filled directly from tvscreener when possible; missing values use lightweight Finnhub/yfinance fallback
-  - Legacy yfinance filters: `min_market_cap` → `intradaymarketcap`, `max_per` → `peratio_lasttwelvemonths`, `min_dividend_yield` → `forward_dividend_yield`
-  - Legacy yfinance sort maps: `volume` → `dayvolume`, `market_cap` → `intradaymarketcap`, `change_rate` → `percentchange`
-
-- **Crypto market**: Uses Upbit top traded coins.
-  - Default sort is `trade_amount` and maps to `acc_trade_price_24h` (24h traded value in KRW)
-  - `sort_by="volume"` is not supported for crypto and returns an error (use `trade_amount`)
-  - Crypto response payload uses `trade_amount_24h` and does not include `volume`
-  - `max_per`, `min_dividend_yield`, `sort_by="dividend_yield"` not supported - returns error
-  - `sector` and `min_analyst_buy` filters are not supported for crypto - returns error
-  - RSI calculated using OHLCV data (subset due to API limits: min(len(candidates), limit*3, 150))
-
-Filter compatibility and error semantics:
-- `sector` filter: Supported for KR/US stocks only. Returns error for crypto or KR ETF/ETN requests
-- `min_analyst_buy` filter: Supported for KR/US stocks only (not ETF/ETN). Returns error for crypto or non-stock asset types
-- `min_dividend` / `min_dividend_yield`: These are aliases. Accepts decimal (0.03) or percentage (3.0) formats. If both are specified with different values, returns error. Not supported for crypto
-  - RSI calculated using OHLCV data (subset due to API limits: min(len(candidates), limit*3, 150))
-
-Advanced filters (PER/dividend/RSI) apply to subset:
-- **Note**: `min_market_cap` is NOT an advanced filter - it uses data already available from KRX/yfinance, so it doesn't trigger external API calls
-- Advanced filters (PER, dividend yield, RSI) require external data fetch for KR market
-- Limit: `min(len(candidates), limit*3, 150)`
-- Parallel fetch with `asyncio.Semaphore(10)`
-- Timeout: 30 seconds
-- Individual failures don't stop overall operation
-
-### 암호화폐 분석 (업비트)
-
-#### 설치 방법
-1. 저장소 클론
-```bash
-git clone <repository-url>
-cd auto_trader
-```
-
-자세한 내용은 `app/mcp_server/README.md`를 참고하세요.
-
-## 사용법
-
-### 암호화폐 분석 (업비트)
-
-업비트 API를 사용하여 암호화폐를 분석합니다. 일봉 200개와 함께 다음 분봉 데이터를 자동으로 수집합니다:
-
-- **60분 캔들 (최근 12개)**: 중기적 방향성 분석
-- **5분 캔들 (최근 12개)**: 단기적 모멘텀 분석  
-- **1분 캔들 (최근 10개)**: 초단기 변동성 분석
-
-```python
-from app.analysis.service_analyzers import UpbitAnalyzer
-
-analyzer = UpbitAnalyzer()
-await analyzer.analyze_coins(["KRW-BTC", "KRW-ETH"])
-```
-
-### 주식 분석 (Yahoo Finance)
-
-Yahoo Finance API를 사용하여 미국 주식을 분석합니다:
-
-```python
-from app.analysis.service_analyzers import YahooAnalyzer
-
-analyzer = YahooAnalyzer()
-await analyzer.analyze_stocks(["AAPL", "GOOGL", "MSFT"])
-```
-
-### 국내주식 분석 (KIS)
-
-한국투자증권 API를 사용하여 국내 주식을 분석합니다:
-
-```python
-from app.analysis.service_analyzers import KISAnalyzer
-
-analyzer = KISAnalyzer()
-await analyzer.analyze_stock("삼성전자")
-```
-
-**참고**: KIS 분봉 데이터는 API 제한으로 인해 일부 상황에서 작동하지 않을 수 있습니다. 이 경우 일봉 데이터만으로 분석을 수행하며, 분봉 데이터 수집 실패 시에도 분석은 정상적으로 진행됩니다.
-
-**KIS 분봉 API 제한사항**: 현재 KIS 분봉 API의 `time_unit` 파라미터가 제대로 작동하지 않아 모든 시간대에서 동일한 데이터가 반환됩니다. 이는 API 자체의 문제로, 향후 한국투자증권의 API 문서 업데이트나 기술지원을 통해 해결될 예정입니다.
+- `DATABASE_URL`, `REDIS_URL` — 필수 인프라
+- `KIS_APP_KEY/SECRET`, `UPBIT_ACCESS_KEY/SECRET_KEY` — 브로커 자격증명
+- 실주문·모의주문 게이트(`TOSS_LIVE_ORDER_MUTATIONS_ENABLED`, `KIWOOM_MOCK_ENABLED`, `BINANCE_SPOT_DEMO_ENABLED` 등)는 **모두 기본 off**
 
 ## 테스트
 
-### 테스트 환경 설정
-
-개발 의존성 설치:
 ```bash
-uv sync --all-groups
+make test          # fast gate (live 제외)
+make test-unit     # 단위 테스트만
+make test-cov      # 커버리지 리포트
+make test-live     # 외부 API 실호출 테스트 (--run-live 명시 필요)
+make lint          # Ruff + ty 타입체크
+make security      # bandit · safety
 ```
 
-### 테스트 실행
+- 마커: `unit` / `integration` / `live`(integration의 strict subset, `--run-live` 필요) / `slow`
+- CI(GitHub Actions): lint → 병렬 fast gate(xdist loadfile) → TaskIQ smoke → 보안 검사 → 커버리지
 
-- Fast gate (`live` 제외): `make test` 또는 `uv run pytest tests/ -v -m "not live"`
-- 단위 테스트만: `make test-unit` 또는 `uv run pytest tests/ -v -m "not integration and not live"`
-- 통합 테스트만 (`live` 제외): `make test-integration` 또는 `uv run pytest tests/ -v -m "integration and not live"`
-- 옛 `tests/test_services.py` 범위 검증: `make test-services-split`
-- Live API 테스트: `make test-live` 또는 `uv run pytest tests/ -v -m "integration and live" --run-live --no-cov`
-- 커버리지 리포트: `make test-cov` 또는 `uv run pytest tests/ -v -m "not live" --cov=app --cov-report=html --cov-report=term-missing`
-- CI fast gate 재현: `CI=true uv run pytest tests/ -m "not live" -n auto --dist=loadfile -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120 --cov=app --cov-report=xml --cov-fail-under=30`
+## 문서
 
-`live` 테스트는 `integration`의 strict subset입니다. 기본 로컬 fast gate는 항상 직렬 `-m "not live"`를 사용하고, GitHub Actions fast gate만 `-n auto --dist=loadfile`로 병렬 실행합니다. `@pytest.mark.live` 테스트는 `--run-live`를 명시적으로 전달해야 실행됩니다.
+- 운영 런북: [`docs/runbooks/`](docs/runbooks/) — 브로커별 smoke 테스트, reconcile, 배포, 인시던트 대응
+- DB 구조: [`STOCK_INFO_GUIDE.md`](STOCK_INFO_GUIDE.md)
+- 배포: [`DEPLOYMENT.md`](DEPLOYMENT.md) · [`DOCKER_USAGE.md`](DOCKER_USAGE.md)
+- Upbit WebSocket: [`UPBIT_WEBSOCKET_README.md`](UPBIT_WEBSOCKET_README.md)
 
-### 테스트 마커
+## 모니터링
 
-- `@pytest.mark.unit`: 단위 테스트
-- `@pytest.mark.integration`: 통합 테스트
-- `@pytest.mark.live`: 외부 API 호출 테스트 (`integration`의 strict subset, `--run-live` 필요)
-- `@pytest.mark.slow`: 느린 테스트 (선택적 실행)
-
-### 코드 품질
-
-코드 포맷팅:
-```bash
-make format
-```
-
-린팅 검사:
-```bash
-make lint
-```
-
-보안 검사:
-```bash
-make security
-```
-
-## 개발
-
-### Makefile 명령어
-
-```bash
-make help          # 사용 가능한 명령어 목록
-make install       # 프로덕션 의존성 설치
-make install-dev   # 개발 의존성 설치
-make test          # live 제외 fast gate 테스트 실행
-make test-services-split # 옛 test_services.py 범위 검증
-make test-live     # live 통합 테스트 실행 (--run-live)
-make test-cov      # 커버리지와 함께 테스트 실행
-make lint          # 코드 품질 검사
-make format        # 코드 포맷팅
-make clean         # 생성된 파일 정리
-make dev           # 개발 서버 시작
-```
-
-### 테스트 구조
-
-```
-tests/
-├── __init__.py
-├── conftest.py           # 공통 fixture 및 설정
-├── test_settings.py      # 테스트 환경 설정
-├── test_config.py        # 설정 모듈 테스트
-├── test_routers.py       # API 라우터 테스트
-├── test_analysis.py      # 분석 모듈 테스트
-├── test_services_*.py    # 서비스 모듈 테스트 (도메인별 분리)
-└── test_integration.py   # 통합 테스트
-```
-
-`tests/test_services_*.py`는 삭제된 `tests/test_services.py`의 정확한 별칭이 아닙니다. 이 패턴은 `tests/test_services_krx.py`도 포함하므로, 예전 단일 파일 범위와 동일한 검증이 필요하면 `make test-services-split`를 사용하세요.
-
-## CI/CD
-
-GitHub Actions를 통해 자동으로 다음을 실행합니다:
-
-- **린팅**: Ruff 린터 + 포맷터, ty 타입 체커
-- **테스트**: Python 3.13에서 fast gate를 병렬 실행하고 후속 TaskIQ smoke tests를 수행 (lint 통과 후)
-- **보안**: bandit, safety 검사
-- **커버리지**: 테스트 커버리지 리포트 생성
-
-## 모니터링 안내
-
-OTEL/Grafana 전용 스택은 제거되었습니다.
-현재 표준 모니터링은 Sentry입니다.
-
-### Sentry 환경 변수
-
-```bash
-SENTRY_DSN=
-SENTRY_ENVIRONMENT=
-SENTRY_TRACES_SAMPLE_RATE=1.0
-SENTRY_PROFILES_SAMPLE_RATE=1.0
-SENTRY_SEND_DEFAULT_PII=true
-SENTRY_ENABLE_LOG_EVENTS=true
-```
-
-### 운영 정책
-
-- `SENTRY_DSN`이 있으면 환경과 무관하게 활성화
-- release는 Docker 스크립트/예제로 주입한 컨테이너 빌드 SHA를 우선 사용하고, 비컨테이너 로컬 실행은 현재 git HEAD에서 자동 해상도
-- 단일 프로젝트에서 `service` 태그로 프로세스 분리
-- `logger.error` 이벤트 수집 활성화
-- 민감 필드(`authorization`, `cookie`, `token`, `secret`, `password`)는 마스킹
+표준 모니터링은 Sentry입니다. `SENTRY_DSN` 설정 시 활성화되며, 민감 필드(`authorization`, `cookie`, `token`, `secret`, `password`)는 마스킹됩니다.
 
 ## 라이센스
 
