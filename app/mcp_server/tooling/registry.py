@@ -124,6 +124,7 @@ from app.mcp_server.tooling.news_registration import register_news_tools
 from app.mcp_server.tooling.operating_briefing_registration import (
     register_operating_briefing_tools,
 )
+from app.mcp_server.tooling.order_proposal_tools import register_order_proposal_tools
 from app.mcp_server.tooling.orders_kis_variants import (
     register_kis_live_order_tools,
     register_kis_mock_order_tools,
@@ -271,6 +272,12 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     # physically absent unless the flag is flipped post-PR-merge.
     if settings.INVESTMENT_SNAPSHOTS_MCP_ENABLED:
         register_investment_snapshots_tools(mcp)
+
+    # ROB-816 — order_proposals SOT ledger read/create surface. Gated by
+    # ``settings.ORDER_PROPOSALS_ENABLED`` (default off). No approve/submit
+    # tool is registered anywhere — approval is Telegram-only (PR 2).
+    if settings.ORDER_PROPOSALS_ENABLED:
+        register_order_proposal_tools(mcp)
 
     # Profile-gated: side-effect order surfaces
     if profile is McpProfile.DEFAULT:

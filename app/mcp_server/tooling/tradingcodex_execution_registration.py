@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
+from app.core.config import settings
 from app.mcp_server.tooling.account_read_registration import ACCOUNT_READ_TOOL_NAMES
 from app.mcp_server.tooling.account_routing_registration import (
     register_account_routing_tools,
@@ -32,6 +33,10 @@ from app.mcp_server.tooling.investment_reports_handlers import (
 from app.mcp_server.tooling.operating_briefing_registration import (
     OPERATING_BRIEFING_TOOL_NAMES,
     register_operating_briefing_tools,
+)
+from app.mcp_server.tooling.order_proposal_tools import (
+    ORDER_PROPOSAL_TOOL_NAMES,
+    register_order_proposal_tools,
 )
 from app.mcp_server.tooling.orders_kis_variants import (
     KIS_LIVE_ORDER_TOOL_NAMES,
@@ -113,6 +118,10 @@ _TRADINGCODEX_EXECUTION_LEARNING_WRITE_TOOL_NAMES: set[str] = {
     "save_trade_retrospective",
 }
 
+# ROB-816 — order_proposals SOT ledger read/create surface. No approve/submit
+# tool is included — approval is Telegram-only (PR 2).
+_TRADINGCODEX_EXECUTION_ORDER_PROPOSAL_TOOL_NAMES: set[str] = ORDER_PROPOSAL_TOOL_NAMES
+
 TRADINGCODEX_EXECUTION_TOOL_NAMES: set[str] = (
     ACCOUNT_READ_TOOL_NAMES
     | _TRADINGCODEX_EXECUTION_ORDER_TOOL_NAMES
@@ -121,6 +130,7 @@ TRADINGCODEX_EXECUTION_TOOL_NAMES: set[str] = (
     | _TRADINGCODEX_EXECUTION_WATCH_WRITE_TOOL_NAMES
     | _TRADINGCODEX_EXECUTION_LEARNING_READ_TOOL_NAMES
     | _TRADINGCODEX_EXECUTION_LEARNING_WRITE_TOOL_NAMES
+    | _TRADINGCODEX_EXECUTION_ORDER_PROPOSAL_TOOL_NAMES
 )
 
 _INVESTMENT_REPORT_REGISTERED_TOOL_NAMES: set[str] = INVESTMENT_REPORT_TOOL_NAMES | {
@@ -414,6 +424,11 @@ def register_tradingcodex_execution_tools(mcp: FastMCP) -> None:
     _register_learning_read_tools(mcp)
     _register_learning_write_tools(mcp)
     _register_watch_write_tools(mcp)
+    # ROB-816 — order_proposals SOT ledger read/create surface. Gated by
+    # ``settings.ORDER_PROPOSALS_ENABLED`` (default off), same flag as the
+    # default-profile registration in registry.py.
+    if settings.ORDER_PROPOSALS_ENABLED:
+        register_order_proposal_tools(filtered)
 
 
 __all__ = [

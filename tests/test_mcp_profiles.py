@@ -12,6 +12,7 @@ from typing import Any, cast
 
 import pytest
 
+from app.core.config import settings
 from app.mcp_server.profiles import McpProfile, resolve_mcp_profile
 from app.mcp_server.tooling.account_read_registration import (
     ACCOUNT_READ_FORBIDDEN_TOOL_NAMES,
@@ -26,6 +27,7 @@ from app.mcp_server.tooling.analysis_readonly_registration import (
     ANALYSIS_READONLY_FORBIDDEN_TOOL_NAMES,
     ANALYSIS_READONLY_TOOL_NAMES,
 )
+from app.mcp_server.tooling.order_proposal_tools import ORDER_PROPOSAL_TOOL_NAMES
 from app.mcp_server.tooling.orders_kis_variants import (
     KIS_LIVE_ORDER_TOOL_NAMES,
     KIS_MOCK_ORDER_TOOL_NAMES,
@@ -511,7 +513,15 @@ class TestAccountReadProfile:
 class TestTradingCodexExecutionProfile:
     def test_registers_exact_tradingcodex_execution_allowlist(self) -> None:
         mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
-        assert set(mcp.tools) == TRADINGCODEX_EXECUTION_TOOL_NAMES
+        # ROB-816: order_proposal_* tools are additionally gated by
+        # settings.ORDER_PROPOSALS_ENABLED (default off), unlike every other
+        # tool group in this allowlist which registers unconditionally. They
+        # are only present in the actually-registered surface when the flag
+        # is flipped on.
+        expected = TRADINGCODEX_EXECUTION_TOOL_NAMES
+        if not settings.ORDER_PROPOSALS_ENABLED:
+            expected = expected - ORDER_PROPOSAL_TOOL_NAMES
+        assert set(mcp.tools) == expected
 
     def test_does_not_register_forbidden_execution_surfaces(self) -> None:
         mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
