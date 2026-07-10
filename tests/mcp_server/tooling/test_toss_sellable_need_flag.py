@@ -32,7 +32,7 @@ async def test_build_batch_position_index_requests_no_sellable(monkeypatch):
 async def test_collect_portfolio_positions_forwards_need_sellable_to_toss(monkeypatch):
     calls: list[bool] = []
 
-    async def fake_fetch(*, need_sellable: bool = True):
+    async def fake_fetch(*, need_sellable: bool = True, **_):
         calls.append(need_sellable)
 
         class _Snap:
@@ -74,7 +74,7 @@ async def test_collect_portfolio_positions_forwards_need_sellable_to_toss(monkey
 async def test_collect_toss_api_positions_defaults_need_sellable_true(monkeypatch):
     seen: list[bool] = []
 
-    async def fake_fetch(*, need_sellable: bool = True):
+    async def fake_fetch(*, need_sellable: bool = True, **_):
         seen.append(need_sellable)
 
         class _Snap:
@@ -90,3 +90,64 @@ async def test_collect_toss_api_positions_defaults_need_sellable_true(monkeypatc
     await portfolio_holdings._collect_toss_api_positions(None, need_sellable=False)
 
     assert seen == [True, False]
+
+
+async def test_collect_toss_api_positions_uses_shared_cache_and_skips_cash(monkeypatch):
+    seen: dict[str, Any] = {}
+    sentinel_cache = object()
+
+    async def fake_fetch(*, need_sellable=True, need_cash=True, sellable_cache=None):
+        seen["need_sellable"] = need_sellable
+        seen["need_cash"] = need_cash
+        seen["sellable_cache"] = sellable_cache
+
+        class _Snap:
+            positions: list[Any] = []
+            errors: list[Any] = []
+
+        return _Snap()
+
+    monkeypatch.setattr(portfolio_holdings.settings, "toss_api_enabled", True)
+    monkeypatch.setattr(portfolio_holdings, "fetch_toss_portfolio_snapshot", fake_fetch)
+    monkeypatch.setattr(
+        portfolio_holdings, "get_shared_sellable_cache", lambda: sentinel_cache
+    )
+
+    # Default: shared cache is used; cash fanout skipped.
+    await portfolio_holdings._collect_toss_api_positions(None)
+    assert seen["need_sellable"] is True
+    assert seen["need_cash"] is False
+    assert seen["sellable_cache"] is sentinel_cache
+
+    # fresh_sellable=True bypasses the cache (fresh fanout), still skips cash.
+    await portfolio_holdings._collect_toss_api_positions(None, fresh_sellable=True)
+    assert seen["need_cash"] is False
+    assert seen["sellable_cache"] is None
+
+
+async def test_collect_portfolio_positions_forwards_fresh_sellable(monkeypatch):
+    seen: list[bool] = []
+
+    async def fake_collect_toss(market_filter, *, need_sellable=True, fresh_sellable=False):
+        seen.append(fresh_sellable)
+        return [], [], False
+
+    async def _empty(*args, **kwargs):
+        return [], []
+
+    monkeypatch.setattr(portfolio_holdings.settings, "toss_api_enabled", True)
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_toss_api_positions", fake_collect_toss
+    )
+    monkeypatch.setattr(portfolio_holdings, "_collect_kis_positions", _empty)
+    monkeypatch.setattr(portfolio_holdings, "_collect_upbit_positions", _empty)
+    monkeypatch.setattr(portfolio_holdings, "_collect_manual_positions", _empty)
+
+    await portfolio_holdings._collect_portfolio_positions(
+        account=None, market=None, include_current_price=False
+    )
+    await portfolio_holdings._collect_portfolio_positions(
+        account=None, market=None, include_current_price=False, fresh_sellable=True
+    )
+
+    assert seen == [False, True]

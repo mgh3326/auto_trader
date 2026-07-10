@@ -106,6 +106,7 @@ from app.services.toss_portfolio_service import (
     TossPortfolioPosition,
     fetch_toss_portfolio_snapshot,
 )
+from app.services.toss_sellable_cache import get_shared_sellable_cache
 from app.services.upbit_symbol_universe_service import (
     UpbitSymbolInactiveError,
     UpbitSymbolNotRegisteredError,
@@ -549,14 +550,27 @@ async def _collect_toss_api_positions(
     market_filter: str | None,
     *,
     need_sellable: bool = True,
+    fresh_sellable: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
     if not bool(getattr(settings, "toss_api_enabled", False)):
         return [], [], False
     if market_filter == "crypto":
         return [], [], False
 
+    # ROB-810: reuse the process-global 45s sellable cache (shared with the
+    # /invest home reader) so repeated get_holdings calls collapse the
+    # ORDER_INFO (6 TPS) /sellable-quantity fanout to 0 within the TTL. Sell
+    # sizing is re-validated at the broker on submit, so display staleness is
+    # bounded and safe (ROB-701 tradeoff). fresh_sellable=True forces a fresh
+    # per-symbol re-fetch. need_cash=False: this path never reads cash, so skip
+    # the ACCOUNT-limited buying_power fanout it would otherwise discard.
+    sellable_cache = None if fresh_sellable else get_shared_sellable_cache()
     try:
-        snapshot = await fetch_toss_portfolio_snapshot(need_sellable=need_sellable)
+        snapshot = await fetch_toss_portfolio_snapshot(
+            need_sellable=need_sellable,
+            need_cash=False,
+            sellable_cache=sellable_cache,
+        )
     except Exception as exc:
         return (
             [],
@@ -789,6 +803,7 @@ async def _collect_portfolio_positions(
     user_id: int = _MCP_USER_ID,
     is_mock: bool = False,
     need_sellable: bool = True,
+    fresh_sellable: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None, str | None]:
     # Short-circuit to paper handler when the caller asked for a paper account.
     from app.mcp_server.tooling.paper_portfolio_handler import (
@@ -877,7 +892,7 @@ async def _collect_portfolio_positions(
             toss_api_errors,
             toss_api_succeeded,
         ) = await _collect_toss_api_positions(
-            market_filter, need_sellable=need_sellable
+            market_filter, need_sellable=need_sellable, fresh_sellable=fresh_sellable
         )
         positions.extend(toss_api_positions)
         errors.extend(toss_api_errors)
