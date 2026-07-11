@@ -10,12 +10,13 @@ import inspect
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timezone import KST
 from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.services.order_proposals import state_machine as sm
 from app.services.order_proposals.errors import (
@@ -27,6 +28,9 @@ from app.services.order_proposals.payload import (
     compute_proposal_payload_hash,
 )
 from app.services.order_proposals.repository import OrderProposalRepository
+from app.services.trade_journal.trade_retrospective_service import (
+    get_retrospective_by_id,
+)
 
 
 @dataclass
@@ -56,6 +60,10 @@ _SUBMITTABLE_ACCOUNT_MODE_MARKETS: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
+_LOSS_CUT_EXIT_REASONS = frozenset({"stop_loss", "thesis_change"})
+_LOSS_CUT_TRIGGER_TYPES = frozenset({"stop_loss", "thesis_change"})
+_LOSS_CUT_MAX_AGE = timedelta(hours=72)
+
 
 class OrderProposalsService:
     def __init__(self, session: AsyncSession) -> None:
@@ -78,9 +86,14 @@ class OrderProposalsService:
         broker_account_id: str | None = None,
         lot_context: dict | None = None,
         valid_until: datetime | None = None,
+        exit_intent: str | None = None,
+        exit_reason: str | None = None,
+        retrospective_id: int | None = None,
+        approval_issue_id: str | None = None,
         correlation_id: str | None = None,
         source_asof: dict | None = None,
         supersedes_proposal_id: uuid.UUID | None = None,
+        now: datetime | None = None,
     ) -> OrderProposal:
         if not rungs:
             raise ValueError("at least one rung required")
@@ -90,6 +103,28 @@ class OrderProposalsService:
                 f"{market!r} (submit path only supports kis_live/equity_kr|"
                 "equity_us and upbit/crypto)"
             )
+        now = now or datetime.now(UTC)
+        self._require_timezone_aware(now)
+        if valid_until is None:
+            valid_until = (now.astimezone(KST) + timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+        else:
+            self._require_timezone_aware(valid_until)
+            if valid_until <= now:
+                raise OrderProposalError("valid_until must be in the future")
+        await self._validate_exit_binding(
+            symbol=symbol,
+            market=market,
+            account_mode=account_mode,
+            side=side,
+            order_type=order_type,
+            exit_intent=exit_intent,
+            exit_reason=exit_reason,
+            retrospective_id=retrospective_id,
+            approval_issue_id=approval_issue_id,
+            now=now,
+        )
         proposal_id = uuid.uuid4()
         root_id = proposal_id
         superseded_group: OrderProposal | None = None
@@ -106,6 +141,10 @@ class OrderProposalsService:
             market=market,
             account_mode=account_mode,
             order_type=order_type,
+            exit_intent=exit_intent,
+            exit_reason=exit_reason,
+            retrospective_id=retrospective_id,
+            approval_issue_id=approval_issue_id,
             rungs=[
                 ProposalRungSpec(
                     r.rung_index,
@@ -136,6 +175,10 @@ class OrderProposalsService:
             rationale=rationale,
             broker_account_id=broker_account_id,
             lot_context=lot_context,
+            exit_intent=exit_intent,
+            exit_reason=exit_reason,
+            retrospective_id=retrospective_id,
+            approval_issue_id=approval_issue_id,
             lifecycle_state="proposed",
             correlation_id=correlation_id,
             valid_until=valid_until,
@@ -158,6 +201,73 @@ class OrderProposalsService:
                 superseded_by_proposal_id=proposal_id,
             )
         return group
+
+    async def _validate_exit_binding(
+        self,
+        *,
+        symbol: str,
+        market: str,
+        account_mode: str,
+        side: str,
+        order_type: str,
+        exit_intent: str | None,
+        exit_reason: str | None,
+        retrospective_id: int | None,
+        approval_issue_id: str | None,
+        now: datetime,
+    ) -> None:
+        supporting = (exit_reason, retrospective_id, approval_issue_id)
+        if exit_intent is None:
+            if any(value is not None for value in supporting):
+                raise OrderProposalError("exit binding fields require exit_intent")
+            return
+        if exit_intent != "loss_cut":
+            raise OrderProposalError("unknown exit_intent (only 'loss_cut')")
+
+        errors: list[str] = []
+        if exit_reason not in _LOSS_CUT_EXIT_REASONS:
+            errors.append(
+                "loss_cut requires exit_reason in ['stop_loss', 'thesis_change']"
+            )
+        if retrospective_id is None:
+            errors.append("loss_cut requires retrospective_id")
+        if not (approval_issue_id or "").strip():
+            errors.append("loss_cut requires approval_issue_id")
+        if (account_mode, market) not in {
+            ("kis_live", "equity_kr"),
+            ("kis_live", "equity_us"),
+        }:
+            errors.append("loss_cut requires a live KIS equity proposal")
+        if side != "sell":
+            errors.append("loss_cut requires side='sell'")
+        if order_type != "limit":
+            errors.append("loss_cut requires order_type='limit'")
+
+        retro = None
+        if retrospective_id is not None:
+            retro = await get_retrospective_by_id(self._session, retrospective_id)
+            if retro is None:
+                errors.append(f"retrospective_id {retrospective_id} not found")
+            else:
+                if (retro.symbol or "").strip().upper() != symbol.strip().upper():
+                    errors.append(
+                        f"retrospective_id {retrospective_id} symbol mismatch"
+                    )
+                if retro.trigger_type not in _LOSS_CUT_TRIGGER_TYPES:
+                    errors.append("retrospective trigger_type is not loss-cut eligible")
+                created = retro.created_at
+                if created is not None:
+                    if created.tzinfo is None:
+                        created = created.replace(tzinfo=UTC)
+                    if (
+                        now.astimezone(UTC) - created.astimezone(UTC)
+                        > _LOSS_CUT_MAX_AGE
+                    ):
+                        errors.append(
+                            f"retrospective_id {retrospective_id} is stale (> 72h old)"
+                        )
+        if errors:
+            raise OrderProposalError("loss_cut proposal invalid: " + "; ".join(errors))
 
     async def get_proposal(
         self, proposal_id: uuid.UUID

@@ -1,9 +1,11 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
+from app.core.timezone import KST
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.errors import (
     OrderProposalError,
@@ -44,6 +46,138 @@ async def _record_ack(service, proposal_id, *, now: datetime):
         approval_hash_digest=f"digest-ack-{proposal_id}",
         now=now,
     )
+
+
+def _retro(*, symbol="005930", trigger_type="stop_loss", created_at=None):
+    return SimpleNamespace(
+        symbol=symbol,
+        trigger_type=trigger_type,
+        created_at=created_at or datetime.now(UTC),
+    )
+
+
+def _loss_cut_create_kwargs(*, now: datetime):
+    return {
+        "symbol": "005930",
+        "market": "equity_kr",
+        "account_mode": "kis_live",
+        "side": "sell",
+        "order_type": "limit",
+        "proposer": "p",
+        "rungs": [RungInput(0, "sell", Decimal("1"), Decimal("65000"), None)],
+        "exit_intent": "loss_cut",
+        "exit_reason": "stop_loss",
+        "retrospective_id": 42,
+        "approval_issue_id": "ROB-800",
+        "now": now,
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_defaults_valid_until_to_next_kst_midnight(db_session):
+    now = datetime(2026, 7, 11, 14, 30, tzinfo=KST)
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("70000"), None)],
+        now=now,
+    )
+    assert group.valid_until == datetime(2026, 7, 12, 0, 0, tzinfo=KST)
+
+
+@pytest.mark.asyncio
+async def test_loss_cut_requires_all_group_fields_without_paperclip_lookup(
+    db_session, monkeypatch
+):
+    async def paperclip_must_not_run(*args, **kwargs):
+        raise AssertionError("Paperclip status belongs to click-time revalidation")
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.order_validation._fetch_approval_issue_status",
+        paperclip_must_not_run,
+    )
+    service = OrderProposalsService(db_session)
+    with pytest.raises(OrderProposalError, match="exit_reason"):
+        await service.create_proposal(
+            symbol="005930",
+            market="equity_kr",
+            account_mode="kis_live",
+            side="sell",
+            order_type="limit",
+            proposer="p",
+            rungs=[RungInput(0, "sell", Decimal("1"), Decimal("65000"), None)],
+            exit_intent="loss_cut",
+            retrospective_id=42,
+            approval_issue_id="ROB-800",
+            now=datetime.now(UTC),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"retrospective_id": None}, "retrospective_id"),
+        ({"approval_issue_id": None}, "approval_issue_id"),
+        ({"exit_reason": None}, "exit_reason"),
+        ({"exit_intent": "emergency"}, "unknown exit_intent"),
+    ],
+)
+async def test_loss_cut_required_fields_fail_closed(db_session, overrides, message):
+    service = OrderProposalsService(db_session)
+    kwargs = _loss_cut_create_kwargs(now=datetime.now(UTC))
+    kwargs.update(overrides)
+    with pytest.raises(OrderProposalError, match=message):
+        await service.create_proposal(**kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("retro", "message"),
+    [
+        (None, "not found"),
+        (_retro(symbol="000660"), "symbol mismatch"),
+        (_retro(trigger_type="fill"), "trigger_type"),
+        (_retro(created_at=datetime.now(UTC) - timedelta(hours=73)), "stale"),
+    ],
+)
+async def test_loss_cut_retrospective_validation(
+    db_session, monkeypatch, retro, message
+):
+    async def fake_lookup(session, retrospective_id):
+        return retro
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    with pytest.raises(OrderProposalError, match=message):
+        await OrderProposalsService(db_session).create_proposal(
+            **_loss_cut_create_kwargs(now=datetime.now(UTC))
+        )
+
+
+@pytest.mark.asyncio
+async def test_valid_loss_cut_persists_exact_group_binding(db_session, monkeypatch):
+    async def fake_lookup(session, retrospective_id):
+        return _retro()
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    group = await OrderProposalsService(db_session).create_proposal(
+        **_loss_cut_create_kwargs(now=datetime.now(UTC))
+    )
+    assert (
+        group.exit_intent,
+        group.exit_reason,
+        group.retrospective_id,
+        group.approval_issue_id,
+    ) == ("loss_cut", "stop_loss", 42, "ROB-800")
 
 
 @pytest.mark.asyncio
