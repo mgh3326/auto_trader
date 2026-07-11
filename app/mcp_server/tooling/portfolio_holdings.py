@@ -557,13 +557,11 @@ async def _collect_toss_api_positions(
     if market_filter == "crypto":
         return [], [], False
 
-    # ROB-810: reuse the process-global 45s sellable cache (shared with the
-    # /invest home reader) so repeated get_holdings calls collapse the
-    # ORDER_INFO (6 TPS) /sellable-quantity fanout to 0 within the TTL. Sell
-    # sizing is re-validated at the broker on submit, so display staleness is
-    # bounded and safe (ROB-701 tradeoff). fresh_sellable=True forces a fresh
-    # per-symbol re-fetch. need_cash=False: this path never reads cash, so skip
-    # the ACCOUNT-limited buying_power fanout it would otherwise discard.
+    # ROB-810/ROB-828: reuse the 600s Redis sellable cache shared with /invest
+    # home and other MCP processes. Confirmed fills and successful sell order
+    # mutations invalidate only their symbol. fresh_sellable=True forces a
+    # fresh per-symbol re-fetch. need_cash=False: this path never reads cash,
+    # so skip the ACCOUNT-limited buying_power fanout it would discard.
     sellable_cache = None if fresh_sellable else get_shared_sellable_cache()
     try:
         snapshot = await fetch_toss_portfolio_snapshot(
@@ -1381,8 +1379,9 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             "marked degraded=true during outages). "
             "Use account_mode={'db_simulated','kis_mock','kis_live'} "
             "(preferred); account_type aliases are deprecated and emit warnings. "
-            "fresh_sellable=True bypasses the 45s Toss sellable-quantity cache "
-            "and re-fetches per-symbol (default False reuses the shared cache). "
+            "fresh_sellable=True bypasses the 600s Toss sellable-quantity Redis "
+            "cache and re-fetches per-symbol (default False reuses the shared "
+            "cache). "
         ),
     )
     async def get_holdings(

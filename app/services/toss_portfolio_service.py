@@ -169,9 +169,10 @@ async def fetch_toss_portfolio_snapshot(
             # /sellable-quantity endpoint; hits reuse the cached value. Re-wrap
             # hits as TossSellableQuantity so the position-build loop below is
             # unchanged.
-            hits: list[Decimal | None] = [
-                sellable_cache.get(item.symbol) for item in holdings.items
-            ]
+            cache_read = await sellable_cache.read_many(
+                [item.symbol for item in holdings.items]
+            )
+            hits = cache_read.values
             miss_indices = [i for i, hit in enumerate(hits) if hit is None]
             with sentry_sdk.start_span(
                 op="invest.home.toss_api.phase",
@@ -193,13 +194,17 @@ async def fetch_toss_portfolio_snapshot(
             fetched_by_index: dict[int, Any] = dict(
                 zip(miss_indices, fetched, strict=True)
             )
-            for index, result in fetched_by_index.items():
-                if not isinstance(result, BaseException):
-                    # Cache ONLY successful fetches — a transient error must not
-                    # poison the cache (next load retries).
-                    sellable_cache.put(
-                        holdings.items[index].symbol, result.sellable_quantity
-                    )
+            successful_values = {
+                holdings.items[index].symbol: result.sellable_quantity
+                for index, result in fetched_by_index.items()
+                if not isinstance(result, BaseException)
+            }
+            # Cache ONLY successful fetches — a transient error must not poison
+            # the cache (next load retries). One pipeline avoids a Redis N+1.
+            await sellable_cache.put_many(
+                successful_values,
+                expected_generations=cache_read.generations,
+            )
             paired: list[tuple[Any, Any]] = []
             for index, item in enumerate(holdings.items):
                 if index in fetched_by_index:

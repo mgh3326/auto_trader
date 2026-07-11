@@ -5,6 +5,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import fakeredis.aioredis
 import pytest
 
 from app.mcp_server.tooling.orders_toss_variants import (
@@ -19,6 +20,7 @@ from app.mcp_server.tooling.orders_toss_variants import (
     toss_place_order,
     toss_preview_order,
 )
+from app.services.toss_sellable_cache import TossSellableCache
 from tests._mcp_tooling_support import DummyMCP
 
 
@@ -1983,6 +1985,184 @@ async def test_cancel_order_records_audit_replacement_chain(monkeypatch):
     assert call["operation_kind"] == "cancel"
     assert call["symbol"] == "005930"
     assert call["side"] == "sell"
+
+
+async def _warm_sellable_cache(monkeypatch, otv, symbol: str) -> TossSellableCache:
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache = TossSellableCache(ttl_seconds=600, redis_client=redis_client)
+    await cache.put(symbol, Decimal("10"))
+    monkeypatch.setattr(
+        otv,
+        "get_shared_sellable_cache",
+        lambda: cache,
+        raising=False,
+    )
+    return cache
+
+
+def _sell_order(order_id: str, symbol: str = "AAPL") -> dict:
+    return {
+        "order_id": order_id,
+        "symbol": symbol,
+        "side": "SELL",
+        "status": "OPEN",
+        "order_type": "LIMIT",
+        "time_in_force": "DAY",
+        "price": Decimal("150"),
+        "quantity": Decimal("10"),
+        "order_amount": None,
+        "currency": "USD",
+        "ordered_at": "2026-06-12T00:00:00Z",
+        "canceled_at": None,
+        "execution": {},
+    }
+
+
+@pytest.mark.asyncio
+async def test_sellable_cache_invalidated_after_sell_place_even_if_ledger_fails(
+    monkeypatch,
+):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+    client = MockTossClient(monkeypatch)
+    client.holdings_list = [
+        {
+            "symbol": "AAPL",
+            "quantity": Decimal("10"),
+            "average_purchase_price": Decimal("100"),
+            "last_price": Decimal("190"),
+            "name": "Apple",
+            "market_country": "US",
+            "currency": "USD",
+            "market_value": {},
+            "profit_loss": {},
+            "daily_profit_loss": {},
+            "cost": {},
+        }
+    ]
+    cache = await _warm_sellable_cache(monkeypatch, otv, "AAPL")
+
+    async def fail_ledger(**kwargs):
+        raise RuntimeError("ledger unavailable")
+
+    monkeypatch.setattr(otv, "record_toss_place_order", fail_ledger)
+
+    result = await toss_place_order(
+        symbol="AAPL",
+        side="sell",
+        quantity="1",
+        price="190",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is False
+    assert result["order_id"] == "new-ord-123"
+    assert await cache.get("AAPL") is None
+
+
+@pytest.mark.asyncio
+async def test_sellable_cache_not_invalidated_after_buy_place(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+    MockTossClient(monkeypatch)
+    cache = await _warm_sellable_cache(monkeypatch, otv, "AAPL")
+    monkeypatch.setattr(
+        otv,
+        "record_toss_place_order",
+        AsyncMock(return_value={"ledger_id": 1}),
+    )
+
+    result = await toss_place_order(
+        symbol="AAPL",
+        side="buy",
+        quantity="1",
+        price="190",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is True
+    assert await cache.get("AAPL") == Decimal("10")
+
+
+@pytest.mark.asyncio
+async def test_sellable_cache_invalidated_after_sell_modify(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+    client = MockTossClient(monkeypatch)
+    client.orders_list = [_sell_order("orig-ord-123")]
+    client.holdings_list = [
+        {
+            "symbol": "AAPL",
+            "quantity": Decimal("10"),
+            "average_purchase_price": Decimal("100"),
+            "last_price": Decimal("155"),
+            "name": "Apple",
+            "market_country": "US",
+            "currency": "USD",
+            "market_value": {},
+            "profit_loss": {},
+            "daily_profit_loss": {},
+            "cost": {},
+        }
+    ]
+    cache = await _warm_sellable_cache(monkeypatch, otv, "AAPL")
+    monkeypatch.setattr(
+        otv,
+        "record_toss_replacement_order",
+        AsyncMock(return_value={"ledger_id": 2}),
+    )
+
+    result = await toss_modify_order(
+        order_id="orig-ord-123",
+        new_price="155",
+        market="us",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is True
+    assert await cache.get("AAPL") is None
+
+
+@pytest.mark.asyncio
+async def test_sellable_cache_invalidated_after_sell_cancel(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+    client = MockTossClient(monkeypatch)
+    client.orders_list = [_sell_order("orig-ord-789")]
+    cache = await _warm_sellable_cache(monkeypatch, otv, "AAPL")
+    monkeypatch.setattr(
+        otv,
+        "record_toss_replacement_order",
+        AsyncMock(return_value={"ledger_id": 3}),
+    )
+
+    result = await toss_cancel_order(
+        order_id="orig-ord-789",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is True
+    assert await cache.get("AAPL") is None
 
 
 @pytest.mark.asyncio

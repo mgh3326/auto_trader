@@ -29,6 +29,7 @@ from app.mcp_server.tooling.market_session import (
 from app.mcp_server.tooling.toss_live_ledger import toss_reconcile_orders_impl
 from app.services.brokers.toss import TossReadClient
 from app.services.toss_fill_poller_service import TossFillPollerService
+from app.services.toss_sellable_cache import get_shared_sellable_cache
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,22 @@ async def toss_live_poll_fills_periodic() -> dict:
             dry_run=False,
             limit=settings.TOSS_FILL_POLL_RECONCILE_LIMIT,
         )
+        booked_symbols = sorted(
+            {
+                str(outcome["symbol"])
+                for outcome in reconcile.get("reconciled", [])
+                if outcome.get("action") == "booked" and outcome.get("symbol")
+            }
+        )
+        if booked_symbols:
+            try:
+                await get_shared_sellable_cache().invalidate_many(booked_symbols)
+            except Exception as exc:  # noqa: BLE001 — reconcile remains primary
+                logger.warning(
+                    "Toss fill sellable-cache invalidation failed symbols=%s: %s",
+                    booked_symbols,
+                    exc,
+                )
         return {
             "success": True,
             "discover": discover,

@@ -53,6 +53,7 @@ from app.services.nxt_preflight import (
     NxtTradability,
     evaluate_nxt_preflight,
 )
+from app.services.toss_sellable_cache import get_shared_sellable_cache
 
 logger = logging.getLogger(__name__)
 
@@ -633,6 +634,16 @@ def _toss_error_response(exc: Exception, base: dict[str, Any]) -> dict[str, Any]
     }
 
 
+async def _invalidate_sellable_after_sell_mutation(symbol: str) -> None:
+    """Best-effort cache correction after Toss accepted a sell mutation."""
+    try:
+        await get_shared_sellable_cache().invalidate(symbol)
+    except Exception as exc:  # noqa: BLE001 — never mask a live broker result
+        logger.warning(
+            "Toss sellable-cache invalidation failed symbol=%s: %s", symbol, exc
+        )
+
+
 _SAFE_ORDER_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
 
@@ -1165,6 +1176,8 @@ async def _toss_place_order_impl(
         res = None
         try:
             res = await client.place_order(payload)
+            if side == "sell":
+                await _invalidate_sellable_after_sell_mutation(symbol)
             raw_response = {
                 "orderId": res.order_id,
                 "clientOrderId": res.client_order_id,
@@ -1417,6 +1430,8 @@ async def toss_modify_order(
         res = None
         try:
             res = await client.modify_order(order_id, payload)
+            if side == "sell":
+                await _invalidate_sellable_after_sell_mutation(symbol)
             ledger = await record_toss_replacement_order(
                 operation_kind="modify",
                 market=mkt,
@@ -1513,6 +1528,8 @@ async def toss_cancel_order(
                 )
             mkt = _infer_market(orig_order.symbol, None)
             res = await client.cancel_order(order_id)
+            if str(orig_order.side).lower() == "sell":
+                await _invalidate_sellable_after_sell_mutation(orig_order.symbol)
             ledger = await record_toss_replacement_order(
                 operation_kind="cancel",
                 market=mkt,

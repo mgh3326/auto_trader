@@ -259,13 +259,12 @@ class Settings(BaseSettings):
     toss_api_base_url: str | None = None
     toss_live_order_mutations_enabled: bool = False
 
-    # ROB-701: process-global short-TTL cache for the per-symbol Toss
-    # sellable-quantity fanout on /invest home & account-panel. Collapses
-    # repeated loads to 0 ORDER_INFO (6 TPS) calls within the TTL; a fill
-    # naturally refreshes after ≤ttl (ROB-549 tolerates brief staleness).
-    # enabled=False => cache always misses => today's fanout-every-load.
+    # ROB-701/ROB-828: Redis cache-aside for the per-symbol Toss sellable-
+    # quantity fanout on /invest home, account-panel, and MCP holdings.
+    # Successful sell mutations and confirmed fills invalidate the symbol.
+    # enabled=False => cache always misses => fanout-every-load.
     toss_sellable_cache_enabled: bool = True
-    toss_sellable_cache_ttl_seconds: float = 45.0
+    toss_sellable_cache_ttl_seconds: float = 600.0
 
     # ROB-710: per-market layer-order flip for /invest batch current-price reads.
     # False (default) => today's KIS → Toss → snapshot order, byte-identical.
