@@ -69,6 +69,26 @@ def test_snapshot_payload_round_trip_reconstructs_canonical_object():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("status", "expected_status"),
+    [
+        ("pending", "open"),
+        ("partial", "open"),
+        ("open", "open"),
+        ("cancelled", "cancelled"),
+    ],
+)
+def test_snapshot_payload_normalizes_canonical_statuses(status, expected_status):
+    payload = TargetOrderSnapshot.from_broker_order(
+        _broker_row(),
+        observed_at=datetime(2026, 7, 11, 8, 23, tzinfo=UTC),
+    ).to_payload()
+    payload["status"] = status
+
+    assert TargetOrderSnapshot.from_payload(payload).status == expected_status
+
+
+@pytest.mark.unit
 def test_snapshot_is_frozen():
     snapshot = TargetOrderSnapshot.from_broker_order(
         _broker_row(),

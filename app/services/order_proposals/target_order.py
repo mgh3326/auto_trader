@@ -47,9 +47,6 @@ class TargetOrderSnapshot:
         *,
         observed_at: datetime,
     ) -> TargetOrderSnapshot:
-        status = str(row.get("status") or "").strip().lower()
-        if status in {"pending", "partial", "open"}:
-            status = "open"
         return cls._from_parts(
             broker_order_id=row.get("order_id"),
             symbol=row.get("symbol"),
@@ -57,7 +54,7 @@ class TargetOrderSnapshot:
             order_type=row.get("order_type") or "limit",
             limit_price=canonical_decimal(row.get("ordered_price")),
             remaining_quantity=canonical_decimal(row.get("remaining_qty")) or "0",
-            status=status,
+            status=cls._normalize_status(row.get("status")),
             observed_at=observed_at,
         )
 
@@ -78,7 +75,7 @@ class TargetOrderSnapshot:
             order_type=payload.get("order_type"),
             limit_price=canonical_decimal(payload.get("limit_price")),
             remaining_quantity=canonical_decimal(payload.get("remaining_quantity")) or "0",
-            status=payload.get("status"),
+            status=cls._normalize_status(payload.get("status")),
             observed_at=observed_at,
         )
 
@@ -133,6 +130,11 @@ class TargetOrderSnapshot:
         if not text:
             raise OrderProposalError(f"target {name} is required")
         return text
+
+    @staticmethod
+    def _normalize_status(value: Any) -> str:
+        status = str(value or "").strip().lower()
+        return "open" if status in {"pending", "partial", "open"} else status
 
     def to_payload(self) -> dict[str, str | None]:
         return asdict(self)
