@@ -33,7 +33,8 @@ both the approve and deny branches.
 
 ``handle_callback_update`` never raises: Telegram's webhook contract expects a
 response for every update, so any unexpected exception is caught, logged, and
-turned into a best-effort ``answer_callback`` + a failure result dict.
+turned into a failure result dict. Callback queries are answered best-effort as
+soon as their metadata is available, before validation or order processing.
 """
 
 from __future__ import annotations
@@ -50,6 +51,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.services.order_proposals.approval_message import (
+    _escape_markdown,
     build_approval_message,
     parse_callback_data,
 )
@@ -169,7 +171,11 @@ def _build_result_summary(outcomes: list[RungOutcome]) -> str:
     lines = ["*처리 결과*"]
     for outcome in outcomes:
         label = _RESULT_LABELS.get(outcome.result, outcome.result)
-        lines.append(f"- #{outcome.rung_index + 1}: {label}")
+        reason = (outcome.detail or {}).get("error")
+        if outcome.result == "error" and not reason:
+            reason = "submit_rejected"
+        suffix = f" — {_escape_markdown(reason)}" if reason else ""
+        lines.append(f"- #{outcome.rung_index + 1}: {label}{suffix}")
     return "\n".join(lines)
 
 
@@ -212,12 +218,8 @@ async def _handle_deny(
     except OrderProposalError as exc:
         # No mutation happened above (mismatch/replay both raise before any
         # flush) -- commit anyway to release the row lock taken by
-        # `consume_approval_nonce`'s `for_update=True` SELECT before making
-        # the Telegram call below.
+        # `consume_approval_nonce`'s `for_update=True` SELECT.
         await session.commit()
-        await _safe_answer(
-            notifier, callback_query_id, "이미 처리되었거나 유효하지 않은 요청입니다"
-        )
         return {"handled": False, "reason": str(exc), "proposal_id": str(proposal_id)}
 
     _group, rungs = await service.get_proposal(proposal_id)
@@ -235,7 +237,6 @@ async def _handle_deny(
 
     if message_id is not None:
         await _safe_edit_message(notifier, chat_id, message_id, "❌ 거부됨")
-    await _safe_answer(notifier, callback_query_id, "거부되었습니다")
     return {
         "handled": True,
         "reason": "denied",
@@ -262,18 +263,14 @@ async def _handle_approve(
         await service.consume_approval_nonce(proposal_id, nonce, now=now)
     except OrderProposalError as exc:
         # See `_handle_deny`'s matching comment: no mutation happened above,
-        # but commit anyway to release the row lock before the Telegram call.
+        # but commit anyway to release the row lock.
         await session.commit()
-        await _safe_answer(
-            notifier, callback_query_id, "이미 처리되었거나 유효하지 않은 요청입니다"
-        )
         return {"handled": False, "reason": str(exc), "proposal_id": str(proposal_id)}
 
     acquired = await service.acquire_commit_lease(proposal_id, now=now)
     if not acquired:
-        # Same rationale -- release the `for_update=True` lock before notify.
+        # Same rationale -- release the `for_update=True` lock before return.
         await session.commit()
-        await _safe_answer(notifier, callback_query_id, "처리 중")
         return {
             "handled": False,
             "reason": "lease_held",
@@ -357,7 +354,6 @@ async def _handle_approve(
                 now=now,
             )
             await session.commit()
-        await _safe_answer(notifier, callback_query_id, "재확인이 필요합니다")
         return {
             "handled": True,
             "reason": "needs_reconfirm",
@@ -374,7 +370,6 @@ async def _handle_approve(
 
     if message_id is not None:
         await _safe_edit_message(notifier, chat_id, message_id, summary)
-    await _safe_answer(notifier, callback_query_id, "처리되었습니다")
     return {
         "handled": True,
         "reason": "approved",
@@ -413,14 +408,14 @@ async def handle_callback_update(
         telegram_user_id = from_user.get("id")
         data = callback_query.get("data")
 
+        await _safe_answer(active_notifier, callback_query_id, "처리 중")
+
         if str(chat_id) not in settings.order_proposals_telegram_chat_allowlist:
-            await _safe_answer(active_notifier, callback_query_id, "허용되지 않은 채팅")
             return {"handled": False, "reason": "chat_not_allowed"}
 
         try:
             action, proposal_short, nonce = parse_callback_data(data)
         except ValueError:
-            await _safe_answer(active_notifier, callback_query_id, "잘못된 요청입니다")
             return {"handled": False, "reason": "malformed_callback_data"}
 
         async with service_factory() as session:
@@ -428,9 +423,6 @@ async def handle_callback_update(
             proposal_id = await _resolve_proposal_id(service, proposal_short)
             if proposal_id is None:
                 await session.commit()
-                await _safe_answer(
-                    active_notifier, callback_query_id, "제안을 찾을 수 없습니다"
-                )
                 return {"handled": False, "reason": "proposal_not_found"}
 
             if action == "dn":
@@ -468,7 +460,4 @@ async def handle_callback_update(
             return result
     except Exception:  # noqa: BLE001 - fail-closed webhook contract
         logger.exception("order_proposals telegram callback handling failed")
-        await _safe_answer(
-            active_notifier, callback_query_id, "처리 중 오류가 발생했습니다"
-        )
         return {"handled": False, "reason": "internal_error"}
