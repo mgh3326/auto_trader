@@ -179,6 +179,13 @@ async def _create_single_rung(db_session, *, symbol: str = "A"):
     return service, group
 
 
+async def _create_cancel_proposal(db_session):
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(**_target_action_create_kwargs("cancel"))
+    await db_session.commit()
+    return service, group
+
+
 async def _drive_to_submitting(service, proposal_id):
     for state in ("revalidating", "approved", "submitting"):
         await service.transition_rung(proposal_id, 0, new_state=state)
@@ -618,6 +625,20 @@ async def test_resting_is_not_filled_and_records_audit_fields(db_session):
     assert rung.validated_at == now
     assert rung.updated_at == now
     assert rung.filled_qty is None
+
+
+@pytest.mark.asyncio
+async def test_record_cancelled_retains_target_id(db_session):
+    service, group = await _create_cancel_proposal(db_session)
+    now = datetime(2026, 7, 10, 9, 5, tzinfo=UTC)
+    await _drive_to_submitting(service, group.proposal_id)
+
+    rung = await service.record_cancelled(
+        group.proposal_id, 0, broker_order_id="old-1", now=now
+    )
+
+    assert rung.state == "cancelled"
+    assert rung.broker_order_id == "old-1"
 
 
 @pytest.mark.asyncio

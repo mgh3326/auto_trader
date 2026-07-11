@@ -668,6 +668,24 @@ class OrderProposalsService:
             updated_at=now,
         )
 
+    async def record_cancelled(
+        self,
+        proposal_id: uuid.UUID,
+        rung_index: int,
+        *,
+        broker_order_id: str,
+        now: datetime,
+    ) -> OrderProposalRung:
+        self._require_timezone_aware(now)
+        return await self.transition_rung(
+            proposal_id,
+            rung_index,
+            new_state="cancelled",
+            broker_order_id=broker_order_id,
+            validated_at=now,
+            updated_at=now,
+        )
+
     async def record_fill_evidence(
         self,
         *,
