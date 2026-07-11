@@ -252,6 +252,35 @@ async def test_approve_injects_configured_submit_identity(monkeypatch, db_sessio
 
 
 @pytest.mark.asyncio
+async def test_approve_empty_submit_identity_masks_and_restores_outer_identity(
+    monkeypatch, db_session
+):
+    _allow_chat(monkeypatch)
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_SUBMIT_AGENT_ID", "   ")
+    group = await _seed_proposal(db_session, nonce="nonce-empty-identity")
+    data = f"op:{str(group.proposal_id)[:8]}:nonce-empty-identity"
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        assert get_caller_agent_id() is None
+        return []
+
+    token = caller_agent_id_var.set("allowed-outer-agent")
+    try:
+        result = await handle_callback_update(
+            _make_update(data=data),
+            now=datetime.now(UTC),
+            service_factory=_session_factory(db_session),
+            notifier=_FakeNotifier(),
+            revalidate_fn=fake_revalidate,
+        )
+
+        assert result["reason"] == "approved"
+        assert get_caller_agent_id() == "allowed-outer-agent"
+    finally:
+        caller_agent_id_var.reset(token)
+
+
+@pytest.mark.asyncio
 async def test_approve_answers_before_order_processing_and_final_edit(
     monkeypatch, db_session
 ):
