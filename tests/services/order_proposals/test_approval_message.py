@@ -14,6 +14,52 @@ from app.services.order_proposals.approval_message import (
 )
 
 
+def _group(**overrides):
+    values = {
+        "proposal_id": uuid.uuid4(),
+        "symbol": "000660",
+        "market": "equity_kr",
+        "side": "sell",
+        "order_type": "limit",
+        "thesis": None,
+        "strategy": None,
+        "valid_until": None,
+        "validated_at": None,
+        "commit_lease_until": None,
+        "source_asof": None,
+        "payload_hash": None,
+        "approval_nonce": "abc123def4560000",
+        "exit_intent": None,
+        "exit_reason": None,
+        "retrospective_id": None,
+        "approval_issue_id": None,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def _rung():
+    return SimpleNamespace(
+        rung_index=0,
+        quantity=Decimal("10"),
+        limit_price=Decimal("70000"),
+        approval_hash_digest=None,
+    )
+
+
+@pytest.mark.unit
+def test_loss_cut_approval_message_shows_reason_and_retrospective():
+    group = _group(
+        exit_intent="loss_cut", exit_reason="stop_loss", retrospective_id=42,
+        approval_issue_id="ROB-800",
+    )
+    text, _keyboard = build_approval_message(group=group, rungs=[_rung()])
+    assert "손절 근거" in text
+    assert "stop\_loss" in text
+    assert "#42" in text
+    assert "ROB-800" not in text
+
+
 @pytest.mark.unit
 def test_callback_data_roundtrip_and_length():
     proposal_id = uuid.uuid4()

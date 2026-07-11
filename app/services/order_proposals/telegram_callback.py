@@ -50,6 +50,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.services.order_proposals.approval_message import (
+    _escape_markdown,
     build_approval_message,
     parse_callback_data,
 )
@@ -84,6 +85,16 @@ _RESULT_LABELS: dict[str, str] = {
     "error": "오류",
     "needs_reconfirm": "재확인 필요",
 }
+
+
+def _outcome_error_summary(outcome: RungOutcome, *, limit: int = 240) -> str | None:
+    error = str((outcome.detail or {}).get("error") or "").strip()
+    if not error:
+        return None
+    compact = " ".join(error.split())
+    if len(compact) > limit:
+        compact = compact[: limit - 1] + "…"
+    return _escape_markdown(compact)
 
 
 def _generate_nonce() -> str:
@@ -169,6 +180,9 @@ def _build_result_summary(outcomes: list[RungOutcome]) -> str:
     lines = ["*처리 결과*"]
     for outcome in outcomes:
         label = _RESULT_LABELS.get(outcome.result, outcome.result)
+        reason = _outcome_error_summary(outcome)
+        if reason and outcome.result in {"guard_blocked", "error"}:
+            label = f"{label} — {reason}"
         lines.append(f"- #{outcome.rung_index + 1}: {label}")
     return "\n".join(lines)
 
@@ -258,6 +272,17 @@ async def _handle_approve(
     telegram_user_id: str,
     revalidate_fn: RevalidateFn,
 ) -> dict[str, Any]:
+    if await service.expire_if_needed(proposal_id, now=now):
+        await session.commit()
+        if message_id is not None:
+            await _safe_edit_message(notifier, chat_id, message_id, "⌛ 제안 만료")
+        await _safe_answer(notifier, callback_query_id, "제안이 만료되었습니다")
+        return {
+            "handled": False,
+            "reason": "proposal_expired",
+            "proposal_id": str(proposal_id),
+        }
+
     try:
         await service.consume_approval_nonce(proposal_id, nonce, now=now)
     except OrderProposalError as exc:
