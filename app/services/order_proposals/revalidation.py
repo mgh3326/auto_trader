@@ -147,6 +147,8 @@ def _adapt_toss_preview_response(preview: dict[str, Any]) -> dict[str, Any]:
 def _invalid_toss_preview_reason(
     preview: dict[str, Any], *, expected_client_order_id: str, order_type: str
 ) -> str | None:
+    if preview.get("success") is not True:
+        return "success_not_true"
     payload = preview.get("payload_preview")
     if not isinstance(payload, dict):
         return "payload_preview_missing_or_malformed"

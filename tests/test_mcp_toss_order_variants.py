@@ -2260,6 +2260,40 @@ def test_public_place_order_does_not_expose_client_order_id_override():
     )
 
 
+def test_private_proposal_binding_restores_nested_contexts():
+    import app.mcp_server.tooling.orders_toss_variants as otv
+
+    with otv._bind_order_proposal_context(
+        client_order_id="tosprop-outer",
+        correlation_id="corr-outer",
+        rung=0,
+    ):
+        assert otv._order_proposal_context.get().client_order_id == "tosprop-outer"
+        with otv._bind_order_proposal_context(
+            client_order_id="tosprop-inner",
+            correlation_id="corr-inner",
+            rung=1,
+        ):
+            assert otv._order_proposal_context.get().client_order_id == (
+                "tosprop-inner"
+            )
+        assert otv._order_proposal_context.get().client_order_id == "tosprop-outer"
+    assert otv._order_proposal_context.get() is None
+
+
+def test_private_proposal_binding_restores_after_exception():
+    import app.mcp_server.tooling.orders_toss_variants as otv
+
+    with pytest.raises(RuntimeError, match="binding failure"):
+        with otv._bind_order_proposal_context(
+            client_order_id="tosprop-exception",
+            correlation_id="corr-exception",
+            rung=2,
+        ):
+            raise RuntimeError("binding failure")
+    assert otv._order_proposal_context.get() is None
+
+
 @pytest.mark.asyncio
 async def test_private_proposal_binding_reaches_toss_ledger_for_rung_one(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv

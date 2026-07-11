@@ -969,6 +969,9 @@ async def test_toss_retry_across_dates_reuses_proposal_client_id(
         "missing_quantity",
         "missing_limit_price",
         "mismatched_client_id",
+        "missing_success",
+        "none_success",
+        "string_success",
     ],
 )
 async def test_toss_incomplete_preview_fails_closed(db_session, monkeypatch, defect):
@@ -1008,8 +1011,14 @@ async def test_toss_incomplete_preview_fails_closed(db_session, monkeypatch, def
             preview["payload_preview"].pop("quantity")
         elif defect == "missing_limit_price":
             preview["payload_preview"].pop("price")
-        else:
+        elif defect == "mismatched_client_id":
             preview["payload_preview"]["clientOrderId"] = "external-client-id"
+        elif defect == "missing_success":
+            preview.pop("success")
+        elif defect == "none_success":
+            preview["success"] = None
+        else:
+            preview["success"] = "true"
         return preview
 
     async def fake_submit(**kwargs):
@@ -1029,6 +1038,50 @@ async def test_toss_incomplete_preview_fails_closed(db_session, monkeypatch, def
 
     assert outcomes[0].result == "error"
     assert outcomes[0].detail["error"].startswith("invalid_toss_preview:")
+    assert submitted is False
+    _, rungs = await svc.get_proposal(group.proposal_id)
+    assert rungs[0].state == "pending_approval"
+
+
+@pytest.mark.asyncio
+async def test_toss_success_false_preview_keeps_guard_blocked_behavior(
+    db_session, monkeypatch
+):
+    svc = OrderProposalsService(db_session)
+    group = await svc.create_proposal(
+        symbol="000660",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("50000"), None)],
+    )
+    await db_session.commit()
+    submitted = False
+
+    async def fake_preview(**kwargs):
+        return {
+            "success": False,
+            "error": "insufficient balance for Toss preview",
+        }
+
+    async def fake_submit(**kwargs):
+        nonlocal submitted
+        submitted = True
+        raise AssertionError("guard-blocked preview must never submit")
+
+    import app.mcp_server.tooling.orders_toss_variants as toss
+
+    monkeypatch.setattr(toss, "toss_preview_order", fake_preview)
+    monkeypatch.setattr(toss, "toss_place_order", fake_submit)
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+    )
+
+    assert outcomes[0].result == "guard_blocked"
     assert submitted is False
     _, rungs = await svc.get_proposal(group.proposal_id)
     assert rungs[0].state == "pending_approval"
