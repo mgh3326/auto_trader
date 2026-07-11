@@ -85,6 +85,7 @@ _RESULT_LABELS: dict[str, str] = {
     "unverified": "확인 불가(수동 확인 필요)",
     "error": "오류",
     "needs_reconfirm": "재확인 필요",
+    "cancelled": "취소 확인",
 }
 
 

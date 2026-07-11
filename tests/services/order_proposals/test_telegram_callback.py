@@ -112,6 +112,11 @@ def test_result_summary_includes_bounded_escaped_guard_reason():
     assert len(summary) < 320
 
 
+def test_result_summary_labels_confirmed_cancel():
+    summary = _build_result_summary([RungOutcome(0, "cancelled", {})])
+    assert "취소 확인" in summary
+
+
 @pytest.mark.asyncio
 async def test_expired_approve_never_revalidates(monkeypatch, db_session):
     _allow_chat(monkeypatch)
@@ -254,6 +259,44 @@ async def test_approve_answers_before_order_processing_and_final_edit(
     assert result["reason"] == "approved"
     assert events == ["answer", "db", "order", "edit"]
     assert notifier.answered == [("cbq-1", "처리 중")]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_approve_commits_before_telegram_edit(monkeypatch, db_session):
+    _allow_chat(monkeypatch)
+    group = await _seed_proposal(db_session, nonce="nonce-cancelled")
+    data = f"op:{str(group.proposal_id)[:8]}:nonce-cancelled"
+    events: list[str] = []
+    notifier = _EventNotifier(events)
+    original_commit = db_session.commit
+
+    async def event_commit():
+        events.append("commit")
+        await original_commit()
+
+    monkeypatch.setattr(db_session, "commit", event_commit)
+
+    @contextlib.asynccontextmanager
+    async def event_session_factory():
+        events.append("db")
+        yield db_session
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        events.append("order")
+        return [RungOutcome(0, "cancelled", {})]
+
+    result = await handle_callback_update(
+        _make_update(data=data),
+        now=datetime.now(UTC),
+        service_factory=event_session_factory,
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+
+    assert result["reason"] == "approved"
+    assert result["results"] == ["cancelled"]
+    assert events == ["answer", "db", "order", "commit", "edit"]
+    assert "취소 확인" in notifier.edited[0][2]
 
 
 @pytest.mark.asyncio
