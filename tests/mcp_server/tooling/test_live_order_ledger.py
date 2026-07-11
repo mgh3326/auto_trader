@@ -642,3 +642,212 @@ async def test_reconcile_buy_journal_backfills_correlation_id():
 
     m_buy.assert_awaited_once()
     assert m_buy.await_args.kwargs["correlation_id"] == "live:kis_live:reconcileUS"
+
+
+# --- ROB-816 PR-3c: proposal-rung convergence from the reconcile kernel -------
+
+
+async def _seed_resting_proposal(*, order_no: str, correlation_id: str):
+    """Create a committed order_proposal whose single rung is `resting`, wired to
+    the given broker order_no / correlation_id so reconcile evidence can find it.
+    """
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    from app.mcp_server.tooling.live_order_ledger import _order_session_factory
+    from app.services.order_proposals import OrderProposalsService
+    from app.services.order_proposals.service import RungInput
+
+    now = datetime(2026, 7, 11, 0, 0, tzinfo=UTC)
+    async with _order_session_factory()() as db:
+        svc = OrderProposalsService(db)
+        group = await svc.create_proposal(
+            symbol="KRW-BTC",
+            market="crypto",
+            account_mode="upbit",
+            side="buy",
+            order_type="limit",
+            proposer="p",
+            rungs=[RungInput(0, "buy", Decimal("0.001"), Decimal("50000000"), None)],
+            now=now,
+        )
+        pid = group.proposal_id
+        for state in ("revalidating", "approved", "submitting"):
+            await svc.transition_rung(pid, 0, new_state=state)
+        await svc.record_resting(
+            pid,
+            0,
+            broker_order_id=order_no,
+            correlation_id=correlation_id,
+            idempotency_key=f"idem-{order_no}",
+            approval_hash_digest=f"digest-{order_no}",
+            now=now,
+        )
+        await db.commit()
+        return pid
+
+
+async def _read_rung_state(pid):
+    from app.mcp_server.tooling.live_order_ledger import _order_session_factory
+    from app.services.order_proposals import OrderProposalsService
+
+    async with _order_session_factory()() as db:
+        svc = OrderProposalsService(db)
+        _, rungs = await svc.get_proposal(pid)
+        return rungs[0].state
+
+
+async def _save_crypto_ledger(*, order_no: str, correlation_id: str, status="accepted"):
+    from app.mcp_server.tooling import live_order_ledger as ll
+
+    return await ll._save_live_order_ledger(
+        broker="upbit",
+        account_scope="upbit_live",
+        market="crypto",
+        symbol="KRW-BTC",
+        exchange=None,
+        market_symbol="KRW-BTC",
+        side="buy",
+        order_kind="limit",
+        quantity=0.001,
+        price=50000000.0,
+        amount=50000.0,
+        currency="KRW",
+        order_no=order_no,
+        order_time=None,
+        status=status,
+        response_code="0",
+        response_message=None,
+        raw_response=None,
+        reason=None,
+        thesis="t",
+        strategy="s",
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
+        correlation_id=correlation_id,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_cancel_converges_proposal_rung(db_session):
+    """ROB-816 PR-3c regression (canary proposal fa0dab30): a resting proposal
+    rung whose broker order was cancelled converges to `cancelled` after
+    reconcile picks up the broker's NONE (cancelled) evidence."""
+    import uuid
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+
+    from app.mcp_server.tooling import live_order_ledger as ll
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence,
+        FillVerdict,
+    )
+
+    order_no = f"U-CXL-{uuid.uuid4()}"
+    corr = f"corr-{order_no}"
+    pid = await _seed_resting_proposal(order_no=order_no, correlation_id=corr)
+    lid = await _save_crypto_ledger(order_no=order_no, correlation_id=corr)
+    row = await ll._load_live_ledger_row(lid)
+    none_ev = FillEvidence(FillVerdict.NONE, Decimal("0"), None, None, "cancelled", "")
+
+    class _Adapter:
+        broker = "upbit"
+        fetch_evidence = AsyncMock(return_value=none_ev)
+
+    with patch.object(ll, "get_evidence_adapter", return_value=_Adapter()):
+        out = await ll._reconcile_one_live_row(row, dry_run=False)
+
+    assert out["verdict"] == "none"
+    assert await _read_rung_state(pid) == "cancelled"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_fill_converges_proposal_rung_and_is_idempotent(db_session):
+    """Broker fill evidence converges a resting rung to `filled`; a second
+    reconcile pass over the already-booked ledger row is a no-op on the (now
+    terminal) rung and never raises."""
+    import uuid
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+
+    from app.mcp_server.tooling import live_order_ledger as ll
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence,
+        FillVerdict,
+    )
+
+    order_no = f"U-FILL-{uuid.uuid4()}"
+    corr = f"corr-{order_no}"
+    pid = await _seed_resting_proposal(order_no=order_no, correlation_id=corr)
+    lid = await _save_crypto_ledger(order_no=order_no, correlation_id=corr)
+    filled = FillEvidence(
+        FillVerdict.FILLED, Decimal("0.001"), Decimal("50000000"), None, "filled", ""
+    )
+
+    class _Adapter:
+        broker = "upbit"
+        fetch_evidence = AsyncMock(return_value=filled)
+
+    with (
+        patch.object(ll, "get_evidence_adapter", return_value=_Adapter()),
+        patch.object(ll, "_save_order_fill", new=AsyncMock(return_value=555)),
+        patch.object(
+            ll,
+            "_create_trade_journal_for_buy",
+            new=AsyncMock(return_value={"journal_id": 77}),
+        ),
+        patch.object(ll, "_link_journal_to_fill", new=AsyncMock(return_value=None)),
+    ):
+        out1 = await ll._reconcile_one_live_row(
+            row=await ll._load_live_ledger_row(lid), dry_run=False
+        )
+        assert out1["action"] == "booked"
+        assert await _read_rung_state(pid) == "filled"
+
+        # Second pass: ledger row is now `filled`, delta<=0 → convergence must
+        # short-circuit on the terminal rung rather than raise.
+        out2 = await ll._reconcile_one_live_row(
+            row=await ll._load_live_ledger_row(lid), dry_run=False
+        )
+        assert out2["action"] == "noop_already_booked"
+        assert await _read_rung_state(pid) == "filled"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_dry_run_does_not_touch_proposal_rung(db_session):
+    """A dry-run reconcile is read-only — it never mutates proposal rung state."""
+    import uuid
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+
+    from app.mcp_server.tooling import live_order_ledger as ll
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence,
+        FillVerdict,
+    )
+
+    order_no = f"U-DRY-{uuid.uuid4()}"
+    corr = f"corr-{order_no}"
+    pid = await _seed_resting_proposal(order_no=order_no, correlation_id=corr)
+    lid = await _save_crypto_ledger(order_no=order_no, correlation_id=corr)
+    row = await ll._load_live_ledger_row(lid)
+    filled = FillEvidence(
+        FillVerdict.FILLED, Decimal("0.001"), Decimal("50000000"), None, "filled", ""
+    )
+
+    class _Adapter:
+        broker = "upbit"
+        fetch_evidence = AsyncMock(return_value=filled)
+
+    with patch.object(ll, "get_evidence_adapter", return_value=_Adapter()):
+        out = await ll._reconcile_one_live_row(row, dry_run=True)
+
+    assert out["action"] == "would_book"
+    assert await _read_rung_state(pid) == "resting"
