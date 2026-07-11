@@ -141,6 +141,11 @@ def _adapt_toss_submit_response(
     submit: dict[str, Any], *, order_type: str
 ) -> dict[str, Any]:
     """Translate Toss accepted-only sends to the proposal submit contract."""
+    if submit.get("success") is False and submit.get("mutation_sent") is True:
+        if submit.get("broker_status") != "rejected":
+            adapted = dict(submit)
+            adapted["success"] = None
+            return adapted
     if submit.get("success") is False or submit.get("broker_status") == "rejected":
         adapted = dict(submit)
         adapted["success"] = False

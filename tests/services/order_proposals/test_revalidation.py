@@ -951,6 +951,79 @@ async def test_toss_explicit_rejection_records_rejected(db_session, monkeypatch)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("submit_result", "expected_order_id"),
+    [
+        (
+            {
+                "success": False,
+                "mutation_sent": True,
+                "error": "broker timeout; order state unknown",
+            },
+            None,
+        ),
+        (
+            {
+                "success": False,
+                "mutation_sent": True,
+                "error": "ledger write failed after broker accepted",
+                "order_id": "preserved-broker-order",
+                "client_order_id": "ambiguous-client",
+            },
+            "preserved-broker-order",
+        ),
+    ],
+    ids=["timeout_unknown", "ledger_failure_preserves_order_id"],
+)
+async def test_toss_post_send_failure_records_unverified(
+    db_session, monkeypatch, submit_result, expected_order_id
+):
+    svc = OrderProposalsService(db_session)
+    group = await svc.create_proposal(
+        symbol="000660",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("50000"), None)],
+    )
+    await db_session.commit()
+
+    async def fake_preview(**kwargs):
+        return {
+            "success": True,
+            "approval_hash": "ambiguous-token",
+            "payload_preview": {
+                "price": "50000",
+                "quantity": "1",
+                "clientOrderId": "ambiguous-client",
+            },
+        }
+
+    async def fake_submit(**kwargs):
+        return submit_result
+
+    import app.mcp_server.tooling.orders_toss_variants as toss
+
+    monkeypatch.setattr(toss, "toss_preview_order", fake_preview)
+    monkeypatch.setattr(toss, "toss_place_order", fake_submit)
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+    )
+
+    assert outcomes[0].result == "unverified"
+    assert outcomes[0].detail["submit"]["error"] == submit_result["error"]
+    assert outcomes[0].detail["submit"].get("order_id") == expected_order_id
+    _, rungs = await svc.get_proposal(group.proposal_id)
+    assert rungs[0].state == "unverified"
+    assert rungs[0].state != "pending_approval"
+    assert rungs[0].void_reason.startswith("ambiguous_submit_response:")
+
+
+@pytest.mark.asyncio
 async def test_toss_market_order_accepted_is_acked_not_filled(db_session, monkeypatch):
     svc = OrderProposalsService(db_session)
     group = await svc.create_proposal(
