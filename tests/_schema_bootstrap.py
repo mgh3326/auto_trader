@@ -465,6 +465,10 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ALTER TABLE review.trade_retrospectives DROP CONSTRAINT IF EXISTS uq_trade_retrospectives_correlation_id",
     "ALTER TABLE review.trade_retrospectives DROP CONSTRAINT IF EXISTS uq_trade_retrospectives_correlation_account",
     "ALTER TABLE review.trade_retrospectives ADD CONSTRAINT uq_trade_retrospectives_correlation_account UNIQUE (correlation_id, account_mode)",
+    "ALTER TABLE review.order_proposals ADD COLUMN IF NOT EXISTS exit_intent TEXT",
+    "ALTER TABLE review.order_proposals ADD COLUMN IF NOT EXISTS exit_reason TEXT",
+    "ALTER TABLE review.order_proposals ADD COLUMN IF NOT EXISTS retrospective_id BIGINT",
+    "ALTER TABLE review.order_proposals ADD COLUMN IF NOT EXISTS approval_issue_id TEXT",
 )
 
 

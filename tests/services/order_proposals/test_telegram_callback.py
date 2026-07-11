@@ -14,6 +14,7 @@ from app.services.order_proposals.approval_message import parse_callback_data
 from app.services.order_proposals.revalidation import RungOutcome
 from app.services.order_proposals.service import RungInput
 from app.services.order_proposals.telegram_callback import (
+    _build_result_summary,
     _resolve_proposal_id,
     handle_callback_update,
 )
@@ -99,6 +100,43 @@ def _allow_chat(monkeypatch, chat_id=CHAT_ID):
     monkeypatch.setattr(
         settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", str(chat_id)
     )
+
+
+def test_result_summary_includes_bounded_escaped_guard_reason():
+    outcome = RungOutcome(
+        0, "guard_blocked", {"error": "cash *blocked* " + ("x" * 400)}
+    )
+    summary = _build_result_summary([outcome])
+    assert "cash \\*blocked\\*" in summary
+    assert summary.endswith("…")
+    assert len(summary) < 320
+
+
+@pytest.mark.asyncio
+async def test_expired_approve_never_revalidates(monkeypatch, db_session):
+    _allow_chat(monkeypatch)
+    group = await _seed_proposal(db_session, nonce="expired-nonce")
+    group.valid_until = datetime.now(UTC) - timedelta(seconds=1)
+    await db_session.commit()
+    called = False
+
+    async def must_not_revalidate(**kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("expired proposal must not revalidate")
+
+    notifier = _FakeNotifier()
+    result = await handle_callback_update(
+        _make_update(data=f"op:{str(group.proposal_id)[:8]}:expired-nonce"),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=must_not_revalidate,
+    )
+    assert result["reason"] == "proposal_expired"
+    assert called is False
+    assert notifier.answered[-1] == ("cbq-1", "제안이 만료되었습니다")
+    assert "만료" in notifier.edited[-1][2]
 
 
 @pytest.mark.asyncio

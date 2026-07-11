@@ -29,12 +29,20 @@ def compute_proposal_payload_hash(
     account_mode: str,
     order_type: str,
     rungs: Sequence[ProposalRungSpec],
+    exit_intent: str | None = None,
+    exit_reason: str | None = None,
+    retrospective_id: int | None = None,
+    approval_issue_id: str | None = None,
 ) -> str:
     canonical = {
         "symbol": symbol,
         "market": market,
         "account_mode": account_mode,
         "order_type": order_type,
+        "exit_intent": exit_intent,
+        "exit_reason": exit_reason,
+        "retrospective_id": retrospective_id,
+        "approval_issue_id": approval_issue_id,
         "rungs": [
             {
                 "rung_index": r.rung_index,

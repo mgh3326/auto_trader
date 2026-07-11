@@ -10,17 +10,31 @@ from __future__ import annotations
 from app.services.order_proposals.errors import OrderProposalInvalidStateTransition
 
 _ALLOWED: dict[str, frozenset[str]] = {
-    "draft": frozenset({"pending_approval", "voided"}),
+    "draft": frozenset({"pending_approval", "expired", "voided"}),
     "pending_approval": frozenset(
-        {"revalidating", "rejected", "voided", "voided_local_stale", "superseded"}
+        {
+            "revalidating",
+            "rejected",
+            "expired",
+            "voided",
+            "voided_local_stale",
+            "superseded",
+        }
     ),
     "revalidating": frozenset(
-        {"approved", "needs_reconfirm", "pending_approval", "superseded", "voided"}
+        {
+            "approved",
+            "needs_reconfirm",
+            "pending_approval",
+            "superseded",
+            "expired",
+            "voided",
+        }
     ),
     "needs_reconfirm": frozenset(
-        {"pending_approval", "rejected", "superseded", "voided"}
+        {"pending_approval", "rejected", "superseded", "expired", "voided"}
     ),
-    "approved": frozenset({"submitting", "superseded", "voided"}),
+    "approved": frozenset({"submitting", "superseded", "expired", "voided"}),
     "submitting": frozenset({"acked", "resting", "rejected", "unverified"}),
     "acked": frozenset({"filled", "partially_filled", "cancelled", "unverified"}),
     "resting": frozenset(

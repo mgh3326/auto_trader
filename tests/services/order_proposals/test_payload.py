@@ -71,3 +71,26 @@ def test_ttl_only_change_keeps_hash_stable():
         order_type="limit",
         rungs=[ProposalRungSpec(0, "buy", "1", "100", None)],
     )
+
+
+@pytest.mark.unit
+def test_loss_cut_binding_changes_payload_hash():
+    ordinary = compute_proposal_payload_hash(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        order_type="limit",
+        rungs=[ProposalRungSpec(0, "sell", "1", "70000", None)],
+    )
+    loss_cut = compute_proposal_payload_hash(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        order_type="limit",
+        rungs=[ProposalRungSpec(0, "sell", "1", "70000", None)],
+        exit_intent="loss_cut",
+        exit_reason="stop_loss",
+        retrospective_id=42,
+        approval_issue_id="ROB-800",
+    )
+    assert ordinary != loss_cut

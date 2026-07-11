@@ -1,3 +1,6 @@
+from datetime import UTC, datetime
+from types import SimpleNamespace
+
 import pytest
 
 from app.core.config import settings
@@ -149,6 +152,60 @@ async def test_create_then_get_then_list():
 
 
 @pytest.mark.asyncio
+async def test_loss_cut_binding_round_trips_through_create_get_list(monkeypatch):
+    async def fake_lookup(session, retrospective_id):
+        return SimpleNamespace(
+            symbol="005930", trigger_type="stop_loss", created_at=datetime.now(UTC)
+        )
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    created = await opt.order_proposal_create(
+        **_create_kwargs(
+            side="sell",
+            rungs=[
+                {
+                    "rung_index": 0,
+                    "side": "sell",
+                    "quantity": "1",
+                    "limit_price": "65000",
+                    "notional": None,
+                }
+            ],
+            exit_intent="loss_cut",
+            exit_reason="stop_loss",
+            retrospective_id=42,
+            approval_issue_id="ROB-800",
+        )
+    )
+    got = await opt.order_proposal_get(created["proposal_id"])
+    listed = await opt.order_proposal_list(symbol="005930")
+    expected = {
+        "exit_intent": "loss_cut",
+        "exit_reason": "stop_loss",
+        "retrospective_id": 42,
+        "approval_issue_id": "ROB-800",
+    }
+    assert {key: got["proposal"][key] for key in expected} == expected
+    row = next(
+        p for p in listed["proposals"] if p["proposal_id"] == created["proposal_id"]
+    )
+    assert {key: row[key] for key in expected} == expected
+
+
+@pytest.mark.asyncio
+async def test_void_requires_reason_and_terminalizes_proposal():
+    created = await opt.order_proposal_create(**_create_kwargs())
+    blank = await opt.order_proposal_void(created["proposal_id"], "   ")
+    assert blank == {"success": False, "error": "void reason is required"}
+    result = await opt.order_proposal_void(created["proposal_id"], "superseded thesis")
+    assert result["success"] is True
+    assert result["lifecycle_state"] == "voided"
+    assert result["void_reason"] == "superseded thesis"
+
+
+@pytest.mark.asyncio
 async def test_create_rejects_empty_rungs():
     res = await opt.order_proposal_create(
         symbol="A",
@@ -173,4 +230,5 @@ def test_tools_registered_and_names_exported():
         "order_proposal_create",
         "order_proposal_get",
         "order_proposal_list",
+        "order_proposal_void",
     }

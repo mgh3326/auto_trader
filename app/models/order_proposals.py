@@ -89,6 +89,10 @@ class OrderProposal(Base):
     rationale: Mapped[dict | None] = mapped_column(JSONB)
     broker_account_id: Mapped[str | None] = mapped_column(Text)
     lot_context: Mapped[dict | None] = mapped_column(JSONB)
+    exit_intent: Mapped[str | None] = mapped_column(Text)
+    exit_reason: Mapped[str | None] = mapped_column(Text)
+    retrospective_id: Mapped[int | None] = mapped_column(BigInteger)
+    approval_issue_id: Mapped[str | None] = mapped_column(Text)
     lifecycle_state: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="proposed"
     )

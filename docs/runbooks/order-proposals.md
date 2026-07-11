@@ -10,7 +10,7 @@ persisted, replayable record: one `order_proposals` row per proposal group
 `order_proposal_rungs` child rows (one per execution ladder rung — price/qty
 pair) tracking each rung's own execution lifecycle independently.
 
-This runbook covers both halves of ROB-816, currently split across two PRs:
+This runbook covers ROB-816's three PR slices:
 
 - **PR 1** — data model + pure state machine + service + three read/create
   MCP tools (`order_proposal_create`/`get`/`list`). OPEN at
@@ -21,8 +21,12 @@ This runbook covers both halves of ROB-816, currently split across two PRs:
   click-time revalidation, safety boundaries, live smoke, troubleshooting,
   evidence template). Opened as a follow-up PR off the same branch, also
   **not yet merged.**
+- **PR 3a** — loss-cut approval bindings, proposal expiry/void safety, and
+  bounded Telegram rejection reasons. This slice adds
+  `order_proposal_void` and the four nullable loss-cut columns documented
+  below.
 
-Both PRs are pending plan-author review. Nothing described here is deployed
+All three PR slices are pending plan-author review. Nothing described here is deployed
 or running in production yet — this runbook documents functionality that
 exists on the `rob-816` branch, not (yet) on `main`. There is still **no**
 `order_proposal_approve` / `order_proposal_submit` MCP tool in either PR —
@@ -76,12 +80,14 @@ See the full design in
   only proves the request came from Telegram (authn), not that it came from
   an approved chat (authz).
 - **Fresh guard chain re-run at every click.** A Telegram approve does not
-  submit the payload that was true at proposal-create time — it re-runs the
-  full guard chain (loss-sell, market-sell-loss, sector cap) via a fresh
-  `dry_run=True` preview inside `revalidate_and_submit` before ever
-  submitting. See "Approval Flow" below.
+  submit the payload that was true at proposal-create time — it re-runs
+  Paperclip `done` status and the full ROB-800 guard chain (loss-sell,
+  market-sell-loss, sector cap) via a fresh `dry_run=True` preview inside
+  `revalidate_and_submit` before ever submitting. The same final guards run
+  again inside `_place_order_impl` at submit; a create-time check is never an
+  approval-time bypass. See "Approval Flow" below.
 - **Default OFF.** `ORDER_PROPOSALS_ENABLED=false` by default
-  (`app/core/config.py`). When off, the three MCP tools are not registered
+  (`app/core/config.py`). When off, the four MCP tools are not registered
   in either the default profile (`registry.py`) or the 8770 TradingCodex
   execution profile allowlist (`tradingcodex_execution_registration.py`).
 - **Pure state machine.** `app/services/order_proposals/state_machine.py` is
@@ -104,14 +110,15 @@ See the full design in
 ORDER_PROPOSALS_ENABLED=true
 ```
 
-Setting this env var (or config override) surfaces the three MCP tools
-(`order_proposal_create`, `order_proposal_get`, `order_proposal_list`) in:
+Setting this env var (or config override) surfaces the four MCP tools
+(`order_proposal_create`, `order_proposal_get`, `order_proposal_list`,
+`order_proposal_void`) in:
 
 - The default MCP profile (`app/mcp_server/tooling/registry.py`).
 - The 8770 TradingCodex execution profile allowlist
   (`app/mcp_server/tooling/tradingcodex_execution_registration.py`).
 
-With the flag off (default), none of the three tools are registered anywhere
+With the flag off (default), none of the four tools are registered anywhere
 and the tables remain unused (migration is additive and applies regardless
 of the flag — `alembic upgrade head` is safe to run at any time).
 
@@ -188,9 +195,9 @@ Verification below).
 
 ## MCP Tools
 
-Read + create only — **no approve/submit tool exists in this PR.**
+Read, create, and local void only — **no approve/submit tool exists in this PR.**
 
-### `order_proposal_create(symbol, market, account_mode, side, order_type, proposer, rungs, thesis=None, strategy=None, rationale=None, broker_account_id=None, lot_context=None, valid_until=None, supersedes_proposal_id=None)`
+### `order_proposal_create(symbol, market, account_mode, side, order_type, proposer, rungs, thesis=None, strategy=None, rationale=None, broker_account_id=None, lot_context=None, valid_until=None, supersedes_proposal_id=None, exit_intent=None, exit_reason=None, retrospective_id=None, approval_issue_id=None)`
 
 Persists a new proposal group + its rungs. `rungs` is a list of
 `{"rung_index": int, "side": str, "quantity": str, "limit_price": str|None,
@@ -202,6 +209,16 @@ If `supersedes_proposal_id` is given, the referenced proposal is marked
 `superseded` and lineage (`root_proposal_id`, `supersedes_proposal_id`) is
 linked on the new row.
 
+When `valid_until` is omitted, the service assigns the next `00:00 KST`. The
+loss-cut fields `exit_intent`, `exit_reason`, `retrospective_id`, and
+`approval_issue_id` are nullable for non-loss-cut proposals. For
+`exit_intent="loss_cut"`, all three companion fields are required. At create
+time, the retrospective must exist, belong to the same symbol, have
+`trigger_type="stop_loss"` or `trigger_type="thesis_change"`, and be no more
+than 72 hours old. The Paperclip
+approval issue is revalidated later at the Telegram click; passing this
+create-time validation never authorizes a future click by itself.
+
 ### `order_proposal_get(proposal_id)`
 
 Read-only fetch of a proposal group and its rungs by `proposal_id` (UUID).
@@ -211,6 +228,24 @@ Returns `{success: false, error: "not_found"}` if missing.
 
 Read-only list of recent proposal groups, optionally filtered by `symbol`
 and/or group-level `lifecycle_state`. `limit` is clamped to `1..200`.
+
+### `order_proposal_void(proposal_id, reason)`
+
+Locally voids a proposal only when every rung is safely pre-submit. `reason`
+must be non-blank and is retained as the audit reason. The tool refuses rather
+than partially mutating a proposal when any rung might have an outstanding
+broker state: rungs at or after submit (`submitting`, `acked`, `resting`, or
+`unverified`) require broker-evidence handling instead of a local void.
+
+### Expire versus void
+
+- **Expire automatically:** clicking Telegram **Approve** after `valid_until`
+  expires the proposal during click handling; operators do not need to issue a
+  separate expiry command.
+- **Void explicitly:** use `order_proposal_void` only to abandon a still
+  pre-submit proposal deliberately, with a non-blank operator reason. Do not
+  use it to resolve a possible broker submission; inspect/reconcile that state
+  first.
 
 ---
 
@@ -222,7 +257,9 @@ SELECT
   id, proposal_id, root_proposal_id, revision,
   supersedes_proposal_id, superseded_by_proposal_id, no_resubmit, void_reason,
   symbol, market, account_mode, side, order_type, proposer,
-  lifecycle_state, valid_until, validated_at, created_at, updated_at
+  lifecycle_state, valid_until,
+  exit_intent, exit_reason, retrospective_id, approval_issue_id,
+  validated_at, created_at, updated_at
 FROM review.order_proposals
 WHERE proposal_id = '<PROPOSAL_UUID>';
 
@@ -416,9 +453,12 @@ submitted blind would defeat the entire point of a human-approval gate.
 5. **Fresh dry-run preview → full guard chain re-run.** `revalidate_and_submit`
    re-runs every `pending_approval` rung through a fresh `place_order_fn(dry_run=True, ...)`
    call — this is the same preview path (`_place_order_impl`) that already
-   enforces the loss-sell guard, market-sell-loss guard, and sector
-   concentration cap. A guard rejection here comes back as `guard_blocked`
-   and the rung returns to `pending_approval` (retryable, not terminal).
+   revalidates Paperclip `done` status and enforces the loss-sell guard,
+   market-sell-loss guard, and sector concentration cap. This happens on
+   every click regardless of the create-time retrospective check; a guard
+   rejection here comes back as `guard_blocked` and the rung returns to
+   `pending_approval` (retryable, not terminal). `_place_order_impl` repeats
+   the final ROB-800 guards when the non-dry-run submit is made.
 6. **Price/qty comparison against what the operator approved.** The fresh
    preview's normalized `price`/`quantity` is compared (`_norm`, which
    canonicalizes `NUMERIC(38,12)` DB values against fresh preview values so
@@ -444,6 +484,11 @@ submitted blind would defeat the entire point of a human-approval gate.
    terminal state — on anything ambiguous (submit exception, unrecognized
    response shape, missing `broker_order_id`). See Safety Boundaries above
    for why `unverified` is never auto-voided.
+
+For a loss-cut proposal, the Telegram approval text shows the operator-facing
+`손절 근거` and `회고 #<retrospective_id>`. It intentionally does **not** expose
+the internal `approval_issue_id`; that identifier remains an audit and
+revalidation input rather than an operator instruction.
 
 **The four time concepts** (all columns on `order_proposals` /
 `order_proposal_rungs`, see `app/models/order_proposals.py`):

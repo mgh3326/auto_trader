@@ -125,6 +125,16 @@ def build_approval_message(
         ]
     )
 
+    if getattr(group, "exit_intent", None) == "loss_cut":
+        lines.extend(
+            [
+                "",
+                "*손절 근거*",
+                f"- 사유: {_escape_markdown(getattr(group, 'exit_reason', None))}",
+                f"- 회고: #{getattr(group, 'retrospective_id', None)}",
+            ]
+        )
+
     time_lines = _build_time_lines(group)
     if time_lines:
         lines.extend(["", "*시간*", *time_lines])
