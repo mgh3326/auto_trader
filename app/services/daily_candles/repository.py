@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import TextClause
 
@@ -65,6 +65,16 @@ def _recent_time_floor(count: int, *, now: datetime) -> datetime:
     """
     window_days = max(400, int(count) * 3)
     return now - timedelta(days=window_days)
+
+
+def _crypto_venue_for_partition(partition: str) -> str:
+    """Map a legacy crypto ``partition`` label to its ``crypto_instruments.venue`` value.
+
+    Today only Upbit KRW is producing crypto rows; ``partition='upbit_krw'`` maps
+    to ``venue='upbit'``. Children B/C will add Binance/Alpaca mappings via
+    additional rows in ``crypto_instruments``.
+    """
+    return "upbit" if partition == "upbit_krw" else partition.split("_")[0]
 
 
 def _build_kr_us_recent_sql(partition_col: str, adj_close_select: str) -> str:
@@ -166,51 +176,115 @@ class DailyCandlesRepository:
         )
         return max(int(result.rowcount or 0), 0)
 
-    async def _resolve_instrument_id(self, *, symbol: str, partition: str) -> int:
-        """Translate legacy (symbol, partition) -> instrument_id.
+    async def resolve_crypto_instrument_ids(
+        self, *, symbols: list[str], partition: str
+    ) -> dict[str, int]:
+        """Batch-resolve legacy ``(symbol, partition)`` -> ``instrument_id``.
 
-        Today only Upbit KRW is producing crypto rows; (partition='upbit_krw',
-        symbol='KRW-XXX') maps to (venue='upbit', product='spot',
-        venue_symbol=symbol). Children B/C will add Binance/Alpaca mappings
-        via additional rows in crypto_instruments.
+        Single ``SELECT ... WHERE venue_symbol IN (:symbols)`` so a fan-out over
+        many crypto symbols collapses to one round-trip. Unknown symbols are
+        silently absent; callers that need fail-on-unknown must look them up
+        explicitly via :meth:`_resolve_instrument_id`.
         """
-        venue = "upbit" if partition == "upbit_krw" else partition.split("_")[0]
-        sql = text(
-            "SELECT id FROM crypto_instruments "
-            "WHERE venue = :v AND product = 'spot' AND venue_symbol = :s "
-            "LIMIT 1"
+        normalized = sorted(
+            {str(symbol).strip().upper() for symbol in symbols if symbol}
         )
-        result = await self._session.execute(sql, {"v": venue, "s": symbol})
-        row = result.first()
-        if row is None:
+        if not normalized:
+            return {}
+        sql = text(
+            "SELECT venue_symbol, id FROM crypto_instruments "
+            "WHERE venue = :venue AND product = 'spot' "
+            "AND venue_symbol IN :symbols"
+        ).bindparams(bindparam("symbols", expanding=True))
+        result = await self._session.execute(
+            sql,
+            {
+                "venue": _crypto_venue_for_partition(partition),
+                "symbols": normalized,
+            },
+        )
+        return {str(row.venue_symbol): int(row.id) for row in result}
+
+    async def _resolve_instrument_id(self, *, symbol: str, partition: str) -> int:
+        """Single-symbol identity resolver. Raises ``LookupError`` if not seeded."""
+        resolved = await self.resolve_crypto_instrument_ids(
+            symbols=[symbol], partition=partition
+        )
+        iid = resolved.get(str(symbol).strip().upper())
+        if iid is None:
+            venue = _crypto_venue_for_partition(partition)
             raise LookupError(
                 f"No crypto_instruments row for venue={venue!r} symbol={symbol!r}; "
                 "seed the instrument before writing candles."
             )
-        return int(row.id)
+        return iid
 
-    async def _upsert_crypto_rows(self, *, rows: list[DailyCandleRow]) -> int:
+    async def fetch_recent_crypto_by_instrument_id(
+        self,
+        *,
+        instrument_id: int,
+        symbol: str,
+        partition: str,
+        count: int,
+    ) -> list[DailyCandleRow]:
+        """Read crypto daily candles directly by instrument_id (no identity lookup)."""
+        sql = text(_CRYPTO_RECENT_SQL)
+        result = await self._session.execute(
+            sql,
+            {
+                "iid": int(instrument_id),
+                "symbol": symbol,
+                "partition": partition,
+                "count": int(count),
+                "time_floor": _recent_time_floor(int(count), now=datetime.now(UTC)),
+            },
+        )
+        out: list[DailyCandleRow] = []
+        for row in result.mappings().all():
+            out.append(
+                DailyCandleRow(
+                    time_utc=row["time"],
+                    symbol=row["symbol"],
+                    partition=row["partition"],
+                    open=float(row["open"]),
+                    high=float(row["high"]),
+                    low=float(row["low"]),
+                    close=float(row["close"]),
+                    adj_close=None,
+                    volume=(
+                        float(row["volume"]) if row["volume"] is not None else 0.0
+                    ),
+                    value=float(row["value"]) if row["value"] is not None else 0.0,
+                    source=row["source"],
+                )
+            )
+        return list(reversed(out))
+
+    async def upsert_crypto_rows_by_instrument_id(
+        self, *, instrument_id: int, rows: list[DailyCandleRow]
+    ) -> int:
+        """Upsert crypto daily candles directly by instrument_id.
+
+        Conflict policy preserves the original close when the existing row is
+        already closed with the same source.
+        """
         if not rows:
             return 0
-        payload: list[dict[str, object]] = []
-        for row in rows:
-            iid = await self._resolve_instrument_id(
-                symbol=row.symbol, partition=row.partition
-            )
-            payload.append(
-                {
-                    "instrument_id": iid,
-                    "time": row.time_utc,
-                    "open": row.open,
-                    "high": row.high,
-                    "low": row.low,
-                    "close": row.close,
-                    "base_volume": row.volume,
-                    "quote_volume": row.value,
-                    "is_closed": True,
-                    "source": row.source,
-                }
-            )
+        payload = [
+            {
+                "instrument_id": int(instrument_id),
+                "time": row.time_utc,
+                "open": row.open,
+                "high": row.high,
+                "low": row.low,
+                "close": row.close,
+                "base_volume": row.volume,
+                "quote_volume": row.value,
+                "is_closed": True,
+                "source": row.source,
+            }
+            for row in rows
+        ]
         sql = text(
             """
             INSERT INTO public.crypto_candles_1d (
@@ -241,6 +315,35 @@ class DailyCandlesRepository:
             cast(object, await self._session.execute(sql, payload)),
         )
         return max(int(result.rowcount or 0), 0)
+
+    async def _upsert_crypto_rows(self, *, rows: list[DailyCandleRow]) -> int:
+        if not rows:
+            return 0
+
+        # Group rows by (symbol, partition) so unique identities resolve once,
+        # not once per row.
+        identities_by_pair: dict[tuple[str, str], int] = {}
+        for row in rows:
+            pair = (str(row.symbol).strip().upper(), str(row.partition))
+            identities_by_pair.setdefault(
+                pair,
+                await self._resolve_instrument_id(
+                    symbol=pair[0], partition=pair[1]
+                ),
+            )
+
+        total = 0
+        for (symbol, partition), iid in identities_by_pair.items():
+            identity_rows = [
+                row
+                for row in rows
+                if str(row.symbol).strip().upper() == symbol
+                and str(row.partition) == partition
+            ]
+            total += await self.upsert_crypto_rows_by_instrument_id(
+                instrument_id=iid, rows=identity_rows
+            )
+        return total
 
     @staticmethod
     def _build_market_upsert(
