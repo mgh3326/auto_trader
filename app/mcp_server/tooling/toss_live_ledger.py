@@ -90,17 +90,19 @@ async def record_toss_place_order(
     indicators_snapshot: dict[str, Any] | None,
     report_item_uuid: str | None,
     approval_hash: str | None = None,
+    correlation_id_override: str | None = None,
+    rung: str | int | None = 0,
 ) -> dict[str, Any]:
     status = "accepted" if broker_order_id else "rejected"
 
-    correlation_id = live_correlation_id(
+    correlation_id = correlation_id_override or live_correlation_id(
         account_scope="toss_live",
         symbol=symbol,
         side=side,
         price=(price if price is not None else Decimal("0")),
         quantity=(quantity if quantity is not None else Decimal("0")),
         kst_trade_day=now_kst().strftime("%Y-%m-%d"),
-        rung=0,
+        rung=rung,
     )
 
     async with _order_session_factory()() as db:

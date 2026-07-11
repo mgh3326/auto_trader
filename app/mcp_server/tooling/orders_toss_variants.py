@@ -12,7 +12,9 @@ import logging
 import re
 import uuid
 from collections.abc import Iterable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -73,6 +75,35 @@ TOSS_LIVE_ORDER_TOOL_NAMES: set[str] = {
 
 _BPS = Decimal("10000")
 _PRICE_CONTEXT_UNAVAILABLE = "price_context_unavailable"
+
+
+@dataclass(frozen=True)
+class _OrderProposalContext:
+    client_order_id: str
+    correlation_id: str | None
+    rung: str | int | None
+
+
+_order_proposal_context: ContextVar[_OrderProposalContext | None] = ContextVar(
+    "toss_order_proposal_context", default=None
+)
+
+
+@contextmanager
+def _bind_order_proposal_context(
+    *,
+    client_order_id: str,
+    correlation_id: str | None,
+    rung: str | int | None,
+):
+    """Bind trusted proposal identity without exposing it in the MCP schema."""
+    token = _order_proposal_context.set(
+        _OrderProposalContext(client_order_id, correlation_id, rung)
+    )
+    try:
+        yield
+    finally:
+        _order_proposal_context.reset(token)
 
 
 def _config_error() -> dict[str, Any] | None:
@@ -770,7 +801,12 @@ async def toss_preview_order(
         order_amount=order_amount_str,
     )
     now = now_kst()
-    client_order_id = derive_client_order_id(canonical, market=mkt, now=now, rung=rung)
+    proposal_context = _order_proposal_context.get()
+    client_order_id = (
+        proposal_context.client_order_id
+        if proposal_context is not None
+        else derive_client_order_id(canonical, market=mkt, now=now, rung=rung)
+    )
     approval_hash = encode_approval_token(canonical, now=now)
     approval_expires_at = (
         (now + timedelta(seconds=APPROVAL_TTL_SECONDS)).astimezone(KST).isoformat()
@@ -925,6 +961,7 @@ async def _toss_place_order_impl(
     if (guard := _entry_guard(account_mode, account_type)) is not None:
         return guard
 
+    proposal_context = _order_proposal_context.get()
     mkt = _infer_market(symbol, market)
     quantity_dec = (
         _decimal_string(quantity, "quantity") if quantity is not None else None
@@ -1207,6 +1244,12 @@ async def _toss_place_order_impl(
                 indicators_snapshot=indicators_snapshot,
                 report_item_uuid=report_item_uuid,
                 approval_hash=ledger_approval_hash,
+                correlation_id_override=(
+                    proposal_context.correlation_id
+                    if proposal_context is not None
+                    else None
+                ),
+                rung=(proposal_context.rung if proposal_context is not None else rung),
             )
             return {
                 "success": True,
@@ -1215,6 +1258,7 @@ async def _toss_place_order_impl(
                 "order_id": res.order_id,
                 "client_order_id": res.client_order_id,
                 **ledger,
+                "approval_hash_digest": ledger_approval_hash,
                 "warnings": guard_warnings,
                 "warnings_check_message": guard_res.error_message,
                 "message": (
@@ -1264,6 +1308,7 @@ async def toss_place_order(
     approval_hash: str | None = None,
     rung: str | int | None = None,
 ) -> dict[str, Any]:
+    proposal_context = _order_proposal_context.get()
     return await _toss_place_order_impl(
         symbol=symbol,
         side=side,
@@ -1290,7 +1335,9 @@ async def toss_place_order(
         account_type=account_type,
         approval_hash=approval_hash,
         rung=rung,
-        client_order_id_override=None,
+        client_order_id_override=(
+            proposal_context.client_order_id if proposal_context is not None else None
+        ),
     )
 
 
@@ -1772,7 +1819,9 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "the tool re-derives the canonical order and fail-closes on mismatch "
             "or expiry. off = ignored; optional = verified only when supplied; "
             "warn = same as optional but logs a hash-less live send; required = "
-            "a valid, unexpired approval_hash is mandatory."
+            "a valid, unexpired approval_hash is mandatory. Order-proposal "
+            "preview/submit identity and correlation are bound internally and "
+            "cannot be supplied by MCP callers."
         ),
     )(toss_place_order)
     mcp.tool(

@@ -12,10 +12,11 @@ from app.models.review import TossLiveOrderLedger
 from app.services.toss_live_order_ledger_service import TossLiveOrderLedgerService
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
+pytestmark.append(pytest.mark.usefixtures("toss_ledger_cleanup_lock"))
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _clean(db_session):
+async def _clean(db_session, toss_ledger_cleanup_lock):
     await db_session.execute(delete(TossLiveOrderLedger))
     await db_session.execute(delete(ExecutionLedger))
     await db_session.commit()

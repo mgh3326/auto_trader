@@ -9,6 +9,7 @@ import pytest
 
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
+from app.mcp_server.caller_identity import caller_agent_id_var, get_caller_agent_id
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.approval_message import parse_callback_data
 from app.services.order_proposals.revalidation import RungOutcome
@@ -222,6 +223,61 @@ async def test_approve_happy_path_submits_and_edits(monkeypatch, db_session):
     assert refreshed.approval_nonce_used_at is not None
     assert refreshed.approved_by_telegram_user_id == str(USER_ID)
     assert refreshed.approved_at is not None
+
+
+@pytest.mark.asyncio
+async def test_approve_injects_configured_submit_identity(monkeypatch, db_session):
+    _allow_chat(monkeypatch)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_SUBMIT_AGENT_ID", "  proposal-agent  "
+    )
+    group = await _seed_proposal(db_session, nonce="nonce-identity")
+    data = f"op:{str(group.proposal_id)[:8]}:nonce-identity"
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        assert get_caller_agent_id() == "proposal-agent"
+        return []
+
+    assert get_caller_agent_id() is None
+    result = await handle_callback_update(
+        _make_update(data=data),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=_FakeNotifier(),
+        revalidate_fn=fake_revalidate,
+    )
+
+    assert result["reason"] == "approved"
+    assert get_caller_agent_id() is None
+
+
+@pytest.mark.asyncio
+async def test_approve_empty_submit_identity_masks_and_restores_outer_identity(
+    monkeypatch, db_session
+):
+    _allow_chat(monkeypatch)
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_SUBMIT_AGENT_ID", "   ")
+    group = await _seed_proposal(db_session, nonce="nonce-empty-identity")
+    data = f"op:{str(group.proposal_id)[:8]}:nonce-empty-identity"
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        assert get_caller_agent_id() is None
+        return []
+
+    token = caller_agent_id_var.set("allowed-outer-agent")
+    try:
+        result = await handle_callback_update(
+            _make_update(data=data),
+            now=datetime.now(UTC),
+            service_factory=_session_factory(db_session),
+            notifier=_FakeNotifier(),
+            revalidate_fn=fake_revalidate,
+        )
+
+        assert result["reason"] == "approved"
+        assert get_caller_agent_id() == "allowed-outer-agent"
+    finally:
+        caller_agent_id_var.reset(token)
 
 
 @pytest.mark.asyncio
@@ -503,6 +559,35 @@ async def test_never_raises_on_internal_error(monkeypatch, db_session):
     assert result["handled"] is False
     assert result["reason"] == "internal_error"
     assert notifier.answered  # best-effort answer still attempted
+
+
+@pytest.mark.asyncio
+async def test_approve_restores_previous_identity_when_revalidation_raises(
+    monkeypatch, db_session
+):
+    _allow_chat(monkeypatch)
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_SUBMIT_AGENT_ID", "proposal-agent")
+    group = await _seed_proposal(db_session, nonce="nonce-identity-boom")
+    data = f"op:{str(group.proposal_id)[:8]}:nonce-identity-boom"
+
+    async def exploding_revalidate(**kwargs):
+        assert get_caller_agent_id() == "proposal-agent"
+        raise RuntimeError("boom")
+
+    token = caller_agent_id_var.set("outer-agent")
+    try:
+        result = await handle_callback_update(
+            _make_update(data=data),
+            now=datetime.now(UTC),
+            service_factory=_session_factory(db_session),
+            notifier=_FakeNotifier(),
+            revalidate_fn=exploding_revalidate,
+        )
+
+        assert result["reason"] == "internal_error"
+        assert get_caller_agent_id() == "outer-agent"
+    finally:
+        caller_agent_id_var.reset(token)
 
 
 # ---------------------------------------------------------------------------

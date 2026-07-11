@@ -7,9 +7,11 @@ from app.models.review import (
     TossLiveOrderLedger,
 )
 
+pytestmark = pytest.mark.usefixtures("toss_ledger_cleanup_lock")
+
 
 @pytest_asyncio.fixture(autouse=True)
-async def clean_kis_live_ledger(db_session):
+async def clean_kis_live_ledger(db_session, toss_ledger_cleanup_lock):
     from sqlalchemy import text
 
     from app.mcp_server.tooling.kis_live_ledger import _order_session_factory
@@ -134,6 +136,11 @@ async def test_record_toss_place_kr_buy_mints_and_publishes(monkeypatch):
     from app.mcp_server.tooling import toss_live_ledger as mod
 
     seen = {}
+    original_correlation = mod.live_correlation_id
+
+    def spy_correlation(**kwargs):
+        assert kwargs["rung"] == 3
+        return original_correlation(**kwargs)
 
     async def spy_publish(**kwargs):
         seen.update(kwargs)
@@ -148,6 +155,7 @@ async def test_record_toss_place_kr_buy_mints_and_publishes(monkeypatch):
         return _Row()
 
     monkeypatch.setattr(mod, "publish_place_time_forecast", spy_publish)
+    monkeypatch.setattr(mod, "live_correlation_id", spy_correlation)
     monkeypatch.setattr(
         "app.services.toss_live_order_ledger_service."
         "TossLiveOrderLedgerService.record_send",
@@ -177,8 +185,69 @@ async def test_record_toss_place_kr_buy_mints_and_publishes(monkeypatch):
         notes=None,
         indicators_snapshot=None,
         report_item_uuid=None,
+        rung=3,
     )
     assert res["correlation_id"].startswith("live:toss_live:")
     assert fake_record_send.kwargs["correlation_id"] == res["correlation_id"]
     assert seen["instrument_type"] == "equity_kr"
     assert seen["target_price"] == 80000.0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_record_toss_place_uses_internal_correlation_override_and_rung(
+    monkeypatch,
+):
+
+    from decimal import Decimal as D
+
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
+    async def fake_publish(**kwargs):
+        assert kwargs["correlation_id"] == "proposal-correlation-r1"
+        return "fc-toss-r1"
+
+    async def fake_record_send(self, **kwargs):
+        fake_record_send.kwargs = kwargs
+
+        class _Row:
+            id = 2
+            status = "accepted"
+
+        return _Row()
+
+    monkeypatch.setattr(mod, "publish_place_time_forecast", fake_publish)
+    monkeypatch.setattr(
+        "app.services.toss_live_order_ledger_service."
+        "TossLiveOrderLedgerService.record_send",
+        fake_record_send,
+    )
+    result = await mod.record_toss_place_order(
+        market="kr",
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        time_in_force="DAY",
+        quantity=D("1"),
+        price=D("70000"),
+        order_amount=None,
+        currency="KRW",
+        client_order_id="tosprop-r1",
+        broker_order_id="broker-r1",
+        raw_response={},
+        reason=None,
+        exit_reason=None,
+        thesis="proposal",
+        strategy=None,
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        indicators_snapshot=None,
+        report_item_uuid=None,
+        correlation_id_override="proposal-correlation-r1",
+        rung=1,
+    )
+
+    assert result["correlation_id"] == "proposal-correlation-r1"
+    assert fake_record_send.kwargs["correlation_id"] == "proposal-correlation-r1"

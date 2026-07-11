@@ -7,6 +7,7 @@ from app.core.config import Settings
 def test_order_proposals_disabled_by_default():
     s = Settings(_env_file=None)
     assert s.ORDER_PROPOSALS_ENABLED is False
+    assert s.ORDER_PROPOSALS_SUBMIT_AGENT_ID == ""
 
 
 @pytest.mark.unit

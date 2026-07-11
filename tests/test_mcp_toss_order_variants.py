@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -2221,6 +2222,124 @@ async def test_private_place_impl_accepts_client_order_id_override(monkeypatch):
         == "abc123def456abc123def456abc123de"
     )
     assert recorded["client_order_id"] == "abc123def456abc123def456abc123de"
+    assert result["approval_hash_digest"] == recorded["approval_hash"]
+
+
+@pytest.mark.asyncio
+async def test_public_place_order_uses_private_proposal_binding(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+
+    seen: dict[str, object] = {}
+
+    async def fake_impl(**kwargs):
+        seen.update(kwargs)
+        return {"success": True}
+
+    monkeypatch.setattr(otv, "_toss_place_order_impl", fake_impl)
+    with otv._bind_order_proposal_context(
+        client_order_id="tosprop-0123456789abcdef",
+        correlation_id="proposal-correlation-r1",
+        rung=1,
+    ):
+        result = await otv.toss_place_order(
+            symbol="005930",
+            side="buy",
+            quantity=1,
+            price=50000,
+            market="kr",
+        )
+
+    assert result["success"] is True
+    assert seen["client_order_id_override"] == "tosprop-0123456789abcdef"
+    assert otv._order_proposal_context.get() is None
+
+
+def test_public_place_order_does_not_expose_client_order_id_override():
+    assert (
+        "client_order_id_override" not in inspect.signature(toss_place_order).parameters
+    )
+
+
+def test_private_proposal_binding_restores_nested_contexts():
+    import app.mcp_server.tooling.orders_toss_variants as otv
+
+    with otv._bind_order_proposal_context(
+        client_order_id="tosprop-outer",
+        correlation_id="corr-outer",
+        rung=0,
+    ):
+        assert otv._order_proposal_context.get().client_order_id == "tosprop-outer"
+        with otv._bind_order_proposal_context(
+            client_order_id="tosprop-inner",
+            correlation_id="corr-inner",
+            rung=1,
+        ):
+            assert otv._order_proposal_context.get().client_order_id == (
+                "tosprop-inner"
+            )
+        assert otv._order_proposal_context.get().client_order_id == "tosprop-outer"
+    assert otv._order_proposal_context.get() is None
+
+
+def test_private_proposal_binding_restores_after_exception():
+    import app.mcp_server.tooling.orders_toss_variants as otv
+
+    with pytest.raises(RuntimeError, match="binding failure"):
+        with otv._bind_order_proposal_context(
+            client_order_id="tosprop-exception",
+            correlation_id="corr-exception",
+            rung=2,
+        ):
+            raise RuntimeError("binding failure")
+    assert otv._order_proposal_context.get() is None
+
+
+@pytest.mark.asyncio
+async def test_private_proposal_binding_reaches_toss_ledger_for_rung_one(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(settings, "toss_live_order_mutations_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+    mock_client = MockTossClient(monkeypatch)
+    recorded: dict[str, object] = {}
+
+    async def fake_record_toss_place_order(**kwargs):
+        recorded.update(kwargs)
+        return {
+            "ledger_id": 778,
+            "broker_status": "accepted",
+            "fill_recorded": False,
+            "journal_created": False,
+            "correlation_id": kwargs["correlation_id_override"],
+        }
+
+    monkeypatch.setattr(otv, "record_toss_place_order", fake_record_toss_place_order)
+    with otv._bind_order_proposal_context(
+        client_order_id="tosprop-fedcba9876543210",
+        correlation_id="proposal-correlation-r1",
+        rung=1,
+    ):
+        result = await otv.toss_place_order(
+            symbol="005930",
+            side="buy",
+            order_type="limit",
+            quantity="1",
+            price="50000",
+            market="kr",
+            dry_run=False,
+            confirm=True,
+            account_mode="toss_live",
+        )
+
+    assert result["success"] is True
+    assert result["correlation_id"] == "proposal-correlation-r1"
+    assert recorded["correlation_id_override"] == "proposal-correlation-r1"
+    assert recorded["rung"] == 1
+    assert mock_client.placed_payloads[0]["clientOrderId"] == (
+        "tosprop-fedcba9876543210"
+    )
 
 
 @pytest.mark.asyncio
@@ -2353,6 +2472,33 @@ async def test_preview_emits_approval_hash_and_deterministic_client_order_id(
     assert cid.startswith("tossp6-")
     # deterministic: identical params + same trading day -> identical id + token payload
     assert res2["payload_preview"]["clientOrderId"] == cid
+
+
+@pytest.mark.asyncio
+async def test_preview_uses_private_proposal_client_order_id(monkeypatch):
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = [
+        {"symbol": "005930", "last_price": Decimal("70000"), "currency": "KRW"}
+    ]
+
+    with otv._bind_order_proposal_context(
+        client_order_id="tosprop-0011223344556677",
+        correlation_id=None,
+        rung=1,
+    ):
+        result = await otv.toss_preview_order(
+            symbol="005930",
+            side="buy",
+            order_type="limit",
+            quantity="10",
+            price="70000",
+            market="kr",
+            account_mode="toss_live",
+            rung=1,
+        )
+
+    assert result["payload_preview"]["clientOrderId"] == ("tosprop-0011223344556677")
 
 
 @pytest.mark.asyncio
