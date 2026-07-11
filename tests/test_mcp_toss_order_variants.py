@@ -2221,6 +2221,31 @@ async def test_private_place_impl_accepts_client_order_id_override(monkeypatch):
         == "abc123def456abc123def456abc123de"
     )
     assert recorded["client_order_id"] == "abc123def456abc123def456abc123de"
+    assert result["approval_hash_digest"] == recorded["approval_hash"]
+
+
+@pytest.mark.asyncio
+async def test_public_place_order_forwards_client_order_id_override(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+
+    seen: dict[str, object] = {}
+
+    async def fake_impl(**kwargs):
+        seen.update(kwargs)
+        return {"success": True}
+
+    monkeypatch.setattr(otv, "_toss_place_order_impl", fake_impl)
+    result = await otv.toss_place_order(
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=50000,
+        market="kr",
+        client_order_id_override="preview-id-across-date-boundary",
+    )
+
+    assert result["success"] is True
+    assert seen["client_order_id_override"] == "preview-id-across-date-boundary"
 
 
 @pytest.mark.asyncio

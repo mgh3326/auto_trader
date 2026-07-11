@@ -1215,6 +1215,7 @@ async def _toss_place_order_impl(
                 "order_id": res.order_id,
                 "client_order_id": res.client_order_id,
                 **ledger,
+                "approval_hash_digest": ledger_approval_hash,
                 "warnings": guard_warnings,
                 "warnings_check_message": guard_res.error_message,
                 "message": (
@@ -1263,6 +1264,7 @@ async def toss_place_order(
     account_type: str | None = None,
     approval_hash: str | None = None,
     rung: str | int | None = None,
+    client_order_id_override: str | None = None,
 ) -> dict[str, Any]:
     return await _toss_place_order_impl(
         symbol=symbol,
@@ -1290,7 +1292,7 @@ async def toss_place_order(
         account_type=account_type,
         approval_hash=approval_hash,
         rung=rung,
-        client_order_id_override=None,
+        client_order_id_override=client_order_id_override,
     )
 
 
@@ -1772,7 +1774,9 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "the tool re-derives the canonical order and fail-closes on mismatch "
             "or expiry. off = ignored; optional = verified only when supplied; "
             "warn = same as optional but logs a hash-less live send; required = "
-            "a valid, unexpired approval_hash is mandatory."
+            "a valid, unexpired approval_hash is mandatory. Automated preview/"
+            "submit callers may also pass payload_preview.clientOrderId as "
+            "client_order_id_override to preserve the exact preview identity."
         ),
     )(toss_place_order)
     mcp.tool(

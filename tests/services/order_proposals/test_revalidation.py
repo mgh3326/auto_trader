@@ -755,6 +755,7 @@ async def test_toss_kr_routes_preview_and_accepted_submit(db_session, monkeypatc
             "success": True,
             "order_id": "toss-order-1",
             "client_order_id": "toss-client-1",
+            "approval_hash_digest": "canonical-ledger-digest",
         }
 
     import app.mcp_server.tooling.orders_toss_variants as toss
@@ -775,12 +776,13 @@ async def test_toss_kr_routes_preview_and_accepted_submit(db_session, monkeypatc
     assert calls["submit"]["dry_run"] is False
     assert calls["submit"]["confirm"] is True
     assert calls["submit"]["approval_hash"] == "preview-token"
+    assert calls["submit"]["client_order_id_override"] == "toss-client-1"
     assert calls["submit"]["rung"] == 0
     _, rungs = await svc.get_proposal(group.proposal_id)
     assert rungs[0].broker_order_id == "toss-order-1"
     assert rungs[0].correlation_id == "proposal-correlation"
     assert rungs[0].idempotency_key == "toss-client-1"
-    assert rungs[0].approval_hash_digest == "preview-token"
+    assert rungs[0].approval_hash_digest == "canonical-ledger-digest"
 
 
 @pytest.mark.asyncio
@@ -826,6 +828,7 @@ async def test_toss_us_preserves_fractional_numeric_precision(db_session, monkey
             "order_id": "us-order",
             "client_order_id": "us-client",
             "correlation_id": "toss-correlation",
+            "approval_hash_digest": "us-ledger-digest",
         }
 
     import app.mcp_server.tooling.orders_toss_variants as toss
@@ -845,6 +848,8 @@ async def test_toss_us_preserves_fractional_numeric_precision(db_session, monkey
     assert not any(isinstance(value, float) for value in calls[0].values())
     assert calls[1]["quantity"] == "0.125"
     assert calls[1]["price"] == "189.1234"
+    _, rungs = await svc.get_proposal(group.proposal_id)
+    assert rungs[0].approval_hash_digest == "us-ledger-digest"
 
 
 @pytest.mark.asyncio
@@ -894,3 +899,102 @@ async def test_toss_tick_normalized_preview_needs_reconfirm_without_submit(
     assert outcomes[0].detail["before"]["limit_price"] == "222601"
     assert outcomes[0].detail["after"]["limit_price"] == "222600"
     assert submitted is False
+
+
+@pytest.mark.asyncio
+async def test_toss_explicit_rejection_records_rejected(db_session, monkeypatch):
+    svc = OrderProposalsService(db_session)
+    group = await svc.create_proposal(
+        symbol="000660",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("50000"), None)],
+    )
+    await db_session.commit()
+
+    async def fake_preview(**kwargs):
+        return {
+            "success": True,
+            "approval_hash": "reject-token",
+            "payload_preview": {
+                "price": "50000",
+                "quantity": "1",
+                "clientOrderId": "reject-client",
+            },
+        }
+
+    async def fake_submit(**kwargs):
+        return {
+            "success": True,
+            "broker_status": "rejected",
+            "response_message": "insufficient balance",
+        }
+
+    import app.mcp_server.tooling.orders_toss_variants as toss
+
+    monkeypatch.setattr(toss, "toss_preview_order", fake_preview)
+    monkeypatch.setattr(toss, "toss_place_order", fake_submit)
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+    )
+
+    assert outcomes[0].result == "error"
+    assert outcomes[0].detail["error"] == "insufficient balance"
+    _, rungs = await svc.get_proposal(group.proposal_id)
+    assert rungs[0].state == "rejected"
+    assert rungs[0].void_reason == "insufficient balance"
+
+
+@pytest.mark.asyncio
+async def test_toss_market_order_accepted_is_acked_not_filled(db_session, monkeypatch):
+    svc = OrderProposalsService(db_session)
+    group = await svc.create_proposal(
+        symbol="AAPL",
+        market="equity_us",
+        account_mode="toss_live",
+        side="buy",
+        order_type="market",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), None, None)],
+    )
+    await db_session.commit()
+
+    async def fake_preview(**kwargs):
+        return {
+            "success": True,
+            "approval_hash": "market-token",
+            "payload_preview": {
+                "price": None,
+                "quantity": "1",
+                "clientOrderId": "market-client",
+            },
+        }
+
+    async def fake_submit(**kwargs):
+        return {
+            "success": True,
+            "broker_status": "accepted",
+            "order_id": "market-order",
+            "client_order_id": "market-client",
+            "approval_hash_digest": "market-digest",
+        }
+
+    import app.mcp_server.tooling.orders_toss_variants as toss
+
+    monkeypatch.setattr(toss, "toss_preview_order", fake_preview)
+    monkeypatch.setattr(toss, "toss_place_order", fake_submit)
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+    )
+
+    assert outcomes[0].result == "submitted_acked"
+    _, rungs = await svc.get_proposal(group.proposal_id)
+    assert rungs[0].state == "acked"
+    assert rungs[0].filled_qty is None

@@ -138,20 +138,29 @@ def _adapt_toss_preview_response(preview: dict[str, Any]) -> dict[str, Any]:
 
 
 def _adapt_toss_submit_response(
-    submit: dict[str, Any], *, order_type: str, approval_hash: Any
+    submit: dict[str, Any], *, order_type: str
 ) -> dict[str, Any]:
     """Translate Toss accepted-only sends to the proposal submit contract."""
+    if submit.get("success") is False or submit.get("broker_status") == "rejected":
+        adapted = dict(submit)
+        adapted["success"] = False
+        adapted["error"] = (
+            submit.get("error")
+            or submit.get("response_message")
+            or submit.get("message")
+            or "toss_order_rejected"
+        )
+        return adapted
     if (
         submit.get("success") is not True
-        or submit.get("broker_status") == "rejected"
         or submit.get("order_id") is None
+        or submit.get("approval_hash_digest") is None
     ):
         return submit
     adapted = dict(submit)
     adapted["status"] = "acked" if order_type == "market" else "resting"
     adapted["broker_order_id"] = submit.get("order_id")
     adapted["idempotency_key"] = submit.get("client_order_id")
-    adapted["approval_hash_digest"] = approval_hash
     return adapted
 
 
@@ -207,6 +216,7 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
     Finding 1 for why the raw response can't be classified directly.
     """
     account_mode = kwargs.pop("account_mode", None)
+    client_order_id_override = kwargs.pop("client_order_id_override", None)
     if account_mode == "toss_live":
         from app.mcp_server.tooling.orders_toss_variants import (
             toss_place_order,
@@ -237,11 +247,11 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
             exit_reason=kwargs.get("exit_reason"),
             thesis=kwargs.get("thesis"),
             strategy=kwargs.get("strategy"),
+            client_order_id_override=client_order_id_override,
         )
         return _adapt_toss_submit_response(
             submit,
             order_type=str(kwargs.get("order_type")),
-            approval_hash=approval_hash,
         )
 
     from app.mcp_server.tooling.order_execution import _place_order_impl
@@ -412,6 +422,11 @@ async def _revalidate_rung(
                 approval_issue_id=group.approval_issue_id,
                 reason=_SUBMIT_REASON.format(rung=rung_index),
                 approval_hash=preview.get("approval_hash"),
+                client_order_id_override=(
+                    preview.get("idempotency_key")
+                    if group.account_mode == "toss_live"
+                    else None
+                ),
                 rung=rung_index,
                 correlation_id=corr,
             )
