@@ -332,8 +332,12 @@ async def test_void_refuses_unverified_rung_without_partial_mutation(db_session)
 async def test_void_multi_rung_sets_audit_and_invalidates_nonce(db_session):
     service = OrderProposalsService(db_session)
     group = await service.create_proposal(
-        symbol="005930", market="equity_kr", account_mode="kis_live",
-        side="buy", order_type="limit", proposer="p",
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
         rungs=[
             RungInput(0, "buy", Decimal("1"), Decimal("70000"), None),
             RungInput(1, "buy", Decimal("1"), Decimal("69000"), None),
