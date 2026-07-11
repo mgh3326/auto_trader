@@ -302,6 +302,63 @@ async def test_approval_nonce_replay_blocked(db_session):
 
 
 @pytest.mark.asyncio
+async def test_expire_if_needed_terminalizes_pending_rungs_and_nonce(db_session):
+    service, group = await _create_single_rung(db_session)
+    await service.set_approval_nonce(group.proposal_id, "nonce")
+    group.valid_until = datetime(2026, 7, 11, 0, 0, tzinfo=UTC)
+    assert await service.expire_if_needed(
+        group.proposal_id, now=datetime(2026, 7, 11, 0, 0, tzinfo=UTC)
+    )
+    refreshed, rungs = await service.get_proposal(group.proposal_id)
+    assert refreshed.lifecycle_state == "expired"
+    assert refreshed.approval_nonce is None
+    assert [r.state for r in rungs] == ["expired"]
+
+
+@pytest.mark.asyncio
+async def test_void_refuses_unverified_rung_without_partial_mutation(db_session):
+    service, group = await _create_single_rung(db_session)
+    await _drive_to_submitting(service, group.proposal_id)
+    await service.record_unverified(
+        group.proposal_id, 0, reason="unknown", now=datetime.now(UTC)
+    )
+    with pytest.raises(OrderProposalError, match="cannot void"):
+        await service.void_proposal(
+            group.proposal_id, reason="operator cleanup", now=datetime.now(UTC)
+        )
+
+
+@pytest.mark.asyncio
+async def test_void_multi_rung_sets_audit_and_invalidates_nonce(db_session):
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="005930", market="equity_kr", account_mode="kis_live",
+        side="buy", order_type="limit", proposer="p",
+        rungs=[
+            RungInput(0, "buy", Decimal("1"), Decimal("70000"), None),
+            RungInput(1, "buy", Decimal("1"), Decimal("69000"), None),
+        ],
+    )
+    await service.set_approval_nonce(group.proposal_id, "nonce")
+    rows = await service.void_proposal(
+        group.proposal_id, reason="thesis invalidated", now=datetime.now(UTC)
+    )
+    refreshed, _ = await service.get_proposal(group.proposal_id)
+    assert [row.state for row in rows] == ["voided", "voided"]
+    assert refreshed.lifecycle_state == "voided"
+    assert refreshed.no_resubmit is True
+    assert refreshed.void_reason == "thesis invalidated"
+    assert refreshed.approval_nonce is None
+
+
+@pytest.mark.asyncio
+async def test_expire_if_needed_before_deadline_is_noop(db_session):
+    service, group = await _create_single_rung(db_session)
+    group.valid_until = datetime.now(UTC) + timedelta(minutes=1)
+    assert not await service.expire_if_needed(group.proposal_id, now=datetime.now(UTC))
+
+
+@pytest.mark.asyncio
 async def test_record_approval_sets_telegram_user_and_timestamp(db_session):
     service, group = await _create_single_rung(db_session)
     now = datetime(2026, 7, 10, 9, 1, 30, tzinfo=UTC)

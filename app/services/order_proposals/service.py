@@ -63,6 +63,9 @@ _SUBMITTABLE_ACCOUNT_MODE_MARKETS: frozenset[tuple[str, str]] = frozenset(
 _LOSS_CUT_EXIT_REASONS = frozenset({"stop_loss", "thesis_change"})
 _LOSS_CUT_TRIGGER_TYPES = frozenset({"stop_loss", "thesis_change"})
 _LOSS_CUT_MAX_AGE = timedelta(hours=72)
+_VOIDABLE_RUNG_STATES = frozenset(
+    {"draft", "pending_approval", "revalidating", "needs_reconfirm", "approved"}
+)
 
 
 class OrderProposalsService:
@@ -343,6 +346,8 @@ class OrderProposalsService:
             "voided_local_stale",
             "superseded",
         }:
+            if states == {"expired"}:
+                return "expired"
             if states == {"rejected"}:
                 return "rejected"
             if states <= {"voided", "voided_local_stale"}:
@@ -360,6 +365,74 @@ class OrderProposalsService:
         if states & {"approved"}:
             return "approved"
         return "proposed"
+
+    async def expire_if_needed(self, proposal_id: uuid.UUID, *, now: datetime) -> bool:
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        if group.valid_until is not None and group.valid_until > now:
+            return False
+
+        rungs = await self._repo.list_rungs(group.id)
+        invalid_rung = next(
+            (rung for rung in rungs if rung.state not in _VOIDABLE_RUNG_STATES), None
+        )
+        if invalid_rung is not None:
+            raise OrderProposalError(
+                f"cannot expire proposal with rung {invalid_rung.rung_index} "
+                f"in state {invalid_rung.state!r}"
+            )
+
+        expired_rungs = []
+        for rung in rungs:
+            sm.assert_rung_transition(rung.state, "expired")
+            expired_rungs.append(
+                await self._repo.update_rung(rung, state="expired", updated_at=now)
+            )
+        await self._repo.update_group(
+            group,
+            lifecycle_state=self._recompute_group_state(expired_rungs),
+            approval_nonce=None,
+        )
+        return True
+
+    async def void_proposal(
+        self, proposal_id: uuid.UUID, *, reason: str, now: datetime
+    ) -> list[OrderProposalRung]:
+        self._require_timezone_aware(now)
+        reason = reason.strip()
+        if not reason:
+            raise OrderProposalError("void reason is required")
+
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        rungs = await self._repo.list_rungs(group.id)
+        invalid_rung = next(
+            (rung for rung in rungs if rung.state not in _VOIDABLE_RUNG_STATES), None
+        )
+        if invalid_rung is not None:
+            raise OrderProposalError(
+                f"cannot void proposal with rung {invalid_rung.rung_index} "
+                f"in state {invalid_rung.state!r}"
+            )
+
+        voided_rungs = []
+        for rung in rungs:
+            sm.assert_rung_transition(rung.state, "voided")
+            voided_rungs.append(
+                await self._repo.update_rung(rung, state="voided", updated_at=now)
+            )
+        await self._repo.update_group(
+            group,
+            lifecycle_state=self._recompute_group_state(voided_rungs),
+            void_reason=reason,
+            no_resubmit=True,
+            approval_nonce=None,
+            approval_nonce_used_at=now,
+        )
+        return voided_rungs
 
     # -- PR-2 helpers -------------------------------------------------------
     async def set_approval_nonce(self, proposal_id: uuid.UUID, nonce: str) -> None:
