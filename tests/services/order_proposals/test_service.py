@@ -699,6 +699,49 @@ async def test_fill_evidence_on_terminal_rung_short_circuits(db_session):
 
 
 @pytest.mark.asyncio
+async def test_fill_evidence_rechecks_committed_state_under_lock(db_session):
+    """Concurrency invariant: once another session has committed a terminal fill,
+    late/partial evidence arriving on a session that observed the rung earlier
+    must short-circuit — it must never regress the already-`filled` rung back to
+    `partially_filled`. Guards the record_fill_evidence lock + refresh re-check."""
+    from app.mcp_server.tooling.live_order_ledger import _order_session_factory
+
+    service, group = await _create_single_rung(db_session)
+    now = datetime(2026, 7, 11, 9, 4, tzinfo=UTC)
+    acked = await _record_ack(service, group.proposal_id, now=now)
+    await db_session.commit()
+
+    # Prime THIS session's identity map with the rung while it is still 'acked'.
+    await service.get_proposal(group.proposal_id)
+
+    # A concurrent session commits the terminal fill.
+    async with _order_session_factory()() as db2:
+        other = OrderProposalsService(db2)
+        await other.record_fill_evidence(
+            broker_order_id=acked.broker_order_id,
+            filled_qty=Decimal("1"),
+            terminal_state="filled",
+            now=now + timedelta(seconds=1),
+        )
+        await db2.commit()
+
+    # Late partial evidence arriving on the stale session must short-circuit,
+    # never regress the committed `filled` rung back to `partially_filled`.
+    result = await service.record_fill_evidence(
+        broker_order_id=acked.broker_order_id,
+        filled_qty=Decimal("0.25"),
+        terminal_state="partially_filled",
+        now=now + timedelta(seconds=2),
+    )
+    assert result is None
+
+    async with _order_session_factory()() as db3:
+        _, rungs = await OrderProposalsService(db3).get_proposal(group.proposal_id)
+        assert rungs[0].state == "filled"
+        assert rungs[0].filled_qty == Decimal("1")
+
+
+@pytest.mark.asyncio
 async def test_fill_evidence_repeated_partial_refreshes_qty(db_session):
     """A second partial-fill evidence on an already-partially-filled rung
     refreshes the cumulative quantity without an (illegal) self-transition."""

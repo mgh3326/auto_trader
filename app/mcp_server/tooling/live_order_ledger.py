@@ -241,9 +241,16 @@ async def _converge_proposal_rung(
 
     The live ledger row is the booking source of truth; the proposal rung is a
     downstream projection, so any failure here is logged and swallowed — it must
-    never turn a successful reconcile into an anomaly. Runs in its own committed
-    session (mirrors the other reconcile helpers). Returns a small summary for
-    the reconcile outcome dict, or ``None`` when no matching open rung exists.
+    never turn a successful reconcile into an anomaly, nor block the ledger from
+    booking. Runs in its own committed session (mirrors the other reconcile
+    helpers). Returns a small summary for the reconcile outcome dict, or ``None``
+    when no matching open rung exists.
+
+    Caveat: once a full-fill / cancel flips the ledger row to a terminal status
+    it drops out of ``_list_open_live_ledger_rows``, so a *swallowed* failure
+    here is not retried by a later reconcile pass. That is why the failure is
+    logged at ERROR with the ledger id (alertable) rather than silently. A
+    guaranteed-convergence proposal-rung reconcile sweep is tracked as follow-up.
     """
     from app.services.order_proposals import OrderProposalsService
 
@@ -259,8 +266,13 @@ async def _converge_proposal_rung(
             )
             await db.commit()
     except Exception as exc:  # noqa: BLE001 - projection is best-effort
-        logger.warning(
-            "proposal rung convergence failed order_no=%s: %s", row.order_no, exc
+        logger.error(
+            "proposal rung convergence failed ledger_id=%s order_no=%s "
+            "terminal_state=%s: %s",
+            row.id,
+            row.order_no,
+            terminal_state,
+            exc,
         )
         return {"converged": False, "error": str(exc) or exc.__class__.__name__}
     if rung is None:

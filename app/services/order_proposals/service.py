@@ -629,6 +629,12 @@ class OrderProposalsService:
             return None
         proposal_id, rung = match
         group, locked = await self._get_locked_rung(proposal_id, rung.rung_index)
+        # ``locked`` may be the same instance ``find_rung_by_evidence`` already
+        # loaded into this session's identity map; a plain re-SELECT would return
+        # it with its find-time ``state`` intact. Refresh it under the group lock
+        # so the terminality re-check below reads the state a concurrent reconcile
+        # committed, not a stale snapshot (which could regress a filled rung).
+        await self._session.refresh(locked)
         if sm.is_terminal(locked.state):
             # Converged by a concurrent reconcile between find and lock.
             return None
