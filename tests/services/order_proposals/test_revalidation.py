@@ -525,3 +525,47 @@ async def test_preview_exception_returns_to_pending_approval(db_session):
     assert out[0].result == "error"
     _, rungs = await svc.get_proposal(g.proposal_id)
     assert rungs[0].state == "pending_approval"
+
+
+class TestDefaultPlaceOrderFnDecimalCoercion:
+    """2026-07-11 activation smoke regression: the proposal ledger hands
+    Decimal quantity/limit_price to the default place_order binding, but
+    `_place_order_impl`'s numeric paths (e.g. `_preview_buy` fee math)
+    assume float — Decimal raised TypeError which was mislabeled as
+    guard_blocked. The default fn must coerce Decimal kwargs to float."""
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_decimal_kwargs_coerced_to_float(self, monkeypatch):
+        from decimal import Decimal
+
+        from app.services.order_proposals import revalidation as mod
+
+        seen: dict = {}
+
+        async def fake_impl(**kwargs):
+            seen.update(kwargs)
+            return {
+                "success": True,
+                "price": kwargs["price"],
+                "quantity": kwargs["quantity"],
+            }
+
+        import app.mcp_server.tooling.order_execution as oe
+
+        monkeypatch.setattr(oe, "_place_order_impl", fake_impl)
+        result = await mod._default_place_order_fn(
+            dry_run=True,
+            symbol="KRW-BTC",
+            side="buy",
+            market="crypto",
+            order_type="limit",
+            quantity=Decimal("0.0001"),
+            price=Decimal("70000000"),
+            reason="regression",
+        )
+        assert result["success"] is True
+        assert isinstance(seen["quantity"], float)
+        assert isinstance(seen["price"], float)
+        assert seen["quantity"] == 0.0001
+        assert seen["price"] == 70000000.0
