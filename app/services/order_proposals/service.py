@@ -239,8 +239,9 @@ class OrderProposalsService:
         if (account_mode, market) not in {
             ("kis_live", "equity_kr"),
             ("kis_live", "equity_us"),
+            ("upbit", "crypto"),
         }:
-            errors.append("loss_cut requires a live KIS equity proposal")
+            errors.append("loss_cut requires a supported live account and market")
         if side != "sell":
             errors.append("loss_cut requires side='sell'")
         if order_type != "limit":

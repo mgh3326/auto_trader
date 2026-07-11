@@ -181,6 +181,31 @@ async def test_valid_loss_cut_persists_exact_group_binding(db_session, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_upbit_crypto_loss_cut_is_valid(db_session, monkeypatch):
+    async def fake_lookup(session, retrospective_id):
+        return _retro(symbol="KRW-DOT")
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    group = await OrderProposalsService(db_session).create_proposal(
+        symbol="KRW-DOT",
+        market="crypto",
+        account_mode="upbit",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "sell", Decimal("0.1"), Decimal("3200"), None)],
+        exit_intent="loss_cut",
+        exit_reason="stop_loss",
+        retrospective_id=42,
+        approval_issue_id="ROB-800",
+        now=datetime.now(UTC),
+    )
+    assert group.exit_intent == "loss_cut"
+
+
+@pytest.mark.asyncio
 async def test_create_and_get_multi_rung(db_session):
     svc = OrderProposalsService(db_session)
     group = await svc.create_proposal(
