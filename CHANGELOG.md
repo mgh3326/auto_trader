@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed (ROB-827 — KIS VTS token cache; migration 0)
+- **VTS OAuth tokens now survive MCP client churn.** Mock KIS clients share a Redis token manager scoped by normalized VTS host and a non-secret SHA-256 appkey fingerprint, so cache and lock keys cannot collide with live KIS or another VTS credential scope.
+- **Slow VTS issuance remains single-flight.** The VTS-only OAuth request timeout is 10 seconds and VTS lock contenders wait 11 seconds, covering the observed 4–6 second issuance latency without changing the live KIS 5-second request timeout, 3-second contender wait, Redis keys, or order paths.
+
 ### Added (ROB-757 — Toss REST fill poller; migration 1)
 - **Default-off TaskIQ poller detects Toss fills without a websocket.** `toss_live.poll_fills_periodic` scans Toss `GET /orders` (read-only), seeds app-direct orders missing from `review.toss_live_order_ledger` as `accepted` rows, then reuses `toss_reconcile_orders_impl(dry_run=False)` to book confirmed fill deltas. Activation gates: `TOSS_FILL_POLL_ENABLED=true` (default `False`), `TOSS_API_ENABLED=true`, valid Toss credentials. The task never places, modifies, or cancels broker orders.
 - **Toss fills write to `review.execution_ledger`.** The reconcile booked branch now upserts Toss fill deltas via `ExecutionLedgerRepository` with `broker='toss'`, `account_mode='live'`, `source='reconciler'`, `venue='toss_kr'`/`'toss_us'`. `filled_qty` stores the newly discovered delta (not broker cumulative); `fill_seq` is derived from `(broker_order_id, previous_cumulative_qty, new_cumulative_qty)` so partial fills create distinct rows. ROB-755 triage reads these with `source='reconciler', broker='toss'`.

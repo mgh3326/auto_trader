@@ -966,14 +966,16 @@ class SafeKISMockClient(BaseKISClient):
 
     def __init__(self) -> None:
         from app.core.config import settings as _settings
-        from app.services.redis_token_manager import RedisTokenManager
+        from app.services.redis_token_manager import get_kis_mock_token_manager
 
         self._mock_settings = _KISMockSettingsProxy(_settings)
         # Call super().__init__() — since _settings property is overridden,
         # _hdr_base will use mock app key/secret automatically.
         super().__init__()
-        # Override token manager to use separate Redis namespace for mock tokens.
-        self._token_manager = RedisTokenManager(namespace="kis_mock")
+        self._token_manager = get_kis_mock_token_manager(
+            base_url=str(self._mock_settings.kis_base_url),
+            app_key=str(self._mock_settings.kis_app_key or ""),
+        )
         self.account = AccountClient(self)
 
     @property
@@ -985,6 +987,9 @@ class SafeKISMockClient(BaseKISClient):
         if not base_url:
             base_url = "https://openapivts.koreainvestment.com:29443"
         return f"{base_url}{path}"
+
+    def _token_request_timeout(self) -> float:
+        return 10.0
 
 
 def _kis_mock_configured() -> bool:
