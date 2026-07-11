@@ -142,6 +142,15 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
     """
     from app.mcp_server.tooling.order_execution import _place_order_impl
 
+    # The proposal ledger stores quantity/limit_price as Decimal, but
+    # `_place_order_impl`'s numeric paths assume the MCP tool layer's
+    # float/int inputs — e.g. `_preview_buy` computes the fee as
+    # `estimated_value * 0.0005`, which raises TypeError on Decimal and
+    # surfaced to the operator as a bogus "guard_blocked" (2026-07-11
+    # activation smoke, KRW-BTC canary). Normalize at this caller boundary;
+    # the impl's float contract stays unchanged for every other caller.
+    kwargs = {k: (float(v) if isinstance(v, Decimal) else v) for k, v in kwargs.items()}
+
     submit = await _place_order_impl(**kwargs)
     if kwargs.get("dry_run") is False:
         return _adapt_live_submit_response(
