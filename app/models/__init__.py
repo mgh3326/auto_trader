@@ -47,6 +47,7 @@ from .market_report import MarketReport
 from .market_valuation_snapshot import MarketValuationSnapshot
 from .naver_research_detail_cache import NaverResearchDetailCache
 from .news import NewsAnalysisResult, NewsArticle, NewsIngestionRun, Sentiment
+from .order_proposals import OrderProposal, OrderProposalRung
 from .paper_trading import PaperAccount, PaperPendingOrder, PaperPosition, PaperTrade
 from .portfolio_decision_run import PortfolioDecisionRun
 from .prompt import PromptResult
@@ -188,6 +189,8 @@ __all__ = [
     "NewsAnalysisResult",
     "NewsIngestionRun",
     "Sentiment",
+    "OrderProposal",
+    "OrderProposalRung",
     "BrokerType",
     "MarketType",
     "BrokerAccount",

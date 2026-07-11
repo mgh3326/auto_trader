@@ -17,7 +17,12 @@ from sqlalchemy import text
 # Bump when adding an ORM table that has NO mirrored ALTER string below, so the
 # content hash changes and a persistent local DB re-bootstraps once. Adding a
 # mirrored ALTER already changes the hash automatically.
-SCHEMA_BOOTSTRAP_VERSION = 4
+#
+# v5 (ROB-816): review.order_proposals / review.order_proposal_rungs (Task 4)
+# have no mirrored ALTER string below — they rely solely on
+# Base.metadata.create_all. Persistent local test DBs bootstrapped before
+# Task 4 landed never got these tables until this bump forces one re-run.
+SCHEMA_BOOTSTRAP_VERSION = 5
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
