@@ -249,6 +249,59 @@ broker state: rungs at or after submit (`submitting`, `acked`, `resting`, or
 
 ---
 
+## ROB-832 Replace and Cancel Actions
+
+`order_proposal_create` now accepts `action="place"` (the default) and
+`target_broker_order_id=None` (the default). `place` keeps the existing
+multi-rung contract and forbids a target. `replace` requires a target and
+exactly one new-order rung. `cancel` requires a target and exactly one rung
+that exactly snapshots the target's side, remaining quantity, and limit price;
+it never submits a new order.
+
+The supported target-action tuples are only `kis_live/equity_kr`,
+`kis_live/equity_us`, and `upbit/crypto`. Create-time target lookup is
+read-only and captures the open-order evidence. Manual or unattributed broker
+orders are valid targets when that evidence matches the requested proposal.
+
+At the Telegram click, replace re-fetches and compares the target evidence,
+performs the fresh replacement preview, requests cancellation, and requires an
+independent broker confirmation that the target is no longer executable before
+submitting the replacement. A cancel action follows the same evidence and
+confirmation path but never previews or submits a new order. A cancel failure,
+timeout, mismatch, or ambiguous confirmation must therefore leave replacement
+submission at zero.
+
+### Lineage and recovery queries
+
+```sql
+SELECT
+  proposal_id, action, target_broker_order_id, lifecycle_state,
+  source_asof->'target_order_snapshot' AS approved_target_snapshot
+FROM review.order_proposals
+WHERE proposal_id = :proposal_id;
+
+SELECT rung_index, state, broker_order_id, correlation_id, void_reason
+FROM review.order_proposal_rungs
+WHERE proposal_pk = (
+  SELECT id FROM review.order_proposals
+  WHERE proposal_id = :proposal_id
+);
+```
+
+For a replacement, `target_broker_order_id` always identifies the original
+order selected for cancellation. The replacement's newly accepted broker order
+ID is the rung's `broker_order_id`; use its `correlation_id` with the original
+target ID to reconstruct the full lineage. A cancel action retains the target
+ID as its audit identity and does not create a replacement broker order.
+
+If a replace or cancel rung is `unverified`, stop retries. Reconcile fresh
+broker evidence for the original `target_broker_order_id` and, where a
+replacement may have been submitted, the rung's `correlation_id` and
+`broker_order_id`. Retry only after that operator reconciliation establishes
+the broker's actual state.
+
+---
+
 ## DB Verification
 
 ```sql
