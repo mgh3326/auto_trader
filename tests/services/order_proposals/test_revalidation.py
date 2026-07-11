@@ -303,7 +303,10 @@ async def test_loss_cut_bindings_forwarded_to_preview_and_submit(
     }
     assert outcomes[0].result == "submitted_resting"
     assert [call["dry_run"] for call in calls] == [True, False]
-    assert [{key: call[key] for key in expected} for call in calls] == [expected, expected]
+    assert [{key: call[key] for key in expected} for call in calls] == [
+        expected,
+        expected,
+    ]
 
 
 @pytest.mark.asyncio
