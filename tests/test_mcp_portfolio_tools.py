@@ -2575,6 +2575,11 @@ async def test_get_holdings_crypto_stop_loss_signal(monkeypatch):
     )
     _patch_runtime_attr(
         monkeypatch,
+        "_resolve_crypto_instrument_ids_for_holdings",
+        AsyncMock(return_value={"KRW-BTC": 101}),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
         "_get_indicators_impl",
         AsyncMock(
             return_value={"symbol": "KRW-BTC", "indicators": {"rsi": {"14": 35.0}}}
@@ -2617,6 +2622,11 @@ async def test_get_holdings_crypto_mean_reversion_signal(monkeypatch):
         monkeypatch,
         "_collect_portfolio_positions",
         AsyncMock(return_value=(mocked_positions, [], "crypto", None)),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_resolve_crypto_instrument_ids_for_holdings",
+        AsyncMock(return_value={"KRW-BTC": 101}),
     )
     _patch_runtime_attr(
         monkeypatch,
@@ -2780,6 +2790,11 @@ async def test_get_holdings_strategy_signal_reuses_portfolio_snapshot_price(
         "_fetch_ohlcv_for_indicators",
         AsyncMock(return_value=df),
     )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_resolve_crypto_instrument_ids_for_holdings",
+        AsyncMock(return_value={"KRW-BTC": 101}),
+    )
 
     result = await tools["get_holdings"](account="upbit", market="crypto")
     btc_position = result["accounts"][0]["positions"][0]
@@ -2816,6 +2831,11 @@ async def test_get_holdings_crypto_strategy_signal_includes_voting(monkeypatch):
         monkeypatch,
         "_collect_portfolio_positions",
         AsyncMock(return_value=(mocked_positions, [], "crypto", None)),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_resolve_crypto_instrument_ids_for_holdings",
+        AsyncMock(return_value={"KRW-BTC": 101}),
     )
     _patch_runtime_attr(
         monkeypatch,
@@ -2887,6 +2907,11 @@ async def test_get_holdings_crypto_strategy_signal_native_types(monkeypatch):
         monkeypatch,
         "_collect_portfolio_positions",
         AsyncMock(return_value=(mocked_positions, [], "crypto", None)),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_resolve_crypto_instrument_ids_for_holdings",
+        AsyncMock(return_value={"KRW-BTC": 101}),
     )
     _patch_runtime_attr(
         monkeypatch,

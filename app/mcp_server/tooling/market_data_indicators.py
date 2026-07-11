@@ -88,10 +88,18 @@ async def _fetch_ohlcv_crypto_paginated(
 
 
 async def _fetch_ohlcv_for_indicators(
-    symbol: str, market_type: str, count: int = 250
+    symbol: str,
+    market_type: str,
+    count: int = 250,
+    *,
+    crypto_instrument_id: int | None = None,
 ) -> pd.DataFrame:
     if market_type == "crypto":
-        return await _cache_first_crypto(symbol=symbol, count=count)
+        return await _cache_first_crypto(
+            symbol=symbol,
+            count=count,
+            instrument_id=crypto_instrument_id,
+        )
     if market_type == "equity_kr":
         return await _cache_first_kr(symbol=symbol, count=count)
     return await _cache_first_us(symbol=symbol, count=count)
@@ -266,8 +274,16 @@ async def _cache_first_us(*, symbol: str, count: int) -> pd.DataFrame:
         return _rows_to_frame(repo_rows) if repo_rows else _rows_to_frame(cached)
 
 
-async def _cache_first_crypto(*, symbol: str, count: int) -> pd.DataFrame:
-    """Read crypto daily candles from DB; fall back to Upbit and upsert on miss."""
+async def _cache_first_crypto(
+    *, symbol: str, count: int, instrument_id: int | None = None
+) -> pd.DataFrame:
+    """Read crypto daily candles from DB; fall back to Upbit and upsert on miss.
+
+    When ``instrument_id`` is supplied, the read/write paths skip the
+    per-symbol ``crypto_instruments`` lookup that drove the holdings N+1.
+    All non-holdings callers continue to omit the new keyword and retain the
+    legacy one-SELECT-per-symbol path.
+    """
     from app.core.db import AsyncSessionLocal
     from app.services.daily_candles.repository import DailyCandlesRepository, MarketKey
 
@@ -279,9 +295,20 @@ async def _cache_first_crypto(*, symbol: str, count: int) -> pd.DataFrame:
 
     async with AsyncSessionLocal() as session:
         repo = DailyCandlesRepository(session=session)
-        cached = await repo.fetch_recent(
-            market=MarketKey.CRYPTO, symbol=symbol, partition=partition, count=count
-        )
+        if instrument_id is not None:
+            cached = await repo.fetch_recent_crypto_by_instrument_id(
+                instrument_id=instrument_id,
+                symbol=symbol,
+                partition=partition,
+                count=count,
+            )
+        else:
+            cached = await repo.fetch_recent(
+                market=MarketKey.CRYPTO,
+                symbol=symbol,
+                partition=partition,
+                count=count,
+            )
         if len(cached) >= count and _cache_is_fresh_crypto(cached):
             logger.debug(
                 "daily_candles cache hit market=%s symbol=%s rows=%d",
@@ -307,7 +334,12 @@ async def _cache_first_crypto(*, symbol: str, count: int) -> pd.DataFrame:
             frame, symbol=symbol, partition=partition, source="upbit"
         )
         if repo_rows:
-            await repo.upsert_rows(market=MarketKey.CRYPTO, rows=repo_rows)
+            if instrument_id is not None:
+                await repo.upsert_crypto_rows_by_instrument_id(
+                    instrument_id=instrument_id, rows=repo_rows
+                )
+            else:
+                await repo.upsert_rows(market=MarketKey.CRYPTO, rows=repo_rows)
             await session.commit()
         return _rows_to_frame(repo_rows) if repo_rows else _rows_to_frame(cached)
 
