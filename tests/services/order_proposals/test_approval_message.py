@@ -50,12 +50,14 @@ def _rung():
 @pytest.mark.unit
 def test_loss_cut_approval_message_shows_reason_and_retrospective():
     group = _group(
-        exit_intent="loss_cut", exit_reason="stop_loss", retrospective_id=42,
+        exit_intent="loss_cut",
+        exit_reason="stop_loss",
+        retrospective_id=42,
         approval_issue_id="ROB-800",
     )
     text, _keyboard = build_approval_message(group=group, rungs=[_rung()])
     assert "손절 근거" in text
-    assert "stop\_loss" in text
+    assert r"stop\_loss" in text
     assert "#42" in text
     assert "ROB-800" not in text
 
