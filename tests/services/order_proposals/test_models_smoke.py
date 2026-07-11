@@ -22,6 +22,21 @@ def test_order_proposal_has_group_level_loss_cut_binding_columns():
 
 
 @pytest.mark.unit
+def test_order_proposal_has_action_columns():
+    columns = OrderProposal.__table__.columns
+    assert columns["action"].nullable
+    assert columns["target_broker_order_id"].nullable
+    check = next(
+        c
+        for c in OrderProposal.__table__.constraints
+        if getattr(c, "name", None) == "ck_order_proposals_order_proposals_action"
+    )
+    assert "action IS NULL" in str(check.sqltext)
+    for action in ("place", "replace", "cancel"):
+        assert f"'{action}'" in str(check.sqltext)
+
+
+@pytest.mark.unit
 def test_rung_state_check_covers_all_states():
     # The DB CHECK must list exactly the state-machine's RUNG_STATES.
     # NOTE: Base.metadata's naming_convention (app/models/base.py) rewrites
