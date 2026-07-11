@@ -323,10 +323,10 @@ class DailyCandlesRepository:
         identities_by_pair: dict[tuple[str, str], int] = {}
         for row in rows:
             pair = (str(row.symbol).strip().upper(), str(row.partition))
-            identities_by_pair.setdefault(
-                pair,
-                await self._resolve_instrument_id(symbol=pair[0], partition=pair[1]),
-            )
+            if pair not in identities_by_pair:
+                identities_by_pair[pair] = await self._resolve_instrument_id(
+                    symbol=pair[0], partition=pair[1]
+                )
 
         total = 0
         for (symbol, partition), iid in identities_by_pair.items():

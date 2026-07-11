@@ -1190,18 +1190,51 @@ async def _get_holdings_impl(
             and p.get("current_price") is not None
         ]
         if crypto_positions:
-            crypto_instrument_ids = await _resolve_crypto_instrument_ids_for_holdings(
-                crypto_positions
-            )
+            # Fail-open (ROB-830 defect 2): a batch resolver DB error must
+            # not take down the whole get_holdings response. Degrade to "no
+            # instrument ids resolved" rather than propagating the error —
+            # indicator-independent signals below still get computed and
+            # holdings are still returned.
+            try:
+                crypto_instrument_ids = (
+                    await _resolve_crypto_instrument_ids_for_holdings(crypto_positions)
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Batch crypto instrument id resolution failed; "
+                    "falling back to indicator-independent signals only: %s",
+                    exc,
+                )
+                crypto_instrument_ids = {}
 
-            # Fail-open: skip symbols missing from crypto_instruments so we
-            # never fabricate strategy_signal data for unseeded holdings.
+            # Fail-open: skip symbols missing from crypto_instruments for
+            # indicator-*dependent* enrichment (RSI/voting) so we never
+            # fabricate that data for unseeded holdings.
             computable_positions = [
                 position
                 for position in crypto_positions
                 if str(position.get("symbol") or "").strip().upper()
                 in crypto_instrument_ids
             ]
+            non_computable_positions = [
+                position
+                for position in crypto_positions
+                if str(position.get("symbol") or "").strip().upper()
+                not in crypto_instrument_ids
+            ]
+
+            # ROB-830 defect 1: stop-loss is an indicator-*independent*
+            # safety signal (profit_rate only) and must still fire for
+            # positions we can't enrich with RSI/voting (missing instrument
+            # id, or resolver failure above). Mirrors the pre-batch behavior
+            # where a per-position lookup failure fell back to
+            # rsi_14=None/voting_result=None instead of dropping the signal.
+            for position in non_computable_positions:
+                signal = _build_crypto_strategy_signal(
+                    position, rsi_14=None, voting_result=None
+                )
+                if signal:
+                    position["strategy_signal"] = signal
 
             async def _compute_for(
                 position: dict[str, Any], iid: int

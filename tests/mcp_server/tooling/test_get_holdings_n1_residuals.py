@@ -78,9 +78,18 @@ async def test_get_holdings_resolves_crypto_instruments_once_and_keeps_signals(
 
 
 @pytest.mark.asyncio
-async def test_get_holdings_missing_crypto_instrument_keeps_position_without_signal(
+async def test_get_holdings_missing_crypto_instrument_still_gets_stop_loss(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """ROB-830 defect 1 regression.
+
+    Stop-loss is an indicator-independent safety signal (profit_rate only).
+    A position whose crypto instrument id can't be resolved (unseeded
+    symbol) must still get a stop-loss signal — only the RSI/voting
+    *enrichment* is allowed to be skipped, matching the pre-batch behavior
+    where a per-position lookup failure fell back to
+    rsi_14=None/voting_result=None instead of dropping the signal outright.
+    """
     positions = [_crypto_position("KRW-NOT-SEEDED", -6.0)]
     monkeypatch.setattr(
         portfolio_holdings,
@@ -103,7 +112,60 @@ async def test_get_holdings_missing_crypto_instrument_keeps_position_without_sig
 
     position = result["accounts"][0]["positions"][0]
     assert position["symbol"] == "KRW-NOT-SEEDED"
-    assert "strategy_signal" not in position
+    assert position["strategy_signal"] == {
+        "action": "sell",
+        "reason": "stop_loss",
+        "threshold_pct": -4.5,
+    }
+    # Indicator-dependent enrichment (RSI/voting) is still correctly
+    # skipped for the unresolved instrument id — only the RED->GREEN
+    # requirement here is that the indicator-independent signal survives.
+    compute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_batch_resolver_db_error_fails_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-830 defect 2 regression.
+
+    A batch resolver DB error (e.g. connection drop) must not propagate out
+    of ``_get_holdings_impl`` — the caller expects holdings back even when
+    the crypto instrument-id lookup fails. Indicator-independent signals
+    (stop-loss) must still be computed from the raw positions.
+    """
+    positions = [
+        _crypto_position("KRW-BTC", -6.0),
+        _crypto_position("KRW-ETH", 10.0),
+    ]
+    monkeypatch.setattr(
+        portfolio_holdings,
+        "_collect_portfolio_positions",
+        AsyncMock(return_value=(positions, [], "crypto", "upbit")),
+    )
+    monkeypatch.setattr(
+        portfolio_holdings,
+        "_resolve_crypto_instrument_ids_for_holdings",
+        AsyncMock(side_effect=RuntimeError("db unavailable")),
+    )
+    compute = AsyncMock()
+    monkeypatch.setattr(
+        portfolio_holdings, "_compute_crypto_signals_for_position", compute
+    )
+
+    result = await portfolio_holdings._get_holdings_impl(
+        account="upbit", market="crypto", minimum_value=0
+    )
+
+    by_symbol = {row["symbol"]: row for row in result["accounts"][0]["positions"]}
+    assert by_symbol["KRW-BTC"]["strategy_signal"] == {
+        "action": "sell",
+        "reason": "stop_loss",
+        "threshold_pct": -4.5,
+    }
+    # KRW-ETH is profitable and has no RSI (indicator path skipped), so it
+    # gets no signal — but the call must not have raised.
+    assert "strategy_signal" not in by_symbol["KRW-ETH"]
     compute.assert_not_awaited()
 
 
