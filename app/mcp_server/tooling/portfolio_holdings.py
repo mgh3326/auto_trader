@@ -100,6 +100,8 @@ from app.mcp_server.tooling.shared import (
 )
 from app.services.brokers.kis.client import KISClient
 from app.services.crypto_voting_signals import CryptoVotingSignals, VotingResult
+from app.services.daily_candles.read_service import cache_first_kr
+from app.services.daily_candles.repository import DailyCandlesRepository
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
 from app.services.toss_portfolio_service import (
@@ -256,13 +258,43 @@ def _build_crypto_strategy_signal(
     return None
 
 
+async def _resolve_crypto_instrument_ids_for_holdings(
+    positions: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Resolve one batched ``symbol -> instrument_id`` map for the holdings fan-out.
+
+    Replaces the legacy per-position lookup that caused the N+1 against
+    ``crypto_instruments``. Returns an empty dict when no crypto positions
+    are in scope so the caller can short-circuit.
+    """
+    symbols = sorted(
+        {
+            str(position.get("symbol") or "").strip().upper()
+            for position in positions
+            if position.get("instrument_type") == "crypto"
+            and position.get("symbol")
+        }
+    )
+    if not symbols:
+        return {}
+    async with AsyncSessionLocal() as session:
+        repo = DailyCandlesRepository(session=session)
+        return await repo.resolve_crypto_instrument_ids(
+            symbols=symbols,
+            partition="upbit_krw",
+        )
+
+
 async def _compute_crypto_signals_for_position(
     position: dict[str, Any],
+    *,
+    instrument_id: int,
 ) -> tuple[float | None, VotingResult | None]:
     """Compute crypto RSI and voting signals for a position.
 
     Args:
         position: Position dict with symbol and current_price
+        instrument_id: Pre-resolved ``crypto_instruments.id`` for this symbol.
 
     Returns:
         Tuple of (rsi_14, voting_result) or (None, None) if computation fails
@@ -273,7 +305,12 @@ async def _compute_crypto_signals_for_position(
         return None, None
 
     try:
-        df = await _fetch_ohlcv_for_indicators(symbol, "crypto", count=50)
+        df = await _fetch_ohlcv_for_indicators(
+            symbol,
+            "crypto",
+            count=50,
+            crypto_instrument_id=instrument_id,
+        )
     except Exception:
         return None, None
 
@@ -712,6 +749,28 @@ async def _fetch_price_map_for_positions(
     ) -> tuple[str, str, float | None, str | None, str | None]:
         if instrument_type == "equity_kr":
             try:
+                cached = await cache_first_kr(symbol, 2)
+                if (
+                    cached is not None
+                    and not cached.empty
+                    and "close" in cached.columns
+                ):
+                    cached_price = _to_optional_float(cached["close"].iloc[-1])
+                    if cached_price is not None and cached_price > 0:
+                        return (
+                            instrument_type,
+                            symbol,
+                            cached_price,
+                            None,
+                            "db",
+                        )
+            except Exception:
+                logger.debug(
+                    "KR daily DB enrichment failed for %s; falling back to KIS",
+                    symbol,
+                    exc_info=True,
+                )
+            try:
                 quote = await _fetch_quote_equity_kr(symbol)
                 price = quote.get("price")
                 return (
@@ -1132,30 +1191,55 @@ async def _get_holdings_impl(
             and p.get("current_price") is not None
         ]
         if crypto_positions:
-            try:
-                signal_results = await bounded_gather(
-                    _CRYPTO_SIGNAL_CONCURRENCY,
-                    [
-                        lambda p=position: _compute_crypto_signals_for_position(p)
-                        for position in crypto_positions
-                    ],
-                    return_exceptions=True,
+            crypto_instrument_ids = await _resolve_crypto_instrument_ids_for_holdings(
+                crypto_positions
+            )
+
+            # Fail-open: skip symbols missing from crypto_instruments so we
+            # never fabricate strategy_signal data for unseeded holdings.
+            computable_positions = [
+                position
+                for position in crypto_positions
+                if str(position.get("symbol") or "").strip().upper()
+                in crypto_instrument_ids
+            ]
+
+            async def _compute_for(
+                position: dict[str, Any], iid: int
+            ) -> tuple[float | None, VotingResult | None]:
+                return await _compute_crypto_signals_for_position(
+                    position, instrument_id=iid
                 )
-                for position, signal_result in zip(
-                    crypto_positions, signal_results, strict=False
-                ):
-                    if isinstance(signal_result, Exception):
-                        rsi_14 = None
-                        voting_result = None
-                    else:
-                        rsi_14, voting_result = signal_result
-                    signal = _build_crypto_strategy_signal(
-                        position, rsi_14=rsi_14, voting_result=voting_result
+
+            if computable_positions:
+                try:
+                    signal_results = await bounded_gather(
+                        _CRYPTO_SIGNAL_CONCURRENCY,
+                        [
+                            lambda p=position, iid=crypto_instrument_ids[
+                                str(position.get("symbol") or "").strip().upper()
+                            ]: _compute_for(p, iid)
+                            for position in computable_positions
+                        ],
+                        return_exceptions=True,
                     )
-                    if signal:
-                        position["strategy_signal"] = signal
-            except Exception as exc:
-                logger.debug("Failed to compute crypto strategy signals: %s", exc)
+                    for position, signal_result in zip(
+                        computable_positions, signal_results, strict=False
+                    ):
+                        if isinstance(signal_result, Exception):
+                            rsi_14 = None
+                            voting_result = None
+                        else:
+                            rsi_14, voting_result = signal_result
+                        signal = _build_crypto_strategy_signal(
+                            position, rsi_14=rsi_14, voting_result=voting_result
+                        )
+                        if signal:
+                            position["strategy_signal"] = signal
+                except Exception as exc:
+                    logger.debug(
+                        "Failed to compute crypto strategy signals: %s", exc
+                    )
 
     grouped_accounts: dict[str, dict[str, Any]] = {}
     for position in positions:
