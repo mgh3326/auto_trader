@@ -6,6 +6,8 @@
 
 **Architecture:** Replace the per-process in-memory value store behind `TossSellableCache` with a fail-open Redis cache-aside using `toss:sellable:v1:{SYMBOL}` keys and a 600-second default TTL. Portfolio reads use one `MGET` and one pipelined write for all holdings; the ROB-757 scheduled poller deletes keys for newly booked fills, and successful sell place/cancel/modify broker mutations delete their symbol immediately. API home readers and MCP holdings continue to receive the same portfolio snapshot contract and now share warm Redis values across processes.
 
+Each symbol also has a Redis generation key. Miss reads capture value+generation in the same `MGET`; writes use `WATCH`/`MULTI` and store a fetched value only if the generation is unchanged. Invalidation atomically increments the generation and deletes the value, preventing an in-flight pre-event broker fetch from restoring stale data after `DEL`.
+
 **Tech Stack:** Python 3.13, redis-py asyncio, fakeredis, FastAPI/TaskIQ/FastMCP, pytest, Ruff, ty.
 
 ## Global Constraints
@@ -16,6 +18,7 @@
 - `need_sellable=False` still skips both Redis and Toss sellable-quantity reads.
 - Only successful sellable responses are cached; degraded/error results are never cached.
 - Redis `MGET`, pipeline write, and `DEL` failures are log-and-continue. Reads fail open as misses; writes and invalidations never fail portfolio reads, order mutations, or reconciliation.
+- A cache miss that started before an invalidation must not write its stale result after that invalidation; per-symbol generations enforce this race boundary.
 - A successful broker sell place, sell cancel, or sell modify invalidates after the broker mutation succeeds, even if later ledger recording fails.
 - Buy-order mutations do not invalidate sellable because they do not change sellable quantity.
 - Order validation, broker payloads, mutation gates, ledger behavior, and response contracts do not change.

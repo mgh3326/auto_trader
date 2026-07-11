@@ -97,6 +97,7 @@ async def test_toss_fill_poller_paused_when_disabled():
 async def test_toss_fill_poller_discovers_then_reconciles():
     fake_client = AsyncMock()
     fake_client.aclose = AsyncMock()
+    fake_cache = AsyncMock()
     fake_service = AsyncMock()
     fake_service.discover_external_orders = AsyncMock(
         return_value={"success": True, "seeded": 1}
@@ -118,8 +119,25 @@ async def test_toss_fill_poller_discovers_then_reconciles():
         patch.object(
             mod,
             "toss_reconcile_orders_impl",
-            AsyncMock(return_value={"success": True, "counts": {"filled": 1}}),
+            AsyncMock(
+                return_value={
+                    "success": True,
+                    "counts": {"filled": 3, "pending": 1},
+                    "reconciled": [
+                        {"action": "booked", "symbol": "BBB"},
+                        {"action": "booked", "symbol": "AAA"},
+                        {"action": "booked", "symbol": "AAA"},
+                        {"action": "noop_pending", "symbol": "CCC"},
+                    ],
+                }
+            ),
         ) as reconcile,
+        patch.object(
+            mod,
+            "get_shared_sellable_cache",
+            return_value=fake_cache,
+            create=True,
+        ),
     ):
         result = await mod.toss_live_poll_fills_periodic()
 
@@ -129,7 +147,8 @@ async def test_toss_fill_poller_discovers_then_reconciles():
         closed_page_cap=20,
     )
     reconcile.assert_awaited_once_with(dry_run=False, limit=100)
+    fake_cache.invalidate_many.assert_awaited_once_with(["AAA", "BBB"])
     fake_client.aclose.assert_awaited_once()
     assert result["success"] is True
     assert result["discover"]["seeded"] == 1
-    assert result["reconcile"]["counts"] == {"filled": 1}
+    assert result["reconcile"]["counts"] == {"filled": 3, "pending": 1}
