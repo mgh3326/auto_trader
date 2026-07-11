@@ -33,7 +33,12 @@ from typing import Any, Literal
 from app.core.timezone import now_kst
 from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.services.live_correlation import live_correlation_id
+from app.services.order_proposals.broker_gateway import (
+    cancel_target_order,
+    fetch_target_order,
+)
 from app.services.order_proposals.service import OrderProposalsService
+from app.services.order_proposals.target_order import TargetOrderSnapshot
 
 RungOutcomeResult = Literal[
     "submitted_acked",
@@ -42,6 +47,7 @@ RungOutcomeResult = Literal[
     "guard_blocked",
     "unverified",
     "error",
+    "cancelled",
 ]
 
 
@@ -54,6 +60,8 @@ class RungOutcome:
 
 PlaceOrderFn = Callable[..., Any]
 CorrelationMint = Callable[..., Any]
+TargetFetchFn = Callable[..., Any]
+TargetCancelFn = Callable[..., Any]
 
 _PREVIEW_REASON = "order_proposal revalidation (rung {rung})"
 _SUBMIT_REASON = "order_proposal submit after revalidation (rung {rung})"
@@ -206,6 +214,8 @@ async def revalidate_and_submit(
     now: datetime,
     place_order_fn: PlaceOrderFn = _default_place_order_fn,
     correlation_mint: CorrelationMint = _default_correlation_mint,
+    fetch_target_fn: TargetFetchFn = fetch_target_order,
+    cancel_target_fn: TargetCancelFn = cancel_target_order,
 ) -> list[RungOutcome]:
     """Revalidate + (maybe) submit every ``pending_approval`` rung.
 
@@ -218,8 +228,29 @@ async def revalidate_and_submit(
     for rung in rungs:
         if rung.state != "pending_approval":
             continue
-        outcomes.append(
-            await _revalidate_rung(
+        action = group.action or "place"
+        if action == "replace":
+            outcome = await _revalidate_replace_rung(
+                service=service,
+                group=group,
+                rung=rung,
+                now=now,
+                place_order_fn=place_order_fn,
+                fetch_target_fn=fetch_target_fn,
+                cancel_target_fn=cancel_target_fn,
+                correlation_mint=correlation_mint,
+            )
+        elif action == "cancel":
+            outcome = await _revalidate_cancel_rung(
+                service=service,
+                group=group,
+                rung=rung,
+                now=now,
+                fetch_target_fn=fetch_target_fn,
+                cancel_target_fn=cancel_target_fn,
+            )
+        else:
+            outcome = await _revalidate_place_rung(
                 service=service,
                 group=group,
                 rung=rung,
@@ -227,11 +258,11 @@ async def revalidate_and_submit(
                 place_order_fn=place_order_fn,
                 correlation_mint=correlation_mint,
             )
-        )
+        outcomes.append(outcome)
     return outcomes
 
 
-async def _revalidate_rung(
+async def _revalidate_place_rung(
     *,
     service: OrderProposalsService,
     group: OrderProposal,
@@ -351,6 +382,361 @@ async def _revalidate_rung(
         corr=corr,
         now=now,
     )
+
+
+def _target_mismatch_reason(
+    approved: TargetOrderSnapshot,
+    fresh: TargetOrderSnapshot,
+) -> str | None:
+    if fresh.status != "open":
+        return f"target_not_open:{fresh.status}"
+    if Decimal(fresh.remaining_quantity) <= 0:
+        return "target_has_no_remaining_quantity"
+    for field in (
+        "broker_order_id",
+        "symbol",
+        "side",
+        "order_type",
+        "limit_price",
+        "remaining_quantity",
+    ):
+        if getattr(approved, field) != getattr(fresh, field):
+            return f"target_snapshot_mismatch:{field}"
+    return None
+
+
+async def _validate_target_action(
+    *,
+    service: OrderProposalsService,
+    group: OrderProposal,
+    rung: OrderProposalRung,
+    now: datetime,
+    fetch_target_fn: TargetFetchFn,
+) -> RungOutcome | None:
+    proposal_id = group.proposal_id
+    rung_index = rung.rung_index
+    await service.transition_rung(proposal_id, rung_index, new_state="revalidating")
+
+    try:
+        target_id = group.target_broker_order_id
+        if target_id is None:
+            raise ValueError("target_broker_order_id_missing")
+        approved = TargetOrderSnapshot.from_payload(
+            (group.source_asof or {})["target_order_snapshot"]
+        )
+    except Exception as exc:
+        await service.record_rejected(
+            proposal_id, rung_index, reason=f"target_evidence_invalid:{exc}", now=now
+        )
+        return RungOutcome(rung_index, "error", {"error": str(exc)})
+
+    try:
+        fresh = await _maybe_await(
+            fetch_target_fn(
+                order_id=target_id,
+                symbol=group.symbol,
+                market=group.market,
+                account_mode=group.account_mode,
+                now=now,
+            )
+        )
+    except Exception as exc:
+        await service.transition_rung(
+            proposal_id, rung_index, new_state="pending_approval"
+        )
+        return RungOutcome(rung_index, "error", {"error": str(exc)})
+
+    if fresh is None:
+        await service.transition_rung(
+            proposal_id, rung_index, new_state="pending_approval"
+        )
+        return RungOutcome(rung_index, "error", {"error": "target_evidence_missing"})
+
+    mismatch_reason = _target_mismatch_reason(approved, fresh)
+    if mismatch_reason is not None:
+        await service.record_rejected(
+            proposal_id, rung_index, reason=mismatch_reason, now=now
+        )
+        return RungOutcome(rung_index, "error", {"error": mismatch_reason})
+    return None
+
+
+async def _revalidate_replace_preview(
+    *,
+    service: OrderProposalsService,
+    group: OrderProposal,
+    rung: OrderProposalRung,
+    now: datetime,
+    place_order_fn: PlaceOrderFn,
+) -> tuple[dict[str, Any] | None, RungOutcome | None]:
+    proposal_id = group.proposal_id
+    rung_index = rung.rung_index
+    try:
+        preview = await _maybe_await(
+            place_order_fn(
+                dry_run=True,
+                symbol=group.symbol,
+                side=rung.side,
+                market=group.market,
+                order_type=group.order_type,
+                quantity=rung.quantity,
+                price=rung.limit_price,
+                thesis=group.thesis,
+                strategy=group.strategy,
+                exit_intent=group.exit_intent,
+                exit_reason=group.exit_reason,
+                retrospective_id=group.retrospective_id,
+                approval_issue_id=group.approval_issue_id,
+                reason=_PREVIEW_REASON.format(rung=rung_index),
+                rung=rung_index,
+            )
+        )
+    except Exception as exc:
+        await service.transition_rung(
+            proposal_id, rung_index, new_state="pending_approval"
+        )
+        return None, RungOutcome(rung_index, "error", {"error": str(exc)})
+
+    if preview.get("success") is False:
+        await service.transition_rung(
+            proposal_id, rung_index, new_state="pending_approval"
+        )
+        return None, RungOutcome(
+            rung_index,
+            "guard_blocked" if _is_guard_blocked_preview(preview) else "error",
+            {"error": preview.get("error"), "preview": preview},
+        )
+
+    if rung.limit_price is None:
+        before = {"limit_price": None, "quantity": _norm(rung.quantity)}
+        after = {"limit_price": None, "quantity": _norm(preview.get("quantity"))}
+    else:
+        before = {
+            "limit_price": _norm(rung.limit_price),
+            "quantity": _norm(rung.quantity),
+        }
+        after = {
+            "limit_price": _norm(preview.get("price")),
+            "quantity": _norm(preview.get("quantity")),
+        }
+    if before != after:
+        await service.mark_needs_reconfirm(proposal_id, rung_index, now=now)
+        return None, RungOutcome(
+            rung_index, "needs_reconfirm", {"before": before, "after": after}
+        )
+    return preview, None
+
+
+async def _cancel_and_confirm_target(
+    *,
+    service: OrderProposalsService,
+    group: OrderProposal,
+    rung: OrderProposalRung,
+    now: datetime,
+    fetch_target_fn: TargetFetchFn,
+    cancel_target_fn: TargetCancelFn,
+) -> RungOutcome | None:
+    proposal_id = group.proposal_id
+    rung_index = rung.rung_index
+    target_id = group.target_broker_order_id
+    if target_id is None:
+        await service.record_rejected(
+            proposal_id, rung_index, reason="target_broker_order_id_missing", now=now
+        )
+        return RungOutcome(rung_index, "error", {"error": "target_broker_order_id_missing"})
+
+    try:
+        cancel_result = await _maybe_await(
+            cancel_target_fn(
+                order_id=target_id,
+                symbol=group.symbol,
+                market=group.market,
+                account_mode=group.account_mode,
+            )
+        )
+    except Exception as exc:
+        await service.record_unverified(
+            proposal_id, rung_index, reason=f"cancel_exception:{exc}", now=now
+        )
+        return RungOutcome(rung_index, "unverified", {"error": str(exc)})
+
+    if not isinstance(cancel_result, dict) or cancel_result.get("success") is not True:
+        reason = (
+            str(cancel_result.get("error") or "cancel_rejected")
+            if isinstance(cancel_result, dict)
+            else "cancel_rejected"
+        )
+        await service.record_rejected(proposal_id, rung_index, reason=reason, now=now)
+        return RungOutcome(rung_index, "error", {"error": "cancel_rejected"})
+
+    try:
+        confirmed = await _maybe_await(
+            fetch_target_fn(
+                order_id=target_id,
+                symbol=group.symbol,
+                market=group.market,
+                account_mode=group.account_mode,
+                now=now,
+            )
+        )
+    except Exception as exc:
+        await service.record_unverified(
+            proposal_id,
+            rung_index,
+            reason=f"cancel_confirmation_error:{exc}",
+            now=now,
+        )
+        return RungOutcome(rung_index, "unverified", {"error": str(exc)})
+
+    if confirmed is None:
+        await service.record_unverified(
+            proposal_id,
+            rung_index,
+            reason="cancel_confirmation_missing_evidence",
+            now=now,
+        )
+        return RungOutcome(
+            rung_index, "unverified", {"error": "cancel_confirmation_missing_evidence"}
+        )
+    if confirmed.status != "cancelled":
+        await service.record_unverified(
+            proposal_id,
+            rung_index,
+            reason=f"cancel_unconfirmed:{confirmed.status}",
+            now=now,
+        )
+        return RungOutcome(
+            rung_index, "unverified", {"error": "cancel_unconfirmed"}
+        )
+    return None
+
+
+async def _revalidate_replace_rung(
+    *,
+    service: OrderProposalsService,
+    group: OrderProposal,
+    rung: OrderProposalRung,
+    now: datetime,
+    place_order_fn: PlaceOrderFn,
+    fetch_target_fn: TargetFetchFn,
+    cancel_target_fn: TargetCancelFn,
+    correlation_mint: CorrelationMint,
+) -> RungOutcome:
+    target_outcome = await _validate_target_action(
+        service=service,
+        group=group,
+        rung=rung,
+        now=now,
+        fetch_target_fn=fetch_target_fn,
+    )
+    if target_outcome is not None:
+        return target_outcome
+
+    preview, preview_outcome = await _revalidate_replace_preview(
+        service=service,
+        group=group,
+        rung=rung,
+        now=now,
+        place_order_fn=place_order_fn,
+    )
+    if preview_outcome is not None:
+        return preview_outcome
+
+    proposal_id = group.proposal_id
+    rung_index = rung.rung_index
+    await service.transition_rung(proposal_id, rung_index, new_state="approved")
+    await service.transition_rung(proposal_id, rung_index, new_state="submitting")
+    cancel_outcome = await _cancel_and_confirm_target(
+        service=service,
+        group=group,
+        rung=rung,
+        now=now,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+    )
+    if cancel_outcome is not None:
+        return cancel_outcome
+
+    corr = await _maybe_await(correlation_mint(group=group, rung=rung, now=now))
+    try:
+        submit = await _maybe_await(
+            place_order_fn(
+                dry_run=False,
+                symbol=group.symbol,
+                side=rung.side,
+                market=group.market,
+                order_type=group.order_type,
+                quantity=rung.quantity,
+                price=rung.limit_price,
+                thesis=group.thesis,
+                strategy=group.strategy,
+                exit_intent=group.exit_intent,
+                exit_reason=group.exit_reason,
+                retrospective_id=group.retrospective_id,
+                approval_issue_id=group.approval_issue_id,
+                reason=_SUBMIT_REASON.format(rung=rung_index),
+                approval_hash=preview.get("approval_hash"),
+                rung=rung_index,
+                correlation_id=corr,
+            )
+        )
+    except Exception as exc:
+        await service.record_unverified(
+            proposal_id, rung_index, reason=f"submit_exception:{exc}", now=now
+        )
+        return RungOutcome(rung_index, "unverified", {"error": str(exc)})
+    return await _classify_submit(
+        service=service,
+        proposal_id=proposal_id,
+        rung_index=rung_index,
+        preview=preview,
+        submit=submit,
+        corr=corr,
+        now=now,
+    )
+
+
+async def _revalidate_cancel_rung(
+    *,
+    service: OrderProposalsService,
+    group: OrderProposal,
+    rung: OrderProposalRung,
+    now: datetime,
+    fetch_target_fn: TargetFetchFn,
+    cancel_target_fn: TargetCancelFn,
+) -> RungOutcome:
+    target_outcome = await _validate_target_action(
+        service=service,
+        group=group,
+        rung=rung,
+        now=now,
+        fetch_target_fn=fetch_target_fn,
+    )
+    if target_outcome is not None:
+        return target_outcome
+
+    proposal_id = group.proposal_id
+    rung_index = rung.rung_index
+    await service.transition_rung(proposal_id, rung_index, new_state="approved")
+    await service.transition_rung(proposal_id, rung_index, new_state="submitting")
+    cancel_outcome = await _cancel_and_confirm_target(
+        service=service,
+        group=group,
+        rung=rung,
+        now=now,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+    )
+    if cancel_outcome is not None:
+        return cancel_outcome
+
+    target_id = group.target_broker_order_id
+    if target_id is None:
+        raise AssertionError("target id validated before cancellation")
+    await service.record_cancelled(
+        proposal_id, rung_index, broker_order_id=target_id, now=now
+    )
+    return RungOutcome(rung_index, "cancelled", {})
 
 
 async def _classify_submit(

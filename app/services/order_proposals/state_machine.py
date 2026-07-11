@@ -26,6 +26,7 @@ _ALLOWED: dict[str, frozenset[str]] = {
             "approved",
             "needs_reconfirm",
             "pending_approval",
+            "rejected",
             "superseded",
             "expired",
             "voided",
