@@ -5,6 +5,8 @@ import pytest
 
 from app.core.config import settings
 from app.mcp_server.tooling import order_proposal_tools as opt
+from app.services.order_proposals.errors import OrderProposalError
+from app.services.order_proposals.target_order import TargetOrderSnapshot
 
 
 class _FakeNotifier:
@@ -44,6 +46,96 @@ def _create_kwargs(**overrides):
     }
     kwargs.update(overrides)
     return kwargs
+
+
+def _target_snapshot(**overrides):
+    payload = {
+        "broker_order_id": "manual-upbit-1",
+        "symbol": "KRW-AVAX",
+        "side": "sell",
+        "order_type": "limit",
+        "limit_price": "42000",
+        "remaining_quantity": "3.5",
+        "status": "open",
+        "observed_at": "2026-07-11T08:23:00+00:00",
+    }
+    payload.update(overrides)
+    return TargetOrderSnapshot.from_payload(payload)
+
+
+def _target_create_kwargs(**overrides):
+    return _create_kwargs(
+        symbol="KRW-AVAX",
+        market="crypto",
+        account_mode="upbit",
+        side="sell",
+        action="replace",
+        target_broker_order_id="manual-upbit-1",
+        rungs=[
+            {
+                "rung_index": 0,
+                "side": "sell",
+                "quantity": "3.5",
+                "limit_price": "43000",
+                "notional": None,
+            }
+        ],
+        **overrides,
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_preflights_manual_target_and_returns_action_evidence(monkeypatch):
+    calls = []
+
+    async def fake_fetch(**kwargs):
+        calls.append(kwargs)
+        return _target_snapshot()
+
+    monkeypatch.setattr(opt, "fetch_target_order", fake_fetch)
+
+    created = await opt.order_proposal_create(**_target_create_kwargs())
+    got = await opt.order_proposal_get(created["proposal_id"])
+
+    assert created["success"] is True
+    assert created["action"] == "replace"
+    assert created["target_broker_order_id"] == "manual-upbit-1"
+    assert calls[0]["order_id"] == "manual-upbit-1"
+    assert got["proposal"]["action"] == "replace"
+    assert got["proposal"]["target_broker_order_id"] == "manual-upbit-1"
+
+
+@pytest.mark.asyncio
+async def test_create_lookup_failure_returns_error_without_service_insert(monkeypatch):
+    async def failed_fetch(**kwargs):
+        raise OrderProposalError("target broker order lookup failed: offline")
+
+    async def insert_must_not_run(*args, **kwargs):
+        raise AssertionError("target preflight failure must not create a proposal")
+
+    monkeypatch.setattr(opt, "fetch_target_order", failed_fetch)
+    monkeypatch.setattr(opt.OrderProposalsService, "create_proposal", insert_must_not_run)
+
+    result = await opt.order_proposal_create(**_target_create_kwargs())
+
+    assert result == {
+        "success": False,
+        "error": "target broker order lookup failed: offline",
+    }
+
+
+@pytest.mark.asyncio
+async def test_place_create_never_fetches_a_target(monkeypatch):
+    async def fetch_must_not_run(**kwargs):
+        raise AssertionError("place proposals must not fetch target orders")
+
+    monkeypatch.setattr(opt, "fetch_target_order", fetch_must_not_run)
+
+    result = await opt.order_proposal_create(**_create_kwargs())
+
+    assert result["success"] is True
+    assert result["action"] == "place"
+    assert result["target_broker_order_id"] is None
 
 
 @pytest.mark.asyncio

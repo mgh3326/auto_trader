@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
 from app.services.order_proposals.errors import OrderProposalError
-from app.services.order_proposals.revalidation import _maybe_await
 from app.services.order_proposals.target_order import TargetOrderSnapshot
 
 SUPPORTED_TARGET_ACTIONS = frozenset(
@@ -15,6 +15,10 @@ SUPPORTED_TARGET_ACTIONS = frozenset(
         ("upbit", "crypto"),
     }
 )
+
+
+async def _maybe_await(value: Any) -> Any:
+    return await value if inspect.isawaitable(value) else value
 
 
 async def fetch_target_order(

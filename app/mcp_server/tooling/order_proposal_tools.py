@@ -17,6 +17,7 @@ from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 from app.services.order_proposals import OrderProposalsService
+from app.services.order_proposals.broker_gateway import fetch_target_order
 from app.services.order_proposals.dispatch import send_proposal_for_approval
 from app.services.order_proposals.errors import (
     OrderProposalError,
@@ -56,6 +57,8 @@ def _group_dict(g: Any) -> dict[str, Any]:
         "account_mode": g.account_mode,
         "side": g.side,
         "order_type": g.order_type,
+        "action": g.action or "place",
+        "target_broker_order_id": g.target_broker_order_id,
         "proposer": g.proposer,
         "lifecycle_state": g.lifecycle_state,
         "thesis": g.thesis,
@@ -107,14 +110,19 @@ async def order_proposal_create(
     exit_reason: str | None = None,
     retrospective_id: int | None = None,
     approval_issue_id: str | None = None,
+    action: str = "place",
+    target_broker_order_id: str | None = None,
 ) -> dict[str, Any]:
-    """Create an order proposal (SOT ledger row). NOT a broker mutation — persists only.
+    """Create a place, replace, or cancel proposal without broker mutation.
 
     Args:
         rungs: list of {"rung_index": int, "side": str, "quantity": str,
                "limit_price": str|None, "notional": str|None}.
         supersedes_proposal_id: if this proposal replaces an existing one (price/qty
                change), the original is marked superseded and lineage is linked.
+        action: ``place`` (default), ``replace``, or ``cancel``. Replace/cancel
+                perform a read-only target-order preflight before persistence.
+        target_broker_order_id: required broker order ID for replace/cancel.
     """
     try:
         rung_inputs = [
@@ -129,6 +137,18 @@ async def order_proposal_create(
         ]
         vu = datetime.fromisoformat(valid_until) if valid_until else None
         sup = uuid.UUID(supersedes_proposal_id) if supersedes_proposal_id else None
+        normalized_action = action or "place"
+        target_snapshot = None
+        if normalized_action in {"replace", "cancel"}:
+            if not target_broker_order_id:
+                raise ValueError(f"{normalized_action} requires target_broker_order_id")
+            target_snapshot = await fetch_target_order(
+                order_id=target_broker_order_id,
+                symbol=symbol,
+                market=market,
+                account_mode=account_mode,
+                now=now_kst(),
+            )
         async with AsyncSessionLocal() as session:
             svc = OrderProposalsService(session)
             group = await svc.create_proposal(
@@ -150,6 +170,11 @@ async def order_proposal_create(
                 retrospective_id=retrospective_id,
                 approval_issue_id=approval_issue_id,
                 supersedes_proposal_id=sup,
+                action=normalized_action,
+                target_broker_order_id=target_broker_order_id,
+                target_order_snapshot=(
+                    target_snapshot.to_payload() if target_snapshot is not None else None
+                ),
             )
             _, saved_rungs = await svc.get_proposal(group.proposal_id)
             await session.commit()
@@ -158,6 +183,8 @@ async def order_proposal_create(
                 "success": True,
                 "proposal_id": str(proposal_id),
                 "lifecycle_state": group.lifecycle_state,
+                "action": group.action or "place",
+                "target_broker_order_id": group.target_broker_order_id,
                 "valid_until": group.valid_until.isoformat()
                 if group.valid_until
                 else None,
@@ -268,9 +295,10 @@ def register_order_proposal_tools(mcp: FastMCP) -> None:
     _ = mcp.tool(
         name="order_proposal_create",
         description=(
-            "Create an order proposal (SOT ledger row) with one or more rungs. "
-            "NOT a broker mutation — persists only. Approval/submission happens "
-            "via Telegram (PR 2), not through this tool."
+            "Create a place, replace, or cancel order proposal (SOT ledger row). "
+            "Replace/cancel read target-order evidence before persistence, but never "
+            "mutate a broker. Approval/submission happens via Telegram (PR 2), not "
+            "through this tool."
         ),
     )(order_proposal_create)
     _ = mcp.tool(
