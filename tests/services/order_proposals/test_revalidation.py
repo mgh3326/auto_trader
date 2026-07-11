@@ -779,7 +779,9 @@ async def _forbidden_submit(**kwargs):
 async def test_replace_confirms_cancel_before_new_submit(db_session):
     service, group = await _create_target_proposal(db_session, action="replace")
     events = []
-    snapshots = iter([_target_snapshot(status="open"), _target_snapshot(status="cancelled")])
+    snapshots = iter(
+        [_target_snapshot(status="open"), _target_snapshot(status="cancelled")]
+    )
 
     async def fetch_target_fn(**kwargs):
         snapshot = next(snapshots)
@@ -814,7 +816,9 @@ async def test_replace_confirms_cancel_before_new_submit(db_session):
 @pytest.mark.parametrize(
     ("field", "value"), [("limit_price", "42001"), ("remaining_quantity", "3.4")]
 )
-async def test_replace_target_drift_is_rejected_without_cancel(db_session, field, value):
+async def test_replace_target_drift_is_rejected_without_cancel(
+    db_session, field, value
+):
     service, group = await _create_target_proposal(db_session, action="replace")
     calls = []
     fresh = _target_snapshot(**{field: value})
@@ -847,7 +851,12 @@ async def test_replace_target_drift_is_rejected_without_cancel(db_session, field
     "preview",
     [
         {"success": False, "error": "loss_sell_blocked"},
-        {"success": True, "approval_hash": "fresh", "price": "43001", "quantity": "3.5"},
+        {
+            "success": True,
+            "approval_hash": "fresh",
+            "price": "43001",
+            "quantity": "3.5",
+        },
     ],
     ids=["guard_blocked", "normalization_diff"],
 )
@@ -906,7 +915,13 @@ async def test_replace_cancel_rejection_forbids_submit(db_session):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "failure", ["cancel_exception", "confirmation_exception", "open_confirmation", "missing_evidence"]
+    "failure",
+    [
+        "cancel_exception",
+        "confirmation_exception",
+        "open_confirmation",
+        "missing_evidence",
+    ],
 )
 async def test_replace_unconfirmed_cancellation_forbids_submit(db_session, failure):
     service, group = await _create_target_proposal(db_session, action="replace")
@@ -1070,7 +1085,9 @@ async def test_replace_confirmation_exception_returns_unverified_no_submit(db_se
 
 
 @pytest.mark.asyncio
-async def test_replace_initial_fetch_returns_pending_approval_on_transient_error(db_session):
+async def test_replace_initial_fetch_returns_pending_approval_on_transient_error(
+    db_session,
+):
     service, group = await _create_target_proposal(db_session, action="replace")
 
     async def fetch_target_fn(**kwargs):

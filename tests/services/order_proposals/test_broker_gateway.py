@@ -186,7 +186,10 @@ async def test_cancel_returns_broker_rejection_for_the_confirmation_gate_to_hand
 @pytest.mark.asyncio
 async def test_fetch_returns_cancelled_evidence_only_when_broker_reports_cancelled_order():
     async def fake_history(**_kwargs):
-        return {"orders": [_order_row(status="cancelled", remaining_qty=0)], "errors": []}
+        return {
+            "orders": [_order_row(status="cancelled", remaining_qty=0)],
+            "errors": [],
+        }
 
     snapshot = await fetch_target_order(
         order_id="manual-1",

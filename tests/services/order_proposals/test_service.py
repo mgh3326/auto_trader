@@ -48,7 +48,9 @@ def _target_action_create_kwargs(action: str, **overrides):
 
 
 @pytest.mark.asyncio
-async def test_place_still_allows_multiple_rungs_and_persists_normalized_action(db_session):
+async def test_place_still_allows_multiple_rungs_and_persists_normalized_action(
+    db_session,
+):
     group = await OrderProposalsService(db_session).create_proposal(
         symbol="005930",
         market="equity_kr",
@@ -93,7 +95,9 @@ async def test_target_actions_require_exactly_one_rung(db_session, action):
         {"target_order_snapshot": None},
     ],
 )
-async def test_target_actions_require_target_broker_evidence(db_session, action, overrides):
+async def test_target_actions_require_target_broker_evidence(
+    db_session, action, overrides
+):
     with pytest.raises(OrderProposalError, match="requires target broker evidence"):
         await OrderProposalsService(db_session).create_proposal(
             **_target_action_create_kwargs(action, **overrides)
@@ -118,8 +122,12 @@ async def test_place_rejects_target_broker_evidence(db_session):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["replace", "cancel"])
-async def test_target_actions_reject_unsupported_account_market_tuple(db_session, action):
-    with pytest.raises(OrderProposalError, match="unsupported account_mode/market/action"):
+async def test_target_actions_reject_unsupported_account_market_tuple(
+    db_session, action
+):
+    with pytest.raises(
+        OrderProposalError, match="unsupported account_mode/market/action"
+    ):
         await OrderProposalsService(db_session).create_proposal(
             **_target_action_create_kwargs(action, account_mode="kis_mock")
         )
@@ -127,19 +135,21 @@ async def test_target_actions_reject_unsupported_account_market_tuple(db_session
 
 @pytest.mark.asyncio
 async def test_cancel_rejects_rung_that_differs_from_target_snapshot(db_session):
-    with pytest.raises(OrderProposalError, match="cancel rung must equal target broker snapshot"):
+    with pytest.raises(
+        OrderProposalError, match="cancel rung must equal target broker snapshot"
+    ):
         await OrderProposalsService(db_session).create_proposal(
             **_target_action_create_kwargs(
                 "cancel",
-                rungs=[
-                    RungInput(0, "sell", Decimal("3.4"), Decimal("42000"), None)
-                ],
+                rungs=[RungInput(0, "sell", Decimal("3.4"), Decimal("42000"), None)],
             )
         )
 
 
 @pytest.mark.asyncio
-async def test_replace_persists_target_snapshot_and_allows_independent_proposals(db_session):
+async def test_replace_persists_target_snapshot_and_allows_independent_proposals(
+    db_session,
+):
     service = OrderProposalsService(db_session)
     first = await service.create_proposal(
         **_target_action_create_kwargs("replace", source_asof={"origin": "manual"})
@@ -1042,7 +1052,9 @@ async def test_create_proposal_allows_upbit_crypto(db_session):
 @pytest.mark.asyncio
 async def test_create_proposal_rejects_kis_mock_equity_kr(db_session):
     service = OrderProposalsService(db_session)
-    with pytest.raises(OrderProposalError, match="unsupported account_mode/market/action"):
+    with pytest.raises(
+        OrderProposalError, match="unsupported account_mode/market/action"
+    ):
         await service.create_proposal(
             symbol="A",
             market="equity_kr",
@@ -1057,7 +1069,9 @@ async def test_create_proposal_rejects_kis_mock_equity_kr(db_session):
 @pytest.mark.asyncio
 async def test_create_proposal_rejects_toss_live_equity_kr(db_session):
     service = OrderProposalsService(db_session)
-    with pytest.raises(OrderProposalError, match="unsupported account_mode/market/action"):
+    with pytest.raises(
+        OrderProposalError, match="unsupported account_mode/market/action"
+    ):
         await service.create_proposal(
             symbol="A",
             market="equity_kr",
@@ -1072,7 +1086,9 @@ async def test_create_proposal_rejects_toss_live_equity_kr(db_session):
 @pytest.mark.asyncio
 async def test_create_proposal_rejects_db_simulated_and_upbit_wrong_market(db_session):
     service = OrderProposalsService(db_session)
-    with pytest.raises(OrderProposalError, match="unsupported account_mode/market/action"):
+    with pytest.raises(
+        OrderProposalError, match="unsupported account_mode/market/action"
+    ):
         await service.create_proposal(
             symbol="A",
             market="equity_kr",
@@ -1082,7 +1098,9 @@ async def test_create_proposal_rejects_db_simulated_and_upbit_wrong_market(db_se
             proposer="p",
             rungs=[RungInput(0, "buy", Decimal("1"), Decimal("100"), None)],
         )
-    with pytest.raises(OrderProposalError, match="unsupported account_mode/market/action"):
+    with pytest.raises(
+        OrderProposalError, match="unsupported account_mode/market/action"
+    ):
         await service.create_proposal(
             symbol="A",
             market="equity_kr",

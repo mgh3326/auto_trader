@@ -74,7 +74,8 @@ class TargetOrderSnapshot:
             side=payload.get("side"),
             order_type=payload.get("order_type"),
             limit_price=canonical_decimal(payload.get("limit_price")),
-            remaining_quantity=canonical_decimal(payload.get("remaining_quantity")) or "0",
+            remaining_quantity=canonical_decimal(payload.get("remaining_quantity"))
+            or "0",
             status=cls._normalize_status(payload.get("status")),
             observed_at=observed_at,
         )

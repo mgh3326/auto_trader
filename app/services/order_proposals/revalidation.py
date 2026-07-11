@@ -445,9 +445,7 @@ async def _validate_target_action(
         await service.transition_rung(
             proposal_id, rung_index, new_state="pending_approval"
         )
-        return RungOutcome(
-            rung_index, "error", {"error": f"target_fetch_error:{exc}"}
-        )
+        return RungOutcome(rung_index, "error", {"error": f"target_fetch_error:{exc}"})
 
     if fresh is None:
         await service.transition_rung(
@@ -545,7 +543,9 @@ async def _cancel_and_confirm_target(
         await service.record_rejected(
             proposal_id, rung_index, reason="target_broker_order_id_missing", now=now
         )
-        return RungOutcome(rung_index, "error", {"error": "target_broker_order_id_missing"})
+        return RungOutcome(
+            rung_index, "error", {"error": "target_broker_order_id_missing"}
+        )
 
     try:
         cancel_result = await _maybe_await(
@@ -608,9 +608,7 @@ async def _cancel_and_confirm_target(
             reason=f"cancel_unconfirmed:{confirmed_status}",
             now=now,
         )
-        return RungOutcome(
-            rung_index, "unverified", {"error": "cancel_unconfirmed"}
-        )
+        return RungOutcome(rung_index, "unverified", {"error": "cancel_unconfirmed"})
     return None
 
 

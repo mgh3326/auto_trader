@@ -294,7 +294,10 @@ def test_build_action_diff_returns_none_for_multiple_rungs():
         source_asof={"target_order_snapshot": _snapshot_payload()},
     )
 
-    assert build_action_diff(group=group, rungs=[_snapshot_rung(), _snapshot_rung()]) is None
+    assert (
+        build_action_diff(group=group, rungs=[_snapshot_rung(), _snapshot_rung()])
+        is None
+    )
 
 
 @pytest.mark.unit

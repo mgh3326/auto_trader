@@ -114,7 +114,9 @@ async def test_create_lookup_failure_returns_error_without_service_insert(monkey
         raise AssertionError("target preflight failure must not create a proposal")
 
     monkeypatch.setattr(opt, "fetch_target_order", failed_fetch)
-    monkeypatch.setattr(opt.OrderProposalsService, "create_proposal", insert_must_not_run)
+    monkeypatch.setattr(
+        opt.OrderProposalsService, "create_proposal", insert_must_not_run
+    )
 
     result = await opt.order_proposal_create(**_target_create_kwargs())
 

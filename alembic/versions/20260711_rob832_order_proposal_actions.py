@@ -4,6 +4,7 @@ Revision ID: 20260711_rob832_actions
 Revises: 20260711_rob816_exit_binding
 Create Date: 2026-07-11
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -20,7 +21,9 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.add_column(
-        "order_proposals", sa.Column("action", sa.Text(), nullable=True), schema="review"
+        "order_proposals",
+        sa.Column("action", sa.Text(), nullable=True),
+        schema="review",
     )
     op.add_column(
         "order_proposals",

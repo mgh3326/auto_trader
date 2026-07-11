@@ -199,9 +199,7 @@ def build_approval_message(
             else None
         )
         after = (
-            effective_diff.get("after")
-            if isinstance(effective_diff, Mapping)
-            else None
+            effective_diff.get("after") if isinstance(effective_diff, Mapping) else None
         )
         diff_heading = "*재확인 변경사항*" if explicit_reconfirm else "*주문 변경사항*"
         lines.extend(

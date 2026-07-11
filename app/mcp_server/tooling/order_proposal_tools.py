@@ -173,7 +173,9 @@ async def order_proposal_create(
                 action=normalized_action,
                 target_broker_order_id=target_broker_order_id,
                 target_order_snapshot=(
-                    target_snapshot.to_payload() if target_snapshot is not None else None
+                    target_snapshot.to_payload()
+                    if target_snapshot is not None
+                    else None
                 ),
             )
             _, saved_rungs = await svc.get_proposal(group.proposal_id)
