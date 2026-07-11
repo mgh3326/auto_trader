@@ -57,12 +57,37 @@ CorrelationMint = Callable[..., Any]
 
 _PREVIEW_REASON = "order_proposal revalidation (rung {rung})"
 _SUBMIT_REASON = "order_proposal submit after revalidation (rung {rung})"
+_GUARD_ERROR_CODES = frozenset(
+    {"loss_cut_preconditions_failed", "nxt_session_not_tradable"}
+)
+_GUARD_ERROR_MARKERS = (
+    "loss_sell_blocked",
+    "sell price ",
+    "live market sell blocked",
+    "loss_cut sell price",
+    "no holdings found",
+    "insufficient ",
+    "stop-loss cooldown",
+    "opposite pending order",
+)
 
 
 async def _maybe_await(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+def _is_guard_blocked_preview(preview: dict[str, Any]) -> bool:
+    if preview.get("success") is not False:
+        return False
+    if preview.get("insufficient_balance") is True or preview.get("violations"):
+        return True
+    error_code = str(preview.get("error_code") or "").lower()
+    error = str(preview.get("error") or "").lower()
+    return error_code in _GUARD_ERROR_CODES or any(
+        marker in error for marker in _GUARD_ERROR_MARKERS
+    )
 
 
 def _norm(value: Any) -> str | None:
@@ -231,6 +256,10 @@ async def _revalidate_rung(
                 price=rung.limit_price,
                 thesis=group.thesis,
                 strategy=group.strategy,
+                exit_intent=group.exit_intent,
+                exit_reason=group.exit_reason,
+                retrospective_id=group.retrospective_id,
+                approval_issue_id=group.approval_issue_id,
                 reason=_PREVIEW_REASON.format(rung=rung_index),
                 rung=rung_index,
             )
@@ -246,15 +275,12 @@ async def _revalidate_rung(
         return RungOutcome(rung_index, "error", {"error": str(exc)})
 
     if preview.get("success") is False:
-        # Fail-closed: the guard chain (loss-sell / market-sell-loss / sector
-        # cap) blocked this rung. Retryable — back to pending_approval, never
-        # submitted.
         await service.transition_rung(
             proposal_id, rung_index, new_state="pending_approval"
         )
         return RungOutcome(
             rung_index,
-            "guard_blocked",
+            "guard_blocked" if _is_guard_blocked_preview(preview) else "error",
             {"error": preview.get("error"), "preview": preview},
         )
 
@@ -299,6 +325,10 @@ async def _revalidate_rung(
                 price=rung.limit_price,
                 thesis=group.thesis,
                 strategy=group.strategy,
+                exit_intent=group.exit_intent,
+                exit_reason=group.exit_reason,
+                retrospective_id=group.retrospective_id,
+                approval_issue_id=group.approval_issue_id,
                 reason=_SUBMIT_REASON.format(rung=rung_index),
                 approval_hash=preview.get("approval_hash"),
                 rung=rung_index,

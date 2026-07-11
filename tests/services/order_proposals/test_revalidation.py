@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,6 +24,21 @@ def _fake_place_order(*, preview_price, preview_qty, submit_result):
         return submit_result
 
     return _fn
+
+
+async def _create_proposal(db_session):
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="A",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("10"), Decimal("2226000"), None)],
+    )
+    await db_session.commit()
+    return service, group
 
 
 @pytest.mark.asyncio
@@ -187,6 +203,107 @@ async def test_guard_block_fail_closed(db_session):
     assert out[0].result == "guard_blocked"
     _, rungs = await svc.get_proposal(g.proposal_id)
     assert rungs[0].state == "pending_approval"  # retryable, not submitted
+
+
+@pytest.mark.asyncio
+async def test_preview_internal_failure_keeps_error_label(db_session):
+    service, group = await _create_proposal(db_session)
+
+    async def internal_failure(**kwargs):
+        return {
+            "success": False,
+            "error": "Order preview failed: unsupported operand type(s) for *",
+        }
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=internal_failure,
+    )
+    assert outcomes[0].result == "error"
+
+
+@pytest.mark.asyncio
+async def test_preview_insufficient_cash_is_guard_blocked(db_session):
+    service, group = await _create_proposal(db_session)
+
+    async def insufficient_cash(**kwargs):
+        return {
+            "success": False,
+            "error": "Insufficient KRW balance",
+            "insufficient_balance": True,
+        }
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=insufficient_cash,
+    )
+    assert outcomes[0].result == "guard_blocked"
+
+
+@pytest.mark.asyncio
+async def test_loss_cut_bindings_forwarded_to_preview_and_submit(
+    db_session, monkeypatch
+):
+    async def fake_lookup(session, retrospective_id):
+        return SimpleNamespace(
+            symbol="005930", trigger_type="stop_loss", created_at=datetime.now(UTC)
+        )
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "sell", Decimal("1"), Decimal("65000"), None)],
+        exit_intent="loss_cut",
+        exit_reason="stop_loss",
+        retrospective_id=42,
+        approval_issue_id="ROB-800",
+    )
+    await db_session.commit()
+    calls: list[dict] = []
+
+    async def accepted(**kwargs):
+        calls.append(kwargs)
+        if kwargs["dry_run"]:
+            return {
+                "success": True,
+                "approval_hash": "TESTTOKEN",
+                "price": "65000",
+                "quantity": "1",
+            }
+        return {
+            "success": True,
+            "status": "resting",
+            "broker_order_id": "B-loss-cut",
+        }
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=accepted,
+    )
+
+    expected = {
+        "exit_intent": "loss_cut",
+        "exit_reason": "stop_loss",
+        "retrospective_id": 42,
+        "approval_issue_id": "ROB-800",
+    }
+    assert outcomes[0].result == "submitted_resting"
+    assert [call["dry_run"] for call in calls] == [True, False]
+    assert [{key: call[key] for key in expected} for call in calls] == [expected, expected]
 
 
 @pytest.mark.asyncio
