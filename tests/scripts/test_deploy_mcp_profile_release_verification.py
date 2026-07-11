@@ -139,13 +139,13 @@ def _build_lsof_stub(bin_dir: Path, map_file: Path) -> None:
         f'map="{map_file}"\n'
         'if [[ "$1" == -tiTCP:* ]]; then\n'
         '  port="${1#-tiTCP:}"\n'
-        '  while read -r p pid cwd; do\n'
+        "  while read -r p pid cwd; do\n"
         '    if [[ "$p" == "$port" ]]; then echo "$pid"; exit 0; fi\n'
         '  done < "$map"\n'
         "  exit 1\n"
         'elif [[ "$1" == "-a" ]]; then\n'
         '  pid="$3"\n'
-        '  while read -r p qpid cwd; do\n'
+        "  while read -r p qpid cwd; do\n"
         '    if [[ "$qpid" == "$pid" ]]; then\n'
         '      printf "p%s\\n" "$pid"\n'
         '      printf "fcwd\\n"\n'
@@ -286,9 +286,9 @@ def test_verify_retries_before_giving_up(tmp_path: Path) -> None:
         'if [[ "$1" == -tiTCP:* ]]; then\n'
         '  port="${1#-tiTCP:}"\n'
         '  case "$port" in\n'
-        '    8768) echo 111; exit 0 ;;\n'
-        '    8769) echo 222; exit 0 ;;\n'
-        '    8770) echo 333; exit 0 ;;\n'
+        "    8768) echo 111; exit 0 ;;\n"
+        "    8769) echo 222; exit 0 ;;\n"
+        "    8770) echo 333; exit 0 ;;\n"
         "  esac\n"
         "  exit 1\n"
         'elif [[ "$1" == "-a" ]]; then\n'
