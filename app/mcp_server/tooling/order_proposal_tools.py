@@ -1,8 +1,8 @@
-"""ROB-816 read/create MCP tools for order_proposals.
+"""ROB-816 read/create/void MCP tools for order_proposals.
 
-READ + CREATE ONLY. There is deliberately no approve/submit tool — approval is
-Telegram-only (PR 2). ``order_proposal_create`` persists a proposal row; it
-performs NO broker mutation.
+READ + CREATE + VOID ONLY. There is deliberately no approve/submit tool —
+approval is Telegram-only (PR 2). ``order_proposal_create`` persists a proposal
+row; it performs NO broker mutation.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ ORDER_PROPOSAL_TOOL_NAMES: set[str] = {
     "order_proposal_create",
     "order_proposal_get",
     "order_proposal_list",
+    "order_proposal_void",
 }
 
 
@@ -59,6 +60,10 @@ def _group_dict(g: Any) -> dict[str, Any]:
         "lifecycle_state": g.lifecycle_state,
         "thesis": g.thesis,
         "strategy": g.strategy,
+        "exit_intent": g.exit_intent,
+        "exit_reason": g.exit_reason,
+        "retrospective_id": g.retrospective_id,
+        "approval_issue_id": g.approval_issue_id,
         "supersedes_proposal_id": (
             str(g.supersedes_proposal_id) if g.supersedes_proposal_id else None
         ),
@@ -98,6 +103,10 @@ async def order_proposal_create(
     lot_context: dict | None = None,
     valid_until: str | None = None,
     supersedes_proposal_id: str | None = None,
+    exit_intent: str | None = None,
+    exit_reason: str | None = None,
+    retrospective_id: int | None = None,
+    approval_issue_id: str | None = None,
 ) -> dict[str, Any]:
     """Create an order proposal (SOT ledger row). NOT a broker mutation — persists only.
 
@@ -136,6 +145,10 @@ async def order_proposal_create(
                 broker_account_id=broker_account_id,
                 lot_context=lot_context,
                 valid_until=vu,
+                exit_intent=exit_intent,
+                exit_reason=exit_reason,
+                retrospective_id=retrospective_id,
+                approval_issue_id=approval_issue_id,
                 supersedes_proposal_id=sup,
             )
             _, saved_rungs = await svc.get_proposal(group.proposal_id)
@@ -145,6 +158,9 @@ async def order_proposal_create(
                 "success": True,
                 "proposal_id": str(proposal_id),
                 "lifecycle_state": group.lifecycle_state,
+                "valid_until": group.valid_until.isoformat()
+                if group.valid_until
+                else None,
                 "rungs": [_rung_dict(r) for r in saved_rungs],
             }
 
@@ -221,8 +237,30 @@ async def order_proposal_list(
         }
 
 
+async def order_proposal_void(proposal_id: str, reason: str) -> dict[str, Any]:
+    try:
+        pid = uuid.UUID(proposal_id)
+        normalized_reason = reason.strip()
+        if not normalized_reason:
+            raise ValueError("void reason is required")
+        async with AsyncSessionLocal() as session:
+            service = OrderProposalsService(session)
+            await service.void_proposal(pid, reason=normalized_reason, now=now_kst())
+            group, rungs = await service.get_proposal(pid)
+            await session.commit()
+            return {
+                "success": True,
+                "proposal_id": proposal_id,
+                "lifecycle_state": group.lifecycle_state,
+                "void_reason": group.void_reason,
+                "rungs": [_rung_dict(rung) for rung in rungs],
+            }
+    except (ValueError, OrderProposalError) as exc:
+        return {"success": False, "error": str(exc)}
+
+
 def register_order_proposal_tools(mcp: FastMCP) -> None:
-    """Register the order_proposals read/create MCP tools.
+    """Register the order_proposals read/create/void MCP tools.
 
     Deliberately excludes any approve/submit tool — approval is Telegram-only
     (ROB-816 PR 2).
@@ -246,6 +284,13 @@ def register_order_proposal_tools(mcp: FastMCP) -> None:
             "symbol and/or lifecycle_state."
         ),
     )(order_proposal_list)
+    _ = mcp.tool(
+        name="order_proposal_void",
+        description=(
+            "Void an unsubmitted order proposal with a required operator reason. "
+            "NOT a broker mutation."
+        ),
+    )(order_proposal_void)
 
 
 __all__ = [
@@ -253,5 +298,6 @@ __all__ = [
     "order_proposal_create",
     "order_proposal_get",
     "order_proposal_list",
+    "order_proposal_void",
     "register_order_proposal_tools",
 ]
