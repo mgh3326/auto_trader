@@ -14,11 +14,13 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import KST
 from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.services.order_proposals import state_machine as sm
+from app.services.order_proposals.broker_gateway import SUPPORTED_TARGET_ACTIONS
 from app.services.order_proposals.errors import (
     OrderProposalError,
     OrderProposalNotFound,
@@ -28,6 +30,10 @@ from app.services.order_proposals.payload import (
     compute_proposal_payload_hash,
 )
 from app.services.order_proposals.repository import OrderProposalRepository
+from app.services.order_proposals.target_order import (
+    TargetOrderSnapshot,
+    canonical_decimal,
+)
 from app.services.trade_journal.trade_retrospective_service import (
     get_retrospective_by_id,
 )
@@ -57,6 +63,12 @@ _SUBMITTABLE_ACCOUNT_MODE_MARKETS: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
+_ACTION_CAPABILITIES = {
+    "place": _SUBMITTABLE_ACCOUNT_MODE_MARKETS,
+    "replace": SUPPORTED_TARGET_ACTIONS,
+    "cancel": SUPPORTED_TARGET_ACTIONS,
+}
+
 _LOSS_CUT_EXIT_REASONS = frozenset({"stop_loss", "thesis_change"})
 _LOSS_CUT_TRIGGER_TYPES = frozenset({"stop_loss", "thesis_change"})
 _LOSS_CUT_MAX_AGE = timedelta(hours=72)
@@ -72,10 +84,92 @@ _EVIDENCE_ACCEPTING_RUNG_STATES = frozenset(
 )
 
 
+def _validate_action_contract(
+    *,
+    action: str | None,
+    account_mode: str,
+    market: str,
+    symbol: str,
+    side: str,
+    order_type: str,
+    rungs: list[RungInput],
+    target_broker_order_id: str | None,
+    target_order_snapshot: dict[str, str | None] | None,
+) -> tuple[str, TargetOrderSnapshot | None]:
+    normalized = action or "place"
+    if normalized not in _ACTION_CAPABILITIES:
+        raise OrderProposalError("action must be one of: place, replace, cancel")
+    if (account_mode, market) not in _ACTION_CAPABILITIES[normalized]:
+        raise OrderProposalError(
+            "unsupported account_mode/market/action: "
+            f"{account_mode}/{market}/{normalized}"
+        )
+    if normalized == "place":
+        if target_broker_order_id is not None or target_order_snapshot is not None:
+            raise OrderProposalError("place proposal cannot target a broker order")
+        return normalized, None
+    if len(rungs) != 1:
+        raise OrderProposalError(f"{normalized} proposal requires exactly one rung")
+    if not target_broker_order_id or target_order_snapshot is None:
+        raise OrderProposalError(f"{normalized} requires target broker evidence")
+
+    snapshot = TargetOrderSnapshot.from_payload(target_order_snapshot)
+    if snapshot.broker_order_id != target_broker_order_id:
+        raise OrderProposalError("target broker order id does not match snapshot")
+    if snapshot.status != "open" or Decimal(snapshot.remaining_quantity) <= 0:
+        raise OrderProposalError(
+            "target broker order must be open with remaining quantity"
+        )
+    if (
+        snapshot.symbol != symbol
+        or snapshot.side != side
+        or snapshot.order_type != order_type
+    ):
+        raise OrderProposalError("target broker evidence conflicts with proposal")
+    if normalized == "cancel":
+        rung = rungs[0]
+        if (
+            canonical_decimal(rung.quantity) != snapshot.remaining_quantity
+            or canonical_decimal(rung.limit_price) != snapshot.limit_price
+            or rung.side != snapshot.side
+        ):
+            raise OrderProposalError("cancel rung must equal target broker snapshot")
+    return normalized, snapshot
+
+
 class OrderProposalsService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
         self._repo = OrderProposalRepository(session)
+
+    async def acquire_target_mutation_lock(self, group: OrderProposal) -> bool:
+        """Serialize replace/cancel transactions for one broker order target.
+
+        The transaction-scoped advisory lock must be acquired before any
+        proposal row lock.  This avoids two independently-created proposals
+        both cancelling/replacing the same broker order while still allowing
+        distinct ladder orders to proceed independently.
+        """
+        action = group.action or "place"
+        if action not in {"replace", "cancel"}:
+            return False
+        if not group.target_broker_order_id:
+            raise OrderProposalError("target action requires target_broker_order_id")
+
+        lock_key = "|".join(
+            (
+                "order_proposal_target",
+                group.account_mode,
+                group.market,
+                group.broker_account_id or "",
+                group.target_broker_order_id,
+            )
+        )
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": lock_key},
+        )
+        return True
 
     async def create_proposal(
         self,
@@ -100,16 +194,30 @@ class OrderProposalsService:
         correlation_id: str | None = None,
         source_asof: dict | None = None,
         supersedes_proposal_id: uuid.UUID | None = None,
+        action: str | None = None,
+        target_broker_order_id: str | None = None,
+        target_order_snapshot: dict[str, str | None] | None = None,
         now: datetime | None = None,
     ) -> OrderProposal:
         if not rungs:
             raise ValueError("at least one rung required")
-        if (account_mode, market) not in _SUBMITTABLE_ACCOUNT_MODE_MARKETS:
-            raise OrderProposalError(
-                f"account_mode {account_mode!r} is not submittable for market "
-                f"{market!r} (submit path only supports kis_live|toss_live/"
-                "equity_kr|equity_us and upbit/crypto)"
-            )
+        normalized_action, target_snapshot = _validate_action_contract(
+            action=action,
+            account_mode=account_mode,
+            market=market,
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            rungs=rungs,
+            target_broker_order_id=target_broker_order_id,
+            target_order_snapshot=target_order_snapshot,
+        )
+        normalized_target_snapshot = (
+            target_snapshot.to_payload() if target_snapshot is not None else None
+        )
+        merged_source_asof = dict(source_asof or {})
+        if normalized_target_snapshot is not None:
+            merged_source_asof["target_order_snapshot"] = normalized_target_snapshot
         now = now or datetime.now(UTC)
         self._require_timezone_aware(now)
         if valid_until is None:
@@ -152,6 +260,9 @@ class OrderProposalsService:
             exit_reason=exit_reason,
             retrospective_id=retrospective_id,
             approval_issue_id=approval_issue_id,
+            action=normalized_action,
+            target_broker_order_id=target_broker_order_id,
+            target_order_snapshot=normalized_target_snapshot,
             rungs=[
                 ProposalRungSpec(
                     r.rung_index,
@@ -182,6 +293,8 @@ class OrderProposalsService:
             rationale=rationale,
             broker_account_id=broker_account_id,
             lot_context=lot_context,
+            action=normalized_action,
+            target_broker_order_id=target_broker_order_id,
             exit_intent=exit_intent,
             exit_reason=exit_reason,
             retrospective_id=retrospective_id,
@@ -189,7 +302,7 @@ class OrderProposalsService:
             lifecycle_state="proposed",
             correlation_id=correlation_id,
             valid_until=valid_until,
-            source_asof=source_asof,
+            source_asof=merged_source_asof or None,
         )
         for r in rungs:
             await self._repo.insert_rung(
@@ -583,13 +696,39 @@ class OrderProposalsService:
         *,
         reason: str,
         now: datetime,
+        correlation_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> OrderProposalRung:
         self._require_timezone_aware(now)
+        evidence = {}
+        if correlation_id is not None:
+            evidence["correlation_id"] = correlation_id
+        if idempotency_key is not None:
+            evidence["idempotency_key"] = idempotency_key
         return await self.transition_rung(
             proposal_id,
             rung_index,
             new_state="unverified",
             void_reason=reason,
+            validated_at=now,
+            updated_at=now,
+            **evidence,
+        )
+
+    async def record_cancelled(
+        self,
+        proposal_id: uuid.UUID,
+        rung_index: int,
+        *,
+        broker_order_id: str,
+        now: datetime,
+    ) -> OrderProposalRung:
+        self._require_timezone_aware(now)
+        return await self.transition_rung(
+            proposal_id,
+            rung_index,
+            new_state="cancelled",
+            broker_order_id=broker_order_id,
             validated_at=now,
             updated_at=now,
         )

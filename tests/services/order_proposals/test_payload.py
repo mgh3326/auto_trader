@@ -34,6 +34,21 @@ def test_hash_is_deterministic_and_order_insensitive():
 
 
 @pytest.mark.unit
+def test_none_action_hashes_identically_to_place():
+    common = {
+        "symbol": "000660",
+        "market": "equity_kr",
+        "account_mode": "kis_live",
+        "order_type": "limit",
+        "rungs": _rungs(),
+    }
+
+    assert compute_proposal_payload_hash(
+        **common, action=None
+    ) == compute_proposal_payload_hash(**common, action="place")
+
+
+@pytest.mark.unit
 def test_price_change_changes_hash():
     base = compute_proposal_payload_hash(
         symbol="000660",
@@ -94,3 +109,46 @@ def test_loss_cut_binding_changes_payload_hash():
         approval_issue_id="ROB-800",
     )
     assert ordinary != loss_cut
+
+
+@pytest.mark.unit
+def test_payload_hash_binds_target_identity_and_remaining_qty():
+    common = {
+        "symbol": "KRW-AVAX",
+        "market": "crypto",
+        "account_mode": "upbit",
+        "order_type": "limit",
+        "rungs": [ProposalRungSpec(0, "sell", "3.5", "43000", None)],
+    }
+    snapshot = {
+        "broker_order_id": "old-1",
+        "symbol": "KRW-AVAX",
+        "side": "sell",
+        "order_type": "limit",
+        "limit_price": "42000",
+        "remaining_quantity": "3.5",
+        "status": "open",
+        "observed_at": "2026-07-11T17:23:00+09:00",
+    }
+    hashes = {
+        compute_proposal_payload_hash(**common),
+        compute_proposal_payload_hash(
+            **common,
+            action="replace",
+            target_broker_order_id="old-1",
+            target_order_snapshot=snapshot,
+        ),
+        compute_proposal_payload_hash(
+            **common,
+            action="replace",
+            target_broker_order_id="old-2",
+            target_order_snapshot={**snapshot, "broker_order_id": "old-2"},
+        ),
+        compute_proposal_payload_hash(
+            **common,
+            action="replace",
+            target_broker_order_id="old-1",
+            target_order_snapshot={**snapshot, "remaining_quantity": "3.4"},
+        ),
+    }
+    assert len(hashes) == 4

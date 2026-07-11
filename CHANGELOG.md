@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added (ROB-832 — order proposal replace/cancel actions; migration 1)
+- **Operators can approve one-order replace or cancel proposals in Telegram.** Replace proposals bind one target broker-order snapshot to one new-order specification; cancel proposals bind one target snapshot to one cancel action. Existing place proposals keep multi-rung behavior and legacy `NULL` actions behave as `place`.
+- **Replace is fail-closed across cancel-and-new.** Approval re-fetches broker evidence, reruns preview/profit guards, confirms the old order cancellation, then submits the replacement. Any target drift, cancellation failure, missing confirmation, or ambiguous broker response prevents a new order and preserves reconciliation lineage.
+- **Manual broker orders are valid targets.** Proposal creation verifies the unattributed order and remaining quantity directly with Upbit or KIS, rejects unsupported account/market/action combinations, and serializes concurrent proposals that target the same broker order without blocking independent ladder orders.
+- **Approval messages show the bound before→after change.** Replace/cancel reuse the existing reconfirm diff rendering, while confirmed cancels and replacement lineage are retained in the proposal audit trail. The additive migration adds nullable `action` and `target_broker_order_id` columns to `review.order_proposals`.
+
 ### Added (ROB-816 — loss-cut completion and Toss proposal routing; migration 0)
 - **Telegram loss-cut approvals now carry an explicit service identity.** `ORDER_PROPOSALS_SUBMIT_AGENT_ID` is empty by default and is scoped only to callback revalidation/submission; operators must add the same value to `LOSS_CUT_ALLOWED_AGENT_IDS`. Empty or whitespace configuration masks any outer identity and fails closed. Upbit crypto loss-cut proposals are supported for the residual KRW-DOT canary while preserving the existing retrospective, approval issue, sell-limit, and ROB-800 checks.
 - **Toss proposals use Toss-native preview and placement.** `toss_live` Korean and US equity proposals route through `toss_preview_order`/`toss_place_order`, preserve exact `str | int` decimal inputs, consume Toss-normalized preview price/quantity, and round-trip the approval token, rung, canonical digest, stable proposal/rung client ID, and exact proposal correlation without exposing idempotency controls in the public MCP schema.

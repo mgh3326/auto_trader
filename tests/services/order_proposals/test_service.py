@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -5,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.core.db import AsyncSessionLocal
 from app.core.timezone import KST
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.errors import (
@@ -13,6 +15,209 @@ from app.services.order_proposals.errors import (
     OrderProposalNotFound,
 )
 from app.services.order_proposals.service import RungInput
+
+
+def _target_snapshot_payload(**overrides):
+    payload = {
+        "broker_order_id": "manual-upbit-1",
+        "symbol": "KRW-AVAX",
+        "side": "sell",
+        "order_type": "limit",
+        "limit_price": "42000",
+        "remaining_quantity": "3.5",
+        "status": "open",
+        "observed_at": "2026-07-11T08:23:00+00:00",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _target_action_create_kwargs(action: str, **overrides):
+    kwargs = {
+        "symbol": "KRW-AVAX",
+        "market": "crypto",
+        "account_mode": "upbit",
+        "side": "sell",
+        "order_type": "limit",
+        "proposer": "p",
+        "action": action,
+        "target_broker_order_id": "manual-upbit-1",
+        "target_order_snapshot": _target_snapshot_payload(),
+        "rungs": [RungInput(0, "sell", Decimal("3.5"), Decimal("42000"), None)],
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+@pytest.mark.asyncio
+async def test_target_mutation_lock_serializes_same_broker_order():
+    target = SimpleNamespace(
+        action="replace",
+        account_mode="upbit",
+        market="crypto",
+        broker_account_id=None,
+        target_broker_order_id=f"manual-{uuid.uuid4()}",
+    )
+
+    async with (
+        AsyncSessionLocal() as first_session,
+        AsyncSessionLocal() as second_session,
+    ):
+        first = OrderProposalsService(first_session)
+        second = OrderProposalsService(second_session)
+
+        assert await first.acquire_target_mutation_lock(target) is True
+        waiter = asyncio.create_task(second.acquire_target_mutation_lock(target))
+        await asyncio.sleep(0.05)
+        assert waiter.done() is False
+
+        await first_session.commit()
+        assert await asyncio.wait_for(waiter, timeout=1) is True
+        await second_session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_place_still_allows_multiple_rungs_and_persists_normalized_action(
+    db_session,
+):
+    group = await OrderProposalsService(db_session).create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        action="place",
+        source_asof={"quote_asof": "2026-07-11T08:23:00+00:00"},
+        rungs=[
+            RungInput(0, "buy", Decimal("1"), Decimal("70000"), None),
+            RungInput(1, "buy", Decimal("1"), Decimal("69000"), None),
+        ],
+    )
+
+    assert group.action == "place"
+    assert group.target_broker_order_id is None
+    assert group.source_asof == {"quote_asof": "2026-07-11T08:23:00+00:00"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["replace", "cancel"])
+async def test_target_actions_require_exactly_one_rung(db_session, action):
+    with pytest.raises(OrderProposalError, match="exactly one rung"):
+        await OrderProposalsService(db_session).create_proposal(
+            **_target_action_create_kwargs(
+                action,
+                rungs=[
+                    RungInput(0, "sell", Decimal("3.5"), Decimal("42000"), None),
+                    RungInput(1, "sell", Decimal("1"), Decimal("41000"), None),
+                ],
+            )
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["replace", "cancel"])
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"target_broker_order_id": None},
+        {"target_order_snapshot": None},
+    ],
+)
+async def test_target_actions_require_target_broker_evidence(
+    db_session, action, overrides
+):
+    with pytest.raises(OrderProposalError, match="requires target broker evidence"):
+        await OrderProposalsService(db_session).create_proposal(
+            **_target_action_create_kwargs(action, **overrides)
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["replace", "cancel"])
+@pytest.mark.parametrize("status", ["filled", "cancelled", "expired", "rejected"])
+async def test_target_actions_reject_non_open_target_at_create(
+    db_session, action, status
+):
+    with pytest.raises(OrderProposalError, match="target broker order must be open"):
+        await OrderProposalsService(db_session).create_proposal(
+            **_target_action_create_kwargs(
+                action,
+                target_order_snapshot=_target_snapshot_payload(
+                    status=status, remaining_quantity="0"
+                ),
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_place_rejects_target_broker_evidence(db_session):
+    with pytest.raises(OrderProposalError, match="cannot target a broker order"):
+        await OrderProposalsService(db_session).create_proposal(
+            symbol="005930",
+            market="equity_kr",
+            account_mode="kis_live",
+            side="buy",
+            order_type="limit",
+            proposer="p",
+            target_broker_order_id="old-1",
+            target_order_snapshot=_target_snapshot_payload(),
+            rungs=[RungInput(0, "buy", Decimal("1"), Decimal("70000"), None)],
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["replace", "cancel"])
+async def test_target_actions_reject_unsupported_account_market_tuple(
+    db_session, action
+):
+    with pytest.raises(
+        OrderProposalError, match="unsupported account_mode/market/action"
+    ):
+        await OrderProposalsService(db_session).create_proposal(
+            **_target_action_create_kwargs(action, account_mode="kis_mock")
+        )
+
+
+@pytest.mark.asyncio
+async def test_cancel_rejects_rung_that_differs_from_target_snapshot(db_session):
+    with pytest.raises(
+        OrderProposalError, match="cancel rung must equal target broker snapshot"
+    ):
+        await OrderProposalsService(db_session).create_proposal(
+            **_target_action_create_kwargs(
+                "cancel",
+                rungs=[RungInput(0, "sell", Decimal("3.4"), Decimal("42000"), None)],
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_replace_persists_target_snapshot_and_allows_independent_proposals(
+    db_session,
+):
+    service = OrderProposalsService(db_session)
+    first = await service.create_proposal(
+        **_target_action_create_kwargs("replace", source_asof={"origin": "manual"})
+    )
+    second = await service.create_proposal(
+        **_target_action_create_kwargs(
+            "replace",
+            target_broker_order_id="manual-upbit-2",
+            target_order_snapshot=_target_snapshot_payload(
+                broker_order_id="manual-upbit-2"
+            ),
+        )
+    )
+
+    assert first.proposal_id != second.proposal_id
+    assert first.action == second.action == "replace"
+    assert first.target_broker_order_id == "manual-upbit-1"
+    assert first.source_asof == {
+        "origin": "manual",
+        "target_order_snapshot": _target_snapshot_payload(),
+    }
+    assert first.payload_hash != second.payload_hash
 
 
 async def _create_single_rung(db_session, *, symbol: str = "A"):
@@ -26,6 +231,13 @@ async def _create_single_rung(db_session, *, symbol: str = "A"):
         proposer="p",
         rungs=[RungInput(0, "buy", Decimal("1"), Decimal("100"), None)],
     )
+    await db_session.commit()
+    return service, group
+
+
+async def _create_cancel_proposal(db_session):
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(**_target_action_create_kwargs("cancel"))
     await db_session.commit()
     return service, group
 
@@ -541,6 +753,36 @@ async def test_resting_is_not_filled_and_records_audit_fields(db_session):
     assert rung.validated_at == now
     assert rung.updated_at == now
     assert rung.filled_qty is None
+
+
+@pytest.mark.asyncio
+async def test_record_cancelled_retains_target_id(db_session):
+    service, group = await _create_cancel_proposal(db_session)
+    now = datetime(2026, 7, 10, 9, 5, tzinfo=UTC)
+    await _drive_to_submitting(service, group.proposal_id)
+
+    rung = await service.record_cancelled(
+        group.proposal_id, 0, broker_order_id="old-1", now=now
+    )
+
+    assert rung.state == "cancelled"
+    assert rung.broker_order_id == "old-1"
+    assert rung.validated_at == now
+    assert rung.updated_at == now
+
+
+@pytest.mark.asyncio
+async def test_record_cancelled_rejects_naive_now(db_session):
+    service, group = await _create_cancel_proposal(db_session)
+    await _drive_to_submitting(service, group.proposal_id)
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        await service.record_cancelled(
+            group.proposal_id,
+            0,
+            broker_order_id="old-1",
+            now=datetime.now(),
+        )
 
 
 @pytest.mark.asyncio
@@ -1076,7 +1318,9 @@ async def test_create_proposal_allows_upbit_crypto(db_session):
 @pytest.mark.asyncio
 async def test_create_proposal_rejects_kis_mock_equity_kr(db_session):
     service = OrderProposalsService(db_session)
-    with pytest.raises(OrderProposalError, match="not submittable"):
+    with pytest.raises(
+        OrderProposalError, match="unsupported account_mode/market/action"
+    ):
         await service.create_proposal(
             symbol="A",
             market="equity_kr",
@@ -1109,7 +1353,9 @@ async def test_create_proposal_allows_toss_live_equities(db_session, market):
 @pytest.mark.asyncio
 async def test_create_proposal_rejects_db_simulated_and_upbit_wrong_market(db_session):
     service = OrderProposalsService(db_session)
-    with pytest.raises(OrderProposalError, match="not submittable"):
+    with pytest.raises(
+        OrderProposalError, match="unsupported account_mode/market/action"
+    ):
         await service.create_proposal(
             symbol="A",
             market="equity_kr",
@@ -1119,7 +1365,9 @@ async def test_create_proposal_rejects_db_simulated_and_upbit_wrong_market(db_se
             proposer="p",
             rungs=[RungInput(0, "buy", Decimal("1"), Decimal("100"), None)],
         )
-    with pytest.raises(OrderProposalError, match="not submittable"):
+    with pytest.raises(
+        OrderProposalError, match="unsupported account_mode/market/action"
+    ):
         await service.create_proposal(
             symbol="A",
             market="equity_kr",

@@ -1366,6 +1366,7 @@ async def test_cancel_order_upbit_uuid(monkeypatch):
 async def test_cancel_order_kis_domestic_auto_lookup(monkeypatch):
     tools = build_tools()
     received_orgnos: list[str | None] = []
+    received_quantities: list[int] = []
 
     class MockKISClient:
         def __init__(self, *, is_mock: bool = False) -> None:
@@ -1378,6 +1379,7 @@ async def test_cancel_order_kis_domestic_auto_lookup(monkeypatch):
                     "sll_buy_dvsn_cd": "02",
                     "pdno": "005930",
                     "ord_qty": "10",
+                    "rmn_qty": "4",
                     "ord_unpr": "80000",
                     "ord_gno_brno": "06010",
                     "ord_tmd": "2024-01-01",
@@ -1396,6 +1398,7 @@ async def test_cancel_order_kis_domestic_auto_lookup(monkeypatch):
             is_mock=False,
         ):
             received_orgnos.append(krx_fwdg_ord_orgno)
+            received_quantities.append(quantity)
             return {"ord_no": order_number, "ord_tmd": "2024-01-01 10:00:00"}
 
     _patch_kis_client(monkeypatch, MockKISClient)
@@ -1405,6 +1408,7 @@ async def test_cancel_order_kis_domestic_auto_lookup(monkeypatch):
     assert result["success"] is True
     assert result["symbol"] == "005930"
     assert received_orgnos == ["06010"]
+    assert received_quantities == [4]
 
 
 @pytest.mark.asyncio

@@ -50,6 +50,10 @@ class OrderProposal(Base):
             "order_type IN ('limit','market')", name="order_proposals_order_type"
         ),
         CheckConstraint(
+            "action IS NULL OR action IN ('place','replace','cancel')",
+            name="order_proposals_action",
+        ),
+        CheckConstraint(
             f"lifecycle_state IN ({_GROUP_STATES_SQL})",
             name="order_proposals_lifecycle_state",
         ),
@@ -89,6 +93,8 @@ class OrderProposal(Base):
     rationale: Mapped[dict | None] = mapped_column(JSONB)
     broker_account_id: Mapped[str | None] = mapped_column(Text)
     lot_context: Mapped[dict | None] = mapped_column(JSONB)
+    action: Mapped[str | None] = mapped_column(Text)
+    target_broker_order_id: Mapped[str | None] = mapped_column(Text)
     exit_intent: Mapped[str | None] = mapped_column(Text)
     exit_reason: Mapped[str | None] = mapped_column(Text)
     retrospective_id: Mapped[int | None] = mapped_column(BigInteger)

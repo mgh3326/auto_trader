@@ -89,7 +89,17 @@ async def test_retry_gives_up_after_attempts():
 # --------------------------------------------------------------------------- #
 # Task 2: apply_test_schema() must be idempotent + preserve drift columns.    #
 # --------------------------------------------------------------------------- #
-from tests._schema_bootstrap import apply_test_schema, schema_content_hash  # noqa: E402
+from tests._schema_bootstrap import (  # noqa: E402
+    _DDL_STATEMENTS,
+    apply_test_schema,
+    schema_content_hash,
+)
+
+
+def test_order_proposal_action_columns_have_persistent_schema_alters():
+    ddl = "\n".join(_DDL_STATEMENTS)
+    assert "order_proposals ADD COLUMN IF NOT EXISTS action" in ddl
+    assert "order_proposals ADD COLUMN IF NOT EXISTS target_broker_order_id" in ddl
 
 
 @pytest.mark.asyncio

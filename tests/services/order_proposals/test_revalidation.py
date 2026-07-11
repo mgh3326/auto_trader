@@ -11,6 +11,7 @@ from app.services.order_proposals.revalidation import (
     revalidate_and_submit,
 )
 from app.services.order_proposals.service import RungInput
+from app.services.order_proposals.target_order import TargetOrderSnapshot
 
 
 def _bound_toss_context():
@@ -807,6 +808,150 @@ class TestDefaultPlaceOrderFnDecimalCoercion:
         assert seen["price"] == 70000000.0
 
 
+def _target_snapshot(
+    *,
+    broker_order_id: str = "old-1",
+    symbol: str = "KRW-AVAX",
+    side: str = "sell",
+    order_type: str = "limit",
+    limit_price: str = "42000",
+    remaining_quantity: str = "3.5",
+    status: str = "open",
+) -> TargetOrderSnapshot:
+    return TargetOrderSnapshot(
+        broker_order_id=broker_order_id,
+        symbol=symbol,
+        side=side,
+        order_type=order_type,
+        limit_price=limit_price,
+        remaining_quantity=remaining_quantity,
+        status=status,
+        observed_at="2026-07-11T08:23:00+00:00",
+    )
+
+
+async def _create_target_proposal(db_session, *, action: str, target_id: str = "old-1"):
+    service = OrderProposalsService(db_session)
+    approved = _target_snapshot(broker_order_id=target_id)
+    group = await service.create_proposal(
+        symbol="KRW-AVAX",
+        market="crypto",
+        account_mode="upbit",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        action=action,
+        target_broker_order_id=target_id,
+        target_order_snapshot=approved.to_payload(),
+        rungs=[
+            RungInput(
+                0,
+                "sell",
+                Decimal("3.5"),
+                Decimal("43000") if action == "replace" else Decimal("42000"),
+                None,
+            )
+        ],
+    )
+    await db_session.commit()
+    return service, group
+
+
+async def _matching_preview(**kwargs):
+    return {
+        "success": True,
+        "approval_hash": "fresh",
+        "price": "43000",
+        "quantity": "3.5",
+    }
+
+
+async def _forbidden_submit(**kwargs):
+    if kwargs["dry_run"]:
+        return await _matching_preview(**kwargs)
+    raise AssertionError("replacement submit requires confirmed cancellation")
+
+
+@pytest.mark.asyncio
+async def test_replace_confirms_cancel_before_new_submit(db_session):
+    service, group = await _create_target_proposal(db_session, action="replace")
+    events = []
+    snapshots = iter(
+        [_target_snapshot(status="open"), _target_snapshot(status="cancelled")]
+    )
+
+    async def fetch_target_fn(**kwargs):
+        snapshot = next(snapshots)
+        events.append(f"fetch:{snapshot.status}")
+        return snapshot
+
+    async def cancel_target_fn(**kwargs):
+        events.append("cancel")
+        return {"success": True}
+
+    async def place_order_fn(**kwargs):
+        if kwargs["dry_run"]:
+            events.append("preview")
+            return await _matching_preview(**kwargs)
+        events.append("submit")
+        return {"success": True, "status": "resting", "broker_order_id": "new-1"}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order_fn,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+    )
+
+    assert events == ["fetch:open", "preview", "cancel", "fetch:cancelled", "submit"]
+    assert outcomes[0].result == "submitted_resting"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("broker_order_id", "old-2"),
+        ("symbol", "KRW-SOL"),
+        ("side", "buy"),
+        ("order_type", "market"),
+        ("limit_price", "42001"),
+        ("remaining_quantity", "3.4"),
+    ],
+)
+async def test_replace_target_drift_is_rejected_without_cancel(
+    db_session, field, value
+):
+    service, group = await _create_target_proposal(db_session, action="replace")
+    calls = []
+    fresh = _target_snapshot(**{field: value})
+
+    async def fetch_target_fn(**kwargs):
+        calls.append("fetch")
+        return fresh
+
+    async def cancel_target_fn(**kwargs):
+        calls.append("cancel")
+        return {"success": True}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=_forbidden_submit,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+    )
+
+    assert outcomes[0].result == "error"
+    assert calls == ["fetch"]
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "rejected"
+    assert rungs[0].void_reason == f"target_snapshot_mismatch:{field}"
+
+
 def test_toss_decimal_args_are_exact_and_canonical():
     from app.services.order_proposals import revalidation as mod
 
@@ -956,6 +1101,372 @@ async def test_toss_retry_across_dates_reuses_proposal_client_id(
     assert first[0].result == "error"
     assert second[0].result == "submitted_resting"
     assert preview_ids[0] == preview_ids[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "preview",
+    [
+        {"success": False, "error": "loss_sell_blocked"},
+        {
+            "success": True,
+            "approval_hash": "fresh",
+            "price": "43001",
+            "quantity": "3.5",
+        },
+    ],
+    ids=["guard_blocked", "normalization_diff"],
+)
+async def test_replace_preview_failure_does_not_cancel(db_session, preview):
+    service, group = await _create_target_proposal(db_session, action="replace")
+    calls = []
+
+    async def fetch_target_fn(**kwargs):
+        calls.append("fetch")
+        return _target_snapshot()
+
+    async def place_order_fn(**kwargs):
+        calls.append("preview" if kwargs["dry_run"] else "submit")
+        return preview
+
+    async def cancel_target_fn(**kwargs):
+        calls.append("cancel")
+        return {"success": True}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order_fn,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+    )
+
+    assert outcomes[0].result in {"guard_blocked", "needs_reconfirm"}
+    assert calls == ["fetch", "preview"]
+
+
+@pytest.mark.asyncio
+async def test_replace_cancel_rejection_forbids_submit(db_session):
+    service, group = await _create_target_proposal(db_session, action="replace")
+
+    async def fetch_target_fn(**kwargs):
+        return _target_snapshot()
+
+    async def cancel_target_fn(**kwargs):
+        return {"success": False, "error": "broker_rejected"}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=_forbidden_submit,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+    )
+
+    assert outcomes[0].result == "error"
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "rejected"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "void_reason_prefix"),
+    [
+        ("cancel_exception", "cancel_exception:"),
+        ("confirmation_exception", "cancel_confirmation_error:"),
+        ("open_confirmation", "cancel_unconfirmed:open"),
+        ("missing_evidence", "cancel_confirmation_missing_evidence"),
+    ],
+)
+async def test_replace_unconfirmed_cancellation_forbids_submit(
+    db_session, failure, void_reason_prefix
+):
+    service, group = await _create_target_proposal(db_session, action="replace")
+    fetches = 0
+
+    async def fetch_target_fn(**kwargs):
+        nonlocal fetches
+        fetches += 1
+        if fetches == 1:
+            return _target_snapshot()
+        if failure == "confirmation_exception":
+            raise TimeoutError("history timeout")
+        if failure == "missing_evidence":
+            return None
+        return _target_snapshot(status="open")
+
+    async def cancel_target_fn(**kwargs):
+        if failure == "cancel_exception":
+            raise TimeoutError("cancel timeout")
+        return {"success": True}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=_forbidden_submit,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+    )
+
+    assert outcomes[0].result == "unverified"
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "unverified"
+    assert rungs[0].void_reason.startswith(void_reason_prefix)
+
+
+@pytest.mark.asyncio
+async def test_cancel_confirms_target_without_preview_or_submit(db_session):
+    service, group = await _create_target_proposal(db_session, action="cancel")
+    events = []
+    snapshots = iter([_target_snapshot(), _target_snapshot(status="cancelled")])
+
+    async def fetch_target_fn(**kwargs):
+        snapshot = next(snapshots)
+        events.append(f"fetch:{snapshot.status}")
+        return snapshot
+
+    async def cancel_target_fn(**kwargs):
+        events.append("cancel")
+        return {"success": True}
+
+    async def forbidden_place_order(**kwargs):
+        raise AssertionError("cancel action must not preview or submit")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=forbidden_place_order,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+    )
+
+    assert events == ["fetch:open", "cancel", "fetch:cancelled"]
+    assert outcomes[0].result == "cancelled"
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_replace_manual_target_uses_fresh_broker_evidence_only(db_session):
+    service, group = await _create_target_proposal(
+        db_session, action="replace", target_id="manual-upbit-1"
+    )
+    snapshots = iter(
+        [
+            _target_snapshot(broker_order_id="manual-upbit-1"),
+            _target_snapshot(broker_order_id="manual-upbit-1", status="cancelled"),
+        ]
+    )
+
+    async def fetch_target_fn(**kwargs):
+        assert kwargs["order_id"] == "manual-upbit-1"
+        return next(snapshots)
+
+    async def cancel_target_fn(**kwargs):
+        return {"success": True}
+
+    async def place_order_fn(**kwargs):
+        if kwargs["dry_run"]:
+            return await _matching_preview(**kwargs)
+        return {"success": True, "status": "resting", "broker_order_id": "new-manual"}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order_fn,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+    )
+
+    assert outcomes[0].result == "submitted_resting"
+
+
+@pytest.mark.asyncio
+async def test_replace_unconfirmed_returns_unverified_no_submit(db_session):
+    service, group = await _create_target_proposal(db_session, action="replace")
+    snapshots = iter([_target_snapshot(), _target_snapshot(status="open")])
+
+    async def fetch_target_fn(**kwargs):
+        return next(snapshots)
+
+    async def cancel_target_fn(**kwargs):
+        return {"success": True}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=_forbidden_submit,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+    )
+
+    assert outcomes[0].result == "unverified"
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "unverified"
+
+
+@pytest.mark.asyncio
+async def test_replace_confirmation_exception_returns_unverified_no_submit(db_session):
+    service, group = await _create_target_proposal(db_session, action="replace")
+
+    class StatusAccessError:
+        @property
+        def status(self):
+            raise TypeError("invalid confirmation status")
+
+    fetches = 0
+
+    async def fetch_target_fn(**kwargs):
+        nonlocal fetches
+        fetches += 1
+        return _target_snapshot() if fetches == 1 else StatusAccessError()
+
+    async def cancel_target_fn(**kwargs):
+        return {"success": True}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=_forbidden_submit,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+    )
+
+    assert outcomes[0].result == "unverified"
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "unverified"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("submit_result", ["exception", "ambiguous"])
+async def test_replace_submit_ambiguity_persists_reconcile_lineage(
+    db_session, submit_result
+):
+    service, group = await _create_target_proposal(db_session, action="replace")
+    snapshots = iter([_target_snapshot(), _target_snapshot(status="cancelled")])
+
+    async def fetch_target_fn(**kwargs):
+        return next(snapshots)
+
+    async def cancel_target_fn(**kwargs):
+        return {"success": True}
+
+    async def place_order_fn(**kwargs):
+        if kwargs["dry_run"]:
+            return {
+                **(await _matching_preview(**kwargs)),
+                "idempotency_key": "idem-replace-1",
+            }
+        if submit_result == "exception":
+            raise TimeoutError("submit outcome unknown")
+        return {"success": True, "status": "unknown"}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order_fn,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+        correlation_mint=lambda **kwargs: "corr-replace-1",
+    )
+
+    assert outcomes[0].result == "unverified"
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].correlation_id == "corr-replace-1"
+    assert rungs[0].idempotency_key == "idem-replace-1"
+
+
+@pytest.mark.asyncio
+async def test_replace_initial_fetch_returns_pending_approval_on_transient_error(
+    db_session,
+):
+    service, group = await _create_target_proposal(db_session, action="replace")
+
+    async def fetch_target_fn(**kwargs):
+        raise TimeoutError("target fetch unavailable")
+
+    async def cancel_target_fn(**kwargs):
+        raise AssertionError("cancel requires fresh target evidence")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=_forbidden_submit,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+    )
+
+    assert outcomes[0].result == "error"
+    assert outcomes[0].detail["error"] == "target_fetch_error:target fetch unavailable"
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "pending_approval"
+
+
+@pytest.mark.asyncio
+async def test_cancel_unconfirmed_returns_unverified(db_session):
+    service, group = await _create_target_proposal(db_session, action="cancel")
+    snapshots = iter([_target_snapshot(), _target_snapshot(status="open")])
+
+    async def fetch_target_fn(**kwargs):
+        return next(snapshots)
+
+    async def cancel_target_fn(**kwargs):
+        return {"success": True}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=_forbidden_submit,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+    )
+
+    assert outcomes[0].result == "unverified"
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "unverified"
+
+
+@pytest.mark.asyncio
+async def test_cancel_confirmation_exception_returns_unverified(db_session):
+    service, group = await _create_target_proposal(db_session, action="cancel")
+
+    class StatusAccessError:
+        @property
+        def status(self):
+            raise TypeError("invalid confirmation status")
+
+    fetches = 0
+
+    async def fetch_target_fn(**kwargs):
+        nonlocal fetches
+        fetches += 1
+        return _target_snapshot() if fetches == 1 else StatusAccessError()
+
+    async def cancel_target_fn(**kwargs):
+        return {"success": True}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=_forbidden_submit,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+    )
+
+    assert outcomes[0].result == "unverified"
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "unverified"
 
 
 @pytest.mark.asyncio

@@ -469,6 +469,18 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ALTER TABLE review.order_proposals ADD COLUMN IF NOT EXISTS exit_reason TEXT",
     "ALTER TABLE review.order_proposals ADD COLUMN IF NOT EXISTS retrospective_id BIGINT",
     "ALTER TABLE review.order_proposals ADD COLUMN IF NOT EXISTS approval_issue_id TEXT",
+    # ---- ROB-832: replace/cancel proposal group columns ----
+    "ALTER TABLE review.order_proposals ADD COLUMN IF NOT EXISTS action TEXT",
+    "ALTER TABLE review.order_proposals "
+    "ADD COLUMN IF NOT EXISTS target_broker_order_id TEXT",
+    "DO $$ BEGIN "
+    "IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conname = 'order_proposals_action' "
+    "AND conrelid = 'review.order_proposals'::regclass) "
+    "THEN ALTER TABLE review.order_proposals "
+    "ADD CONSTRAINT order_proposals_action "
+    "CHECK (action IS NULL OR action IN ('place','replace','cancel')); "
+    "END IF; END $$",
 )
 
 

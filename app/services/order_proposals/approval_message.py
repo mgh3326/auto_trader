@@ -60,6 +60,37 @@ def parse_callback_data(data: str) -> tuple[str, str, str]:
     )
 
 
+def build_action_diff(*, group: Any, rungs: Sequence[Any]) -> dict | None:
+    action = getattr(group, "action", None) or "place"
+    if action == "place" or len(rungs) != 1:
+        return None
+
+    source_asof = getattr(group, "source_asof", None)
+    if not isinstance(source_asof, Mapping):
+        return None
+    before = source_asof.get("target_order_snapshot")
+    if not isinstance(before, Mapping):
+        return None
+
+    if action == "replace":
+        after = {
+            "quantity": getattr(rungs[0], "quantity", None),
+            "limit_price": getattr(rungs[0], "limit_price", None),
+        }
+    elif action == "cancel":
+        after = {"quantity": "0", "limit_price": before.get("limit_price")}
+    else:
+        return None
+
+    return {
+        "before": {
+            "quantity": before.get("remaining_quantity"),
+            "limit_price": before.get("limit_price"),
+        },
+        "after": after,
+    }
+
+
 def build_approval_message(
     *,
     group: Any,
@@ -88,19 +119,36 @@ def build_approval_message(
     symbol = str(getattr(group, "symbol", "") or "미기재")
     side = str(getattr(group, "side", "") or "미기재")
     order_type = str(getattr(group, "order_type", "") or "미기재")
+    action = str(getattr(group, "action", None) or "place")
+    target_broker_order_id = getattr(group, "target_broker_order_id", None)
     currency = _currency_for_market(market=market, symbol=symbol)
     quantity_unit = "주" if market in {"equity_kr", "equity_us"} else ""
     sorted_rungs = sorted(rungs, key=lambda rung: getattr(rung, "rung_index", 0))
+    explicit_reconfirm = diff is not None
+    effective_diff = (
+        diff if explicit_reconfirm else build_action_diff(group=group, rungs=rungs)
+    )
 
-    title = "*주문 제안 재확인*" if diff else "*주문 제안 승인*"
+    title = "*주문 제안 재확인*" if explicit_reconfirm else "*주문 제안 승인*"
     lines = [
         title,
         f"- 종목: `{_escape_inline_code(symbol)}`",
         "- 시장/방향/유형: "
         f"`{_escape_inline_code(f'{market} / {side} / {order_type}')}`",
-        "",
-        "*주문 단계*",
     ]
+    if action != "place":
+        target = (
+            f"`{_escape_inline_code(target_broker_order_id)}`"
+            if target_broker_order_id
+            else "미기재"
+        )
+        lines.extend(
+            [
+                f"- 작업: `{_escape_inline_code(action)}`",
+                f"- 대상 주문 ID: {target}",
+            ]
+        )
+    lines.extend(["", "*주문 단계*"])
     if sorted_rungs:
         for rung in sorted_rungs:
             display_index = int(getattr(rung, "rung_index", 0)) + 1
@@ -144,13 +192,20 @@ def build_approval_message(
         if cash_lines:
             lines.extend(["", "*현금 스트레스*", *cash_lines])
 
-    if diff:
-        before = diff.get("before") if isinstance(diff, Mapping) else None
-        after = diff.get("after") if isinstance(diff, Mapping) else None
+    if effective_diff is not None:
+        before = (
+            effective_diff.get("before")
+            if isinstance(effective_diff, Mapping)
+            else None
+        )
+        after = (
+            effective_diff.get("after") if isinstance(effective_diff, Mapping) else None
+        )
+        diff_heading = "*재확인 변경사항*" if explicit_reconfirm else "*주문 변경사항*"
         lines.extend(
             [
                 "",
-                "*재확인 변경사항*",
+                diff_heading,
                 f"- 변경 전: {_format_diff_side(before, currency=currency)}",
                 f"- 변경 후: {_format_diff_side(after, currency=currency)}",
             ]

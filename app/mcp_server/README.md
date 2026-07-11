@@ -488,6 +488,20 @@ proposal describes a possible order; creating or voiding one is not a broker
 order mutation.
 
 - `order_proposal_create(...)`
+  - `action="place"` is the default and `target_broker_order_id=None` is the
+    default.
+  - `place`: `target_broker_order_id` must be absent; one or more proposal
+    rungs are allowed.
+  - `replace`: `target_broker_order_id` is required; exactly one rung is the
+    proposed new order. Creation reads and snapshots the open target order but
+    does not mutate the broker. Telegram approval cancels the target, confirms
+    cancellation from fresh broker evidence, and only then submits the new
+    order.
+  - `cancel`: `target_broker_order_id` is required; exactly one rung must be
+    an exact snapshot of the target order (side, remaining quantity, and limit
+    price). It performs no new-order submit.
+  - Target-action tuples are supported only for
+    `kis_live/equity_kr`, `kis_live/equity_us`, and `upbit/crypto`.
   - When `valid_until` is omitted, it defaults to the next `00:00 KST`.
   - It accepts nullable `exit_intent`, `exit_reason`, `retrospective_id`, and
     `approval_issue_id` fields for a loss-cut proposal. For
