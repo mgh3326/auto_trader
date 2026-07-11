@@ -7,9 +7,11 @@ from app.models.review import (
     TossLiveOrderLedger,
 )
 
+pytestmark = pytest.mark.usefixtures("toss_ledger_cleanup_lock")
+
 
 @pytest_asyncio.fixture(autouse=True)
-async def clean_kis_live_ledger(db_session):
+async def clean_kis_live_ledger(db_session, toss_ledger_cleanup_lock):
     from sqlalchemy import text
 
     from app.mcp_server.tooling.kis_live_ledger import _order_session_factory
@@ -196,6 +198,7 @@ async def test_record_toss_place_kr_buy_mints_and_publishes(monkeypatch):
 async def test_record_toss_place_uses_internal_correlation_override_and_rung(
     monkeypatch,
 ):
+
     from decimal import Decimal as D
 
     from app.mcp_server.tooling import toss_live_ledger as mod

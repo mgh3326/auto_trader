@@ -19,10 +19,11 @@ import app.mcp_server.tooling.orders_toss_variants as otv
 from app.models.review import TossLiveOrderLedger
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
+pytestmark.append(pytest.mark.usefixtures("toss_ledger_cleanup_lock"))
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _clean(db_session):
+async def _clean(db_session, toss_ledger_cleanup_lock):
     await db_session.execute(delete(TossLiveOrderLedger))
     await db_session.commit()
     yield
