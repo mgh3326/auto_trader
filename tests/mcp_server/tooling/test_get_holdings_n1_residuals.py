@@ -64,9 +64,7 @@ async def test_get_holdings_resolves_crypto_instruments_once_and_keeps_signals(
     )
 
     resolve.assert_awaited_once_with(positions)
-    by_symbol = {
-        row["symbol"]: row for row in result["accounts"][0]["positions"]
-    }
+    by_symbol = {row["symbol"]: row for row in result["accounts"][0]["positions"]}
     assert by_symbol["KRW-BTC"]["strategy_signal"] == {
         "action": "sell",
         "reason": "stop_loss",

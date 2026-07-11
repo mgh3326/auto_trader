@@ -271,8 +271,7 @@ async def _resolve_crypto_instrument_ids_for_holdings(
         {
             str(position.get("symbol") or "").strip().upper()
             for position in positions
-            if position.get("instrument_type") == "crypto"
-            and position.get("symbol")
+            if position.get("instrument_type") == "crypto" and position.get("symbol")
         }
     )
     if not symbols:
@@ -1216,9 +1215,9 @@ async def _get_holdings_impl(
                     signal_results = await bounded_gather(
                         _CRYPTO_SIGNAL_CONCURRENCY,
                         [
-                            lambda p=position, iid=crypto_instrument_ids[
-                                str(position.get("symbol") or "").strip().upper()
-                            ]: _compute_for(p, iid)
+                            lambda p=position, iid=crypto_instrument_ids[str(position.get("symbol") or "").strip().upper()]: (
+                                _compute_for(p, iid)
+                            )
                             for position in computable_positions
                         ],
                         return_exceptions=True,
@@ -1237,9 +1236,7 @@ async def _get_holdings_impl(
                         if signal:
                             position["strategy_signal"] = signal
                 except Exception as exc:
-                    logger.debug(
-                        "Failed to compute crypto strategy signals: %s", exc
-                    )
+                    logger.debug("Failed to compute crypto strategy signals: %s", exc)
 
     grouped_accounts: dict[str, dict[str, Any]] = {}
     for position in positions:

@@ -251,9 +251,7 @@ class DailyCandlesRepository:
                     low=float(row["low"]),
                     close=float(row["close"]),
                     adj_close=None,
-                    volume=(
-                        float(row["volume"]) if row["volume"] is not None else 0.0
-                    ),
+                    volume=(float(row["volume"]) if row["volume"] is not None else 0.0),
                     value=float(row["value"]) if row["value"] is not None else 0.0,
                     source=row["source"],
                 )
@@ -327,9 +325,7 @@ class DailyCandlesRepository:
             pair = (str(row.symbol).strip().upper(), str(row.partition))
             identities_by_pair.setdefault(
                 pair,
-                await self._resolve_instrument_id(
-                    symbol=pair[0], partition=pair[1]
-                ),
+                await self._resolve_instrument_id(symbol=pair[0], partition=pair[1]),
             )
 
         total = 0
