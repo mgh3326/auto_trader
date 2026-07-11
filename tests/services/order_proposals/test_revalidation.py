@@ -1,3 +1,4 @@
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -10,6 +11,14 @@ from app.services.order_proposals.revalidation import (
     revalidate_and_submit,
 )
 from app.services.order_proposals.service import RungInput
+
+
+def _bound_toss_context():
+    import app.mcp_server.tooling.orders_toss_variants as toss
+
+    context = toss._order_proposal_context.get()
+    assert context is not None
+    return context
 
 
 def _fake_place_order(*, preview_price, preview_qty, submit_result):
@@ -329,6 +338,91 @@ async def test_loss_cut_bindings_forwarded_to_preview_and_submit(
         expected,
         expected,
     ]
+
+
+@pytest.mark.asyncio
+async def test_upbit_loss_cut_default_binding_forwards_identity_and_exit_fields(
+    db_session, monkeypatch
+):
+    from app.mcp_server.caller_identity import caller_agent_id_var, get_caller_agent_id
+    from app.services.order_proposals import revalidation as mod
+
+    async def fake_lookup(session, retrospective_id):
+        return SimpleNamespace(
+            symbol="KRW-DOT",
+            trigger_type="stop_loss",
+            created_at=datetime.now(UTC),
+        )
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    svc = OrderProposalsService(db_session)
+    group = await svc.create_proposal(
+        symbol="KRW-DOT",
+        market="crypto",
+        account_mode="upbit",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "sell", Decimal("0.1"), Decimal("3200"), None)],
+        exit_intent="loss_cut",
+        exit_reason="stop_loss",
+        retrospective_id=42,
+        approval_issue_id="ROB-800",
+        now=datetime.now(UTC),
+    )
+    await db_session.commit()
+    calls: list[dict] = []
+
+    async def fake_impl(**kwargs):
+        calls.append(kwargs)
+        assert get_caller_agent_id() == "proposal-agent"
+        assert "account_mode" not in kwargs
+        assert kwargs["market"] == "crypto"
+        if kwargs["dry_run"]:
+            return {
+                "success": True,
+                "approval_hash": "upbit-token",
+                "price": "3200",
+                "quantity": "0.1",
+            }
+        return {
+            "success": True,
+            "broker_status": "accepted",
+            "order_id": "upbit-order",
+            "correlation_id": "upbit-correlation",
+            "idempotency_key": "upbit-client",
+            "approval_hash_digest": "upbit-digest",
+        }
+
+    import app.mcp_server.tooling.order_execution as order_execution
+
+    monkeypatch.setattr(order_execution, "_place_order_impl", fake_impl)
+    token = caller_agent_id_var.set("proposal-agent")
+    try:
+        outcomes = await revalidate_and_submit(
+            service=svc,
+            proposal_id=group.proposal_id,
+            now=datetime.now(UTC),
+            place_order_fn=mod._default_place_order_fn,
+        )
+    finally:
+        caller_agent_id_var.reset(token)
+
+    assert outcomes[0].result == "submitted_resting"
+    assert len(calls) == 2
+    expected = {
+        "exit_intent": "loss_cut",
+        "exit_reason": "stop_loss",
+        "retrospective_id": 42,
+        "approval_issue_id": "ROB-800",
+    }
+    assert [{key: call[key] for key in expected} for call in calls] == [
+        expected,
+        expected,
+    ]
+    assert get_caller_agent_id() is None
 
 
 @pytest.mark.asyncio
@@ -722,6 +816,17 @@ def test_toss_decimal_args_are_exact_and_canonical():
     assert mod._toss_decimal_arg(Decimal("0.000000000001")) == "0.000000000001"
 
 
+def test_toss_proposal_client_ids_are_stable_and_rung_scoped():
+    from app.services.order_proposals import revalidation as mod
+
+    proposal_id = uuid.UUID("12345678-1234-5678-1234-567812345678")
+    same = mod._toss_proposal_client_order_id(proposal_id, 0)
+    assert same == mod._toss_proposal_client_order_id(proposal_id, 0)
+    assert same != mod._toss_proposal_client_order_id(proposal_id, 1)
+    assert same != mod._toss_proposal_client_order_id(uuid.uuid4(), 0)
+    assert same.startswith("tosprop-")
+
+
 @pytest.mark.asyncio
 async def test_toss_kr_routes_preview_and_accepted_submit(db_session, monkeypatch):
     svc = OrderProposalsService(db_session)
@@ -739,22 +844,24 @@ async def test_toss_kr_routes_preview_and_accepted_submit(db_session, monkeypatc
 
     async def fake_preview(**kwargs):
         calls["preview"] = kwargs
+        calls["preview_context"] = _bound_toss_context()
         return {
             "success": True,
             "approval_hash": "preview-token",
             "payload_preview": {
                 "price": "222600",
                 "quantity": "10",
-                "clientOrderId": "toss-client-1",
+                "clientOrderId": calls["preview_context"].client_order_id,
             },
         }
 
     async def fake_submit(**kwargs):
         calls["submit"] = kwargs
+        calls["submit_context"] = _bound_toss_context()
         return {
             "success": True,
             "order_id": "toss-order-1",
-            "client_order_id": "toss-client-1",
+            "client_order_id": calls["submit_context"].client_order_id,
             "approval_hash_digest": "canonical-ledger-digest",
         }
 
@@ -776,13 +883,226 @@ async def test_toss_kr_routes_preview_and_accepted_submit(db_session, monkeypatc
     assert calls["submit"]["dry_run"] is False
     assert calls["submit"]["confirm"] is True
     assert calls["submit"]["approval_hash"] == "preview-token"
-    assert calls["submit"]["client_order_id_override"] == "toss-client-1"
     assert calls["submit"]["rung"] == 0
+    assert (
+        calls["preview_context"].client_order_id
+        == calls["submit_context"].client_order_id
+    )
+    assert calls["submit_context"].correlation_id == "proposal-correlation"
     _, rungs = await svc.get_proposal(group.proposal_id)
     assert rungs[0].broker_order_id == "toss-order-1"
     assert rungs[0].correlation_id == "proposal-correlation"
-    assert rungs[0].idempotency_key == "toss-client-1"
+    assert rungs[0].idempotency_key == calls["preview_context"].client_order_id
     assert rungs[0].approval_hash_digest == "canonical-ledger-digest"
+
+
+@pytest.mark.asyncio
+async def test_toss_retry_across_dates_reuses_proposal_client_id(
+    db_session, monkeypatch
+):
+    svc = OrderProposalsService(db_session)
+    group = await svc.create_proposal(
+        symbol="000660",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("50000"), None)],
+    )
+    await db_session.commit()
+    preview_ids: list[str] = []
+
+    async def fake_preview(**kwargs):
+        client_order_id = _bound_toss_context().client_order_id
+        preview_ids.append(client_order_id)
+        if len(preview_ids) == 1:
+            raise RuntimeError("temporary preview failure")
+        return {
+            "success": True,
+            "approval_hash": "retry-token",
+            "payload_preview": {
+                "price": "50000",
+                "quantity": "1",
+                "clientOrderId": client_order_id,
+            },
+        }
+
+    async def fake_submit(**kwargs):
+        context = _bound_toss_context()
+        return {
+            "success": True,
+            "broker_status": "accepted",
+            "order_id": "retry-order",
+            "client_order_id": context.client_order_id,
+            "approval_hash_digest": "retry-digest",
+        }
+
+    import app.mcp_server.tooling.orders_toss_variants as toss
+
+    monkeypatch.setattr(toss, "toss_preview_order", fake_preview)
+    monkeypatch.setattr(toss, "toss_place_order", fake_submit)
+    first = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime(2026, 7, 11, 14, 59, tzinfo=UTC),
+    )
+    second = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime(2026, 7, 12, 15, 1, tzinfo=UTC),
+    )
+
+    assert first[0].result == "error"
+    assert second[0].result == "submitted_resting"
+    assert preview_ids[0] == preview_ids[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "missing_payload",
+        "malformed_payload",
+        "missing_hash",
+        "missing_client_id",
+        "missing_quantity",
+        "missing_limit_price",
+        "mismatched_client_id",
+    ],
+)
+async def test_toss_incomplete_preview_fails_closed(db_session, monkeypatch, defect):
+    svc = OrderProposalsService(db_session)
+    group = await svc.create_proposal(
+        symbol="000660",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("50000"), None)],
+    )
+    await db_session.commit()
+    submitted = False
+
+    async def fake_preview(**kwargs):
+        context = _bound_toss_context()
+        preview = {
+            "success": True,
+            "approval_hash": "capability-token",
+            "payload_preview": {
+                "price": "50000",
+                "quantity": "1",
+                "clientOrderId": context.client_order_id,
+            },
+        }
+        if defect == "missing_payload":
+            preview.pop("payload_preview")
+        elif defect == "malformed_payload":
+            preview["payload_preview"] = []
+        elif defect == "missing_hash":
+            preview.pop("approval_hash")
+        elif defect == "missing_client_id":
+            preview["payload_preview"].pop("clientOrderId")
+        elif defect == "missing_quantity":
+            preview["payload_preview"].pop("quantity")
+        elif defect == "missing_limit_price":
+            preview["payload_preview"].pop("price")
+        else:
+            preview["payload_preview"]["clientOrderId"] = "external-client-id"
+        return preview
+
+    async def fake_submit(**kwargs):
+        nonlocal submitted
+        submitted = True
+        raise AssertionError("incomplete preview must never submit")
+
+    import app.mcp_server.tooling.orders_toss_variants as toss
+
+    monkeypatch.setattr(toss, "toss_preview_order", fake_preview)
+    monkeypatch.setattr(toss, "toss_place_order", fake_submit)
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+    )
+
+    assert outcomes[0].result == "error"
+    assert outcomes[0].detail["error"].startswith("invalid_toss_preview:")
+    assert submitted is False
+    _, rungs = await svc.get_proposal(group.proposal_id)
+    assert rungs[0].state == "pending_approval"
+
+
+@pytest.mark.asyncio
+async def test_toss_multi_rung_ids_and_correlations_stay_distinct(
+    db_session, monkeypatch
+):
+    svc = OrderProposalsService(db_session)
+    group = await svc.create_proposal(
+        symbol="000660",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[
+            RungInput(0, "buy", Decimal("1"), Decimal("50000"), None),
+            RungInput(1, "buy", Decimal("2"), Decimal("49000"), None),
+        ],
+    )
+    await db_session.commit()
+    submit_contexts = []
+
+    async def fake_preview(**kwargs):
+        context = _bound_toss_context()
+        return {
+            "success": True,
+            "approval_hash": f"token-{context.rung}",
+            "payload_preview": {
+                "price": str(kwargs["price"]),
+                "quantity": str(kwargs["quantity"]),
+                "clientOrderId": context.client_order_id,
+            },
+        }
+
+    async def fake_submit(**kwargs):
+        context = _bound_toss_context()
+        submit_contexts.append(context)
+        return {
+            "success": True,
+            "broker_status": "accepted",
+            "order_id": f"order-{context.rung}",
+            "client_order_id": context.client_order_id,
+            "correlation_id": context.correlation_id,
+            "approval_hash_digest": f"digest-{context.rung}",
+        }
+
+    import app.mcp_server.tooling.orders_toss_variants as toss
+
+    monkeypatch.setattr(toss, "toss_preview_order", fake_preview)
+    monkeypatch.setattr(toss, "toss_place_order", fake_submit)
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        correlation_mint=lambda **kwargs: f"proposal-corr-{kwargs['rung'].rung_index}",
+    )
+
+    assert [outcome.result for outcome in outcomes] == [
+        "submitted_resting",
+        "submitted_resting",
+    ]
+    assert submit_contexts[0].client_order_id != submit_contexts[1].client_order_id
+    assert [context.correlation_id for context in submit_contexts] == [
+        "proposal-corr-0",
+        "proposal-corr-1",
+    ]
+    _, rungs = await svc.get_proposal(group.proposal_id)
+    assert [rung.correlation_id for rung in rungs] == [
+        "proposal-corr-0",
+        "proposal-corr-1",
+    ]
 
 
 @pytest.mark.asyncio
@@ -810,23 +1130,25 @@ async def test_toss_us_preserves_fractional_numeric_precision(db_session, monkey
 
     async def fake_preview(**kwargs):
         calls.append(kwargs)
+        client_order_id = _bound_toss_context().client_order_id
         return {
             "success": True,
             "approval_hash": "us-token",
             "payload_preview": {
                 "price": "189.1234",
                 "quantity": "0.125",
-                "clientOrderId": "us-client",
+                "clientOrderId": client_order_id,
             },
         }
 
     async def fake_submit(**kwargs):
         calls.append(kwargs)
+        client_order_id = _bound_toss_context().client_order_id
         return {
             "success": True,
             "broker_status": "accepted",
             "order_id": "us-order",
-            "client_order_id": "us-client",
+            "client_order_id": client_order_id,
             "correlation_id": "toss-correlation",
             "approval_hash_digest": "us-ledger-digest",
         }
@@ -870,13 +1192,14 @@ async def test_toss_tick_normalized_preview_needs_reconfirm_without_submit(
     submitted = False
 
     async def fake_preview(**kwargs):
+        client_order_id = _bound_toss_context().client_order_id
         return {
             "success": True,
             "approval_hash": "normalized-token",
             "payload_preview": {
                 "price": "222600",
                 "quantity": "10",
-                "clientOrderId": "normalized-client",
+                "clientOrderId": client_order_id,
             },
         }
 
@@ -916,13 +1239,14 @@ async def test_toss_explicit_rejection_records_rejected(db_session, monkeypatch)
     await db_session.commit()
 
     async def fake_preview(**kwargs):
+        client_order_id = _bound_toss_context().client_order_id
         return {
             "success": True,
             "approval_hash": "reject-token",
             "payload_preview": {
                 "price": "50000",
                 "quantity": "1",
-                "clientOrderId": "reject-client",
+                "clientOrderId": client_order_id,
             },
         }
 
@@ -991,13 +1315,14 @@ async def test_toss_post_send_failure_records_unverified(
     await db_session.commit()
 
     async def fake_preview(**kwargs):
+        client_order_id = _bound_toss_context().client_order_id
         return {
             "success": True,
             "approval_hash": "ambiguous-token",
             "payload_preview": {
                 "price": "50000",
                 "quantity": "1",
-                "clientOrderId": "ambiguous-client",
+                "clientOrderId": client_order_id,
             },
         }
 
@@ -1038,22 +1363,24 @@ async def test_toss_market_order_accepted_is_acked_not_filled(db_session, monkey
     await db_session.commit()
 
     async def fake_preview(**kwargs):
+        client_order_id = _bound_toss_context().client_order_id
         return {
             "success": True,
             "approval_hash": "market-token",
             "payload_preview": {
                 "price": None,
                 "quantity": "1",
-                "clientOrderId": "market-client",
+                "clientOrderId": client_order_id,
             },
         }
 
     async def fake_submit(**kwargs):
+        client_order_id = _bound_toss_context().client_order_id
         return {
             "success": True,
             "broker_status": "accepted",
             "order_id": "market-order",
-            "client_order_id": "market-client",
+            "client_order_id": client_order_id,
             "approval_hash_digest": "market-digest",
         }
 

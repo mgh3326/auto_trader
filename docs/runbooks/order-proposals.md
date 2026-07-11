@@ -125,12 +125,14 @@ See the full design in
   `toss_place_order` owns the fail-closed sell-loss and mutation checks directly
   before broker POST. Sector concentration from preview is advisory/soft.
   Proposal `Decimal` values cross the Toss tool boundary as exact `str | int`
-  values, with no float coercion. Submit reuses the preview's raw
-  `approval_hash`, the same `rung`, and the exact
-  `payload_preview.clientOrderId`; the proposal rung stores the actual
-  `approval_hash_digest` returned by `toss_place_order`. Broker acceptance is
-  not a fill, and any post-send ambiguity remains `unverified` for
-  reconciliation rather than being retried or voided.
+  values, with no float coercion. Revalidation privately binds a stable client
+  ID derived only from `proposal_id + rung` around both preview and submit,
+  fails closed unless preview returns that exact ID, and privately hands the
+  proposal correlation/rung into the Toss ledger. These values are not public
+  MCP inputs. Submit reuses the preview's raw `approval_hash`; the proposal
+  rung stores the actual `approval_hash_digest` returned by `toss_place_order`.
+  Broker acceptance is not a fill, and any post-send ambiguity remains
+  `unverified` for reconciliation rather than being retried or voided.
 - **Default OFF.** `ORDER_PROPOSALS_ENABLED=false` by default
   (`app/core/config.py`). When off, the four MCP tools are not registered
   in either the default profile (`registry.py`) or the 8770 TradingCodex
@@ -532,13 +534,15 @@ submitted blind would defeat the entire point of a human-approval gate.
    matches, the rung transitions `approved → submitting` and is actually
    submitted (`dry_run=False`) using the **freshly minted** `approval_hash`
    from step 5's preview — never the one from the original proposal-create
-   preview. Toss also receives the same `rung` and the exact
-   `payload_preview.clientOrderId` as `client_order_id_override`, so submit
-   cannot derive a different identity across a date boundary. Toss proposal
-   numerics are converted at the adapter boundary to canonical `str | int`
-   values, never floats. After an accepted Toss send, the proposal ledger
-   records `toss_place_order`'s actual `approval_hash_digest`; it does not
-   substitute the raw approval token. If the comparison does *not* match, the
+   preview. Toss receives a privately bound client ID derived only from the
+   proposal ID and rung for both preview and submit, so retries and date
+   boundaries cannot change the identity; preview must return the exact bound
+   ID or submission fails closed. The proposal correlation and rung use the
+   same private binding and are not operator-controlled MCP parameters. Toss
+   proposal numerics are converted at the adapter boundary to canonical
+   `str | int` values, never floats. After an accepted Toss send, the proposal
+   ledger records `toss_place_order`'s actual `approval_hash_digest`; it does
+   not substitute the raw approval token. If the comparison does *not* match, the
    rung transitions to
    `needs_reconfirm` and a brand-new Telegram message is sent
    (`build_approval_message(..., diff=...)`) showing an explicit

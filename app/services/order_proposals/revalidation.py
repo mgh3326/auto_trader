@@ -22,6 +22,7 @@ or returns a response this orchestrator cannot classify is recorded via
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import uuid
 from collections.abc import Callable
@@ -125,6 +126,12 @@ def _toss_decimal_arg(value: Decimal | None) -> str | int | None:
     return format(normalized, "f")
 
 
+def _toss_proposal_client_order_id(proposal_id: uuid.UUID, rung_index: int) -> str:
+    """Return a proposal/rung-stable, Toss-safe private idempotency key."""
+    digest = hashlib.sha256(f"{proposal_id}:{rung_index}".encode()).hexdigest()[:32]
+    return f"tosprop-{digest}"
+
+
 def _adapt_toss_preview_response(preview: dict[str, Any]) -> dict[str, Any]:
     """Expose Toss's normalized wire payload through the proposal contract."""
     payload = preview.get("payload_preview")
@@ -135,6 +142,30 @@ def _adapt_toss_preview_response(preview: dict[str, Any]) -> dict[str, Any]:
     adapted["quantity"] = payload.get("quantity")
     adapted["idempotency_key"] = payload.get("clientOrderId")
     return adapted
+
+
+def _invalid_toss_preview_reason(
+    preview: dict[str, Any], *, expected_client_order_id: str, order_type: str
+) -> str | None:
+    payload = preview.get("payload_preview")
+    if not isinstance(payload, dict):
+        return "payload_preview_missing_or_malformed"
+    approval_hash = preview.get("approval_hash")
+    if not isinstance(approval_hash, str) or not approval_hash.strip():
+        return "approval_hash_missing"
+    client_order_id = payload.get("clientOrderId")
+    if not isinstance(client_order_id, str) or not client_order_id.strip():
+        return "client_order_id_missing"
+    if client_order_id != expected_client_order_id:
+        return "client_order_id_mismatch"
+    quantity = payload.get("quantity")
+    if quantity is None or not str(quantity).strip():
+        return "quantity_missing"
+    if order_type == "limit":
+        price = payload.get("price")
+        if price is None or not str(price).strip():
+            return "limit_price_missing"
+    return None
 
 
 def _adapt_toss_submit_response(
@@ -221,9 +252,10 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
     Finding 1 for why the raw response can't be classified directly.
     """
     account_mode = kwargs.pop("account_mode", None)
-    client_order_id_override = kwargs.pop("client_order_id_override", None)
+    proposal_client_order_id = kwargs.pop("proposal_client_order_id", None)
     if account_mode == "toss_live":
         from app.mcp_server.tooling.orders_toss_variants import (
+            _bind_order_proposal_context,
             toss_place_order,
             toss_preview_order,
         )
@@ -240,20 +272,30 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
             "rung": kwargs.get("rung"),
         }
         if kwargs.get("dry_run") is True:
-            return _adapt_toss_preview_response(await toss_preview_order(**toss_kwargs))
+            with _bind_order_proposal_context(
+                client_order_id=str(proposal_client_order_id),
+                correlation_id=None,
+                rung=kwargs.get("rung"),
+            ):
+                preview = await toss_preview_order(**toss_kwargs)
+            return _adapt_toss_preview_response(preview)
 
         approval_hash = kwargs.get("approval_hash")
-        submit = await toss_place_order(
-            **toss_kwargs,
-            dry_run=False,
-            confirm=True,
-            approval_hash=approval_hash,
-            reason=kwargs.get("reason"),
-            exit_reason=kwargs.get("exit_reason"),
-            thesis=kwargs.get("thesis"),
-            strategy=kwargs.get("strategy"),
-            client_order_id_override=client_order_id_override,
-        )
+        with _bind_order_proposal_context(
+            client_order_id=str(proposal_client_order_id),
+            correlation_id=kwargs.get("correlation_id"),
+            rung=kwargs.get("rung"),
+        ):
+            submit = await toss_place_order(
+                **toss_kwargs,
+                dry_run=False,
+                confirm=True,
+                approval_hash=approval_hash,
+                reason=kwargs.get("reason"),
+                exit_reason=kwargs.get("exit_reason"),
+                thesis=kwargs.get("thesis"),
+                strategy=kwargs.get("strategy"),
+            )
         return _adapt_toss_submit_response(
             submit,
             order_type=str(kwargs.get("order_type")),
@@ -335,6 +377,11 @@ async def _revalidate_rung(
 ) -> RungOutcome:
     proposal_id = group.proposal_id
     rung_index = rung.rung_index
+    toss_client_order_id = (
+        _toss_proposal_client_order_id(proposal_id, rung_index)
+        if group.account_mode == "toss_live"
+        else None
+    )
 
     await service.transition_rung(proposal_id, rung_index, new_state="revalidating")
 
@@ -357,6 +404,11 @@ async def _revalidate_rung(
                 approval_issue_id=group.approval_issue_id,
                 reason=_PREVIEW_REASON.format(rung=rung_index),
                 rung=rung_index,
+                **(
+                    {"proposal_client_order_id": toss_client_order_id}
+                    if toss_client_order_id is not None
+                    else {}
+                ),
             )
         )
     except Exception as exc:  # noqa: BLE001 - preview never reached the broker
@@ -378,6 +430,25 @@ async def _revalidate_rung(
             "guard_blocked" if _is_guard_blocked_preview(preview) else "error",
             {"error": preview.get("error"), "preview": preview},
         )
+
+    if toss_client_order_id is not None:
+        invalid_reason = _invalid_toss_preview_reason(
+            preview,
+            expected_client_order_id=toss_client_order_id,
+            order_type=group.order_type,
+        )
+        if invalid_reason is not None:
+            await service.transition_rung(
+                proposal_id, rung_index, new_state="pending_approval"
+            )
+            return RungOutcome(
+                rung_index,
+                "error",
+                {
+                    "error": f"invalid_toss_preview:{invalid_reason}",
+                    "preview": preview,
+                },
+            )
 
     # Market-order rungs have no `limit_price` by design (it's always None),
     # but `_build_preview` always backfills `preview["price"]` with the live
@@ -427,10 +498,10 @@ async def _revalidate_rung(
                 approval_issue_id=group.approval_issue_id,
                 reason=_SUBMIT_REASON.format(rung=rung_index),
                 approval_hash=preview.get("approval_hash"),
-                client_order_id_override=(
-                    preview.get("idempotency_key")
-                    if group.account_mode == "toss_live"
-                    else None
+                **(
+                    {"proposal_client_order_id": toss_client_order_id}
+                    if toss_client_order_id is not None
+                    else {}
                 ),
                 rung=rung_index,
                 correlation_id=corr,
