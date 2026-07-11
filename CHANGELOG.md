@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added (ROB-816 — loss-cut completion and Toss proposal routing; migration 0)
+- **Telegram loss-cut approvals now carry an explicit service identity.** `ORDER_PROPOSALS_SUBMIT_AGENT_ID` is empty by default and is scoped only to callback revalidation/submission; operators must add the same value to `LOSS_CUT_ALLOWED_AGENT_IDS`. Empty or whitespace configuration masks any outer identity and fails closed. Upbit crypto loss-cut proposals are supported for the residual KRW-DOT canary while preserving the existing retrospective, approval issue, sell-limit, and ROB-800 checks.
+- **Toss proposals use Toss-native preview and placement.** `toss_live` Korean and US equity proposals route through `toss_preview_order`/`toss_place_order`, preserve exact `str | int` decimal inputs, consume Toss-normalized preview price/quantity, and round-trip the approval token, rung, canonical digest, stable proposal/rung client ID, and exact proposal correlation without exposing idempotency controls in the public MCP schema.
+- **Ambiguous live outcomes stay non-retryable.** Explicit Toss rejection terminalizes, accepted sends remain `acked`/`resting` rather than filled, and any post-send timeout or ledger failure remains `unverified` with broker evidence preserved. Incomplete or malformed Toss preview capability envelopes fail closed before mutation.
+
 ### Fixed (ROB-827 — KIS VTS token cache; migration 0)
 - **VTS OAuth tokens now survive MCP client churn.** Mock KIS clients share a Redis token manager scoped by normalized VTS host and a non-secret SHA-256 appkey fingerprint, so cache and lock keys cannot collide with live KIS or another VTS credential scope.
 - **Slow VTS issuance remains single-flight.** The VTS-only OAuth request timeout is 10 seconds and VTS lock contenders wait 11 seconds, covering the observed 4–6 second issuance latency without changing the live KIS 5-second request timeout, 3-second contender wait, Redis keys, or order paths.
