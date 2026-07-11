@@ -1009,3 +1009,144 @@ async def test_replace_manual_target_uses_fresh_broker_evidence_only(db_session)
     )
 
     assert outcomes[0].result == "submitted_resting"
+
+
+@pytest.mark.asyncio
+async def test_replace_unconfirmed_returns_unverified_no_submit(db_session):
+    service, group = await _create_target_proposal(db_session, action="replace")
+    snapshots = iter([_target_snapshot(), _target_snapshot(status="open")])
+
+    async def fetch_target_fn(**kwargs):
+        return next(snapshots)
+
+    async def cancel_target_fn(**kwargs):
+        return {"success": True}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=_forbidden_submit,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+    )
+
+    assert outcomes[0].result == "unverified"
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "unverified"
+
+
+@pytest.mark.asyncio
+async def test_replace_confirmation_exception_returns_unverified_no_submit(db_session):
+    service, group = await _create_target_proposal(db_session, action="replace")
+
+    class StatusAccessError:
+        @property
+        def status(self):
+            raise TypeError("invalid confirmation status")
+
+    fetches = 0
+
+    async def fetch_target_fn(**kwargs):
+        nonlocal fetches
+        fetches += 1
+        return _target_snapshot() if fetches == 1 else StatusAccessError()
+
+    async def cancel_target_fn(**kwargs):
+        return {"success": True}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=_forbidden_submit,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+    )
+
+    assert outcomes[0].result == "unverified"
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "unverified"
+
+
+@pytest.mark.asyncio
+async def test_replace_initial_fetch_returns_pending_approval_on_transient_error(db_session):
+    service, group = await _create_target_proposal(db_session, action="replace")
+
+    async def fetch_target_fn(**kwargs):
+        raise TimeoutError("target fetch unavailable")
+
+    async def cancel_target_fn(**kwargs):
+        raise AssertionError("cancel requires fresh target evidence")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=_forbidden_submit,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+    )
+
+    assert outcomes[0].result == "error"
+    assert outcomes[0].detail["error"] == "target_fetch_error:target fetch unavailable"
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "pending_approval"
+
+
+@pytest.mark.asyncio
+async def test_cancel_unconfirmed_returns_unverified(db_session):
+    service, group = await _create_target_proposal(db_session, action="cancel")
+    snapshots = iter([_target_snapshot(), _target_snapshot(status="open")])
+
+    async def fetch_target_fn(**kwargs):
+        return next(snapshots)
+
+    async def cancel_target_fn(**kwargs):
+        return {"success": True}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=_forbidden_submit,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+    )
+
+    assert outcomes[0].result == "unverified"
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "unverified"
+
+
+@pytest.mark.asyncio
+async def test_cancel_confirmation_exception_returns_unverified(db_session):
+    service, group = await _create_target_proposal(db_session, action="cancel")
+
+    class StatusAccessError:
+        @property
+        def status(self):
+            raise TypeError("invalid confirmation status")
+
+    fetches = 0
+
+    async def fetch_target_fn(**kwargs):
+        nonlocal fetches
+        fetches += 1
+        return _target_snapshot() if fetches == 1 else StatusAccessError()
+
+    async def cancel_target_fn(**kwargs):
+        return {"success": True}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=_forbidden_submit,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+    )
+
+    assert outcomes[0].result == "unverified"
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "unverified"

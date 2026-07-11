@@ -440,11 +440,14 @@ async def _validate_target_action(
                 now=now,
             )
         )
+        mismatch_reason = _target_mismatch_reason(approved, fresh)
     except Exception as exc:
         await service.transition_rung(
             proposal_id, rung_index, new_state="pending_approval"
         )
-        return RungOutcome(rung_index, "error", {"error": str(exc)})
+        return RungOutcome(
+            rung_index, "error", {"error": f"target_fetch_error:{exc}"}
+        )
 
     if fresh is None:
         await service.transition_rung(
@@ -452,7 +455,6 @@ async def _validate_target_action(
         )
         return RungOutcome(rung_index, "error", {"error": "target_evidence_missing"})
 
-    mismatch_reason = _target_mismatch_reason(approved, fresh)
     if mismatch_reason is not None:
         await service.record_rejected(
             proposal_id, rung_index, reason=mismatch_reason, now=now
@@ -579,6 +581,7 @@ async def _cancel_and_confirm_target(
                 now=now,
             )
         )
+        confirmed_status = getattr(confirmed, "status", None)
     except Exception as exc:
         await service.record_unverified(
             proposal_id,
@@ -598,11 +601,11 @@ async def _cancel_and_confirm_target(
         return RungOutcome(
             rung_index, "unverified", {"error": "cancel_confirmation_missing_evidence"}
         )
-    if confirmed.status != "cancelled":
+    if confirmed_status != "cancelled":
         await service.record_unverified(
             proposal_id,
             rung_index,
-            reason=f"cancel_unconfirmed:{confirmed.status}",
+            reason=f"cancel_unconfirmed:{confirmed_status}",
             now=now,
         )
         return RungOutcome(
