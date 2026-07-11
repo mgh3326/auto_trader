@@ -717,15 +717,18 @@ class TestDefaultPlaceOrderFnDecimalCoercion:
 def _target_snapshot(
     *,
     broker_order_id: str = "old-1",
+    symbol: str = "KRW-AVAX",
+    side: str = "sell",
+    order_type: str = "limit",
     limit_price: str = "42000",
     remaining_quantity: str = "3.5",
     status: str = "open",
 ) -> TargetOrderSnapshot:
     return TargetOrderSnapshot(
         broker_order_id=broker_order_id,
-        symbol="KRW-AVAX",
-        side="sell",
-        order_type="limit",
+        symbol=symbol,
+        side=side,
+        order_type=order_type,
         limit_price=limit_price,
         remaining_quantity=remaining_quantity,
         status=status,
@@ -814,7 +817,15 @@ async def test_replace_confirms_cancel_before_new_submit(db_session):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("field", "value"), [("limit_price", "42001"), ("remaining_quantity", "3.4")]
+    ("field", "value"),
+    [
+        ("broker_order_id", "old-2"),
+        ("symbol", "KRW-SOL"),
+        ("side", "buy"),
+        ("order_type", "market"),
+        ("limit_price", "42001"),
+        ("remaining_quantity", "3.4"),
+    ],
 )
 async def test_replace_target_drift_is_rejected_without_cancel(
     db_session, field, value
@@ -844,6 +855,7 @@ async def test_replace_target_drift_is_rejected_without_cancel(
     assert calls == ["fetch"]
     _, rungs = await service.get_proposal(group.proposal_id)
     assert rungs[0].state == "rejected"
+    assert rungs[0].void_reason == f"target_snapshot_mismatch:{field}"
 
 
 @pytest.mark.asyncio
@@ -915,15 +927,17 @@ async def test_replace_cancel_rejection_forbids_submit(db_session):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "failure",
+    ("failure", "void_reason_prefix"),
     [
-        "cancel_exception",
-        "confirmation_exception",
-        "open_confirmation",
-        "missing_evidence",
+        ("cancel_exception", "cancel_exception:"),
+        ("confirmation_exception", "cancel_confirmation_error:"),
+        ("open_confirmation", "cancel_unconfirmed:open"),
+        ("missing_evidence", "cancel_confirmation_missing_evidence"),
     ],
 )
-async def test_replace_unconfirmed_cancellation_forbids_submit(db_session, failure):
+async def test_replace_unconfirmed_cancellation_forbids_submit(
+    db_session, failure, void_reason_prefix
+):
     service, group = await _create_target_proposal(db_session, action="replace")
     fetches = 0
 
@@ -955,6 +969,7 @@ async def test_replace_unconfirmed_cancellation_forbids_submit(db_session, failu
     assert outcomes[0].result == "unverified"
     _, rungs = await service.get_proposal(group.proposal_id)
     assert rungs[0].state == "unverified"
+    assert rungs[0].void_reason.startswith(void_reason_prefix)
 
 
 @pytest.mark.asyncio

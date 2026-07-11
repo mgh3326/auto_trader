@@ -34,6 +34,21 @@ def test_hash_is_deterministic_and_order_insensitive():
 
 
 @pytest.mark.unit
+def test_none_action_hashes_identically_to_place():
+    common = {
+        "symbol": "000660",
+        "market": "equity_kr",
+        "account_mode": "kis_live",
+        "order_type": "limit",
+        "rungs": _rungs(),
+    }
+
+    assert compute_proposal_payload_hash(
+        **common, action=None
+    ) == compute_proposal_payload_hash(**common, action="place")
+
+
+@pytest.mark.unit
 def test_price_change_changes_hash():
     base = compute_proposal_payload_hash(
         symbol="000660",

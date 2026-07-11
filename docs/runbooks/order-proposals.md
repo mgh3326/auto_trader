@@ -294,11 +294,13 @@ ID is the rung's `broker_order_id`; use its `correlation_id` with the original
 target ID to reconstruct the full lineage. A cancel action retains the target
 ID as its audit identity and does not create a replacement broker order.
 
-If a replace or cancel rung is `unverified`, stop retries. Reconcile fresh
-broker evidence for the original `target_broker_order_id` and, where a
-replacement may have been submitted, the rung's `correlation_id` and
-`broker_order_id`. Retry only after that operator reconciliation establishes
-the broker's actual state.
+### Replace/cancel recovery by rung state
+
+| Rung state and outcome | Retry? | Operator action |
+|---|---|---|
+| `pending_approval` with `result="error"` caused by a transient target fetch failure | **Yes** | Retry the approval after broker connectivity/evidence retrieval recovers. No cancel request or replacement submit was attempted. |
+| `rejected` because the fresh target snapshot mismatched the approved snapshot | **No** | Do not retry the existing proposal: the approved target is stale. Create a new proposal from a fresh target snapshot and obtain a new approval. |
+| `unverified` after cancel/confirmation ambiguity | **No — not until reconciled** | Stop retries. Reconcile fresh broker evidence for the original `target_broker_order_id` and, where a replacement may have been submitted, the rung's `correlation_id` and `broker_order_id`. Take further action only after operator reconciliation establishes the broker's actual state. |
 
 ---
 
