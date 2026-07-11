@@ -369,7 +369,12 @@ async def _revalidate_place_rung(
         )
     except Exception as exc:  # noqa: BLE001 - broker call; ambiguous, not a void
         await service.record_unverified(
-            proposal_id, rung_index, reason=f"submit_exception:{exc}", now=now
+            proposal_id,
+            rung_index,
+            reason=f"submit_exception:{exc}",
+            now=now,
+            correlation_id=corr,
+            idempotency_key=preview.get("idempotency_key"),
         )
         return RungOutcome(rung_index, "unverified", {"error": str(exc)})
 
@@ -683,7 +688,12 @@ async def _revalidate_replace_rung(
         )
     except Exception as exc:
         await service.record_unverified(
-            proposal_id, rung_index, reason=f"submit_exception:{exc}", now=now
+            proposal_id,
+            rung_index,
+            reason=f"submit_exception:{exc}",
+            now=now,
+            correlation_id=corr,
+            idempotency_key=preview.get("idempotency_key"),
         )
         return RungOutcome(rung_index, "unverified", {"error": str(exc)})
     return await _classify_submit(
@@ -798,5 +808,9 @@ async def _classify_submit(
         rung_index,
         reason=f"ambiguous_submit_response:status={submit.get('status')!r}",
         now=now,
+        correlation_id=corr,
+        idempotency_key=(
+            submit.get("idempotency_key") or preview.get("idempotency_key")
+        ),
     )
     return RungOutcome(rung_index, "unverified", {"submit": submit})

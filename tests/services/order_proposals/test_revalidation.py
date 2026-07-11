@@ -1100,6 +1100,46 @@ async def test_replace_confirmation_exception_returns_unverified_no_submit(db_se
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("submit_result", ["exception", "ambiguous"])
+async def test_replace_submit_ambiguity_persists_reconcile_lineage(
+    db_session, submit_result
+):
+    service, group = await _create_target_proposal(db_session, action="replace")
+    snapshots = iter([_target_snapshot(), _target_snapshot(status="cancelled")])
+
+    async def fetch_target_fn(**kwargs):
+        return next(snapshots)
+
+    async def cancel_target_fn(**kwargs):
+        return {"success": True}
+
+    async def place_order_fn(**kwargs):
+        if kwargs["dry_run"]:
+            return {
+                **(await _matching_preview(**kwargs)),
+                "idempotency_key": "idem-replace-1",
+            }
+        if submit_result == "exception":
+            raise TimeoutError("submit outcome unknown")
+        return {"success": True, "status": "unknown"}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order_fn,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+        correlation_mint=lambda **kwargs: "corr-replace-1",
+    )
+
+    assert outcomes[0].result == "unverified"
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].correlation_id == "corr-replace-1"
+    assert rungs[0].idempotency_key == "idem-replace-1"
+
+
+@pytest.mark.asyncio
 async def test_replace_initial_fetch_returns_pending_approval_on_transient_error(
     db_session,
 ):

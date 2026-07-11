@@ -274,6 +274,12 @@ async def _handle_approve(
     telegram_user_id: str,
     revalidate_fn: RevalidateFn,
 ) -> dict[str, Any]:
+    # Lock the broker target before taking any proposal row lock. Independently
+    # created proposals may point at the same manual/session order, so the
+    # proposal-scoped commit lease alone cannot prevent a double mutation.
+    target_group, _ = await service.get_proposal(proposal_id)
+    await service.acquire_target_mutation_lock(target_group)
+
     if await service.expire_if_needed(proposal_id, now=now):
         await session.commit()
         if message_id is not None:

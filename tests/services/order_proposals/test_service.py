@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -5,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.core.db import AsyncSessionLocal
 from app.core.timezone import KST
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.errors import (
@@ -45,6 +47,33 @@ def _target_action_create_kwargs(action: str, **overrides):
     }
     kwargs.update(overrides)
     return kwargs
+
+
+@pytest.mark.asyncio
+async def test_target_mutation_lock_serializes_same_broker_order():
+    target = SimpleNamespace(
+        action="replace",
+        account_mode="upbit",
+        market="crypto",
+        broker_account_id=None,
+        target_broker_order_id=f"manual-{uuid.uuid4()}",
+    )
+
+    async with (
+        AsyncSessionLocal() as first_session,
+        AsyncSessionLocal() as second_session,
+    ):
+        first = OrderProposalsService(first_session)
+        second = OrderProposalsService(second_session)
+
+        assert await first.acquire_target_mutation_lock(target) is True
+        waiter = asyncio.create_task(second.acquire_target_mutation_lock(target))
+        await asyncio.sleep(0.05)
+        assert waiter.done() is False
+
+        await first_session.commit()
+        assert await asyncio.wait_for(waiter, timeout=1) is True
+        await second_session.rollback()
 
 
 @pytest.mark.asyncio
@@ -101,6 +130,23 @@ async def test_target_actions_require_target_broker_evidence(
     with pytest.raises(OrderProposalError, match="requires target broker evidence"):
         await OrderProposalsService(db_session).create_proposal(
             **_target_action_create_kwargs(action, **overrides)
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["replace", "cancel"])
+@pytest.mark.parametrize("status", ["filled", "cancelled", "expired", "rejected"])
+async def test_target_actions_reject_non_open_target_at_create(
+    db_session, action, status
+):
+    with pytest.raises(OrderProposalError, match="target broker order must be open"):
+        await OrderProposalsService(db_session).create_proposal(
+            **_target_action_create_kwargs(
+                action,
+                target_order_snapshot=_target_snapshot_payload(
+                    status=status, remaining_quantity="0"
+                ),
+            )
         )
 
 

@@ -692,9 +692,21 @@ async def _cancel_kis_domestic(
                 price = int(
                     float(_get_kis_field(order, "ord_unpr", "ORD_UNPR", default=0) or 0)
                 )
-                quantity = int(
-                    float(_get_kis_field(order, "ord_qty", "ORD_QTY", default=0) or 0)
+                remaining_raw = _get_kis_field(
+                    order, "rmn_qty", "RMN_QTY", default=None
                 )
+                if remaining_raw is None:
+                    ordered_quantity = float(
+                        _get_kis_field(order, "ord_qty", "ORD_QTY", default=0) or 0
+                    )
+                    filled_quantity = float(
+                        _get_kis_field(order, "tot_ccld_qty", "TOT_CCLD_QTY", default=0)
+                        or 0
+                    )
+                    remaining_raw = max(ordered_quantity - filled_quantity, 0)
+                quantity = int(float(remaining_raw or 0))
+                if quantity <= 0:
+                    raise RuntimeError("broker order has no remaining quantity")
                 orgno_value = _get_kis_field(
                     order,
                     "ord_gno_brno",

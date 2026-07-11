@@ -230,6 +230,39 @@ async def test_approve_happy_path_submits_and_edits(monkeypatch, db_session):
 
 
 @pytest.mark.asyncio
+async def test_approve_acquires_target_lock_before_revalidation(
+    monkeypatch, db_session
+):
+    _allow_chat(monkeypatch)
+    group = await _seed_proposal(db_session, nonce="nonce-target-lock")
+    data = f"op:{str(group.proposal_id)[:8]}:nonce-target-lock"
+    events: list[str] = []
+
+    async def fake_target_lock(self, proposal):
+        assert proposal.proposal_id == group.proposal_id
+        events.append("target_lock")
+        return False
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        events.append("revalidate")
+        return [RungOutcome(0, "submitted_resting", {"submit": {}})]
+
+    monkeypatch.setattr(
+        OrderProposalsService, "acquire_target_mutation_lock", fake_target_lock
+    )
+    result = await handle_callback_update(
+        _make_update(data=data),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=_FakeNotifier(),
+        revalidate_fn=fake_revalidate,
+    )
+
+    assert result["reason"] == "approved"
+    assert events == ["target_lock", "revalidate"]
+
+
+@pytest.mark.asyncio
 async def test_approve_answers_before_order_processing_and_final_edit(
     monkeypatch, db_session
 ):

@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import KST
@@ -111,6 +112,10 @@ def _validate_action_contract(
     snapshot = TargetOrderSnapshot.from_payload(target_order_snapshot)
     if snapshot.broker_order_id != target_broker_order_id:
         raise OrderProposalError("target broker order id does not match snapshot")
+    if snapshot.status != "open" or Decimal(snapshot.remaining_quantity) <= 0:
+        raise OrderProposalError(
+            "target broker order must be open with remaining quantity"
+        )
     if (
         snapshot.symbol != symbol
         or snapshot.side != side
@@ -132,6 +137,35 @@ class OrderProposalsService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
         self._repo = OrderProposalRepository(session)
+
+    async def acquire_target_mutation_lock(self, group: OrderProposal) -> bool:
+        """Serialize replace/cancel transactions for one broker order target.
+
+        The transaction-scoped advisory lock must be acquired before any
+        proposal row lock.  This avoids two independently-created proposals
+        both cancelling/replacing the same broker order while still allowing
+        distinct ladder orders to proceed independently.
+        """
+        action = group.action or "place"
+        if action not in {"replace", "cancel"}:
+            return False
+        if not group.target_broker_order_id:
+            raise OrderProposalError("target action requires target_broker_order_id")
+
+        lock_key = "|".join(
+            (
+                "order_proposal_target",
+                group.account_mode,
+                group.market,
+                group.broker_account_id or "",
+                group.target_broker_order_id,
+            )
+        )
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": lock_key},
+        )
+        return True
 
     async def create_proposal(
         self,
@@ -657,8 +691,15 @@ class OrderProposalsService:
         *,
         reason: str,
         now: datetime,
+        correlation_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> OrderProposalRung:
         self._require_timezone_aware(now)
+        evidence = {}
+        if correlation_id is not None:
+            evidence["correlation_id"] = correlation_id
+        if idempotency_key is not None:
+            evidence["idempotency_key"] = idempotency_key
         return await self.transition_rung(
             proposal_id,
             rung_index,
@@ -666,6 +707,7 @@ class OrderProposalsService:
             void_reason=reason,
             validated_at=now,
             updated_at=now,
+            **evidence,
         )
 
     async def record_cancelled(
