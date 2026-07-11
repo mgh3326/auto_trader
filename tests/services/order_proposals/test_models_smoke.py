@@ -12,6 +12,15 @@ def test_tables_in_review_schema():
     assert OrderProposalRung.__tablename__ == "order_proposal_rungs"
 
 
+def test_order_proposal_has_group_level_loss_cut_binding_columns():
+    columns = OrderProposal.__table__.columns
+    assert columns["exit_intent"].nullable
+    assert columns["exit_reason"].nullable
+    assert columns["retrospective_id"].nullable
+    assert columns["approval_issue_id"].nullable
+    assert "exit_intent" not in OrderProposalRung.__table__.columns
+
+
 @pytest.mark.unit
 def test_rung_state_check_covers_all_states():
     # The DB CHECK must list exactly the state-machine's RUNG_STATES.
