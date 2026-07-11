@@ -19,10 +19,11 @@ import app.mcp_server.tooling.orders_toss_variants as otv
 from app.models.review import TossLiveOrderLedger
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
+pytestmark.append(pytest.mark.usefixtures("toss_ledger_cleanup_lock"))
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _clean(db_session):
+async def _clean(db_session, toss_ledger_cleanup_lock):
     await db_session.execute(delete(TossLiveOrderLedger))
     await db_session.commit()
     yield
@@ -156,7 +157,20 @@ async def test_idempotent_retry_replays_single_ledger_row(db_session, monkeypatc
     assert second["order_id"] == "ord-1"
     assert first["ledger_id"] == second["ledger_id"]
 
-    rows = (await db_session.execute(select(TossLiveOrderLedger))).scalars().all()
+    # Scoped to this test's own idempotency key: an unscoped whole-table count
+    # breaks under xdist whenever a parallel worker inserts any toss ledger row
+    # (pre-existing isolation gap, surfaced by this branch's shard regrouping).
+    rows = (
+        (
+            await db_session.execute(
+                select(TossLiveOrderLedger).where(
+                    TossLiveOrderLedger.client_order_id == "rob545cid0001"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert len(rows) == 1
 
 
@@ -178,7 +192,20 @@ async def test_idempotency_anomaly_surfaces_order_id_for_cancel(
 
     # Only the first order is recorded; the anomalous duplicate is NOT silently
     # written under a conflicting client_order_id.
-    rows = (await db_session.execute(select(TossLiveOrderLedger))).scalars().all()
+    # Scoped to this test's own idempotency key: an unscoped whole-table count
+    # breaks under xdist whenever a parallel worker inserts any toss ledger row
+    # (pre-existing isolation gap, surfaced by this branch's shard regrouping).
+    rows = (
+        (
+            await db_session.execute(
+                select(TossLiveOrderLedger).where(
+                    TossLiveOrderLedger.client_order_id == "rob545cid0001"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert len(rows) == 1
 
 

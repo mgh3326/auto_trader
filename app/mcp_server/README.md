@@ -517,10 +517,41 @@ order mutation.
     Rungs at or after submit cause the whole request to fail closed, with no
     partial local void.
 
-Telegram approval revalidates Paperclip `done` status and every final ROB-800
-guard at the click, then `_place_order_impl` repeats those checks at submit.
-Telegram result messages surface a bounded rejection or guard reason: at most
-240 characters, followed by an ellipsis when truncated.
+Telegram approval runs fresh broker-specific checks at the click. KIS/Upbit
+rerun their applicable Paperclip/ROB-800 checks through `_place_order_impl`.
+`ORDER_PROPOSALS_SUBMIT_AGENT_ID` has no default identity (`""`) and is used
+only while the Telegram callback revalidates and submits the approved proposal.
+Operators must set it explicitly and add the exact same trimmed identity to
+`LOSS_CUT_ALLOWED_AGENT_IDS`; missing or whitespace-only values bind no caller
+identity, so `loss_cut` validation fails closed. Do not use a hardcoded UUID as
+a fallback for this setting.
+
+Loss-cut proposal binding supports `kis_live` equities
+(`equity_kr`/`equity_us`) and `upbit`/`crypto`. General proposal submission also
+supports `toss_live` equities. KIS/Upbit proposals use the shared
+`_place_order_impl` fallback; Toss proposals never use that path and instead
+route through `toss_preview_order` and `toss_place_order`. Toss preview owns the
+wire price/quantity used for revalidation, including KR tick normalization, and
+provides its read-only warning, price/cost, NXT-context, and advisory sector
+concentration checks. It does not run the Toss sell-loss/mutation guards.
+`toss_place_order` runs the confirmation/activation, high-value, warnings,
+opposite-pending-order, sell-loss, and configured NXT guards immediately before
+POST; sell-loss and required mutation gates fail closed, while sector
+concentration remains advisory. Proposal `Decimal` values cross the Toss
+boundary as exact `str | int` values, never floats. Proposal revalidation binds
+a private client ID derived only from `proposal_id + rung` around both preview
+and submit, verifies the preview returned that exact ID, and privately carries
+the rung correlation into the Toss ledger. Neither value is operator-controlled
+through the MCP tool schema. The rung ledger stores the actual
+`approval_hash_digest` returned by `toss_place_order`, not the raw token.
+
+An accepted send is still not a fill. `toss_reconcile_orders` can book confirmed
+fill evidence in the Toss broker ledger, but this branch does not feed that
+evidence back into `order_proposal_rungs`; proposal rungs remain `acked` or
+`resting`. Proposal-rung convergence is the separate PR 3c / #1498 follow-up.
+Any post-send timeout or ledger ambiguity remains `unverified`. Telegram result
+messages surface a bounded rejection or guard reason: at most 240 characters,
+followed by an ellipsis when truncated.
 
 ### Account Routing
 
@@ -627,6 +658,7 @@ Operator activation and the one-share live smoke are documented in
 - **Account Mode Routing**: All Toss tools require `account_mode="toss_live"` (or `account_type="toss_live"`) and reject any mismatched account parameters.
 - **Mutation Safety (Dry-Run, Confirm, and Activation Gate)**: All mutation tools (`toss_place_order`, `toss_modify_order`, `toss_cancel_order`) default to `dry_run=True`. They perform actual HTTP requests (POSTs) to Toss Securities only when `dry_run=False`, `confirm=True`, and `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true` are explicitly set. Keep `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=false` until the accepted-order ledger and operator live-smoke hold are cleared.
 - **Accepted-only ledger and reconcile**: Real `toss_place_order` writes only an accepted/rejected row to `review.toss_live_order_ledger`. It does not create fills, journals, or realized PnL at send time. `toss_reconcile_orders(dry_run=True)` previews broker evidence from `GET /orders/{orderId}`; `dry_run=False` books only confirmed execution deltas. GET order-detail `403 non-json-response` failures are retried once after token reissue; unresolved failures are persisted as `requires_manual_review=true`. Mutation POSTs are not implicitly retried on that error.
+- **Proposal identity handoff**: Order-proposal flows privately bind a stable client ID derived from `proposal_id + rung` around both `toss_preview_order` and `toss_place_order`, then require preview to return that exact ID. The proposal correlation and rung are carried through the same internal binding into the Toss ledger. These values are not exposed as operator-controlled MCP parameters. Accepted responses expose `approval_hash_digest`, the canonical ledger digest; the raw approval token is used only as the `approval_hash` submit input.
 - **US FX PnL split**: Toss order detail does not provide fill-time FX. For US rows only, `toss_reconcile_orders(dry_run=False)` captures USD/KRW through `exchange_rate_service` at reconcile time. Buy rows persist `buy_fx_rate`; sell rows persist `sell_fx_rate`, FIFO-attributed `fx_pnl_krw`, `security_pnl_usd`, `security_pnl_krw`, and `total_pnl_krw`. Automatic values are labelled `fx_rate_source="reconcile_spot"` and `fx_pnl_accuracy="approximate"`. Legacy lots with no buy FX keep FX PnL fields null until an operator backfills exact values through `modify_journal_entry`.
 - **Fill Notifications (ROB-576)**: `toss_reconcile_orders(dry_run=False)` sends a Discord/Telegram fill notification only when `TOSS_FILL_NOTIFY_ENABLED=true`, the reconcile pass books a new fill delta, and the shared `TradeNotifier` has a KR/US webhook or Telegram fallback configured. Notifications reuse the existing fill card format and route by `market='kr'|'us'`; Toss fill enrichment is intentionally disabled (`enrichment=None`) until Toss account PnL/position enrichment exists. The optional paused TaskIQ task `toss_live.reconcile_periodic` calls `toss_reconcile_orders_impl(dry_run=False)` only when both `TOSS_LIVE_AUTO_RECONCILE_ENABLED=true` and `TOSS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED=true`. It has no in-repo schedule; operator automation must register/unpause the cadence externally.
 - **Toss fill poller (ROB-757)**: `toss_live.poll_fills_periodic` is default-off behind `TOSS_FILL_POLL_ENABLED`. It scans Toss `GET /orders` read-only, records app-direct orders missing from `review.toss_live_order_ledger`, and reuses `toss_reconcile_orders` to book confirmed deltas. New Toss fill deltas are also upserted into `review.execution_ledger` with `broker='toss'`, `account_mode='live'`, and `source='reconciler'`; ROB-755 triage should read them with `source='reconciler', broker='toss'`.

@@ -231,6 +231,55 @@ async def _update_live_ledger_outcome(
         await db.commit()
 
 
+async def _converge_proposal_rung(
+    row: LiveOrderLedger,
+    *,
+    terminal_state: str,
+    filled_qty: Decimal | None,
+) -> dict[str, Any] | None:
+    """Project reconciled broker evidence onto the order_proposal rung (ROB-816).
+
+    The live ledger row is the booking source of truth; the proposal rung is a
+    downstream projection, so any failure here is logged and swallowed — it must
+    never turn a successful reconcile into an anomaly, nor block the ledger from
+    booking. Runs in its own committed session (mirrors the other reconcile
+    helpers). Returns a small summary for the reconcile outcome dict, or ``None``
+    when no matching open rung exists.
+
+    Caveat: once a full-fill / cancel flips the ledger row to a terminal status
+    it drops out of ``_list_open_live_ledger_rows``, so a *swallowed* failure
+    here is not retried by a later reconcile pass. That is why the failure is
+    logged at ERROR with the ledger id (alertable) rather than silently. A
+    guaranteed-convergence proposal-rung reconcile sweep is tracked as follow-up.
+    """
+    from app.services.order_proposals import OrderProposalsService
+
+    try:
+        async with _order_session_factory()() as db:
+            service = OrderProposalsService(db)
+            rung = await service.record_fill_evidence(
+                correlation_id=getattr(row, "correlation_id", None),
+                broker_order_id=row.order_no,
+                filled_qty=filled_qty,
+                terminal_state=terminal_state,
+                now=datetime.now(UTC),
+            )
+            await db.commit()
+    except Exception as exc:  # noqa: BLE001 - projection is best-effort
+        logger.error(
+            "proposal rung convergence failed ledger_id=%s order_no=%s "
+            "terminal_state=%s: %s",
+            row.id,
+            row.order_no,
+            terminal_state,
+            exc,
+        )
+        return {"converged": False, "error": str(exc) or exc.__class__.__name__}
+    if rung is None:
+        return None
+    return {"converged": True, "proposal_rung_state": rung.state}
+
+
 async def _reconcile_one_live_row(
     row: LiveOrderLedger, *, dry_run: bool
 ) -> dict[str, Any]:
@@ -253,6 +302,11 @@ async def _reconcile_one_live_row(
         base["action"] = "marked_cancelled"
         if not dry_run:
             await _update_live_ledger_outcome(ledger_id=row.id, status="cancelled")
+            converged = await _converge_proposal_rung(
+                row, terminal_state="cancelled", filled_qty=None
+            )
+            if converged is not None:
+                base["proposal_rung"] = converged
         return base
 
     # FILLED / PARTIAL — broker 확정값. 델타 멱등 booking.
@@ -265,6 +319,8 @@ async def _reconcile_one_live_row(
     base["avg_price"] = float(avg_price)
     base["delta_qty"] = float(delta)
 
+    rung_terminal = "filled" if new_status == "filled" else "partially_filled"
+
     if delta <= 0:
         base["action"] = "noop_already_booked"
         if not dry_run:
@@ -274,6 +330,11 @@ async def _reconcile_one_live_row(
                 filled_qty=broker_cum,
                 avg_fill_price=avg_price,
             )
+            converged = await _converge_proposal_rung(
+                row, terminal_state=rung_terminal, filled_qty=broker_cum
+            )
+            if converged is not None:
+                base["proposal_rung"] = converged
         return base
 
     if dry_run:
@@ -423,6 +484,11 @@ async def _reconcile_one_live_row(
     base["action"] = "booked"
     base["trade_id"] = trade_id
     base["journal_id"] = journal_id
+    converged = await _converge_proposal_rung(
+        row, terminal_state=rung_terminal, filled_qty=broker_cum
+    )
+    if converged is not None:
+        base["proposal_rung"] = converged
     return base
 
 

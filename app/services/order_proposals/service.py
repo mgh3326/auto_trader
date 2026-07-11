@@ -49,19 +49,16 @@ class RungInput:
 
 
 # (account_mode, market) combinations the submit path
-# (revalidation.py's `_default_place_order_fn` -> `_place_order_impl`) actually
-# routes correctly today. `_place_order_impl` has no `account_mode` parameter
-# at all -- it routes purely by `market` (crypto -> upbit, equity_kr/equity_us
-# -> KIS) and always submits with `is_mock=False` (live). Any other
-# account_mode (`kis_mock`, `toss_live`, `db_simulated`) would therefore be
-# silently submitted to LIVE KIS regardless of what the operator intended, or
-# routed to the wrong broker entirely. Reject those combinations at create
-# time rather than let a mock/paper/wrong-broker proposal ever reach the
-# submit path. See ROB-816 final-review Finding 1.
+# (revalidation.py's `_default_place_order_fn`) actually routes correctly.
+# Toss has a dedicated adapter; `_place_order_impl` remains the KIS/Upbit-only
+# fallback and has no `account_mode` parameter. Reject any other combination at
+# create time rather than let a mock/paper/wrong-broker proposal reach submit.
 _SUBMITTABLE_ACCOUNT_MODE_MARKETS: frozenset[tuple[str, str]] = frozenset(
     {
         ("kis_live", "equity_kr"),
         ("kis_live", "equity_us"),
+        ("toss_live", "equity_kr"),
+        ("toss_live", "equity_us"),
         ("upbit", "crypto"),
     }
 )
@@ -77,6 +74,13 @@ _LOSS_CUT_TRIGGER_TYPES = frozenset({"stop_loss", "thesis_change"})
 _LOSS_CUT_MAX_AGE = timedelta(hours=72)
 _VOIDABLE_RUNG_STATES = frozenset(
     {"draft", "pending_approval", "revalidating", "needs_reconfirm", "approved"}
+)
+# Rung states that can legally absorb broker fill/cancel evidence. Every state
+# here has ``filled``/``partially_filled``/``cancelled`` reachable in the
+# transition graph (see state_machine._ALLOWED); terminal states are excluded so
+# re-delivered evidence short-circuits instead of raising.
+_EVIDENCE_ACCEPTING_RUNG_STATES = frozenset(
+    {"acked", "resting", "partially_filled", "unverified"}
 )
 
 
@@ -352,8 +356,9 @@ class OrderProposalsService:
         if (account_mode, market) not in {
             ("kis_live", "equity_kr"),
             ("kis_live", "equity_us"),
+            ("upbit", "crypto"),
         }:
-            errors.append("loss_cut requires a live KIS equity proposal")
+            errors.append("loss_cut requires a supported live account and market")
         if side != "sell":
             errors.append("loss_cut requires side='sell'")
         if order_type != "limit":
@@ -733,23 +738,53 @@ class OrderProposalsService:
         *,
         correlation_id: str | None = None,
         broker_order_id: str | None = None,
-        filled_qty: Decimal,
-        terminal_state: Literal["filled", "partially_filled"] = "filled",
+        filled_qty: Decimal | None = None,
+        terminal_state: Literal["filled", "partially_filled", "cancelled"] = "filled",
         now: datetime,
     ) -> OrderProposalRung | None:
+        """Converge a rung from broker fill/cancel evidence (ROB-816 PR-3c).
+
+        Called by the live reconcile kernel. Fail-safe by construction:
+
+        - Only rungs in an evidence-accepting (non-terminal) state are matched,
+          so re-delivered evidence for an already-terminal rung short-circuits
+          to ``None`` instead of raising ``OrderProposalInvalidStateTransition``
+          (which reconcile would otherwise mislabel as an anomaly).
+        - The matched rung is re-read under a row lock and re-checked for
+          terminality, closing the find→transition race with a concurrent pass.
+        - ``cancelled`` carries no fill quantity (``filled_qty=None``) so a
+          partial fill booked before a cancel is preserved, not zeroed.
+        - No terminal state is ever inferred without matching broker evidence.
+        """
         self._require_timezone_aware(now)
         match = await self._repo.find_rung_by_evidence(
-            correlation_id=correlation_id, broker_order_id=broker_order_id
+            correlation_id=correlation_id,
+            broker_order_id=broker_order_id,
+            states=_EVIDENCE_ACCEPTING_RUNG_STATES,
         )
         if match is None:
             return None
         proposal_id, rung = match
-        return await self.transition_rung(
-            proposal_id,
-            rung.rung_index,
-            new_state=terminal_state,
-            filled_qty=filled_qty,
-            updated_at=now,
+        group, locked = await self._get_locked_rung(proposal_id, rung.rung_index)
+        # ``locked`` may be the same instance ``find_rung_by_evidence`` already
+        # loaded into this session's identity map; a plain re-SELECT would return
+        # it with its find-time ``state`` intact. Refresh it under the group lock
+        # so the terminality re-check below reads the state a concurrent reconcile
+        # committed, not a stale snapshot (which could regress a filled rung).
+        await self._session.refresh(locked)
+        if sm.is_terminal(locked.state):
+            # Converged by a concurrent reconcile between find and lock.
+            return None
+        audit: dict[str, Any] = {"updated_at": now}
+        if filled_qty is not None:
+            audit["filled_qty"] = filled_qty
+        if locked.state == terminal_state:
+            # Repeated non-terminal evidence (e.g. a larger partial fill on an
+            # already-partially_filled rung): refresh audit fields in place
+            # rather than attempt an illegal self-transition.
+            return await self._repo.update_rung(locked, **audit)
+        return await self._transition_locked_rung(
+            group, locked, new_state=terminal_state, **audit
         )
 
     async def mark_needs_reconfirm(

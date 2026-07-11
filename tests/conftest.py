@@ -893,3 +893,37 @@ async def seed_summary_sell_005930(db_session):
     db_session.add(sum_)
     await db_session.flush()
     return sum_
+
+
+@pytest_asyncio.fixture
+async def toss_ledger_cleanup_lock():
+    """Serialize tests that globally delete/scan ``review.toss_live_order_ledger``.
+
+    Several toss-ledger test files run an autouse pre-clean that issues a
+    whole-table ``delete(TossLiveOrderLedger)`` and assert on ledger rows they
+    just committed. Under xdist those files land on different workers and nuke
+    each other's in-flight rows mid-test (2026-07-11, PR #1500 CI: a replay
+    row vanished between the seeding call and the idempotency re-check —
+    ROB-834). Same remedy as ``investment_reports_cleanup_lock``: hold a
+    Postgres advisory lock for the duration of each test in the marked files,
+    serializing only the toss-ledger family against itself. Apply with
+    ``pytestmark = pytest.mark.usefixtures("toss_ledger_cleanup_lock")``.
+    """
+    from sqlalchemy import text
+
+    from app.core.db import engine
+
+    TOSS_LEDGER_TEST_LOCK_ID = 265_202_711
+
+    async with engine.connect() as conn:
+        await conn.execute(
+            text("SELECT pg_advisory_lock(CAST(:lock_id AS bigint))"),
+            {"lock_id": TOSS_LEDGER_TEST_LOCK_ID},
+        )
+        try:
+            yield
+        finally:
+            await conn.execute(
+                text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
+                {"lock_id": TOSS_LEDGER_TEST_LOCK_ID},
+            )

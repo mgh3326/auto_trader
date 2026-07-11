@@ -260,6 +260,19 @@ async def _record_ack(service, proposal_id, *, now: datetime):
     )
 
 
+async def _record_resting(service, proposal_id, *, now: datetime):
+    await _drive_to_submitting(service, proposal_id)
+    return await service.record_resting(
+        proposal_id,
+        0,
+        broker_order_id=f"B-REST-{proposal_id}",
+        correlation_id=f"corr-rest-{proposal_id}",
+        idempotency_key=f"idem-rest-{proposal_id}",
+        approval_hash_digest=f"digest-rest-{proposal_id}",
+        now=now,
+    )
+
+
 def _retro(*, symbol="005930", trigger_type="stop_loss", created_at=None):
     return SimpleNamespace(
         symbol=symbol,
@@ -390,6 +403,65 @@ async def test_valid_loss_cut_persists_exact_group_binding(db_session, monkeypat
         group.retrospective_id,
         group.approval_issue_id,
     ) == ("loss_cut", "stop_loss", 42, "ROB-800")
+
+
+@pytest.mark.asyncio
+async def test_upbit_crypto_loss_cut_is_valid(db_session, monkeypatch):
+    async def fake_lookup(session, retrospective_id):
+        return _retro(symbol="KRW-DOT")
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    group = await OrderProposalsService(db_session).create_proposal(
+        symbol="KRW-DOT",
+        market="crypto",
+        account_mode="upbit",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "sell", Decimal("0.1"), Decimal("3200"), None)],
+        exit_intent="loss_cut",
+        exit_reason="stop_loss",
+        retrospective_id=42,
+        approval_issue_id="ROB-800",
+        now=datetime.now(UTC),
+    )
+    assert group.exit_intent == "loss_cut"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("market", "symbol"),
+    [("equity_kr", "005930"), ("equity_us", "AAPL")],
+)
+async def test_toss_live_loss_cut_remains_unsupported(
+    db_session, monkeypatch, market, symbol
+):
+    async def fake_lookup(session, retrospective_id):
+        return _retro(symbol=symbol)
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    with pytest.raises(
+        OrderProposalError,
+        match="loss_cut requires a supported live account and market",
+    ):
+        await OrderProposalsService(db_session).create_proposal(
+            symbol=symbol,
+            market=market,
+            account_mode="toss_live",
+            side="sell",
+            order_type="limit",
+            proposer="p",
+            rungs=[RungInput(0, "sell", Decimal("1"), Decimal("100"), None)],
+            exit_intent="loss_cut",
+            exit_reason="stop_loss",
+            retrospective_id=42,
+            approval_issue_id="ROB-800",
+            now=datetime.now(UTC),
+        )
 
 
 @pytest.mark.asyncio
@@ -851,6 +923,154 @@ async def test_fill_evidence_missing_match_is_noop(db_session):
 
 
 @pytest.mark.asyncio
+async def test_fill_evidence_records_cancelled_terminal(db_session):
+    """ROB-816 PR-3c: broker cancel evidence converges a resting rung to
+    `cancelled` (the fa0dab30 canary scenario), with no filled_qty required."""
+    service, group = await _create_single_rung(db_session)
+    now = datetime(2026, 7, 11, 9, 0, tzinfo=UTC)
+    rested = await _record_resting(service, group.proposal_id, now=now)
+    await db_session.commit()
+
+    cancelled = await service.record_fill_evidence(
+        correlation_id=rested.correlation_id,
+        terminal_state="cancelled",
+        now=now + timedelta(seconds=1),
+    )
+
+    assert cancelled is not None
+    assert cancelled.state == "cancelled"
+    assert cancelled.updated_at == now + timedelta(seconds=1)
+
+
+@pytest.mark.asyncio
+async def test_fill_evidence_cancel_after_partial_keeps_filled_qty(db_session):
+    """A partially-filled rung that is later cancelled keeps the quantity that
+    actually filled — cancel evidence must not zero out the partial fill."""
+    service, group = await _create_single_rung(db_session)
+    now = datetime(2026, 7, 11, 9, 1, tzinfo=UTC)
+    acked = await _record_ack(service, group.proposal_id, now=now)
+    await db_session.commit()
+    await service.record_fill_evidence(
+        broker_order_id=acked.broker_order_id,
+        filled_qty=Decimal("0.25"),
+        terminal_state="partially_filled",
+        now=now + timedelta(seconds=1),
+    )
+
+    cancelled = await service.record_fill_evidence(
+        broker_order_id=acked.broker_order_id,
+        terminal_state="cancelled",
+        now=now + timedelta(seconds=2),
+    )
+
+    assert cancelled is not None
+    assert cancelled.state == "cancelled"
+    assert cancelled.filled_qty == Decimal("0.25")
+
+
+@pytest.mark.asyncio
+async def test_fill_evidence_on_terminal_rung_short_circuits(db_session):
+    """Re-evidence flowing into an already-terminal rung must short-circuit to a
+    no-op — never raise InvalidStateTransition (which the reconcile kernel would
+    otherwise mislabel as an anomaly)."""
+    service, group = await _create_single_rung(db_session)
+    now = datetime(2026, 7, 11, 9, 2, tzinfo=UTC)
+    rested = await _record_resting(service, group.proposal_id, now=now)
+    await db_session.commit()
+
+    first = await service.record_fill_evidence(
+        broker_order_id=rested.broker_order_id, terminal_state="cancelled", now=now
+    )
+    assert first is not None and first.state == "cancelled"
+
+    # A second reconcile pass re-delivers the same cancel evidence.
+    again = await service.record_fill_evidence(
+        broker_order_id=rested.broker_order_id, terminal_state="cancelled", now=now
+    )
+    assert again is None
+
+    # A late-arriving fill against the same terminal rung must also no-op.
+    late = await service.record_fill_evidence(
+        broker_order_id=rested.broker_order_id,
+        filled_qty=Decimal("1"),
+        terminal_state="filled",
+        now=now,
+    )
+    assert late is None
+
+
+@pytest.mark.asyncio
+async def test_fill_evidence_rechecks_committed_state_under_lock(db_session):
+    """Concurrency invariant: once another session has committed a terminal fill,
+    late/partial evidence arriving on a session that observed the rung earlier
+    must short-circuit — it must never regress the already-`filled` rung back to
+    `partially_filled`. Guards the record_fill_evidence lock + refresh re-check."""
+    from app.mcp_server.tooling.live_order_ledger import _order_session_factory
+
+    service, group = await _create_single_rung(db_session)
+    now = datetime(2026, 7, 11, 9, 4, tzinfo=UTC)
+    acked = await _record_ack(service, group.proposal_id, now=now)
+    await db_session.commit()
+
+    # Prime THIS session's identity map with the rung while it is still 'acked'.
+    await service.get_proposal(group.proposal_id)
+
+    # A concurrent session commits the terminal fill.
+    async with _order_session_factory()() as db2:
+        other = OrderProposalsService(db2)
+        await other.record_fill_evidence(
+            broker_order_id=acked.broker_order_id,
+            filled_qty=Decimal("1"),
+            terminal_state="filled",
+            now=now + timedelta(seconds=1),
+        )
+        await db2.commit()
+
+    # Late partial evidence arriving on the stale session must short-circuit,
+    # never regress the committed `filled` rung back to `partially_filled`.
+    result = await service.record_fill_evidence(
+        broker_order_id=acked.broker_order_id,
+        filled_qty=Decimal("0.25"),
+        terminal_state="partially_filled",
+        now=now + timedelta(seconds=2),
+    )
+    assert result is None
+
+    async with _order_session_factory()() as db3:
+        _, rungs = await OrderProposalsService(db3).get_proposal(group.proposal_id)
+        assert rungs[0].state == "filled"
+        assert rungs[0].filled_qty == Decimal("1")
+
+
+@pytest.mark.asyncio
+async def test_fill_evidence_repeated_partial_refreshes_qty(db_session):
+    """A second partial-fill evidence on an already-partially-filled rung
+    refreshes the cumulative quantity without an (illegal) self-transition."""
+    service, group = await _create_single_rung(db_session)
+    now = datetime(2026, 7, 11, 9, 3, tzinfo=UTC)
+    acked = await _record_ack(service, group.proposal_id, now=now)
+    await db_session.commit()
+
+    await service.record_fill_evidence(
+        broker_order_id=acked.broker_order_id,
+        filled_qty=Decimal("0.25"),
+        terminal_state="partially_filled",
+        now=now + timedelta(seconds=1),
+    )
+    refreshed = await service.record_fill_evidence(
+        broker_order_id=acked.broker_order_id,
+        filled_qty=Decimal("0.5"),
+        terminal_state="partially_filled",
+        now=now + timedelta(seconds=2),
+    )
+
+    assert refreshed is not None
+    assert refreshed.state == "partially_filled"
+    assert refreshed.filled_qty == Decimal("0.5")
+    assert refreshed.updated_at == now + timedelta(seconds=2)
+
+
+@pytest.mark.asyncio
 async def test_mark_needs_reconfirm_bumps_revision(db_session):
     service, group = await _create_single_rung(db_session)
     now = datetime(2026, 7, 10, 9, 10, tzinfo=UTC)
@@ -1113,20 +1333,21 @@ async def test_create_proposal_rejects_kis_mock_equity_kr(db_session):
 
 
 @pytest.mark.asyncio
-async def test_create_proposal_rejects_toss_live_equity_kr(db_session):
+@pytest.mark.parametrize("market", ["equity_kr", "equity_us"])
+async def test_create_proposal_allows_toss_live_equities(db_session, market):
     service = OrderProposalsService(db_session)
-    with pytest.raises(
-        OrderProposalError, match="unsupported account_mode/market/action"
-    ):
-        await service.create_proposal(
-            symbol="A",
-            market="equity_kr",
-            account_mode="toss_live",
-            side="buy",
-            order_type="limit",
-            proposer="p",
-            rungs=[RungInput(0, "buy", Decimal("1"), Decimal("100"), None)],
-        )
+    group = await service.create_proposal(
+        symbol="A" if market == "equity_kr" else "AAPL",
+        market=market,
+        account_mode="toss_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("100"), None)],
+    )
+    await db_session.commit()
+    assert group.account_mode == "toss_live"
+    assert group.market == market
 
 
 @pytest.mark.asyncio

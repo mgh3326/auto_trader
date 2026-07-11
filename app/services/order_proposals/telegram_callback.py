@@ -50,6 +50,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
+from app.mcp_server.caller_identity import caller_agent_id_var
 from app.services.order_proposals.approval_message import (
     _escape_markdown,
     build_approval_message,
@@ -329,9 +330,14 @@ async def _handle_approve(
                 proposal_id, current_rung.rung_index, new_state="pending_approval"
             )
 
-    outcomes: list[RungOutcome] = await revalidate_fn(
-        service=service, proposal_id=proposal_id, now=now
-    )
+    submit_agent_id = settings.ORDER_PROPOSALS_SUBMIT_AGENT_ID.strip() or None
+    caller_agent_id_token = caller_agent_id_var.set(submit_agent_id)
+    try:
+        outcomes: list[RungOutcome] = await revalidate_fn(
+            service=service, proposal_id=proposal_id, now=now
+        )
+    finally:
+        caller_agent_id_var.reset(caller_agent_id_token)
 
     reconfirm_outcomes = [o for o in outcomes if o.result == "needs_reconfirm"]
     if reconfirm_outcomes:
