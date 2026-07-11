@@ -480,6 +480,34 @@ The endpoint guard applies: if `ALPACA_PAPER_BASE_URL` is ever set to the live
 endpoint, the service constructor rejects it and the tool raises
 `AlpacaPaperEndpointError` (fail closed).
 
+### Order proposal approval tools (ROB-816)
+
+When `ORDER_PROPOSALS_ENABLED=true`, the default and
+`tradingcodex_execution` profiles expose the proposal-ledger tools below. A
+proposal describes a possible order; creating or voiding one is not a broker
+order mutation.
+
+- `order_proposal_create(...)`
+  - When `valid_until` is omitted, it defaults to the next `00:00 KST`.
+  - It accepts nullable `exit_intent`, `exit_reason`, `retrospective_id`, and
+    `approval_issue_id` fields for a loss-cut proposal. For
+    `exit_intent="loss_cut"`, all of `exit_reason`, `retrospective_id`, and
+    `approval_issue_id` are required.
+  - The referenced retrospective is checked at create time for existence,
+    matching symbol, an eligible loss-cut trigger type (`stop_loss` or
+    `thesis_change`), and freshness within 72 hours.
+    This create-time check does not replace approval-time checks.
+- `order_proposal_void(proposal_id, reason)`
+  - Requires a non-blank operator reason.
+  - Refuses to mutate a proposal if any rung can have outstanding broker state.
+    Rungs at or after submit cause the whole request to fail closed, with no
+    partial local void.
+
+Telegram approval revalidates Paperclip `done` status and every final ROB-800
+guard at the click, then `_place_order_impl` repeats those checks at submit.
+Telegram result messages surface a bounded rejection or guard reason: at most
+240 characters, followed by an ellipsis when truncated.
+
 ### Account Routing
 
 MCP account-facing tools use `account_mode` to avoid mixing DB simulation,
