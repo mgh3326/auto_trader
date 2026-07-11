@@ -38,12 +38,35 @@ def _group(**overrides):
     return SimpleNamespace(**values)
 
 
-def _rung():
-    return SimpleNamespace(
+def _rung(**overrides):
+    values = {
+        "rung_index": 0,
+        "quantity": Decimal("10"),
+        "limit_price": Decimal("70000"),
+        "approval_hash_digest": None,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def _snapshot_payload():
+    return {
+        "broker_order_id": "old-1",
+        "symbol": "000660",
+        "side": "sell",
+        "order_type": "limit",
+        "limit_price": "42000",
+        "remaining_quantity": "3.5",
+        "status": "open",
+        "observed_at": "2026-07-11T00:00:00+00:00",
+    }
+
+
+def _snapshot_rung():
+    return _rung(
         rung_index=0,
-        quantity=Decimal("10"),
-        limit_price=Decimal("70000"),
-        approval_hash_digest=None,
+        quantity=Decimal("3.5"),
+        limit_price=Decimal("42000"),
     )
 
 
@@ -216,6 +239,39 @@ def test_message_includes_times_cash_and_reconfirm_diff_without_secrets():
             ]
         ]
     }
+
+
+@pytest.mark.unit
+def test_replace_message_renders_target_before_new_rung_after():
+    group = _group(
+        action="replace",
+        target_broker_order_id="old-1",
+        source_asof={"target_order_snapshot": _snapshot_payload()},
+    )
+
+    text, _ = build_approval_message(
+        group=group,
+        rungs=[_rung(quantity=Decimal("3.5"), limit_price=Decimal("43000"))],
+    )
+
+    assert "replace" in text
+    assert "old-1" in text
+    assert "변경 전: 수량 3.5 / 가격 ₩42,000" in text
+    assert "변경 후: 수량 3.5 / 가격 ₩43,000" in text
+    assert "재확인" not in text
+
+
+@pytest.mark.unit
+def test_cancel_message_renders_zero_remaining_after():
+    group = _group(
+        action="cancel",
+        target_broker_order_id="old-1",
+        source_asof={"target_order_snapshot": _snapshot_payload()},
+    )
+
+    text, _ = build_approval_message(group=group, rungs=[_snapshot_rung()])
+
+    assert "변경 후: 수량 0" in text
 
 
 @pytest.mark.unit

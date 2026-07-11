@@ -36,7 +36,15 @@ def _session_factory(db_session):
     return _factory
 
 
-async def _seed_proposal(db_session, *, source_asof=None):
+async def _seed_proposal(
+    db_session,
+    *,
+    source_asof=None,
+    action=None,
+    target_broker_order_id=None,
+    target_order_snapshot=None,
+    rungs=None,
+):
     service = OrderProposalsService(db_session)
     group = await service.create_proposal(
         symbol="005930",
@@ -45,8 +53,11 @@ async def _seed_proposal(db_session, *, source_asof=None):
         side="buy",
         order_type="limit",
         proposer="p",
-        rungs=[RungInput(0, "buy", Decimal("10"), Decimal("100"), None)],
+        rungs=rungs or [RungInput(0, "buy", Decimal("10"), Decimal("100"), None)],
         source_asof=source_asof,
+        action=action,
+        target_broker_order_id=target_broker_order_id,
+        target_order_snapshot=target_order_snapshot,
     )
     await db_session.commit()
     return group
@@ -85,6 +96,48 @@ async def test_send_proposal_for_approval_mints_nonce_and_sends(
     assert refreshed.source_asof["approval_message_id"] == 5001
     assert refreshed.source_asof["approval_chat_id"] == CHAT_ID
     assert refreshed.source_asof["approval_sent_at"] == now.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_send_proposal_for_approval_renders_initial_replace_action(
+    monkeypatch, db_session
+):
+    from app.core.config import settings
+
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+    )
+    group = await _seed_proposal(
+        db_session,
+        action="replace",
+        target_broker_order_id="old-1",
+        target_order_snapshot={
+            "broker_order_id": "old-1",
+            "symbol": "005930",
+            "side": "buy",
+            "order_type": "limit",
+            "limit_price": "42000",
+            "remaining_quantity": "3.5",
+            "status": "open",
+            "observed_at": "2026-07-11T00:00:00+00:00",
+        },
+        rungs=[RungInput(0, "buy", Decimal("3.5"), Decimal("43000"), None)],
+    )
+    notifier = _FakeNotifier()
+
+    await send_proposal_for_approval(
+        group.proposal_id,
+        notifier=notifier,
+        now=datetime(2026, 7, 10, 9, 20, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+    )
+
+    text, _, _ = notifier.sent_messages[0]
+    assert "replace" in text
+    assert "old-1" in text
+    assert "변경 전: 수량 3.5 / 가격 ₩42,000" in text
+    assert "변경 후: 수량 3.5 / 가격 ₩43,000" in text
+    assert "재확인" not in text
 
 
 @pytest.mark.asyncio
