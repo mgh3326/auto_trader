@@ -10,30 +10,37 @@ persisted, replayable record: one `order_proposals` row per proposal group
 `order_proposal_rungs` child rows (one per execution ladder rung — price/qty
 pair) tracking each rung's own execution lifecycle independently.
 
-This runbook covers ROB-816's four PR slices:
+This runbook covers the deployed ROB-816 foundation, this branch's unmerged
+PR 3a-2/PR 3b changes, and the separate PR 3c follow-up:
 
 - **PR 1** — data model + pure state machine + service + three read/create
-  MCP tools (`order_proposal_create`/`get`/`list`). OPEN at
-  [github.com/mgh3326/auto_trader/pull/1490](https://github.com/mgh3326/auto_trader/pull/1490),
-  **not yet merged.**
+  MCP tools (`order_proposal_create`/`get`/`list`). Merged as
+  [#1491](https://github.com/mgh3326/auto_trader/pull/1491) and deployed on
+  `main`/production.
 - **PR 2** — the Telegram button-approval flow documented in the
   "Telegram Approval" sections below (bot setup, webhook receiver,
   click-time revalidation, safety boundaries, live smoke, troubleshooting,
-  evidence template). Opened as a follow-up PR off the same branch, also
-  **not yet merged.**
+  evidence template). Merged as
+  [#1490](https://github.com/mgh3326/auto_trader/pull/1490) and deployed on
+  `main`/production; Linear records the Telegram activation smoke as deployed.
 - **PR 3a** — loss-cut approval bindings, proposal expiry/void safety, and
   bounded Telegram rejection reasons. This slice adds
   `order_proposal_void` and the four nullable loss-cut columns documented
-  below.
-- **PR 3b** — fail-closed Telegram submit identity binding, Upbit loss-cut
-  support, and native Toss proposal preview/submit routing. Its real-money
+  below. Merged as
+  [#1497](https://github.com/mgh3326/auto_trader/pull/1497) and deployed on
+  `main`/production.
+- **This branch: PR 3a-2 + PR 3b** — fail-closed Telegram submit identity
+  binding, Upbit loss-cut support, and native Toss proposal preview/submit
+  routing. These changes are not merged or deployed yet. Their real-money
   checks remain post-merge operator canaries; no live action is part of the
   implementation or test run.
+- **PR 3c / #1498 follow-up** — separate work to converge proposal-rung state
+  from live reconcile evidence. It is not part of this branch, so current
+  broker reconcile can book broker-ledger fills without advancing the linked
+  proposal rung from `acked`/`resting`.
 
-All four PR slices are pending plan-author review. Nothing described here is deployed
-or running in production yet — this runbook documents functionality that
-exists on the `rob-816` branch, not (yet) on `main`. There is still **no**
-`order_proposal_approve` / `order_proposal_submit` MCP tool in either PR —
+There is still **no**
+`order_proposal_approve` / `order_proposal_submit` MCP tool in any slice —
 the only path from a proposal row to a live broker order is the Telegram
 button flow described below.
 
@@ -63,10 +70,10 @@ See the full design in
   confirmation (`record_resting`) is recorded on the rung as `acked` /
   `resting` — never as a fill. `order_proposal_rungs` has no code path that
   writes `filled`/`partially_filled` from the Telegram approval flow itself;
-  fills are booked later, out of this feature's scope, by the existing
-  broker-evidence reconcile tools (`kis_live_reconcile_orders` /
-  `live_reconcile_orders`) once real fill evidence exists. See
-  `revalidation.py`'s module docstring ("Principle #6").
+  existing reconcile tools can book confirmed fill evidence in their broker
+  ledgers, but this branch does not call `record_fill_evidence` to converge the
+  linked proposal rung. That proposal-rung convergence is the separate PR 3c /
+  #1498 follow-up. See `revalidation.py`'s module docstring ("Principle #6").
 - **Nonce replay defense.** Every Telegram button click must present the
   `approval_nonce` currently stored on the group row; `consume_approval_nonce`
   (`app/services/order_proposals/service.py`) takes a `for_update=True` row
@@ -83,15 +90,20 @@ See the full design in
   — distinct from the `ORDER_PROPOSALS_TELEGRAM_TOKEN` webhook secret, which
   only proves the request came from Telegram (authn), not that it came from
   an approved chat (authz).
-- **Fresh guard chain re-run at every click.** A Telegram approve does not
-  submit the payload that was true at proposal-create time — it re-runs
-  Paperclip `done` status and the full ROB-800 guard chain (loss-sell,
-  market-sell-loss, sector cap) via a fresh `dry_run=True` preview inside
-  `revalidate_and_submit` before ever submitting. KIS/Upbit use the shared
-  `_place_order_impl` preview/submit path; Toss uses its dedicated
-  `toss_preview_order`/`toss_place_order` path and never enters
-  `_place_order_impl`. A create-time check is never an approval-time bypass.
-  See "Approval Flow" below.
+- **Fresh broker-specific checks at every click.** A Telegram approve does not
+  submit the payload that was true at proposal-create time. KIS/Upbit rerun
+  their applicable Paperclip/ROB-800 checks through the shared
+  `_place_order_impl` dry-run preview and repeat final guards at submit. Toss
+  instead calls `toss_preview_order`, never `_place_order_impl`; that preview
+  supplies the normalized payload/tick plus its actual read-only warning,
+  price/cost, NXT-context, and advisory sector-concentration checks. It does
+  **not** run the Toss sell-loss or mutation guard chain. On unchanged payload,
+  `toss_place_order` applies the mutation activation/confirmation gates,
+  high-value check, warnings guard, opposite-pending-order guard, sell-loss
+  guard, and configured NXT preflight immediately before the POST. Sell-loss
+  and required mutation gates fail closed; sector concentration is advisory
+  and never authorizes or blocks the send. A create-time check is never an
+  approval-time bypass. See "Approval Flow" below.
 - **Explicit submit identity, scoped to Telegram.**
   `ORDER_PROPOSALS_SUBMIT_AGENT_ID` defaults to the empty string. The Telegram
   approve callback trims it and temporarily binds it as caller identity only
@@ -109,13 +121,16 @@ See the full design in
 - **Native Toss routing and exact handoff.** `toss_live` +
   `equity_kr|equity_us` proposals route through `toss_preview_order` and
   `toss_place_order`, never the shared `_place_order_impl`. Preview supplies
-  the canonical wire price/quantity, including KR tick normalization. Proposal
-  `Decimal` values cross the Toss tool boundary as exact `str | int` values,
-  with no float coercion. Submit reuses the preview's raw `approval_hash`, the
-  same `rung`, and the exact `payload_preview.clientOrderId`; the proposal rung
-  stores the actual `approval_hash_digest` returned by `toss_place_order`.
-  Broker acceptance is not a fill, and any post-send ambiguity remains
-  `unverified` for reconciliation rather than being retried or voided.
+  the canonical wire price/quantity, including KR tick normalization, while
+  `toss_place_order` owns the fail-closed sell-loss and mutation checks directly
+  before broker POST. Sector concentration from preview is advisory/soft.
+  Proposal `Decimal` values cross the Toss tool boundary as exact `str | int`
+  values, with no float coercion. Submit reuses the preview's raw
+  `approval_hash`, the same `rung`, and the exact
+  `payload_preview.clientOrderId`; the proposal rung stores the actual
+  `approval_hash_digest` returned by `toss_place_order`. Broker acceptance is
+  not a fill, and any post-send ambiguity remains `unverified` for
+  reconciliation rather than being retried or voided.
 - **Default OFF.** `ORDER_PROPOSALS_ENABLED=false` by default
   (`app/core/config.py`). When off, the four MCP tools are not registered
   in either the default profile (`registry.py`) or the 8770 TradingCodex
@@ -489,17 +504,23 @@ submitted blind would defeat the entire point of a human-approval gate.
    updates arriving almost simultaneously) from racing two submits. If the
    lease is already held, the second click is answered "처리 중" and does
    nothing further.
-5. **Fresh dry-run preview → full guard chain re-run.** `revalidate_and_submit`
+5. **Fresh dry-run preview → broker-specific checks.** `revalidate_and_submit`
    re-runs every `pending_approval` rung through a fresh
    `place_order_fn(dry_run=True, ...)` call. For `kis_live` equities and
    `upbit` crypto this delegates to `_place_order_impl`, which enforces the
    applicable Paperclip and ROB-800 guards and repeats final guards on live
    submit. For `toss_live` equities it delegates to `toss_preview_order`,
    never `_place_order_impl`; Toss preview returns the canonical wire
-   `payload_preview`, including KR tick normalization. This happens on every
-   click regardless of the create-time retrospective check. A guard rejection
-   comes back as `guard_blocked` and the rung returns to `pending_approval`
-   (retryable, not terminal).
+   `payload_preview`, including KR tick normalization, and performs only its
+   read-only warning, price/cost, NXT-context, and advisory sector-concentration
+   checks. It does not run the Toss sell-loss/mutation guards. After an
+   unchanged comparison, `toss_place_order` runs confirmation/activation,
+   high-value, warnings, opposite-pending-order, sell-loss, and configured NXT
+   guards immediately before POST. Sell-loss and required mutation gates fail
+   closed; sector concentration remains advisory/soft. This happens on every
+   click regardless of the create-time retrospective check. A preview guard
+   rejection comes back as `guard_blocked` and the rung returns to
+   `pending_approval` (retryable, not terminal).
 6. **Price/qty comparison against what the operator approved.** The fresh
    preview's normalized `price`/`quantity` is compared (`_norm`, which
    canonicalizes `NUMERIC(38,12)` DB values against fresh preview values so
@@ -530,8 +551,10 @@ submitted blind would defeat the entire point of a human-approval gate.
    (market orders) or `resting` (limit orders) on explicit broker success,
    `rejected` on explicit broker/guard rejection, and `unverified` — never a
    terminal state — on anything ambiguous (submit exception, unrecognized
-   response shape, missing `broker_order_id`). See Safety Boundaries above
-   for why `unverified` is never auto-voided.
+   response shape, missing `broker_order_id`). Toss reconcile may later book
+   confirmed fill evidence in the Toss broker ledger, but proposal-rung
+   convergence is deferred to the separate PR 3c / #1498 follow-up. See Safety
+   Boundaries above for why `unverified` is never auto-voided.
 
 For a loss-cut proposal, the Telegram approval text shows the operator-facing
 `손절 근거` and `회고 #<retrospective_id>`. It intentionally does **not** expose
@@ -583,8 +606,9 @@ live action.
 - [ ] **Toss KR canary during market hours:** approve a minimal KR limit
   proposal; verify Toss preview tick normalization, `approval_hash`/`rung`
   handoff, the exact preview `clientOrderId`, accepted-only ledger state, and
-  no KIS submission. Reconcile later for fill evidence; acceptance alone must
-  not be reported as filled.
+  no KIS submission. Reconcile later for broker-ledger fill evidence;
+  acceptance alone must not be reported as filled, and the proposal rung is
+  not expected to converge until the separate PR 3c / #1498 follow-up lands.
 
 ### Preflight
 
@@ -647,9 +671,10 @@ live action.
 7. **Confirm `UNVERIFIED` handling** by killing network connectivity (or
    otherwise forcing a submit-phase exception) mid-approve on a mock/paper
    proposal, if your test environment supports it. **What to check:** the
-   rung lands in `unverified` (never a terminal state), and
-   `kis_live_reconcile_orders` / `live_reconcile_orders` can later resolve
-   it from broker evidence — see Troubleshooting.
+   rung lands in `unverified` (never a terminal state). Broker reconcile can
+   later establish what happened in the broker ledger, but this branch does
+   not automatically converge the proposal rung; that wiring is PR 3c / #1498.
+   See Troubleshooting.
 
 Record the `proposal_id` and DB query output for every step you run (see
 "Evidence Template" below) so results are auditable, not just "it worked."
@@ -826,7 +851,7 @@ A rung in `unverified` state means `revalidate_and_submit` could not
 classify the broker's response after a real submit attempt (network
 exception, ambiguous status, missing `broker_order_id` — see
 `revalidation.py`'s `_classify_submit`). By design this is a **holding**
-state, not terminal, and nothing in this feature auto-voids it. To resolve:
+state, not terminal, and nothing in this feature auto-voids it. To investigate,
 run the existing broker-evidence reconcile tools —
 `kis_live_reconcile_orders` (KR) or `live_reconcile_orders` (US/crypto,
 see `docs/runbooks/kis-live-order-reconcile.md` /
@@ -834,7 +859,7 @@ see `docs/runbooks/kis-live-order-reconcile.md` /
 `correlation_id`/`broker_order_id` (from the DB Verification query or the
 Evidence Template above) to pull real order-status evidence and determine
 whether it actually got submitted, filled, or rejected. `record_fill_evidence`
-(`service.py`) is the sink for that evidence once you have it, but wiring the
-existing reconcile tools to call it automatically is a documented follow-up
-(see the plan's "Out of Scope (PR 3)" section) — for now this is a manual
-step.
+(`service.py`) is the proposal-rung sink for that evidence, but this branch does
+not wire broker reconcile into it. That convergence is the separate PR 3c /
+#1498 follow-up. Until it lands, broker-ledger reconciliation does not imply the
+proposal rung has left `unverified`, `acked`, or `resting`.
