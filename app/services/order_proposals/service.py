@@ -43,19 +43,16 @@ class RungInput:
 
 
 # (account_mode, market) combinations the submit path
-# (revalidation.py's `_default_place_order_fn` -> `_place_order_impl`) actually
-# routes correctly today. `_place_order_impl` has no `account_mode` parameter
-# at all -- it routes purely by `market` (crypto -> upbit, equity_kr/equity_us
-# -> KIS) and always submits with `is_mock=False` (live). Any other
-# account_mode (`kis_mock`, `toss_live`, `db_simulated`) would therefore be
-# silently submitted to LIVE KIS regardless of what the operator intended, or
-# routed to the wrong broker entirely. Reject those combinations at create
-# time rather than let a mock/paper/wrong-broker proposal ever reach the
-# submit path. See ROB-816 final-review Finding 1.
+# (revalidation.py's `_default_place_order_fn`) actually routes correctly.
+# Toss has a dedicated adapter; `_place_order_impl` remains the KIS/Upbit-only
+# fallback and has no `account_mode` parameter. Reject any other combination at
+# create time rather than let a mock/paper/wrong-broker proposal reach submit.
 _SUBMITTABLE_ACCOUNT_MODE_MARKETS: frozenset[tuple[str, str]] = frozenset(
     {
         ("kis_live", "equity_kr"),
         ("kis_live", "equity_us"),
+        ("toss_live", "equity_kr"),
+        ("toss_live", "equity_us"),
         ("upbit", "crypto"),
     }
 )
@@ -103,8 +100,8 @@ class OrderProposalsService:
         if (account_mode, market) not in _SUBMITTABLE_ACCOUNT_MODE_MARKETS:
             raise OrderProposalError(
                 f"account_mode {account_mode!r} is not submittable for market "
-                f"{market!r} (submit path only supports kis_live/equity_kr|"
-                "equity_us and upbit/crypto)"
+                f"{market!r} (submit path only supports kis_live|toss_live/"
+                "equity_kr|equity_us and upbit/crypto)"
             )
         now = now or datetime.now(UTC)
         self._require_timezone_aware(now)

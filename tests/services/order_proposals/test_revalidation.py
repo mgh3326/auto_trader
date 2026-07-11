@@ -711,3 +711,186 @@ class TestDefaultPlaceOrderFnDecimalCoercion:
         assert isinstance(seen["price"], float)
         assert seen["quantity"] == 0.0001
         assert seen["price"] == 70000000.0
+
+
+def test_toss_decimal_args_are_exact_and_canonical():
+    from app.services.order_proposals import revalidation as mod
+
+    assert mod._toss_decimal_arg(None) is None
+    assert mod._toss_decimal_arg(Decimal("10.000")) == 10
+    assert mod._toss_decimal_arg(Decimal("0.125000")) == "0.125"
+    assert mod._toss_decimal_arg(Decimal("0.000000000001")) == "0.000000000001"
+
+
+@pytest.mark.asyncio
+async def test_toss_kr_routes_preview_and_accepted_submit(db_session, monkeypatch):
+    svc = OrderProposalsService(db_session)
+    group = await svc.create_proposal(
+        symbol="000660",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("10.000"), Decimal("222600"), None)],
+    )
+    await db_session.commit()
+    calls: dict[str, dict] = {}
+
+    async def fake_preview(**kwargs):
+        calls["preview"] = kwargs
+        return {
+            "success": True,
+            "approval_hash": "preview-token",
+            "payload_preview": {
+                "price": "222600",
+                "quantity": "10",
+                "clientOrderId": "toss-client-1",
+            },
+        }
+
+    async def fake_submit(**kwargs):
+        calls["submit"] = kwargs
+        return {
+            "success": True,
+            "order_id": "toss-order-1",
+            "client_order_id": "toss-client-1",
+        }
+
+    import app.mcp_server.tooling.orders_toss_variants as toss
+
+    monkeypatch.setattr(toss, "toss_preview_order", fake_preview)
+    monkeypatch.setattr(toss, "toss_place_order", fake_submit)
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        correlation_mint=lambda **_: "proposal-correlation",
+    )
+
+    assert outcomes[0].result == "submitted_resting"
+    assert calls["preview"]["market"] == "kr"
+    assert calls["preview"]["quantity"] == 10
+    assert calls["preview"]["price"] == 222600
+    assert calls["submit"]["dry_run"] is False
+    assert calls["submit"]["confirm"] is True
+    assert calls["submit"]["approval_hash"] == "preview-token"
+    assert calls["submit"]["rung"] == 0
+    _, rungs = await svc.get_proposal(group.proposal_id)
+    assert rungs[0].broker_order_id == "toss-order-1"
+    assert rungs[0].correlation_id == "proposal-correlation"
+    assert rungs[0].idempotency_key == "toss-client-1"
+    assert rungs[0].approval_hash_digest == "preview-token"
+
+
+@pytest.mark.asyncio
+async def test_toss_us_preserves_fractional_numeric_precision(db_session, monkeypatch):
+    svc = OrderProposalsService(db_session)
+    group = await svc.create_proposal(
+        symbol="AAPL",
+        market="equity_us",
+        account_mode="toss_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[
+            RungInput(
+                0,
+                "buy",
+                Decimal("0.125000"),
+                Decimal("189.123400"),
+                None,
+            )
+        ],
+    )
+    await db_session.commit()
+    calls: list[dict] = []
+
+    async def fake_preview(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "approval_hash": "us-token",
+            "payload_preview": {
+                "price": "189.1234",
+                "quantity": "0.125",
+                "clientOrderId": "us-client",
+            },
+        }
+
+    async def fake_submit(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "broker_status": "accepted",
+            "order_id": "us-order",
+            "client_order_id": "us-client",
+            "correlation_id": "toss-correlation",
+        }
+
+    import app.mcp_server.tooling.orders_toss_variants as toss
+
+    monkeypatch.setattr(toss, "toss_preview_order", fake_preview)
+    monkeypatch.setattr(toss, "toss_place_order", fake_submit)
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+    )
+
+    assert outcomes[0].result == "submitted_resting"
+    assert calls[0]["market"] == "us"
+    assert calls[0]["quantity"] == "0.125"
+    assert calls[0]["price"] == "189.1234"
+    assert not any(isinstance(value, float) for value in calls[0].values())
+    assert calls[1]["quantity"] == "0.125"
+    assert calls[1]["price"] == "189.1234"
+
+
+@pytest.mark.asyncio
+async def test_toss_tick_normalized_preview_needs_reconfirm_without_submit(
+    db_session, monkeypatch
+):
+    svc = OrderProposalsService(db_session)
+    group = await svc.create_proposal(
+        symbol="000660",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("10"), Decimal("222601"), None)],
+    )
+    await db_session.commit()
+    submitted = False
+
+    async def fake_preview(**kwargs):
+        return {
+            "success": True,
+            "approval_hash": "normalized-token",
+            "payload_preview": {
+                "price": "222600",
+                "quantity": "10",
+                "clientOrderId": "normalized-client",
+            },
+        }
+
+    async def fake_submit(**kwargs):
+        nonlocal submitted
+        submitted = True
+        raise AssertionError("normalized preview must require reconfirmation")
+
+    import app.mcp_server.tooling.orders_toss_variants as toss
+
+    monkeypatch.setattr(toss, "toss_preview_order", fake_preview)
+    monkeypatch.setattr(toss, "toss_place_order", fake_submit)
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+    )
+
+    assert outcomes[0].result == "needs_reconfirm"
+    assert outcomes[0].detail["before"]["limit_price"] == "222601"
+    assert outcomes[0].detail["after"]["limit_price"] == "222600"
+    assert submitted is False

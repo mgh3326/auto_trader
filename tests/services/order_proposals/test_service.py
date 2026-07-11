@@ -894,18 +894,21 @@ async def test_create_proposal_rejects_kis_mock_equity_kr(db_session):
 
 
 @pytest.mark.asyncio
-async def test_create_proposal_rejects_toss_live_equity_kr(db_session):
+@pytest.mark.parametrize("market", ["equity_kr", "equity_us"])
+async def test_create_proposal_allows_toss_live_equities(db_session, market):
     service = OrderProposalsService(db_session)
-    with pytest.raises(OrderProposalError, match="not submittable"):
-        await service.create_proposal(
-            symbol="A",
-            market="equity_kr",
-            account_mode="toss_live",
-            side="buy",
-            order_type="limit",
-            proposer="p",
-            rungs=[RungInput(0, "buy", Decimal("1"), Decimal("100"), None)],
-        )
+    group = await service.create_proposal(
+        symbol="A" if market == "equity_kr" else "AAPL",
+        market=market,
+        account_mode="toss_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("100"), None)],
+    )
+    await db_session.commit()
+    assert group.account_mode == "toss_live"
+    assert group.market == market
 
 
 @pytest.mark.asyncio

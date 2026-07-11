@@ -115,6 +115,46 @@ def _norm(value: Any) -> str | None:
     return text
 
 
+def _toss_decimal_arg(value: Decimal | None) -> str | int | None:
+    """Convert proposal numerics to Toss's exact ``str | int`` contract."""
+    if value is None:
+        return None
+    normalized = value.normalize()
+    if normalized == normalized.to_integral_value():
+        return int(normalized)
+    return format(normalized, "f")
+
+
+def _adapt_toss_preview_response(preview: dict[str, Any]) -> dict[str, Any]:
+    """Expose Toss's normalized wire payload through the proposal contract."""
+    payload = preview.get("payload_preview")
+    if not isinstance(payload, dict):
+        return preview
+    adapted = dict(preview)
+    adapted["price"] = payload.get("price")
+    adapted["quantity"] = payload.get("quantity")
+    adapted["idempotency_key"] = payload.get("clientOrderId")
+    return adapted
+
+
+def _adapt_toss_submit_response(
+    submit: dict[str, Any], *, order_type: str, approval_hash: Any
+) -> dict[str, Any]:
+    """Translate Toss accepted-only sends to the proposal submit contract."""
+    if (
+        submit.get("success") is not True
+        or submit.get("broker_status") == "rejected"
+        or submit.get("order_id") is None
+    ):
+        return submit
+    adapted = dict(submit)
+    adapted["status"] = "acked" if order_type == "market" else "resting"
+    adapted["broker_order_id"] = submit.get("order_id")
+    adapted["idempotency_key"] = submit.get("client_order_id")
+    adapted["approval_hash_digest"] = approval_hash
+    return adapted
+
+
 def _adapt_live_submit_response(
     submit: dict[str, Any], *, order_type: str
 ) -> dict[str, Any]:
@@ -166,6 +206,44 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
     ``_classify_submit`` — see that helper's docstring and Task 13 report
     Finding 1 for why the raw response can't be classified directly.
     """
+    account_mode = kwargs.pop("account_mode", None)
+    if account_mode == "toss_live":
+        from app.mcp_server.tooling.orders_toss_variants import (
+            toss_place_order,
+            toss_preview_order,
+        )
+
+        market = {"equity_kr": "kr", "equity_us": "us"}[str(kwargs["market"])]
+        toss_kwargs = {
+            "symbol": kwargs["symbol"],
+            "side": kwargs["side"],
+            "order_type": kwargs["order_type"],
+            "quantity": _toss_decimal_arg(kwargs.get("quantity")),
+            "price": _toss_decimal_arg(kwargs.get("price")),
+            "market": market,
+            "account_mode": account_mode,
+            "rung": kwargs.get("rung"),
+        }
+        if kwargs.get("dry_run") is True:
+            return _adapt_toss_preview_response(await toss_preview_order(**toss_kwargs))
+
+        approval_hash = kwargs.get("approval_hash")
+        submit = await toss_place_order(
+            **toss_kwargs,
+            dry_run=False,
+            confirm=True,
+            approval_hash=approval_hash,
+            reason=kwargs.get("reason"),
+            exit_reason=kwargs.get("exit_reason"),
+            thesis=kwargs.get("thesis"),
+            strategy=kwargs.get("strategy"),
+        )
+        return _adapt_toss_submit_response(
+            submit,
+            order_type=str(kwargs.get("order_type")),
+            approval_hash=approval_hash,
+        )
+
     from app.mcp_server.tooling.order_execution import _place_order_impl
 
     # The proposal ledger stores quantity/limit_price as Decimal, but
@@ -249,6 +327,7 @@ async def _revalidate_rung(
         preview = await _maybe_await(
             place_order_fn(
                 dry_run=True,
+                account_mode=group.account_mode,
                 symbol=group.symbol,
                 side=rung.side,
                 market=group.market,
@@ -318,6 +397,7 @@ async def _revalidate_rung(
         submit = await _maybe_await(
             place_order_fn(
                 dry_run=False,
+                account_mode=group.account_mode,
                 symbol=group.symbol,
                 side=rung.side,
                 market=group.market,
