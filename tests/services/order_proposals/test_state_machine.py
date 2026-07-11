@@ -59,14 +59,16 @@ def test_terminal_has_no_exits():
 
 
 @pytest.mark.parametrize(
-    "state", ["draft", "pending_approval", "revalidating", "needs_reconfirm", "approved"]
+    "state",
+    ["draft", "pending_approval", "revalidating", "needs_reconfirm", "approved"],
 )
 def test_pre_submit_states_can_expire(state):
     sm.assert_rung_transition(state, "expired")
 
 
 @pytest.mark.parametrize(
-    "state", ["draft", "pending_approval", "revalidating", "needs_reconfirm", "approved"]
+    "state",
+    ["draft", "pending_approval", "revalidating", "needs_reconfirm", "approved"],
 )
 def test_pre_submit_states_can_void(state):
     sm.assert_rung_transition(state, "voided")
