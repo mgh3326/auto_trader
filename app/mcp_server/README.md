@@ -504,9 +504,29 @@ order mutation.
     partial local void.
 
 Telegram approval revalidates Paperclip `done` status and every final ROB-800
-guard at the click, then `_place_order_impl` repeats those checks at submit.
-Telegram result messages surface a bounded rejection or guard reason: at most
-240 characters, followed by an ellipsis when truncated.
+guard at the click. `ORDER_PROPOSALS_SUBMIT_AGENT_ID` has no default identity
+(`""`) and is used only while the Telegram callback revalidates and submits the
+approved proposal. Operators must set it explicitly and add the exact same
+trimmed identity to `LOSS_CUT_ALLOWED_AGENT_IDS`; missing or whitespace-only
+values bind no caller identity, so `loss_cut` validation fails closed. Do not
+use a hardcoded UUID as a fallback for this setting.
+
+Loss-cut proposal binding supports `kis_live` equities
+(`equity_kr`/`equity_us`) and `upbit`/`crypto`. General proposal submission also
+supports `toss_live` equities. KIS/Upbit proposals use the shared
+`_place_order_impl` fallback; Toss proposals never use that path and instead
+route through `toss_preview_order` and `toss_place_order`. Toss preview owns the
+wire price/quantity used for revalidation, including KR tick normalization.
+Proposal `Decimal` values cross the Toss boundary as exact `str | int` values,
+never floats. The submit handoff preserves the preview's `approval_hash`,
+`rung`, and exact `payload_preview.clientOrderId`; the rung ledger stores the
+actual `approval_hash_digest` returned by `toss_place_order`, not the raw token.
+
+An accepted send is still not a fill. Toss accepted orders remain `acked` or
+`resting` until reconcile supplies fill evidence, and any post-send timeout or
+ledger ambiguity remains `unverified`. Telegram result messages surface a
+bounded rejection or guard reason: at most 240 characters, followed by an
+ellipsis when truncated.
 
 ### Account Routing
 

@@ -10,7 +10,7 @@ persisted, replayable record: one `order_proposals` row per proposal group
 `order_proposal_rungs` child rows (one per execution ladder rung — price/qty
 pair) tracking each rung's own execution lifecycle independently.
 
-This runbook covers ROB-816's three PR slices:
+This runbook covers ROB-816's four PR slices:
 
 - **PR 1** — data model + pure state machine + service + three read/create
   MCP tools (`order_proposal_create`/`get`/`list`). OPEN at
@@ -25,8 +25,12 @@ This runbook covers ROB-816's three PR slices:
   bounded Telegram rejection reasons. This slice adds
   `order_proposal_void` and the four nullable loss-cut columns documented
   below.
+- **PR 3b** — fail-closed Telegram submit identity binding, Upbit loss-cut
+  support, and native Toss proposal preview/submit routing. Its real-money
+  checks remain post-merge operator canaries; no live action is part of the
+  implementation or test run.
 
-All three PR slices are pending plan-author review. Nothing described here is deployed
+All four PR slices are pending plan-author review. Nothing described here is deployed
 or running in production yet — this runbook documents functionality that
 exists on the `rob-816` branch, not (yet) on `main`. There is still **no**
 `order_proposal_approve` / `order_proposal_submit` MCP tool in either PR —
@@ -83,9 +87,35 @@ See the full design in
   submit the payload that was true at proposal-create time — it re-runs
   Paperclip `done` status and the full ROB-800 guard chain (loss-sell,
   market-sell-loss, sector cap) via a fresh `dry_run=True` preview inside
-  `revalidate_and_submit` before ever submitting. The same final guards run
-  again inside `_place_order_impl` at submit; a create-time check is never an
-  approval-time bypass. See "Approval Flow" below.
+  `revalidate_and_submit` before ever submitting. KIS/Upbit use the shared
+  `_place_order_impl` preview/submit path; Toss uses its dedicated
+  `toss_preview_order`/`toss_place_order` path and never enters
+  `_place_order_impl`. A create-time check is never an approval-time bypass.
+  See "Approval Flow" below.
+- **Explicit submit identity, scoped to Telegram.**
+  `ORDER_PROPOSALS_SUBMIT_AGENT_ID` defaults to the empty string. The Telegram
+  approve callback trims it and temporarily binds it as caller identity only
+  around proposal revalidation/submission, then restores the previous context.
+  Missing or whitespace-only values bind `None`; they never inherit an outer
+  request identity and a `loss_cut` submission therefore fails closed.
+  Operators must set a deliberate identity and include the exact same trimmed
+  value in `LOSS_CUT_ALLOWED_AGENT_IDS`. Do not add a hardcoded UUID to satisfy
+  this contract.
+- **Loss-cut binding scope.** `exit_intent="loss_cut"` proposals are supported
+  for `kis_live` + `equity_kr|equity_us` and `upbit` + `crypto`. Toss equity
+  proposals are submittable, but Toss is not a supported loss-cut binding in
+  this slice. The residual KRW-DOT loss-cut is a post-merge operator canary,
+  not a live action performed by tests or during this documentation change.
+- **Native Toss routing and exact handoff.** `toss_live` +
+  `equity_kr|equity_us` proposals route through `toss_preview_order` and
+  `toss_place_order`, never the shared `_place_order_impl`. Preview supplies
+  the canonical wire price/quantity, including KR tick normalization. Proposal
+  `Decimal` values cross the Toss tool boundary as exact `str | int` values,
+  with no float coercion. Submit reuses the preview's raw `approval_hash`, the
+  same `rung`, and the exact `payload_preview.clientOrderId`; the proposal rung
+  stores the actual `approval_hash_digest` returned by `toss_place_order`.
+  Broker acceptance is not a fill, and any post-send ambiguity remains
+  `unverified` for reconciliation rather than being retried or voided.
 - **Default OFF.** `ORDER_PROPOSALS_ENABLED=false` by default
   (`app/core/config.py`). When off, the four MCP tools are not registered
   in either the default profile (`registry.py`) or the 8770 TradingCodex
@@ -319,8 +349,7 @@ PR 2 adds a second, independent env gate on top of `ORDER_PROPOSALS_ENABLED`
 Telegram chat and be approvable; `ORDER_PROPOSALS_ENABLED=true` alone still
 only gets you the read/create MCP tools with no approval surface.
 
-All four settings live in `app/core/config.py` (confirmed at lines 766–780
-on this branch):
+The approval settings live in `app/core/config.py`:
 
 | Env var | Default | Purpose |
 |---|---|---|
@@ -329,6 +358,16 @@ on this branch):
 | `ORDER_PROPOSALS_TELEGRAM_TOKEN` | `""` | The webhook **secret token** — a value you choose, registered with Telegram via `setWebhook`'s `secret_token` param (see "Telegram Bot Setup" below). Distinct from the bot token. Gates every request under `/trading/api/telegram/` in `AuthMiddleware` (`TELEGRAM_CALLBACK_PATH_PREFIX`). |
 | `ORDER_PROPOSALS_TELEGRAM_TOKEN_HEADER` | `X-Telegram-Bot-Api-Secret-Token` | The HTTP header Telegram sends the secret token back in. Telegram's own webhook mechanism hard-codes this header name — only override if you're proxying through something that renames headers. |
 | `ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR` | `""` | Comma-separated Telegram chat IDs, parsed via `settings.order_proposals_telegram_chat_allowlist`. Does double duty: (1) `handle_callback_update` uses the full list as the approve/deny **authz allowlist** (any chat not in it gets `chat_not_allowed`); (2) `send_proposal_for_approval` (`dispatch.py`) sends the initial approval message to `allowlist[0]` only — the **first** entry. Empty means no chat is allowed to approve/deny and no message is ever dispatched (`dispatch.py` no-ops). This is a distinct setting from the pre-existing `TELEGRAM_CHAT_IDS_STR` (used by `TradeNotifier`'s other, non-approval notifications) — the two lists are not required to match. |
+| `ORDER_PROPOSALS_SUBMIT_AGENT_ID` | `""` | Caller identity temporarily bound only during Telegram approval revalidation/submission. There is no default submit identity. The operator must set a non-blank value and add the exact same trimmed identity to `LOSS_CUT_ALLOWED_AGENT_IDS`. Missing or whitespace-only input becomes no identity and keeps `loss_cut` fail-closed. Never solve this with a hardcoded UUID. |
+
+For a deployment that will approve loss cuts, configure both sides of the
+identity binding with an operator-managed identity (placeholder shown; do not
+copy a real ID into this runbook):
+
+```bash
+ORDER_PROPOSALS_SUBMIT_AGENT_ID=<proposal-submit-agent-id>
+LOSS_CUT_ALLOWED_AGENT_IDS=<existing-allowed-agent-ids>,<proposal-submit-agent-id>
+```
 
 Restart the process that serves both the MCP tools and the FastAPI app after
 changing any of these (same restart as § Activation above).
@@ -451,14 +490,16 @@ submitted blind would defeat the entire point of a human-approval gate.
    lease is already held, the second click is answered "처리 중" and does
    nothing further.
 5. **Fresh dry-run preview → full guard chain re-run.** `revalidate_and_submit`
-   re-runs every `pending_approval` rung through a fresh `place_order_fn(dry_run=True, ...)`
-   call — this is the same preview path (`_place_order_impl`) that already
-   revalidates Paperclip `done` status and enforces the loss-sell guard,
-   market-sell-loss guard, and sector concentration cap. This happens on
-   every click regardless of the create-time retrospective check; a guard
-   rejection here comes back as `guard_blocked` and the rung returns to
-   `pending_approval` (retryable, not terminal). `_place_order_impl` repeats
-   the final ROB-800 guards when the non-dry-run submit is made.
+   re-runs every `pending_approval` rung through a fresh
+   `place_order_fn(dry_run=True, ...)` call. For `kis_live` equities and
+   `upbit` crypto this delegates to `_place_order_impl`, which enforces the
+   applicable Paperclip and ROB-800 guards and repeats final guards on live
+   submit. For `toss_live` equities it delegates to `toss_preview_order`,
+   never `_place_order_impl`; Toss preview returns the canonical wire
+   `payload_preview`, including KR tick normalization. This happens on every
+   click regardless of the create-time retrospective check. A guard rejection
+   comes back as `guard_blocked` and the rung returns to `pending_approval`
+   (retryable, not terminal).
 6. **Price/qty comparison against what the operator approved.** The fresh
    preview's normalized `price`/`quantity` is compared (`_norm`, which
    canonicalizes `NUMERIC(38,12)` DB values against fresh preview values so
@@ -470,7 +511,14 @@ submitted blind would defeat the entire point of a human-approval gate.
    matches, the rung transitions `approved → submitting` and is actually
    submitted (`dry_run=False`) using the **freshly minted** `approval_hash`
    from step 5's preview — never the one from the original proposal-create
-   preview. If it does *not* match, the rung transitions to
+   preview. Toss also receives the same `rung` and the exact
+   `payload_preview.clientOrderId` as `client_order_id_override`, so submit
+   cannot derive a different identity across a date boundary. Toss proposal
+   numerics are converted at the adapter boundary to canonical `str | int`
+   values, never floats. After an accepted Toss send, the proposal ledger
+   records `toss_place_order`'s actual `approval_hash_digest`; it does not
+   substitute the raw approval token. If the comparison does *not* match, the
+   rung transitions to
    `needs_reconfirm` and a brand-new Telegram message is sent
    (`build_approval_message(..., diff=...)`) showing an explicit
    before/after, with a freshly minted `approval_nonce` — the operator must
@@ -522,19 +570,39 @@ against a real Telegram bot and a real (or KIS/Kiwoom **mock**) broker
 account. Never point this at a live-money account you are not prepared to
 place a real (small) order through.
 
+### Post-merge operator smoke checklist — not performed now
+
+These are intentionally unchecked. Run them only after the PR is merged and
+deployed, with the operator present and all normal live-order gates satisfied.
+No test, documentation command, or pre-merge verification should perform either
+live action.
+
+- [ ] **DOT residual loss-cut canary:** approve the residual KRW-DOT stop-loss
+  proposal and verify the Upbit accepted-only ledger/correlation record, then
+  cancel or reconcile as planned.
+- [ ] **Toss KR canary during market hours:** approve a minimal KR limit
+  proposal; verify Toss preview tick normalization, `approval_hash`/`rung`
+  handoff, the exact preview `clientOrderId`, accepted-only ledger state, and
+  no KIS submission. Reconcile later for fill evidence; acceptance alone must
+  not be reported as filled.
+
 ### Preflight
 
 1. Confirm both env gates are set in the target process's environment:
    `ORDER_PROPOSALS_ENABLED=true` and `ORDER_PROPOSALS_TELEGRAM_ENABLED=true`.
-2. Confirm `TELEGRAM_TOKEN` (the actual bot token — not
+2. For a loss-cut canary, confirm `ORDER_PROPOSALS_SUBMIT_AGENT_ID` is
+   explicitly non-blank and its exact trimmed value appears in
+   `LOSS_CUT_ALLOWED_AGENT_IDS`. Do not rely on an implicit or hardcoded
+   identity; missing/whitespace must remain fail-closed.
+3. Confirm `TELEGRAM_TOKEN` (the actual bot token — not
    `ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN`, which is unused), `TELEGRAM_CHAT_IDS_STR`,
    `ORDER_PROPOSALS_TELEGRAM_TOKEN`, and
    `ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR` are all set (see
    "Telegram Approval — Activation").
-3. `curl .../getWebhookInfo` (see "Telegram Bot Setup" step 5) and confirm
+4. `curl .../getWebhookInfo` (see "Telegram Bot Setup" step 5) and confirm
    the registered `url` points at the target host and `last_error_message`
    is empty.
-4. Restart the MCP process / FastAPI app so the new env values are loaded.
+5. Restart the MCP process / FastAPI app so the new env values are loaded.
 
 ### Staged run
 
