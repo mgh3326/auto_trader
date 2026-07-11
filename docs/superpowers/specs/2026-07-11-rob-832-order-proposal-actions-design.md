@@ -174,11 +174,16 @@ the same pre-submit states and terminates in the existing `cancelled` state.
 Only legal transitions are added if the current graph does not already allow
 them.
 
-Failures before a broker mutation return the rung to a retryable pre-submit
-state with a bounded operator-visible reason. Ambiguous broker mutation
-outcomes use `unverified`; they are never auto-voided. Accepted replacement
-orders remain `acked` or `resting`, never `filled`, until later reconcile
-evidence arrives.
+Transient failures before a broker mutation, such as a read timeout or preview
+service error, return the rung to a retryable pre-submit state with a bounded
+operator-visible reason. A deterministic target mismatch, missing/non-open
+target, non-positive remaining quantity, or explicit cancel rejection records
+`rejected`: retrying the same immutable approval cannot make that payload safe.
+Once a cancellation request may have reached the broker, any timeout,
+contradictory response, or missing cancellation confirmation records
+`unverified`; it is never auto-voided and replacement submission remains
+forbidden. Accepted replacement orders remain `acked` or `resting`, never
+`filled`, until later reconcile evidence arrives.
 
 The callback transaction is committed before Telegram edits exactly as in the
 existing flow. Telegram delivery failure cannot roll back recorded broker
