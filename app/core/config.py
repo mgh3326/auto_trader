@@ -769,6 +769,7 @@ class Settings(BaseSettings):
     ORDER_PROPOSALS_TELEGRAM_TOKEN: str = ""
     ORDER_PROPOSALS_TELEGRAM_TOKEN_HEADER: str = "X-Telegram-Bot-Api-Secret-Token"
     ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR: str = ""
+    ORDER_PROPOSALS_SUBMIT_AGENT_ID: str = ""
 
     @property
     def order_proposals_telegram_chat_allowlist(self) -> list[str]:
