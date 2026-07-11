@@ -66,7 +66,16 @@ class OrderProposalRepository:
         *,
         correlation_id: str | None,
         broker_order_id: str | None,
+        states: frozenset[str] | None = None,
     ) -> tuple[uuid.UUID, OrderProposalRung] | None:
+        """Locate a rung by broker evidence.
+
+        ``states``, when given, restricts the match to rungs currently in one of
+        those states. Reconcile passes the evidence-accepting (non-terminal) set
+        so that re-delivered evidence for an already-terminal rung simply finds
+        nothing (a safe no-op) instead of matching a rung the state machine can
+        no longer transition — see OrderProposalsService.record_fill_evidence.
+        """
         evidence = (
             (OrderProposalRung.correlation_id, correlation_id),
             (OrderProposalRung.broker_order_id, broker_order_id),
@@ -81,9 +90,10 @@ class OrderProposalRepository:
                     OrderProposalRung.proposal_pk == OrderProposal.id,
                 )
                 .where(column == value)
-                .order_by(OrderProposalRung.id)
-                .limit(1)
             )
+            if states is not None:
+                stmt = stmt.where(OrderProposalRung.state.in_(states))
+            stmt = stmt.order_by(OrderProposalRung.id).limit(1)
             row = (await self._session.execute(stmt)).one_or_none()
             if row is not None:
                 return row[0], row[1]
