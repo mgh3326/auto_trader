@@ -114,8 +114,10 @@ async def test_expired_approve_never_revalidates(monkeypatch, db_session):
     notifier = _FakeNotifier()
     result = await handle_callback_update(
         _make_update(data=f"op:{str(group.proposal_id)[:8]}:expired-nonce"),
-        now=datetime.now(UTC), service_factory=_session_factory(db_session),
-        notifier=notifier, revalidate_fn=must_not_revalidate,
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=must_not_revalidate,
     )
     assert result["reason"] == "proposal_expired"
     assert called is False
