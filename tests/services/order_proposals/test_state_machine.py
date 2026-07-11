@@ -17,6 +17,11 @@ def test_happy_path_allowed():
 
 
 @pytest.mark.unit
+def test_confirmed_cancel_terminalizes_submitting():
+    sm.assert_rung_transition("submitting", "cancelled")
+
+
+@pytest.mark.unit
 def test_accepted_is_not_filled():
     # A rung may only reach filled via ACKED/RESTING — never straight from submitting-approved.
     with pytest.raises(OrderProposalInvalidStateTransition):
