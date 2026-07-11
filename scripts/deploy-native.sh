@@ -62,6 +62,22 @@ SINGLE_ACTIVE_LABELS=(
   "com.robinco.auto-trader.mcp-watchdog"
 )
 
+# ROB-831: fixed-profile MCP services (label:port) whose *process release path*
+# must be re-verified after restart_single_active_services() kickstarts them.
+# restart_single_active_services() already bounces these via
+# `launchctl kickstart -k`, but a wedged/slow-to-reap process can survive the
+# kickstart and keep serving the previous release's code while /health still
+# answers 200 — this is exactly what was observed on 2026-07-11: PR-3a's
+# order_proposal_void tool was missing from :8770 (mcp-tradingcodex-execution)
+# after an otherwise "successful" deploy until an operator ran
+# `launchctl kickstart -k` by hand. verify_mcp_profile_release_paths() below
+# closes that gap by asserting the listening process's cwd is $NEW_RELEASE.
+MCP_PROFILE_PORTS=(
+  "com.robinco.auto-trader.mcp-analysis-readonly:8768"
+  "com.robinco.auto-trader.mcp-account-read:8769"
+  "com.robinco.auto-trader.mcp-tradingcodex-execution:8770"
+)
+
 NEW_RELEASE="$RELEASES/$SHA"
 PREVIOUS_RELEASE="$(readlink "$CURRENT" 2>/dev/null || true)"
 SWITCHED=0
@@ -170,6 +186,66 @@ restart_single_active_services() {
     launchctl enable "gui/$uid_num/$label"
     launchctl kickstart -k "gui/$uid_num/$label"
   done
+}
+
+# verify_mcp_profile_release_paths
+#
+# ROB-831: after restart_single_active_services() kickstarts the fixed-profile
+# MCP services (MCP_PROFILE_PORTS), confirm the process actually LISTENING on
+# each port has a working directory under $NEW_RELEASE. Each service's plist
+# sets WorkingDirectory to the `current` symlink, which is repointed to
+# $NEW_RELEASE before restart_single_active_services() runs; a kernel chdir()
+# through that symlink resolves to the release's real (canonical) path, so a
+# freshly-restarted process's cwd must equal $NEW_RELEASE's canonical path. A
+# process that failed to actually restart (wedged, slow to reap, or a stray
+# survivor still bound to the port) keeps its OLD cwd and therefore old code —
+# `/health` can still answer 200 while serving stale tools (the 2026-07-11
+# incident: order_proposal_void missing from :8770/mcp-tradingcodex-execution
+# after a "successful" deploy). Fail closed instead of silently skipping.
+#
+# Tunables (mainly for tests / slow cold starts):
+#   AUTO_TRADER_MCP_RELEASE_VERIFY_ATTEMPTS          (default 10)
+#   AUTO_TRADER_MCP_RELEASE_VERIFY_INTERVAL_SECONDS  (default 2)
+verify_mcp_profile_release_paths() {
+  local expected entry label port attempts interval attempt pid cwd rc
+  expected="$(cd "$NEW_RELEASE" && pwd -P)"
+  attempts="${AUTO_TRADER_MCP_RELEASE_VERIFY_ATTEMPTS:-10}"
+  interval="${AUTO_TRADER_MCP_RELEASE_VERIFY_INTERVAL_SECONDS:-2}"
+  [[ "$attempts" =~ ^[0-9]+$ ]] && (( attempts >= 1 )) || attempts=10
+  rc=0
+
+  for entry in "${MCP_PROFILE_PORTS[@]}"; do
+    label="${entry%%:*}"
+    port="${entry##*:}"
+    pid=""
+    cwd=""
+
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+      pid="$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -n1 || true)"
+      if [[ -n "$pid" ]]; then
+        cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | awk '/^n/{print substr($0, 2); exit}' || true)"
+        if [[ "$cwd" == "$expected" ]]; then
+          log "verify_mcp_profile_release_paths: $label (pid $pid, :$port) OK -> $cwd"
+          break
+        fi
+      fi
+      if (( attempt < attempts )); then
+        sleep "$interval"
+      fi
+    done
+
+    if [[ -z "$pid" ]]; then
+      echo "verify_mcp_profile_release_paths: no listening process found on :$port ($label) after $attempts attempts" >&2
+      rc=1
+      continue
+    fi
+    if [[ "$cwd" != "$expected" ]]; then
+      echo "verify_mcp_profile_release_paths: $label (pid $pid, :$port) is running from '${cwd:-<unknown>}', expected '$expected' -- stale release, this MCP profile did not actually reload" >&2
+      rc=1
+    fi
+  done
+
+  return "$rc"
 }
 
 run_healthcheck_once() {
@@ -361,6 +437,9 @@ SWITCHED=1
 
 log "Restarting single-active services"
 restart_single_active_services
+
+log "Verifying fixed-profile MCP services loaded the new release"
+verify_mcp_profile_release_paths
 
 log "Running healthcheck"
 run_healthcheck
