@@ -639,6 +639,22 @@ async def test_record_cancelled_retains_target_id(db_session):
 
     assert rung.state == "cancelled"
     assert rung.broker_order_id == "old-1"
+    assert rung.validated_at == now
+    assert rung.updated_at == now
+
+
+@pytest.mark.asyncio
+async def test_record_cancelled_rejects_naive_now(db_session):
+    service, group = await _create_cancel_proposal(db_session)
+    await _drive_to_submitting(service, group.proposal_id)
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        await service.record_cancelled(
+            group.proposal_id,
+            0,
+            broker_order_id="old-1",
+            now=datetime.now(),
+        )
 
 
 @pytest.mark.asyncio
