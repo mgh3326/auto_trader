@@ -43,6 +43,20 @@ class _FakeNotifier:
         return True
 
 
+class _EventNotifier(_FakeNotifier):
+    def __init__(self, events: list[str]) -> None:
+        super().__init__()
+        self.events = events
+
+    async def answer_callback(self, callback_query_id, text=None):
+        self.events.append("answer")
+        return await super().answer_callback(callback_query_id, text)
+
+    async def edit_message(self, chat_id, message_id, text, reply_markup=None):
+        self.events.append("edit")
+        return await super().edit_message(chat_id, message_id, text, reply_markup)
+
+
 def _session_factory(db_session):
     @contextlib.asynccontextmanager
     async def _factory():
@@ -124,7 +138,7 @@ async def test_chat_not_in_allowlist_rejected(monkeypatch, db_session):
 
     assert result == {"handled": False, "reason": "chat_not_allowed"}
     assert revalidate_calls == []
-    assert notifier.answered == [("cbq-1", "허용되지 않은 채팅")]
+    assert notifier.answered == [("cbq-1", "처리 중")]
     assert notifier.edited == []
 
 
@@ -170,6 +184,61 @@ async def test_approve_happy_path_submits_and_edits(monkeypatch, db_session):
     assert refreshed.approval_nonce_used_at is not None
     assert refreshed.approved_by_telegram_user_id == str(USER_ID)
     assert refreshed.approved_at is not None
+
+
+@pytest.mark.asyncio
+async def test_approve_answers_before_order_processing_and_final_edit(
+    monkeypatch, db_session
+):
+    _allow_chat(monkeypatch)
+    group = await _seed_proposal(db_session, nonce="nonce-answer-first")
+    data = f"op:{str(group.proposal_id)[:8]}:nonce-answer-first"
+    events: list[str] = []
+    notifier = _EventNotifier(events)
+
+    @contextlib.asynccontextmanager
+    async def event_session_factory():
+        events.append("db")
+        yield db_session
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        events.append("order")
+        return [RungOutcome(0, "submitted_resting", {"submit": {}})]
+
+    result = await handle_callback_update(
+        _make_update(data=data),
+        now=datetime.now(UTC),
+        service_factory=event_session_factory,
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+
+    assert result["reason"] == "approved"
+    assert events == ["answer", "db", "order", "edit"]
+    assert notifier.answered == [("cbq-1", "처리 중")]
+
+
+@pytest.mark.asyncio
+async def test_order_failure_final_edit_includes_reason(monkeypatch, db_session):
+    _allow_chat(monkeypatch)
+    group = await _seed_proposal(db_session, nonce="nonce-order-failure")
+    data = f"op:{str(group.proposal_id)[:8]}:nonce-order-failure"
+    notifier = _FakeNotifier()
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        return [RungOutcome(0, "error", {"error": "broker_rejected"})]
+
+    result = await handle_callback_update(
+        _make_update(data=data),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+
+    assert result["reason"] == "approved"
+    assert "오류" in notifier.edited[0][2]
+    assert "broker\\_rejected" in notifier.edited[0][2]
 
 
 @pytest.mark.asyncio
