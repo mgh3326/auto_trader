@@ -1402,6 +1402,78 @@ async def test_toss_post_send_failure_records_unverified(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "submit_result",
+    [
+        {
+            "success": True,
+            "broker_status": "accepted",
+            "client_order_id": "incomplete-client",
+            "approval_hash_digest": "incomplete-digest",
+        },
+        {
+            "success": True,
+            "broker_status": "accepted",
+            "order_id": "incomplete-order",
+            "client_order_id": "incomplete-client",
+        },
+    ],
+    ids=["missing_order_id", "missing_approval_hash_digest"],
+)
+async def test_toss_incomplete_accepted_submit_stays_unverified(
+    db_session, monkeypatch, submit_result
+):
+    svc = OrderProposalsService(db_session)
+    group = await svc.create_proposal(
+        symbol="000660",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("50000"), None)],
+    )
+    await db_session.commit()
+
+    async def fake_preview(**kwargs):
+        client_order_id = _bound_toss_context().client_order_id
+        return {
+            "success": True,
+            "approval_hash": "incomplete-token",
+            "payload_preview": {
+                "price": "50000",
+                "quantity": "1",
+                "clientOrderId": client_order_id,
+            },
+        }
+
+    async def fake_submit(**kwargs):
+        result = dict(submit_result)
+        result["client_order_id"] = _bound_toss_context().client_order_id
+        return result
+
+    import app.mcp_server.tooling.orders_toss_variants as toss
+
+    monkeypatch.setattr(toss, "toss_preview_order", fake_preview)
+    monkeypatch.setattr(toss, "toss_place_order", fake_submit)
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+    )
+
+    assert outcomes[0].result == "unverified"
+    assert outcomes[0].detail["submit"]["success"] is True
+    assert outcomes[0].detail["submit"].get("order_id") == submit_result.get("order_id")
+    assert outcomes[0].detail["submit"].get(
+        "approval_hash_digest"
+    ) == submit_result.get("approval_hash_digest")
+    _, rungs = await svc.get_proposal(group.proposal_id)
+    assert rungs[0].state == "unverified"
+    assert rungs[0].broker_order_id is None
+
+
+@pytest.mark.asyncio
 async def test_toss_market_order_accepted_is_acked_not_filled(db_session, monkeypatch):
     svc = OrderProposalsService(db_session)
     group = await svc.create_proposal(

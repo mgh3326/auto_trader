@@ -206,6 +206,40 @@ async def test_upbit_crypto_loss_cut_is_valid(db_session, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("market", "symbol"),
+    [("equity_kr", "005930"), ("equity_us", "AAPL")],
+)
+async def test_toss_live_loss_cut_remains_unsupported(
+    db_session, monkeypatch, market, symbol
+):
+    async def fake_lookup(session, retrospective_id):
+        return _retro(symbol=symbol)
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    with pytest.raises(
+        OrderProposalError,
+        match="loss_cut requires a supported live account and market",
+    ):
+        await OrderProposalsService(db_session).create_proposal(
+            symbol=symbol,
+            market=market,
+            account_mode="toss_live",
+            side="sell",
+            order_type="limit",
+            proposer="p",
+            rungs=[RungInput(0, "sell", Decimal("1"), Decimal("100"), None)],
+            exit_intent="loss_cut",
+            exit_reason="stop_loss",
+            retrospective_id=42,
+            approval_issue_id="ROB-800",
+            now=datetime.now(UTC),
+        )
+
+
+@pytest.mark.asyncio
 async def test_create_and_get_multi_rung(db_session):
     svc = OrderProposalsService(db_session)
     group = await svc.create_proposal(
