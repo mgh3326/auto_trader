@@ -263,6 +263,10 @@ class BaseKISClient:
             client_entered=client_entered,
         )
 
+    def _token_request_timeout(self) -> float:
+        """Return the OAuth token request timeout for this KIS environment."""
+        return 5.0
+
     async def _fetch_token(self) -> tuple[str, int]:
         """Fetch new OAuth2 token from KIS API.
 
@@ -290,7 +294,8 @@ class BaseKISClient:
         breaker = get_kis_circuit_breaker()
         breaker.before_request()  # OUTSIDE the classify try/except (ROB-699 invariant)
         try:
-            cli = await self._ensure_client(timeout=5.0)
+            token_timeout = self._token_request_timeout()
+            cli = await self._ensure_client(timeout=token_timeout)
             r = await cli.post(
                 self._kis_url("/oauth2/token"),
                 data={
@@ -298,7 +303,7 @@ class BaseKISClient:
                     "appkey": self._settings.kis_app_key,
                     "appsecret": self._settings.kis_app_secret,
                 },
-                timeout=5,
+                timeout=token_timeout,
             )
             response = r.json()
             access_token = response["access_token"]
