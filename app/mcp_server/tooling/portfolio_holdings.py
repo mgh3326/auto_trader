@@ -100,6 +100,8 @@ from app.mcp_server.tooling.shared import (
 )
 from app.services.brokers.kis.client import KISClient
 from app.services.crypto_voting_signals import CryptoVotingSignals, VotingResult
+from app.services.daily_candles.read_service import cache_first_kr
+from app.services.daily_candles.repository import DailyCandlesRepository
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
 from app.services.toss_portfolio_service import (
@@ -256,13 +258,42 @@ def _build_crypto_strategy_signal(
     return None
 
 
+async def _resolve_crypto_instrument_ids_for_holdings(
+    positions: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Resolve one batched ``symbol -> instrument_id`` map for the holdings fan-out.
+
+    Replaces the legacy per-position lookup that caused the N+1 against
+    ``crypto_instruments``. Returns an empty dict when no crypto positions
+    are in scope so the caller can short-circuit.
+    """
+    symbols = sorted(
+        {
+            str(position.get("symbol") or "").strip().upper()
+            for position in positions
+            if position.get("instrument_type") == "crypto" and position.get("symbol")
+        }
+    )
+    if not symbols:
+        return {}
+    async with AsyncSessionLocal() as session:
+        repo = DailyCandlesRepository(session=session)
+        return await repo.resolve_crypto_instrument_ids(
+            symbols=symbols,
+            partition="upbit_krw",
+        )
+
+
 async def _compute_crypto_signals_for_position(
     position: dict[str, Any],
+    *,
+    instrument_id: int,
 ) -> tuple[float | None, VotingResult | None]:
     """Compute crypto RSI and voting signals for a position.
 
     Args:
         position: Position dict with symbol and current_price
+        instrument_id: Pre-resolved ``crypto_instruments.id`` for this symbol.
 
     Returns:
         Tuple of (rsi_14, voting_result) or (None, None) if computation fails
@@ -273,7 +304,12 @@ async def _compute_crypto_signals_for_position(
         return None, None
 
     try:
-        df = await _fetch_ohlcv_for_indicators(symbol, "crypto", count=50)
+        df = await _fetch_ohlcv_for_indicators(
+            symbol,
+            "crypto",
+            count=50,
+            crypto_instrument_id=instrument_id,
+        )
     except Exception:
         return None, None
 
@@ -557,13 +593,11 @@ async def _collect_toss_api_positions(
     if market_filter == "crypto":
         return [], [], False
 
-    # ROB-810: reuse the process-global 45s sellable cache (shared with the
-    # /invest home reader) so repeated get_holdings calls collapse the
-    # ORDER_INFO (6 TPS) /sellable-quantity fanout to 0 within the TTL. Sell
-    # sizing is re-validated at the broker on submit, so display staleness is
-    # bounded and safe (ROB-701 tradeoff). fresh_sellable=True forces a fresh
-    # per-symbol re-fetch. need_cash=False: this path never reads cash, so skip
-    # the ACCOUNT-limited buying_power fanout it would otherwise discard.
+    # ROB-810/ROB-828: reuse the 600s Redis sellable cache shared with /invest
+    # home and other MCP processes. Confirmed fills and successful sell order
+    # mutations invalidate only their symbol. fresh_sellable=True forces a
+    # fresh per-symbol re-fetch. need_cash=False: this path never reads cash,
+    # so skip the ACCOUNT-limited buying_power fanout it would discard.
     sellable_cache = None if fresh_sellable else get_shared_sellable_cache()
     try:
         snapshot = await fetch_toss_portfolio_snapshot(
@@ -711,6 +745,28 @@ async def _fetch_price_map_for_positions(
         instrument_type: str, symbol: str
     ) -> tuple[str, str, float | None, str | None, str | None]:
         if instrument_type == "equity_kr":
+            try:
+                cached = await cache_first_kr(symbol, 2)
+                if (
+                    cached is not None
+                    and not cached.empty
+                    and "close" in cached.columns
+                ):
+                    cached_price = _to_optional_float(cached["close"].iloc[-1])
+                    if cached_price is not None and cached_price > 0:
+                        return (
+                            instrument_type,
+                            symbol,
+                            cached_price,
+                            None,
+                            "db",
+                        )
+            except Exception:
+                logger.debug(
+                    "KR daily DB enrichment failed for %s; falling back to KIS",
+                    symbol,
+                    exc_info=True,
+                )
             try:
                 quote = await _fetch_quote_equity_kr(symbol)
                 price = quote.get("price")
@@ -1132,30 +1188,86 @@ async def _get_holdings_impl(
             and p.get("current_price") is not None
         ]
         if crypto_positions:
+            # Fail-open (ROB-830 defect 2): a batch resolver DB error must
+            # not take down the whole get_holdings response. Degrade to "no
+            # instrument ids resolved" rather than propagating the error —
+            # indicator-independent signals below still get computed and
+            # holdings are still returned.
             try:
-                signal_results = await bounded_gather(
-                    _CRYPTO_SIGNAL_CONCURRENCY,
-                    [
-                        lambda p=position: _compute_crypto_signals_for_position(p)
-                        for position in crypto_positions
-                    ],
-                    return_exceptions=True,
+                crypto_instrument_ids = (
+                    await _resolve_crypto_instrument_ids_for_holdings(crypto_positions)
                 )
-                for position, signal_result in zip(
-                    crypto_positions, signal_results, strict=False
-                ):
-                    if isinstance(signal_result, Exception):
-                        rsi_14 = None
-                        voting_result = None
-                    else:
-                        rsi_14, voting_result = signal_result
-                    signal = _build_crypto_strategy_signal(
-                        position, rsi_14=rsi_14, voting_result=voting_result
-                    )
-                    if signal:
-                        position["strategy_signal"] = signal
             except Exception as exc:
-                logger.debug("Failed to compute crypto strategy signals: %s", exc)
+                logger.warning(
+                    "Batch crypto instrument id resolution failed; "
+                    "falling back to indicator-independent signals only: %s",
+                    exc,
+                )
+                crypto_instrument_ids = {}
+
+            # Fail-open: skip symbols missing from crypto_instruments for
+            # indicator-*dependent* enrichment (RSI/voting) so we never
+            # fabricate that data for unseeded holdings.
+            computable_positions = [
+                position
+                for position in crypto_positions
+                if str(position.get("symbol") or "").strip().upper()
+                in crypto_instrument_ids
+            ]
+            non_computable_positions = [
+                position
+                for position in crypto_positions
+                if str(position.get("symbol") or "").strip().upper()
+                not in crypto_instrument_ids
+            ]
+
+            # ROB-830 defect 1: stop-loss is an indicator-*independent*
+            # safety signal (profit_rate only) and must still fire for
+            # positions we can't enrich with RSI/voting (missing instrument
+            # id, or resolver failure above). Mirrors the pre-batch behavior
+            # where a per-position lookup failure fell back to
+            # rsi_14=None/voting_result=None instead of dropping the signal.
+            for position in non_computable_positions:
+                signal = _build_crypto_strategy_signal(
+                    position, rsi_14=None, voting_result=None
+                )
+                if signal:
+                    position["strategy_signal"] = signal
+
+            async def _compute_for(
+                position: dict[str, Any], iid: int
+            ) -> tuple[float | None, VotingResult | None]:
+                return await _compute_crypto_signals_for_position(
+                    position, instrument_id=iid
+                )
+
+            if computable_positions:
+                try:
+                    signal_results = await bounded_gather(
+                        _CRYPTO_SIGNAL_CONCURRENCY,
+                        [
+                            lambda p=position, iid=crypto_instrument_ids[str(position.get("symbol") or "").strip().upper()]: (
+                                _compute_for(p, iid)
+                            )
+                            for position in computable_positions
+                        ],
+                        return_exceptions=True,
+                    )
+                    for position, signal_result in zip(
+                        computable_positions, signal_results, strict=False
+                    ):
+                        if isinstance(signal_result, Exception):
+                            rsi_14 = None
+                            voting_result = None
+                        else:
+                            rsi_14, voting_result = signal_result
+                        signal = _build_crypto_strategy_signal(
+                            position, rsi_14=rsi_14, voting_result=voting_result
+                        )
+                        if signal:
+                            position["strategy_signal"] = signal
+                except Exception as exc:
+                    logger.debug("Failed to compute crypto strategy signals: %s", exc)
 
     grouped_accounts: dict[str, dict[str, Any]] = {}
     for position in positions:
@@ -1381,8 +1493,9 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             "marked degraded=true during outages). "
             "Use account_mode={'db_simulated','kis_mock','kis_live'} "
             "(preferred); account_type aliases are deprecated and emit warnings. "
-            "fresh_sellable=True bypasses the 45s Toss sellable-quantity cache "
-            "and re-fetches per-symbol (default False reuses the shared cache). "
+            "fresh_sellable=True bypasses the 600s Toss sellable-quantity Redis "
+            "cache and re-fetches per-symbol (default False reuses the shared "
+            "cache). "
         ),
     )
     async def get_holdings(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import fakeredis.aioredis
 import pytest
 
 from app.services.brokers.toss.dto import (
@@ -176,21 +177,14 @@ async def test_fetch_toss_cash_snapshot_does_not_fetch_holdings_or_sellable() ->
     assert snapshot.errors == []
 
 
-class _Clock:
-    def __init__(self, t: float = 1000.0) -> None:
-        self.t = t
-
-    def now(self) -> float:
-        return self.t
-
-    def advance(self, dt: float) -> None:
-        self.t += dt
+@pytest.fixture
+def sellable_redis():
+    return fakeredis.aioredis.FakeRedis(decode_responses=True)
 
 
 @pytest.mark.asyncio
-async def test_snapshot_cache_hit_issues_zero_sellable_calls() -> None:
-    clock = _Clock()
-    cache = TossSellableCache(ttl_seconds=45, now=clock.now)
+async def test_snapshot_cache_hit_issues_zero_sellable_calls(sellable_redis) -> None:
+    cache = TossSellableCache(ttl_seconds=600, redis_client=sellable_redis)
     client = _FakeTossClient()
 
     # Cold load: miss on every symbol => one fanout, cache populated.
@@ -209,15 +203,14 @@ async def test_snapshot_cache_hit_issues_zero_sellable_calls() -> None:
 
 
 @pytest.mark.asyncio
-async def test_snapshot_cache_refetches_after_ttl_expiry() -> None:
-    clock = _Clock()
-    cache = TossSellableCache(ttl_seconds=45, now=clock.now)
+async def test_snapshot_cache_refetches_after_redis_expiry(sellable_redis) -> None:
+    cache = TossSellableCache(ttl_seconds=600, redis_client=sellable_redis)
     client = _FakeTossClient()
 
     await fetch_toss_portfolio_snapshot(
         client=client, need_sellable=True, sellable_cache=cache
     )
-    clock.advance(45.0)  # TTL boundary is exclusive => expired
+    await sellable_redis.delete("toss:sellable:v1:BRK.B")
     await fetch_toss_portfolio_snapshot(
         client=client, need_sellable=True, sellable_cache=cache
     )
@@ -225,14 +218,13 @@ async def test_snapshot_cache_refetches_after_ttl_expiry() -> None:
 
 
 @pytest.mark.asyncio
-async def test_snapshot_cache_does_not_store_failed_fetch() -> None:
+async def test_snapshot_cache_does_not_store_failed_fetch(sellable_redis) -> None:
     class ErrClient(_FakeTossClient):
         async def sellable_quantity(self, *, symbol: str):
             self.sellable_calls.append(symbol)
             raise RuntimeError(f"boom {symbol}")
 
-    clock = _Clock()
-    cache = TossSellableCache(ttl_seconds=45, now=clock.now)
+    cache = TossSellableCache(ttl_seconds=600, redis_client=sellable_redis)
     client = ErrClient()
 
     snap1 = await fetch_toss_portfolio_snapshot(
@@ -258,16 +250,58 @@ async def test_snapshot_no_cache_default_still_fans_out() -> None:
 
 
 @pytest.mark.asyncio
-async def test_snapshot_need_sellable_false_ignores_cache() -> None:
-    clock = _Clock()
-    cache = TossSellableCache(ttl_seconds=45, now=clock.now)
+async def test_snapshot_need_sellable_false_ignores_cache(
+    sellable_redis, mocker
+) -> None:
+    cache = TossSellableCache(ttl_seconds=600, redis_client=sellable_redis)
+    mget = mocker.spy(sellable_redis, "mget")
     client = _FakeTossClient()
     snap = await fetch_toss_portfolio_snapshot(
         client=client, need_sellable=False, sellable_cache=cache
     )
     # ROB-685 skip path is untouched: no fanout, no cache read/write.
     assert client.sellable_calls == []
+    assert mget.call_count == 0
     assert snap.positions[0].sellable_quantity is None
+
+
+@pytest.mark.asyncio
+async def test_fill_invalidation_refetches_only_affected_symbol(
+    sellable_redis,
+) -> None:
+    class Client(_FakeTossClient):
+        async def holdings(self) -> TossHoldings:
+            return TossHoldings(
+                items=[
+                    _holding(symbol="AAA", quantity="3"),
+                    _holding(symbol="BBB", quantity="5"),
+                ]
+            )
+
+        async def sellable_quantity(self, *, symbol: str) -> TossSellableQuantity:
+            self.sellable_calls.append(symbol)
+            assert symbol == "AAA"
+            return TossSellableQuantity(sellable_quantity=Decimal("2"))
+
+    cache = TossSellableCache(ttl_seconds=600, redis_client=sellable_redis)
+    await cache.put_many({"AAA": Decimal("3"), "BBB": Decimal("5")})
+    await cache.invalidate("AAA")
+    client = Client()
+
+    snapshot = await fetch_toss_portfolio_snapshot(
+        client=client,
+        need_sellable=True,
+        need_cash=False,
+        sellable_cache=cache,
+    )
+
+    assert client.sellable_calls == ["AAA"]
+    assert [position.sellable_quantity for position in snapshot.positions] == [
+        Decimal("2"),
+        Decimal("5"),
+    ]
+    assert await cache.get("AAA") == Decimal("2")
+    assert await cache.get("BBB") == Decimal("5")
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.crypto_instruments import CryptoInstrument
@@ -179,3 +179,71 @@ async def test_crypto_fetch_recent_returns_rows_in_ascending_order(
     assert [r.time_utc.day for r in recent] == [18, 19, 20]
     assert all(r.symbol == "KRW-XRP" for r in recent)
     assert all(r.partition == "upbit_krw" for r in recent)
+
+
+@pytest.mark.asyncio
+async def test_resolve_crypto_instrument_ids_batches_symbols_in_one_select(
+    db_session: AsyncSession,
+) -> None:
+    instruments = [
+        CryptoInstrument(
+            venue="upbit",
+            product="spot",
+            venue_symbol=symbol,
+            base_asset=symbol.removeprefix("KRW-"),
+            quote_asset="KRW",
+            status="active",
+        )
+        for symbol in ("KRW-BTC", "KRW-ETH", "KRW-XRP")
+    ]
+    db_session.add_all(instruments)
+    await db_session.flush()
+
+    statements: list[str] = []
+    engine = db_session.get_bind()
+
+    def record_statement(conn, cursor, statement, parameters, context, executemany):
+        if "crypto_instruments" in statement and statement.lstrip().upper().startswith(
+            "SELECT"
+        ):
+            statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        resolved = await DailyCandlesRepository(
+            session=db_session
+        ).resolve_crypto_instrument_ids(
+            symbols=["KRW-XRP", "KRW-BTC", "KRW-ETH", "KRW-BTC"],
+            partition="upbit_krw",
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+    assert resolved == {item.venue_symbol: item.id for item in instruments}
+    assert len(statements) == 1
+    assert " IN " in statements[0].upper()
+
+
+@pytest.mark.asyncio
+async def test_resolve_crypto_instrument_ids_returns_only_known_symbols(
+    db_session: AsyncSession,
+) -> None:
+    known = CryptoInstrument(
+        venue="upbit",
+        product="spot",
+        venue_symbol="KRW-SOL",
+        base_asset="SOL",
+        quote_asset="KRW",
+        status="active",
+    )
+    db_session.add(known)
+    await db_session.flush()
+
+    resolved = await DailyCandlesRepository(
+        session=db_session
+    ).resolve_crypto_instrument_ids(
+        symbols=["KRW-SOL", "KRW-NOT-SEEDED"],
+        partition="upbit_krw",
+    )
+
+    assert resolved == {"KRW-SOL": known.id}

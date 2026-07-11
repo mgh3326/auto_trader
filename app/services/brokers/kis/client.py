@@ -9,7 +9,7 @@ from pandas import DataFrame
 
 from app.core.async_rate_limiter import get_limiter
 from app.core.config import settings
-from app.services.redis_token_manager import RedisTokenManager
+from app.services.redis_token_manager import get_kis_mock_token_manager
 
 from .account import AccountClient, extract_domestic_cash_summary_from_integrated_margin
 from .base import BaseKISClient
@@ -106,7 +106,10 @@ class KISClient(BaseKISClient):
         self._settings_view = _KISSettingsView(is_mock=is_mock)
         super().__init__()
         if is_mock:
-            self._token_manager = RedisTokenManager("kis_mock")
+            self._token_manager = get_kis_mock_token_manager(
+                base_url=self._settings.kis_base_url,
+                app_key=self._settings.kis_app_key,
+            )
         parent: KISClientProtocol = cast(KISClientProtocol, cast(object, self))
         self._market_data: MarketDataClient = MarketDataClient(parent)
         self._account: AccountClient = AccountClient(parent)
@@ -119,6 +122,11 @@ class KISClient(BaseKISClient):
 
     async def _get_limiter(self, api_key: str, *, rate: int, period: float) -> Any:
         return await get_limiter("kis", api_key, rate=rate, period=period)
+
+    def _token_request_timeout(self) -> float:
+        if self._is_mock_client:
+            return 10.0
+        return super()._token_request_timeout()
 
     @staticmethod
     def _aggregate_intraday_to_hour(df: pd.DataFrame) -> pd.DataFrame:
