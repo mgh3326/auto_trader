@@ -66,6 +66,7 @@ _GUARD_ERROR_MARKERS = (
     "live market sell blocked",
     "loss_cut sell price",
     "no holdings found",
+    "no sellable holdings",
     "insufficient ",
     "stop-loss cooldown",
     "opposite pending order",

@@ -245,6 +245,28 @@ async def test_preview_insufficient_cash_is_guard_blocked(db_session):
 
 
 @pytest.mark.asyncio
+async def test_preview_kis_no_sellable_holdings_is_guard_blocked(db_session):
+    service, group = await _create_proposal(db_session)
+
+    async def no_sellable_holdings(**kwargs):
+        return {
+            "success": False,
+            "error": (
+                "No sellable holdings for A in the KIS subaccount that "
+                "kis_live routes to."
+            ),
+        }
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=no_sellable_holdings,
+    )
+    assert outcomes[0].result == "guard_blocked"
+
+
+@pytest.mark.asyncio
 async def test_loss_cut_bindings_forwarded_to_preview_and_submit(
     db_session, monkeypatch
 ):
