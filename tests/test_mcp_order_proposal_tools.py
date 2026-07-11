@@ -1,6 +1,117 @@
 import pytest
 
+from app.core.config import settings
 from app.mcp_server.tooling import order_proposal_tools as opt
+
+
+class _FakeNotifier:
+    def __init__(self, *, message_id: int | None = 4242) -> None:
+        self.calls: list[tuple[str, dict, str]] = []
+        self._message_id = message_id
+
+    async def send_approval_message(self, text, inline_keyboard, *, chat_id):
+        self.calls.append((text, inline_keyboard, chat_id))
+        return self._message_id
+
+
+class _RaisingNotifier:
+    async def send_approval_message(self, text, inline_keyboard, *, chat_id):
+        raise RuntimeError("telegram down")
+
+
+def _create_kwargs(**overrides):
+    kwargs = {
+        "symbol": "005930",
+        "market": "equity_kr",
+        "account_mode": "kis_live",
+        "side": "buy",
+        "order_type": "limit",
+        "proposer": "operator:sess-dispatch",
+        "thesis": "t",
+        "strategy": "ladder",
+        "rungs": [
+            {
+                "rung_index": 0,
+                "side": "buy",
+                "quantity": "10",
+                "limit_price": "70000",
+                "notional": None,
+            }
+        ],
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+@pytest.mark.asyncio
+async def test_create_dispatches_telegram_when_enabled_and_allowlisted(monkeypatch):
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "chat-1"
+    )
+    fake_notifier = _FakeNotifier(message_id=9999)
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.notifier.get_trade_notifier",
+        lambda: fake_notifier,
+    )
+
+    created = await opt.order_proposal_create(**_create_kwargs())
+
+    assert created["success"] is True
+    assert len(fake_notifier.calls) == 1
+    _, _, chat_id = fake_notifier.calls[0]
+    assert chat_id == "chat-1"
+
+
+@pytest.mark.asyncio
+async def test_create_does_not_dispatch_when_telegram_disabled(monkeypatch):
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", False)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "chat-1"
+    )
+    fake_notifier = _FakeNotifier()
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.notifier.get_trade_notifier",
+        lambda: fake_notifier,
+    )
+
+    created = await opt.order_proposal_create(**_create_kwargs())
+
+    assert created["success"] is True
+    assert fake_notifier.calls == []
+
+
+@pytest.mark.asyncio
+async def test_create_does_not_dispatch_when_allowlist_empty(monkeypatch):
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "")
+    fake_notifier = _FakeNotifier()
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.notifier.get_trade_notifier",
+        lambda: fake_notifier,
+    )
+
+    created = await opt.order_proposal_create(**_create_kwargs())
+
+    assert created["success"] is True
+    assert fake_notifier.calls == []
+
+
+@pytest.mark.asyncio
+async def test_create_succeeds_even_when_notifier_raises(monkeypatch):
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "chat-1"
+    )
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.notifier.get_trade_notifier",
+        lambda: _RaisingNotifier(),
+    )
+
+    created = await opt.order_proposal_create(**_create_kwargs())
+
+    assert created["success"] is True
+    assert "proposal_id" in created
 
 
 @pytest.mark.asyncio

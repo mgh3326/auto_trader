@@ -7,13 +7,17 @@ performs NO broker mutation.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
+from app.core.config import settings
 from app.core.db import AsyncSessionLocal
+from app.core.timezone import now_kst
 from app.services.order_proposals import OrderProposalsService
+from app.services.order_proposals.dispatch import send_proposal_for_approval
 from app.services.order_proposals.errors import (
     OrderProposalError,
     OrderProposalNotFound,
@@ -22,6 +26,8 @@ from app.services.order_proposals.service import RungInput
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
+
+logger = logging.getLogger(__name__)
 
 ORDER_PROPOSAL_TOOL_NAMES: set[str] = {
     "order_proposal_create",
@@ -134,12 +140,42 @@ async def order_proposal_create(
             )
             _, saved_rungs = await svc.get_proposal(group.proposal_id)
             await session.commit()
-            return {
+            proposal_id = group.proposal_id
+            result = {
                 "success": True,
-                "proposal_id": str(group.proposal_id),
+                "proposal_id": str(proposal_id),
                 "lifecycle_state": group.lifecycle_state,
                 "rungs": [_rung_dict(r) for r in saved_rungs],
             }
+
+        # Best-effort Telegram dispatch (ROB-816 PR 2). The proposal's own
+        # session above is already closed/committed by this point --
+        # `send_proposal_for_approval` opens a genuinely separate session, so
+        # this is intentional, not a nested-session bug. A dispatch failure
+        # (Telegram down, notifier misconfigured, etc.) must never fail this
+        # tool's contract -- the proposal has already persisted successfully.
+        if (
+            settings.ORDER_PROPOSALS_TELEGRAM_ENABLED
+            and settings.order_proposals_telegram_chat_allowlist
+        ):
+            try:
+                from app.monitoring.trade_notifier.notifier import (
+                    get_trade_notifier,
+                )
+
+                await send_proposal_for_approval(
+                    proposal_id,
+                    notifier=get_trade_notifier(),
+                    now=now_kst(),
+                )
+            except Exception:  # noqa: BLE001 - best-effort, never fail create
+                logger.exception(
+                    "order_proposal_create: telegram approval dispatch failed "
+                    "for proposal_id=%s",
+                    proposal_id,
+                )
+
+        return result
     except (ValueError, OrderProposalError) as exc:
         return {"success": False, "error": str(exc)}
 

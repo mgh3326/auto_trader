@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.services.hermes_client import ReviewTriggerPayload
@@ -16,9 +16,12 @@ from app.services.fill_notification import FillEnrichment, FillOrder
 from . import formatters_discord as fmt_discord
 from . import formatters_telegram as fmt_telegram
 from .transports import (
+    answer_callback_query,
+    edit_message_text,
     send_discord_content_single,
     send_discord_embed_single,
     send_telegram,
+    send_telegram_message,
 )
 from .types import DiscordEmbed
 
@@ -165,6 +168,56 @@ class TradeNotifier:
             chat_ids=self._chat_ids,
             text=message,
             parse_mode=parse_mode,
+        )
+
+    async def send_approval_message(
+        self,
+        text: str,
+        inline_keyboard: dict[str, Any],
+        *,
+        chat_id: str,
+    ) -> int | None:
+        """Send a Telegram approval message using the singleton HTTP client."""
+        if not self._http_client or not self._bot_token:
+            return None
+        return await send_telegram_message(
+            http_client=self._http_client,
+            bot_token=self._bot_token,
+            chat_id=chat_id,
+            text=text,
+            reply_markup=inline_keyboard,
+        )
+
+    async def answer_callback(
+        self, callback_query_id: str, text: str | None = None
+    ) -> bool:
+        """Acknowledge a Telegram callback using the singleton HTTP client."""
+        if not self._http_client or not self._bot_token:
+            return False
+        return await answer_callback_query(
+            http_client=self._http_client,
+            bot_token=self._bot_token,
+            callback_query_id=callback_query_id,
+            text=text,
+        )
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> bool:
+        """Edit a Telegram message using the singleton HTTP client."""
+        if not self._http_client or not self._bot_token:
+            return False
+        return await edit_message_text(
+            http_client=self._http_client,
+            bot_token=self._bot_token,
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            reply_markup=reply_markup,
         )
 
     async def _send_to_discord_embed_single(

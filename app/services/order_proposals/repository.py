@@ -12,6 +12,7 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.order_proposals import OrderProposal, OrderProposalRung
 
@@ -60,6 +61,52 @@ class OrderProposalRepository:
             stmt = stmt.where(OrderProposal.lifecycle_state == lifecycle_state)
         return list((await self._session.execute(stmt)).scalars().all())
 
+    async def find_rung_by_evidence(
+        self,
+        *,
+        correlation_id: str | None,
+        broker_order_id: str | None,
+    ) -> tuple[uuid.UUID, OrderProposalRung] | None:
+        evidence = (
+            (OrderProposalRung.correlation_id, correlation_id),
+            (OrderProposalRung.broker_order_id, broker_order_id),
+        )
+        for column, value in evidence:
+            if value is None:
+                continue
+            stmt = (
+                select(OrderProposal.proposal_id, OrderProposalRung)
+                .join(
+                    OrderProposalRung,
+                    OrderProposalRung.proposal_pk == OrderProposal.id,
+                )
+                .where(column == value)
+                .order_by(OrderProposalRung.id)
+                .limit(1)
+            )
+            row = (await self._session.execute(stmt)).one_or_none()
+            if row is not None:
+                return row[0], row[1]
+        return None
+
+    async def list_local_stale_candidates(
+        self,
+    ) -> list[tuple[uuid.UUID, OrderProposalRung]]:
+        stmt = (
+            select(OrderProposal.proposal_id, OrderProposalRung)
+            .join(
+                OrderProposalRung,
+                OrderProposalRung.proposal_pk == OrderProposal.id,
+            )
+            .where(
+                OrderProposalRung.state == "pending_approval",
+                OrderProposalRung.broker_order_id.is_(None),
+            )
+            .order_by(OrderProposalRung.id)
+        )
+        rows = (await self._session.execute(stmt)).all()
+        return [(row[0], row[1]) for row in rows]
+
     async def update_group(self, group: OrderProposal, **fields: Any) -> OrderProposal:
         for k, v in fields.items():
             setattr(group, k, v)
@@ -71,5 +118,7 @@ class OrderProposalRepository:
     ) -> OrderProposalRung:
         for k, v in fields.items():
             setattr(rung, k, v)
+            if k == "updated_at":
+                flag_modified(rung, k)
         await self._session.flush()
         return rung

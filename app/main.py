@@ -64,6 +64,7 @@ from app.routers import (
     screener,
     strategy_events,
     symbol_settings,
+    telegram_callback,
     test,
     trade_journals,
     user_defaults,
@@ -217,6 +218,19 @@ def create_app() -> FastAPI:
     app.include_router(research_reports.router)
     app.include_router(strategy_events.router)
     app.include_router(kospi200.router)
+    # ROB-816 PR 2 — flag-gated, same rationale as investment_snapshots
+    # above. The PRIMARY rejection layer for unauthenticated probes against
+    # the Telegram webhook path prefix is AuthMiddleware's
+    # TELEGRAM_CALLBACK_PATH_PREFIX branch (app/middleware/auth.py), which
+    # fires on the path prefix alone and fails closed (403 when the shared
+    # token isn't configured, 401 on a wrong token) independent of this flag
+    # -- middleware runs before routing, so that branch fires whether or not
+    # the router below is mounted. Keeping the router itself absent when the
+    # flag is off is a secondary, defense-in-depth layer (a 404 at FastAPI's
+    # routing layer if middleware were ever bypassed/misconfigured), not the
+    # reason probes are rejected today.
+    if settings.ORDER_PROPOSALS_TELEGRAM_ENABLED:
+        app.include_router(telegram_callback.router)
     app.include_router(websocket.router)
     if settings.EXPOSE_MONITORING_TEST_ROUTES:
         app.include_router(test.router)

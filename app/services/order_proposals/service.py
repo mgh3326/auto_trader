@@ -6,17 +6,22 @@ and never commits — callers own the transaction (see global-constraints.md).
 
 from __future__ import annotations
 
+import inspect
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.services.order_proposals import state_machine as sm
-from app.services.order_proposals.errors import OrderProposalNotFound
+from app.services.order_proposals.errors import (
+    OrderProposalError,
+    OrderProposalNotFound,
+)
 from app.services.order_proposals.payload import (
     ProposalRungSpec,
     compute_proposal_payload_hash,
@@ -31,6 +36,25 @@ class RungInput:
     quantity: Decimal
     limit_price: Decimal | None
     notional: Decimal | None
+
+
+# (account_mode, market) combinations the submit path
+# (revalidation.py's `_default_place_order_fn` -> `_place_order_impl`) actually
+# routes correctly today. `_place_order_impl` has no `account_mode` parameter
+# at all -- it routes purely by `market` (crypto -> upbit, equity_kr/equity_us
+# -> KIS) and always submits with `is_mock=False` (live). Any other
+# account_mode (`kis_mock`, `toss_live`, `db_simulated`) would therefore be
+# silently submitted to LIVE KIS regardless of what the operator intended, or
+# routed to the wrong broker entirely. Reject those combinations at create
+# time rather than let a mock/paper/wrong-broker proposal ever reach the
+# submit path. See ROB-816 final-review Finding 1.
+_SUBMITTABLE_ACCOUNT_MODE_MARKETS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("kis_live", "equity_kr"),
+        ("kis_live", "equity_us"),
+        ("upbit", "crypto"),
+    }
+)
 
 
 class OrderProposalsService:
@@ -60,6 +84,12 @@ class OrderProposalsService:
     ) -> OrderProposal:
         if not rungs:
             raise ValueError("at least one rung required")
+        if (account_mode, market) not in _SUBMITTABLE_ACCOUNT_MODE_MARKETS:
+            raise OrderProposalError(
+                f"account_mode {account_mode!r} is not submittable for market "
+                f"{market!r} (submit path only supports kis_live/equity_kr|"
+                "equity_us and upbit/crypto)"
+            )
         proposal_id = uuid.uuid4()
         root_id = proposal_id
         superseded_group: OrderProposal | None = None
@@ -158,6 +188,14 @@ class OrderProposalsService:
         new_state: str,
         **audit_fields: Any,
     ) -> OrderProposalRung:
+        group, rung = await self._get_locked_rung(proposal_id, rung_index)
+        return await self._transition_locked_rung(
+            group, rung, new_state=new_state, **audit_fields
+        )
+
+    async def _get_locked_rung(
+        self, proposal_id: uuid.UUID, rung_index: int
+    ) -> tuple[OrderProposal, OrderProposalRung]:
         group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
         if group is None:
             raise OrderProposalNotFound(str(proposal_id))
@@ -165,9 +203,18 @@ class OrderProposalsService:
         rung = next((r for r in rungs if r.rung_index == rung_index), None)
         if rung is None:
             raise OrderProposalNotFound(f"{proposal_id}#{rung_index}")
+        return group, rung
+
+    async def _transition_locked_rung(
+        self,
+        group: OrderProposal,
+        rung: OrderProposalRung,
+        *,
+        new_state: str,
+        **audit_fields: Any,
+    ) -> OrderProposalRung:
         sm.assert_rung_transition(rung.state, new_state)
         rung = await self._repo.update_rung(rung, state=new_state, **audit_fields)
-        # refresh rung list then recompute group rollup
         rungs = await self._repo.list_rungs(group.id)
         await self._repo.update_group(
             group, lifecycle_state=self._recompute_group_state(rungs)
@@ -205,36 +252,248 @@ class OrderProposalsService:
         return "proposed"
 
     # -- PR-2 helpers -------------------------------------------------------
-    # Stubs only. Task 12 (PR 2) fills these in with the Telegram approval
-    # flow, callback-nonce binding, commit-lease, and fill-evidence recording.
-    # Deliberately unimplemented in PR 1 (no Telegram, no broker mutation).
-
-    async def set_approval_nonce(self, *args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError("set_approval_nonce is implemented in PR 2 (ROB-816)")
-
-    async def consume_approval_nonce(self, *args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError(
-            "consume_approval_nonce is implemented in PR 2 (ROB-816)"
+    async def set_approval_nonce(self, proposal_id: uuid.UUID, nonce: str) -> None:
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        await self._repo.update_group(
+            group, approval_nonce=nonce, approval_nonce_used_at=None
         )
 
-    async def acquire_commit_lease(self, *args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError(
-            "acquire_commit_lease is implemented in PR 2 (ROB-816)"
+    async def consume_approval_nonce(
+        self, proposal_id: uuid.UUID, nonce: str, *, now: datetime
+    ) -> OrderProposal:
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        if group.approval_nonce != nonce:
+            raise OrderProposalError("nonce_mismatch")
+        if group.approval_nonce_used_at is not None:
+            raise OrderProposalError("nonce_replay")
+        return await self._repo.update_group(group, approval_nonce_used_at=now)
+
+    async def record_approval(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        telegram_user_id: str,
+        now: datetime,
+    ) -> OrderProposal:
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        return await self._repo.update_group(
+            group, approved_by_telegram_user_id=telegram_user_id, approved_at=now
         )
 
-    async def record_ack(self, *args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError("record_ack is implemented in PR 2 (ROB-816)")
+    async def record_approval_dispatch(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        message_id: int,
+        chat_id: str,
+        now: datetime,
+    ) -> OrderProposal:
+        """Record where the initial Telegram approval message was sent.
 
-    async def record_resting(self, *args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError("record_resting is implemented in PR 2 (ROB-816)")
+        No new column exists for this (see ``dispatch.py``'s module docstring)
+        -- ``message_id``/``chat_id``/``sent_at`` are merged into the existing
+        ``source_asof`` JSONB column so a later Telegram ``edit_message`` call
+        can find them. This merges on top of whatever keys are already there
+        (e.g. ``resting_deadline``, read by
+        ``approval_message.py::_build_time_lines``) rather than overwriting
+        the column outright.
+        """
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        existing = group.source_asof or {}
+        merged = {
+            **existing,
+            "approval_message_id": message_id,
+            "approval_chat_id": chat_id,
+            "approval_sent_at": now.isoformat(),
+        }
+        return await self._repo.update_group(group, source_asof=merged)
 
-    async def record_unverified(self, *args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError("record_unverified is implemented in PR 2 (ROB-816)")
+    async def acquire_commit_lease(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        now: datetime,
+        lease_seconds: int = 10,
+    ) -> bool:
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        lease_until = group.commit_lease_until
+        if lease_until is not None:
+            self._require_timezone_aware(lease_until)
+            if lease_until > now:
+                return False
+        await self._repo.update_group(
+            group, commit_lease_until=now + timedelta(seconds=lease_seconds)
+        )
+        return True
 
-    async def record_fill_evidence(self, *args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError(
-            "record_fill_evidence is implemented in PR 2 (ROB-816)"
+    async def record_ack(
+        self,
+        proposal_id: uuid.UUID,
+        rung_index: int,
+        *,
+        broker_order_id: str,
+        correlation_id: str,
+        idempotency_key: str,
+        approval_hash_digest: str,
+        now: datetime,
+    ) -> OrderProposalRung:
+        self._require_timezone_aware(now)
+        return await self.transition_rung(
+            proposal_id,
+            rung_index,
+            new_state="acked",
+            broker_order_id=broker_order_id,
+            correlation_id=correlation_id,
+            idempotency_key=idempotency_key,
+            approval_hash_digest=approval_hash_digest,
+            validated_at=now,
+            updated_at=now,
         )
 
-    async def sweep_local_stale(self, *args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError("sweep_local_stale is implemented in PR 2 (ROB-816)")
+    async def record_resting(
+        self,
+        proposal_id: uuid.UUID,
+        rung_index: int,
+        *,
+        broker_order_id: str,
+        correlation_id: str,
+        idempotency_key: str,
+        approval_hash_digest: str,
+        now: datetime,
+    ) -> OrderProposalRung:
+        self._require_timezone_aware(now)
+        return await self.transition_rung(
+            proposal_id,
+            rung_index,
+            new_state="resting",
+            broker_order_id=broker_order_id,
+            correlation_id=correlation_id,
+            idempotency_key=idempotency_key,
+            approval_hash_digest=approval_hash_digest,
+            validated_at=now,
+            updated_at=now,
+        )
+
+    async def record_unverified(
+        self,
+        proposal_id: uuid.UUID,
+        rung_index: int,
+        *,
+        reason: str,
+        now: datetime,
+    ) -> OrderProposalRung:
+        self._require_timezone_aware(now)
+        return await self.transition_rung(
+            proposal_id,
+            rung_index,
+            new_state="unverified",
+            void_reason=reason,
+            validated_at=now,
+            updated_at=now,
+        )
+
+    async def record_fill_evidence(
+        self,
+        *,
+        correlation_id: str | None = None,
+        broker_order_id: str | None = None,
+        filled_qty: Decimal,
+        terminal_state: Literal["filled", "partially_filled"] = "filled",
+        now: datetime,
+    ) -> OrderProposalRung | None:
+        self._require_timezone_aware(now)
+        match = await self._repo.find_rung_by_evidence(
+            correlation_id=correlation_id, broker_order_id=broker_order_id
+        )
+        if match is None:
+            return None
+        proposal_id, rung = match
+        return await self.transition_rung(
+            proposal_id,
+            rung.rung_index,
+            new_state=terminal_state,
+            filled_qty=filled_qty,
+            updated_at=now,
+        )
+
+    async def mark_needs_reconfirm(
+        self, proposal_id: uuid.UUID, rung_index: int, *, now: datetime
+    ) -> OrderProposalRung:
+        self._require_timezone_aware(now)
+        group, rung = await self._get_locked_rung(proposal_id, rung_index)
+        return await self._transition_locked_rung(
+            group,
+            rung,
+            new_state="needs_reconfirm",
+            approval_revision=(rung.approval_revision or 0) + 1,
+            validated_at=now,
+            updated_at=now,
+        )
+
+    async def record_rejected(
+        self,
+        proposal_id: uuid.UUID,
+        rung_index: int,
+        *,
+        reason: str,
+        now: datetime,
+    ) -> OrderProposalRung:
+        self._require_timezone_aware(now)
+        return await self.transition_rung(
+            proposal_id,
+            rung_index,
+            new_state="rejected",
+            void_reason=reason,
+            updated_at=now,
+        )
+
+    async def sweep_local_stale(
+        self,
+        *,
+        now: datetime,
+        broker_evidence: Callable[[OrderProposalRung], str | Awaitable[str]],
+    ) -> list[uuid.UUID]:
+        self._require_timezone_aware(now)
+        candidates = await self._repo.list_local_stale_candidates()
+        swept: list[uuid.UUID] = []
+        swept_set: set[uuid.UUID] = set()
+        for proposal_id, candidate in candidates:
+            evidence = broker_evidence(candidate)
+            if inspect.isawaitable(evidence):
+                evidence = await evidence
+            if evidence != "no_broker_order":
+                continue
+
+            group, rung = await self._get_locked_rung(proposal_id, candidate.rung_index)
+            if rung.state != "pending_approval" or rung.broker_order_id is not None:
+                continue
+            await self._transition_locked_rung(
+                group,
+                rung,
+                new_state="voided_local_stale",
+                void_reason="no_broker_order",
+                updated_at=now,
+            )
+            if proposal_id not in swept_set:
+                swept.append(proposal_id)
+                swept_set.add(proposal_id)
+        return swept
+
+    @staticmethod
+    def _require_timezone_aware(value: datetime) -> None:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("datetime must be timezone-aware")
