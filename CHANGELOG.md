@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added (ROB-839 — crypto judgment rules policy promotion; migration 0)
+- **Crypto policy reads now return lane-filtered judgment rules.** `get_trading_policy(market="crypto", lane=...)` exposes an advisory `market_rules` block for the 2-of-4 recovery frame, support/resistance source priority, and no-chasing criteria while retaining the existing `{version, content_hash}` stamp.
+- **Missing report thresholds stay explicitly unknown.** Fear & Greed, kimchi premium, same-day gain, and 24-hour liquidity cutoffs remain `null`, so callers cannot invent model-specific numbers; the report-backed breadth (`>50%`) and BTC long/short (`<=1.5`) thresholds remain explicit.
+- **Execution safety boundaries are unchanged.** The new strict Pydantic/YAML contract is advisory only, does not alter loss-sale or ladder fail-closed guards, and requires no database migration.
 ### Added (ROB-838 — immutable analysis snapshot bundles; migration 0)
 - **Re-analysis sessions can consume one fixed, write-once input bundle.** `analysis_bundle_create` captures holdings, cash, quotes, order books, indicators, support/resistance, flow, decision history, and gate inputs once through read-only service boundaries; each section retains its collection source, as-of timestamp, completion timestamp, and explicit unavailable error instead of being repaired on read.
 - **Bundle reads are DB-only and integrity checked.** `analysis_bundle_get` verifies the stored `content_hash`, returns the exact persisted document without provider calls or recomputation, and optionally projects `sections=[...]` from those stored values. Freshness is response metadata (`created_at`, per-section as-of/age/stale state), so old or incomplete evidence cannot masquerade as current data.

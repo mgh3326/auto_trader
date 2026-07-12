@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
+import httpx
+
+from app.core.exceptions import describe_exception
 from app.services.order_proposals.errors import OrderProposalError
 from app.services.order_proposals.target_order import TargetOrderSnapshot
 
@@ -15,6 +19,14 @@ SUPPORTED_TARGET_ACTIONS = frozenset(
         ("upbit", "crypto"),
     }
 )
+
+
+@dataclass(frozen=True)
+class SubmitEvidence:
+    outcome: Literal["found", "absent", "unknown"]
+    broker_order_id: str | None = None
+    broker_state: str | None = None
+    reason: str | None = None
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -61,6 +73,41 @@ async def fetch_target_order(
     if len(matches) != 1:
         raise OrderProposalError("target broker order not found uniquely")
     return TargetOrderSnapshot.from_broker_order(matches[0], observed_at=now)
+
+
+async def fetch_submit_evidence(
+    *,
+    identifier: str,
+    account_mode: str,
+    market: str,
+    lookup_fn: Callable[..., Any] | None = None,
+) -> SubmitEvidence:
+    if (account_mode, market) != ("upbit", "crypto"):
+        return SubmitEvidence(
+            "unknown",
+            reason=(f"submit evidence lookup unsupported for {account_mode}/{market}"),
+        )
+    if lookup_fn is None:
+        from app.services.brokers.upbit.orders import fetch_order_by_identifier
+
+        lookup_fn = fetch_order_by_identifier
+
+    try:
+        order = await _maybe_await(lookup_fn(identifier))
+        broker_order_id = str(order.get("uuid") or "").strip()
+        broker_state = str(order.get("state") or "").strip()
+        if not broker_order_id or not broker_state:
+            return SubmitEvidence(
+                "unknown",
+                reason="broker lookup returned incomplete order evidence",
+            )
+        return SubmitEvidence("found", broker_order_id, broker_state)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return SubmitEvidence("absent")
+        return SubmitEvidence("unknown", reason=describe_exception(exc))
+    except Exception as exc:
+        return SubmitEvidence("unknown", reason=describe_exception(exc))
 
 
 async def cancel_target_order(

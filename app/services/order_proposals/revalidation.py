@@ -36,6 +36,7 @@ from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.services.live_correlation import live_correlation_id
 from app.services.order_proposals.broker_gateway import (
     cancel_target_order,
+    fetch_submit_evidence,
     fetch_target_order,
 )
 from app.services.order_proposals.service import OrderProposalsService
@@ -63,6 +64,7 @@ PlaceOrderFn = Callable[..., Any]
 CorrelationMint = Callable[..., Any]
 TargetFetchFn = Callable[..., Any]
 TargetCancelFn = Callable[..., Any]
+SubmitEvidenceFetchFn = Callable[..., Any]
 
 _PREVIEW_REASON = "order_proposal revalidation (rung {rung})"
 _SUBMIT_REASON = "order_proposal submit after revalidation (rung {rung})"
@@ -138,6 +140,11 @@ def _toss_proposal_client_order_id(proposal_id: uuid.UUID, rung_index: int) -> s
     """Return a proposal/rung-stable, Toss-safe private idempotency key."""
     digest = hashlib.sha256(f"{proposal_id}:{rung_index}".encode()).hexdigest()[:32]
     return f"tosprop-{digest}"
+
+
+def _proposal_client_order_id(proposal_id: uuid.UUID, rung_index: int) -> str:
+    digest = hashlib.sha256(f"{proposal_id}:{rung_index}".encode()).hexdigest()[:32]
+    return f"oprop-{digest}"
 
 
 def _adapt_toss_preview_response(preview: dict[str, Any]) -> dict[str, Any]:
@@ -321,6 +328,8 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
     # activation smoke, KRW-BTC canary). Normalize at this caller boundary;
     # the impl's float contract stays unchanged for every other caller.
     kwargs = {k: (float(v) if isinstance(v, Decimal) else v) for k, v in kwargs.items()}
+    if proposal_client_order_id is not None:
+        kwargs["client_order_id"] = str(proposal_client_order_id)
 
     submit = await _place_order_impl(**kwargs)
     if kwargs.get("dry_run") is False:
@@ -353,6 +362,7 @@ async def revalidate_and_submit(
     correlation_mint: CorrelationMint = _default_correlation_mint,
     fetch_target_fn: TargetFetchFn = fetch_target_order,
     cancel_target_fn: TargetCancelFn = cancel_target_order,
+    fetch_submit_evidence_fn: SubmitEvidenceFetchFn = fetch_submit_evidence,
 ) -> list[RungOutcome]:
     """Revalidate + (maybe) submit every ``pending_approval`` rung.
 
@@ -376,6 +386,7 @@ async def revalidate_and_submit(
                 fetch_target_fn=fetch_target_fn,
                 cancel_target_fn=cancel_target_fn,
                 correlation_mint=correlation_mint,
+                fetch_submit_evidence_fn=fetch_submit_evidence_fn,
             )
         elif action == "cancel":
             outcome = await _revalidate_cancel_rung(
@@ -394,6 +405,7 @@ async def revalidate_and_submit(
                 now=now,
                 place_order_fn=place_order_fn,
                 correlation_mint=correlation_mint,
+                fetch_submit_evidence_fn=fetch_submit_evidence_fn,
             )
         outcomes.append(outcome)
     return outcomes
@@ -407,12 +419,15 @@ async def _revalidate_place_rung(
     now: datetime,
     place_order_fn: PlaceOrderFn,
     correlation_mint: CorrelationMint,
+    fetch_submit_evidence_fn: SubmitEvidenceFetchFn,
 ) -> RungOutcome:
     proposal_id = group.proposal_id
     rung_index = rung.rung_index
-    toss_client_order_id = (
+    proposal_client_order_id = (
         _toss_proposal_client_order_id(proposal_id, rung_index)
         if group.account_mode == "toss_live"
+        else _proposal_client_order_id(proposal_id, rung_index)
+        if group.account_mode == "upbit"
         else None
     )
 
@@ -438,8 +453,8 @@ async def _revalidate_place_rung(
                 reason=_PREVIEW_REASON.format(rung=rung_index),
                 rung=rung_index,
                 **(
-                    {"proposal_client_order_id": toss_client_order_id}
-                    if toss_client_order_id is not None
+                    {"proposal_client_order_id": proposal_client_order_id}
+                    if proposal_client_order_id is not None
                     else {}
                 ),
             )
@@ -464,10 +479,10 @@ async def _revalidate_place_rung(
             {"error": preview.get("error"), "preview": preview},
         )
 
-    if toss_client_order_id is not None:
+    if group.account_mode == "toss_live":
         invalid_reason = _invalid_toss_preview_reason(
             preview,
-            expected_client_order_id=toss_client_order_id,
+            expected_client_order_id=proposal_client_order_id,
             order_type=group.order_type,
         )
         if invalid_reason is not None:
@@ -532,8 +547,8 @@ async def _revalidate_place_rung(
                 reason=_SUBMIT_REASON.format(rung=rung_index),
                 approval_hash=preview.get("approval_hash"),
                 **(
-                    {"proposal_client_order_id": toss_client_order_id}
-                    if toss_client_order_id is not None
+                    {"proposal_client_order_id": proposal_client_order_id}
+                    if proposal_client_order_id is not None
                     else {}
                 ),
                 rung=rung_index,
@@ -541,6 +556,20 @@ async def _revalidate_place_rung(
             )
         )
     except Exception as exc:  # noqa: BLE001 - broker call; ambiguous, not a void
+        if group.account_mode == "upbit":
+            return await _classify_submit(
+                service=service,
+                proposal_id=proposal_id,
+                rung_index=rung_index,
+                preview=preview,
+                submit={"success": False, "error": str(exc)},
+                corr=corr,
+                now=now,
+                account_mode=group.account_mode,
+                market=group.market,
+                identifier=proposal_client_order_id,
+                fetch_submit_evidence_fn=fetch_submit_evidence_fn,
+            )
         await service.record_unverified(
             proposal_id,
             rung_index,
@@ -559,6 +588,10 @@ async def _revalidate_place_rung(
         submit=submit,
         corr=corr,
         now=now,
+        account_mode=group.account_mode,
+        market=group.market,
+        identifier=proposal_client_order_id,
+        fetch_submit_evidence_fn=fetch_submit_evidence_fn,
     )
 
 
@@ -646,6 +679,7 @@ async def _revalidate_replace_preview(
     rung: OrderProposalRung,
     now: datetime,
     place_order_fn: PlaceOrderFn,
+    proposal_client_order_id: str | None,
 ) -> tuple[dict[str, Any] | None, RungOutcome | None]:
     proposal_id = group.proposal_id
     rung_index = rung.rung_index
@@ -667,6 +701,12 @@ async def _revalidate_replace_preview(
                 approval_issue_id=group.approval_issue_id,
                 reason=_PREVIEW_REASON.format(rung=rung_index),
                 rung=rung_index,
+                account_mode=group.account_mode,
+                **(
+                    {"proposal_client_order_id": proposal_client_order_id}
+                    if proposal_client_order_id is not None
+                    else {}
+                ),
             )
         )
     except Exception as exc:
@@ -800,7 +840,13 @@ async def _revalidate_replace_rung(
     fetch_target_fn: TargetFetchFn,
     cancel_target_fn: TargetCancelFn,
     correlation_mint: CorrelationMint,
+    fetch_submit_evidence_fn: SubmitEvidenceFetchFn,
 ) -> RungOutcome:
+    proposal_client_order_id = (
+        _proposal_client_order_id(group.proposal_id, rung.rung_index)
+        if group.account_mode == "upbit"
+        else None
+    )
     target_outcome = await _validate_target_action(
         service=service,
         group=group,
@@ -817,6 +863,7 @@ async def _revalidate_replace_rung(
         rung=rung,
         now=now,
         place_order_fn=place_order_fn,
+        proposal_client_order_id=proposal_client_order_id,
     )
     if preview_outcome is not None:
         return preview_outcome
@@ -857,9 +904,29 @@ async def _revalidate_replace_rung(
                 approval_hash=preview.get("approval_hash"),
                 rung=rung_index,
                 correlation_id=corr,
+                account_mode=group.account_mode,
+                **(
+                    {"proposal_client_order_id": proposal_client_order_id}
+                    if proposal_client_order_id is not None
+                    else {}
+                ),
             )
         )
     except Exception as exc:
+        if group.account_mode == "upbit":
+            return await _classify_submit(
+                service=service,
+                proposal_id=proposal_id,
+                rung_index=rung_index,
+                preview=preview,
+                submit={"success": False, "error": str(exc)},
+                corr=corr,
+                now=now,
+                account_mode=group.account_mode,
+                market=group.market,
+                identifier=proposal_client_order_id,
+                fetch_submit_evidence_fn=fetch_submit_evidence_fn,
+            )
         await service.record_unverified(
             proposal_id,
             rung_index,
@@ -877,6 +944,10 @@ async def _revalidate_replace_rung(
         submit=submit,
         corr=corr,
         now=now,
+        account_mode=group.account_mode,
+        market=group.market,
+        identifier=proposal_client_order_id,
+        fetch_submit_evidence_fn=fetch_submit_evidence_fn,
     )
 
 
@@ -932,15 +1003,70 @@ async def _classify_submit(
     submit: dict[str, Any],
     corr: str,
     now: datetime,
+    account_mode: str,
+    market: str,
+    identifier: str | None,
+    fetch_submit_evidence_fn: SubmitEvidenceFetchFn,
 ) -> RungOutcome:
     success = submit.get("success")
 
     if success is False:
+        original_error = str(submit.get("error") or "submit_rejected")
+        if account_mode == "upbit" and identifier is not None:
+            evidence = await _maybe_await(
+                fetch_submit_evidence_fn(
+                    identifier=identifier,
+                    account_mode=account_mode,
+                    market=market,
+                )
+            )
+            if evidence.outcome == "found":
+                status = (
+                    "resting" if evidence.broker_state in {"wait", "watch"} else "acked"
+                )
+                record_fn = (
+                    service.record_resting
+                    if status == "resting"
+                    else service.record_ack
+                )
+                await record_fn(
+                    proposal_id,
+                    rung_index,
+                    broker_order_id=evidence.broker_order_id,
+                    correlation_id=corr,
+                    idempotency_key=identifier,
+                    approval_hash_digest=preview.get("approval_hash"),
+                    now=now,
+                )
+                result: RungOutcomeResult = (
+                    "submitted_resting" if status == "resting" else "submitted_acked"
+                )
+                return RungOutcome(
+                    rung_index,
+                    result,
+                    {"submit": submit, "submit_evidence": evidence},
+                )
+            if evidence.outcome == "unknown":
+                await service.record_unverified(
+                    proposal_id,
+                    rung_index,
+                    reason=(
+                        f"submit_evidence_unknown:{evidence.reason or original_error}"
+                    ),
+                    now=now,
+                    correlation_id=corr,
+                    idempotency_key=identifier,
+                )
+                return RungOutcome(
+                    rung_index,
+                    "unverified",
+                    {"error": original_error, "submit_evidence": evidence},
+                )
         # Explicit broker/guard rejection — not ambiguous, safe to terminalize.
         await service.record_rejected(
             proposal_id,
             rung_index,
-            reason=str(submit.get("error") or "submit_rejected"),
+            reason=original_error,
             now=now,
         )
         return RungOutcome(rung_index, "error", {"error": submit.get("error")})
@@ -983,7 +1109,9 @@ async def _classify_submit(
         now=now,
         correlation_id=corr,
         idempotency_key=(
-            submit.get("idempotency_key") or preview.get("idempotency_key")
+            identifier
+            or submit.get("idempotency_key")
+            or preview.get("idempotency_key")
         ),
     )
     return RungOutcome(rung_index, "unverified", {"submit": submit})

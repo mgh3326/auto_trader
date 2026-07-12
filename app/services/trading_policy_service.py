@@ -87,6 +87,13 @@ def get_policy_for(market: str, lane: str) -> dict[str, Any]:
         for key, spec in doc.decision_rules.items()
         if lane in spec.lanes
     }
+    market_rules: dict[str, Any] = {}
+    rules = doc.market_rules.get("crypto") if market == "crypto" else None
+    if rules is not None:
+        for key in type(rules).model_fields:
+            spec = getattr(rules, key)
+            if lane in spec.lanes:
+                market_rules[key] = spec.model_dump(exclude={"lanes"})
     return {
         "market": market,
         "lane": lane,
@@ -94,6 +101,7 @@ def get_policy_for(market: str, lane: str) -> dict[str, Any]:
         "content_hash": content_hash,
         "thresholds": thresholds,
         "decision_rules": decision_rules,
+        "market_rules": market_rules,
     }
 
 
