@@ -101,6 +101,42 @@ def _default_clock_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _validate_candle(candle: Candle) -> None:
+    """Semantic sanity of the latest kline (ROB-841). A row can carry the right
+    number of fields yet hold NaN/±Inf, non-positive, or self-contradictory
+    OHLC (e.g. ``high < low``) — ``open_time``-only validation would pass such a
+    poisoned candle as healthy. Reject it as unavailable instead.
+
+    Finiteness is checked FIRST so a ``Decimal('NaN')`` never reaches a ``<``/
+    ``max``/``min`` comparison (which would raise ``InvalidOperation`` and leak
+    as a generic error). No new field (e.g. volume) is consulted."""
+    ohlc = (candle.open, candle.high, candle.low, candle.close)
+    if not all(v.is_finite() for v in ohlc):
+        raise MarketConditionsUnavailable(
+            "non_finite_kline: "
+            f"o={candle.open} h={candle.high} l={candle.low} c={candle.close}"
+        )
+    if any(v <= 0 for v in ohlc):
+        raise MarketConditionsUnavailable(
+            "non_positive_kline: "
+            f"o={candle.open} h={candle.high} l={candle.low} c={candle.close}"
+        )
+    if (
+        candle.high < candle.low
+        or candle.high < max(candle.open, candle.close)
+        or candle.low > min(candle.open, candle.close)
+    ):
+        raise MarketConditionsUnavailable(
+            "inconsistent_kline_ohlc: "
+            f"o={candle.open} h={candle.high} l={candle.low} c={candle.close}"
+        )
+    if candle.close_time_ms < candle.open_time_ms:
+        raise MarketConditionsUnavailable(
+            "kline_time_disorder: "
+            f"open={candle.open_time_ms} close={candle.close_time_ms}"
+        )
+
+
 def _validate_quote(book: BookTicker) -> None:
     """Reject non-finite (NaN / ±Inf), non-positive, or crossed (ask < bid)
     quotes as unavailable. The finiteness check runs first: comparing a
@@ -132,8 +168,10 @@ async def build_market_conditions(
     The ``spread_bps`` and ``data_age_seconds`` fields are always measured from
     the exchange's own quote/kline — never supplied or influenced by the caller.
     Fails closed via :class:`MarketConditionsUnavailable` on any provider error,
-    empty/malformed kline, missing/invalid timestamp, or invalid/non-finite
-    quote, so the caller can reject the order without touching broker or ledger.
+    empty kline, missing/invalid timestamp, a semantically invalid kline
+    (non-finite / non-positive / inconsistent OHLC or disordered timestamps),
+    or an invalid/non-finite quote — so the caller can reject the order without
+    touching broker or ledger.
 
     Data age is measured from a clock sampled **after both observations
     complete** (``clock_ms``, injectable), so real bookTicker + kline fetch
@@ -164,6 +202,7 @@ async def build_market_conditions(
     latest = candles[-1]
     if latest.open_time_ms is None or latest.open_time_ms <= 0:
         raise MarketConditionsUnavailable("missing_kline_timestamp")
+    _validate_candle(latest)
     _validate_quote(book)
 
     return MarketConditions(

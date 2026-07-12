@@ -47,6 +47,27 @@ def _candle(open_time_ms: int = _OPEN_MS) -> Candle:
     )
 
 
+def _candle_ohlc(
+    o: str,
+    h: str,
+    low: str,
+    c: str,
+    *,
+    open_time_ms: int = _OPEN_MS,
+    close_time_ms: int | None = None,
+) -> Candle:
+    return Candle(
+        open_time_ms=open_time_ms,
+        open=Decimal(o),
+        high=Decimal(h),
+        low=Decimal(low),
+        close=Decimal(c),
+        close_time_ms=(
+            close_time_ms if close_time_ms is not None else open_time_ms + 59_999
+        ),
+    )
+
+
 class _FakeMD:
     """Scripted Demo-host reader. Either value may be an Exception to raise."""
 
@@ -305,6 +326,137 @@ async def test_fetch_latency_pushes_age_over_stale_boundary() -> None:
         market=market,
     )
     assert ReasonCode.STALE_DATA in decision.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_full_shape_nan_ohlc_kline_from_reader_fails_closed(httpx_mock) -> None:
+    # ROB-841 review: a kline row with the CORRECT number of fields but a NaN
+    # OHLC value parses cleanly (Decimal('NaN')), so open_time-only validation
+    # let it through as a healthy snapshot. Semantic validation must reject it.
+    httpx_mock.add_response(
+        method="GET",
+        url=re.compile(
+            r"^https://demo-fapi\.binance\.com/fapi/v1/ticker/bookTicker\?.*$"
+        ),
+        json={"symbol": "XRPUSDT", "bidPrice": "1.35950000", "askPrice": "1.35960000"},
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url=re.compile(r"^https://demo-fapi\.binance\.com/fapi/v1/klines\?.*$"),
+        json=[
+            [
+                _OPEN_MS,  # open_time (valid, > 0)
+                "1.35960000",  # open
+                "1.35980000",  # high
+                "1.35950000",  # low
+                "NaN",  # close — full shape, but not finite
+                "6136.00000000",  # volume
+                _OPEN_MS + 59_999,  # close_time
+                "8342.58965000",
+                46,
+                "2795.80000000",
+                "3801.21357000",
+                "0",
+            ]
+        ],
+    )
+    md = DemoScalpingMarketData()
+    try:
+        with pytest.raises(MarketConditionsUnavailable):
+            await build_market_conditions(
+                md,
+                product="usdm_futures",
+                symbol="XRPUSDT",
+                clock_ms=lambda: _OPEN_MS,
+            )
+    finally:
+        await md.aclose()
+
+
+@pytest.mark.parametrize("field", ["open", "high", "low", "close"])
+@pytest.mark.parametrize("bad", ["NaN", "Infinity", "-Infinity"])
+@pytest.mark.asyncio
+async def test_non_finite_ohlc_fails_closed(field: str, bad: str) -> None:
+    ohlc = {"open": "1.36", "high": "1.37", "low": "1.35", "close": "1.36"}
+    ohlc[field] = bad
+    md = _FakeMD(
+        book=BookTicker(bid=Decimal("100"), ask=Decimal("100.05")),
+        klines=[_candle_ohlc(ohlc["open"], ohlc["high"], ohlc["low"], ohlc["close"])],
+    )
+    with pytest.raises(MarketConditionsUnavailable):
+        await _build(md, now_ms=_OPEN_MS)
+
+
+@pytest.mark.parametrize("field", ["open", "high", "low", "close"])
+@pytest.mark.parametrize("bad", ["0", "-1"])
+@pytest.mark.asyncio
+async def test_non_positive_ohlc_fails_closed(field: str, bad: str) -> None:
+    ohlc = {"open": "1.36", "high": "1.37", "low": "1.35", "close": "1.36"}
+    ohlc[field] = bad
+    md = _FakeMD(
+        book=BookTicker(bid=Decimal("100"), ask=Decimal("100.05")),
+        klines=[_candle_ohlc(ohlc["open"], ohlc["high"], ohlc["low"], ohlc["close"])],
+    )
+    with pytest.raises(MarketConditionsUnavailable):
+        await _build(md, now_ms=_OPEN_MS)
+
+
+@pytest.mark.parametrize(
+    "o,h,low,c",
+    [
+        ("1.36", "1.34", "1.35", "1.36"),  # high < low
+        ("1.36", "1.355", "1.35", "1.36"),  # high < max(open, close)
+        ("1.36", "1.37", "1.365", "1.36"),  # low > min(open, close)
+    ],
+)
+@pytest.mark.asyncio
+async def test_inconsistent_ohlc_fails_closed(o, h, low, c) -> None:
+    md = _FakeMD(
+        book=BookTicker(bid=Decimal("100"), ask=Decimal("100.05")),
+        klines=[_candle_ohlc(o, h, low, c)],
+    )
+    with pytest.raises(MarketConditionsUnavailable):
+        await _build(md, now_ms=_OPEN_MS)
+
+
+@pytest.mark.asyncio
+async def test_close_before_open_time_fails_closed() -> None:
+    md = _FakeMD(
+        book=BookTicker(bid=Decimal("100"), ask=Decimal("100.05")),
+        klines=[
+            _candle_ohlc(
+                "1.36",
+                "1.37",
+                "1.35",
+                "1.36",
+                open_time_ms=_OPEN_MS,
+                close_time_ms=_OPEN_MS - 1,  # close_time before open_time
+            )
+        ],
+    )
+    with pytest.raises(MarketConditionsUnavailable):
+        await _build(md, now_ms=_OPEN_MS)
+
+
+@pytest.mark.asyncio
+async def test_semantically_valid_candle_is_allowed() -> None:
+    # Boundary-valid OHLC (high == max, low == min, close_time == open_time)
+    # must pass so the tightened validation does not over-reject.
+    md = _FakeMD(
+        book=BookTicker(bid=Decimal("100"), ask=Decimal("100.05")),
+        klines=[
+            _candle_ohlc(
+                "1.36",
+                "1.36",  # high == open == close
+                "1.36",  # low == open == close
+                "1.36",
+                open_time_ms=_OPEN_MS,
+                close_time_ms=_OPEN_MS,  # close_time == open_time
+            )
+        ],
+    )
+    market = await _build(md, now_ms=_OPEN_MS)
+    assert isinstance(market.data_age_seconds, float)
 
 
 def _empty_ledger():
