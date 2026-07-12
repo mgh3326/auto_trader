@@ -3000,3 +3000,74 @@ async def test_place_order_impl_rejects_mock_crypto_before_upbit_reads(monkeypat
     market_buy.assert_not_awaited()
     place_sell.assert_not_awaited()
     market_sell.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_place_order_impl_client_order_id_override_reaches_execution(monkeypatch):
+    executed = AsyncMock(return_value={"success": True, "broker_status": "accepted"})
+    monkeypatch.setattr(
+        order_execution,
+        "_fetch_current_price",
+        AsyncMock(return_value=70_000_000.0),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_build_preview",
+        AsyncMock(return_value={"estimated_value": 700_000.0}),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_check_balance_and_warn",
+        AsyncMock(return_value=(None, None)),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "evaluate_sector_concentration",
+        AsyncMock(return_value={"verdict": "ok"}),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_get_crypto_trade_cooldown_service",
+        lambda: type("Cooldown", (), {"is_in_cooldown": AsyncMock(return_value=False)})(),
+    )
+    monkeypatch.setattr(order_execution, "_execute_and_record", executed)
+
+    result = await order_execution._place_order_impl(
+        symbol="KRW-BTC",
+        side="buy",
+        market="crypto",
+        order_type="limit",
+        quantity=0.01,
+        price=70_000_000.0,
+        dry_run=False,
+        thesis="t",
+        strategy="s",
+        client_order_id="oprop-fixed",
+    )
+
+    assert result["success"] is True
+    assert executed.await_args.kwargs["idempotency_key"] == "oprop-fixed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_order_id", ["", " ", "x" * 41])
+async def test_place_order_impl_rejects_invalid_client_order_id_before_execution(
+    monkeypatch, client_order_id
+):
+    executed = AsyncMock()
+    monkeypatch.setattr(order_execution, "_execute_and_record", executed)
+
+    result = await order_execution._place_order_impl(
+        symbol="KRW-BTC",
+        side="buy",
+        market="crypto",
+        order_type="limit",
+        quantity=0.01,
+        price=70_000_000.0,
+        dry_run=False,
+        client_order_id=client_order_id,
+    )
+
+    assert result["success"] is False
+    assert "client_order_id" in result["error"]
+    executed.assert_not_awaited()

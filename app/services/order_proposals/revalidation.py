@@ -140,6 +140,11 @@ def _toss_proposal_client_order_id(proposal_id: uuid.UUID, rung_index: int) -> s
     return f"tosprop-{digest}"
 
 
+def _proposal_client_order_id(proposal_id: uuid.UUID, rung_index: int) -> str:
+    digest = hashlib.sha256(f"{proposal_id}:{rung_index}".encode()).hexdigest()[:32]
+    return f"oprop-{digest}"
+
+
 def _adapt_toss_preview_response(preview: dict[str, Any]) -> dict[str, Any]:
     """Expose Toss's normalized wire payload through the proposal contract."""
     payload = preview.get("payload_preview")
@@ -321,6 +326,8 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
     # activation smoke, KRW-BTC canary). Normalize at this caller boundary;
     # the impl's float contract stays unchanged for every other caller.
     kwargs = {k: (float(v) if isinstance(v, Decimal) else v) for k, v in kwargs.items()}
+    if proposal_client_order_id is not None:
+        kwargs["client_order_id"] = str(proposal_client_order_id)
 
     submit = await _place_order_impl(**kwargs)
     if kwargs.get("dry_run") is False:
@@ -410,9 +417,11 @@ async def _revalidate_place_rung(
 ) -> RungOutcome:
     proposal_id = group.proposal_id
     rung_index = rung.rung_index
-    toss_client_order_id = (
+    proposal_client_order_id = (
         _toss_proposal_client_order_id(proposal_id, rung_index)
         if group.account_mode == "toss_live"
+        else _proposal_client_order_id(proposal_id, rung_index)
+        if group.account_mode == "upbit"
         else None
     )
 
@@ -438,8 +447,8 @@ async def _revalidate_place_rung(
                 reason=_PREVIEW_REASON.format(rung=rung_index),
                 rung=rung_index,
                 **(
-                    {"proposal_client_order_id": toss_client_order_id}
-                    if toss_client_order_id is not None
+                    {"proposal_client_order_id": proposal_client_order_id}
+                    if proposal_client_order_id is not None
                     else {}
                 ),
             )
@@ -464,10 +473,10 @@ async def _revalidate_place_rung(
             {"error": preview.get("error"), "preview": preview},
         )
 
-    if toss_client_order_id is not None:
+    if group.account_mode == "toss_live":
         invalid_reason = _invalid_toss_preview_reason(
             preview,
-            expected_client_order_id=toss_client_order_id,
+            expected_client_order_id=proposal_client_order_id,
             order_type=group.order_type,
         )
         if invalid_reason is not None:
@@ -532,8 +541,8 @@ async def _revalidate_place_rung(
                 reason=_SUBMIT_REASON.format(rung=rung_index),
                 approval_hash=preview.get("approval_hash"),
                 **(
-                    {"proposal_client_order_id": toss_client_order_id}
-                    if toss_client_order_id is not None
+                    {"proposal_client_order_id": proposal_client_order_id}
+                    if proposal_client_order_id is not None
                     else {}
                 ),
                 rung=rung_index,

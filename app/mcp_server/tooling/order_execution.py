@@ -1216,6 +1216,7 @@ async def _place_order_impl(
     rung: str | int | None = None,
     mirror_cohort: str | None = None,
     mirror_source_bucket: str | None = None,
+    client_order_id: str | None = None,
 ) -> dict[str, Any]:
     symbol, side_lower, order_type_lower = _validate_inputs(
         symbol,
@@ -1227,6 +1228,18 @@ async def _place_order_impl(
     )
 
     market_type, normalized_symbol = _resolve_market_type(symbol, market)
+    source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "kis"}
+    source = source_map[market_type]
+
+    def _order_error(message: str) -> dict[str, Any]:
+        return _build_order_error(message, source, normalized_symbol, market_type)
+
+    if client_order_id is not None and (
+        not isinstance(client_order_id, str)
+        or not client_order_id.strip()
+        or len(client_order_id) > 40
+    ):
+        return _order_error("client_order_id must be non-blank and at most 40 characters")
 
     # Validate buy order journal requirements before any external API calls.
     # Skipped for KIS mock: mock orders write to kis_mock_order_ledger and
@@ -1247,12 +1260,6 @@ async def _place_order_impl(
                 "symbol": normalized_symbol,
                 "instrument_type": market_type,
             }
-
-    source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "kis"}
-    source = source_map[market_type]
-
-    def _order_error(message: str) -> dict[str, Any]:
-        return _build_order_error(message, source, normalized_symbol, market_type)
 
     if market_type == "crypto" and is_mock:
         return _order_error(_MOCK_CRYPTO_ERROR)
@@ -1433,8 +1440,11 @@ async def _place_order_impl(
         )
         now = now_kst()
         salt_market = order_approval.salt_market_for(market_type)
-        idempotency_key = order_approval.derive_client_order_id(
-            canonical, market=salt_market, now=now, rung=rung
+        idempotency_key = client_order_id or order_approval.derive_client_order_id(
+            canonical,
+            market=salt_market,
+            now=now,
+            rung=rung,
         )
 
         # Dry-run exit — the preview emits the approval token operators pass back.

@@ -972,6 +972,96 @@ def test_toss_proposal_client_ids_are_stable_and_rung_scoped():
     assert same.startswith("tosprop-")
 
 
+def test_upbit_proposal_client_ids_are_stable_and_rung_scoped():
+    from app.services.order_proposals import revalidation as mod
+
+    proposal_id = uuid.UUID("12345678-1234-5678-1234-567812345678")
+    first = mod._proposal_client_order_id(proposal_id, 0)
+    assert first == mod._proposal_client_order_id(proposal_id, 0)
+    assert first != mod._proposal_client_order_id(proposal_id, 1)
+    assert first != mod._proposal_client_order_id(uuid.uuid4(), 0)
+    assert first.startswith("oprop-")
+    assert len(first) <= 40
+
+
+@pytest.mark.asyncio
+async def test_upbit_revalidation_binds_same_proposal_client_id_to_preview_and_submit(
+    db_session,
+):
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="KRW-BTC",
+        market="crypto",
+        account_mode="upbit",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("0.01"), Decimal("70000000"), None)],
+    )
+    await db_session.commit()
+    calls: list[dict] = []
+
+    async def accepted(**kwargs):
+        calls.append(kwargs)
+        if kwargs["dry_run"]:
+            return {
+                "success": True,
+                "approval_hash": "upbit-token",
+                "price": "70000000",
+                "quantity": "0.01",
+            }
+        return {"success": True, "status": "resting", "broker_order_id": "upbit-1"}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=accepted,
+    )
+
+    from app.services.order_proposals import revalidation as mod
+
+    expected = mod._proposal_client_order_id(group.proposal_id, 0)
+    assert outcomes[0].result == "submitted_resting"
+    assert [call["proposal_client_order_id"] for call in calls] == [
+        expected,
+        expected,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_default_place_order_forwards_proposal_client_id_to_preview_and_submit(
+    monkeypatch,
+):
+    from app.services.order_proposals import revalidation as mod
+    import app.mcp_server.tooling.order_execution as order_execution
+
+    calls: list[dict] = []
+
+    async def fake_impl(**kwargs):
+        calls.append(kwargs)
+        return {"success": True}
+
+    monkeypatch.setattr(order_execution, "_place_order_impl", fake_impl)
+    expected = mod._proposal_client_order_id(
+        uuid.UUID("12345678-1234-5678-1234-567812345678"), 0
+    )
+    for dry_run in (True, False):
+        await mod._default_place_order_fn(
+            dry_run=dry_run,
+            account_mode="upbit",
+            symbol="KRW-BTC",
+            side="buy",
+            market="crypto",
+            order_type="limit",
+            quantity=Decimal("0.01"),
+            price=Decimal("70000000"),
+            proposal_client_order_id=expected,
+        )
+
+    assert [call["client_order_id"] for call in calls] == [expected, expected]
+
+
 @pytest.mark.asyncio
 async def test_toss_kr_routes_preview_and_accepted_submit(db_session, monkeypatch):
     svc = OrderProposalsService(db_session)
