@@ -62,6 +62,7 @@ from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
     is_ledger_tracking_unavailable,
 )
 from app.services.brokers.kis.mock_scalping_ws.state import MarketState
+from app.services.brokers.kis.pre_send import PreSendFreshnessError
 
 logger = logging.getLogger("rob321.kis_mock_scalping_exec")
 
@@ -361,15 +362,6 @@ def _is_finite_positive(x: float | None) -> bool:
     return x is not None and math.isfinite(x) and x > 0
 
 
-class PreSendFreshnessError(RuntimeError):
-    """Raised by the pre-send re-check when the live book is no longer tradeable
-    immediately before the broker POST (ROB-843 P1-1)."""
-
-    def __init__(self, reason_codes: tuple[str, ...]) -> None:
-        self.reason_codes = tuple(reason_codes)
-        super().__init__(",".join(self.reason_codes) or "pre_send_freshness")
-
-
 def assert_market_fresh_for_send(
     state: MarketState | None,
     *,
@@ -575,12 +567,17 @@ class KisMockLedgerWriter:
         )
 
     async def record_anomaly(
-        self, *, correlation_id: str, symbol: str, detail: str
+        self, *, correlation_id: str, symbol: str, side: Side, detail: str
     ) -> None:
+        # ROB-843 P2: persist the anomaly's real leg/side so it de-dups with the
+        # native row for the same order in the daily count (entry_unfilled=buy,
+        # exit_unconfirmed=sell) rather than counting as a phantom second order.
+        db_side = "buy" if side == "BUY" else "sell"
+        scalping_role = "entry" if side == "BUY" else "exit"
         await _save_kis_mock_order_ledger(
             symbol=symbol,
             instrument_type="equity_kr",
-            side="sell",
+            side=db_side,
             order_type="limit",
             quantity=0.0,
             price=0.0,
@@ -599,5 +596,5 @@ class KisMockLedgerWriter:
             notes=detail,
             lifecycle_state="anomaly",
             correlation_id=correlation_id,
-            scalping_role="exit",
+            scalping_role=scalping_role,
         )

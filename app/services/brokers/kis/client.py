@@ -9,6 +9,7 @@ from pandas import DataFrame
 
 from app.core.async_rate_limiter import get_limiter
 from app.core.config import settings
+from app.services.brokers.kis.pre_send import PreSendHook
 from app.services.redis_token_manager import get_kis_mock_token_manager
 
 from .account import AccountClient, extract_domestic_cash_summary_from_integrated_margin
@@ -374,9 +375,16 @@ class KISClient(BaseKISClient):
         quantity: int,
         price: int = 0,
         is_mock: bool = False,
+        *,
+        pre_send_hook: PreSendHook | None = None,
     ) -> dict[str, Any]:
         return await self._domestic_orders.order_korea_stock(
-            stock_code, order_type, quantity, price, is_mock
+            stock_code,
+            order_type,
+            quantity,
+            price,
+            is_mock,
+            pre_send_hook=pre_send_hook,
         )
 
     async def sell_korea_stock(
@@ -450,9 +458,17 @@ class KISClient(BaseKISClient):
         quantity: int,
         price: float = 0.0,
         is_mock: bool = False,
+        *,
+        pre_send_hook: PreSendHook | None = None,
     ) -> dict[str, Any]:
         return await self._overseas_orders.order_overseas_stock(
-            symbol, exchange_code, order_type, quantity, price, is_mock
+            symbol,
+            exchange_code,
+            order_type,
+            quantity,
+            price,
+            is_mock,
+            pre_send_hook=pre_send_hook,
         )
 
     async def buy_overseas_stock(
@@ -462,9 +478,11 @@ class KISClient(BaseKISClient):
         quantity: int,
         price: float = 0.0,
         is_mock: bool = False,
+        *,
+        pre_send_hook: PreSendHook | None = None,
     ) -> dict[str, Any]:
         return await self._overseas_orders.buy_overseas_stock(
-            symbol, exchange_code, quantity, price, is_mock
+            symbol, exchange_code, quantity, price, is_mock, pre_send_hook=pre_send_hook
         )
 
     async def sell_overseas_stock(
@@ -474,9 +492,11 @@ class KISClient(BaseKISClient):
         quantity: int,
         price: float = 0.0,
         is_mock: bool = False,
+        *,
+        pre_send_hook: PreSendHook | None = None,
     ) -> dict[str, Any]:
         return await self._overseas_orders.sell_overseas_stock(
-            symbol, exchange_code, quantity, price, is_mock
+            symbol, exchange_code, quantity, price, is_mock, pre_send_hook=pre_send_hook
         )
 
     async def inquire_overseas_orders(

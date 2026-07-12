@@ -71,7 +71,8 @@ def _gate(state, *, holdings=_empty_holdings, history=_no_history):
 
 @pytest.fixture(autouse=True)
 def _reset_tracking_state():
-    """Keep the process-local ledger-tracking flag from leaking between tests."""
+    """Keep the process-local ledger-tracking flag from leaking between tests
+    (this file mixes sync and async tests, so the fixture stays sync)."""
     from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
         reset_ledger_tracking_state,
     )
@@ -235,18 +236,21 @@ async def test_order_history_loader_reads_ledger(db_session) -> None:
     )
     from app.models.review import KISMockOrderLedger
     from app.services.brokers.kis.mock_scalping_exec.ledger_state import (
+        clear_tracking_degradation,
         load_kis_mock_order_history,
     )
 
     symbol = "900843"
     # Deterministic across re-runs of the persistent shared test DB (clear any
     # prior-run rows, including legacy closes written before reconciled_at was
-    # stamped).
+    # stamped, and any stray durable degradation marker that would fail-close).
     async with _order_session_factory()() as _db:
         await _db.execute(
             delete(KISMockOrderLedger).where(KISMockOrderLedger.symbol == symbol)
         )
         await _db.commit()
+    async with _order_session_factory()() as _db:
+        await clear_tracking_degradation(_db)
     await _save_kis_mock_order_ledger(
         symbol=symbol,
         instrument_type="equity_kr",

@@ -56,6 +56,7 @@ from app.mcp_server.tooling.shared import (
     to_float as _to_float,
 )
 from app.services.brokers.kis import KISClient
+from app.services.brokers.kis.pre_send import PreSendFreshnessError
 from app.services.crypto_trade_cooldown_service import CryptoTradeCooldownService
 from app.services.order_send_intent_service import (
     DuplicateOrderIntent,
@@ -139,6 +140,7 @@ async def _execute_order(
     market_type: str,
     is_mock: bool = False,
     identifier: str | None = None,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     if market_type == "crypto":
         if is_mock:
@@ -148,9 +150,17 @@ async def _execute_order(
         )
     if market_type == "equity_kr":
         return await _execute_kr_order(
-            symbol, side, order_type, quantity, price, is_mock=is_mock
+            symbol,
+            side,
+            order_type,
+            quantity,
+            price,
+            is_mock=is_mock,
+            pre_send_hook=pre_send_hook,
         )
-    return await _execute_us_order(symbol, side, quantity, price, is_mock=is_mock)
+    return await _execute_us_order(
+        symbol, side, quantity, price, is_mock=is_mock, pre_send_hook=pre_send_hook
+    )
 
 
 async def _execute_crypto_order(
@@ -197,6 +207,7 @@ async def _execute_kr_order(
     quantity: float | None,
     price: float | None,
     is_mock: bool = False,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     kis = _create_kis_client(is_mock=is_mock)
     stock_code = symbol
@@ -226,6 +237,9 @@ async def _execute_kr_order(
                 tick_size,
             )
 
+    # ROB-843 P1: only thread the hook when present (mock scalping). The live /
+    # normal path passes no callback at all → byte-for-byte identical behavior.
+    hook_kw = {"pre_send_hook": pre_send_hook} if pre_send_hook is not None else {}
     if side == "buy":
         result = await _call_kis(
             kis.order_korea_stock,
@@ -234,6 +248,7 @@ async def _execute_kr_order(
             quantity=order_quantity,
             price=order_price,
             is_mock=is_mock,
+            **hook_kw,
         )
     else:
         result = await _call_kis(
@@ -243,6 +258,7 @@ async def _execute_kr_order(
             quantity=order_quantity,
             price=order_price,
             is_mock=is_mock,
+            **hook_kw,
         )
 
     if original_price is not None and order_price != original_price:
@@ -258,10 +274,13 @@ async def _execute_us_order(
     quantity: float | None,
     price: float | None,
     is_mock: bool = False,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     kis = _create_kis_client(is_mock=is_mock)
     exchange_code = await get_us_exchange_by_symbol(symbol)
 
+    # ROB-843 P1: pass the hook only when present (live/normal path unchanged).
+    hook_kw = {"pre_send_hook": pre_send_hook} if pre_send_hook is not None else {}
     if side == "buy":
         return await _call_kis(
             kis.buy_overseas_stock,
@@ -270,6 +289,7 @@ async def _execute_us_order(
             quantity=int(quantity) if quantity else 0,
             price=price if price else 0.0,
             is_mock=is_mock,
+            **hook_kw,
         )
     return await _call_kis(
         kis.sell_overseas_stock,
@@ -278,6 +298,7 @@ async def _execute_us_order(
         quantity=int(quantity) if quantity else 0,
         price=price if price else 0.0,
         is_mock=is_mock,
+        **hook_kw,
     )
 
 
@@ -829,33 +850,12 @@ async def _execute_and_record(
             return True
         return False
 
-    # ROB-843 P1-1: final pre-send freshness re-check, invoked immediately
-    # before the real broker POST (after baseline/preflight). KIS-mock-scalping
-    # only — live callers pass no hook, so live behavior is unchanged. On a
-    # freshness violation the POST is skipped entirely (zero broker calls) and a
-    # structured pre_send_blocked result is returned.
-    if pre_send_hook is not None:
-        try:
-            await pre_send_hook()
-        except Exception as hook_exc:  # noqa: BLE001 — abort the send, never POST
-            reason_codes = list(getattr(hook_exc, "reason_codes", ()) or ())
-            logger.info(
-                "pre-send freshness block symbol=%s side=%s reasons=%s",
-                normalized_symbol,
-                side,
-                reason_codes,
-            )
-            await _release_reserved_mock_mirror_intent_after_send_failure(hook_exc)
-            return {
-                "success": False,
-                "pre_send_blocked": True,
-                "reason_codes": reason_codes,
-                "detail": f"{type(hook_exc).__name__}: {hook_exc}"[:200],
-                "account_mode": "kis_mock" if is_mock else market_type,
-                "dry_run": False,
-            }
-
     try:
+        # ROB-843 P1: the pre_send_hook (KIS-mock-scalping only) is threaded all
+        # the way into the transport and fired immediately before EACH real HTTP
+        # mutation (including token-refresh/retry re-sends), so a book that went
+        # stale during token/limiter/client/NXT preflight blocks the POST with
+        # zero broker calls. Live callers pass no hook → identical behavior.
         execution_result = await _execute_order(
             symbol=normalized_symbol,
             side=side,
@@ -865,7 +865,24 @@ async def _execute_and_record(
             market_type=market_type,
             is_mock=is_mock,
             identifier=idempotency_key if market_type == "crypto" else None,
+            pre_send_hook=pre_send_hook,
         )
+    except PreSendFreshnessError as fresh_exc:
+        await _release_reserved_mock_mirror_intent_after_send_failure(fresh_exc)
+        logger.info(
+            "pre-send freshness block symbol=%s side=%s reasons=%s",
+            normalized_symbol,
+            side,
+            list(fresh_exc.reason_codes),
+        )
+        return {
+            "success": False,
+            "pre_send_blocked": True,
+            "reason_codes": list(fresh_exc.reason_codes),
+            "detail": f"{type(fresh_exc).__name__}: {fresh_exc}"[:200],
+            "account_mode": "kis_mock" if is_mock else market_type,
+            "dry_run": False,
+        }
     except httpx.RequestError as send_exc:
         retry_allowed = await _release_reserved_mock_mirror_intent_after_send_failure(
             send_exc

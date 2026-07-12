@@ -18,12 +18,50 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from app.core.timezone import now_kst
 from app.models.review import KISMockOrderLedger
 
 _CLOSED_STATE = "reconciled"
+
+# ROB-843 P1-2: a durable ledger-tracking degradation latch. When an accepted
+# order's native AND fallback ledger writes are both lost, a marker row is
+# persisted so the block survives process restart / module reload / a fresh DB
+# session. Only an explicit reconciliation (clearing the marker) re-opens trading.
+_DEGRADATION_SYMBOL = "__ledger_tracking__"
+_DEGRADATION_ROLE = "tracking_degraded"
+
+
+async def is_tracking_degraded(db) -> bool:
+    """True while an unresolved durable degradation marker exists (any process)."""
+    found = await db.scalar(
+        select(func.count())
+        .select_from(KISMockOrderLedger)
+        .where(
+            KISMockOrderLedger.scalping_role == _DEGRADATION_ROLE,
+            KISMockOrderLedger.lifecycle_state != _CLOSED_STATE,
+        )
+    )
+    return bool(found or 0)
+
+
+async def clear_tracking_degradation(db) -> int:
+    """Explicit reconciliation: resolve all degradation markers. Returns count.
+
+    This is the ONLY way the durable latch is released — order tracking must be
+    verified recovered before calling it.
+    """
+    result = await db.execute(
+        update(KISMockOrderLedger)
+        .where(
+            KISMockOrderLedger.scalping_role == _DEGRADATION_ROLE,
+            KISMockOrderLedger.lifecycle_state != _CLOSED_STATE,
+        )
+        .values(lifecycle_state=_CLOSED_STATE, reconciled_at=now_kst())
+    )
+    await db.commit()
+    return int(result.rowcount or 0)
 
 
 @dataclass(frozen=True)
@@ -77,6 +115,8 @@ async def count_daily_broker_orders(
     ).where(
         KISMockOrderLedger.trade_date >= since,
         KISMockOrderLedger.scalping_role.is_not(None),
+        KISMockOrderLedger.scalping_role
+        != _DEGRADATION_ROLE,  # control row, not an order
         KISMockOrderLedger.lifecycle_state.in_(_SYNTHETIC_EVIDENCE_STATES),
     )
     if symbol is not None:
@@ -107,6 +147,11 @@ async def load_kis_mock_order_history(
     since = _start_of_kst_day(now)
 
     async with _order_session_factory()() as db:
+        # ROB-843 P1-2: durable pre-send fail-close. A prior lost-write
+        # degradation latch (survives restart) blocks every new order until an
+        # explicit reconciliation clears it — never silently undercounts.
+        if await is_tracking_degraded(db):
+            raise RuntimeError("ledger_tracking_unavailable")
         orders_today = await count_daily_broker_orders(db, since=since)
         realized_loss = await db.scalar(
             select(func.coalesce(func.sum(-KISMockOrderLedger.net_pnl), 0)).where(

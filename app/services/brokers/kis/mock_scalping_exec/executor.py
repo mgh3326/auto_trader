@@ -128,7 +128,7 @@ class LedgerPort(Protocol):
     ) -> None: ...
 
     async def record_anomaly(
-        self, *, correlation_id: str, symbol: str, detail: str
+        self, *, correlation_id: str, symbol: str, side: Side, detail: str
     ) -> None: ...
 
 
@@ -243,8 +243,13 @@ class MockScalpingExecutor:
         # 2. Confirm entry fill (bounded).
         entry_fill = await self._await_fill(buy)
         if entry_fill is None:
+            # ROB-843 P2: an entry-unfilled anomaly is the BUY leg (side=BUY) so
+            # it de-dups with the native BUY row in the daily count.
             await self._ledger.record_anomaly(
-                correlation_id=cid, symbol=intent.symbol, detail="entry_unfilled"
+                correlation_id=cid,
+                symbol=intent.symbol,
+                side="BUY",
+                detail="entry_unfilled",
             )
             return RoundTripResult(
                 correlation_id=cid,
@@ -276,8 +281,12 @@ class MockScalpingExecutor:
         exit_fill = await self._await_fill(sell)
         if exit_fill is None:
             # Failsafe: cannot prove the close — never report a clean success.
+            # The exit-unconfirmed anomaly is the SELL leg (side=SELL).
             await self._ledger.record_anomaly(
-                correlation_id=cid, symbol=intent.symbol, detail="exit_unconfirmed"
+                correlation_id=cid,
+                symbol=intent.symbol,
+                side="SELL",
+                detail="exit_unconfirmed",
             )
             return RoundTripResult(
                 correlation_id=cid,

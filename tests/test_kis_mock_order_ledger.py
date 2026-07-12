@@ -1245,9 +1245,42 @@ async def test_record_native_error_writes_synthetic_fallback(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_record_all_evidence_lost_marks_tracking_unavailable(monkeypatch):
-    """ROB-843 P1-2: native AND fallback both fail to persist → tracking degraded
-    (subsequent orders fail-close) while broker success stays true."""
+async def test_record_all_evidence_lost_persists_durable_marker(monkeypatch):
+    """ROB-843 P1-2: native AND fallback both fail → a DURABLE degradation marker
+    is persisted (survives restart); broker success stays true."""
+    from app.mcp_server.tooling import kis_mock_ledger
+    from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
+        LedgerWriteError,
+        reset_ledger_tracking_state,
+    )
+
+    reset_ledger_tracking_state()
+    monkeypatch.setattr(
+        kis_mock_ledger,
+        "_save_kis_mock_order_ledger",
+        AsyncMock(side_effect=LedgerWriteError("db down")),
+    )
+    monkeypatch.setattr(
+        kis_mock_ledger, "_native_row_exists", AsyncMock(return_value=False)
+    )
+    monkeypatch.setattr(
+        kis_mock_ledger, "_persist_tracking_fallback", AsyncMock(return_value=None)
+    )
+    marker = AsyncMock(return_value=123)  # durable marker persisted
+    monkeypatch.setattr(kis_mock_ledger, "_persist_tracking_degradation_marker", marker)
+    try:
+        result = await _record_accepted(monkeypatch)
+        assert result["success"] is True
+        assert result["ledger_tracking_unavailable"] is True
+        marker.assert_awaited_once()
+    finally:
+        reset_ledger_tracking_state()
+
+
+@pytest.mark.asyncio
+async def test_record_marker_lost_falls_back_to_process_latch(monkeypatch):
+    """ROB-843 P1-2: if even the durable marker cannot persist, the process-local
+    latch is set as a last resort so the next order still fail-closes."""
     from app.mcp_server.tooling import kis_mock_ledger
     from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
         LedgerWriteError,
@@ -1267,9 +1300,13 @@ async def test_record_all_evidence_lost_marks_tracking_unavailable(monkeypatch):
     monkeypatch.setattr(
         kis_mock_ledger, "_persist_tracking_fallback", AsyncMock(return_value=None)
     )
+    monkeypatch.setattr(
+        kis_mock_ledger,
+        "_persist_tracking_degradation_marker",
+        AsyncMock(return_value=None),
+    )
     try:
         result = await _record_accepted(monkeypatch)
-        assert result["success"] is True
         assert result["ledger_tracking_unavailable"] is True
         assert is_ledger_tracking_unavailable() is True
     finally:

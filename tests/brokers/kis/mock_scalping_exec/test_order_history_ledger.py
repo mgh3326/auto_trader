@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import delete, update
 
 from app.core.timezone import now_kst
@@ -34,6 +35,27 @@ async def _reset(symbol: str) -> None:
             delete(KISMockOrderLedger).where(KISMockOrderLedger.symbol == symbol)
         )
         await db.commit()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clear_degradation_markers():
+    """A durable degradation marker is global — clear it before/after every test
+    so a stray marker never fail-closes unrelated history loads on the shared DB.
+    """
+    from app.services.brokers.kis.mock_scalping_exec.ledger_state import (
+        clear_tracking_degradation,
+    )
+    from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
+        reset_ledger_tracking_state,
+    )
+
+    async with _order_session_factory()() as db:
+        await clear_tracking_degradation(db)
+    reset_ledger_tracking_state()
+    yield
+    async with _order_session_factory()() as db:
+        await clear_tracking_degradation(db)
+    reset_ledger_tracking_state()
 
 
 async def _ins(**over) -> None:
@@ -298,6 +320,165 @@ async def test_fallback_and_later_synthetic_dedupe(db_session) -> None:
         correlation_id=cid,
     )
     assert await _count(sym) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_entry_unfilled_buy_anomaly_dedups_with_native(db_session) -> None:
+    """ROB-843 P2: executor → real ledger writer → DB count. A native BUY and its
+    entry_unfilled anomaly (now side=buy) de-dup to ONE order (was 2 when the
+    anomaly was mis-recorded as sell)."""
+    from decimal import Decimal as _D
+
+    from app.services.brokers.kis.mock_scalping.contract import (
+        LedgerSnapshot,
+        MarketConditions,
+        ScalpingRiskLimits,
+    )
+    from app.services.brokers.kis.mock_scalping.order_intent import OrderIntent
+    from app.services.brokers.kis.mock_scalping_exec.adapters import KisMockLedgerWriter
+    from app.services.brokers.kis.mock_scalping_exec.executor import (
+        ExecutorConfig,
+        MockScalpingExecutor,
+        RiskInputs,
+    )
+
+    sym = "900301"
+    await _reset(sym)
+
+    class _NativeWritingBroker:
+        async def submit_buy(self, *, symbol, price, quantity, correlation_id, confirm):
+            # Emulate the native ledger row a real submit would leave behind.
+            await _save_kis_mock_order_ledger(
+                symbol=symbol,
+                instrument_type="equity_kr",
+                side="buy",
+                order_type="limit",
+                quantity=float(quantity),
+                price=float(price),
+                amount=float(price * quantity),
+                currency="KRW",
+                order_no=f"native-{correlation_id}",
+                order_time=None,
+                krx_fwdg_ord_orgno=None,
+                status="accepted",
+                response_code="0",
+                response_message="ok",
+                raw_response=None,
+                reason="scalp_entry",
+                thesis=None,
+                strategy=None,
+                notes=None,
+                lifecycle_state="accepted",
+                correlation_id=correlation_id,
+            )
+            return {"kind": "buy"}
+
+        async def submit_exit_sell(self, **kw):  # unreached (entry unfilled)
+            return {"kind": "sell"}
+
+        async def confirm_fill(self, submit_result):
+            return None  # entry never fills
+
+        def quote(self, symbol):
+            return None
+
+    class _PassGate:
+        async def load(self, *, symbol, side) -> RiskInputs:
+            return RiskInputs(
+                ledger=LedgerSnapshot(False, 0, 0, _D("0"), None),
+                market=MarketConditions(spread_bps=_D("10"), data_age_seconds=1.0),
+            )
+
+    async def _no_sleep(_s):
+        return None
+
+    executor = MockScalpingExecutor(
+        broker=_NativeWritingBroker(),
+        ledger=KisMockLedgerWriter(),
+        config=ExecutorConfig(max_fill_polls=1),
+        sleep=_no_sleep,
+        clock=lambda: 0.0,
+        risk=_PassGate(),
+        limits=ScalpingRiskLimits(allowlist=frozenset({sym})),
+    )
+    intent = OrderIntent(
+        symbol=sym,
+        side="BUY",
+        order_type="limit",
+        target_notional_krw=_D("100000"),
+        entry_reference_price=_D("70000"),
+        tp_price=_D("70210"),
+        sl_price=_D("69860"),
+        confidence=_D("0.5"),
+        reason_codes=("enter_long_breakout",),
+        source_candle_close_time_ms=1,
+        evaluated_at_ms=2,
+    )
+    result = await executor.execute_monitored(intent, confirm=True)
+    assert result.status == "entry_unfilled"
+    # native BUY + entry_unfilled anomaly (side=buy) -> exactly ONE submission.
+    assert await _count(sym) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_tracking_degradation_is_durable_across_new_gate(db_session) -> None:
+    """P1-2: a persisted degradation marker fail-closes a BRAND-NEW gate instance
+    (module-global reset), and only explicit reconciliation clears it."""
+    from app.mcp_server.tooling.kis_mock_ledger import (
+        _persist_tracking_degradation_marker,
+    )
+    from app.services.brokers.kis.mock_scalping_exec.adapters import KisMockRiskGate
+    from app.services.brokers.kis.mock_scalping_exec.ledger_state import (
+        clear_tracking_degradation,
+    )
+    from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
+        reset_ledger_tracking_state,
+    )
+
+    # Persist a durable marker (native+fallback both lost for some order).
+    await _persist_tracking_degradation_marker(
+        correlation_id="lost-order-1", side="buy", market_type="equity_kr"
+    )
+    # Prove the block is DURABLE, not process-local: clear the in-memory latch.
+    reset_ledger_tracking_state()
+
+    # A fresh loader call on a NEW DB session fail-closes.
+    with pytest.raises(RuntimeError, match="ledger_tracking_unavailable"):
+        await load_kis_mock_order_history(symbol="005930")
+
+    # A brand-new gate instance (new object) also fail-closes.
+    async def _holdings():
+        return {"holdings": [], "cash": {}}
+
+    gate = KisMockRiskGate(
+        get_state=lambda _s: None,  # unreached: durable check is inside history load
+        holdings_provider=_holdings,
+        clock=lambda: 100.0,
+    )
+    # get_state returns None -> market check would raise first; assert it still
+    # fails closed (either market or durable). Use a valid state to reach history:
+    from app.services.brokers.kis.mock_scalping_ws.state import MarketState
+
+    gate2 = KisMockRiskGate(
+        get_state=lambda _s: MarketState(
+            symbol="005930", bid=70000.0, ask=70100.0, _book_updated_at=100.0
+        ),
+        holdings_provider=_holdings,
+        clock=lambda: 100.5,
+    )
+    with pytest.raises(RuntimeError):
+        await gate.load(symbol="005930", side="BUY")
+    with pytest.raises(RuntimeError, match="ledger_tracking_unavailable"):
+        await gate2.load(symbol="005930", side="BUY")
+
+    # Explicit reconciliation clears the latch; trading re-opens.
+    async with _order_session_factory()() as db:
+        cleared = await clear_tracking_degradation(db)
+    assert cleared >= 1
+    hist = await load_kis_mock_order_history(symbol="005930")
+    assert hist is not None  # no longer fail-closed
 
 
 @pytest.mark.integration

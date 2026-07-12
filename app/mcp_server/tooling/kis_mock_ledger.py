@@ -443,6 +443,50 @@ async def _persist_tracking_fallback(
     )
 
 
+async def _persist_tracking_degradation_marker(
+    *, correlation_id: str | None, side: str, market_type: str
+) -> int | None:
+    """Persist a DURABLE ledger-tracking degradation marker (ROB-843 P1-2).
+
+    Written when an accepted order's native AND fallback evidence are both lost.
+    It survives process restart / module reload; only an explicit reconciliation
+    (``clear_tracking_degradation``) resolves it. Returns the row id, or None if
+    even this write could not persist (then the caller falls back to the
+    process-local latch as a last resort).
+    """
+    from app.services.brokers.kis.mock_scalping_exec.ledger_state import (
+        _DEGRADATION_ROLE,
+        _DEGRADATION_SYMBOL,
+    )
+
+    currency = "KRW" if market_type != "equity_us" else "USD"
+    db_side = "buy" if str(side).lower() == "buy" else "sell"
+    return await _save_kis_mock_order_ledger(
+        symbol=_DEGRADATION_SYMBOL,
+        instrument_type=market_type,
+        side=db_side,
+        order_type="limit",
+        quantity=0.0,
+        price=0.0,
+        amount=0.0,
+        currency=currency,
+        order_no=None,
+        order_time=None,
+        krx_fwdg_ord_orgno=None,
+        status="unknown",
+        response_code=None,
+        response_message="ledger tracking degraded; native+fallback write lost",
+        raw_response=None,
+        reason="ledger_tracking_degraded",
+        thesis=None,
+        strategy=None,
+        notes=correlation_id,
+        lifecycle_state="anomaly",
+        correlation_id=correlation_id,
+        scalping_role=_DEGRADATION_ROLE,
+    )
+
+
 async def _record_kis_mock_order(
     *,
     normalized_symbol: str,
@@ -593,8 +637,17 @@ async def _record_kis_mock_order(
                 market_type=market_type,
             )
             if fallback_id is None:
+                # Neither native nor fallback evidence persisted: degrade tracking
+                # DURABLY (survives restart) so the next order fail-closes; the
+                # process-local latch is a last resort if even the marker is lost.
                 ledger_tracking_unavailable = True
-                mark_ledger_tracking_unavailable()
+                marker_id = await _persist_tracking_degradation_marker(
+                    correlation_id=correlation_id,
+                    side=side,
+                    market_type=market_type,
+                )
+                if marker_id is None:
+                    mark_ledger_tracking_unavailable()
 
     # ROB-730: emit the place-time forecast only for accepted orders (mirrors
     # kis_live). publish_place_time_forecast is itself buy+target-gated and runs

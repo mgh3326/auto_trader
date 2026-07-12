@@ -132,19 +132,27 @@ async def test_submit_buy_hook_passes_when_fresh(monkeypatch) -> None:
     await captured["pre_send_hook"]()  # age 1s -> no raise
 
 
-# --- _execute_and_record aborts BEFORE the POST -------------------------------
+# --- _execute_and_record threads the hook and converts a block ----------------
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_execute_and_record_blocks_before_post(monkeypatch) -> None:
-    """A raising pre-send hook returns pre_send_blocked and NEVER calls the POST."""
-    from unittest.mock import AsyncMock
-
+async def test_execute_and_record_threads_hook_and_returns_blocked(monkeypatch) -> None:
+    """_execute_and_record threads the hook into _execute_order (which fires it at
+    the real send boundary) and converts a PreSendFreshnessError into a stable
+    pre_send_blocked result. The real send-boundary POST-0 proof lives in
+    test_pre_send_transport.py (through the actual domestic service + transport)."""
     from app.mcp_server.tooling import order_execution
 
-    post_spy = AsyncMock(return_value={"rt_cd": "0", "odno": "1"})
-    monkeypatch.setattr(order_execution, "_execute_order", post_spy)
+    received: dict[str, Any] = {}
+
+    async def _fake_execute_order(**kwargs):
+        received.update(kwargs)
+        # The transport fires the hook right before the POST; emulate that here.
+        await kwargs["pre_send_hook"]()
+        return {"rt_cd": "0", "odno": "1"}
+
+    monkeypatch.setattr(order_execution, "_execute_order", _fake_execute_order)
 
     async def _raise() -> None:
         raise PreSendFreshnessError((ReasonCode.STALE_DATA,))
@@ -174,9 +182,9 @@ async def test_execute_and_record_blocks_before_post(monkeypatch) -> None:
         is_mock=False,
         pre_send_hook=_raise,
     )
+    assert received["pre_send_hook"] is _raise  # threaded down, not invoked here
     assert result["pre_send_blocked"] is True
     assert ReasonCode.STALE_DATA in result["reason_codes"]
-    assert post_spy.await_count == 0  # ZERO broker POSTs
 
 
 # --- executor surfaces the block as a clean blocked round trip ----------------

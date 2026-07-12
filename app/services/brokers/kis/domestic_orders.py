@@ -10,6 +10,7 @@ from app.services.kr_symbol_universe_service import is_nxt_eligible
 
 from . import constants
 from .base import _log_kis_api_failure
+from .pre_send import PreSendHook
 
 if TYPE_CHECKING:
     from .protocols import KISClientProtocol
@@ -236,6 +237,7 @@ class DomesticOrderClient:
         price: int = 0,  # 0이면 시장가
         is_mock: bool = False,
         *,
+        pre_send_hook: PreSendHook | None = None,
         _token_retry_depth: int = 0,
     ) -> dict:
         """
@@ -328,6 +330,9 @@ class DomesticOrderClient:
             # and 429 re-POSTs (throttle is pre-send wait only).
             retry_request_errors=False,
             max_retries_override=0,
+            # ROB-843 P1: mock-only freshness re-check fired at the actual HTTP
+            # send boundary (None for live → identical behavior).
+            pre_send_hook=pre_send_hook,
         )
 
         if js.get("rt_cd") != "0":
@@ -364,12 +369,15 @@ class DomesticOrderClient:
                 )
                 await self._parent._token_manager.clear_token()
                 await self._parent._ensure_token()
+                # ROB-843 P1: re-thread the hook so the token-refresh re-send
+                # re-checks freshness immediately before its own HTTP mutation.
                 return await self.order_korea_stock(
                     stock_code,
                     order_type,
                     quantity,
                     price,
                     is_mock,
+                    pre_send_hook=pre_send_hook,
                     _token_retry_depth=_token_retry_depth + 1,
                 )
 
