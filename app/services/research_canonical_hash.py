@@ -1,8 +1,24 @@
-"""ROB-846 — canonical SHA-256 identity helpers for the strategy experiment registry.
+"""ROB-846 — canonical identity helpers for the strategy experiment registry.
 
-Deterministic, order-independent hashing so a strategy version's identity
-(strategy/code/params/dataset/PIT/frozen-config/policy/benchmark/cost/MDD) can
-be pinned once and reproduced exactly.
+The identity of a strategy version must have ONE canonical, collision-free,
+JSON-safe representation used for both hashing and JSONB persistence, so a
+version can be reproduced exactly and two genuinely different identities can
+never share an ``experiment_id``.
+
+Design: every value — leaf AND container, including plain strings — is encoded
+into a **closed, typed canonical AST** made only of JSON-native types. Each node
+is a 2-element ``[tag, payload]`` list, e.g. ``["decimal", "1.0"]``,
+``["str", "x"]``, ``["list", [...]]``, ``["tuple", [...]]``, ``["set", [...]]``,
+``["dict", [[key, node], ...]]``. Because raw ``list``/``dict`` inputs are
+themselves wrapped in a typed node and their members are recursively encoded, a
+user cannot forge a tag: a raw string ``"__decimal__:1.0"`` encodes to
+``["str", "__decimal__:1.0"]`` which can never equal ``["decimal", "1.0"]``, and
+a ``list`` (``["list", ...]``) can never equal a ``tuple``/``set``.
+
+Two entry points are kept deliberately separate (ROB-846 review): one encodes a
+RAW Python value into an AST, the other hashes an ALREADY-encoded AST. A
+persisted JSONB manifest is hashed directly and never re-encoded, so a
+round-trip reproduces identical digests.
 
 Intentionally stdlib-only. This module must never import broker/order/fill
 surfaces (see ``tests/services/research/test_no_broker_import_guard.py``).
@@ -19,11 +35,15 @@ from typing import Any
 
 __all__ = [
     "IDENTITY_COMPONENTS",
+    "canonical_ast_json",
     "canonical_json",
     "canonical_sha256",
     "compute_identity_hashes",
+    "compute_identity_hashes_from_ast",
     "derive_experiment_id",
-    "to_jsonable",
+    "encode_canonical",
+    "encode_manifest",
+    "hash_canonical_ast",
 ]
 
 # Ordered identity components. Each maps to a ``<name>_hash`` column on
@@ -43,86 +63,87 @@ IDENTITY_COMPONENTS: tuple[str, ...] = (
     "mdd",
 )
 
+# The null AST node — the canonical encoding of ``None`` (also the default used
+# when a persisted manifest is missing a component).
+_NULL_NODE: list[Any] = ["null", None]
 
-def to_jsonable(value: Any) -> Any:
-    """Recursively convert an identity payload into a JSON-safe structure.
 
-    This is the single canonical representation used for BOTH hashing and DB
-    (JSONB) persistence, so a value that was hashed can be stored, read back,
-    and re-hashed to the identical digest. The result contains only
-    ``dict``/``list``/``str``/``int``/``float``/``bool``/``None`` and therefore
-    always serialises to Postgres JSONB.
+def encode_canonical(value: Any) -> list[Any]:
+    """Encode a raw identity value into a closed, forgery-proof typed AST.
 
-    Type mapping and fail-closed rules:
+    Returns a JSON-native ``[tag, payload]`` node. Fail-closed rules:
 
-    * ``Decimal`` → ``"__decimal__:<canonical str>"`` (never a lossy float);
-      non-finite Decimals (NaN/Inf) are rejected.
-    * ``float`` → passed through, but NaN/±Inf are rejected (JSONB has no
-      representation for them).
-    * ``datetime``/``date`` → ``"__datetime__:<ISO-8601>"``.
-    * ``dict`` → keys MUST be ``str``. A non-string key (e.g. ``1`` vs ``"1"``)
-      is rejected rather than coerced with ``str(key)``, which would collapse
-      distinct identities onto the same manifest/hash.
-    * ``set``/``frozenset`` → list ordered by each member's canonical JSON (not
-      the members' Python natural order, which is undefined across types).
-      Members that collide to the same canonical form are rejected as
-      ambiguous.
-
-    Raises ``ValueError``/``TypeError`` for any value that cannot be represented
-    as a collision-free, JSON-safe canonical form.
+    * ``float`` NaN/±Inf and non-finite ``Decimal`` are rejected — JSONB cannot
+      represent them.
+    * ``dict`` keys must be ``str`` (a non-string key would otherwise need a
+      lossy ``str()`` coercion that collapses distinct identities).
+    * ``set``/``frozenset`` members are ordered by their canonical AST bytes
+      (never Python natural order, which is undefined across types); members
+      that encode to the same node are rejected as ambiguous.
+    * Any unsupported type raises ``TypeError`` (rejected at the schema boundary,
+      before any DB work).
     """
-    if value is None or isinstance(value, str | bool):
-        return value
+    if value is None:
+        return ["null", None]
+    # bool is a subclass of int — handle it first.
+    if isinstance(value, bool):
+        return ["bool", value]
     if isinstance(value, int):
-        return value
+        return ["int", value]
     if isinstance(value, float):
         if not math.isfinite(value):
             raise ValueError(f"non-finite float is not JSON/JSONB safe: {value!r}")
-        return value
+        return ["float", value]
     if isinstance(value, Decimal):
         if not value.is_finite():
             raise ValueError(f"non-finite Decimal is not JSON/JSONB safe: {value!r}")
-        return f"__decimal__:{value!s}"
-    if isinstance(value, datetime | date):
-        return f"__datetime__:{value.isoformat()}"
+        return ["decimal", str(value)]
+    # datetime is a subclass of date — handle it first.
+    if isinstance(value, datetime):
+        return ["datetime", value.isoformat()]
+    if isinstance(value, date):
+        return ["date", value.isoformat()]
+    if isinstance(value, str):
+        return ["str", value]
     if isinstance(value, dict):
-        result: dict[str, Any] = {}
+        entries: list[list[Any]] = []
         for key, item in value.items():
             if not isinstance(key, str):
                 raise TypeError(
                     "identity dict keys must be str to stay collision-free; got "
                     f"{type(key).__name__} key {key!r}"
                 )
-            result[key] = to_jsonable(item)
-        return result
-    if isinstance(value, list | tuple):
-        return [to_jsonable(item) for item in value]
+            entries.append([key, encode_canonical(item)])
+        entries.sort(key=lambda pair: pair[0])
+        return ["dict", entries]
+    if isinstance(value, tuple):
+        return ["tuple", [encode_canonical(item) for item in value]]
+    if isinstance(value, list):
+        return ["list", [encode_canonical(item) for item in value]]
     if isinstance(value, frozenset | set):
-        keyed = sorted(
-            ((canonical_json(to_jsonable(item)), to_jsonable(item)) for item in value),
-            key=lambda pair: pair[0],
+        members = sorted(
+            (encode_canonical(item) for item in value), key=canonical_ast_json
         )
-        for earlier, later in zip(keyed, keyed[1:], strict=False):
-            if earlier[0] == later[0]:
+        for earlier, later in zip(members, members[1:], strict=False):
+            if canonical_ast_json(earlier) == canonical_ast_json(later):
                 raise ValueError(
-                    "ambiguous set: members collide to the same canonical form "
-                    f"{later[0]!r}"
+                    "ambiguous set: members encode to the same canonical node "
+                    f"{canonical_ast_json(later)!r}"
                 )
-        return [member for _, member in keyed]
-    raise TypeError(f"Unhashable identity value of type {type(value).__name__!r}")
+        return ["set", members]
+    raise TypeError(f"unsupported identity value of type {type(value).__name__!r}")
 
 
-def canonical_json(payload: Any) -> str:
-    """Canonical JSON text: sorted keys, compact separators, UTF-8 safe.
+def canonical_ast_json(ast: Any) -> str:
+    """Deterministic JSON text of an ALREADY-encoded canonical AST.
 
-    Operates on the json-safe form (:func:`to_jsonable`) so the exact bytes
-    that are hashed equal the bytes derived from the persisted JSONB manifest.
-    ``allow_nan=False`` is the last line of defence — ``to_jsonable`` already
-    rejects non-finite numbers, but this guarantees no ``NaN``/``Infinity``
-    token can ever reach the wire even via an unforeseen path.
+    The AST contains only JSON-native types produced by :func:`encode_canonical`.
+    A top-level manifest mapping (component name → AST) may also be passed, so
+    ``sort_keys=True`` normalises those keys; ``allow_nan=False`` is a final
+    guard against any stray non-finite number reaching the wire.
     """
     return json.dumps(
-        to_jsonable(payload),
+        ast,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -130,20 +151,45 @@ def canonical_json(payload: Any) -> str:
     )
 
 
+def hash_canonical_ast(ast: Any) -> str:
+    """Lowercase 64-hex SHA-256 of an already-encoded canonical AST."""
+    return hashlib.sha256(canonical_ast_json(ast).encode("utf-8")).hexdigest()
+
+
+def canonical_json(payload: Any) -> str:
+    """Canonical JSON text of a RAW value (encode then serialise)."""
+    return canonical_ast_json(encode_canonical(payload))
+
+
 def canonical_sha256(payload: Any) -> str:
-    """Lowercase 64-hex SHA-256 of the canonical JSON of ``payload``."""
-    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+    """Lowercase 64-hex SHA-256 of a RAW value's canonical AST."""
+    return hash_canonical_ast(encode_canonical(payload))
+
+
+def encode_manifest(components: dict[str, Any]) -> dict[str, Any]:
+    """Encode identity components into their persisted AST (name → AST node)."""
+    return {
+        name: encode_canonical(components.get(name)) for name in IDENTITY_COMPONENTS
+    }
 
 
 def compute_identity_hashes(components: dict[str, Any]) -> dict[str, str]:
-    """Return ``{"<component>_hash": sha256}`` for every identity component.
-
-    A missing component is hashed as ``null`` so the mapping is always complete
-    and deterministic; callers that require full identity enforce presence at
-    the schema layer.
-    """
+    """Per-component SHA-256 from RAW components (encode then hash)."""
     return {
         f"{name}_hash": canonical_sha256(components.get(name))
+        for name in IDENTITY_COMPONENTS
+    }
+
+
+def compute_identity_hashes_from_ast(manifest: dict[str, Any]) -> dict[str, str]:
+    """Per-component SHA-256 from a PERSISTED AST manifest (hash directly).
+
+    The manifest maps component name → already-encoded AST node. It is hashed
+    without re-encoding, so a JSONB round-trip reproduces identical digests —
+    this is the separate hashing entry point required by ROB-846 review.
+    """
+    return {
+        f"{name}_hash": hash_canonical_ast(manifest.get(name, _NULL_NODE))
         for name in IDENTITY_COMPONENTS
     }
 

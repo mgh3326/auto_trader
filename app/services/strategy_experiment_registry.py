@@ -33,9 +33,11 @@ from app.schemas.research_backtest import (
     TrialAccounting,
 )
 from app.services.research_canonical_hash import (
+    canonical_ast_json,
     compute_identity_hashes,
     derive_experiment_id,
-    to_jsonable,
+    encode_canonical,
+    encode_manifest,
 )
 
 # Bounded retry for the monotonic trial_index allocation race. Two concurrent
@@ -62,6 +64,12 @@ class InvalidTrialStatus(StrategyExperimentRegistryError):
 
 class PromotionHashMismatch(StrategyExperimentRegistryError):
     """A promotion candidate referenced missing/mismatched experiment hashes."""
+
+
+class CanonicalIdentityCollision(StrategyExperimentRegistryError):
+    """An incoming identity derived an existing experiment_id but its canonical
+    manifest differs from the stored one — an experiment_id collision. Registry
+    refuses to replay the stored immutable row under a different identity."""
 
 
 async def _get_experiment(
@@ -91,10 +99,21 @@ async def register_experiment(
         identity.strategy_version,
         component_hashes,
     )
+    incoming_manifest = encode_manifest(identity.components())
 
     existing = await _get_experiment(session, experiment_id)
     if existing is not None:
-        # Immutable: never rewrite. Same identity → same row.
+        # Idempotent replay — but only for the SAME identity. Compare the stored
+        # canonical manifest with the incoming one exactly; if they differ this
+        # experiment_id was reached by a different identity (a hash collision),
+        # so refuse to replay the immutable row under it (ROB-846 review).
+        if canonical_ast_json(existing.manifest) != canonical_ast_json(
+            incoming_manifest
+        ):
+            raise CanonicalIdentityCollision(
+                f"experiment_id {experiment_id!r} already exists with a different "
+                "canonical manifest; refusing to replay under a colliding identity"
+            )
         return existing
 
     if identity.supersedes_experiment_id is not None:
@@ -105,18 +124,19 @@ async def register_experiment(
                 "is not registered"
             )
 
-    # Persist the manifest/definitions in the SAME json-safe representation that
-    # was hashed, so a DB read-back re-hashes to the identical identity.
+    # Persist the SAME typed canonical AST that was hashed, so a JSONB read-back
+    # re-hashes (via hash_canonical_ast, without re-encoding) to the identical
+    # identity — no double-encode of the persisted form.
     row = ResearchStrategyExperiment(
         experiment_id=experiment_id,
         strategy_key=identity.strategy_key,
         strategy_version=identity.strategy_version,
         hypothesis=identity.hypothesis,
         supersedes_experiment_id=identity.supersedes_experiment_id,
-        benchmark_definition=to_jsonable(identity.benchmark),
-        cost_definition=to_jsonable(identity.cost),
-        mdd_definition=to_jsonable(identity.mdd),
-        manifest=to_jsonable(identity.components()),
+        benchmark_definition=encode_canonical(identity.benchmark),
+        cost_definition=encode_canonical(identity.cost),
+        mdd_definition=encode_canonical(identity.mdd),
+        manifest=incoming_manifest,
         **component_hashes,
     )
     try:

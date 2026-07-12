@@ -1,15 +1,15 @@
-"""ROB-846 — canonical SHA-256 identity helpers (unit).
+"""ROB-846 — canonical identity helpers (unit).
 
 The experiment registry pins strategy/code/params/dataset/PIT/frozen-config/
-policy/benchmark/cost/MDD to a canonical, order-independent SHA-256 identity so
-a strategy version can be reproduced exactly. These tests lock the canonical
-form down.
+policy/benchmark/cost/MDD to ONE closed, typed, collision-free canonical AST so
+a strategy version can be reproduced exactly and two different identities can
+never share an experiment_id. These tests lock the canonical form down.
 """
 
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
@@ -19,8 +19,11 @@ from app.services.research_canonical_hash import (
     canonical_json,
     canonical_sha256,
     compute_identity_hashes,
+    compute_identity_hashes_from_ast,
     derive_experiment_id,
-    to_jsonable,
+    encode_canonical,
+    encode_manifest,
+    hash_canonical_ast,
 )
 
 pytestmark = pytest.mark.unit
@@ -59,19 +62,30 @@ def test_canonical_json_is_key_order_independent() -> None:
     assert canonical_sha256({"a": 1, "b": 2}) == canonical_sha256({"b": 2, "a": 1})
 
 
-def test_canonical_json_uses_compact_separators_and_sorted_keys() -> None:
-    assert canonical_json({"b": 1, "a": 2}) == '{"a":2,"b":1}'
+def test_encode_canonical_is_a_closed_typed_ast() -> None:
+    # Every value becomes a tagged [tag, payload] node built of JSON-native types.
+    assert encode_canonical("x") == ["str", "x"]
+    assert encode_canonical(5) == ["int", 5]
+    assert encode_canonical(True) == ["bool", True]
+    assert encode_canonical(None) == ["null", None]
+    assert encode_canonical(Decimal("1.0")) == ["decimal", "1.0"]
+    assert encode_canonical(["a"]) == ["list", [["str", "a"]]]
+    assert encode_canonical(("a",)) == ["tuple", [["str", "a"]]]
+    assert encode_canonical({"a"}) == ["set", [["str", "a"]]]
+    assert encode_canonical({"k": 1}) == ["dict", [["k", ["int", 1]]]]
+    # The AST is JSON-serialisable (JSONB-safe) by construction.
+    json.dumps(encode_canonical(_identity_components()))
 
 
 def test_distinct_payloads_hash_differently() -> None:
     assert canonical_sha256({"roi": 0.05}) != canonical_sha256({"roi": 0.06})
 
 
-def test_decimal_and_datetime_are_hashed_deterministically() -> None:
+def test_decimal_hashes_deterministically_as_typed_node() -> None:
     payload = {"pf": Decimal("1.30"), "at": datetime(2026, 1, 1, tzinfo=UTC)}
     assert canonical_sha256(payload) == canonical_sha256(payload)
-    # Decimal serializes as canonical string, not float, so 1.30 != 1.3 text.
-    assert "1.30" in canonical_json(payload)
+    # Decimal is a typed "decimal" node carrying its exact text (1.30 != 1.3).
+    assert '["decimal","1.30"]' in canonical_json(payload)
 
 
 def test_compute_identity_hashes_covers_every_component() -> None:
@@ -91,80 +105,128 @@ def test_identity_hashes_are_independent_per_component() -> None:
     mutated_hashes = compute_identity_hashes(mutated)
 
     assert mutated_hashes["params_hash"] != base_hashes["params_hash"]
-    # Only the mutated component's hash changes.
     for name in IDENTITY_COMPONENTS:
         if name == "params":
             continue
         assert mutated_hashes[f"{name}_hash"] == base_hashes[f"{name}_hash"]
 
 
-def test_to_jsonable_is_json_safe_and_hash_consistent() -> None:
-    from datetime import date
+# --------------------------------------------------------------------------- #
+# Cross-type collision resistance (the review blocker)                         #
+# --------------------------------------------------------------------------- #
 
-    payload = {
-        "pf": Decimal("1.30"),
-        "at": datetime(2026, 1, 1, tzinfo=UTC),
-        "on": date(2026, 1, 2),
-        "tags": {"b", "a", "c"},
-        "nested": {"levels": [Decimal("2.5"), {"deep": Decimal("0.10")}]},
-    }
-    jsonable = to_jsonable(payload)
-    # Must serialise to JSON (what JSONB storage requires).
-    reparsed = json.loads(json.dumps(jsonable))
-    # Hashing the raw payload, the json-safe form, and the DB roundtrip all match.
-    assert canonical_sha256(payload) == canonical_sha256(jsonable)
-    assert canonical_sha256(payload) == canonical_sha256(reparsed)
-    # Decimal is preserved losslessly as canonical text, not a float.
-    assert jsonable["pf"] == "__decimal__:1.30"
-    assert jsonable["tags"] == ["a", "b", "c"]
+
+def test_decimal_never_collides_with_its_prefix_string() -> None:
+    assert canonical_sha256(Decimal("1.0")) != canonical_sha256("__decimal__:1.0")
+
+
+def test_datetime_and_date_never_collide_with_iso_strings() -> None:
+    dt = datetime(2026, 1, 1, tzinfo=UTC)
+    d = date(2026, 1, 2)
+    assert canonical_sha256(dt) != canonical_sha256(dt.isoformat())
+    assert canonical_sha256(dt) != canonical_sha256(f"__datetime__:{dt.isoformat()}")
+    assert canonical_sha256(d) != canonical_sha256(d.isoformat())
+    # A date and a datetime are also distinct from each other.
+    assert canonical_sha256(d) != canonical_sha256(dt)
+
+
+def test_list_tuple_and_set_are_distinct_containers() -> None:
+    assert canonical_sha256([1, 2]) != canonical_sha256((1, 2))
+    assert canonical_sha256([1, 2]) != canonical_sha256({1, 2})
+    assert canonical_sha256((1, 2)) != canonical_sha256({1, 2})
+
+
+def test_forged_tag_shaped_input_cannot_impersonate_special_nodes() -> None:
+    # A raw list/dict/string that mimics a tag shape is re-wrapped, so it can
+    # never equal the special node it imitates.
+    assert canonical_sha256(["decimal", "1.0"]) != canonical_sha256(Decimal("1.0"))
+    assert canonical_sha256(["str", "x"]) != canonical_sha256("x")
+    assert canonical_sha256(
+        {"__type__": "decimal", "value": "1.0"}
+    ) != canonical_sha256(Decimal("1.0"))
+
+
+# --------------------------------------------------------------------------- #
+# JSON-safety / fail-closed rules                                             #
+# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
 def test_non_finite_float_is_rejected(bad: float) -> None:
     with pytest.raises((ValueError, TypeError)):
-        to_jsonable({"x": bad})
+        encode_canonical({"x": bad})
     with pytest.raises((ValueError, TypeError)):
         canonical_json({"x": bad})
 
 
 @pytest.mark.parametrize("text", ["NaN", "Infinity", "-Infinity", "sNaN"])
 def test_non_finite_decimal_is_rejected(text: str) -> None:
-    bad = Decimal(text)
     with pytest.raises((ValueError, TypeError)):
-        to_jsonable({"x": bad})
+        encode_canonical({"x": Decimal(text)})
 
 
 def test_finite_decimal_still_roundtrips() -> None:
-    assert to_jsonable(Decimal("-0.0001")) == "__decimal__:-0.0001"
+    assert encode_canonical(Decimal("-0.0001")) == ["decimal", "-0.0001"]
 
 
 def test_int_and_string_key_do_not_collide() -> None:
-    # {1: ..., "1": ...} must not silently collapse to a single "1" key.
     with pytest.raises((TypeError, ValueError)):
-        to_jsonable({1: "int", "1": "str"})
+        encode_canonical({1: "int", "1": "str"})
 
 
 def test_non_string_key_rejected_even_when_nested() -> None:
     with pytest.raises((TypeError, ValueError)):
-        to_jsonable({"outer": {2: "deep"}})
+        encode_canonical({"outer": {2: "deep"}})
     with pytest.raises((TypeError, ValueError)):
-        to_jsonable({"outer": [{"ok": 1}, {3: "bad"}]})
+        encode_canonical({"outer": [{"ok": 1}, {3: "bad"}]})
+
+
+def test_unsupported_type_is_rejected() -> None:
+    with pytest.raises((TypeError, ValueError)):
+        encode_canonical({"blob": b"bytes"})
 
 
 def test_heterogeneous_set_is_deterministic_not_a_typeerror() -> None:
-    # Previously sorting {1, "1"} raised TypeError; now it is deterministic.
     payload = {1, "1", "a", 2}
-    first = to_jsonable(payload)
-    assert isinstance(first, list)
-    assert first == to_jsonable({2, "a", "1", 1})  # order-independent input
+    first = encode_canonical(payload)
+    assert first[0] == "set"
+    assert first == encode_canonical({2, "a", "1", 1})  # order-independent input
     assert canonical_sha256(payload) == canonical_sha256({2, "a", "1", 1})
+    # 1 and "1" are now distinguished (typed), not merged.
+    assert canonical_sha256({1}) != canonical_sha256({"1"})
 
 
-def test_set_members_that_collide_to_same_canonical_form_fail_close() -> None:
-    # A raw Decimal and a hand-crafted string that mimics its encoded form must
-    # not silently map to the same canonical member.
-    with pytest.raises((ValueError, TypeError)):
-        to_jsonable({Decimal("1.0"), "__decimal__:1.0"})
+def test_formerly_colliding_set_members_are_now_distinguished() -> None:
+    # Decimal("1.0") and the hand-crafted string that mimicked its old encoding
+    # are now distinct typed nodes, so the set is unambiguous (no fail-close).
+    encoded = encode_canonical({Decimal("1.0"), "__decimal__:1.0"})
+    assert encoded[0] == "set"
+    assert len(encoded[1]) == 2
+    assert ["decimal", "1.0"] in encoded[1]
+    assert ["str", "__decimal__:1.0"] in encoded[1]
+
+
+# --------------------------------------------------------------------------- #
+# AST hashing entry point (persisted manifest, no double-encode)              #
+# --------------------------------------------------------------------------- #
+
+
+def test_ast_manifest_rehashes_to_same_component_hashes() -> None:
+    components = _identity_components()
+    raw_hashes = compute_identity_hashes(components)
+    manifest = encode_manifest(components)
+    # Simulate a JSONB round-trip (tuple->list normalisation, etc.).
+    roundtripped = json.loads(json.dumps(manifest))
+    ast_hashes = compute_identity_hashes_from_ast(roundtripped)
+    assert ast_hashes == raw_hashes
+
+
+def test_hash_canonical_ast_does_not_re_encode() -> None:
+    # Hashing an already-encoded node must not wrap it again.
+    ast = encode_canonical({"roi": Decimal("0.05")})
+    assert hash_canonical_ast(ast) == canonical_sha256({"roi": Decimal("0.05")})
+    # Double-encoding would change the digest.
+    assert hash_canonical_ast(encode_canonical(ast)) != hash_canonical_ast(ast)
 
 
 def test_derive_experiment_id_is_deterministic_and_identity_sensitive() -> None:
@@ -172,11 +234,8 @@ def test_derive_experiment_id_is_deterministic_and_identity_sensitive() -> None:
     exp_id = derive_experiment_id("NFIX", "v1", hashes)
     assert len(exp_id) == _HEX64
     assert exp_id == derive_experiment_id("NFIX", "v1", hashes)
-
-    # A different version is a different identity.
     assert exp_id != derive_experiment_id("NFIX", "v2", hashes)
 
-    # A different code hash (same version) is a different identity.
     mutated = _identity_components()
     mutated["code"] = "def populate_entry_trend(): return 1"
     assert exp_id != derive_experiment_id(

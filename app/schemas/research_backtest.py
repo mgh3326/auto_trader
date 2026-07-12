@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.services.research_canonical_hash import IDENTITY_COMPONENTS, to_jsonable
+from app.services.research_canonical_hash import IDENTITY_COMPONENTS, encode_canonical
 
 # ROB-846 — terminal trial outcomes; every invocation records exactly one.
 TrialStatus = Literal["completed", "rejected", "crashed", "timeout"]
@@ -55,13 +55,13 @@ class StrategyExperimentIdentity(BaseModel):
                 "identity components must be non-null (use an explicit empty "
                 f"sentinel like {{}} for unused ones): {missing}"
             )
-        # Each component must reduce to a collision-free, JSON-safe canonical
-        # form (no NaN/Inf, str-only dict keys, unambiguous sets) so hashing and
-        # JSONB persistence cannot diverge. Reject invalid identities here, with
-        # the offending component named, long before any DB work.
+        # Each component must reduce to a closed, collision-free typed canonical
+        # AST (no NaN/Inf, str-only dict keys, unambiguous sets, no unsupported
+        # types) so hashing and JSONB persistence cannot diverge. Reject invalid
+        # identities here, with the offending component named, before any DB work.
         for name in IDENTITY_COMPONENTS:
             try:
-                to_jsonable(getattr(self, name))
+                encode_canonical(getattr(self, name))
             except (TypeError, ValueError) as exc:
                 raise ValueError(
                     f"identity component {name!r} is not canonical/JSON-safe: {exc}"

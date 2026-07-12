@@ -31,7 +31,7 @@ from app.schemas.research_backtest import (
 )
 from app.services import strategy_experiment_registry as reg
 from app.services.research_canonical_hash import (
-    compute_identity_hashes,
+    compute_identity_hashes_from_ast,
     derive_experiment_id,
 )
 
@@ -508,7 +508,7 @@ async def test_manifest_roundtrip_rehashes_to_same_identity(registry_tables) -> 
     ).one()
     manifest, params_hash, cost_hash, experiment_id = stored
 
-    recomputed = compute_identity_hashes(manifest)
+    recomputed = compute_identity_hashes_from_ast(manifest)
     assert recomputed["params_hash"] == params_hash
     assert recomputed["cost_hash"] == cost_hash
     assert (
@@ -687,7 +687,7 @@ async def test_heterogeneous_set_identity_roundtrips(registry_tables) -> None:
         )
     ).one()
     manifest, universe_hash, experiment_id = stored
-    recomputed = compute_identity_hashes(manifest)
+    recomputed = compute_identity_hashes_from_ast(manifest)
     assert recomputed["universe_hash"] == universe_hash
     assert (
         derive_experiment_id(
@@ -718,3 +718,65 @@ async def test_promotion_null_identity_row_rejected_by_db(registry_tables) -> No
             {"rid": trial.id},
         )
     await session.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# Canonical-collision blocker (typed AST)                                      #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("a_value", "b_value"),
+    [
+        (Decimal("1.0"), "__decimal__:1.0"),  # Decimal vs prefix string
+        ([1, 2], (1, 2)),  # list vs tuple
+        ([1, 2], {1, 2}),  # list vs set
+    ],
+    ids=["decimal-vs-str", "list-vs-tuple", "list-vs-set"],
+)
+async def test_formerly_colliding_identities_register_as_distinct_rows(
+    registry_tables, a_value, b_value
+) -> None:
+    session = registry_tables
+    key = "COLL-" + uuid.uuid4().hex[:8]
+    exp_a = await reg.register_experiment(
+        session, _identity(strategy_key=key, params={"p": a_value})
+    )
+    await session.flush()
+    exp_b = await reg.register_experiment(
+        session, _identity(strategy_key=key, params={"p": b_value})
+    )
+    await session.flush()
+
+    # Distinct canonical identities → distinct experiment_ids and two rows.
+    assert exp_a.experiment_id != exp_b.experiment_id
+    assert exp_a.params_hash != exp_b.params_hash
+    count = await session.scalar(
+        select(func.count())
+        .select_from(reg.ResearchStrategyExperiment)
+        .where(reg.ResearchStrategyExperiment.strategy_key == key)
+    )
+    assert count == 2
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_experiment_id_collision_with_different_manifest_fails_closed(
+    registry_tables, monkeypatch
+) -> None:
+    # Defensive replay guard: if a different identity ever derived an existing
+    # experiment_id (a hash collision), the registry must NOT replay the stored
+    # immutable row — it fails closed after comparing canonical manifests.
+    session = registry_tables
+    first = await reg.register_experiment(session, _identity(params={"p": "first"}))
+    await session.flush()
+
+    monkeypatch.setattr(
+        reg,
+        "derive_experiment_id",
+        lambda *args, **kwargs: first.experiment_id,
+    )
+    with pytest.raises(reg.CanonicalIdentityCollision):
+        await reg.register_experiment(session, _identity(params={"p": "second"}))
