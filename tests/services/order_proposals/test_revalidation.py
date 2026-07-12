@@ -1033,8 +1033,8 @@ async def test_upbit_revalidation_binds_same_proposal_client_id_to_preview_and_s
 async def test_default_place_order_forwards_proposal_client_id_to_preview_and_submit(
     monkeypatch,
 ):
-    from app.services.order_proposals import revalidation as mod
     import app.mcp_server.tooling.order_execution as order_execution
+    from app.services.order_proposals import revalidation as mod
 
     calls: list[dict] = []
 
