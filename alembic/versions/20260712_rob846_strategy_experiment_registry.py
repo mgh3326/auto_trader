@@ -70,14 +70,25 @@ _IMMUTABILITY_DDL: tuple[str, ...] = (
     CREATE OR REPLACE FUNCTION research.reject_backtest_trial_mutation()
     RETURNS trigger AS $$
     BEGIN
-        IF OLD.strategy_experiment_id IS NOT NULL THEN
-            RAISE EXCEPTION
-                'research.backtest_runs trial rows are append-only; % rejected on id=%',
-                TG_OP, OLD.id
-                USING ERRCODE = 'restrict_violation';
-        END IF;
         IF TG_OP = 'DELETE' THEN
+            IF OLD.strategy_experiment_id IS NOT NULL THEN
+                RAISE EXCEPTION
+                    'research.backtest_runs trial rows are append-only; DELETE rejected on id=%',
+                    OLD.id
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
             RETURN OLD;
+        END IF;
+        -- UPDATE: reject when the row is (OLD) or would become (NEW) a trial.
+        -- This blocks both mutating an existing trial and the legacy->trial
+        -- conversion bypass. Only legacy->legacy (null->null) edits are allowed.
+        IF OLD.strategy_experiment_id IS NOT NULL
+           OR NEW.strategy_experiment_id IS NOT NULL THEN
+            RAISE EXCEPTION
+                'research.backtest_runs trial rows are append-only; '
+                'UPDATE/convert rejected on id=%',
+                OLD.id
+                USING ERRCODE = 'restrict_violation';
         END IF;
         RETURN NEW;
     END;
@@ -222,6 +233,20 @@ def upgrade() -> None:
         ["strategy_experiment_id", "trial_index"],
         schema="research",
     )
+    # Trial all-or-none integrity: a row is either a legacy summary (no trial
+    # fields at all) or a fully-formed trial (experiment + index + status). Added
+    # NOT VALID so pre-existing legacy summary rows are never retro-invalidated
+    # while every new INSERT/UPDATE is enforced.
+    op.execute(
+        "ALTER TABLE research.backtest_runs "
+        "ADD CONSTRAINT ck_research_backtest_runs_trial_all_or_none CHECK ("
+        "(strategy_experiment_id IS NULL AND trial_index IS NULL "
+        "AND trial_status IS NULL AND trial_idempotency_key IS NULL "
+        "AND seed IS NULL AND information_cutoff IS NULL "
+        "AND gate_artifact_hash IS NULL) "
+        "OR (strategy_experiment_id IS NOT NULL AND trial_index IS NOT NULL "
+        "AND trial_status IS NOT NULL)) NOT VALID"
+    )
 
     # ---- promotion_candidates: exact run/config/data linkage ----
     op.add_column(
@@ -239,6 +264,16 @@ def upgrade() -> None:
         sa.Column("run_data_hash", sa.String(length=64), nullable=True),
         schema="research",
     )
+    # AC#5 boundary: a NEW promotion candidate must carry a full exact identity
+    # (experiment/config/data hashes). NOT VALID keeps legacy null-identity rows
+    # for migration compatibility while blocking any new incomplete write at the
+    # DB boundary; the service layer no longer writes identity-less candidates.
+    op.execute(
+        "ALTER TABLE research.promotion_candidates "
+        "ADD CONSTRAINT ck_research_promotion_candidates_identity_complete CHECK ("
+        "experiment_id IS NOT NULL AND run_config_hash IS NOT NULL "
+        "AND run_data_hash IS NOT NULL) NOT VALID"
+    )
 
     for stmt in _IMMUTABILITY_DDL:
         op.execute(stmt)
@@ -255,6 +290,15 @@ def downgrade() -> None:
     )
     op.execute("DROP FUNCTION IF EXISTS research.reject_backtest_trial_mutation()")
     op.execute("DROP FUNCTION IF EXISTS research.reject_strategy_experiment_mutation()")
+
+    op.execute(
+        "ALTER TABLE research.promotion_candidates "
+        "DROP CONSTRAINT IF EXISTS ck_research_promotion_candidates_identity_complete"
+    )
+    op.execute(
+        "ALTER TABLE research.backtest_runs "
+        "DROP CONSTRAINT IF EXISTS ck_research_backtest_runs_trial_all_or_none"
+    )
 
     op.drop_column("promotion_candidates", "run_data_hash", schema="research")
     op.drop_column("promotion_candidates", "run_config_hash", schema="research")

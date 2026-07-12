@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.services.research_canonical_hash import IDENTITY_COMPONENTS
 
@@ -15,30 +15,47 @@ TrialStatus = Literal["completed", "rejected", "crashed", "timeout"]
 class StrategyExperimentIdentity(BaseModel):
     """Immutable identity of a strategy version to register (ROB-846).
 
-    Each of the identity components is hashed into a canonical SHA-256 digest;
-    the combination derives the experiment_id. Unknown keys are rejected so the
-    identity contract cannot silently drift.
+    Each identity component is hashed into a canonical SHA-256 digest; the
+    combination derives the experiment_id. Unknown keys are rejected so the
+    contract cannot silently drift.
+
+    Reproducibility contract: every component is **required and non-null** — an
+    all-null identity cannot be registered. A component that a strategy
+    genuinely does not use must be stated explicitly with an empty sentinel
+    (e.g. ``benchmark={}`` or ``cost=[]``), not omitted or set to ``None``, so
+    "no benchmark" is a deliberate, hashable fact rather than missing data.
+    ``hypothesis`` and ``supersedes_experiment_id`` are the only optional fields.
     """
 
     strategy_key: str = Field(min_length=1)
     strategy_version: str = Field(min_length=1)
     hypothesis: str | None = None
 
-    strategy: Any = None
-    code: Any = None
-    params: Any = None
-    dataset_manifest: Any = None
-    universe: Any = None
-    pit: Any = None
-    frozen_config: Any = None
-    policy: Any = None
-    benchmark: Any = None
-    cost: Any = None
-    mdd: Any = None
+    strategy: Any
+    code: Any
+    params: Any
+    dataset_manifest: Any
+    universe: Any
+    pit: Any
+    frozen_config: Any
+    policy: Any
+    benchmark: Any
+    cost: Any
+    mdd: Any
 
     supersedes_experiment_id: str | None = None
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _require_non_null_components(self) -> StrategyExperimentIdentity:
+        missing = [name for name in IDENTITY_COMPONENTS if getattr(self, name) is None]
+        if missing:
+            raise ValueError(
+                "identity components must be non-null (use an explicit empty "
+                f"sentinel like {{}} for unused ones): {missing}"
+            )
+        return self
 
     def components(self) -> dict[str, Any]:
         """Ordered identity components fed to ``compute_identity_hashes``."""

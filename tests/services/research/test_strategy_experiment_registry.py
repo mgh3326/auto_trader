@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import UTC, datetime
+from decimal import Decimal
 from unittest.mock import AsyncMock
 
 import pytest
@@ -28,6 +30,10 @@ from app.schemas.research_backtest import (
     StrategyExperimentIdentity,
 )
 from app.services import strategy_experiment_registry as reg
+from app.services.research_canonical_hash import (
+    compute_identity_hashes,
+    derive_experiment_id,
+)
 
 
 def _identity(**overrides) -> StrategyExperimentIdentity:
@@ -442,3 +448,195 @@ async def test_concurrent_distinct_trials_get_distinct_indices(
             .where(ResearchBacktestRun.strategy_experiment_id == exp_pk)
         )
     assert total == 2
+
+
+# --------------------------------------------------------------------------- #
+# Review blockers                                                              #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+def test_identity_rejects_all_null_components() -> None:
+    # B2: an all-null identity (or any null component) cannot be constructed.
+    with pytest.raises(ValueError):
+        StrategyExperimentIdentity(strategy_key="k", strategy_version="v")
+    # A single null component is also rejected (explicit sentinel required).
+    with pytest.raises(ValueError):
+        StrategyExperimentIdentity(
+            strategy_key="k",
+            strategy_version="v",
+            strategy=None,
+            code={},
+            params={},
+            dataset_manifest={},
+            universe=[],
+            pit={},
+            frozen_config={},
+            policy={},
+            benchmark={},
+            cost={},
+            mdd={},
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_manifest_roundtrip_rehashes_to_same_identity(registry_tables) -> None:
+    # B3: register with Decimal/datetime/set/nested payloads, read the manifest
+    # back from JSONB, and recompute the hashes → identical identity.
+    session = registry_tables
+    identity = _identity(
+        params={
+            "roi": {"0": Decimal("0.055")},
+            "stoploss": Decimal("-0.10"),
+            "flags": {"b", "a"},
+            "opened_at": datetime(2026, 1, 1, tzinfo=UTC),
+        },
+        cost={"maker_bps": Decimal("2.5"), "taker_bps": Decimal("4.0")},
+    )
+    exp = await reg.register_experiment(session, identity)
+    await session.commit()
+
+    stored = (
+        await session.execute(
+            text(
+                "SELECT manifest, params_hash, cost_hash, experiment_id "
+                "FROM research.strategy_experiments WHERE id = :id"
+            ),
+            {"id": exp.id},
+        )
+    ).one()
+    manifest, params_hash, cost_hash, experiment_id = stored
+
+    recomputed = compute_identity_hashes(manifest)
+    assert recomputed["params_hash"] == params_hash
+    assert recomputed["cost_hash"] == cost_hash
+    assert (
+        derive_experiment_id(
+            identity.strategy_key, identity.strategy_version, recomputed
+        )
+        == experiment_id
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_concurrent_register_same_identity_returns_one_row(
+    registry_tables,
+) -> None:
+    # B4: two independent DB sessions registering the same identity concurrently
+    # both return the same original row; exactly one row is persisted.
+    from app.core.db import engine
+
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    identity = _identity(strategy_key="RACE-" + uuid.uuid4().hex[:8])
+
+    async def worker() -> str:
+        async with Session() as s:
+            row = await reg.register_experiment(s, identity)
+            experiment_id = row.experiment_id
+            await s.commit()
+            return experiment_id
+
+    left, right = await asyncio.gather(worker(), worker())
+    assert left == right
+
+    async with Session() as check:
+        count = await check.scalar(
+            select(func.count())
+            .select_from(reg.ResearchStrategyExperiment)
+            .where(reg.ResearchStrategyExperiment.experiment_id == left)
+        )
+    assert count == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_legacy_row_cannot_be_converted_to_trial_by_update(
+    registry_tables,
+) -> None:
+    # B5: a legacy (null-experiment) row cannot be UPDATE-converted into a trial
+    # — the trigger inspects NEW as well as OLD.
+    session = registry_tables
+    exp = await reg.register_experiment(session, _identity())
+    await session.flush()
+    legacy = ResearchBacktestRun(
+        run_id="legacy-" + uuid.uuid4().hex[:8],
+        strategy_name="NFIX",
+        timeframe="5m",
+        runner="mac",
+    )
+    session.add(legacy)
+    await session.flush()
+
+    with pytest.raises(IntegrityError):
+        await session.execute(
+            text(
+                "UPDATE research.backtest_runs SET strategy_experiment_id = :eid, "
+                "trial_index = 1, trial_status = 'completed' WHERE id = :id"
+            ),
+            {"eid": exp.id, "id": legacy.id},
+        )
+    await session.rollback()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_legacy_to_legacy_update_is_allowed(registry_tables) -> None:
+    # B5: a legacy row stays mutable as long as it stays legacy (null → null).
+    session = registry_tables
+    legacy = ResearchBacktestRun(
+        run_id="legacy-" + uuid.uuid4().hex[:8],
+        strategy_name="NFIX",
+        timeframe="5m",
+        runner="mac",
+    )
+    session.add(legacy)
+    await session.flush()
+    await session.execute(
+        text("UPDATE research.backtest_runs SET total_trades = 7 WHERE id = :id"),
+        {"id": legacy.id},
+    )
+    await session.rollback()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_trial_all_or_none_check_rejects_partial_trial(registry_tables) -> None:
+    # B5: a row with an experiment but no trial_index/status violates all-or-none.
+    session = registry_tables
+    exp = await reg.register_experiment(session, _identity())
+    await session.flush()
+    with pytest.raises(IntegrityError):
+        await session.execute(
+            text(
+                "INSERT INTO research.backtest_runs "
+                "(run_id, strategy_name, timeframe, runner, strategy_experiment_id) "
+                "VALUES (:rid, 'NFIX', '5m', 'mac', :eid)"
+            ),
+            {"rid": "partial-" + uuid.uuid4().hex[:8], "eid": exp.id},
+        )
+    await session.rollback()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_promotion_null_identity_row_rejected_by_db(registry_tables) -> None:
+    # B1: the DB boundary blocks a new promotion candidate with null identity.
+    session = registry_tables
+    exp = await reg.register_experiment(session, _identity())
+    await session.flush()
+    trial = await reg.record_trial(
+        session, experiment_id=exp.experiment_id, request=_trial("completed")
+    )
+    await session.flush()
+    with pytest.raises(IntegrityError):
+        await session.execute(
+            text(
+                "INSERT INTO research.promotion_candidates "
+                "(backtest_run_id, status, reason_code) "
+                "VALUES (:rid, 'PASS', 'OK')"
+            ),
+            {"rid": trial.id},
+        )
+    await session.rollback()

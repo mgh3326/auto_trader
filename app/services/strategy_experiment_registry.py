@@ -35,6 +35,7 @@ from app.schemas.research_backtest import (
 from app.services.research_canonical_hash import (
     compute_identity_hashes,
     derive_experiment_id,
+    to_jsonable,
 )
 
 # Bounded retry for the monotonic trial_index allocation race. Two concurrent
@@ -104,28 +105,34 @@ async def register_experiment(
                 "is not registered"
             )
 
+    # Persist the manifest/definitions in the SAME json-safe representation that
+    # was hashed, so a DB read-back re-hashes to the identical identity.
     row = ResearchStrategyExperiment(
         experiment_id=experiment_id,
         strategy_key=identity.strategy_key,
         strategy_version=identity.strategy_version,
         hypothesis=identity.hypothesis,
         supersedes_experiment_id=identity.supersedes_experiment_id,
-        benchmark_definition=_as_json(identity.benchmark),
-        cost_definition=_as_json(identity.cost),
-        mdd_definition=_as_json(identity.mdd),
-        manifest=identity.components(),
+        benchmark_definition=to_jsonable(identity.benchmark),
+        cost_definition=to_jsonable(identity.cost),
+        mdd_definition=to_jsonable(identity.mdd),
+        manifest=to_jsonable(identity.components()),
         **component_hashes,
     )
-    session.add(row)
-    await session.flush()
+    try:
+        async with session.begin_nested():
+            session.add(row)
+            await session.flush()
+    except IntegrityError as exc:
+        # Concurrent registration of the SAME identity won the race and
+        # committed. Idempotent contract: return that original row unchanged.
+        if "experiment_id" not in _constraint_name(exc):
+            raise
+        winner = await _get_experiment(session, experiment_id)
+        if winner is None:  # pragma: no cover - conflict without a visible row
+            raise
+        return winner
     return row
-
-
-def _as_json(value: object) -> object | None:
-    """Only persist dict/list definitions in the JSONB definition columns."""
-    if isinstance(value, dict | list):
-        return value
-    return None
 
 
 def _build_trial_row(

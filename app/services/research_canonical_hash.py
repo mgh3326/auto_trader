@@ -22,6 +22,7 @@ __all__ = [
     "canonical_sha256",
     "compute_identity_hashes",
     "derive_experiment_id",
+    "to_jsonable",
 ]
 
 # Ordered identity components. Each maps to a ``<name>_hash`` column on
@@ -42,33 +43,47 @@ IDENTITY_COMPONENTS: tuple[str, ...] = (
 )
 
 
-def _default(value: Any) -> Any:
-    """Deterministic fallback for non-JSON-native identity payloads.
+def to_jsonable(value: Any) -> Any:
+    """Recursively convert an identity payload into a JSON-safe structure.
 
-    Decimals serialize as their canonical string form (never a lossy float),
-    and datetimes/dates as ISO-8601. This keeps the hash stable across
-    processes and Python builds.
+    This is the single canonical representation used for BOTH hashing and DB
+    (JSONB) persistence, so a value that was hashed can be stored, read back,
+    and re-hashed to the identical digest. Non-JSON-native types are mapped to
+    deterministic, lossless string forms:
+
+    * ``Decimal`` → ``"__decimal__:<canonical str>"`` (never a lossy float)
+    * ``datetime``/``date`` → ``"__datetime__:<ISO-8601>"``
+    * ``set``/``frozenset`` → sorted list of json-safe members
+
+    The result contains only ``dict``/``list``/``str``/``int``/``float``/
+    ``bool``/``None`` and therefore serialises cleanly to JSONB.
     """
+    if value is None or isinstance(value, str | bool | int | float):
+        return value
     if isinstance(value, Decimal):
         return f"__decimal__:{value!s}"
     if isinstance(value, datetime | date):
         return f"__datetime__:{value.isoformat()}"
+    if isinstance(value, dict):
+        return {str(key): to_jsonable(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [to_jsonable(item) for item in value]
     if isinstance(value, frozenset | set):
-        return sorted(
-            _default(v) if isinstance(v, Decimal | datetime | date) else v
-            for v in value
-        )
+        return sorted(to_jsonable(item) for item in value)
     raise TypeError(f"Unhashable identity value of type {type(value).__name__!r}")
 
 
 def canonical_json(payload: Any) -> str:
-    """Canonical JSON text: sorted keys, compact separators, UTF-8 safe."""
+    """Canonical JSON text: sorted keys, compact separators, UTF-8 safe.
+
+    Operates on the json-safe form (:func:`to_jsonable`) so the exact bytes
+    that are hashed equal the bytes derived from the persisted JSONB manifest.
+    """
     return json.dumps(
-        payload,
+        to_jsonable(payload),
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
-        default=_default,
     )
 
 

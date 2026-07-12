@@ -8,6 +8,7 @@ form down.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -19,6 +20,7 @@ from app.services.research_canonical_hash import (
     canonical_sha256,
     compute_identity_hashes,
     derive_experiment_id,
+    to_jsonable,
 )
 
 pytestmark = pytest.mark.unit
@@ -94,6 +96,27 @@ def test_identity_hashes_are_independent_per_component() -> None:
         if name == "params":
             continue
         assert mutated_hashes[f"{name}_hash"] == base_hashes[f"{name}_hash"]
+
+
+def test_to_jsonable_is_json_safe_and_hash_consistent() -> None:
+    from datetime import date
+
+    payload = {
+        "pf": Decimal("1.30"),
+        "at": datetime(2026, 1, 1, tzinfo=UTC),
+        "on": date(2026, 1, 2),
+        "tags": {"b", "a", "c"},
+        "nested": {"levels": [Decimal("2.5"), {"deep": Decimal("0.10")}]},
+    }
+    jsonable = to_jsonable(payload)
+    # Must serialise to JSON (what JSONB storage requires).
+    reparsed = json.loads(json.dumps(jsonable))
+    # Hashing the raw payload, the json-safe form, and the DB roundtrip all match.
+    assert canonical_sha256(payload) == canonical_sha256(jsonable)
+    assert canonical_sha256(payload) == canonical_sha256(reparsed)
+    # Decimal is preserved losslessly as canonical text, not a float.
+    assert jsonable["pf"] == "__decimal__:1.30"
+    assert jsonable["tags"] == ["a", "b", "c"]
 
 
 def test_derive_experiment_id_is_deterministic_and_identity_sensitive() -> None:

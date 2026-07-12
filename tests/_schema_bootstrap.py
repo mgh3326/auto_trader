@@ -24,7 +24,9 @@ from sqlalchemy import text
 # Task 4 landed never got these tables until this bump forces one re-run.
 # v6 (ROB-846): research.strategy_experiments / research.backtest_runs
 # append-only immutability triggers are non-ORM DDL and are mirrored below.
-SCHEMA_BOOTSTRAP_VERSION = 6
+# v7 (ROB-846 review): trigger now blocks legacy->trial UPDATE conversion, plus
+# trial all-or-none + promotion identity-complete CHECK constraints (NOT VALID).
+SCHEMA_BOOTSTRAP_VERSION = 7
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -528,12 +530,33 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "('completed','rejected','crashed','timeout')); END IF; END $$",
     "CREATE INDEX IF NOT EXISTS ix_research_backtest_runs_experiment "
     "ON research.backtest_runs (strategy_experiment_id, trial_index)",
+    # trial all-or-none integrity (NOT VALID: enforce new rows, skip legacy)
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conname='ck_research_backtest_runs_trial_all_or_none' "
+    "AND conrelid='research.backtest_runs'::regclass) THEN "
+    "ALTER TABLE research.backtest_runs "
+    "ADD CONSTRAINT ck_research_backtest_runs_trial_all_or_none CHECK ("
+    "(strategy_experiment_id IS NULL AND trial_index IS NULL "
+    "AND trial_status IS NULL AND trial_idempotency_key IS NULL "
+    "AND seed IS NULL AND information_cutoff IS NULL "
+    "AND gate_artifact_hash IS NULL) "
+    "OR (strategy_experiment_id IS NOT NULL AND trial_index IS NOT NULL "
+    "AND trial_status IS NOT NULL)) NOT VALID; END IF; END $$",
     "ALTER TABLE research.promotion_candidates "
     "ADD COLUMN IF NOT EXISTS experiment_id VARCHAR(64)",
     "ALTER TABLE research.promotion_candidates "
     "ADD COLUMN IF NOT EXISTS run_config_hash VARCHAR(64)",
     "ALTER TABLE research.promotion_candidates "
     "ADD COLUMN IF NOT EXISTS run_data_hash VARCHAR(64)",
+    # AC#5: new promotion candidates must carry full identity (NOT VALID keeps
+    # any legacy null-identity rows for compat, blocks new incomplete writes)
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conname='ck_research_promotion_candidates_identity_complete' "
+    "AND conrelid='research.promotion_candidates'::regclass) THEN "
+    "ALTER TABLE research.promotion_candidates "
+    "ADD CONSTRAINT ck_research_promotion_candidates_identity_complete CHECK ("
+    "experiment_id IS NOT NULL AND run_config_hash IS NOT NULL "
+    "AND run_data_hash IS NOT NULL) NOT VALID; END IF; END $$",
     # ---- ROB-846: append-only immutability triggers (mirror of the migration)
     # research.strategy_experiments rows are fully immutable; research.backtest_runs
     # rows are immutable only when they are trials (strategy_experiment_id NOT NULL),
@@ -551,12 +574,19 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "FOR EACH ROW EXECUTE FUNCTION research.reject_strategy_experiment_mutation()",
     "CREATE OR REPLACE FUNCTION research.reject_backtest_trial_mutation() "
     "RETURNS trigger AS $$ BEGIN "
+    "IF TG_OP = 'DELETE' THEN "
     "IF OLD.strategy_experiment_id IS NOT NULL THEN "
     "RAISE EXCEPTION "
-    "'research.backtest_runs trial rows are append-only; % rejected on id=%', "
-    "TG_OP, OLD.id USING ERRCODE = 'restrict_violation'; "
+    "'research.backtest_runs trial rows are append-only; DELETE rejected on id=%', "
+    "OLD.id USING ERRCODE = 'restrict_violation'; "
+    "END IF; RETURN OLD; "
     "END IF; "
-    "IF TG_OP = 'DELETE' THEN RETURN OLD; END IF; "
+    "IF OLD.strategy_experiment_id IS NOT NULL "
+    "OR NEW.strategy_experiment_id IS NOT NULL THEN "
+    "RAISE EXCEPTION "
+    "'research.backtest_runs trial rows are append-only; UPDATE/convert rejected on id=%', "
+    "OLD.id USING ERRCODE = 'restrict_violation'; "
+    "END IF; "
     "RETURN NEW; "
     "END; $$ LANGUAGE plpgsql",
     "DROP TRIGGER IF EXISTS trg_backtest_runs_trial_immutable "
