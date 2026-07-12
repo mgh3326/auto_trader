@@ -99,6 +99,23 @@ class AlpacaPaperBrokerService:
             return []
         return [Position.model_validate(item) for item in data]
 
+    async def get_position(self, symbol: str) -> Position | None:
+        """Read-only current paper position for a symbol (None if flat / 404).
+
+        Used as the fresh sell-eligibility evidence right before a sell POST.
+        Never mutates. Alpaca positions use the slashless symbol for crypto
+        (e.g. BTC/USD -> BTCUSD); callers should pass the broker symbol form.
+        """
+        try:
+            data = await self._request("GET", f"/v2/positions/{symbol}")
+        except AlpacaPaperRequestError as exc:
+            if getattr(exc, "status_code", None) == 404:
+                return None
+            raise
+        if not data:
+            return None
+        return Position.model_validate(data)
+
     async def list_assets(
         self,
         *,

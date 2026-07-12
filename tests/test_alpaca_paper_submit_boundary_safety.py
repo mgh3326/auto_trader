@@ -189,6 +189,33 @@ def test_submit_service_defines_no_schema_and_no_raw_writes() -> None:
 
 
 @pytest.mark.unit
+def test_no_alpaca_tooling_calls_broker_submit_directly() -> None:
+    """Only the coordinator service may call broker.submit_order.
+
+    Every Alpaca paper MCP tooling module must delegate the actual POST to the
+    AlpacaPaperSubmitCoordinator — no direct ``.submit_order(`` fallback that
+    would bypass the packet + atomic-claim boundary (ROB-842 blocker 1).
+    """
+    tooling_dir = REPO_ROOT / "app/mcp_server/tooling"
+    offenders = []
+    for path in tooling_dir.rglob("alpaca_paper*.py"):
+        text = path.read_text(encoding="utf-8")
+        if ".submit_order(" in text:
+            offenders.append(path.name)
+    assert not offenders, (
+        f"Alpaca paper tooling calls broker.submit_order directly (must route "
+        f"through the coordinator): {offenders}"
+    )
+
+
+@pytest.mark.unit
+def test_only_coordinator_service_posts_orders() -> None:
+    """The submit-service coordinator is the single module that POSTs orders."""
+    text = SUBMIT_SERVICE.read_text(encoding="utf-8")
+    assert "broker.submit_order(" in text  # the one and only POST site
+
+
+@pytest.mark.unit
 def test_atomic_claim_targets_existing_ledger_table_only() -> None:
     """claim_submit writes only the existing alpaca_paper_order_ledger table."""
     from app.models.review import AlpacaPaperOrderLedger

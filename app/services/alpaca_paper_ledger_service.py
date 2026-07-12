@@ -524,6 +524,58 @@ class AlpacaPaperLedgerService:
         result = await self._db.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_execution_by_client_order_id(
+        self, client_order_id: str
+    ) -> AlpacaPaperOrderLedger | None:
+        """Public: the execution row for a client_order_id in ANY lifecycle state.
+
+        Includes terminal ``anomaly`` rows (unlike ``find_executed_by_client_order_id``
+        which is scoped to executed states) so a deterministic broker failure is
+        replayed instead of re-attempted.
+        """
+        return await self._find_execution_row(client_order_id)
+
+    async def record_submit_failure(
+        self,
+        client_order_id: str,
+        *,
+        order_status: str = "rejected",
+        error_summary: str,
+    ) -> AlpacaPaperOrderLedger:
+        """Book a deterministic broker rejection as a terminal execution outcome.
+
+        Marks the existing execution (claim) row ``anomaly`` and stamps
+        ``submitted_at`` so it is no longer in-flight — a retry of the same key
+        replays this failure instead of re-POSTing. Reuses existing columns only
+        (no new schema). ``error_summary`` is redacted + length-bounded so no raw
+        broker body / token is persisted.
+        """
+        target = await self._find_execution_row(client_order_id)
+        if target is None:
+            raise LedgerNotFoundError(
+                f"No execution row to fail for client_order_id={client_order_id!r}"
+            )
+        safe_summary = (_redact_sensitive_text(error_summary) or "")[:300]
+        await self._db.execute(
+            update(AlpacaPaperOrderLedger)
+            .where(AlpacaPaperOrderLedger.id == target.id)
+            .values(
+                lifecycle_state=LIFECYCLE_ANOMALY,
+                order_status=order_status,
+                submitted_at=datetime.now(UTC),
+                confirm_flag=True,
+                error_summary=safe_summary,
+            )
+        )
+        await self._db.commit()
+        self._db.expire_all()
+        row = await self._find_execution_row(client_order_id)
+        if row is None:
+            raise LedgerNotFoundError(
+                f"No execution row for client_order_id={client_order_id!r}"
+            )
+        return row
+
     async def get_preview_by_client_order_id(
         self, client_order_id: str
     ) -> AlpacaPaperOrderLedger | None:

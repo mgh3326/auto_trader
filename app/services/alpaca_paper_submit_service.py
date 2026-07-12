@@ -33,6 +33,7 @@ from app.services.alpaca_paper_ledger_service import (
     AlpacaPaperLedgerService,
     is_inflight_execution,
 )
+from app.services.brokers.alpaca.exceptions import AlpacaPaperRequestError
 from app.services.brokers.alpaca.schemas import OrderRequest
 from app.services.paper_approval_packet import (
     PaperApprovalPacket,
@@ -209,6 +210,22 @@ class AlpacaPaperSubmitCoordinator:
         self._inflight_poll_interval_s = float(inflight_poll_interval_s)
         self._sleep_fn = sleep_fn or asyncio.sleep
 
+    def _server_key_for(
+        self, packet: PaperApprovalPacket, canonical: dict[str, Any]
+    ) -> str:
+        """Origin-aware server-derived claim key.
+
+        Automated submits fold server-owned decision identity into the key;
+        manual operator submits use the economics-only key.
+        """
+        if packet.origin == "automated":
+            return derive_automated_key(
+                correlation_id=packet.lifecycle_correlation_id,
+                snapshot_id=packet.snapshot_id,
+                canonical=canonical,
+            )
+        return derive_client_order_id(canonical)
+
     async def submit(
         self,
         packet: PaperApprovalPacket,
@@ -216,16 +233,19 @@ class AlpacaPaperSubmitCoordinator:
         submit_canonical: dict[str, Any],
         caller_client_order_id: str | None = None,
     ) -> SubmitOutcome:
-        """Verify, claim and (for the winner only) submit the packet's order."""
+        """Verify, claim and (for the winner only) submit the packet's order.
+
+        This is the single boundary every real broker POST passes through —
+        manual and automated alike. Duplicate intents (sequential or concurrent)
+        POST exactly once; everyone else replays the winner's success, replays a
+        terminal failure, recovers a crashed-after-success submit, or ends
+        in-flight — never a second POST.
+        """
         coid = packet.client_order_id
 
-        # --- Fail-close verification (all before any claim / broker call) -------
+        # --- Fail-close pure verification (idempotent; safe for duplicates) -----
         try:
-            server_key = derive_automated_key(
-                correlation_id=packet.lifecycle_correlation_id,
-                snapshot_id=packet.snapshot_id,
-                canonical=submit_canonical,
-            )
+            server_key = self._server_key_for(packet, submit_canonical)
             verify_server_derived_key(
                 packet,
                 server_key=server_key,
@@ -237,9 +257,13 @@ class AlpacaPaperSubmitCoordinator:
             )
             now = self._now_fn()
             verify_packet_freshness(packet, now=now)
-            verify_packet_market_data(packet, now=now, max_age=self._quote_max_age)
+            if packet.origin == "automated":
+                verify_packet_market_data(packet, now=now, max_age=self._quote_max_age)
             verify_packet_account_mode(packet, expected=self._expected_account_mode)
-            await verify_sell_packet_source(packet, ledger=self._ledger)
+            if packet.origin == "automated":
+                # Ledger buy-source provenance is an automated-cohort gate. Manual
+                # operator sells rely on the fresh live-position check below.
+                await verify_sell_packet_source(packet, ledger=self._ledger)
         except PaperApprovalPacketError as exc:
             return SubmitOutcome(
                 status="rejected",
@@ -249,16 +273,27 @@ class AlpacaPaperSubmitCoordinator:
                 message=str(exc),
             )
 
-        # --- Idempotency fast-path (avoid a claim attempt when possible) --------
+        # --- Idempotency fast-path (resolve a prior outcome before any claim) ---
         # Force a fresh READ COMMITTED snapshot: the session uses
         # expire_on_commit=False, so a prior same-session submit's committed row
         # would otherwise be read back stale from the identity map.
         self._ledger.session.expire_all()
-        existing = await self._ledger.find_executed_by_client_order_id(coid)
+        existing = await self._ledger.get_execution_by_client_order_id(coid)
         if existing is not None:
             if is_inflight_execution(existing):
                 return await self._resolve_inflight(coid)
-            return self._replay_outcome(existing)
+            return self._resolved_outcome(existing)
+
+        # --- Sell preflight: fresh current-position evidence (NEW intent only) --
+        # Runs after the fast-path so a duplicate of a filled sell replays instead
+        # of being re-validated against a now-reduced position. Before the claim so
+        # a transient position issue never burns the idempotency key.
+        if packet.side == "sell":
+            sell_reject = await self._check_sell_current_position(
+                packet, submit_canonical
+            )
+            if sell_reject is not None:
+                return sell_reject
 
         # --- Atomic claim: only the winner POSTs to the broker ------------------
         claim = await self._ledger.claim_submit(
@@ -278,10 +313,15 @@ class AlpacaPaperSubmitCoordinator:
         if not claim.won:
             row = claim.row
             if row is not None and not is_inflight_execution(row):
-                return self._replay_outcome(row)
+                return self._resolved_outcome(row)
             return await self._resolve_inflight(coid)
 
         # --- Winner: exactly one broker HTTP submit -----------------------------
+        return await self._winner_submit(coid, submit_canonical)
+
+    async def _winner_submit(
+        self, coid: str, submit_canonical: dict[str, Any]
+    ) -> SubmitOutcome:
         broker = self._broker_factory()
         request = OrderRequest(
             symbol=submit_canonical["symbol"],
@@ -294,7 +334,40 @@ class AlpacaPaperSubmitCoordinator:
             stop_price=None,
             client_order_id=coid,
         )
-        order = await broker.submit_order(request)
+        try:
+            order = await broker.submit_order(request)
+        except AlpacaPaperRequestError as exc:
+            status = getattr(exc, "status_code", None)
+            if status is not None and 400 <= status < 500:
+                # Deterministic client rejection — terminal. Book it so retries
+                # replay the failure instead of re-POSTing.
+                try:
+                    await self._ledger.record_submit_failure(
+                        coid,
+                        order_status="rejected",
+                        error_summary=f"broker_rejected: HTTP {status}",
+                    )
+                except Exception:  # noqa: BLE001 - persistence best-effort
+                    # Even if we cannot persist the terminal outcome, the in-flight
+                    # claim row blocks any re-POST (retries end in-flight).
+                    return SubmitOutcome(
+                        status="failed",
+                        client_order_id=coid,
+                        broker_called=True,
+                        reason_code="broker_rejected_unpersisted",
+                        message=f"broker rejected (HTTP {status}); terminal record failed",
+                    )
+                return SubmitOutcome(
+                    status="failed",
+                    client_order_id=coid,
+                    broker_called=True,
+                    reason_code="broker_rejected",
+                    message=f"broker rejected the order (HTTP {status})",
+                )
+            # Uncertain outcome (5xx / connection): the order may or may not exist.
+            # Reconcile by client_order_id; never re-POST.
+            return await self._resolve_uncertain(coid)
+
         order_dict = _order_to_dict(order)
         await self._ledger.record_submit(coid, order_dict, raw_response=order_dict)
         return SubmitOutcome(
@@ -302,6 +375,98 @@ class AlpacaPaperSubmitCoordinator:
             client_order_id=coid,
             broker_called=True,
             order=order_dict,
+        )
+
+    async def _check_sell_current_position(
+        self, packet: PaperApprovalPacket, submit_canonical: dict[str, Any]
+    ) -> SubmitOutcome | None:
+        """Fail-close a sell unless a fresh Alpaca position covers the qty.
+
+        Past ledger fills are provenance only; the sellable quantity is the
+        broker's *current* position, re-read here right before the claim/POST.
+        Returns a rejected outcome, or None when the sell is covered.
+        """
+        requested = _to_decimal(submit_canonical.get("qty"))
+        if requested is None or not requested.is_finite() or requested <= 0:
+            return self._sell_reject(
+                packet, "sell_qty_invalid", "sell qty missing or non-positive"
+            )
+
+        broker = self._broker_factory()
+        getter = getattr(broker, "get_position", None)
+        if getter is None:  # pragma: no cover - defensive
+            return self._sell_reject(
+                packet, "position_unavailable", "broker cannot read positions"
+            )
+
+        broker_symbol = _broker_position_symbol(packet.execution_symbol)
+        try:
+            position = await getter(broker_symbol)
+        except AlpacaPaperRequestError as exc:
+            return self._sell_reject(
+                packet,
+                "position_unavailable",
+                f"position read failed (HTTP {getattr(exc, 'status_code', None)})",
+            )
+        if position is None:
+            return self._sell_reject(
+                packet, "position_flat", "no current position to sell"
+            )
+
+        if not _symbols_match(
+            getattr(position, "symbol", None), packet.execution_symbol
+        ):
+            return self._sell_reject(
+                packet,
+                "position_symbol_mismatch",
+                f"position symbol {getattr(position, 'symbol', None)!r} != {packet.execution_symbol!r}",
+            )
+
+        available = _to_decimal(getattr(position, "qty", None))
+        if available is None or not available.is_finite():
+            return self._sell_reject(
+                packet, "position_malformed", "position qty missing/non-finite"
+            )
+        if available <= 0:
+            return self._sell_reject(
+                packet, "position_flat", "current position qty is non-positive"
+            )
+        if requested > available:
+            return self._sell_reject(
+                packet,
+                "qty_exceeds_position",
+                f"sell qty {requested} exceeds current position {available}",
+            )
+        if packet.max_qty is not None and requested > packet.max_qty:
+            return self._sell_reject(
+                packet,
+                "qty_exceeds_max",
+                f"sell qty {requested} exceeds ceiling {packet.max_qty}",
+            )
+        return None
+
+    def _sell_reject(
+        self, packet: PaperApprovalPacket, code: str, message: str
+    ) -> SubmitOutcome:
+        return SubmitOutcome(
+            status="rejected",
+            client_order_id=packet.client_order_id,
+            broker_called=False,
+            reason_code=code,
+            message=message,
+        )
+
+    async def _resolve_uncertain(self, client_order_id: str) -> SubmitOutcome:
+        """Reconcile an uncertain winner outcome (5xx/timeout). Never re-POSTs."""
+        recovered = await self._reconcile_inflight_via_broker(client_order_id)
+        if recovered is not None:
+            return recovered
+        return SubmitOutcome(
+            status="idempotency_in_progress",
+            client_order_id=client_order_id,
+            broker_called=True,
+            reason_code="idempotency_in_progress",
+            message="submit outcome uncertain; broker has no order yet — not re-POSTing",
         )
 
     # ------------------------------------------------------------------
@@ -317,11 +482,11 @@ class AlpacaPaperSubmitCoordinator:
         """
         for _ in range(self._inflight_max_polls):
             # New READ COMMITTED snapshot each poll so a concurrent winner's
-            # committed record_submit becomes visible.
+            # committed record_submit / record_submit_failure becomes visible.
             self._ledger.session.expire_all()
-            row = await self._ledger.find_executed_by_client_order_id(client_order_id)
+            row = await self._ledger.get_execution_by_client_order_id(client_order_id)
             if row is not None and not is_inflight_execution(row):
-                return self._replay_outcome(row)
+                return self._resolved_outcome(row)
             await self._sleep_fn(self._inflight_poll_interval_s)
 
         recovered = await self._reconcile_inflight_via_broker(client_order_id)
@@ -364,6 +529,25 @@ class AlpacaPaperSubmitCoordinator:
             message="crashed-after-success submit recovered from broker evidence",
         )
 
+    def _resolved_outcome(self, row: Any) -> SubmitOutcome:
+        """Map an already-resolved execution row to a replay outcome.
+
+        A terminal ``anomaly`` row replays the deterministic broker failure; any
+        other resolved row replays the stored success.
+        """
+        state = str(getattr(row, "lifecycle_state", "") or "")
+        coid = str(getattr(row, "client_order_id", ""))
+        if state == "anomaly":
+            return SubmitOutcome(
+                status="failed",
+                client_order_id=coid,
+                broker_called=False,
+                reason_code="broker_rejected_replayed",
+                order=None,
+                message=str(getattr(row, "error_summary", None) or "terminal failure"),
+            )
+        return self._replay_outcome(row)
+
     def _replay_outcome(self, row: Any) -> SubmitOutcome:
         stored = None
         raw = getattr(row, "raw_responses", None)
@@ -391,6 +575,19 @@ def _to_decimal(value: Any) -> Decimal | None:
         return Decimal(str(value))
     except Exception:
         return None
+
+
+def _normalize_symbol(symbol: str | None) -> str:
+    return (symbol or "").replace("/", "").replace("-", "").strip().upper()
+
+
+def _symbols_match(a: str | None, b: str | None) -> bool:
+    return _normalize_symbol(a) == _normalize_symbol(b) and _normalize_symbol(a) != ""
+
+
+def _broker_position_symbol(execution_symbol: str) -> str:
+    """Alpaca positions key crypto by the slashless symbol (BTC/USD -> BTCUSD)."""
+    return (execution_symbol or "").replace("/", "").strip()
 
 
 def _order_to_dict(order: Any) -> dict[str, Any]:

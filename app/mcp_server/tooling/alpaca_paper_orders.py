@@ -12,22 +12,30 @@ switch the underlying service to the live endpoint.
 from __future__ import annotations
 
 import re
+import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.alpaca_paper_preview import (
     ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD,
     PreviewOrderInput,
 )
+from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
 from app.services.alpaca_paper_submit_service import (
+    AlpacaPaperSubmitCoordinator,
     build_canonical_payload,
+    canonical_hash,
     derive_client_order_id,
 )
-from app.services.brokers.alpaca.schemas import OrderRequest
 from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
+from app.services.crypto_execution_mapping import map_alpaca_paper_to_upbit
+from app.services.paper_approval_packet import PaperApprovalPacket
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -42,15 +50,32 @@ SUBMIT_MAX_QTY: Decimal = Decimal("5")
 SUBMIT_MAX_NOTIONAL_USD: Decimal = Decimal("1000")
 ORDER_ID_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 ORDER_ID_RESERVED_VALUES = frozenset({"all", "order", "orders", "bulk", "cancel"})
+_MANUAL_PACKET_TTL_SECONDS = 120
 
 ServiceFactory = Callable[[], AlpacaPaperBrokerService]
+SessionFactory = Callable[[], async_sessionmaker[AsyncSession]]
 
 
 def _default_service_factory() -> AlpacaPaperBrokerService:
     return AlpacaPaperBrokerService()
 
 
+def _default_session_factory() -> async_sessionmaker[AsyncSession]:
+    return AsyncSessionLocal  # type: ignore[return-value]
+
+
 _service_factory: ServiceFactory = _default_service_factory
+_session_factory: SessionFactory = _default_session_factory
+
+
+def set_alpaca_paper_orders_session_factory(factory: SessionFactory) -> None:
+    global _session_factory
+    _session_factory = factory
+
+
+def reset_alpaca_paper_orders_session_factory() -> None:
+    global _session_factory
+    _session_factory = _default_session_factory
 
 
 def set_alpaca_paper_orders_service_factory(factory: ServiceFactory) -> None:
@@ -109,6 +134,55 @@ def _validate_exact_order_id(order_id: str) -> str:
     return stripped
 
 
+def _manual_ceiling(
+    validated: PreviewOrderInput,
+) -> tuple[Decimal | None, Decimal | None]:
+    """Server hard-cap ceiling for a manual order (never caller-supplied)."""
+    hard_notional = (
+        ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD
+        if validated.asset_class == "crypto"
+        else SUBMIT_MAX_NOTIONAL_USD
+    )
+    if validated.notional is not None or validated.limit_price is not None:
+        return hard_notional, None
+    if validated.qty is not None:
+        return None, SUBMIT_MAX_QTY
+    return hard_notional, None
+
+
+def _build_manual_packet(
+    validated: PreviewOrderInput, canonical: dict[str, Any], coid: str
+) -> PaperApprovalPacket:
+    """Server-built manual operator packet (origin='manual', server-derived key)."""
+    if validated.asset_class == "crypto":
+        signal_symbol = map_alpaca_paper_to_upbit(validated.symbol)
+    else:
+        signal_symbol = validated.symbol
+    max_notional, max_qty = _manual_ceiling(validated)
+    return PaperApprovalPacket(
+        signal_source="manual_operator",
+        artifact_id=uuid.uuid4(),
+        signal_symbol=signal_symbol,
+        signal_venue="upbit",
+        execution_symbol=validated.symbol,
+        execution_venue="alpaca_paper",
+        execution_asset_class=validated.asset_class,
+        side=validated.side,
+        max_notional=max_notional,
+        max_qty=max_qty,
+        qty_source="manual_operator",
+        expected_lifecycle_step="previewed",
+        lifecycle_correlation_id=coid,
+        client_order_id=coid,
+        expires_at=datetime.now(UTC) + timedelta(seconds=_MANUAL_PACKET_TTL_SECONDS),
+        account_mode="alpaca_paper",
+        origin="manual",
+        preview_payload_hash=canonical_hash(canonical),
+        execution_order_type=validated.type,
+        execution_time_in_force=validated.time_in_force,
+    )
+
+
 async def alpaca_paper_submit_order(
     symbol: str,
     side: str,
@@ -117,7 +191,6 @@ async def alpaca_paper_submit_order(
     notional: Decimal | None = None,
     time_in_force: str | None = None,
     limit_price: Decimal | None = None,
-    client_order_id: str | None = None,
     asset_class: str = "us_equity",
     confirm: bool = False,
 ) -> dict[str, Any]:
@@ -125,11 +198,14 @@ async def alpaca_paper_submit_order(
 
     Defaults to ``confirm=False`` which performs no broker call.
 
-    This is the MANUAL, operator-only smoke tool. It is NOT the automated
-    execution path and carries no caller-selectable origin switch: an automated
-    cohort must use the separate ``alpaca_paper_automated_preview_order`` /
-    ``alpaca_paper_automated_submit_order`` tools, which route through the
-    server-owned approval-packet + ledger-atomic-claim boundary (ROB-842).
+    This is the MANUAL operator tool. It carries no caller-selectable origin,
+    client_order_id, or claim mode: the idempotency key is server-derived from the
+    canonical order. When ``confirm=True`` the real broker POST is routed through
+    the SAME durable packet + ledger atomic-claim coordinator as the automated
+    path (ROB-842) — duplicate manual intents POST exactly once, a deterministic
+    broker rejection is terminal, and an uncertain outcome is reconciled, never
+    re-POSTed. There is no direct-POST fallback and this behaviour does not depend
+    on the automated feature flag.
     """
     validated = PreviewOrderInput(
         symbol=symbol,
@@ -140,7 +216,7 @@ async def alpaca_paper_submit_order(
         time_in_force=time_in_force,
         limit_price=limit_price,
         stop_price=None,
-        client_order_id=client_order_id,
+        client_order_id=None,
         asset_class=asset_class,
     )
 
@@ -170,7 +246,7 @@ async def alpaca_paper_submit_order(
         )
 
     canonical = _canonical_payload(validated)
-    coid = validated.client_order_id or _derive_client_order_id(canonical)
+    coid = _derive_client_order_id(canonical)
 
     if confirm is not True:
         return {
@@ -183,25 +259,23 @@ async def alpaca_paper_submit_order(
             "client_order_id": coid,
         }
 
-    request = OrderRequest(
-        symbol=validated.symbol,
-        side=validated.side,
-        type=validated.type,
-        qty=validated.qty,
-        notional=validated.notional,
-        time_in_force=validated.time_in_force,
-        limit_price=validated.limit_price,
-        stop_price=None,
-        client_order_id=coid,
-    )
-    order = await _service_factory().submit_order(request)
+    # confirm=True — route the real broker POST through the durable boundary.
+    packet = _build_manual_packet(validated, canonical, coid)
+    async with _session_factory()() as db:
+        ledger = AlpacaPaperLedgerService(db)
+        coordinator = AlpacaPaperSubmitCoordinator(ledger, _service_factory)
+        outcome = await coordinator.submit(packet, submit_canonical=canonical)
+
     return {
-        "success": True,
+        "success": outcome.status != "rejected",
         "account_mode": "alpaca_paper",
         "source": "alpaca_paper",
-        "submitted": True,
-        "order": _model_to_jsonable(order),
-        "client_order_id": coid,
+        "submitted": outcome.submitted,
+        "status": outcome.status,
+        "reason_code": outcome.reason_code,
+        "order": outcome.order,
+        "client_order_id": outcome.client_order_id,
+        "message": outcome.message,
     }
 
 
@@ -248,12 +322,17 @@ def register_alpaca_paper_orders_tools(mcp: FastMCP) -> None:
     _ = mcp.tool(
         name="alpaca_paper_submit_order",
         description=(
-            "Submit a single Alpaca PAPER us_equity or narrow crypto order. "
-            "Defaults to confirm=False which validates and returns the request "
-            "WITHOUT calling the broker. Use confirm=True to actually submit. "
-            "Paper endpoint only; live endpoint cannot be selected. "
-            "Strict caps: us_equity qty<=5/notional<=$1000/qty*limit_price<=$1000; "
-            "crypto is buy/sell limit-only, allowlisted, and capped at $50."
+            "MANUAL operator submit for a single Alpaca PAPER us_equity or narrow "
+            "crypto order. Defaults to confirm=False which validates and returns "
+            "the request WITHOUT calling the broker. confirm=True routes the real "
+            "POST through the SAME server-owned packet + ledger atomic-claim "
+            "coordinator as the automated path: duplicate intents POST exactly "
+            "once, a deterministic broker rejection is terminal, an uncertain "
+            "outcome is reconciled (never re-POSTed). The idempotency key is "
+            "server-derived — there is no caller client_order_id or origin. Paper "
+            "endpoint only; live endpoint cannot be selected. Strict caps: "
+            "us_equity qty<=5/notional<=$1000/qty*limit_price<=$1000; crypto is "
+            "buy/sell limit-only, allowlisted, and capped at $50."
         ),
     )(alpaca_paper_submit_order)
     _ = mcp.tool(

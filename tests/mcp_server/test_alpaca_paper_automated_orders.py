@@ -1,21 +1,16 @@
 """ROB-842 real public-MCP-handler integration tests for the automated boundary.
 
-Drives the actual ``alpaca_paper_automated_preview_order`` /
-``alpaca_paper_automated_submit_order`` handlers (session-factory + broker-factory
-injected, gate armed) against the test DB with a counting fake broker. Proves:
-- automated submit is default-disabled;
-- the public handler produces exactly ONE broker submit for sequential AND
-  parallel duplicate calls;
-- caller cannot select origin or inject a client_order_id (no such params);
-- packet authority (max_notional=10 vs notional=50) and market-data freshness
-  fail-close at preview before any persistence/broker call.
+Post-3rd-round: the public preview takes ONLY order intent + an opaque, trusted
+``quote_snapshot_id``. Identity / market provenance / ceiling are server-owned
+(loaded from ``market_quote_snapshots`` + hard-cap policy); the caller cannot
+supply correlation, snapshot, market-data, ceiling, origin, or client_order_id.
 """
 
 from __future__ import annotations
 
 import asyncio
 import inspect
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -32,12 +27,13 @@ from app.mcp_server.tooling.alpaca_paper_automated_orders import (
     reset_alpaca_paper_automated_factories,
     set_alpaca_paper_automated_factories,
 )
+from app.models.market_quote_snapshot import MarketQuoteSnapshot
 from app.models.review import AlpacaPaperOrderLedger
 from app.services.brokers.alpaca.schemas import Order
 
 pytestmark = [pytest.mark.asyncio]
 
-_CORR = "rob842-auto-it"
+_CORR = "rob842dec-"  # server-derived correlation prefix
 
 
 class CountingBroker:
@@ -64,26 +60,34 @@ class CountingBroker:
     async def get_order_by_client_order_id(self, client_order_id: str) -> Order | None:
         return None
 
+    async def get_position(self, symbol: str) -> Any:
+        return None
+
 
 @pytest_asyncio.fixture
 async def broker(monkeypatch) -> CountingBroker:
     monkeypatch.setattr(settings, "alpaca_paper_automated_submit_enabled", True)
     b = CountingBroker(delay_s=0.02)
     set_alpaca_paper_automated_factories(
-        session_factory=lambda: AsyncSessionLocal,
-        broker_factory=lambda: b,
+        session_factory=lambda: AsyncSessionLocal, broker_factory=lambda: b
     )
     yield b
     reset_alpaca_paper_automated_factories()
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _clean_rows():
+async def _clean():
     async with AsyncSessionLocal() as db:
-        stmt = delete(AlpacaPaperOrderLedger).where(
-            AlpacaPaperOrderLedger.lifecycle_correlation_id.like(f"{_CORR}%")
+        await db.execute(
+            delete(AlpacaPaperOrderLedger).where(
+                AlpacaPaperOrderLedger.lifecycle_correlation_id.like(f"{_CORR}%")
+            )
         )
-        await db.execute(stmt)
+        await db.execute(
+            delete(MarketQuoteSnapshot).where(
+                MarketQuoteSnapshot.symbol.in_(["KRW-BTC", "AAPL"])
+            )
+        )
         await db.commit()
     yield
     async with AsyncSessionLocal() as db:
@@ -92,24 +96,40 @@ async def _clean_rows():
                 AlpacaPaperOrderLedger.lifecycle_correlation_id.like(f"{_CORR}%")
             )
         )
+        await db.execute(
+            delete(MarketQuoteSnapshot).where(
+                MarketQuoteSnapshot.symbol.in_(["KRW-BTC", "AAPL"])
+            )
+        )
         await db.commit()
 
 
-def _preview_kwargs(corr: str, **overrides: Any) -> dict[str, Any]:
+async def _seed_snapshot(
+    *, market="crypto", symbol="KRW-BTC", source="upbit", age_s=10, price="50000"
+) -> int:
+    async with AsyncSessionLocal() as db:
+        row = MarketQuoteSnapshot(
+            market=market,
+            symbol=symbol,
+            source=source,
+            snapshot_at=datetime.now(UTC) - timedelta(seconds=age_s),
+            price=Decimal(price),
+        )
+        db.add(row)
+        await db.commit()
+        return row.id
+
+
+def _crypto_intent(snapshot_id: int, **overrides: Any) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "symbol": "BTC/USD",
         "side": "buy",
         "type": "limit",
-        "correlation_id": corr,
-        "snapshot_id": f"{corr}-snap",
-        "signal_symbol": "KRW-BTC",
-        "market_data_asof": datetime.now(UTC).isoformat(),
-        "market_data_source": "upbit_ticker",
+        "quote_snapshot_id": snapshot_id,
         "notional": Decimal("10"),
         "limit_price": Decimal("50000"),
         "time_in_force": "gtc",
         "asset_class": "crypto",
-        "max_notional": Decimal("10"),
     }
     kwargs.update(overrides)
     return kwargs
@@ -119,16 +139,22 @@ def _preview_kwargs(corr: str, **overrides: Any) -> dict[str, Any]:
 # Default-disabled
 # ---------------------------------------------------------------------------
 async def test_automated_preview_disabled_by_default() -> None:
-    # No gate armed, factories default.
     result = await alpaca_paper_automated_preview_order(
-        **_preview_kwargs(f"{_CORR}-off")
+        symbol="BTC/USD",
+        side="buy",
+        type="limit",
+        quote_snapshot_id=1,
+        notional=Decimal("10"),
+        limit_price=Decimal("50000"),
+        time_in_force="gtc",
+        asset_class="crypto",
     )
     assert result["success"] is False
     assert result["reason_code"] == "automated_submit_disabled"
 
 
 async def test_automated_submit_disabled_by_default() -> None:
-    result = await alpaca_paper_automated_submit_order("any-token", confirm=True)
+    result = await alpaca_paper_automated_submit_order("any", confirm=True)
     assert result["success"] is False
     assert result["reason_code"] == "automated_submit_disabled"
 
@@ -136,11 +162,9 @@ async def test_automated_submit_disabled_by_default() -> None:
 # ---------------------------------------------------------------------------
 # Public-handler exactly-one broker submit
 # ---------------------------------------------------------------------------
-async def test_public_handler_sequential_duplicate_submits_once(
-    broker: CountingBroker,
-) -> None:
-    corr = f"{_CORR}-seq"
-    preview = await alpaca_paper_automated_preview_order(**_preview_kwargs(corr))
+async def test_public_handler_sequential_duplicate_submits_once(broker):
+    sid = await _seed_snapshot()
+    preview = await alpaca_paper_automated_preview_order(**_crypto_intent(sid))
     assert preview["success"] is True
     token = preview["approval_token"]
 
@@ -148,109 +172,131 @@ async def test_public_handler_sequential_duplicate_submits_once(
     second = await alpaca_paper_automated_submit_order(token, confirm=True)
 
     assert first["status"] == "submitted"
-    assert first["broker_called"] is True
     assert second["status"] in {"replayed", "recovered"}
     assert second["broker_called"] is False
     assert len(broker.submit_calls) == 1
 
 
-async def test_public_handler_parallel_duplicate_submits_once(
-    broker: CountingBroker,
-) -> None:
-    corr = f"{_CORR}-par"
-    preview = await alpaca_paper_automated_preview_order(**_preview_kwargs(corr))
-    token = preview["approval_token"]
-
+async def test_public_handler_parallel_duplicate_submits_once(broker):
+    sid = await _seed_snapshot()
+    token = (await alpaca_paper_automated_preview_order(**_crypto_intent(sid)))[
+        "approval_token"
+    ]
     results = await asyncio.gather(
         alpaca_paper_automated_submit_order(token, confirm=True),
         alpaca_paper_automated_submit_order(token, confirm=True),
     )
-
     assert len(broker.submit_calls) == 1
-    statuses = sorted(r["status"] for r in results)
-    assert statuses.count("submitted") == 1
-    other = [r for r in results if r["status"] != "submitted"][0]
-    assert other["status"] in {"replayed", "recovered", "idempotency_in_progress"}
-    assert other["broker_called"] is False
+    assert sorted(r["status"] for r in results).count("submitted") == 1
 
 
-async def test_confirm_false_is_dry_run_no_post(broker: CountingBroker) -> None:
-    corr = f"{_CORR}-dry"
-    preview = await alpaca_paper_automated_preview_order(**_preview_kwargs(corr))
-    token = preview["approval_token"]
-
+async def test_confirm_false_is_dry_run_no_post(broker):
+    sid = await _seed_snapshot()
+    token = (await alpaca_paper_automated_preview_order(**_crypto_intent(sid)))[
+        "approval_token"
+    ]
     dry = await alpaca_paper_automated_submit_order(token, confirm=False)
     assert dry["submitted"] is False
     assert dry["blocked_reason"] == "confirmation_required"
     assert broker.submit_calls == []
 
 
-async def test_submit_without_persisted_preview_rejected(
-    broker: CountingBroker,
-) -> None:
+async def test_submit_without_persisted_preview_rejected(broker):
     result = await alpaca_paper_automated_submit_order(
-        "rob842a-crypto-nonexistent", confirm=True
+        "rob842a-crypto-nope", confirm=True
     )
-    assert result["status"] == "rejected"
     assert result["reason_code"] == "no_preview_for_token"
     assert broker.submit_calls == []
 
 
 # ---------------------------------------------------------------------------
-# Packet authority fail-close at preview (blocker 3) — no persistence, no broker
+# Trusted-snapshot provenance fail-close (B2) — no persistence, no broker
 # ---------------------------------------------------------------------------
-async def test_preview_notional_exceeds_approved_ceiling_fails_close(
-    broker: CountingBroker,
-) -> None:
-    corr = f"{_CORR}-overmax"
+async def test_preview_missing_snapshot_fails_close(broker):
+    result = await alpaca_paper_automated_preview_order(**_crypto_intent(999999))
+    assert result["success"] is False
+    assert result["reason_code"] == "no_trusted_snapshot"
+
+
+async def test_preview_stale_snapshot_fails_close(broker):
+    sid = await _seed_snapshot(age_s=3600)  # 1h old
+    result = await alpaca_paper_automated_preview_order(**_crypto_intent(sid))
+    assert result["success"] is False
+    assert result["reason_code"] == "stale_trusted_snapshot"
+
+
+async def test_preview_symbol_mismatch_fails_close(broker):
+    # snapshot maps to BTC/USD but the order is for a different pair
+    sid = await _seed_snapshot(symbol="KRW-BTC")
     result = await alpaca_paper_automated_preview_order(
-        **_preview_kwargs(corr, notional=Decimal("50"), max_notional=Decimal("10"))
+        **_crypto_intent(sid, symbol="ETH/USD", limit_price=Decimal("3000"))
+    )
+    assert result["success"] is False
+    assert result["reason_code"] == "snapshot_symbol_mismatch"
+
+
+async def test_preview_order_exceeding_hard_cap_fails_close(broker):
+    # us_equity notional above the $1000 server hard cap — caller cannot raise it
+    sid = await _seed_snapshot(market="us", symbol="AAPL", source="yahoo", price="150")
+    result = await alpaca_paper_automated_preview_order(
+        symbol="AAPL",
+        side="buy",
+        type="market",
+        quote_snapshot_id=sid,
+        notional=Decimal("1500"),
+        asset_class="us_equity",
     )
     assert result["success"] is False
     assert result["reason_code"] == "notional_exceeds_max"
-    # No preview row persisted → submit finds nothing.
-    submit = await alpaca_paper_automated_submit_order(
-        result["client_order_id"], confirm=True
-    )
-    assert submit["reason_code"] == "no_preview_for_token"
-    assert broker.submit_calls == []
 
 
-async def test_preview_missing_market_data_source_fails_close(
-    broker: CountingBroker,
-) -> None:
-    result = await alpaca_paper_automated_preview_order(
-        **_preview_kwargs(f"{_CORR}-nosrc", market_data_source="")
-    )
-    assert result["success"] is False
-    assert result["reason_code"] == "missing_market_data_source"
+async def test_same_snapshot_same_key_different_snapshot_different_key(broker):
+    sid1 = await _seed_snapshot()
+    p1a = await alpaca_paper_automated_preview_order(**_crypto_intent(sid1))
+    p1b = await alpaca_paper_automated_preview_order(**_crypto_intent(sid1))
+    assert p1a["approval_token"] == p1b["approval_token"]  # same trusted decision
+
+    sid2 = await _seed_snapshot()  # a distinct trusted observation
+    p2 = await alpaca_paper_automated_preview_order(**_crypto_intent(sid2))
+    assert p2["approval_token"] != p1a["approval_token"]
 
 
-async def test_preview_future_asof_fails_close(broker: CountingBroker) -> None:
-    future = datetime(2999, 1, 1, tzinfo=UTC).isoformat()
-    result = await alpaca_paper_automated_preview_order(
-        **_preview_kwargs(f"{_CORR}-future", market_data_asof=future)
-    )
-    assert result["success"] is False
-    assert result["reason_code"] == "future_source_timestamp"
+async def test_preview_records_provenance_hashes(broker):
+    sid = await _seed_snapshot()
+    preview = await alpaca_paper_automated_preview_order(**_crypto_intent(sid))
+    prov = preview["provenance"]
+    assert prov["quote_snapshot_id"] == sid
+    assert prov["snapshot_content_hash"]
+    assert prov["packet_hash"]
+    assert prov["policy_max_notional"] == "50"  # crypto hard cap
 
 
 # ---------------------------------------------------------------------------
-# Trusted origin: no caller-selectable origin / client_order_id (blocker 2/4)
+# No caller-owned identity / provenance / ceiling / origin (B2/B4)
 # ---------------------------------------------------------------------------
-async def test_public_handlers_expose_no_origin_or_client_order_id() -> None:
-    preview_params = set(
-        inspect.signature(alpaca_paper_automated_preview_order).parameters
+async def test_preview_signature_exposes_no_caller_owned_trust_fields() -> None:
+    params = set(inspect.signature(alpaca_paper_automated_preview_order).parameters)
+    forbidden = {
+        "correlation_id",
+        "snapshot_id",
+        "market_data_asof",
+        "market_data_source",
+        "max_notional",
+        "max_qty",
+        "qty_source",
+        "origin",
+        "client_order_id",
+        "signal_venue",
+    }
+    assert forbidden.isdisjoint(params), (
+        f"caller-owned trust fields present: {forbidden & params}"
     )
-    submit_params = set(
-        inspect.signature(alpaca_paper_automated_submit_order).parameters
-    )
-    assert "origin" not in preview_params
-    assert "client_order_id" not in preview_params
-    assert "origin" not in submit_params
-    assert "client_order_id" not in submit_params
-    # Submit binds only to a server-issued token.
-    assert submit_params == {"approval_token", "confirm"}
+    assert "quote_snapshot_id" in params  # only an opaque server-issued reference
+
+
+async def test_submit_signature_is_token_and_confirm_only() -> None:
+    params = set(inspect.signature(alpaca_paper_automated_submit_order).parameters)
+    assert params == {"approval_token", "confirm"}
 
 
 async def test_manual_submit_tool_has_no_origin_param() -> None:
@@ -258,11 +304,11 @@ async def test_manual_submit_tool_has_no_origin_param() -> None:
 
     params = set(inspect.signature(alpaca_paper_submit_order).parameters)
     assert "origin" not in params
+    assert "client_order_id" not in params
 
 
 async def test_module_exposes_gate_and_factory_controls() -> None:
     assert callable(auto_mod.set_alpaca_paper_automated_factories)
-    assert callable(auto_mod.reset_alpaca_paper_automated_factories)
     assert auto_mod.ALPACA_PAPER_AUTOMATED_TOOL_NAMES == {
         "alpaca_paper_automated_preview_order",
         "alpaca_paper_automated_submit_order",

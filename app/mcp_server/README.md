@@ -421,6 +421,38 @@ estimated cost.
 There is still no Alpaca paper `place_order`, `replace_order`, `modify_order`,
 `cancel_all`, close-position/liquidate, or generic Alpaca order-routing surface.
 
+#### Unified submit boundary (ROB-842)
+
+Every real Alpaca Paper broker POST — manual and automated — passes through a
+single server-side boundary: **server-owned approval packet → existing
+`review.alpaca_paper_order_ledger` atomic claim → broker POST → stored-result
+replay**. There is no direct-POST fallback, and this holds for `us-paper` only.
+
+- **Roles.** `alpaca_paper_submit_order` is the **manual operator** tool
+  (confirm-gated $10-scale smoke). `alpaca_paper_automated_preview_order` +
+  `alpaca_paper_automated_submit_order` are the **automated cohort** tools —
+  registered only under `MCP_PROFILE=us-paper` and **default-off** behind
+  `ALPACA_PAPER_AUTOMATED_SUBMIT_ENABLED` (fail-closed when unset).
+- **Exactly once.** Duplicate intents (sequential or concurrent) produce exactly
+  one broker HTTP submit; every other caller replays the winner's result.
+- **Server-owned identity/provenance/ceiling.** The caller never supplies
+  correlation, snapshot, market-data as-of/source, ceiling, `origin`, or
+  `client_order_id`. The idempotency key is server-derived; automated preview
+  loads identity + market provenance from a trusted `market_quote_snapshots` row
+  (opaque `quote_snapshot_id`) and takes the ceiling from hard-cap policy —
+  applying the more conservative of policy and any recommendation. A missing /
+  stale / symbol-mismatched snapshot fails closed before any packet is built. The
+  packet + policy hashes are recorded in the ledger preview evidence.
+- **Live sell eligibility.** A sell is verified against the **current** Alpaca
+  paper position re-read right before the POST (past fills are provenance only);
+  qty must be within both the live position and the ceiling, else fail-closed.
+- **Deterministic failure vs uncertainty.** An HTTP 4xx/422 rejection is booked
+  as a terminal outcome and replayed on retry (no re-POST). A 5xx/timeout/
+  crash-after-send is reconciled via `get_order_by_client_order_id` — recovered
+  if the order exists, otherwise left in-flight — never re-POSTed.
+- **Paper only.** The only broker built is `AlpacaPaperBrokerService`
+  (paper-host-pinned); no live endpoint or live-credential path is imported.
+
 Read-only operator runbook: [`docs/runbooks/alpaca-paper-readonly-smoke.md`](../../docs/runbooks/alpaca-paper-readonly-smoke.md)
 Read-only smoke helper: `scripts/smoke/alpaca_paper_readonly_smoke.py` (argumentless, read-only, exits non-zero on failure)
 Dev submit/cancel smoke runbook: [`docs/runbooks/alpaca-paper-dev-smoke.md`](../../docs/runbooks/alpaca-paper-dev-smoke.md)

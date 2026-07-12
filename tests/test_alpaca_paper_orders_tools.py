@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import pytest_asyncio
+from sqlalchemy import delete
 
 from app.mcp_server.profiles import McpProfile
 from app.mcp_server.tooling import alpaca_paper_orders as _orders_mod
@@ -19,9 +22,29 @@ from app.mcp_server.tooling.alpaca_paper_orders import (
     set_alpaca_paper_orders_service_factory,
 )
 from app.mcp_server.tooling.registry import register_all_tools
+from app.models.review import AlpacaPaperOrderLedger
 from app.services.brokers.alpaca.schemas import Order
 from tests._mcp_tooling_support import DummyMCP
 from tests.test_mcp_alpaca_paper_tools import FakeAlpacaPaperService
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_manual_ledger_rows():
+    """Manual submits now route through the durable ledger claim; keep the
+    server-derived manual keys (rob73-/rob74-crypto-) clean between tests."""
+    from app.core.db import AsyncSessionLocal
+
+    stmt = delete(AlpacaPaperOrderLedger).where(
+        AlpacaPaperOrderLedger.client_order_id.like("rob73-%")
+        | AlpacaPaperOrderLedger.client_order_id.like("rob74-crypto-%")
+    )
+    async with AsyncSessionLocal() as db:
+        await db.execute(stmt)
+        await db.commit()
+    yield
+    async with AsyncSessionLocal() as db:
+        await db.execute(stmt)
+        await db.commit()
 
 
 def test_module_exposes_expected_surface() -> None:
@@ -58,6 +81,14 @@ class FakeOrdersService(FakeAlpacaPaperService):
 
     async def cancel_order(self, order_id: str) -> None:  # type: ignore[override]
         self.calls.append(("cancel_order", {"order_id": order_id}))
+
+    async def get_position(self, symbol: str) -> Any:  # type: ignore[override]
+        # A covering current position so manual sells pass the live-position gate.
+        self.calls.append(("get_position", {"symbol": symbol}))
+        return SimpleNamespace(symbol=symbol, qty=Decimal("100"))
+
+    async def get_order_by_client_order_id(self, client_order_id: str) -> Order | None:  # type: ignore[override]
+        return None
 
     async def get_order(self, order_id: str) -> Order:  # type: ignore[override]
         self.calls.append(("get_order", {"order_id": order_id}))
@@ -256,7 +287,6 @@ async def test_crypto_sell_limit_submit_is_confirm_gated_and_single_order(
         type="limit",
         qty=Decimal("0.0001"),
         limit_price=Decimal("50000"),
-        client_order_id="rob86-sell-test",
         asset_class="crypto",
         confirm=False,
     )
@@ -271,13 +301,13 @@ async def test_crypto_sell_limit_submit_is_confirm_gated_and_single_order(
         type="limit",
         qty=Decimal("0.0001"),
         limit_price=Decimal("50000"),
-        client_order_id="rob86-sell-test",
         asset_class="crypto",
         confirm=True,
     )
 
     assert submitted["submitted"] is True
-    assert submitted["client_order_id"] == "rob86-sell-test"
+    # server-derived key, not a caller-chosen id
+    assert submitted["client_order_id"].startswith("rob74-crypto-")
     submit_calls = [
         call for call in fake_orders_service.calls if call[0] == "submit_order"
     ]
@@ -290,23 +320,30 @@ async def test_crypto_sell_limit_submit_is_confirm_gated_and_single_order(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_submit_caller_client_order_id_passes_through(
+async def test_submit_has_no_caller_client_order_id_param(
     fake_orders_service: FakeOrdersService,
 ) -> None:
+    """Manual submit exposes no client_order_id — the claim key is server-derived
+    and cannot be injected by the caller (ROB-842 blocker 1/2)."""
+    import inspect
+
+    params = set(inspect.signature(alpaca_paper_submit_order).parameters)
+    assert "client_order_id" not in params
+    assert "origin" not in params
+
     payload = await alpaca_paper_submit_order(
         symbol="AAPL",
         side="buy",
         type="limit",
         qty=Decimal("1"),
         limit_price=Decimal("1.00"),
-        client_order_id="dev-smoke-001",
         confirm=True,
     )
-    assert payload["client_order_id"] == "dev-smoke-001"
+    assert payload["client_order_id"].startswith("rob73-")
     sent = [c for c in fake_orders_service.calls if c[0] == "submit_order"][0][1][
         "request"
     ]
-    assert sent.client_order_id == "dev-smoke-001"
+    assert sent.client_order_id.startswith("rob73-")
 
 
 @pytest.mark.unit
