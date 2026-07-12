@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import datetime as dt
 import json
 from collections.abc import Awaitable, Callable
@@ -54,12 +53,14 @@ def _unavailable_section(
     now: dt.datetime,
     source: dict[str, Any],
     error: str,
+    *,
+    as_of: dt.datetime | None = None,
 ) -> AnalysisSection:
     soft_ttl, hard_ttl = _SECTION_TTLS[name]
     return AnalysisSection(
         status="unavailable",
         collected_at=now,
-        as_of=now,
+        as_of=as_of or now,
         source=source,
         soft_ttl_seconds=soft_ttl,
         hard_ttl_seconds=hard_ttl,
@@ -138,20 +139,17 @@ class AnalysisInputFrozenCollector:
 
     async def collect(self, request: CollectorRequest) -> list[SnapshotCollectResult]:
         captured_at = self._clock()
-        sections = await asyncio.gather(
-            self._collector_section("portfolio", "portfolio", request, captured_at),
-            self._collector_section(
-                "quotes_orderbooks", "symbol", request, captured_at
-            ),
-            self._analysis_section(request, captured_at),
-            self._collector_section(
-                "market_gate_inputs", "market", request, captured_at
-            ),
-            self._collector_section(
-                "investor_flow", "investor_flow", request, captured_at
-            ),
-            self._decision_history_section(request, captured_at),
-        )
+        # The production collectors and decision-history function share the
+        # request's AsyncSession. AsyncSession does not permit overlapping
+        # operations, so capture these read-only surfaces in contract order.
+        sections = [
+            await self._collector_section("portfolio", "portfolio", request),
+            await self._collector_section("quotes_orderbooks", "symbol", request),
+            await self._analysis_section(request),
+            await self._collector_section("market_gate_inputs", "market", request),
+            await self._collector_section("investor_flow", "investor_flow", request),
+            await self._decision_history_section(request),
+        ]
         section_map = dict(zip(ANALYSIS_SECTION_NAMES, sections, strict=True))
         document = AnalysisFrozenDocument(
             captured_at=captured_at,
@@ -207,21 +205,48 @@ class AnalysisInputFrozenCollector:
         name: AnalysisSectionName,
         kind: str,
         request: CollectorRequest,
-        now: dt.datetime,
     ) -> AnalysisSection:
-        source = {"snapshot_kind": kind}
+        source: dict[str, Any] = {"snapshot_kind": kind}
         collector = self._collectors.get(kind)
         if collector is None:
+            completed_at = self._clock()
+            source["as_of_provenance"] = (
+                "collection_completion_fallback: provider/domain as_of absent"
+            )
             return _unavailable_section(
-                name, now, source, f"{kind} collector unavailable"
+                name, completed_at, source, f"{kind} collector unavailable"
             )
         try:
             results = list(await collector.collect(request))
         except Exception as exc:  # noqa: BLE001 - each section fails independently
-            return _unavailable_section(name, now, source, _error_text(exc))
+            completed_at = self._clock()
+            source["as_of_provenance"] = (
+                "collection_completion_fallback: provider/domain as_of absent"
+            )
+            return _unavailable_section(name, completed_at, source, _error_text(exc))
+        completed_at = self._clock()
         if not results:
+            source["as_of_provenance"] = (
+                "collection_completion_fallback: provider/domain as_of absent"
+            )
             return _unavailable_section(
-                name, now, source, f"{kind} collector returned no results"
+                name,
+                completed_at,
+                source,
+                f"{kind} collector returned no results",
+            )
+        source_timestamps = [result.source_timestamps_json for result in results]
+        source["source_timestamps_json"] = source_timestamps
+        has_upstream_as_of = any(bool(value) for value in source_timestamps)
+        if has_upstream_as_of:
+            section_as_of = min(result.as_of for result in results)
+            source["as_of_provenance"] = (
+                "collector_result.as_of with upstream source_timestamps_json"
+            )
+        else:
+            section_as_of = completed_at
+            source["as_of_provenance"] = (
+                "collection_completion_fallback: provider/domain as_of absent"
             )
         unavailable = any(
             result.freshness_status == "unavailable" for result in results
@@ -231,9 +256,10 @@ class AnalysisInputFrozenCollector:
         if unavailable:
             section = _unavailable_section(
                 name,
-                now,
+                completed_at,
                 source,
                 diagnostic or f"{kind} collector returned unavailable data",
+                as_of=section_as_of,
             )
             return section.model_copy(update={"data": data})
         partial = any(result.freshness_status == "partial" for result in results)
@@ -241,18 +267,21 @@ class AnalysisInputFrozenCollector:
         partial = partial or diagnostic is not None
         return _available_section(
             name,
-            now,
-            min(result.as_of for result in results),
+            completed_at,
+            section_as_of,
             source,
             data,
             partial=partial,
             error=diagnostic,
         )
 
-    async def _analysis_section(
-        self, request: CollectorRequest, now: dt.datetime
-    ) -> AnalysisSection:
-        source = {"service": "full_analysis"}
+    async def _analysis_section(self, request: CollectorRequest) -> AnalysisSection:
+        source = {
+            "service": "full_analysis",
+            "as_of_provenance": (
+                "collection_completion_fallback: provider/domain as_of absent"
+            ),
+        }
         try:
             data = await self._analysis_fn(
                 list(request.symbols or []),
@@ -263,25 +292,43 @@ class AnalysisInputFrozenCollector:
                 refresh=False,
             )
         except Exception as exc:  # noqa: BLE001 - section-local diagnostic
+            completed_at = self._clock()
             return _unavailable_section(
-                "indicators_support_resistance", now, source, _error_text(exc)
+                "indicators_support_resistance",
+                completed_at,
+                source,
+                _error_text(exc),
             )
+        completed_at = self._clock()
         return _available_section(
-            "indicators_support_resistance", now, now, source, data
+            "indicators_support_resistance",
+            completed_at,
+            completed_at,
+            source,
+            data,
         )
 
     async def _decision_history_section(
-        self, request: CollectorRequest, now: dt.datetime
+        self, request: CollectorRequest
     ) -> AnalysisSection:
-        source = {"service": "build_decision_context"}
-        symbols = list(request.symbols or [])
-        outcomes = await asyncio.gather(
-            *(
-                self._decision_history_fn(symbol, request.market, request.account_scope)
-                for symbol in symbols
+        source = {
+            "service": "build_decision_context",
+            "as_of_provenance": (
+                "collection_completion_fallback: provider/domain as_of absent"
             ),
-            return_exceptions=True,
-        )
+        }
+        symbols = list(request.symbols or [])
+        outcomes: list[Any | BaseException] = []
+        for symbol in symbols:
+            try:
+                outcome = await self._decision_history_fn(
+                    symbol, request.market, request.account_scope
+                )
+            except Exception as exc:  # noqa: BLE001 - retain per-symbol diagnostic
+                outcomes.append(exc)
+            else:
+                outcomes.append(outcome)
+        completed_at = self._clock()
         data: dict[str, Any] = {}
         errors: list[str] = []
         for symbol, outcome in zip(symbols, outcomes, strict=True):
@@ -293,13 +340,13 @@ class AnalysisInputFrozenCollector:
                 data[symbol] = outcome
         if errors and len(errors) == len(symbols):
             unavailable = _unavailable_section(
-                "decision_history", now, source, errors[0]
+                "decision_history", completed_at, source, errors[0]
             )
             return unavailable.model_copy(update={"data": data})
         return _available_section(
             "decision_history",
-            now,
-            now,
+            completed_at,
+            completed_at,
             source,
             data,
             partial=bool(errors),
@@ -323,19 +370,11 @@ class AnalysisBundleCaptureService:
         self._analysis_fn = analysis_fn
         self._decision_history_fn = decision_history_fn
         self._clock = clock or _utcnow
-        self._last_capture_at: dt.datetime | None = None
-
-    def _capture_time(self) -> dt.datetime:
-        captured_at = self._clock()
-        if self._last_capture_at is not None and captured_at <= self._last_capture_at:
-            captured_at = self._last_capture_at + dt.timedelta(microseconds=1)
-        self._last_capture_at = captured_at
-        return captured_at
 
     async def capture(
         self, request: AnalysisBundleCreateRequest
     ) -> AnalysisBundleCreateResponse:
-        captured_at = self._capture_time()
+        captured_at = self._clock()
         frozen_collector = AnalysisInputFrozenCollector(
             self._collectors,
             analysis_fn=self._analysis_fn,

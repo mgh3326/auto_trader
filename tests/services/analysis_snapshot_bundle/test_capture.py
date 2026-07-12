@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 from unittest.mock import AsyncMock
 
@@ -11,8 +12,12 @@ from app.schemas.analysis_snapshot_bundle import (
     AnalysisBundleCreateRequest,
 )
 from app.services.action_report.common.canonicalize import canonical_payload_hash
-from app.services.analysis_snapshot_bundle import AnalysisBundleCaptureService
+from app.services.analysis_snapshot_bundle import (
+    AnalysisBundleCaptureService,
+    AnalysisInputFrozenCollector,
+)
 from app.services.investment_snapshots.collectors import (
+    CollectorRequest,
     SnapshotCollectorRegistry,
     SnapshotCollectResult,
 )
@@ -236,3 +241,132 @@ async def test_second_capture_returns_new_bundle_uuid(service, capture_request):
     first = await service.capture(capture_request)
     second = await service.capture(capture_request)
     assert first.bundle_id != second.bundle_id
+
+
+@pytest.mark.asyncio
+async def test_two_capture_service_instances_with_fixed_clock_create_unique_bundles(
+    db_session,
+    capture_request,
+    portfolio,
+    symbol,
+    market,
+    investor_flow,
+    analysis_fn,
+    decision_history_fn,
+):
+    registry = SnapshotCollectorRegistry()
+    for collector in (portfolio, symbol, market, investor_flow):
+        registry.register(collector)
+
+    first_service = AnalysisBundleCaptureService(
+        db_session,
+        collectors=registry,
+        analysis_fn=analysis_fn,
+        decision_history_fn=decision_history_fn,
+        clock=lambda: NOW,
+    )
+    second_service = AnalysisBundleCaptureService(
+        db_session,
+        collectors=registry,
+        analysis_fn=analysis_fn,
+        decision_history_fn=decision_history_fn,
+        clock=lambda: NOW,
+    )
+
+    first = await first_service.capture(capture_request)
+    second = await second_service.capture(capture_request)
+
+    assert first.bundle_id != second.bundle_id
+    assert first.content_hash == second.content_hash
+
+
+@pytest.mark.asyncio
+async def test_frozen_collector_never_overlaps_shared_session_reads():
+    active = 0
+    max_active = 0
+
+    async def tracked(result):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return result
+
+    class TrackingCollector:
+        def __init__(self, kind: str) -> None:
+            self.snapshot_kind = kind
+
+        async def collect(self, request):
+            return await tracked([_result(self.snapshot_kind)])
+
+    registry = SnapshotCollectorRegistry()
+    for kind in ("portfolio", "symbol", "market", "investor_flow"):
+        registry.register(TrackingCollector(kind))
+
+    async def analysis(*args, **kwargs):
+        return await tracked({"005930": {"rsi": 52.1}})
+
+    async def decision(*args):
+        return await tracked({"recent": []})
+
+    collector = AnalysisInputFrozenCollector(
+        registry,
+        analysis_fn=analysis,
+        decision_history_fn=decision,
+        clock=lambda: NOW,
+    )
+    await collector.collect(
+        CollectorRequest(
+            market="kr",
+            account_scope="kis_live",
+            symbols=["005930"],
+            policy_snapshot={},
+        )
+    )
+
+    assert max_active == 1
+
+
+@pytest.mark.asyncio
+async def test_sections_stamp_completion_time_and_preserve_timestamp_provenance():
+    ticks = iter(NOW + dt.timedelta(seconds=offset) for offset in range(20))
+    registry = SnapshotCollectorRegistry()
+    for kind in ("portfolio", "symbol", "market"):
+        registry.register(FakeCollector(kind, [_result(kind)]))
+    unavailable_flow = _result("investor_flow")
+    unavailable_flow.freshness_status = "unavailable"
+    unavailable_flow.errors_json = {"provider": "provider off"}
+    registry.register(FakeCollector("investor_flow", [unavailable_flow]))
+
+    collector = AnalysisInputFrozenCollector(
+        registry,
+        analysis_fn=AsyncMock(return_value={"005930": {"rsi": 52.1}}),
+        decision_history_fn=AsyncMock(return_value={"recent": []}),
+        clock=lambda: next(ticks),
+    )
+    [result] = await collector.collect(
+        CollectorRequest(
+            market="kr",
+            account_scope="kis_live",
+            symbols=["005930"],
+            policy_snapshot={},
+        )
+    )
+    sections = result.payload_json["sections"]
+    completion_times = [
+        dt.datetime.fromisoformat(sections[name]["collected_at"])
+        for name in ANALYSIS_SECTION_NAMES
+    ]
+
+    assert completion_times == sorted(completion_times)
+    assert len(set(completion_times)) == len(ANALYSIS_SECTION_NAMES)
+    assert sections["portfolio"]["source"]["source_timestamps_json"] == [
+        {"provider": NOW.isoformat()}
+    ]
+    assert dt.datetime.fromisoformat(sections["investor_flow"]["as_of"]) == NOW
+    for name in ("indicators_support_resistance", "decision_history"):
+        assert sections[name]["as_of"] == sections[name]["collected_at"]
+        assert sections[name]["source"]["as_of_provenance"] == (
+            "collection_completion_fallback: provider/domain as_of absent"
+        )

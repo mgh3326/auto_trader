@@ -114,6 +114,8 @@ class BundleCreate(BaseModel):
     status: BundleStatus
     coverage_summary: dict[str, Any] = Field(default_factory=dict)
     freshness_summary: dict[str, Any] = Field(default_factory=dict)
+    idempotency_discriminator: str | None = None
+    """Optional persisted idempotency-key component for create-new calls."""
 
 
 class BundleItemCreate(BaseModel):

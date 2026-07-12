@@ -1261,15 +1261,22 @@ async def test_build_altseason_fn_returns_payload(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_build_altseason_fn_failopen_on_error(monkeypatch):
-    from app.services.action_report.snapshot_backed.collectors import registry
-
+async def test_production_registry_preserves_altseason_error_diagnostic(monkeypatch):
     async def boom():
         raise RuntimeError("upbit down")
 
     monkeypatch.setattr("app.services.external.upbit_index.fetch_upbit_altseason", boom)
-    fn = registry._build_altseason_fn()
-    assert await fn() is None
+    collectors = production_collector_registry(MagicMock())
+    collector = collectors.get("market")
+    assert isinstance(collector, MarketEventsSnapshotCollector)
+    collector._query = _empty_events_query()
+
+    results = await collector.collect(_request(market="crypto"))
+
+    assert results[0].freshness_status == "partial"
+    assert results[0].errors_json["altseason"] == "RuntimeError: upbit down"
+    assert "altseason" not in results[0].payload_json
+    assert results[0].payload_json["events"] == []
 
 
 # ---------------------------------------------------------------------------

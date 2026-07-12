@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import uuid
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -245,6 +246,9 @@ class SnapshotBundleEnsureService:
                 status=bundle_status,
                 coverage_summary=coverage,
                 freshness_summary=freshness_summary,
+                idempotency_discriminator=(
+                    str(uuid.uuid4()) if request.mode == "create_new" else None
+                ),
             )
         )
 
