@@ -38,24 +38,25 @@ async def _reset(symbol: str) -> None:
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _clear_degradation_markers():
-    """A durable degradation marker is global — clear it before/after every test
-    so a stray marker never fail-closes unrelated history loads on the shared DB.
-    """
-    from app.services.brokers.kis.mock_scalping_exec.ledger_state import (
-        clear_tracking_degradation,
-    )
-    from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
-        reset_ledger_tracking_state,
-    )
+async def _clear_scalping_reservations():
+    """The scalping reservation is a global fail-close signal — clear it
+    before/after every test so a stray reservation never fail-closes unrelated
+    history loads on the shared DB."""
+    from app.models.review import OrderSendIntent
+    from app.services.order_send_intent_service import KIS_MOCK_SCALPING_SCOPE
 
-    async with _order_session_factory()() as db:
-        await clear_tracking_degradation(db)
-    reset_ledger_tracking_state()
+    async def _clear():
+        async with _order_session_factory()() as db:
+            await db.execute(
+                delete(OrderSendIntent).where(
+                    OrderSendIntent.account_scope == KIS_MOCK_SCALPING_SCOPE
+                )
+            )
+            await db.commit()
+
+    await _clear()
     yield
-    async with _order_session_factory()() as db:
-        await clear_tracking_degradation(db)
-    reset_ledger_tracking_state()
+    await _clear()
 
 
 async def _ins(**over) -> None:
@@ -277,11 +278,11 @@ async def test_synthetic_only_fill_is_counted_as_fallback(db_session) -> None:
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_synthetic_anomaly_fallback_is_counted(db_session) -> None:
-    """P1-2: an unfilled/anomaly synthetic (native lost) still counts once."""
+async def test_legacy_control_fallback_row_is_not_counted(db_session) -> None:
+    """ROB-843 P2: a legacy `native_fallback` control row is never a trade — the
+    daily count excludes it (durability now lives in the reservation)."""
     sym = "900208"
     await _reset(sym)
-    cid = f"cid-{sym}"
     await _ins(
         symbol=sym,
         side="sell",
@@ -289,24 +290,25 @@ async def test_synthetic_anomaly_fallback_is_counted(db_session) -> None:
         scalping_role="native_fallback",
         lifecycle_state="anomaly",
         status="unknown",
-        correlation_id=cid,
+        reason="ledger_tracking_fallback",
+        correlation_id=f"cid-{sym}",
     )
-    assert await _count(sym) == 1
+    assert await _count(sym) == 0
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_fallback_and_later_synthetic_dedupe(db_session) -> None:
-    """P1-2: a tracking-fallback row and the later synthetic fill share
-    (correlation_id, side) and de-dup to a single count."""
+async def test_two_synthetic_rows_same_pair_dedupe(db_session) -> None:
+    """P1-2: two synthetic evidence rows sharing (correlation_id, side) de-dup
+    to a single count."""
     sym = "900209"
     await _reset(sym)
     cid = f"cid-{sym}"
     await _ins(
         symbol=sym,
         side="buy",
-        order_no=None,
-        scalping_role="native_fallback",
+        order_no=f"L-{sym}-a",
+        scalping_role="entry",
         lifecycle_state="anomaly",
         status="unknown",
         correlation_id=cid,
@@ -314,7 +316,7 @@ async def test_fallback_and_later_synthetic_dedupe(db_session) -> None:
     await _ins(
         symbol=sym,
         side="buy",
-        order_no=f"L-{sym}-entry",
+        order_no=f"L-{sym}-b",
         scalping_role="entry",
         lifecycle_state="fill",
         correlation_id=cid,
@@ -423,62 +425,59 @@ async def test_entry_unfilled_buy_anomaly_dedups_with_native(db_session) -> None
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_tracking_degradation_is_durable_across_new_gate(db_session) -> None:
-    """P1-2: a persisted degradation marker fail-closes a BRAND-NEW gate instance
-    (module-global reset), and only explicit reconciliation clears it."""
-    from app.mcp_server.tooling.kis_mock_ledger import (
-        _persist_tracking_degradation_marker,
-    )
+async def test_unresolved_reservation_fail_closes_new_gate(db_session) -> None:
+    """ROB-843 P1: an UNRESOLVED write-ahead reservation (in-flight/uncertain
+    order) fail-closes a fresh loader call AND a brand-new gate instance — it is
+    durable across restart/session — and only an explicit reconciliation that
+    confirms the order releases it."""
     from app.services.brokers.kis.mock_scalping_exec.adapters import KisMockRiskGate
-    from app.services.brokers.kis.mock_scalping_exec.ledger_state import (
-        clear_tracking_degradation,
+    from app.services.brokers.kis.mock_scalping_exec.reservation import (
+        reconcile_entries,
+        reserve_entry,
     )
-    from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
-        reset_ledger_tracking_state,
-    )
+    from app.services.brokers.kis.mock_scalping_ws.state import MarketState
 
-    # Persist a durable marker (native+fallback both lost for some order).
-    await _persist_tracking_degradation_marker(
-        correlation_id="lost-order-1", side="buy", market_type="equity_kr"
-    )
-    # Prove the block is DURABLE, not process-local: clear the in-memory latch.
-    reset_ledger_tracking_state()
+    # An order was sent but its native write was lost -> reservation stays.
+    await reserve_entry(correlation_id="inflight-1", symbol="005930", side="buy")
 
-    # A fresh loader call on a NEW DB session fail-closes.
+    # A fresh loader call (new DB session) fail-closes.
     with pytest.raises(RuntimeError, match="ledger_tracking_unavailable"):
         await load_kis_mock_order_history(symbol="005930")
 
-    # A brand-new gate instance (new object) also fail-closes.
-    async def _holdings():
-        return {"holdings": [], "cash": {}}
-
+    # A brand-new gate instance also fail-closes (durable, not process-local).
     gate = KisMockRiskGate(
-        get_state=lambda _s: None,  # unreached: durable check is inside history load
-        holdings_provider=_holdings,
-        clock=lambda: 100.0,
-    )
-    # get_state returns None -> market check would raise first; assert it still
-    # fails closed (either market or durable). Use a valid state to reach history:
-    from app.services.brokers.kis.mock_scalping_ws.state import MarketState
-
-    gate2 = KisMockRiskGate(
         get_state=lambda _s: MarketState(
             symbol="005930", bid=70000.0, ask=70100.0, _book_updated_at=100.0
         ),
-        holdings_provider=_holdings,
+        holdings_provider=_empty_holdings_coro,
         clock=lambda: 100.5,
     )
-    with pytest.raises(RuntimeError):
-        await gate.load(symbol="005930", side="BUY")
     with pytest.raises(RuntimeError, match="ledger_tracking_unavailable"):
-        await gate2.load(symbol="005930", side="BUY")
+        await gate.load(symbol="005930", side="BUY")
 
-    # Explicit reconciliation clears the latch; trading re-opens.
-    async with _order_session_factory()() as db:
-        cleared = await clear_tracking_degradation(db)
-    assert cleared >= 1
+    # A reconciliation that does NOT confirm the order keeps the block.
+    released = await reconcile_entries(confirm=_never_confirm)
+    assert released == 0
+    with pytest.raises(RuntimeError, match="ledger_tracking_unavailable"):
+        await load_kis_mock_order_history(symbol="005930")
+
+    # Only an explicit reconciliation that confirms the order releases it.
+    released = await reconcile_entries(confirm=_always_confirm)
+    assert released == 1
     hist = await load_kis_mock_order_history(symbol="005930")
-    assert hist is not None  # no longer fail-closed
+    assert hist is not None  # trading re-opened
+
+
+async def _empty_holdings_coro():
+    return {"holdings": [], "cash": {}}
+
+
+async def _never_confirm(_key: str) -> bool:
+    return False
+
+
+async def _always_confirm(_key: str) -> bool:
+    return True
 
 
 @pytest.mark.integration

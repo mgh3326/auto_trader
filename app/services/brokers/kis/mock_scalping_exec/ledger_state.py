@@ -18,50 +18,49 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, not_, or_, select
 
 from app.core.timezone import now_kst
 from app.models.review import KISMockOrderLedger
 
 _CLOSED_STATE = "reconciled"
 
-# ROB-843 P1-2: a durable ledger-tracking degradation latch. When an accepted
-# order's native AND fallback ledger writes are both lost, a marker row is
-# persisted so the block survives process restart / module reload / a fresh DB
-# session. Only an explicit reconciliation (clearing the marker) re-opens trading.
-_DEGRADATION_SYMBOL = "__ledger_tracking__"
-_DEGRADATION_ROLE = "tracking_degraded"
+# ROB-843 P2: control-only rows that must NEVER be treated as trades by any
+# ledger consumer (daily count, retrospective, journal bridge, holdings). The
+# durable in-flight/uncertain state now lives in the write-ahead reservation
+# (review.order_send_intents), so new code writes no control rows here; this
+# predicate defends against any legacy control rows from earlier revisions.
+_CONTROL_SYMBOL = "__ledger_tracking__"
+_CONTROL_ROLES: frozenset[str] = frozenset({"tracking_degraded", "native_fallback"})
+_CONTROL_REASONS: frozenset[str] = frozenset(
+    {"ledger_tracking_degraded", "ledger_tracking_fallback"}
+)
 
 
-async def is_tracking_degraded(db) -> bool:
-    """True while an unresolved durable degradation marker exists (any process)."""
-    found = await db.scalar(
-        select(func.count())
-        .select_from(KISMockOrderLedger)
-        .where(
-            KISMockOrderLedger.scalping_role == _DEGRADATION_ROLE,
-            KISMockOrderLedger.lifecycle_state != _CLOSED_STATE,
-        )
+def is_control_row(row: KISMockOrderLedger) -> bool:
+    """True for a non-trade control/reservation/degradation row (ROB-843 P2)."""
+    return (
+        row.symbol == _CONTROL_SYMBOL
+        or (row.scalping_role in _CONTROL_ROLES)
+        or (row.reason in _CONTROL_REASONS)
     )
-    return bool(found or 0)
 
 
-async def clear_tracking_degradation(db) -> int:
-    """Explicit reconciliation: resolve all degradation markers. Returns count.
-
-    This is the ONLY way the durable latch is released — order tracking must be
-    verified recovered before calling it.
-    """
-    result = await db.execute(
-        update(KISMockOrderLedger)
-        .where(
-            KISMockOrderLedger.scalping_role == _DEGRADATION_ROLE,
-            KISMockOrderLedger.lifecycle_state != _CLOSED_STATE,
-        )
-        .values(lifecycle_state=_CLOSED_STATE, reconciled_at=now_kst())
+def real_order_filter():
+    """SQLAlchemy predicate selecting only genuine order rows (excludes control
+    rows). Apply in every KISMockOrderLedger consumer so a control row is never
+    counted, retrospected, or journaled as a trade."""
+    return and_(
+        KISMockOrderLedger.symbol != _CONTROL_SYMBOL,
+        or_(
+            KISMockOrderLedger.scalping_role.is_(None),
+            not_(KISMockOrderLedger.scalping_role.in_(_CONTROL_ROLES)),
+        ),
+        or_(
+            KISMockOrderLedger.reason.is_(None),
+            not_(KISMockOrderLedger.reason.in_(_CONTROL_REASONS)),
+        ),
     )
-    await db.commit()
-    return int(result.rowcount or 0)
 
 
 @dataclass(frozen=True)
@@ -108,6 +107,7 @@ async def count_daily_broker_orders(
     ).where(
         KISMockOrderLedger.trade_date >= since,
         KISMockOrderLedger.scalping_role.is_(None),
+        real_order_filter(),  # never count a control row
     )
     synthetic_q = select(
         KISMockOrderLedger.correlation_id,
@@ -115,8 +115,7 @@ async def count_daily_broker_orders(
     ).where(
         KISMockOrderLedger.trade_date >= since,
         KISMockOrderLedger.scalping_role.is_not(None),
-        KISMockOrderLedger.scalping_role
-        != _DEGRADATION_ROLE,  # control row, not an order
+        real_order_filter(),  # excludes tracking_degraded / native_fallback
         KISMockOrderLedger.lifecycle_state.in_(_SYNTHETIC_EVIDENCE_STATES),
     )
     if symbol is not None:
@@ -147,10 +146,19 @@ async def load_kis_mock_order_history(
     since = _start_of_kst_day(now)
 
     async with _order_session_factory()() as db:
-        # ROB-843 P1-2: durable pre-send fail-close. A prior lost-write
-        # degradation latch (survives restart) blocks every new order until an
-        # explicit reconciliation clears it — never silently undercounts.
-        if await is_tracking_degraded(db):
+        # ROB-843 P1: durable pre-send fail-close. An UNRESOLVED write-ahead
+        # reservation (order_send_intents) means some automated order is
+        # in-flight/uncertain — a state that survives restart / a fresh session /
+        # a new gate instance — so block every new order until an explicit
+        # reconciliation releases it. Never silently undercounts.
+        from app.services.order_send_intent_service import (
+            KIS_MOCK_SCALPING_SCOPE,
+            OrderSendIntentService,
+        )
+
+        if await OrderSendIntentService(db).has_reservations(
+            account_scope=KIS_MOCK_SCALPING_SCOPE
+        ):
             raise RuntimeError("ledger_tracking_unavailable")
         orders_today = await count_daily_broker_orders(db, since=since)
         realized_loss = await db.scalar(

@@ -30,7 +30,11 @@ from typing import Any
 
 from app.core.symbol import to_db_symbol
 from app.mcp_server.tooling.kis_mock_ledger import _save_kis_mock_order_ledger
-from app.mcp_server.tooling.order_execution import _create_kis_client, _place_order_impl
+from app.mcp_server.tooling.order_execution import (
+    OrderSendOutcomeUnknown,
+    _create_kis_client,
+    _place_order_impl,
+)
 from app.services.brokers.kis import KISClient
 from app.services.brokers.kis.mock_scalping.contract import (
     LedgerSnapshot,
@@ -58,11 +62,13 @@ from app.services.brokers.kis.mock_scalping_exec.ledger_state import (
     MockOrderHistory,
     load_kis_mock_order_history,
 )
-from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
-    is_ledger_tracking_unavailable,
+from app.services.brokers.kis.mock_scalping_exec.reservation import (
+    release_entry,
+    reserve_entry,
 )
 from app.services.brokers.kis.mock_scalping_ws.state import MarketState
 from app.services.brokers.kis.pre_send import PreSendFreshnessError
+from app.services.order_send_intent_service import DuplicateOrderIntent
 
 logger = logging.getLogger("rob321.kis_mock_scalping_exec")
 
@@ -133,6 +139,14 @@ class KisMockBroker:
 
         return _hook
 
+    async def _safe_release_reservation(self, correlation_id: str) -> None:
+        try:
+            await release_entry(correlation_id=correlation_id)
+        except Exception as exc:  # noqa: BLE001 — a stale reservation is fail-safe
+            logger.warning(
+                "scalping reservation release failed cid=%s: %s", correlation_id, exc
+            )
+
     async def submit_buy(
         self,
         *,
@@ -151,24 +165,74 @@ class KisMockBroker:
             if confirm
             else None
         )
-        result = await _place_order_impl(
-            symbol=symbol,
-            side="buy",
-            market="kr",
-            order_type="limit",
-            quantity=float(quantity),
-            price=float(price),
-            dry_run=not confirm,
-            is_mock=True,
-            reason=f"scalp_entry:{correlation_id}",
-            strategy=self._strategy_id,
-            # Share the executor correlation_id so native + synthetic evidence
-            # link for the daily-count de-dup (ROB-843 P1-2).
-            correlation_id=correlation_id,
-            # Final freshness re-check right before the POST (entry only; an
-            # exit must always be allowed to close a live position).
-            pre_send_hook=self._make_pre_send_hook(symbol),
-        )
+        # ROB-843 P1: WRITE-AHEAD durable reservation, recorded BEFORE the POST.
+        # If this durable write cannot land, the broker POST must never happen
+        # (POST 0). An unresolved reservation is the durable in-flight/uncertain
+        # state that survives restart and fail-closes new orders until an
+        # explicit reconciliation releases it.
+        if confirm:
+            try:
+                await reserve_entry(
+                    correlation_id=correlation_id, symbol=symbol, side="buy"
+                )
+            except DuplicateOrderIntent:
+                return {
+                    "success": False,
+                    "reservation_blocked": True,
+                    "reason_codes": ["duplicate_send"],
+                    "detail": f"scalping entry already reserved: {correlation_id}",
+                    "dry_run": False,
+                }
+            except Exception as exc:  # noqa: BLE001 — durable write lost → POST 0
+                logger.warning("scalping reservation failed sym=%s: %s", symbol, exc)
+                return {
+                    "success": False,
+                    "reservation_blocked": True,
+                    "reason_codes": ["reservation_unavailable"],
+                    "detail": f"{type(exc).__name__}: {exc}"[:200],
+                    "dry_run": False,
+                }
+
+        try:
+            result = await _place_order_impl(
+                symbol=symbol,
+                side="buy",
+                market="kr",
+                order_type="limit",
+                quantity=float(quantity),
+                price=float(price),
+                dry_run=not confirm,
+                is_mock=True,
+                reason=f"scalp_entry:{correlation_id}",
+                strategy=self._strategy_id,
+                # Share the executor correlation_id so native + synthetic evidence
+                # link for the daily-count de-dup (ROB-843 P1-2).
+                correlation_id=correlation_id,
+                # Final freshness re-check right before the POST (entry only; an
+                # exit must always be allowed to close a live position).
+                pre_send_hook=self._make_pre_send_hook(symbol),
+            )
+        except OrderSendOutcomeUnknown:
+            # Uncertain send (timeout/network after the POST): KEEP the
+            # reservation so the order stays fail-closed until reconciliation.
+            raise
+        except Exception:
+            # Deterministic broker error before/at send (rejection, token cap,
+            # validation): no order was created — release the reservation.
+            if confirm:
+                await self._safe_release_reservation(correlation_id)
+            raise
+
+        if confirm:
+            tracked = bool(result.get("success")) and not result.get(
+                "ledger_tracking_unavailable"
+            )
+            if result.get("pre_send_blocked") or tracked:
+                # Certain no-order (POST 0) OR fully-tracked native row → release.
+                await self._safe_release_reservation(correlation_id)
+            # else: native write lost / unknown / malformed = uncertain → KEEP
+            # the reservation (durable fail-close until reconciliation).
+
         if isinstance(result, dict) and baseline is not None:
             result["_baseline"] = baseline
         return result
@@ -472,10 +536,9 @@ class KisMockRiskGate:
         return has_open, open_count
 
     async def load(self, *, symbol: str, side: Side) -> RiskInputs:
-        # ROB-843 P1-2: if a prior order's durable bookkeeping was lost, the
-        # daily count can no longer be trusted — fail-close the next order.
-        if is_ledger_tracking_unavailable():
-            raise RuntimeError("ledger_tracking_unavailable")
+        # ROB-843 P1: the durable fail-close (unresolved write-ahead reservation)
+        # is enforced inside the order-history load below, so it survives restart
+        # and a fresh gate instance.
         market = self._market(symbol)
         has_open, open_count = await self._position(symbol)
         history = await self._load_history(symbol=to_db_symbol(symbol))

@@ -9,13 +9,20 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import delete
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.review import OrderSendIntent
 
 logger = logging.getLogger(__name__)
+
+# ROB-843 P1: write-ahead reservation scope for automated KIS mock scalping
+# entries. A reservation is inserted BEFORE the broker POST (proving the DB is
+# writable) and released only when the order is confirmed fully tracked or
+# proven not sent. An UNRESOLVED reservation is a durable "in-flight / uncertain"
+# marker that survives restart and fail-closes new orders until reconciliation.
+KIS_MOCK_SCALPING_SCOPE = "kis_mock_scalping"
 
 
 class DuplicateOrderIntent(Exception):
@@ -66,3 +73,26 @@ class OrderSendIntentService:
         )
         await self._db.commit()
         return int(result.rowcount or 0)
+
+    async def has_reservations(self, *, account_scope: str) -> bool:
+        """True if ANY unresolved reservation exists in ``account_scope``.
+
+        Used as the durable fail-close signal (ROB-843 P1): while an automated
+        mock order is in-flight/uncertain its reservation is still present, so
+        new orders must fail-close until reconciliation releases it.
+        """
+        found = await self._db.scalar(
+            select(func.count())
+            .select_from(OrderSendIntent)
+            .where(OrderSendIntent.account_scope == account_scope)
+        )
+        return bool(found or 0)
+
+    async def list_keys(self, *, account_scope: str) -> list[str]:
+        """The idempotency keys of all unresolved reservations in ``account_scope``."""
+        rows = await self._db.execute(
+            select(OrderSendIntent.idempotency_key).where(
+                OrderSendIntent.account_scope == account_scope
+            )
+        )
+        return [k for (k,) in rows.all()]

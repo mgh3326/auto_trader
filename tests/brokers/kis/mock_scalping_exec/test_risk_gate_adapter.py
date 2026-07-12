@@ -69,31 +69,8 @@ def _gate(state, *, holdings=_empty_holdings, history=_no_history):
     )
 
 
-@pytest.fixture(autouse=True)
-def _reset_tracking_state():
-    """Keep the process-local ledger-tracking flag from leaking between tests
-    (this file mixes sync and async tests, so the fixture stays sync)."""
-    from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
-        reset_ledger_tracking_state,
-    )
-
-    reset_ledger_tracking_state()
-    yield
-    reset_ledger_tracking_state()
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_gate_fail_closes_when_tracking_unavailable() -> None:
-    """ROB-843 P1-2: a degraded ledger-tracking flag fail-closes the next order
-    before any market/holdings read."""
-    from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
-        mark_ledger_tracking_unavailable,
-    )
-
-    mark_ledger_tracking_unavailable()
-    with pytest.raises(RuntimeError, match="ledger_tracking_unavailable"):
-        await _gate(_FakeState()).load(symbol="005930", side="BUY")
+# (The durable reservation fail-close is enforced inside the real order-history
+# loader and is exercised end-to-end in test_order_history_ledger.py.)
 
 
 # --- Market snapshot fail-close (Blocker 3) -----------------------------------
@@ -234,23 +211,25 @@ async def test_order_history_loader_reads_ledger(db_session) -> None:
         _order_session_factory,
         _save_kis_mock_order_ledger,
     )
-    from app.models.review import KISMockOrderLedger
+    from app.models.review import KISMockOrderLedger, OrderSendIntent
     from app.services.brokers.kis.mock_scalping_exec.ledger_state import (
-        clear_tracking_degradation,
         load_kis_mock_order_history,
     )
+    from app.services.order_send_intent_service import KIS_MOCK_SCALPING_SCOPE
 
     symbol = "900843"
     # Deterministic across re-runs of the persistent shared test DB (clear any
-    # prior-run rows, including legacy closes written before reconciled_at was
-    # stamped, and any stray durable degradation marker that would fail-close).
+    # prior-run rows and any stray scalping reservation that would fail-close).
     async with _order_session_factory()() as _db:
         await _db.execute(
             delete(KISMockOrderLedger).where(KISMockOrderLedger.symbol == symbol)
         )
+        await _db.execute(
+            delete(OrderSendIntent).where(
+                OrderSendIntent.account_scope == KIS_MOCK_SCALPING_SCOPE
+            )
+        )
         await _db.commit()
-    async with _order_session_factory()() as _db:
-        await clear_tracking_degradation(_db)
     await _save_kis_mock_order_ledger(
         symbol=symbol,
         instrument_type="equity_kr",

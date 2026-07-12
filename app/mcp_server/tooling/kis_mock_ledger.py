@@ -22,7 +22,6 @@ from app.mcp_server.tooling.shared import to_float as _to_float
 from app.models.review import KISMockOrderLedger
 from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
     LedgerWriteError,
-    mark_ledger_tracking_unavailable,
 )
 from app.services.brokers.kis.order_id import normalize_broker_order_id
 from app.services.kis_mock_lifecycle_service import KISMockLifecycleService
@@ -403,90 +402,6 @@ async def _native_row_exists(order_no: str | None) -> bool:
         return False
 
 
-async def _persist_tracking_fallback(
-    *,
-    correlation_id: str | None,
-    side: str,
-    normalized_symbol: str,
-    market_type: str,
-) -> int | None:
-    """Write a durable fallback evidence row (correlation_id + side) so the daily
-    broker-order count still counts a submitted order whose native row was lost.
-
-    Keyed on the same correlation_id the synthetic scalping fill/exit row uses,
-    so native/fallback/synthetic evidence for one order de-dup to a single count.
-    """
-    currency = "KRW" if market_type != "equity_us" else "USD"
-    return await _save_kis_mock_order_ledger(
-        symbol=normalized_symbol,
-        instrument_type=market_type,
-        side=side,
-        order_type="limit",
-        quantity=0.0,
-        price=0.0,
-        amount=0.0,
-        currency=currency,
-        order_no=None,
-        order_time=None,
-        krx_fwdg_ord_orgno=None,
-        status="unknown",
-        response_code=None,
-        response_message="native ledger write lost; tracking fallback",
-        raw_response=None,
-        reason="ledger_tracking_fallback",
-        thesis=None,
-        strategy=None,
-        notes=None,
-        lifecycle_state="anomaly",
-        correlation_id=correlation_id,
-        scalping_role="native_fallback",
-    )
-
-
-async def _persist_tracking_degradation_marker(
-    *, correlation_id: str | None, side: str, market_type: str
-) -> int | None:
-    """Persist a DURABLE ledger-tracking degradation marker (ROB-843 P1-2).
-
-    Written when an accepted order's native AND fallback evidence are both lost.
-    It survives process restart / module reload; only an explicit reconciliation
-    (``clear_tracking_degradation``) resolves it. Returns the row id, or None if
-    even this write could not persist (then the caller falls back to the
-    process-local latch as a last resort).
-    """
-    from app.services.brokers.kis.mock_scalping_exec.ledger_state import (
-        _DEGRADATION_ROLE,
-        _DEGRADATION_SYMBOL,
-    )
-
-    currency = "KRW" if market_type != "equity_us" else "USD"
-    db_side = "buy" if str(side).lower() == "buy" else "sell"
-    return await _save_kis_mock_order_ledger(
-        symbol=_DEGRADATION_SYMBOL,
-        instrument_type=market_type,
-        side=db_side,
-        order_type="limit",
-        quantity=0.0,
-        price=0.0,
-        amount=0.0,
-        currency=currency,
-        order_no=None,
-        order_time=None,
-        krx_fwdg_ord_orgno=None,
-        status="unknown",
-        response_code=None,
-        response_message="ledger tracking degraded; native+fallback write lost",
-        raw_response=None,
-        reason="ledger_tracking_degraded",
-        thesis=None,
-        strategy=None,
-        notes=correlation_id,
-        lifecycle_state="anomaly",
-        correlation_id=correlation_id,
-        scalping_role=_DEGRADATION_ROLE,
-    )
-
-
 async def _record_kis_mock_order(
     *,
     normalized_symbol: str,
@@ -628,26 +543,15 @@ async def _record_kis_mock_order(
         ledger_id = None
 
     if accepted:
+        # ROB-843 P1: an accepted order whose native row is NOT durable (write
+        # error, and no existing row from a conflict) is "sent but not tracked".
+        # We do NOT write a control row here (that shared the native write's
+        # failure mode). Instead the caller keeps the write-ahead reservation
+        # unresolved — a durable, restart-safe fail-close resolved only by
+        # reconciliation. Signal that state to the caller.
         native_durable = ledger_id is not None or await _native_row_exists(order_no)
         if not native_durable:
-            fallback_id = await _persist_tracking_fallback(
-                correlation_id=correlation_id,
-                side=side,
-                normalized_symbol=normalized_symbol,
-                market_type=market_type,
-            )
-            if fallback_id is None:
-                # Neither native nor fallback evidence persisted: degrade tracking
-                # DURABLY (survives restart) so the next order fail-closes; the
-                # process-local latch is a last resort if even the marker is lost.
-                ledger_tracking_unavailable = True
-                marker_id = await _persist_tracking_degradation_marker(
-                    correlation_id=correlation_id,
-                    side=side,
-                    market_type=market_type,
-                )
-                if marker_id is None:
-                    mark_ledger_tracking_unavailable()
+            ledger_tracking_unavailable = True
 
     # ROB-730: emit the place-time forecast only for accepted orders (mirrors
     # kis_live). publish_place_time_forecast is itself buy+target-gated and runs

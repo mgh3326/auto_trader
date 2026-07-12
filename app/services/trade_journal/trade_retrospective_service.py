@@ -34,6 +34,7 @@ from app.schemas.trade_retrospective import (
     IntendedVsHappened,
     NextAction,
 )
+from app.services.brokers.kis.mock_scalping_exec.ledger_state import real_order_filter
 
 # Sentinel: distinguishes "caller did not provide this field" (preserve on
 # upsert) from "caller explicitly set None" (clear the field).
@@ -1133,6 +1134,8 @@ async def build_retrospective_pending(
                 KISMockOrderLedger.lifecycle_state.in_(_KIS_MOCK_TERMINAL),
                 KISMockOrderLedger.trade_date >= window_start,
                 KISMockOrderLedger.trade_date <= window_end,
+                # ROB-843 P2: never retrospect a control/reservation row.
+                real_order_filter(),
             )
             .order_by(KISMockOrderLedger.trade_date.desc())
             .limit(_PENDING_LEDGER_FETCH_CAP)

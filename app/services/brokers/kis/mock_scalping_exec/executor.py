@@ -225,10 +225,13 @@ class MockScalpingExecutor:
             correlation_id=cid,
             confirm=confirm,
         )
-        # ROB-843 P1-1: the broker's final pre-send freshness re-check blocked the
-        # POST (book went stale/crossed after the risk gate). Zero broker calls,
-        # no fill, no ledger — surface as a clean blocked result.
-        if isinstance(buy, dict) and buy.get("pre_send_blocked"):
+        # ROB-843 P1: the broker refused to POST — either the final pre-send
+        # freshness re-check blocked it (book went stale/crossed after the risk
+        # gate) or the write-ahead durable reservation could not be recorded
+        # (POST 0). Zero broker calls, no fill, no ledger — surface as blocked.
+        if isinstance(buy, dict) and (
+            buy.get("pre_send_blocked") or buy.get("reservation_blocked")
+        ):
             return RoundTripResult(
                 correlation_id=cid,
                 status="blocked",

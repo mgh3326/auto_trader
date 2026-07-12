@@ -1189,128 +1189,42 @@ async def _record_accepted(monkeypatch, **over):
 
 @pytest.mark.asyncio
 async def test_record_native_conflict_requeries_existing_row(monkeypatch):
-    """ROB-843 P1-2: an on-conflict no-op with an existing native row is durable —
-    no fallback, tracking stays available, success preserved."""
+    """ROB-843 P1: an on-conflict no-op with an existing native row is durable —
+    tracking stays available, success preserved, and NO control row is written."""
     from app.mcp_server.tooling import kis_mock_ledger
-    from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
-        reset_ledger_tracking_state,
-    )
 
-    reset_ledger_tracking_state()
-    monkeypatch.setattr(
-        kis_mock_ledger, "_save_kis_mock_order_ledger", AsyncMock(return_value=None)
-    )
+    save = AsyncMock(return_value=None)  # on-conflict no-op
+    monkeypatch.setattr(kis_mock_ledger, "_save_kis_mock_order_ledger", save)
     monkeypatch.setattr(
         kis_mock_ledger, "_native_row_exists", AsyncMock(return_value=True)
     )
-    fallback = AsyncMock(return_value=1)
-    monkeypatch.setattr(kis_mock_ledger, "_persist_tracking_fallback", fallback)
-    try:
-        result = await _record_accepted(monkeypatch)
-        assert result["success"] is True
-        assert result["ledger_tracking_unavailable"] is False
-        fallback.assert_not_awaited()  # existing row is durable, no fallback
-    finally:
-        reset_ledger_tracking_state()
+    result = await _record_accepted(monkeypatch)
+    assert result["success"] is True
+    assert result["ledger_tracking_unavailable"] is False
+    # exactly one ledger write (the native insert) — no fallback/marker control row
+    assert save.await_count == 1
 
 
 @pytest.mark.asyncio
-async def test_record_native_error_writes_synthetic_fallback(monkeypatch):
-    """ROB-843 P1-2: a lost native write falls back to a durable evidence row;
-    tracking stays available and broker success is preserved."""
+async def test_record_native_error_signals_tracking_unavailable(monkeypatch):
+    """ROB-843 P1: a lost native write (and no conflict row) signals
+    ledger_tracking_unavailable so the caller KEEPS the write-ahead reservation
+    unresolved. Broker success is preserved and NO control row is written."""
     from app.mcp_server.tooling import kis_mock_ledger
     from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
         LedgerWriteError,
-        reset_ledger_tracking_state,
     )
 
-    reset_ledger_tracking_state()
-    monkeypatch.setattr(
-        kis_mock_ledger,
-        "_save_kis_mock_order_ledger",
-        AsyncMock(side_effect=LedgerWriteError("db down")),
-    )
+    save = AsyncMock(side_effect=LedgerWriteError("db down"))
+    monkeypatch.setattr(kis_mock_ledger, "_save_kis_mock_order_ledger", save)
     monkeypatch.setattr(
         kis_mock_ledger, "_native_row_exists", AsyncMock(return_value=False)
     )
-    fallback = AsyncMock(return_value=99)
-    monkeypatch.setattr(kis_mock_ledger, "_persist_tracking_fallback", fallback)
-    try:
-        result = await _record_accepted(monkeypatch)
-        assert result["success"] is True  # broker accepted; bookkeeping recovered
-        assert result["ledger_tracking_unavailable"] is False
-        fallback.assert_awaited_once()
-    finally:
-        reset_ledger_tracking_state()
-
-
-@pytest.mark.asyncio
-async def test_record_all_evidence_lost_persists_durable_marker(monkeypatch):
-    """ROB-843 P1-2: native AND fallback both fail → a DURABLE degradation marker
-    is persisted (survives restart); broker success stays true."""
-    from app.mcp_server.tooling import kis_mock_ledger
-    from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
-        LedgerWriteError,
-        reset_ledger_tracking_state,
-    )
-
-    reset_ledger_tracking_state()
-    monkeypatch.setattr(
-        kis_mock_ledger,
-        "_save_kis_mock_order_ledger",
-        AsyncMock(side_effect=LedgerWriteError("db down")),
-    )
-    monkeypatch.setattr(
-        kis_mock_ledger, "_native_row_exists", AsyncMock(return_value=False)
-    )
-    monkeypatch.setattr(
-        kis_mock_ledger, "_persist_tracking_fallback", AsyncMock(return_value=None)
-    )
-    marker = AsyncMock(return_value=123)  # durable marker persisted
-    monkeypatch.setattr(kis_mock_ledger, "_persist_tracking_degradation_marker", marker)
-    try:
-        result = await _record_accepted(monkeypatch)
-        assert result["success"] is True
-        assert result["ledger_tracking_unavailable"] is True
-        marker.assert_awaited_once()
-    finally:
-        reset_ledger_tracking_state()
-
-
-@pytest.mark.asyncio
-async def test_record_marker_lost_falls_back_to_process_latch(monkeypatch):
-    """ROB-843 P1-2: if even the durable marker cannot persist, the process-local
-    latch is set as a last resort so the next order still fail-closes."""
-    from app.mcp_server.tooling import kis_mock_ledger
-    from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
-        LedgerWriteError,
-        is_ledger_tracking_unavailable,
-        reset_ledger_tracking_state,
-    )
-
-    reset_ledger_tracking_state()
-    monkeypatch.setattr(
-        kis_mock_ledger,
-        "_save_kis_mock_order_ledger",
-        AsyncMock(side_effect=LedgerWriteError("db down")),
-    )
-    monkeypatch.setattr(
-        kis_mock_ledger, "_native_row_exists", AsyncMock(return_value=False)
-    )
-    monkeypatch.setattr(
-        kis_mock_ledger, "_persist_tracking_fallback", AsyncMock(return_value=None)
-    )
-    monkeypatch.setattr(
-        kis_mock_ledger,
-        "_persist_tracking_degradation_marker",
-        AsyncMock(return_value=None),
-    )
-    try:
-        result = await _record_accepted(monkeypatch)
-        assert result["ledger_tracking_unavailable"] is True
-        assert is_ledger_tracking_unavailable() is True
-    finally:
-        reset_ledger_tracking_state()
+    result = await _record_accepted(monkeypatch)
+    assert result["success"] is True  # broker accepted (bookkeeping failed)
+    assert result["ledger_tracking_unavailable"] is True
+    # only the failed native insert was attempted — no control-row write follows
+    assert save.await_count == 1
 
 
 @pytest.mark.asyncio
