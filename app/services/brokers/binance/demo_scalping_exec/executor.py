@@ -38,6 +38,7 @@ from app.services.brokers.binance.demo_scalping.contract import (
     DEMO_SCALPING_FEE_RATE_BPS,
     MarketConditions,
     Product,
+    ReasonCode,
     ScalpingRiskLimits,
     evaluate_risk,
 )
@@ -588,11 +589,23 @@ class DemoScalpingExecutor:
 
         ROB-315 0c / D4: the caller supplies the real ``market`` snapshot
         (spread + data age) so the ``SPREAD_TOO_WIDE`` / ``STALE_DATA`` gates
-        actually fire. When omitted the gates are inert (0/0) — the prior
-        behavior — so non-scheduler callers are unaffected."""
+        actually fire.
+
+        ROB-841: a missing snapshot now fails **closed** with
+        ``market_conditions_unavailable`` instead of synthesizing a 0/0
+        snapshot (which silently disarmed those gates). The fail-close returns
+        BEFORE the ledger read, so an unavailable snapshot touches neither
+        broker nor ledger."""
         # The spread@fill entry leg is the preflight spread (captured just
         # before the open). Reset per run so a blocked/early return is clean.
-        self._entry_spread_bps = market.spread_bps if market is not None else None
+        if market is None:
+            self._entry_spread_bps = None
+            return ExecutionResult(
+                intent=intent,
+                status="blocked",
+                reason_codes=(ReasonCode.MARKET_CONDITIONS_UNAVAILABLE,),
+            )
+        self._entry_spread_bps = market.spread_bps
         snapshot = await load_ledger_snapshot(
             self.ledger, product=intent.product, symbol=intent.symbol, now=self.now
         )
@@ -603,12 +616,7 @@ class DemoScalpingExecutor:
             target_notional_usdt=intent.target_notional_usdt,
             limits=self.limits,
             ledger=snapshot,
-            market=market
-            or MarketConditions(
-                spread_bps=Decimal("0"),
-                data_age_seconds=0.0,
-                spot_free_base_qty=Decimal("0"),
-            ),
+            market=market,
         )
         if not risk.allowed:
             return ExecutionResult(

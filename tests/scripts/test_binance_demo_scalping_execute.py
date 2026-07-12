@@ -79,6 +79,22 @@ class _FakeReference:
         return None
 
 
+def _canned_market_conditions():
+    from app.services.brokers.binance.demo_scalping.contract import MarketConditions
+
+    return MarketConditions(
+        spread_bps=Decimal("2"),
+        data_age_seconds=5.0,
+        spot_free_base_qty=Decimal("0"),
+    )
+
+
+async def _fake_build_market_conditions(market_data, **kwargs):
+    # ROB-841: the CLI now derives a server market snapshot before executing.
+    # Stub it so the wiring tests stay hermetic (no network).
+    return _canned_market_conditions()
+
+
 class _FakeResult:
     def __init__(self, status: str = "dry_run") -> None:
         self.status = status
@@ -91,7 +107,7 @@ class _FakeExecutor:
     def __init__(self, **kwargs) -> None:
         pass
 
-    async def execute(self, intent, *, confirm: bool):
+    async def execute(self, intent, *, confirm: bool, **kwargs):
         return _FakeResult("dry_run")
 
     async def execute_monitored(self, intent, *, confirm: bool, **kwargs):
@@ -116,6 +132,7 @@ def _patch_wiring(monkeypatch) -> None:
     monkeypatch.setattr(dbmod, "AsyncSessionLocal", lambda: _FakeSession())
     monkeypatch.setattr(refmod, "DemoReferenceData", _FakeReference)
     monkeypatch.setattr(mdmod, "DemoScalpingMarketData", _FakeReference)
+    monkeypatch.setattr(mdmod, "build_market_conditions", _fake_build_market_conditions)
     monkeypatch.setattr(exmod, "DemoScalpingExecutor", _FakeExecutor)
 
 
@@ -126,6 +143,7 @@ def test_enabled_dry_run_wiring_does_not_await_sync_from_env(
     # full _run wiring with fakes (no creds, no DB, no network). If someone
     # re-adds `await ...from_env()`, awaiting _FakeClient() raises and rc != 0.
     import app.core.db as dbmod
+    import app.services.brokers.binance.demo_scalping.market_data as mdmod
     import app.services.brokers.binance.demo_scalping_exec.executor as exmod
     import app.services.brokers.binance.demo_scalping_exec.reference as refmod
     from app.services.brokers.binance.spot_demo.execution_client import (
@@ -140,6 +158,8 @@ def test_enabled_dry_run_wiring_does_not_await_sync_from_env(
     )
     monkeypatch.setattr(dbmod, "AsyncSessionLocal", lambda: _FakeSession())
     monkeypatch.setattr(refmod, "DemoReferenceData", _FakeReference)
+    monkeypatch.setattr(mdmod, "DemoScalpingMarketData", _FakeReference)
+    monkeypatch.setattr(mdmod, "build_market_conditions", _fake_build_market_conditions)
     monkeypatch.setattr(exmod, "DemoScalpingExecutor", _FakeExecutor)
 
     rc = main(["--product", "spot", "--symbol", "DOGEUSDT"])

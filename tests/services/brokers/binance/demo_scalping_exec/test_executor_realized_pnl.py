@@ -35,6 +35,15 @@ from app.services.brokers.binance.demo_scalping_exec.reference import SymbolRefe
 # ---------------------------------------------------------------------------
 
 _NOW = dt.datetime(2026, 5, 25, 12, 0, 0, tzinfo=dt.UTC)
+
+# ROB-841: the executor fails closed without a server market snapshot; supply a
+# fresh, tight one for calls that are not themselves testing the market gates.
+_FRESH_MARKET = MarketConditions(
+    spread_bps=Decimal("2"),
+    data_age_seconds=5.0,
+    spot_free_base_qty=Decimal("0"),
+)
+
 _REF = SymbolReference(
     price=Decimal("100"),
     step_size=Decimal("0.1"),
@@ -172,7 +181,7 @@ async def test_close_row_carries_realized_pnl_open_row_does_not(db_session) -> N
         poll_delay_seconds=0.0,
     )
     result = await ex.execute_monitored(
-        _intent("RPNLWINUSDT"), confirm=True, max_poll_count=5
+        _intent("RPNLWINUSDT"), confirm=True, market=_FRESH_MARKET, max_poll_count=5
     )
     assert result.status == "reconciled"
 
@@ -213,7 +222,7 @@ async def test_losing_round_trip_feeds_daily_loss_budget_gate(db_session) -> Non
         poll_delay_seconds=0.0,
     )
     result = await ex.execute(
-        _intent("RPNLLOSSUSDT"), confirm=True
+        _intent("RPNLLOSSUSDT"), confirm=True, market=_FRESH_MARKET
     )  # immediate open+close
     assert result.status == "reconciled"
 

@@ -28,6 +28,15 @@ from app.services.brokers.binance.demo_scalping_exec.executor import (
 from app.services.brokers.binance.demo_scalping_exec.reference import SymbolReference
 
 _NOW = dt.datetime(2026, 5, 25, 12, 0, 0, tzinfo=dt.UTC)
+
+# ROB-841: the executor fails closed without a server market snapshot; supply a
+# fresh, tight one for calls that are not themselves testing the market gates.
+_FRESH_MARKET = MarketConditions(
+    spread_bps=Decimal("2"),
+    data_age_seconds=5.0,
+    spot_free_base_qty=Decimal("0"),
+)
+
 _REF = SymbolReference(
     price=Decimal("100"),
     step_size=Decimal("0.1"),
@@ -160,7 +169,7 @@ async def test_monitored_take_profit_writes_correct_analytics_row(db_session) ->
         poll_delay_seconds=0.0,
     )
     result = await ex.execute_monitored(
-        _intent("ANAFUTAUSDT"), confirm=True, max_poll_count=5
+        _intent("ANAFUTAUSDT"), confirm=True, market=_FRESH_MARKET, max_poll_count=5
     )
     assert result.status == "reconciled"
     assert result.exit_reason == "take_profit"
@@ -337,7 +346,7 @@ async def test_open_NEW_then_get_order_filled_uses_polled_entry_price(
         poll_delay_seconds=0.0,
     )
     result = await ex.execute_monitored(
-        _intent("POLLENTRYUSDT"), confirm=True, max_poll_count=5
+        _intent("POLLENTRYUSDT"), confirm=True, market=_FRESH_MARKET, max_poll_count=5
     )
     assert result.status == "reconciled"
     row = await ScalpTradeAnalyticsService(db_session).get_by_open_client_order_id(
@@ -368,7 +377,7 @@ async def test_close_NEW_then_get_order_filled_uses_polled_exit_price(
         poll_delay_seconds=0.0,
     )
     result = await ex.execute_monitored(
-        _intent("POLLEXITUSDT"), confirm=True, max_poll_count=5
+        _intent("POLLEXITUSDT"), confirm=True, market=_FRESH_MARKET, max_poll_count=5
     )
     assert result.status == "reconciled"
     row = await ScalpTradeAnalyticsService(db_session).get_by_open_client_order_id(
@@ -401,7 +410,7 @@ async def test_open_proven_by_position_without_price_records_partial_row(
         poll_delay_seconds=0.0,
     )
     result = await ex.execute_monitored(
-        _intent("NOPRICEUSDT"), confirm=True, max_poll_count=5
+        _intent("NOPRICEUSDT"), confirm=True, market=_FRESH_MARKET, max_poll_count=5
     )
     assert result.status == "reconciled"
     row = await ScalpTradeAnalyticsService(db_session).get_by_open_client_order_id(
@@ -565,7 +574,7 @@ async def test_dry_run_writes_no_analytics_row(db_session) -> None:
         poll_delay_seconds=0.0,
     )
     result = await ex.execute_monitored(
-        _intent("ANADRYUSDT"), confirm=False, max_poll_count=5
+        _intent("ANADRYUSDT"), confirm=False, market=_FRESH_MARKET, max_poll_count=5
     )
     assert result.status == "dry_run"
     # No open client order id on a dry run → no analytics row.

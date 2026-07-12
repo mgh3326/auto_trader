@@ -2034,3 +2034,30 @@ Each typed tool rejects any `account_mode` value other than its own pinned mode.
 ```
 
 With all mock vars missing, the `hermes-paper-kis` profile is effectively read-only KIS — the safe state for a misconfigured paper deployment.
+
+### Binance Demo scalping — server-derived market conditions (ROB-841)
+
+`binance_demo_scalping_submit_decision` (registered only when
+`settings.binance_demo_scalping_enabled` is true) accepts an LLM/MCP decision
+but **never** accepts caller-supplied spread or data-age. Before any risk check,
+the handler derives a `MarketConditions` snapshot **server-side** from the
+Demo-host bookTicker + latest 1m kline (`build_market_conditions`), and only that
+server-observed snapshot feeds the existing risk gates.
+
+- **Fail-closed**: if the bookTicker/kline provider fails, the kline is
+  empty/malformed, its timestamp is missing, or the quote is invalid (crossed or
+  non-positive), the tool returns `status="market_conditions_unavailable"` and
+  places **no order** — zero broker submit and zero ledger read/write. The
+  executor preflight also fails closed (`market_conditions_unavailable`) if a
+  caller omits the snapshot; the old `spread_bps=0`/`data_age_seconds=0`
+  synthesis (which silently disarmed the gates) is removed.
+- **Existing threshold reason codes are unchanged**: an over-threshold snapshot
+  is rejected as `stale_data` (`data_age_seconds > max_data_age_seconds`) or
+  `spread_too_wide` (`spread_bps > max_spread_bps`).
+- **Dry-run parity**: `dry_run=True` runs the same server-derived market/risk
+  preflight and returns the same judgment (`planned` / `blocked` /
+  `market_conditions_unavailable`, plus the observed `market_conditions`), but
+  performs no broker mutation and inserts no ledger row. A real Demo order still
+  requires `dry_run=false` **and** `confirm=true`.
+- Demo-host allowlist, notional/daily-loss/cooldown caps, and the broker-native
+  ledger/reconcile contract are unchanged.
