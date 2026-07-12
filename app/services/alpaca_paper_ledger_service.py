@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -247,6 +247,23 @@ class SubmitClaim:
     """
 
     won: bool
+    row: AlpacaPaperOrderLedger | None
+
+
+@dataclass
+class SellReservationClaim:
+    """Result of an advisory-locked sell reservation + atomic claim.
+
+    won:          True if this caller inserted the execution claim row.
+    insufficient: True if the requested qty exceeds the reservation-adjusted
+                  available position (no claim attempted); ``available`` is set.
+    available:    position qty minus already-reserved open sell qty (Decimal).
+    row:          the execution row for the client_order_id (for replay lookups).
+    """
+
+    won: bool
+    insufficient: bool
+    available: Decimal | None
     row: AlpacaPaperOrderLedger | None
 
 
@@ -504,6 +521,115 @@ class AlpacaPaperLedgerService:
         self._db.expire_all()
         row = await self._find_execution_row(client_order_id)
         return SubmitClaim(won=inserted_id is not None, row=row)
+
+    async def reserve_sell_and_claim(
+        self,
+        *,
+        client_order_id: str,
+        lifecycle_correlation_id: str | None = None,
+        execution_symbol: str,
+        execution_venue: str,
+        instrument_type: InstrumentType,
+        account_mode: str = "alpaca_paper",
+        requested_qty: Decimal,
+        position_qty: Decimal,
+        order_type: str = "limit",
+        time_in_force: str | None = None,
+        requested_price: Decimal | float | None = None,
+        currency: str = "USD",
+        preview_payload: dict[str, Any] | None = None,
+        provenance: ApprovalProvenance | None = None,
+    ) -> SellReservationClaim:
+        """Atomically reserve sellable qty and claim the submit under one lock.
+
+        Serializes concurrent sells for the same ``(account_mode, execution_symbol)``
+        across sessions/processes via a transaction-scoped PostgreSQL advisory lock,
+        so two *different* sell intents cannot each read the full position and both
+        POST. Within the lock: available = position_qty − Σ(open sell requested_qty
+        already reserved for this symbol/account) and, only if the request fits,
+        inserts the execution claim row (ON CONFLICT DO NOTHING). The inserted claim
+        itself counts as a reservation for the next caller. No new schema.
+        """
+        if not client_order_id or not client_order_id.strip():
+            raise ValueError("client_order_id must not be empty")
+
+        prov = provenance or ApprovalProvenance()
+        correlation_id = lifecycle_correlation_id or client_order_id
+        lock_key = f"alpaca_paper_sell:{account_mode}:{execution_symbol}"
+
+        # Transaction-scoped advisory lock (released on commit/rollback).
+        await self._db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": lock_key}
+        )
+
+        reserved_stmt = select(
+            func.coalesce(func.sum(AlpacaPaperOrderLedger.requested_qty), 0)
+        ).where(
+            AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
+            AlpacaPaperOrderLedger.side == "sell",
+            AlpacaPaperOrderLedger.execution_symbol == execution_symbol,
+            AlpacaPaperOrderLedger.account_mode == account_mode,
+            AlpacaPaperOrderLedger.lifecycle_state.in_(
+                [LIFECYCLE_SUBMITTED, LIFECYCLE_FILLED]
+            ),
+            AlpacaPaperOrderLedger.client_order_id != client_order_id,
+        )
+        reserved_raw = (await self._db.execute(reserved_stmt)).scalar_one()
+        reserved = Decimal(str(reserved_raw or 0))
+        available = Decimal(str(position_qty)) - reserved
+
+        if requested_qty > available:
+            # No write yet — end the txn to release the advisory lock immediately.
+            await self._db.rollback()
+            self._db.expire_all()
+            existing = await self._find_execution_row(client_order_id)
+            return SellReservationClaim(
+                won=False, insufficient=True, available=available, row=existing
+            )
+
+        values: dict[str, Any] = {
+            "client_order_id": client_order_id,
+            "lifecycle_correlation_id": correlation_id,
+            "record_kind": RECORD_KIND_EXECUTION,
+            "broker": "alpaca",
+            "account_mode": account_mode,
+            "lifecycle_state": LIFECYCLE_SUBMITTED,
+            "execution_symbol": execution_symbol,
+            "execution_venue": execution_venue,
+            "instrument_type": instrument_type,
+            "side": "sell",
+            "order_type": order_type,
+            "time_in_force": time_in_force,
+            "requested_qty": requested_qty,
+            "requested_price": requested_price,
+            "currency": currency,
+            "preview_payload": _redact_sensitive_keys(preview_payload)
+            if preview_payload
+            else None,
+            "broker_order_id": None,
+            "submitted_at": None,
+            "confirm_flag": True,
+            **self._build_provenance_values(prov),
+        }
+        stmt = (
+            pg_insert(AlpacaPaperOrderLedger)
+            .values(**values)
+            .on_conflict_do_nothing(
+                index_elements=["client_order_id", "record_kind"],
+                index_where=text("validation_attempt_no IS NULL"),
+            )
+            .returning(AlpacaPaperOrderLedger.id)
+        )
+        inserted_id = (await self._db.execute(stmt)).scalar_one_or_none()
+        await self._db.commit()  # releases the advisory lock
+        self._db.expire_all()
+        row = await self._find_execution_row(client_order_id)
+        return SellReservationClaim(
+            won=inserted_id is not None,
+            insufficient=False,
+            available=available,
+            row=row,
+        )
 
     async def _find_execution_row(
         self, client_order_id: str
@@ -1343,6 +1469,7 @@ __all__ = [
     "RECORD_KIND_PREVIEW",
     "RECORD_KIND_RECONCILE",
     "RECORD_KIND_VALIDATION_ATTEMPT",
+    "SellReservationClaim",
     "SubmitClaim",
     "_derive_lifecycle_state",
     "_redact_sensitive_keys",

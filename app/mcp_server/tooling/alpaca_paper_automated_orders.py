@@ -33,17 +33,17 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
-from app.mcp_server.tooling.alpaca_paper_preview import (
-    ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD,
-    PreviewOrderInput,
-)
-from app.models.market_quote_snapshot import MarketQuoteSnapshot
+from app.mcp_server.tooling.alpaca_paper_preview import PreviewOrderInput
 from app.models.trading import InstrumentType
 from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+from app.services.alpaca_paper_market_evidence import (
+    MarketEvidenceError,
+    hard_notional_cap,
+    load_market_evidence,
+)
 from app.services.alpaca_paper_submit_service import (
     AlpacaPaperSubmitCoordinator,
     SubmitOutcome,
@@ -52,10 +52,6 @@ from app.services.alpaca_paper_submit_service import (
     derive_automated_key,
 )
 from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
-from app.services.crypto_execution_mapping import (
-    CryptoExecutionMappingError,
-    map_upbit_to_alpaca_paper,
-)
 from app.services.paper_approval_packet import (
     PaperApprovalPacket,
     PaperApprovalPacketError,
@@ -63,11 +59,6 @@ from app.services.paper_approval_packet import (
     verify_packet_freshness,
     verify_packet_market_data,
 )
-
-# Server hard-cap policy ceiling for an automated per-order notional (never
-# caller-supplied). Equity uses the ROB-73 strict cap; crypto the narrow $50 cap.
-_HARD_NOTIONAL_CAP_USD = Decimal("1000")
-_HARD_EQUITY_MAX_QTY = Decimal("5")
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -153,55 +144,6 @@ def _rejected(coid: str | None, code: str, message: str) -> dict[str, Any]:
     }
 
 
-def _hard_ceiling(
-    validated: PreviewOrderInput,
-) -> tuple[Decimal | None, Decimal | None]:
-    """Server policy ceiling (never caller-supplied) for an automated order."""
-    hard_notional = (
-        ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD
-        if validated.asset_class == "crypto"
-        else _HARD_NOTIONAL_CAP_USD
-    )
-    if validated.side == "sell":
-        # Sell ceiling authority is the live position (checked at submit); the
-        # packet's max_qty mirrors the intent so order-within passes.
-        return None, validated.qty if validated.qty is not None else Decimal("0")
-    if validated.notional is not None or validated.limit_price is not None:
-        return hard_notional, None
-    if validated.qty is not None:
-        return None, _HARD_EQUITY_MAX_QTY
-    return hard_notional, None
-
-
-def _snapshot_content_hash(snap: MarketQuoteSnapshot) -> str:
-    blob = "|".join(
-        str(x)
-        for x in (
-            snap.id,
-            snap.market,
-            snap.symbol,
-            snap.source,
-            snap.snapshot_at.isoformat(),
-            snap.price,
-        )
-    ).encode("utf-8")
-    return hashlib.sha256(blob).hexdigest()[:16]
-
-
-def _snapshot_matches_order(
-    snap: MarketQuoteSnapshot, validated: PreviewOrderInput
-) -> bool:
-    if validated.asset_class == "crypto":
-        if snap.market != "crypto":
-            return False
-        try:
-            mapping = map_upbit_to_alpaca_paper(snap.symbol)
-        except CryptoExecutionMappingError:
-            return False
-        return mapping.execution_symbol == validated.symbol
-    return snap.market == "us" and (snap.symbol or "").upper() == validated.symbol
-
-
 async def alpaca_paper_automated_preview_order(
     symbol: str,
     side: str,
@@ -218,10 +160,12 @@ async def alpaca_paper_automated_preview_order(
 
     The caller supplies ONLY the order intent plus an opaque, server-issued
     ``quote_snapshot_id`` referencing a trusted ``market_quote_snapshots`` row.
-    Identity (correlation/snapshot), market provenance (as-of/source) and the
-    signal symbol are loaded from that trusted artifact — never from the caller —
-    and the ceiling is the server hard-cap policy. A missing / stale / symbol-
-    mismatched snapshot fails closed before any packet is built. Returns an
+    Identity (correlation/snapshot), market provenance (as-of/source), the signal
+    symbol and the trusted reference price are loaded from that artifact — never
+    from the caller — and the ceiling is the server hard-cap policy. A missing /
+    stale / symbol-mismatched / non-finite-priced snapshot fails closed before any
+    packet is built. Automated SELL is explicitly disabled until ROB-845 wires an
+    opaque buy/position source (see reason ``automated_sell_disabled``). Returns an
     ``approval_token`` bound to the persisted packet. No broker call.
     """
     if not _enabled():
@@ -240,6 +184,16 @@ async def alpaca_paper_automated_preview_order(
         asset_class=asset_class,
     )
 
+    # ROB-842 F6: automated sell needs an opaque buy/position source identity that
+    # is not the quote-snapshot correlation. Until ROB-845 provides it, fail closed
+    # with a stable reason rather than a nominally-enabled always-missing-source.
+    if validated.side == "sell":
+        return _rejected(
+            None,
+            "automated_sell_disabled",
+            "automated sell is disabled until ROB-845 wires an opaque buy/position source",
+        )
+
     canonical = build_canonical_payload(
         symbol=validated.symbol,
         side=validated.side,
@@ -253,47 +207,22 @@ async def alpaca_paper_automated_preview_order(
 
     now = datetime.now(UTC)
     async with _session_factory()() as db:
-        snap = (
-            await db.execute(
-                select(MarketQuoteSnapshot).where(
-                    MarketQuoteSnapshot.id == int(quote_snapshot_id)
-                )
+        try:
+            evidence = await load_market_evidence(
+                db,
+                quote_snapshot_id,
+                execution_symbol=validated.symbol,
+                asset_class=validated.asset_class,
+                now=now,
+                max_age=_QUOTE_MAX_AGE,
             )
-        ).scalar_one_or_none()
+        except MarketEvidenceError as exc:
+            return _rejected(None, exc.code, str(exc))
 
-        if snap is None:
-            return _rejected(
-                None, "no_trusted_snapshot", "no trusted market snapshot for reference"
-            )
-        if not _snapshot_matches_order(snap, validated):
-            return _rejected(
-                None,
-                "snapshot_symbol_mismatch",
-                f"trusted snapshot symbol {snap.symbol!r} does not map to order {validated.symbol!r}",
-            )
-        asof = snap.snapshot_at
-        if asof.tzinfo is None:
-            asof = asof.replace(tzinfo=UTC)
-        if now - asof > _QUOTE_MAX_AGE:
-            return _rejected(
-                None,
-                "stale_trusted_snapshot",
-                f"trusted snapshot as-of {asof.isoformat()} is stale",
-            )
-
-        # --- Server-owned identity + provenance derived from the trusted row ---
-        content_hash = _snapshot_content_hash(snap)
-        correlation_id = f"rob842dec-{content_hash}"
-        packet_snapshot_id = f"qs{snap.id}-{content_hash}"
-        signal_symbol = snap.symbol
-        max_notional, max_qty = _hard_ceiling(validated)
-        qty_source = (
-            "ledger_filled_qty" if validated.side == "sell" else "notional_estimate"
-        )
-
+        max_notional = hard_notional_cap(validated.asset_class)
         coid = derive_automated_key(
-            correlation_id=correlation_id,
-            snapshot_id=packet_snapshot_id,
+            correlation_id=evidence.correlation_id,
+            snapshot_id=evidence.snapshot_id,
             canonical=canonical,
         )
 
@@ -301,32 +230,33 @@ async def alpaca_paper_automated_preview_order(
             packet = PaperApprovalPacket(
                 signal_source="automated_preview",
                 artifact_id=uuid.uuid4(),
-                signal_symbol=signal_symbol,
+                signal_symbol=evidence.signal_symbol,
                 signal_venue="upbit",
                 execution_symbol=validated.symbol,
                 execution_venue="alpaca_paper",
                 execution_asset_class=validated.asset_class,
                 side=validated.side,
                 max_notional=max_notional,
-                max_qty=max_qty,
-                qty_source=qty_source,
+                max_qty=None,
+                qty_source="notional_estimate",
                 expected_lifecycle_step="previewed",
-                lifecycle_correlation_id=correlation_id,
+                lifecycle_correlation_id=evidence.correlation_id,
                 client_order_id=coid,
                 expires_at=now + timedelta(seconds=max(1, int(valid_for_seconds))),
                 account_mode="alpaca_paper",
                 origin="automated",
-                market_data_asof=asof,
-                market_data_source=snap.source,
+                market_data_asof=evidence.market_data_asof,
+                market_data_source=evidence.market_data_source,
                 preview_payload_hash=canonical_hash(canonical),
-                snapshot_id=packet_snapshot_id,
+                snapshot_id=evidence.snapshot_id,
                 execution_order_type=validated.type,
                 execution_time_in_force=validated.time_in_force,
+                reference_price=evidence.price,
             )
         except ValueError as exc:
             return _rejected(coid, "invalid_packet", str(exc))
 
-        # Fail-close market-data + order-authority (ceiling) checks at preview.
+        # Fail-close market-data + order-authority (trusted-price notional) checks.
         try:
             verify_packet_market_data(packet, now=now, max_age=_QUOTE_MAX_AGE)
             verify_order_within_packet(packet, canonical)
@@ -335,20 +265,18 @@ async def alpaca_paper_automated_preview_order(
 
         packet_dict = packet.model_dump(mode="json")
         provenance = {
-            "quote_snapshot_id": snap.id,
-            "snapshot_content_hash": content_hash,
-            "market_data_source": snap.source,
-            "policy_max_notional": str(max_notional)
-            if max_notional is not None
-            else None,
-            "policy_max_qty": str(max_qty) if max_qty is not None else None,
+            "quote_snapshot_id": evidence.quote_snapshot_id,
+            "snapshot_content_hash": evidence.content_hash,
+            "market_data_source": evidence.market_data_source,
+            "reference_price": str(evidence.price),
+            "policy_max_notional": str(max_notional),
             "packet_hash": _packet_hash(packet_dict),
         }
 
         ledger = AlpacaPaperLedgerService(db)
         await ledger.record_preview(
             client_order_id=coid,
-            lifecycle_correlation_id=correlation_id,
+            lifecycle_correlation_id=evidence.correlation_id,
             execution_symbol=validated.symbol,
             execution_venue="alpaca_paper",
             instrument_type=_instrument_type_for(validated.asset_class),
@@ -365,6 +293,26 @@ async def alpaca_paper_automated_preview_order(
             },
         )
 
+        # ROB-842 F7: record_preview is ON CONFLICT DO NOTHING, so on a duplicate
+        # token this call kept the ORIGINAL persisted packet. Re-read it and answer
+        # from the persisted expiry/hash — never the locally-rebuilt values.
+        db.expire_all()
+        persisted = await ledger.get_preview_by_client_order_id(coid)
+        stored = (persisted.preview_payload or {}) if persisted is not None else {}
+        stored_packet = (
+            stored.get("approval_packet") if isinstance(stored, dict) else None
+        )
+        stored_prov = stored.get("provenance") if isinstance(stored, dict) else None
+        expires_at = (
+            stored_packet.get("expires_at")
+            if isinstance(stored_packet, dict)
+            else packet.expires_at.isoformat()
+        )
+        response_prov = stored_prov if isinstance(stored_prov, dict) else provenance
+        stored_canonical = (
+            stored.get("canonical") if isinstance(stored, dict) else canonical
+        )
+
     return {
         "success": True,
         "account_mode": "alpaca_paper",
@@ -373,9 +321,11 @@ async def alpaca_paper_automated_preview_order(
         "preview": True,
         "approval_token": coid,
         "client_order_id": coid,
-        "expires_at": packet.expires_at.isoformat(),
-        "order_request": canonical,
-        "provenance": provenance,
+        "expires_at": expires_at,
+        "order_request": stored_canonical
+        if isinstance(stored_canonical, dict)
+        else canonical,
+        "provenance": response_prov,
     }
 
 
@@ -451,7 +401,7 @@ async def alpaca_paper_automated_submit_order(
 
 def _outcome_to_result(outcome: SubmitOutcome) -> dict[str, Any]:
     return {
-        "success": outcome.status != "rejected",
+        "success": outcome.success,
         "account_mode": "alpaca_paper",
         "source": "alpaca_paper",
         "submitted": outcome.submitted,
@@ -468,11 +418,15 @@ def register_alpaca_paper_automated_orders_tools(mcp: FastMCP) -> None:
     _ = mcp.tool(
         name="alpaca_paper_automated_preview_order",
         description=(
-            "Automated Alpaca PAPER preview: server builds and persists the approval "
-            "packet (server-owned decision identity + preview hash + market-data "
-            "as-of) and returns an approval_token. No broker call. Requires "
-            "correlation_id, snapshot_id, market_data_asof, market_data_source, and "
-            "exactly one approved ceiling (max_notional or max_qty)."
+            "Automated Alpaca PAPER preview (buy only; automated sell is disabled "
+            "until ROB-845). The caller passes ONLY the order intent plus an opaque, "
+            "server-issued quote_snapshot_id (a trusted market_quote_snapshots row). "
+            "The server loads identity (correlation/snapshot), market-data as-of/"
+            "source, signal symbol and the trusted reference price from that row, "
+            "sets the ceiling from hard-cap policy, persists the packet, and returns "
+            "an approval_token. No broker call. A missing / stale / symbol-mismatched "
+            "/ non-finite-priced snapshot fails closed. There is NO caller-supplied "
+            "correlation, snapshot, market-data, ceiling, origin, or client_order_id."
         ),
     )(alpaca_paper_automated_preview_order)
     _ = mcp.tool(

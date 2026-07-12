@@ -27,6 +27,11 @@ from app.mcp_server.tooling.alpaca_paper_preview import (
     PreviewOrderInput,
 )
 from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+from app.services.alpaca_paper_market_evidence import (
+    MarketEvidence,
+    MarketEvidenceError,
+    load_market_evidence,
+)
 from app.services.alpaca_paper_submit_service import (
     AlpacaPaperSubmitCoordinator,
     build_canonical_payload,
@@ -51,6 +56,7 @@ SUBMIT_MAX_NOTIONAL_USD: Decimal = Decimal("1000")
 ORDER_ID_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 ORDER_ID_RESERVED_VALUES = frozenset({"all", "order", "orders", "bulk", "cancel"})
 _MANUAL_PACKET_TTL_SECONDS = 120
+_MANUAL_QUOTE_MAX_AGE = timedelta(minutes=5)
 
 ServiceFactory = Callable[[], AlpacaPaperBrokerService]
 SessionFactory = Callable[[], async_sessionmaker[AsyncSession]]
@@ -151,9 +157,17 @@ def _manual_ceiling(
 
 
 def _build_manual_packet(
-    validated: PreviewOrderInput, canonical: dict[str, Any], coid: str
+    validated: PreviewOrderInput,
+    canonical: dict[str, Any],
+    coid: str,
+    evidence: MarketEvidence,
 ) -> PaperApprovalPacket:
-    """Server-built manual operator packet (origin='manual', server-derived key)."""
+    """Server-built manual operator packet (origin='manual', server-derived key).
+
+    Carries server-observed market evidence (as-of/source/reference price) from a
+    trusted snapshot, so the coordinator applies the same market/order checks it
+    applies to automated submits — no origin-based bypass.
+    """
     if validated.asset_class == "crypto":
         signal_symbol = map_alpaca_paper_to_upbit(validated.symbol)
     else:
@@ -177,9 +191,12 @@ def _build_manual_packet(
         expires_at=datetime.now(UTC) + timedelta(seconds=_MANUAL_PACKET_TTL_SECONDS),
         account_mode="alpaca_paper",
         origin="manual",
+        market_data_asof=evidence.market_data_asof,
+        market_data_source=evidence.market_data_source,
         preview_payload_hash=canonical_hash(canonical),
         execution_order_type=validated.type,
         execution_time_in_force=validated.time_in_force,
+        reference_price=evidence.price,
     )
 
 
@@ -187,6 +204,7 @@ async def alpaca_paper_submit_order(
     symbol: str,
     side: str,
     type: str,  # noqa: A002
+    quote_snapshot_id: int | None = None,
     qty: Decimal | None = None,
     notional: Decimal | None = None,
     time_in_force: str | None = None,
@@ -200,12 +218,14 @@ async def alpaca_paper_submit_order(
 
     This is the MANUAL operator tool. It carries no caller-selectable origin,
     client_order_id, or claim mode: the idempotency key is server-derived from the
-    canonical order. When ``confirm=True`` the real broker POST is routed through
-    the SAME durable packet + ledger atomic-claim coordinator as the automated
-    path (ROB-842) — duplicate manual intents POST exactly once, a deterministic
-    broker rejection is terminal, and an uncertain outcome is reconciled, never
-    re-POSTed. There is no direct-POST fallback and this behaviour does not depend
-    on the automated feature flag.
+    canonical order. ``confirm=True`` requires an opaque, server-issued
+    ``quote_snapshot_id`` (a trusted ``market_quote_snapshots`` row) so the real
+    broker POST — routed through the SAME durable packet + ledger atomic-claim
+    coordinator as the automated path — is validated against server-observed
+    market evidence and (for sells) the live position. Duplicate manual intents
+    POST exactly once, a deterministic broker rejection is terminal, and an
+    uncertain outcome is reconciled — never re-POSTed. There is no direct-POST
+    fallback and this behaviour does not depend on the automated feature flag.
     """
     validated = PreviewOrderInput(
         symbol=symbol,
@@ -259,15 +279,50 @@ async def alpaca_paper_submit_order(
             "client_order_id": coid,
         }
 
-    # confirm=True — route the real broker POST through the durable boundary.
-    packet = _build_manual_packet(validated, canonical, coid)
+    # confirm=True — route the real broker POST through the durable boundary. A
+    # server-observed market snapshot is REQUIRED (no origin bypass of market
+    # evidence).
+    if quote_snapshot_id is None:
+        return {
+            "success": False,
+            "account_mode": "alpaca_paper",
+            "source": "alpaca_paper",
+            "submitted": False,
+            "status": "rejected",
+            "reason_code": "missing_market_evidence",
+            "client_order_id": coid,
+            "message": "confirm=True requires a trusted quote_snapshot_id",
+        }
+
+    now = datetime.now(UTC)
     async with _session_factory()() as db:
+        try:
+            evidence = await load_market_evidence(
+                db,
+                quote_snapshot_id,
+                execution_symbol=validated.symbol,
+                asset_class=validated.asset_class,
+                now=now,
+                max_age=_MANUAL_QUOTE_MAX_AGE,
+            )
+        except MarketEvidenceError as exc:
+            return {
+                "success": False,
+                "account_mode": "alpaca_paper",
+                "source": "alpaca_paper",
+                "submitted": False,
+                "status": "rejected",
+                "reason_code": exc.code,
+                "client_order_id": coid,
+                "message": str(exc),
+            }
+        packet = _build_manual_packet(validated, canonical, coid, evidence)
         ledger = AlpacaPaperLedgerService(db)
         coordinator = AlpacaPaperSubmitCoordinator(ledger, _service_factory)
         outcome = await coordinator.submit(packet, submit_canonical=canonical)
 
     return {
-        "success": outcome.status != "rejected",
+        "success": outcome.success,
         "account_mode": "alpaca_paper",
         "source": "alpaca_paper",
         "submitted": outcome.submitted,
@@ -324,15 +379,18 @@ def register_alpaca_paper_orders_tools(mcp: FastMCP) -> None:
         description=(
             "MANUAL operator submit for a single Alpaca PAPER us_equity or narrow "
             "crypto order. Defaults to confirm=False which validates and returns "
-            "the request WITHOUT calling the broker. confirm=True routes the real "
-            "POST through the SAME server-owned packet + ledger atomic-claim "
-            "coordinator as the automated path: duplicate intents POST exactly "
-            "once, a deterministic broker rejection is terminal, an uncertain "
-            "outcome is reconciled (never re-POSTed). The idempotency key is "
-            "server-derived — there is no caller client_order_id or origin. Paper "
-            "endpoint only; live endpoint cannot be selected. Strict caps: "
-            "us_equity qty<=5/notional<=$1000/qty*limit_price<=$1000; crypto is "
-            "buy/sell limit-only, allowlisted, and capped at $50."
+            "the request WITHOUT calling the broker. confirm=True REQUIRES an "
+            "opaque, server-issued quote_snapshot_id (a trusted market_quote_"
+            "snapshots row) and routes the real POST through the SAME server-owned "
+            "packet + ledger atomic-claim coordinator as the automated path: market "
+            "evidence + (for sells) the live position are verified, duplicate "
+            "intents POST exactly once, a deterministic broker rejection is "
+            "terminal, and an uncertain outcome is reconciled (never re-POSTed). "
+            "The idempotency key is server-derived — there is no caller "
+            "client_order_id or origin. Paper endpoint only; live endpoint cannot "
+            "be selected. Strict caps: us_equity qty<=5/notional<=$1000/"
+            "qty*limit_price<=$1000; crypto is buy/sell limit-only, allowlisted, "
+            "and capped at $50."
         ),
     )(alpaca_paper_submit_order)
     _ = mcp.tool(

@@ -85,6 +85,9 @@ class CountingBroker:
         self.lookup_calls.append(client_order_id)
         return self._lookup_order
 
+    async def get_position(self, symbol: str) -> Any:
+        return None
+
 
 def _canonical(limit_price: str = "50000") -> dict[str, Any]:
     return build_canonical_payload(
@@ -230,7 +233,8 @@ async def test_caller_supplied_id_cannot_bypass_server_key(db_session):
     assert broker.submit_calls == []
 
 
-async def test_sell_packet_without_source_rejected_before_broker(db_session):
+async def test_sell_without_current_position_rejected_before_broker(db_session):
+    # No live position (broker.get_position -> None) => fail closed before POST.
     broker = CountingBroker()
     canonical = build_canonical_payload(
         symbol="BTC/USD",
@@ -255,7 +259,7 @@ async def test_sell_packet_without_source_rejected_before_broker(db_session):
     outcome = await coord.submit(packet, submit_canonical=canonical)
 
     assert outcome.status == "rejected"
-    assert outcome.reason_code == "missing_source_order"
+    assert outcome.reason_code == "position_flat"
     assert broker.submit_calls == []
 
 

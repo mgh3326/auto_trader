@@ -7,6 +7,8 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
+from sqlalchemy import delete
 
 from app.mcp_server.tooling.alpaca_paper import (
     reset_alpaca_paper_service_factory,
@@ -16,6 +18,33 @@ from app.mcp_server.tooling.alpaca_paper_orders import (
     reset_alpaca_paper_orders_service_factory,
     set_alpaca_paper_orders_service_factory,
 )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_smoke_rows():
+    """The smoke side-effect submit now persists a snapshot + a durable manual
+    claim; keep the deterministic manual keys and smoke snapshots clean."""
+    from app.core.db import AsyncSessionLocal
+    from app.models.market_quote_snapshot import MarketQuoteSnapshot
+    from app.models.review import AlpacaPaperOrderLedger
+
+    led = delete(AlpacaPaperOrderLedger).where(
+        AlpacaPaperOrderLedger.client_order_id.like("rob73-%")
+        | AlpacaPaperOrderLedger.client_order_id.like("rob74-crypto-%")
+    )
+    snap = delete(MarketQuoteSnapshot).where(
+        MarketQuoteSnapshot.symbol.in_(["AAPL", "KRW-BTC"])
+    )
+    async with AsyncSessionLocal() as db:
+        await db.execute(led)
+        await db.execute(snap)
+        await db.commit()
+    yield
+    async with AsyncSessionLocal() as db:
+        await db.execute(led)
+        await db.execute(snap)
+        await db.commit()
+
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[1]

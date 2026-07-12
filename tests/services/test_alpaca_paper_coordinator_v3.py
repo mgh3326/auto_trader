@@ -205,7 +205,7 @@ async def test_sell_blocked_when_qty_exceeds_current_position(db_session):
     outcome = await coord.submit(packet, submit_canonical=canonical)
 
     assert outcome.status == "rejected"
-    assert outcome.reason_code == "qty_exceeds_position"
+    assert outcome.reason_code == "qty_exceeds_available"
     assert broker.submit_calls == []
 
 

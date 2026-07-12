@@ -29,6 +29,7 @@ from app.mcp_server.tooling.alpaca_paper_automated_orders import (
 )
 from app.models.market_quote_snapshot import MarketQuoteSnapshot
 from app.models.review import AlpacaPaperOrderLedger
+from app.services.brokers.alpaca.exceptions import AlpacaPaperRequestError
 from app.services.brokers.alpaca.schemas import Order
 
 pytestmark = [pytest.mark.asyncio]
@@ -313,3 +314,112 @@ async def test_module_exposes_gate_and_factory_controls() -> None:
         "alpaca_paper_automated_preview_order",
         "alpaca_paper_automated_submit_order",
     }
+
+
+# ---------------------------------------------------------------------------
+# F4 — trusted price × qty must not bypass the $1,000 hard cap
+# ---------------------------------------------------------------------------
+async def test_preview_market_qty_bypass_of_hard_cap_fails_close(broker):
+    # equity MARKET qty=5 at trusted price 100,000 => $500,000 implied notional.
+    sid = await _seed_snapshot(
+        market="us", symbol="AAPL", source="yahoo", price="100000"
+    )
+    result = await alpaca_paper_automated_preview_order(
+        symbol="AAPL",
+        side="buy",
+        type="market",
+        quote_snapshot_id=sid,
+        qty=Decimal("5"),
+        asset_class="us_equity",
+    )
+    assert result["success"] is False
+    assert result["reason_code"] == "notional_exceeds_max"
+
+
+async def test_preview_rejects_non_finite_snapshot_price(broker):
+    # A snapshot with a non-positive/zero price is not usable evidence.
+    sid = await _seed_snapshot(market="us", symbol="AAPL", source="yahoo", price="0")
+    result = await alpaca_paper_automated_preview_order(
+        symbol="AAPL",
+        side="buy",
+        type="market",
+        quote_snapshot_id=sid,
+        qty=Decimal("1"),
+        asset_class="us_equity",
+    )
+    assert result["success"] is False
+    assert result["reason_code"] == "invalid_snapshot_price"
+
+
+# ---------------------------------------------------------------------------
+# F6 — automated sell is explicitly disabled until ROB-845
+# ---------------------------------------------------------------------------
+async def test_automated_sell_is_explicitly_disabled(broker):
+    sid = await _seed_snapshot()
+    result = await alpaca_paper_automated_preview_order(
+        symbol="BTC/USD",
+        side="sell",
+        type="limit",
+        quote_snapshot_id=sid,
+        qty=Decimal("0.0001"),
+        limit_price=Decimal("50000"),
+        time_in_force="gtc",
+        asset_class="crypto",
+    )
+    assert result["success"] is False
+    assert result["reason_code"] == "automated_sell_disabled"
+
+
+# ---------------------------------------------------------------------------
+# F7 — a duplicate-token preview answers from the persisted packet
+# ---------------------------------------------------------------------------
+async def test_duplicate_preview_returns_persisted_expiry(broker):
+    sid = await _seed_snapshot()
+    first = await alpaca_paper_automated_preview_order(
+        **_crypto_intent(sid, valid_for_seconds=300)
+    )
+    # A second preview of the SAME trusted decision must echo the ORIGINAL
+    # persisted expiry/hash, not a locally rebuilt one.
+    second = await alpaca_paper_automated_preview_order(
+        **_crypto_intent(sid, valid_for_seconds=999)
+    )
+    assert first["approval_token"] == second["approval_token"]
+    assert second["expires_at"] == first["expires_at"]
+    assert second["provenance"]["packet_hash"] == first["provenance"]["packet_hash"]
+
+
+# ---------------------------------------------------------------------------
+# F3 — public success contract at the handler (422 => success=false, replay)
+# ---------------------------------------------------------------------------
+class _RaisingBroker(CountingBroker):
+    def __init__(self, exc: Exception) -> None:
+        super().__init__()
+        self._exc = exc
+
+    async def submit_order(self, request):  # type: ignore[override]
+        self.submit_calls.append(request)
+        raise self._exc
+
+
+async def test_handler_http_422_success_false_and_terminal_replay(monkeypatch):
+    monkeypatch.setattr(settings, "alpaca_paper_automated_submit_enabled", True)
+    raising = _RaisingBroker(AlpacaPaperRequestError("bad", status_code=422))
+    set_alpaca_paper_automated_factories(
+        session_factory=lambda: AsyncSessionLocal, broker_factory=lambda: raising
+    )
+    try:
+        sid = await _seed_snapshot()
+        token = (await alpaca_paper_automated_preview_order(**_crypto_intent(sid)))[
+            "approval_token"
+        ]
+        first = await alpaca_paper_automated_submit_order(token, confirm=True)
+        assert first["status"] == "failed"
+        assert first["success"] is False  # failed is NOT success
+
+        second = await alpaca_paper_automated_submit_order(token, confirm=True)
+        assert second["status"] == "failed"
+        assert second["success"] is False
+        assert second["reason_code"] == "broker_rejected_replayed"
+        assert len(raising.submit_calls) == 1  # terminal — no re-POST
+    finally:
+        reset_alpaca_paper_automated_factories()

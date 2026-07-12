@@ -43,7 +43,6 @@ from app.services.paper_approval_packet import (
     verify_packet_freshness,
     verify_packet_market_data,
     verify_preview_submit_hash,
-    verify_sell_packet_source,
     verify_server_derived_key,
 )
 
@@ -57,6 +56,9 @@ DEFAULT_QUOTE_MAX_AGE = timedelta(minutes=5)
 # Default bounded wait for an in-flight winner before returning in-progress.
 DEFAULT_INFLIGHT_MAX_POLLS = 3
 DEFAULT_INFLIGHT_POLL_INTERVAL_S = 0.05
+
+# ROB-842 public success contract — only these statuses are a success.
+SUCCESS_STATUSES: frozenset[str] = frozenset({"submitted", "replayed", "recovered"})
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +184,13 @@ class SubmitOutcome:
     def submitted(self) -> bool:
         return self.status == "submitted"
 
+    @property
+    def success(self) -> bool:
+        """Public success contract: a real broker-side success or a faithful
+        replay/recovery of one. failed / rejected / idempotency_in_progress are
+        NOT success."""
+        return self.status in SUCCESS_STATUSES
+
 
 # ---------------------------------------------------------------------------
 # Coordinator
@@ -243,7 +252,10 @@ class AlpacaPaperSubmitCoordinator:
         """
         coid = packet.client_order_id
 
-        # --- Fail-close pure verification (idempotent; safe for duplicates) -----
+        # --- (1) Immutable binding checks — time-independent, run for ALL calls --
+        # token/key/hash/account binding must pass before we replay OR reject, so a
+        # tampered duplicate never replays and a valid duplicate never gets a
+        # time-dependent rejection.
         try:
             server_key = self._server_key_for(packet, submit_canonical)
             verify_server_derived_key(
@@ -255,15 +267,7 @@ class AlpacaPaperSubmitCoordinator:
             verify_preview_submit_hash(
                 packet, submit_hash=canonical_hash(submit_canonical)
             )
-            now = self._now_fn()
-            verify_packet_freshness(packet, now=now)
-            if packet.origin == "automated":
-                verify_packet_market_data(packet, now=now, max_age=self._quote_max_age)
             verify_packet_account_mode(packet, expected=self._expected_account_mode)
-            if packet.origin == "automated":
-                # Ledger buy-source provenance is an automated-cohort gate. Manual
-                # operator sells rely on the fresh live-position check below.
-                await verify_sell_packet_source(packet, ledger=self._ledger)
         except PaperApprovalPacketError as exc:
             return SubmitOutcome(
                 status="rejected",
@@ -273,10 +277,10 @@ class AlpacaPaperSubmitCoordinator:
                 message=str(exc),
             )
 
-        # --- Idempotency fast-path (resolve a prior outcome before any claim) ---
-        # Force a fresh READ COMMITTED snapshot: the session uses
-        # expire_on_commit=False, so a prior same-session submit's committed row
-        # would otherwise be read back stale from the identity map.
+        # --- (2) Replay a prior terminal/success BEFORE any time-dependent check-
+        # Force a fresh READ COMMITTED snapshot (session is expire_on_commit=False).
+        # A completed or terminally-failed order replays its ORIGINAL result even
+        # after the packet's freshness window has elapsed.
         self._ledger.session.expire_all()
         existing = await self._ledger.get_execution_by_client_order_id(coid)
         if existing is not None:
@@ -284,18 +288,26 @@ class AlpacaPaperSubmitCoordinator:
                 return await self._resolve_inflight(coid)
             return self._resolved_outcome(existing)
 
-        # --- Sell preflight: fresh current-position evidence (NEW intent only) --
-        # Runs after the fast-path so a duplicate of a filled sell replays instead
-        # of being re-validated against a now-reduced position. Before the claim so
-        # a transient position issue never burns the idempotency key.
-        if packet.side == "sell":
-            sell_reject = await self._check_sell_current_position(
-                packet, submit_canonical
+        # --- (3) Time-dependent evidence — NEW (not-yet-claimed) submits only ----
+        # No origin bypass: every new submit must carry server-observed market
+        # evidence and pass freshness. Sells additionally require live position.
+        try:
+            now = self._now_fn()
+            verify_packet_freshness(packet, now=now)
+            verify_packet_market_data(packet, now=now, max_age=self._quote_max_age)
+        except PaperApprovalPacketError as exc:
+            return SubmitOutcome(
+                status="rejected",
+                client_order_id=coid,
+                broker_called=False,
+                reason_code=exc.code,
+                message=str(exc),
             )
-            if sell_reject is not None:
-                return sell_reject
 
-        # --- Atomic claim: only the winner POSTs to the broker ------------------
+        if packet.side == "sell":
+            return await self._submit_sell(packet, submit_canonical, coid)
+
+        # --- (4) Buy: atomic claim; only the winner POSTs -----------------------
         claim = await self._ledger.claim_submit(
             client_order_id=coid,
             lifecycle_correlation_id=packet.lifecycle_correlation_id,
@@ -316,7 +328,88 @@ class AlpacaPaperSubmitCoordinator:
                 return self._resolved_outcome(row)
             return await self._resolve_inflight(coid)
 
-        # --- Winner: exactly one broker HTTP submit -----------------------------
+        return await self._winner_submit(coid, submit_canonical)
+
+    async def _submit_sell(
+        self, packet: PaperApprovalPacket, submit_canonical: dict[str, Any], coid: str
+    ) -> SubmitOutcome:
+        """Sell path: fresh live position + cross-process reservation, then claim.
+
+        The current position is re-read from the broker, then availability
+        (position minus already-reserved open sells) and the atomic claim are
+        computed under one account+symbol advisory lock so two *different* sell
+        intents cannot both consume the same shares.
+        """
+        requested = _to_decimal(submit_canonical.get("qty"))
+        if requested is None or not requested.is_finite() or requested <= 0:
+            return self._sell_reject(
+                packet, "sell_qty_invalid", "sell qty missing or non-positive"
+            )
+
+        broker = self._broker_factory()
+        getter = getattr(broker, "get_position", None)
+        if getter is None:  # pragma: no cover - defensive
+            return self._sell_reject(
+                packet, "position_unavailable", "broker cannot read positions"
+            )
+        broker_symbol = _broker_position_symbol(packet.execution_symbol)
+        try:
+            position = await getter(broker_symbol)
+        except AlpacaPaperRequestError as exc:
+            return self._sell_reject(
+                packet,
+                "position_unavailable",
+                f"position read failed (HTTP {getattr(exc, 'status_code', None)})",
+            )
+        if position is None:
+            return self._sell_reject(
+                packet, "position_flat", "no current position to sell"
+            )
+        if not _symbols_match(
+            getattr(position, "symbol", None), packet.execution_symbol
+        ):
+            return self._sell_reject(
+                packet,
+                "position_symbol_mismatch",
+                f"position symbol {getattr(position, 'symbol', None)!r} != {packet.execution_symbol!r}",
+            )
+        pos_qty = _to_decimal(getattr(position, "qty", None))
+        if pos_qty is None or not pos_qty.is_finite():
+            return self._sell_reject(
+                packet, "position_malformed", "position qty missing/non-finite"
+            )
+        if pos_qty <= 0:
+            return self._sell_reject(
+                packet, "position_flat", "current position qty is non-positive"
+            )
+
+        claim = await self._ledger.reserve_sell_and_claim(
+            client_order_id=coid,
+            lifecycle_correlation_id=packet.lifecycle_correlation_id,
+            execution_symbol=packet.execution_symbol,
+            execution_venue=packet.execution_venue,
+            instrument_type=_instrument_type_for(packet.execution_asset_class),
+            account_mode=packet.account_mode,
+            requested_qty=requested,
+            position_qty=pos_qty,
+            order_type=str(submit_canonical.get("type") or "limit"),
+            time_in_force=submit_canonical.get("time_in_force"),
+            requested_price=_to_decimal(submit_canonical.get("limit_price")),
+            preview_payload=dict(submit_canonical),
+        )
+        if claim.insufficient:
+            return self._sell_reject(
+                packet,
+                "qty_exceeds_available",
+                f"sell qty {requested} exceeds available {claim.available} "
+                f"(position {pos_qty} minus reserved open sells)",
+            )
+        if not claim.won:
+            row = claim.row
+            if row is not None and not is_inflight_execution(row):
+                return self._resolved_outcome(row)
+            return await self._resolve_inflight(coid)
+
         return await self._winner_submit(coid, submit_canonical)
 
     async def _winner_submit(
@@ -376,74 +469,6 @@ class AlpacaPaperSubmitCoordinator:
             broker_called=True,
             order=order_dict,
         )
-
-    async def _check_sell_current_position(
-        self, packet: PaperApprovalPacket, submit_canonical: dict[str, Any]
-    ) -> SubmitOutcome | None:
-        """Fail-close a sell unless a fresh Alpaca position covers the qty.
-
-        Past ledger fills are provenance only; the sellable quantity is the
-        broker's *current* position, re-read here right before the claim/POST.
-        Returns a rejected outcome, or None when the sell is covered.
-        """
-        requested = _to_decimal(submit_canonical.get("qty"))
-        if requested is None or not requested.is_finite() or requested <= 0:
-            return self._sell_reject(
-                packet, "sell_qty_invalid", "sell qty missing or non-positive"
-            )
-
-        broker = self._broker_factory()
-        getter = getattr(broker, "get_position", None)
-        if getter is None:  # pragma: no cover - defensive
-            return self._sell_reject(
-                packet, "position_unavailable", "broker cannot read positions"
-            )
-
-        broker_symbol = _broker_position_symbol(packet.execution_symbol)
-        try:
-            position = await getter(broker_symbol)
-        except AlpacaPaperRequestError as exc:
-            return self._sell_reject(
-                packet,
-                "position_unavailable",
-                f"position read failed (HTTP {getattr(exc, 'status_code', None)})",
-            )
-        if position is None:
-            return self._sell_reject(
-                packet, "position_flat", "no current position to sell"
-            )
-
-        if not _symbols_match(
-            getattr(position, "symbol", None), packet.execution_symbol
-        ):
-            return self._sell_reject(
-                packet,
-                "position_symbol_mismatch",
-                f"position symbol {getattr(position, 'symbol', None)!r} != {packet.execution_symbol!r}",
-            )
-
-        available = _to_decimal(getattr(position, "qty", None))
-        if available is None or not available.is_finite():
-            return self._sell_reject(
-                packet, "position_malformed", "position qty missing/non-finite"
-            )
-        if available <= 0:
-            return self._sell_reject(
-                packet, "position_flat", "current position qty is non-positive"
-            )
-        if requested > available:
-            return self._sell_reject(
-                packet,
-                "qty_exceeds_position",
-                f"sell qty {requested} exceeds current position {available}",
-            )
-        if packet.max_qty is not None and requested > packet.max_qty:
-            return self._sell_reject(
-                packet,
-                "qty_exceeds_max",
-                f"sell qty {requested} exceeds ceiling {packet.max_qty}",
-            )
-        return None
 
     def _sell_reject(
         self, packet: PaperApprovalPacket, code: str, message: str
@@ -604,6 +629,7 @@ __all__ = [
     "DEFAULT_INFLIGHT_MAX_POLLS",
     "DEFAULT_INFLIGHT_POLL_INTERVAL_S",
     "DEFAULT_QUOTE_MAX_AGE",
+    "SUCCESS_STATUSES",
     "SubmitOutcome",
     "build_canonical_payload",
     "canonical_hash",

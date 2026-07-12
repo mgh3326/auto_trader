@@ -202,12 +202,48 @@ async def _side_effect_account_ready(lines: list[SMOKE_LINE]) -> bool:
         return False
 
 
+async def _ensure_market_snapshot(args: argparse.Namespace) -> int:
+    """Persist a server-observed market_quote_snapshots row for the smoke order.
+
+    ROB-842 requires server-observed market evidence for every confirm=True submit.
+    The smoke observes its own reference price (the far-below-market limit price)
+    and records it as a trusted snapshot, returning its opaque id.
+    """
+    from datetime import UTC, datetime
+
+    from app.core.db import AsyncSessionLocal
+    from app.models.market_quote_snapshot import MarketQuoteSnapshot
+    from app.services.crypto_execution_mapping import map_alpaca_paper_to_upbit
+
+    if args.asset_class == "crypto":
+        market, source = "crypto", "upbit"
+        symbol = map_alpaca_paper_to_upbit(args.symbol or DEFAULT_CRYPTO_SYMBOL)
+        price = args.limit_price if args.limit_price is not None else SMOKE_LIMIT_PRICE
+    else:
+        market, source = "us", "yahoo"
+        symbol = args.symbol or DEFAULT_EQUITY_SYMBOL
+        price = SMOKE_LIMIT_PRICE
+    async with AsyncSessionLocal() as db:
+        row = MarketQuoteSnapshot(
+            market=market,
+            symbol=symbol,
+            source=source,
+            snapshot_at=datetime.now(UTC),
+            price=Decimal(str(price)),
+        )
+        db.add(row)
+        await db.commit()
+        return row.id
+
+
 async def _side_effect_submit(
     lines: list[SMOKE_LINE], args: argparse.Namespace
 ) -> str | None:
     try:
+        snapshot_id = await _ensure_market_snapshot(args)
         submit_result = await alpaca_paper_submit_order(
             **_order_payload(args),
+            quote_snapshot_id=snapshot_id,
             confirm=True,
         )
         submitted_id = submit_result["order"]["id"]

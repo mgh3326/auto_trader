@@ -33,18 +33,46 @@ async def _clean_manual_ledger_rows():
     """Manual submits now route through the durable ledger claim; keep the
     server-derived manual keys (rob73-/rob74-crypto-) clean between tests."""
     from app.core.db import AsyncSessionLocal
+    from app.models.market_quote_snapshot import MarketQuoteSnapshot
 
     stmt = delete(AlpacaPaperOrderLedger).where(
         AlpacaPaperOrderLedger.client_order_id.like("rob73-%")
         | AlpacaPaperOrderLedger.client_order_id.like("rob74-crypto-%")
     )
+    snap_stmt = delete(MarketQuoteSnapshot).where(
+        MarketQuoteSnapshot.symbol.in_(["KRW-BTC", "AAPL"])
+    )
     async with AsyncSessionLocal() as db:
         await db.execute(stmt)
+        await db.execute(snap_stmt)
         await db.commit()
     yield
     async with AsyncSessionLocal() as db:
         await db.execute(stmt)
+        await db.execute(snap_stmt)
         await db.commit()
+
+
+async def _seed_quote_snapshot(
+    *, market="us", symbol="AAPL", source="yahoo", price="150", age_s=10
+) -> int:
+    """Seed a trusted market_quote_snapshots row and return its id."""
+    from datetime import UTC, datetime, timedelta
+
+    from app.core.db import AsyncSessionLocal
+    from app.models.market_quote_snapshot import MarketQuoteSnapshot
+
+    async with AsyncSessionLocal() as db:
+        row = MarketQuoteSnapshot(
+            market=market,
+            symbol=symbol,
+            source=source,
+            snapshot_at=datetime.now(UTC) - timedelta(seconds=age_s),
+            price=Decimal(price),
+        )
+        db.add(row)
+        await db.commit()
+        return row.id
 
 
 def test_module_exposes_expected_surface() -> None:
@@ -142,12 +170,14 @@ async def test_submit_without_confirm_is_blocked_no_op(
 async def test_submit_with_confirm_calls_service_once(
     fake_orders_service: FakeOrdersService,
 ) -> None:
+    sid = await _seed_quote_snapshot(market="us", symbol="AAPL", source="yahoo")
     payload = await alpaca_paper_submit_order(
         symbol="AAPL",
         side="buy",
         type="limit",
         qty=Decimal("1"),
         limit_price=Decimal("1.00"),
+        quote_snapshot_id=sid,
         confirm=True,
     )
     assert payload["submitted"] is True
@@ -227,6 +257,7 @@ async def test_crypto_submit_rejects_invalid_time_in_force_before_service_call(
 async def test_crypto_submit_with_confirm_calls_service_once(
     fake_orders_service: FakeOrdersService,
 ) -> None:
+    sid = await _seed_quote_snapshot(market="crypto", symbol="KRW-BTC", source="upbit")
     payload = await alpaca_paper_submit_order(
         symbol="BTC/USD",
         side="buy",
@@ -235,6 +266,7 @@ async def test_crypto_submit_with_confirm_calls_service_once(
         limit_price=Decimal("50000"),
         time_in_force="gtc",
         asset_class="crypto",
+        quote_snapshot_id=sid,
         confirm=True,
     )
     assert payload["submitted"] is True
@@ -295,6 +327,7 @@ async def test_crypto_sell_limit_submit_is_confirm_gated_and_single_order(
     assert dry_run["blocked_reason"] == "confirmation_required"
     assert fake_orders_service.calls == []
 
+    sid = await _seed_quote_snapshot(market="crypto", symbol="KRW-BTC", source="upbit")
     submitted = await alpaca_paper_submit_order(
         symbol="BTC/USD",
         side="sell",
@@ -302,6 +335,7 @@ async def test_crypto_sell_limit_submit_is_confirm_gated_and_single_order(
         qty=Decimal("0.0001"),
         limit_price=Decimal("50000"),
         asset_class="crypto",
+        quote_snapshot_id=sid,
         confirm=True,
     )
 
@@ -331,12 +365,14 @@ async def test_submit_has_no_caller_client_order_id_param(
     assert "client_order_id" not in params
     assert "origin" not in params
 
+    sid = await _seed_quote_snapshot(market="us", symbol="AAPL", source="yahoo")
     payload = await alpaca_paper_submit_order(
         symbol="AAPL",
         side="buy",
         type="limit",
         qty=Decimal("1"),
         limit_price=Decimal("1.00"),
+        quote_snapshot_id=sid,
         confirm=True,
     )
     assert payload["client_order_id"].startswith("rob73-")
@@ -619,6 +655,7 @@ async def test_submit_fails_closed_on_live_endpoint(
     )
     mod.reset_alpaca_paper_orders_service_factory()
 
+    sid = await _seed_quote_snapshot(market="us", symbol="AAPL", source="yahoo")
     with pytest.raises(AlpacaPaperEndpointError):
         await alpaca_paper_submit_order(
             symbol="AAPL",
@@ -626,6 +663,7 @@ async def test_submit_fails_closed_on_live_endpoint(
             type="limit",
             qty=Decimal("1"),
             limit_price=Decimal("1.00"),
+            quote_snapshot_id=sid,
             confirm=True,
         )
 

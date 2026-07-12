@@ -298,6 +298,32 @@ def test_order_within_packet_notional_exceeds_max() -> None:
 
 
 @pytest.mark.unit
+def test_order_within_packet_market_qty_bounded_by_reference_price() -> None:
+    # A market qty order (no limit price) is bounded via the packet's trusted
+    # reference price so it cannot bypass max_notional (ROB-842 F4).
+    canonical = build_canonical_payload(
+        symbol="BTC/USD",
+        side="buy",
+        type="market",
+        time_in_force="gtc",
+        qty=Decimal("5"),
+        notional=None,
+        limit_price=None,
+        asset_class="crypto",
+    )
+    packet = _make_packet(
+        execution_order_type="market",
+        execution_time_in_force="gtc",
+        max_notional=Decimal("1000"),
+        max_qty=None,
+        reference_price=Decimal("100000"),  # 5 * 100000 = 500000 > 1000
+    )
+    with pytest.raises(PaperApprovalPacketError) as exc:
+        verify_order_within_packet(packet, canonical)
+    assert exc.value.code == "notional_exceeds_max"
+
+
+@pytest.mark.unit
 def test_order_within_packet_qty_exceeds_max() -> None:
     canonical = build_canonical_payload(
         symbol="BTC/USD",

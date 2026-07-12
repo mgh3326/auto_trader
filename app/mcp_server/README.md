@@ -433,19 +433,33 @@ replay**. There is no direct-POST fallback, and this holds for `us-paper` only.
   `alpaca_paper_automated_submit_order` are the **automated cohort** tools —
   registered only under `MCP_PROFILE=us-paper` and **default-off** behind
   `ALPACA_PAPER_AUTOMATED_SUBMIT_ENABLED` (fail-closed when unset).
+- **Server-observed market evidence for every submit.** Both tools require an
+  opaque, server-issued `quote_snapshot_id` (a trusted `market_quote_snapshots`
+  row) at `confirm=True` — there is no origin-based bypass of market/freshness
+  checks. The caller never supplies correlation, snapshot, market-data as-of/
+  source, ceiling, `origin`, or `client_order_id`: the server loads identity,
+  market provenance and the trusted reference price from that row, and the ceiling
+  is the server **hard-cap** policy ($1,000 equity / $50 crypto). A market/qty
+  order's implied notional (trusted price × qty) is bounded by the same cap. A
+  missing / stale / symbol-mismatched / non-finite-priced snapshot fails closed
+  before any packet is built. Packet + policy hashes are recorded in the ledger
+  preview evidence.
+- **Replay before freshness.** Immutable token/key/hash/account binding is checked
+  first; a completed or terminally-failed order then replays its original result
+  even after the packet's freshness window has elapsed. Freshness / market-data /
+  live-position checks apply only to a not-yet-claimed new submit.
 - **Exactly once.** Duplicate intents (sequential or concurrent) produce exactly
   one broker HTTP submit; every other caller replays the winner's result.
-- **Server-owned identity/provenance/ceiling.** The caller never supplies
-  correlation, snapshot, market-data as-of/source, ceiling, `origin`, or
-  `client_order_id`. The idempotency key is server-derived; automated preview
-  loads identity + market provenance from a trusted `market_quote_snapshots` row
-  (opaque `quote_snapshot_id`) and takes the ceiling from hard-cap policy —
-  applying the more conservative of policy and any recommendation. A missing /
-  stale / symbol-mismatched snapshot fails closed before any packet is built. The
-  packet + policy hashes are recorded in the ledger preview evidence.
-- **Live sell eligibility.** A sell is verified against the **current** Alpaca
-  paper position re-read right before the POST (past fills are provenance only);
-  qty must be within both the live position and the ceiling, else fail-closed.
+- **Live sell eligibility + no oversell.** A sell is verified against the
+  **current** Alpaca paper position re-read right before the POST (past fills are
+  provenance only). Availability and the atomic claim are computed under an
+  account+symbol advisory lock, subtracting already-reserved open sells, so two
+  *different* sell intents cannot both consume the same shares. Automated sell is
+  **explicitly disabled** (reason `automated_sell_disabled`) until ROB-845 wires an
+  opaque buy/position source; manual sell is supported.
+- **Public success contract.** `success` is true only for
+  `submitted` / `replayed` / `recovered`; `failed`, `rejected` and
+  `idempotency_in_progress` are `success=false`.
 - **Deterministic failure vs uncertainty.** An HTTP 4xx/422 rejection is booked
   as a terminal outcome and replayed on retry (no re-POST). A 5xx/timeout/
   crash-after-send is reconciled via `get_order_by_client_order_id` — recovered

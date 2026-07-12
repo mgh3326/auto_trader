@@ -163,6 +163,9 @@ class PaperApprovalPacket(BaseModel):
     snapshot_id: str | None = None
     execution_order_type: Literal["limit", "market"] | None = None
     execution_time_in_force: str | None = None
+    # ROB-842: trusted reference price (from the server-observed market snapshot),
+    # used to bound notional for qty/market orders that carry no limit price.
+    reference_price: Decimal | None = None
 
     @field_validator("expires_at")
     @classmethod
@@ -633,8 +636,12 @@ def verify_order_within_packet(
 
     if packet.max_notional is not None:
         effective_notional = notional
-        if effective_notional is None and qty is not None and limit_price is not None:
-            effective_notional = qty * limit_price
+        if effective_notional is None and qty is not None:
+            # Prefer the order's own limit price; fall back to the packet's trusted
+            # reference price so a market/qty order is still bounded by notional.
+            px = limit_price if limit_price is not None else packet.reference_price
+            if px is not None:
+                effective_notional = qty * px
         if effective_notional is None:
             raise PaperApprovalPacketError(
                 code="order_size_unverifiable",
