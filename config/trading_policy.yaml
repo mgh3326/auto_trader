@@ -2,9 +2,9 @@
 # Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
 # (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
 # Repo is public; exposing these values is an accepted decision.
-version: "2026-07-07.1"
-captured_as_of: "2026-07-07"
-source: "ROB-643 playbook policy_keys (seed); ROB-751 sell.trim_preplace tie-break promoted"
+version: "2026-07-12.1"
+captured_as_of: "2026-07-12"
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12 (sonnet, opus, fable)"
 
 authority:
   scope: judgment_policy_only
@@ -151,6 +151,68 @@ decision_rules:
       - single_share_position
       - no_resistance_reference
       - composite_gates
+
+market_rules:
+  crypto:
+    recovery_gate:
+      lanes: [buy]
+      advisory: true
+      semantics: reserve deployment recovery frame; otherwise support-conditional only
+      min_conditions_met: 2
+      of: 4
+      missing_or_null_threshold: do_not_infer_or_count_as_met
+      conditions:
+        - id: fear_greed
+          metric: crypto_fear_greed_index
+          sources: [alternative_me]
+          operator: null
+          threshold: null
+          unit: index
+          semantics: reports cite a recovering trend but define no pass cutoff
+        - id: alt_breadth_24h
+          metric: upbit_alt_breadth_24h
+          sources: [upbit_open_api_ticker_derived]
+          operator: gt
+          threshold: 50
+          unit: percent
+          semantics: share of KRW alts outperforming BTC over 24h
+        - id: btc_long_short_ratio
+          metric: btc_long_short_ratio
+          sources: [binance_global_account, binance_top_trader_position]
+          operator: lte
+          threshold: 1.5
+          unit: ratio
+          semantics: both report inputs should remain at or below the threshold
+        - id: btc_kimchi_premium
+          metric: btc_kimchi_premium
+          sources: [upbit_binance_fx]
+          operator: null
+          threshold: null
+          unit: percent
+          semantics: reports interpret discount and domestic FOMO qualitatively; no pass cutoff
+    support_resistance:
+      lanes: [buy, sell, discovery]
+      advisory: true
+      semantics: rank fresh levels by independent-source confluence before source priority
+      selection_rule: confluence_first_then_source_priority
+      source_priority: [fibonacci, value_area, bb_lower, bb_middle, volume_poc]
+      confluence_examples:
+        - [fib_0, value_area_low, bb_lower]
+        - [bb_middle, fib_23_6]
+        - [bb_middle, volume_poc]
+    no_chasing:
+      lanes: [buy, discovery]
+      advisory: true
+      semantics: reject pump-like new entries without inventing numeric cutoffs
+      # Reports contain no numeric pump-gain or liquidity cutoff. Null is
+      # intentional: consumers must not infer a model-specific replacement.
+      daily_change_pct_threshold: null
+      min_trade_value_24h_krw: null
+      criteria:
+        - exclude low-liquidity rotation-pump candidates
+        - new alt candidates are ineligible when 24h alt breadth is below 50 percent
+        - exclude sharply rising candidates without support structure or decision history
+      follow_up: reports contain no quantitative cutoff; operator fills values after live-operation evidence in a follow-up PR
 
 market_overrides:
   kr: {}
