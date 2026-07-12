@@ -12,7 +12,10 @@ from types import SimpleNamespace
 import pytest
 from fastmcp.exceptions import ToolError
 
-from app.mcp_server.timeout_middleware import ToolTimeoutMiddleware
+from app.mcp_server.timeout_middleware import (
+    ELEVATED_TOOL_TIMEOUTS_S,
+    ToolTimeoutMiddleware,
+)
 
 
 def _ctx(name: str) -> SimpleNamespace:
@@ -85,6 +88,7 @@ def test_budget_resolution_default_and_overrides() -> None:
     assert mw._budget_for("a_tool_with_no_override") == 45.0
     assert mw._budget_for("investment_report_generate_from_bundle") == 240.0
     assert mw._budget_for("get_holdings") == 120.0
+    assert ELEVATED_TOOL_TIMEOUTS_S["analysis_bundle_create"] == 240.0
 
 
 @pytest.mark.unit

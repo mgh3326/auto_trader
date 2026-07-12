@@ -36,6 +36,7 @@ DEFAULT_TOOL_TIMEOUT_S = DEFAULT_MCP_TOOL_TIMEOUT_S
 # purpose. Names verified against the registered tool surface. A budget of 0 means
 # "exempt" (no timeout).
 ELEVATED_TOOL_TIMEOUTS_S: dict[str, float] = {
+    "analysis_bundle_create": 240.0,
     # Report generation (snapshot collectors + Hermes composition) — heaviest.
     "investment_report_generate_from_bundle": 240.0,
     "investment_report_prepare_bundle": 240.0,

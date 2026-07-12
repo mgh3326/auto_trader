@@ -85,7 +85,10 @@ def test_read_only_bucket_has_no_phantom_tools():
     # A classified read-only tool that no longer registers = rename/removal drift.
     # Tolerate flag-gated read-only tools that are absent at default settings.
     default = _default_tools()
-    _FLAG_GATED_OR_OPTIONAL: set[str] = set()
+    _FLAG_GATED_OR_OPTIONAL: set[str] = {
+        "analysis_bundle_create",
+        "analysis_bundle_get",
+    }
     phantom = READ_ONLY_ADVISORY_TOOLS - default - _FLAG_GATED_OR_OPTIONAL
     assert not phantom, (
         f"READ_ONLY_ADVISORY_TOOLS references unregistered tools: {sorted(phantom)}"

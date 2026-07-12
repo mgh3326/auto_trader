@@ -91,6 +91,9 @@ from app.mcp_server.tooling.alpaca_paper_preview import (
 from app.mcp_server.tooling.analysis_artifact_registration import (
     register_analysis_artifact_tools,
 )
+from app.mcp_server.tooling.analysis_bundle_handlers import (
+    register_analysis_bundle_tools,
+)
 from app.mcp_server.tooling.analysis_readonly_registration import (
     register_analysis_readonly_tools,
 )
@@ -234,6 +237,8 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     )
     register_session_context_tools(mcp)
     register_analysis_artifact_tools(mcp)
+    if settings.ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED:
+        register_analysis_bundle_tools(mcp)
     register_operating_briefing_tools(mcp)
     # ROB-646 — read-only policy thresholds + version stamp; always registered
     # so every profile can cite the stamp when recording a verdict.
