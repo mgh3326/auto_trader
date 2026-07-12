@@ -249,6 +249,10 @@ class OverseasOrderClient:
             "odno": output.get("ODNO"),  # 주문번호
             "ord_tmd": output.get("ORD_TMD"),  # 주문시각
             "msg": js.get("msg1"),  # 응답메시지
+            # ROB-843: preserve the provider-verified accepted contract (reached
+            # only when rt_cd == "0") for the kis_mock result boundary.
+            "rt_cd": js.get("rt_cd"),
+            "msg_cd": js.get("msg_cd"),
         }
 
         logging.info(

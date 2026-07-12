@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import datetime
 import logging
+import math
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from decimal import Decimal
 from typing import Any
 
@@ -52,14 +53,26 @@ from app.services.brokers.kis.mock_scalping_exec.holdings_delta_confirm import (
     confirm_fill_from_holdings_delta,
 )
 from app.services.brokers.kis.mock_scalping_exec.ledger_state import (
-    load_kis_mock_ledger_snapshot,
+    MockOrderHistory,
+    load_kis_mock_order_history,
 )
 from app.services.brokers.kis.mock_scalping_ws.state import MarketState
 
 logger = logging.getLogger("rob321.kis_mock_scalping_exec")
 
 StateProvider = Callable[[str], MarketState | None]
-LedgerSnapshotLoader = Callable[..., Awaitable[LedgerSnapshot]]
+OrderHistoryLoader = Callable[..., Awaitable[MockOrderHistory]]
+HoldingsProvider = Callable[[], Awaitable[Mapping[str, Any]]]
+
+
+async def _default_mock_holdings_snapshot() -> Mapping[str, Any]:
+    """Fresh KIS mock domestic balance snapshot ({holdings, cash}). Mock host only.
+
+    ``holdings`` is pre-filtered to ``hldg_qty > 0`` by the account reader, so
+    every entry is an actual position.
+    """
+    client = _create_kis_client(is_mock=True)
+    return await client.fetch_domestic_balance_snapshot(is_mock=True)
 
 
 def _to_decimal(value: Any) -> Decimal | None:
@@ -302,43 +315,96 @@ class KisMockBroker:
         )
 
 
-class KisMockRiskGate:
-    """RiskGatePort: fresh live-market + durable-ledger snapshot (ROB-843).
+def _is_finite_positive(x: float | None) -> bool:
+    return x is not None and math.isfinite(x) and x > 0
 
-    ``load`` raises on any missing/stale market field or ledger read fault so
-    the executor fail-closes to zero broker mutation. The market snapshot comes
-    from the live per-symbol ``MarketState`` (same source the broker reads); the
-    durable snapshot comes from ``review.kis_mock_order_ledger``.
+
+class KisMockRiskGate:
+    """RiskGatePort: fresh position + market + order-history snapshot (ROB-843).
+
+    ``load`` raises on any missing/stale/malformed market field, holdings read
+    fault, or order-history read fault so the executor fail-closes to zero
+    broker mutation. Sources:
+
+    * **Position** (has-open / open-count): a fresh KIS mock *holdings* snapshot
+      — the authoritative record of what is actually held. Order lifecycle rows
+      are NOT treated as positions (a filled buy later sold is flat).
+    * **Market** (spread / data age): the live per-symbol ``MarketState``.
+    * **Order history** (daily count / realized loss / cooldown): the mock
+      order ledger.
     """
 
     def __init__(
         self,
         *,
         get_state: StateProvider,
+        holdings_provider: HoldingsProvider = _default_mock_holdings_snapshot,
         clock: Callable[[], float] = time.monotonic,
-        snapshot_loader: LedgerSnapshotLoader = load_kis_mock_ledger_snapshot,
+        order_history_loader: OrderHistoryLoader = load_kis_mock_order_history,
     ) -> None:
         self._get_state = get_state
+        self._holdings = holdings_provider
         self._clock = clock
-        self._load_ledger = snapshot_loader
+        self._load_history = order_history_loader
 
-    async def load(self, *, symbol: str, side: Side) -> RiskInputs:
+    def _market(self, symbol: str) -> MarketConditions:
+        """Validate the live book and build ``MarketConditions``, else raise.
+
+        Fail-closes on a missing state, missing/negative/NaN/Inf book age,
+        non-positive or non-finite bid/ask, or a crossed book (ask < bid) — the
+        last would otherwise pass ``evaluate_risk`` as a negative spread.
+        """
         state = self._get_state(symbol)
         if state is None:
             raise RuntimeError(f"no live market state for {symbol}")
         now = self._clock()
         book_age = state.book_age_seconds(now=now)
-        spread = state.spread_bps()
-        if state.bid is None or state.ask is None or book_age is None or spread is None:
+        bid, ask = state.bid, state.ask
+        if book_age is None or not math.isfinite(book_age) or book_age < 0:
+            raise RuntimeError(f"missing/invalid book timestamp for {symbol}")
+        if not _is_finite_positive(bid) or not _is_finite_positive(ask):
             raise RuntimeError(
-                f"incomplete live market snapshot for {symbol} "
-                f"(bid={state.bid} ask={state.ask} book_age={book_age})"
+                f"non-positive/non-finite quote for {symbol} (bid={bid} ask={ask})"
             )
-        market = MarketConditions(
+        if ask < bid:  # crossed book — never trade a negative spread
+            raise RuntimeError(f"crossed book for {symbol} (bid={bid} ask={ask})")
+        spread = state.spread_bps()
+        if spread is None or not math.isfinite(spread) or spread < 0:
+            raise RuntimeError(f"invalid spread for {symbol} (spread={spread})")
+        return MarketConditions(
             spread_bps=Decimal(str(spread)),
             data_age_seconds=float(book_age),
         )
-        ledger = await self._load_ledger(symbol=to_db_symbol(symbol))
+
+    async def _position(self, symbol: str) -> tuple[bool, int]:
+        """(has_open_for_symbol, open_position_count) from fresh holdings."""
+        snap = await self._holdings()
+        holdings = snap.get("holdings") or []
+        target = to_db_symbol(symbol)
+        open_count = 0
+        has_open = False
+        for holding in holdings:
+            qty = _to_decimal(holding.get("hldg_qty")) or Decimal("0")
+            if qty <= 0:
+                continue
+            open_count += 1
+            if to_db_symbol(str(holding.get("pdno") or "")) == target:
+                has_open = True
+        return has_open, open_count
+
+    async def load(self, *, symbol: str, side: Side) -> RiskInputs:
+        market = self._market(symbol)
+        has_open, open_count = await self._position(symbol)
+        history = await self._load_history(symbol=to_db_symbol(symbol))
+        ledger = LedgerSnapshot(
+            has_open_position_for_symbol=has_open,
+            open_position_count=open_count,
+            orders_today=history.orders_today,
+            realized_loss_today_krw=history.realized_loss_today_krw,
+            seconds_since_last_close_for_symbol=(
+                history.seconds_since_last_close_for_symbol
+            ),
+        )
         return RiskInputs(ledger=ledger, market=market)
 
 

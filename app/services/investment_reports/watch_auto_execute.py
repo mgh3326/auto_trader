@@ -160,18 +160,26 @@ async def maybe_auto_execute(
     if not allowed:
         return {"executed": False, "blocking_reasons": reasons}
 
-    # 4) place the kis_mock order (executor hard-pinned is_mock=True).
-    place_result = await place_order_fn(
-        symbol=alert.symbol,
-        side=side,
-        order_type="limit",
-        quantity=float(quantity),
-        price=float(limit_price),
-        dry_run=False,
-        reason="watch auto_execute_mock",
-        is_mock=True,
-        correlation_id=correlation_id,
-    )
+    # 4) place the kis_mock order (executor hard-pinned is_mock=True). A raised
+    # exception is a failure too — never leave the intent 'previewed' (ROB-843).
+    try:
+        place_result: Any = await place_order_fn(
+            symbol=alert.symbol,
+            side=side,
+            order_type="limit",
+            quantity=float(quantity),
+            price=float(limit_price),
+            dry_run=False,
+            reason="watch auto_execute_mock",
+            is_mock=True,
+            correlation_id=correlation_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — surface as a truthful failed outcome
+        place_result = {
+            "success": False,
+            "reason": "order_exception",
+            "detail": f"{type(exc).__name__}: {exc}"[:200],
+        }
 
     # 5) validate + persist the broker outcome truthfully (ROB-843). The result
     # is never discarded: a failure flips the intent row to 'failed' with the

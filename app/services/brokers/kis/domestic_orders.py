@@ -382,6 +382,12 @@ class DomesticOrderClient:
             "odno": output.get("ODNO") or output.get("ORD_NO"),  # 주문번호
             "ord_tmd": output.get("ORD_TMD"),  # 주문시각
             "msg": js.get("msg1"),  # 응답메시지
+            # ROB-843: preserve the provider-verified accepted contract. This
+            # point is reached only when rt_cd == "0" (non-zero raised above);
+            # carrying it forward lets the kis_mock result boundary prove
+            # provider acceptance instead of inferring success from an ID alone.
+            "rt_cd": js.get("rt_cd"),
+            "msg_cd": js.get("msg_cd"),
         }
 
         logging.info(

@@ -203,6 +203,34 @@ async def test_failed_broker_result_persists_failed_outcome(db_session, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_place_order_exception_persists_failed(db_session, monkeypatch):
+    """ROB-843 Blocker 4: a raised exception is a failure too — the intent must
+    become 'failed' (not left 'previewed') with reason/detail preserved."""
+    monkeypatch.setattr(
+        watch_auto_execute.settings, "WATCH_AUTO_EXECUTE_MOCK_ENABLED", True
+    )
+
+    async def _raise(**kwargs):
+        raise RuntimeError("broker POST blew up")
+
+    alert = _alert(_good_max_action())
+    cid = f"corr-{uuid.uuid4().hex}"
+    outcome = await watch_auto_execute.maybe_auto_execute(
+        db_session,
+        alert=alert,
+        correlation_id=cid,
+        kst_date="2026-06-01",
+        place_order_fn=_raise,
+    )
+    assert outcome["executed"] is False
+    assert outcome["reason"] == "order_exception"
+    assert "broker POST blew up" in (outcome["detail"] or "")
+    row = await _intent_for(db_session, cid)
+    assert row.lifecycle_state == "failed"
+    assert row.blocked_by == "order_exception"
+
+
+@pytest.mark.asyncio
 async def test_malformed_broker_result_persists_failed(db_session, monkeypatch):
     """ROB-843: a non-dict broker result is a failure, never executed=True."""
     monkeypatch.setattr(

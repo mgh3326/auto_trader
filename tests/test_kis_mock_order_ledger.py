@@ -828,6 +828,79 @@ async def test_record_preserves_explicit_correlation_id(monkeypatch):
     assert pub.await_args.kwargs["correlation_id"] == "scalp-pair-1"
 
 
+def _make_domestic_orders():
+    """DomesticOrderClient with a mocked parent (mirrors the retry-test harness)."""
+    from unittest.mock import MagicMock
+
+    from app.services.brokers.kis.domestic_orders import DomesticOrderClient
+
+    parent = MagicMock()
+    parent._hdr_base = {"content-type": "application/json"}
+    parent._ensure_token = AsyncMock()
+    parent._kis_url = lambda path: f"https://host{path}"
+    tok = MagicMock()
+    tok.clear_token = AsyncMock()
+    parent._token_manager = tok
+    settings = MagicMock()
+    settings.kis_account_no = "1234567890"
+    settings.kis_access_token = "test-token"
+    parent._settings = settings
+    return DomesticOrderClient(parent), parent
+
+
+@pytest.mark.asyncio
+async def test_record_accepts_real_domestic_order_shape(monkeypatch):
+    """ROB-843 Blocker 1: the accepted contract must survive the REAL domestic
+    order-service return shape (which the service builds after verifying
+    rt_cd==0), not a hand-fabricated rt_cd fixture. The service preserves the
+    provider-verified success metadata so the mock boundary can prove it."""
+    from unittest.mock import patch
+
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    instance, parent = _make_domestic_orders()
+    # Realistic raw KIS accepted envelope (rt_cd at top level, ODNO in output).
+    parent._request_with_rate_limit = AsyncMock(
+        return_value={
+            "rt_cd": "0",
+            "msg_cd": "APBK0013",
+            "msg1": "주문 전송 완료 되었습니다.",
+            "output": {"ODNO": "0001234567", "ORD_TMD": "091500"},
+        }
+    )
+    with patch(
+        "app.services.brokers.kis.domestic_orders.is_nxt_eligible",
+        AsyncMock(return_value=False),
+    ):
+        exec_result = await instance.order_korea_stock("005930", "buy", 1, 70000)
+
+    # provider-verified success metadata is preserved to the boundary
+    assert exec_result["rt_cd"] == "0"
+    assert exec_result["odno"] == "0001234567"
+
+    monkeypatch.setattr(
+        kis_mock_ledger, "_save_kis_mock_order_ledger", AsyncMock(return_value=7)
+    )
+    monkeypatch.setattr(
+        kis_mock_ledger, "publish_place_time_forecast", AsyncMock(return_value=None)
+    )
+    result = await kis_mock_ledger._record_kis_mock_order(
+        normalized_symbol="005930",
+        market_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        dry_run_result=_mock_preview(),
+        execution_result=exec_result,
+        reason="t",
+        thesis=None,
+        strategy=None,
+        notes=None,
+    )
+    assert result["success"] is True
+    assert result["status"] == "accepted"
+    assert result["order_no"] == "0001234567"
+
+
 @pytest.mark.asyncio
 async def test_record_accepted_returns_success_true(monkeypatch):
     """ROB-843: accepted requires provider success (rt_cd==0) AND broker order ID."""

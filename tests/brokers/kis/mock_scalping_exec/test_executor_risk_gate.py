@@ -91,7 +91,9 @@ class FakeLedger:
 class FakeRiskGate:
     """Executor-owned snapshot provider. Records every load call."""
 
-    def __init__(self, *, inputs: RiskInputs | None = None, raises: Exception | None = None):
+    def __init__(
+        self, *, inputs: RiskInputs | None = None, raises: Exception | None = None
+    ):
         self._inputs = inputs
         self._raises = raises
         self.calls = 0
