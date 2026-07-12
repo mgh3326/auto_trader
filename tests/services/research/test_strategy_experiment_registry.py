@@ -619,6 +619,84 @@ async def test_trial_all_or_none_check_rejects_partial_trial(registry_tables) ->
     await session.rollback()
 
 
+@pytest.mark.unit
+def test_identity_rejects_non_json_safe_components() -> None:
+    # Canonical-safety is enforced at schema validation (before any DB work).
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        _identity(params={"x": float("nan")})
+    with pytest.raises(ValidationError):
+        _identity(params={1: "int", "1": "str"})
+    with pytest.raises(ValidationError):
+        _identity(cost={"maker_bps": Decimal("Infinity")})
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_invalid_identity_creates_no_experiment_row(registry_tables) -> None:
+    # Even when schema validation is bypassed, the service must fail before any
+    # DB flush — no partial/invalid experiment row is ever persisted.
+    session = registry_tables
+    bad = StrategyExperimentIdentity.model_construct(
+        strategy_key="BAD-" + uuid.uuid4().hex[:8],
+        strategy_version="v1",
+        hypothesis=None,
+        strategy={"ok": 1},
+        code="x",
+        params={"nan": float("nan")},
+        dataset_manifest={},
+        universe=[],
+        pit={},
+        frozen_config={},
+        policy={},
+        benchmark={},
+        cost={},
+        mdd={},
+        supersedes_experiment_id=None,
+    )
+    before = await session.scalar(
+        select(func.count()).select_from(reg.ResearchStrategyExperiment)
+    )
+    with pytest.raises((ValueError, TypeError)):
+        await reg.register_experiment(session, bad)
+    await session.rollback()
+    after = await session.scalar(
+        select(func.count()).select_from(reg.ResearchStrategyExperiment)
+    )
+    assert after == before
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_heterogeneous_set_identity_roundtrips(registry_tables) -> None:
+    # A heterogeneous set component registers, persists as JSONB, and re-hashes
+    # to the identical identity on read-back.
+    session = registry_tables
+    identity = _identity(universe={"BTC/USDT", "ETH/USDT", 1, 2})
+    exp = await reg.register_experiment(session, identity)
+    await session.commit()
+
+    stored = (
+        await session.execute(
+            text(
+                "SELECT manifest, universe_hash, experiment_id "
+                "FROM research.strategy_experiments WHERE id = :id"
+            ),
+            {"id": exp.id},
+        )
+    ).one()
+    manifest, universe_hash, experiment_id = stored
+    recomputed = compute_identity_hashes(manifest)
+    assert recomputed["universe_hash"] == universe_hash
+    assert (
+        derive_experiment_id(
+            identity.strategy_key, identity.strategy_version, recomputed
+        )
+        == experiment_id
+    )
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_promotion_null_identity_row_rejected_by_db(registry_tables) -> None:

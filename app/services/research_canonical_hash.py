@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -48,28 +49,66 @@ def to_jsonable(value: Any) -> Any:
 
     This is the single canonical representation used for BOTH hashing and DB
     (JSONB) persistence, so a value that was hashed can be stored, read back,
-    and re-hashed to the identical digest. Non-JSON-native types are mapped to
-    deterministic, lossless string forms:
+    and re-hashed to the identical digest. The result contains only
+    ``dict``/``list``/``str``/``int``/``float``/``bool``/``None`` and therefore
+    always serialises to Postgres JSONB.
 
-    * ``Decimal`` → ``"__decimal__:<canonical str>"`` (never a lossy float)
-    * ``datetime``/``date`` → ``"__datetime__:<ISO-8601>"``
-    * ``set``/``frozenset`` → sorted list of json-safe members
+    Type mapping and fail-closed rules:
 
-    The result contains only ``dict``/``list``/``str``/``int``/``float``/
-    ``bool``/``None`` and therefore serialises cleanly to JSONB.
+    * ``Decimal`` → ``"__decimal__:<canonical str>"`` (never a lossy float);
+      non-finite Decimals (NaN/Inf) are rejected.
+    * ``float`` → passed through, but NaN/±Inf are rejected (JSONB has no
+      representation for them).
+    * ``datetime``/``date`` → ``"__datetime__:<ISO-8601>"``.
+    * ``dict`` → keys MUST be ``str``. A non-string key (e.g. ``1`` vs ``"1"``)
+      is rejected rather than coerced with ``str(key)``, which would collapse
+      distinct identities onto the same manifest/hash.
+    * ``set``/``frozenset`` → list ordered by each member's canonical JSON (not
+      the members' Python natural order, which is undefined across types).
+      Members that collide to the same canonical form are rejected as
+      ambiguous.
+
+    Raises ``ValueError``/``TypeError`` for any value that cannot be represented
+    as a collision-free, JSON-safe canonical form.
     """
-    if value is None or isinstance(value, str | bool | int | float):
+    if value is None or isinstance(value, str | bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"non-finite float is not JSON/JSONB safe: {value!r}")
         return value
     if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError(f"non-finite Decimal is not JSON/JSONB safe: {value!r}")
         return f"__decimal__:{value!s}"
     if isinstance(value, datetime | date):
         return f"__datetime__:{value.isoformat()}"
     if isinstance(value, dict):
-        return {str(key): to_jsonable(item) for key, item in value.items()}
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(
+                    "identity dict keys must be str to stay collision-free; got "
+                    f"{type(key).__name__} key {key!r}"
+                )
+            result[key] = to_jsonable(item)
+        return result
     if isinstance(value, list | tuple):
         return [to_jsonable(item) for item in value]
     if isinstance(value, frozenset | set):
-        return sorted(to_jsonable(item) for item in value)
+        keyed = sorted(
+            ((canonical_json(to_jsonable(item)), to_jsonable(item)) for item in value),
+            key=lambda pair: pair[0],
+        )
+        for earlier, later in zip(keyed, keyed[1:], strict=False):
+            if earlier[0] == later[0]:
+                raise ValueError(
+                    "ambiguous set: members collide to the same canonical form "
+                    f"{later[0]!r}"
+                )
+        return [member for _, member in keyed]
     raise TypeError(f"Unhashable identity value of type {type(value).__name__!r}")
 
 
@@ -78,12 +117,16 @@ def canonical_json(payload: Any) -> str:
 
     Operates on the json-safe form (:func:`to_jsonable`) so the exact bytes
     that are hashed equal the bytes derived from the persisted JSONB manifest.
+    ``allow_nan=False`` is the last line of defence — ``to_jsonable`` already
+    rejects non-finite numbers, but this guarantees no ``NaN``/``Infinity``
+    token can ever reach the wire even via an unforeseen path.
     """
     return json.dumps(
         to_jsonable(payload),
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
+        allow_nan=False,
     )
 
 

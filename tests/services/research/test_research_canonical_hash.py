@@ -119,6 +119,54 @@ def test_to_jsonable_is_json_safe_and_hash_consistent() -> None:
     assert jsonable["tags"] == ["a", "b", "c"]
 
 
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_float_is_rejected(bad: float) -> None:
+    with pytest.raises((ValueError, TypeError)):
+        to_jsonable({"x": bad})
+    with pytest.raises((ValueError, TypeError)):
+        canonical_json({"x": bad})
+
+
+@pytest.mark.parametrize("text", ["NaN", "Infinity", "-Infinity", "sNaN"])
+def test_non_finite_decimal_is_rejected(text: str) -> None:
+    bad = Decimal(text)
+    with pytest.raises((ValueError, TypeError)):
+        to_jsonable({"x": bad})
+
+
+def test_finite_decimal_still_roundtrips() -> None:
+    assert to_jsonable(Decimal("-0.0001")) == "__decimal__:-0.0001"
+
+
+def test_int_and_string_key_do_not_collide() -> None:
+    # {1: ..., "1": ...} must not silently collapse to a single "1" key.
+    with pytest.raises((TypeError, ValueError)):
+        to_jsonable({1: "int", "1": "str"})
+
+
+def test_non_string_key_rejected_even_when_nested() -> None:
+    with pytest.raises((TypeError, ValueError)):
+        to_jsonable({"outer": {2: "deep"}})
+    with pytest.raises((TypeError, ValueError)):
+        to_jsonable({"outer": [{"ok": 1}, {3: "bad"}]})
+
+
+def test_heterogeneous_set_is_deterministic_not_a_typeerror() -> None:
+    # Previously sorting {1, "1"} raised TypeError; now it is deterministic.
+    payload = {1, "1", "a", 2}
+    first = to_jsonable(payload)
+    assert isinstance(first, list)
+    assert first == to_jsonable({2, "a", "1", 1})  # order-independent input
+    assert canonical_sha256(payload) == canonical_sha256({2, "a", "1", 1})
+
+
+def test_set_members_that_collide_to_same_canonical_form_fail_close() -> None:
+    # A raw Decimal and a hand-crafted string that mimics its encoded form must
+    # not silently map to the same canonical member.
+    with pytest.raises((ValueError, TypeError)):
+        to_jsonable({Decimal("1.0"), "__decimal__:1.0"})
+
+
 def test_derive_experiment_id_is_deterministic_and_identity_sensitive() -> None:
     hashes = compute_identity_hashes(_identity_components())
     exp_id = derive_experiment_id("NFIX", "v1", hashes)
