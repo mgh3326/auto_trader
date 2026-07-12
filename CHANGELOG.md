@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added (ROB-838 — immutable analysis snapshot bundles; migration 0)
+- **Re-analysis sessions can consume one fixed, write-once input bundle.** `analysis_bundle_create` captures holdings, cash, quotes, order books, indicators, support/resistance, flow, decision history, and gate inputs once through read-only service boundaries; each section retains its collection source, as-of timestamp, completion timestamp, and explicit unavailable error instead of being repaired on read.
+- **Bundle reads are DB-only and integrity checked.** `analysis_bundle_get` verifies the stored `content_hash`, returns the exact persisted document without provider calls or recomputation, and optionally projects `sections=[...]` from those stored values. Freshness is response metadata (`created_at`, per-section as-of/age/stale state), so old or incomplete evidence cannot masquerade as current data.
+- **The new MCP surface is isolated default-off.** `ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED=false` hides creation and retrieval until explicitly enabled; the read-only profile exposes retrieval only. ROB-833 can reuse the contract as `watch/fill event → bundle creation → same bundle ID passed to every claude -p session`, keeping model comparisons on identical inputs.
+
 ### Added (ROB-832 — order proposal replace/cancel actions; migration 1)
 - **Operators can approve one-order replace or cancel proposals in Telegram.** Replace proposals bind one target broker-order snapshot to one new-order specification; cancel proposals bind one target snapshot to one cancel action. Existing place proposals keep multi-rung behavior and legacy `NULL` actions behave as `place`.
 - **Replace is fail-closed across cancel-and-new.** Approval re-fetches broker evidence, reruns preview/profit guards, confirms the old order cancellation, then submits the replacement. Any target drift, cancellation failure, missing confirmation, or ambiguous broker response prevents a new order and preserves reconciliation lineage.
