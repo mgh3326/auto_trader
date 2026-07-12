@@ -150,7 +150,12 @@ BINANCE_DEMO_SCALPING_ENABLED=true BINANCE_FUTURES_DEMO_ENABLED=true \
 ```
 
 Exit codes: `0` reconciled / dry-run / disabled, `1` blocked / operator
-misconfig, `2` anomaly / runtime.
+misconfig, `2` anomaly / runtime. An untrustworthy server market snapshot
+(bookTicker/kline unavailable, malformed, or non-finite; ROB-841) is a
+**blocked** outcome — the CLI emits a `demo_scalping_execute` evidence line
+with `status=blocked` and `reason_codes=[market_conditions_unavailable]` and
+exits `1` (never the generic exit `2`), before any DB session, executor, or
+broker submit.
 
 ### Running the real-order smoke (clean ledger DB)
 
