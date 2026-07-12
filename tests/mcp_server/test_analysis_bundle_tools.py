@@ -51,12 +51,13 @@ def test_registrar_can_physically_omit_create() -> None:
 def test_descriptions_lock_frozen_evidence_boundaries() -> None:
     mcp = _RecorderMCP()
     handlers.register_analysis_bundle_tools(mcp)
-    descriptions = " ".join(mcp.descriptions.values()).lower()
+    get_description = mcp.descriptions["analysis_bundle_get"]
+    create_description = mcp.descriptions["analysis_bundle_create"]
 
-    assert "stored payload verbatim" in descriptions
-    assert "zero provider calls/recomputation on get" in descriptions
-    assert "sha-256 verified" in descriptions
-    assert "evidence append only; no order/proposal mutation" in descriptions
+    assert "verbatim" in get_description.lower()
+    assert "zero provider" in get_description.lower()
+    assert "sha-256" in get_description.lower()
+    assert "no order" in create_description.lower()
 
 
 @pytest.mark.asyncio

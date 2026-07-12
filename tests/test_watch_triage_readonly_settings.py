@@ -89,6 +89,17 @@ def test_session_context_append_is_NOT_denied():
     assert not any(e.endswith("__session_context_append") for e in _deny())
 
 
+def test_analysis_bundle_read_is_allowed_but_capture_is_not() -> None:
+    from app.mcp_server.tooling.analysis_readonly_registration import (
+        ANALYSIS_READONLY_FORBIDDEN_TOOL_NAMES,
+        ANALYSIS_READONLY_TOOL_NAMES,
+    )
+
+    assert "analysis_bundle_get" in ANALYSIS_READONLY_TOOL_NAMES
+    assert "analysis_bundle_create" not in ANALYSIS_READONLY_TOOL_NAMES
+    assert "analysis_bundle_create" in ANALYSIS_READONLY_FORBIDDEN_TOOL_NAMES
+
+
 def test_no_new_order_mutation_tool_escapes_known_set():
     found: set[str] = set()
     for p in TOOLING.glob("*.py"):

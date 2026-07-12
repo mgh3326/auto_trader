@@ -223,6 +223,53 @@ disabled no-op payloads:
 - `investment_stage_artifacts_ingest_from_hermes`
 - `investment_report_prepare_intraday_context`
 
+### Frozen analysis snapshot bundles (ROB-838)
+
+The `analysis_bundle_create` and `analysis_bundle_get` tools are gated by
+`ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED`, whose default is `false`. When the gate
+is false, both tools are physically absent from the default MCP surface.
+
+`analysis_bundle_create(market, account_scope, symbols, user_id=None,
+market_session=None)` captures a fixed, append-only input document. `market` is
+`kr`, `us`, or `crypto`; `account_scope` is optional and, when present, is
+`kis_live`, `kis_mock`, `alpaca_paper`, or `upbit_live`; `symbols` contains 1–10
+symbols; and `user_id` and `market_session` are optional capture context. A
+successful call returns `success`, `bundle_id`, the canonical SHA-256
+`content_hash`, `captured_at`, and completeness fields: `status` (`complete` or
+`partial`), `unavailable_sections`, and `partial_sections`. Capture has no order
+or proposal mutation side effect.
+
+`analysis_bundle_get(bundle_id, sections=None)` accepts the bundle UUID and an
+optional list drawn from `portfolio`, `quotes_orderbooks`,
+`indicators_support_resistance`, `market_gate_inputs`, `investor_flow`, and
+`decision_history`. Omitting `sections` returns the complete stored document.
+Supplying it only projects the named stored sections; it does not recapture,
+recompute, refresh, backfill, or otherwise change any stored value. The result
+includes `success`, `bundle_id`, `content_hash`, `integrity_verified`, creation,
+capture, and read timestamps, bundle `age_seconds`, `status`, `completeness`,
+`stale_warning`, per-section `section_freshness`, and the stored `document`.
+
+Bundles are write-once evidence. To correct or update input, create a new bundle
+and hand off its new `bundle_id`; never patch an old bundle. Every get recomputes
+the canonical SHA-256 hash and compares it with the stored hash before returning
+the document. A mismatch, malformed frozen document, wrong bundle purpose/kind,
+or invalid item cardinality returns `error="analysis_bundle_integrity_error"`
+instead of unverified evidence.
+
+Freshness is read-time metadata only. `age_seconds`, `stale_warning`, and each
+section's `as_of`, age, and freshness status describe the frozen evidence
+without refreshing it. Likewise, a provider failure captured as an unavailable
+section retains its original error and remains unavailable; get never calls a
+provider to fill it.
+
+The `analysis_readonly` Codex/headless profile exposes
+`analysis_bundle_get` only when the gate is enabled. It never exposes
+`analysis_bundle_create`, preserving the consumer's get-only boundary.
+
+The ROB-833 runner handoff is exactly:
+
+`watch/fill event → bundle create → same bundle_id into claude -p sessions → bundle get only`.
+
 ### Session Context Tools
 
 `session_context_append(entries)` persists append-only operator context for
@@ -1820,6 +1867,7 @@ Allowed tools:
 - `get_intraday_investor_flow`
 - `analysis_artifact_save`
 - `analysis_artifact_get`
+- `analysis_bundle_get` (only when `ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED=true`)
 - `forecast_save`
 - `session_context_append`
 - `session_context_get_recent`
