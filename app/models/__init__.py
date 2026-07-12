@@ -55,6 +55,7 @@ from .research_backtest import (
     ResearchBacktestPair,
     ResearchBacktestRun,
     ResearchPromotionCandidate,
+    ResearchStrategyExperiment,
     ResearchSyncJob,
 )
 from .research_pipeline import (
@@ -146,6 +147,7 @@ __all__ = [
     "ResearchBacktestRun",
     "ResearchBacktestPair",
     "ResearchPromotionCandidate",
+    "ResearchStrategyExperiment",
     "ResearchSyncJob",
     "AssetProfile",
     "TierRuleParam",

@@ -22,7 +22,9 @@ from sqlalchemy import text
 # have no mirrored ALTER string below — they rely solely on
 # Base.metadata.create_all. Persistent local test DBs bootstrapped before
 # Task 4 landed never got these tables until this bump forces one re-run.
-SCHEMA_BOOTSTRAP_VERSION = 5
+# v6 (ROB-846): research.strategy_experiments / research.backtest_runs
+# append-only immutability triggers are non-ORM DDL and are mirrored below.
+SCHEMA_BOOTSTRAP_VERSION = 6
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -481,6 +483,87 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ADD CONSTRAINT order_proposals_action "
     "CHECK (action IS NULL OR action IN ('place','replace','cancel')); "
     "END IF; END $$",
+    # ---- ROB-846: append-only trial-child columns on research.backtest_runs +
+    # run/config/data hash linkage on research.promotion_candidates. create_all
+    # skips existing tables, so a persistent test DB needs these ALTERs (they
+    # are no-ops on a fresh DB where create_all already built the ORM shape).
+    "ALTER TABLE research.backtest_runs "
+    "ADD COLUMN IF NOT EXISTS strategy_experiment_id BIGINT",
+    "ALTER TABLE research.backtest_runs ADD COLUMN IF NOT EXISTS trial_index INTEGER",
+    "ALTER TABLE research.backtest_runs ADD COLUMN IF NOT EXISTS seed BIGINT",
+    "ALTER TABLE research.backtest_runs "
+    "ADD COLUMN IF NOT EXISTS information_cutoff TIMESTAMPTZ",
+    "ALTER TABLE research.backtest_runs "
+    "ADD COLUMN IF NOT EXISTS trial_status VARCHAR(16)",
+    "ALTER TABLE research.backtest_runs "
+    "ADD COLUMN IF NOT EXISTS gate_artifact_hash VARCHAR(64)",
+    "ALTER TABLE research.backtest_runs "
+    "ADD COLUMN IF NOT EXISTS trial_idempotency_key VARCHAR(128)",
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conname='fk_research_backtest_runs_experiment_id' "
+    "AND conrelid='research.backtest_runs'::regclass) THEN "
+    "ALTER TABLE research.backtest_runs "
+    "ADD CONSTRAINT fk_research_backtest_runs_experiment_id "
+    "FOREIGN KEY (strategy_experiment_id) "
+    "REFERENCES research.strategy_experiments(id) ON DELETE RESTRICT; "
+    "END IF; END $$",
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conname='uq_research_backtest_runs_experiment_trial_index' "
+    "AND conrelid='research.backtest_runs'::regclass) THEN "
+    "ALTER TABLE research.backtest_runs "
+    "ADD CONSTRAINT uq_research_backtest_runs_experiment_trial_index "
+    "UNIQUE (strategy_experiment_id, trial_index); END IF; END $$",
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conname='uq_research_backtest_runs_experiment_idempotency' "
+    "AND conrelid='research.backtest_runs'::regclass) THEN "
+    "ALTER TABLE research.backtest_runs "
+    "ADD CONSTRAINT uq_research_backtest_runs_experiment_idempotency "
+    "UNIQUE (strategy_experiment_id, trial_idempotency_key); END IF; END $$",
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conrelid='research.backtest_runs'::regclass AND contype='c' "
+    "AND pg_get_constraintdef(oid) LIKE '%trial_status%') THEN "
+    "ALTER TABLE research.backtest_runs "
+    "ADD CONSTRAINT ck_research_backtest_runs_trial_status "
+    "CHECK (trial_status IS NULL OR trial_status IN "
+    "('completed','rejected','crashed','timeout')); END IF; END $$",
+    "CREATE INDEX IF NOT EXISTS ix_research_backtest_runs_experiment "
+    "ON research.backtest_runs (strategy_experiment_id, trial_index)",
+    "ALTER TABLE research.promotion_candidates "
+    "ADD COLUMN IF NOT EXISTS experiment_id VARCHAR(64)",
+    "ALTER TABLE research.promotion_candidates "
+    "ADD COLUMN IF NOT EXISTS run_config_hash VARCHAR(64)",
+    "ALTER TABLE research.promotion_candidates "
+    "ADD COLUMN IF NOT EXISTS run_data_hash VARCHAR(64)",
+    # ---- ROB-846: append-only immutability triggers (mirror of the migration)
+    # research.strategy_experiments rows are fully immutable; research.backtest_runs
+    # rows are immutable only when they are trials (strategy_experiment_id NOT NULL),
+    # so legacy summary upserts still work.
+    "CREATE OR REPLACE FUNCTION research.reject_strategy_experiment_mutation() "
+    "RETURNS trigger AS $$ BEGIN "
+    "RAISE EXCEPTION "
+    "'research.strategy_experiments is append-only/immutable; % rejected', TG_OP "
+    "USING ERRCODE = 'restrict_violation'; "
+    "END; $$ LANGUAGE plpgsql",
+    "DROP TRIGGER IF EXISTS trg_strategy_experiments_immutable "
+    "ON research.strategy_experiments",
+    "CREATE TRIGGER trg_strategy_experiments_immutable "
+    "BEFORE UPDATE OR DELETE ON research.strategy_experiments "
+    "FOR EACH ROW EXECUTE FUNCTION research.reject_strategy_experiment_mutation()",
+    "CREATE OR REPLACE FUNCTION research.reject_backtest_trial_mutation() "
+    "RETURNS trigger AS $$ BEGIN "
+    "IF OLD.strategy_experiment_id IS NOT NULL THEN "
+    "RAISE EXCEPTION "
+    "'research.backtest_runs trial rows are append-only; % rejected on id=%', "
+    "TG_OP, OLD.id USING ERRCODE = 'restrict_violation'; "
+    "END IF; "
+    "IF TG_OP = 'DELETE' THEN RETURN OLD; END IF; "
+    "RETURN NEW; "
+    "END; $$ LANGUAGE plpgsql",
+    "DROP TRIGGER IF EXISTS trg_backtest_runs_trial_immutable "
+    "ON research.backtest_runs",
+    "CREATE TRIGGER trg_backtest_runs_trial_immutable "
+    "BEFORE UPDATE OR DELETE ON research.backtest_runs "
+    "FOR EACH ROW EXECUTE FUNCTION research.reject_backtest_trial_mutation()",
 )
 
 
