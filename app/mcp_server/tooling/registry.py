@@ -314,10 +314,15 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_kis_mock_order_tools(mcp)
         # Intentionally NOT: register_order_tools, register_kis_live_order_tools
     elif profile is McpProfile.US_PAPER:
+        from app.mcp_server.tooling.alpaca_paper_automated_orders import (
+            register_alpaca_paper_automated_orders_tools,
+        )
+
         register_alpaca_paper_tools(mcp)
         register_alpaca_paper_preview_tools(mcp)
         register_us_dual_paper_tools(mcp)
         register_alpaca_paper_orders_tools(mcp)
+        register_alpaca_paper_automated_orders_tools(mcp)
         register_alpaca_paper_ledger_read_tools(mcp)
     elif profile is McpProfile.DB_PAPER:
         register_paper_account_tools(mcp)

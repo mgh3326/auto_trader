@@ -234,6 +234,47 @@ def from_approval_bridge(
 
 
 # ---------------------------------------------------------------------------
+# ROB-842: atomic submit-claim support
+# ---------------------------------------------------------------------------
+@dataclass
+class SubmitClaim:
+    """Result of an atomic submit claim on the existing execution unique slot.
+
+    won:  True if this caller inserted the execution claim row (owns the broker
+          POST); False if a concurrent/sequential caller already claimed it.
+    row:  the execution/lifecycle row for the client_order_id (winner's fresh claim
+          row, or the row a losing caller must inspect for replay vs in-flight).
+    """
+
+    won: bool
+    row: AlpacaPaperOrderLedger | None
+
+
+def is_inflight_execution(row: Any) -> bool:
+    """True when an execution row is a claimed-but-not-yet-recorded submit.
+
+    The winner inserts an execution row with ``submitted_at``/``broker_order_id``
+    NULL, then fills them in ``record_submit`` after the broker responds. An
+    execution row still missing both markers therefore denotes an in-flight (or
+    crashed-mid-flight) submit that must not be re-POSTed.
+    """
+    if row is None:
+        return False
+    if str(_get_attr(row, "record_kind") or "") != RECORD_KIND_EXECUTION:
+        return False
+    return (
+        _get_attr(row, "submitted_at") is None
+        and _get_attr(row, "broker_order_id") is None
+    )
+
+
+def _get_attr(row: Any, key: str, default: Any = None) -> Any:
+    if isinstance(row, dict):
+        return row.get(key, default)
+    return getattr(row, key, default)
+
+
+# ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
 class LedgerNotFoundError(Exception):
@@ -252,6 +293,11 @@ class AlpacaPaperLedgerService:
 
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
+
+    @property
+    def session(self) -> AsyncSession:
+        """Underlying async session (used to force a fresh READ COMMITTED snapshot)."""
+        return self._db
 
     # ------------------------------------------------------------------
     # Read helpers
@@ -364,6 +410,133 @@ class AlpacaPaperLedgerService:
                 AlpacaPaperOrderLedger.client_order_id == client_order_id,
                 AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
                 AlpacaPaperOrderLedger.lifecycle_state.in_(EXECUTED_LIFECYCLE_STATES),
+            )
+            .order_by(
+                AlpacaPaperOrderLedger.created_at.desc(),
+                AlpacaPaperOrderLedger.id.desc(),
+            )
+            .limit(1)
+        )
+        result = await self._db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    # ------------------------------------------------------------------
+    # ROB-842: atomic submit claim
+    # ------------------------------------------------------------------
+
+    async def claim_submit(
+        self,
+        *,
+        client_order_id: str,
+        lifecycle_correlation_id: str | None = None,
+        execution_symbol: str,
+        execution_venue: str,
+        instrument_type: InstrumentType,
+        side: str,
+        order_type: str = "limit",
+        time_in_force: str | None = None,
+        requested_qty: Decimal | float | None = None,
+        requested_notional: Decimal | float | None = None,
+        requested_price: Decimal | float | None = None,
+        currency: str = "USD",
+        preview_payload: dict[str, Any] | None = None,
+        provenance: ApprovalProvenance | None = None,
+    ) -> SubmitClaim:
+        """Atomically claim submit ownership for ``client_order_id``.
+
+        Inserts the single execution row for this order (record_kind='execution',
+        lifecycle_state='submitted', broker_order_id/submitted_at NULL) using
+        ``INSERT ... ON CONFLICT DO NOTHING RETURNING id`` against the existing
+        partial-unique execution slot. The winner is whichever caller inserts the
+        row; every other concurrent/sequential caller conflicts and observes
+        ``won=False``. No new table/column/index is introduced — this reuses the
+        ROB-90 ``(client_order_id, record_kind)`` unique slot that
+        ``record_submit`` later updates in place.
+        """
+        if not client_order_id or not client_order_id.strip():
+            raise ValueError("client_order_id must not be empty")
+
+        prov = provenance or ApprovalProvenance()
+        correlation_id = lifecycle_correlation_id or client_order_id
+        sanitized_preview = (
+            _redact_sensitive_keys(preview_payload) if preview_payload else None
+        )
+
+        values: dict[str, Any] = {
+            "client_order_id": client_order_id,
+            "lifecycle_correlation_id": correlation_id,
+            "record_kind": RECORD_KIND_EXECUTION,
+            "broker": "alpaca",
+            "account_mode": "alpaca_paper",
+            "lifecycle_state": LIFECYCLE_SUBMITTED,
+            "execution_symbol": execution_symbol,
+            "execution_venue": execution_venue,
+            "instrument_type": instrument_type,
+            "side": side,
+            "order_type": order_type,
+            "time_in_force": time_in_force,
+            "requested_qty": requested_qty,
+            "requested_notional": requested_notional,
+            "requested_price": requested_price,
+            "currency": currency,
+            "preview_payload": sanitized_preview,
+            # In-flight markers: intentionally NULL until record_submit fills them.
+            "broker_order_id": None,
+            "submitted_at": None,
+            "confirm_flag": True,
+            **self._build_provenance_values(prov),
+        }
+
+        stmt = (
+            pg_insert(AlpacaPaperOrderLedger)
+            .values(**values)
+            .on_conflict_do_nothing(
+                index_elements=["client_order_id", "record_kind"],
+                index_where=text("validation_attempt_no IS NULL"),
+            )
+            .returning(AlpacaPaperOrderLedger.id)
+        )
+        result = await self._db.execute(stmt)
+        inserted_id = result.scalar_one_or_none()
+        await self._db.commit()
+
+        # Re-read from the committed state so a losing caller sees the winner's row.
+        self._db.expire_all()
+        row = await self._find_execution_row(client_order_id)
+        return SubmitClaim(won=inserted_id is not None, row=row)
+
+    async def _find_execution_row(
+        self, client_order_id: str
+    ) -> AlpacaPaperOrderLedger | None:
+        """Return the execution row for client_order_id regardless of lifecycle state."""
+        stmt = (
+            select(AlpacaPaperOrderLedger)
+            .where(
+                AlpacaPaperOrderLedger.client_order_id == client_order_id,
+                AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
+            )
+            .order_by(
+                AlpacaPaperOrderLedger.created_at.desc(),
+                AlpacaPaperOrderLedger.id.desc(),
+            )
+            .limit(1)
+        )
+        result = await self._db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_preview_by_client_order_id(
+        self, client_order_id: str
+    ) -> AlpacaPaperOrderLedger | None:
+        """Return the persisted preview row for a client_order_id, if any.
+
+        Used by the automated submit path to bind the submit to the server-owned
+        packet built and persisted at preview time.
+        """
+        stmt = (
+            select(AlpacaPaperOrderLedger)
+            .where(
+                AlpacaPaperOrderLedger.client_order_id == client_order_id,
+                AlpacaPaperOrderLedger.record_kind == RECORD_KIND_PREVIEW,
             )
             .order_by(
                 AlpacaPaperOrderLedger.created_at.desc(),
@@ -1118,8 +1291,10 @@ __all__ = [
     "RECORD_KIND_PREVIEW",
     "RECORD_KIND_RECONCILE",
     "RECORD_KIND_VALIDATION_ATTEMPT",
+    "SubmitClaim",
     "_derive_lifecycle_state",
     "_redact_sensitive_keys",
     "_redact_sensitive_text",
     "from_approval_bridge",
+    "is_inflight_execution",
 ]

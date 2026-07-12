@@ -11,8 +11,6 @@ switch the underlying service to the live endpoint.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from collections.abc import Callable
 from decimal import Decimal
@@ -23,6 +21,10 @@ from pydantic import BaseModel
 from app.mcp_server.tooling.alpaca_paper_preview import (
     ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD,
     PreviewOrderInput,
+)
+from app.services.alpaca_paper_submit_service import (
+    build_canonical_payload,
+    derive_client_order_id,
 )
 from app.services.brokers.alpaca.schemas import OrderRequest
 from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
@@ -72,25 +74,22 @@ def _model_to_jsonable(value: Any) -> Any:
 
 
 def _canonical_payload(validated: PreviewOrderInput) -> dict[str, Any]:
-    return {
-        "symbol": validated.symbol,
-        "side": validated.side,
-        "type": validated.type,
-        "time_in_force": validated.time_in_force,
-        "qty": str(validated.qty) if validated.qty is not None else None,
-        "notional": str(validated.notional) if validated.notional is not None else None,
-        "limit_price": str(validated.limit_price)
-        if validated.limit_price is not None
-        else None,
-        "asset_class": validated.asset_class,
-    }
+    """Canonical submit payload — shared with the ROB-842 application service."""
+    return build_canonical_payload(
+        symbol=validated.symbol,
+        side=validated.side,
+        type=validated.type,
+        time_in_force=validated.time_in_force,
+        qty=validated.qty,
+        notional=validated.notional,
+        limit_price=validated.limit_price,
+        asset_class=validated.asset_class,
+    )
 
 
 def _derive_client_order_id(payload: dict[str, Any]) -> str:
-    blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    digest = hashlib.sha256(blob).hexdigest()[:16]
-    prefix = "rob74-crypto" if payload.get("asset_class") == "crypto" else "rob73"
-    return f"{prefix}-{digest}"
+    """Server-derived deterministic client_order_id (shared, single source)."""
+    return derive_client_order_id(payload)
 
 
 def _validate_exact_order_id(order_id: str) -> str:
@@ -125,6 +124,12 @@ async def alpaca_paper_submit_order(
     """Submit a single Alpaca PAPER order (us_equity or narrow crypto).
 
     Defaults to ``confirm=False`` which performs no broker call.
+
+    This is the MANUAL, operator-only smoke tool. It is NOT the automated
+    execution path and carries no caller-selectable origin switch: an automated
+    cohort must use the separate ``alpaca_paper_automated_preview_order`` /
+    ``alpaca_paper_automated_submit_order`` tools, which route through the
+    server-owned approval-packet + ledger-atomic-claim boundary (ROB-842).
     """
     validated = PreviewOrderInput(
         symbol=symbol,
