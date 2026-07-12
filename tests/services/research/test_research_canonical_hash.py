@@ -169,6 +169,25 @@ def test_finite_decimal_still_roundtrips() -> None:
     assert encode_canonical(Decimal("-0.0001")) == ["decimal", "-0.0001"]
 
 
+@pytest.mark.parametrize(
+    "value",
+    [-0.0, 0.0, 1e20, 5e-324, 1.7976931348623157e308, 0.1, -0.1],
+    ids=["neg0", "pos0", "e20", "min-subnormal", "max-finite", "0.1", "-0.1"],
+)
+def test_float_encodes_as_exact_stable_hex_string(value: float) -> None:
+    encoded = encode_canonical(value)
+    assert encoded == ["float", value.hex()]
+    # Payload is a string (JSONB-stable), not a JSON number.
+    assert isinstance(encoded[1], str)
+    # A JSON round-trip (what JSONB does) reproduces the identical digest.
+    roundtripped = json.loads(json.dumps(encoded))
+    assert hash_canonical_ast(roundtripped) == canonical_sha256(value)
+
+
+def test_signed_zero_floats_are_distinguished() -> None:
+    assert canonical_sha256(-0.0) != canonical_sha256(0.0)
+
+
 def test_int_and_string_key_do_not_collide() -> None:
     with pytest.raises((TypeError, ValueError)):
         encode_canonical({1: "int", "1": "str"})

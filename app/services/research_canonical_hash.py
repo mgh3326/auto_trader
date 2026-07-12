@@ -93,7 +93,13 @@ def encode_canonical(value: Any) -> list[Any]:
     if isinstance(value, float):
         if not math.isfinite(value):
             raise ValueError(f"non-finite float is not JSON/JSONB safe: {value!r}")
-        return ["float", value]
+        # Store the float as its exact hex string, NOT a JSON number: Postgres
+        # JSONB normalises numeric literals (``-0.0`` → ``0.0``, ``1e20`` → a big
+        # integer, max-finite → a 300-digit integer), which would change the
+        # canonical hash across a store/read round-trip and cause false
+        # ``CanonicalIdentityCollision`` on replay. ``float.hex()`` is exact,
+        # sign-preserving, and JSONB-stable (it is a plain string).
+        return ["float", value.hex()]
     if isinstance(value, Decimal):
         if not value.is_finite():
             raise ValueError(f"non-finite Decimal is not JSON/JSONB safe: {value!r}")

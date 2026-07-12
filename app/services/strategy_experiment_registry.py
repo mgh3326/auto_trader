@@ -33,6 +33,7 @@ from app.schemas.research_backtest import (
     TrialAccounting,
 )
 from app.services.research_canonical_hash import (
+    IDENTITY_COMPONENTS,
     canonical_ast_json,
     compute_identity_hashes,
     derive_experiment_id,
@@ -82,6 +83,40 @@ async def _get_experiment(
     )
 
 
+def _assert_same_identity(
+    stored: ResearchStrategyExperiment,
+    *,
+    identity: StrategyExperimentIdentity,
+    component_hashes: dict[str, str],
+    incoming_manifest: dict[str, object],
+) -> None:
+    """Fail closed unless ``stored`` is the SAME identity as the incoming one.
+
+    Guards every replay of an existing immutable row (both the initial
+    existing-row lookup and the concurrent unique-conflict winner re-read).
+    Compares the FULL identity — strategy key/version, the canonical manifest,
+    and every persisted component hash — so a row reached under a colliding
+    ``experiment_id`` (different key/version/params/manifest) is never replayed.
+    """
+    mismatches: list[str] = []
+    if stored.strategy_key != identity.strategy_key:
+        mismatches.append("strategy_key")
+    if stored.strategy_version != identity.strategy_version:
+        mismatches.append("strategy_version")
+    for name in IDENTITY_COMPONENTS:
+        column = f"{name}_hash"
+        if getattr(stored, column) != component_hashes[column]:
+            mismatches.append(column)
+    if canonical_ast_json(stored.manifest) != canonical_ast_json(incoming_manifest):
+        mismatches.append("manifest")
+    if mismatches:
+        raise CanonicalIdentityCollision(
+            f"experiment_id {stored.experiment_id!r} already exists with a different "
+            f"identity (mismatch: {', '.join(mismatches)}); refusing to replay the "
+            "immutable row under a colliding identity"
+        )
+
+
 async def register_experiment(
     session: AsyncSession,
     identity: StrategyExperimentIdentity,
@@ -103,17 +138,13 @@ async def register_experiment(
 
     existing = await _get_experiment(session, experiment_id)
     if existing is not None:
-        # Idempotent replay — but only for the SAME identity. Compare the stored
-        # canonical manifest with the incoming one exactly; if they differ this
-        # experiment_id was reached by a different identity (a hash collision),
-        # so refuse to replay the immutable row under it (ROB-846 review).
-        if canonical_ast_json(existing.manifest) != canonical_ast_json(
-            incoming_manifest
-        ):
-            raise CanonicalIdentityCollision(
-                f"experiment_id {experiment_id!r} already exists with a different "
-                "canonical manifest; refusing to replay under a colliding identity"
-            )
+        # Idempotent replay — but only for the SAME complete identity.
+        _assert_same_identity(
+            existing,
+            identity=identity,
+            component_hashes=component_hashes,
+            incoming_manifest=incoming_manifest,
+        )
         return existing
 
     if identity.supersedes_experiment_id is not None:
@@ -144,13 +175,21 @@ async def register_experiment(
             session.add(row)
             await session.flush()
     except IntegrityError as exc:
-        # Concurrent registration of the SAME identity won the race and
-        # committed. Idempotent contract: return that original row unchanged.
+        # A concurrent registration won the unique-experiment_id race and
+        # committed. Re-read the winner and apply the SAME full-identity check as
+        # the initial path: only replay it when the identity matches exactly,
+        # otherwise fail closed (a collision must not silently replay).
         if "experiment_id" not in _constraint_name(exc):
             raise
         winner = await _get_experiment(session, experiment_id)
         if winner is None:  # pragma: no cover - conflict without a visible row
             raise
+        _assert_same_identity(
+            winner,
+            identity=identity,
+            component_hashes=component_hashes,
+            incoming_manifest=incoming_manifest,
+        )
         return winner
     return row
 

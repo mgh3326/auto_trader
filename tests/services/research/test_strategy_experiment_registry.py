@@ -780,3 +780,140 @@ async def test_experiment_id_collision_with_different_manifest_fails_closed(
     )
     with pytest.raises(reg.CanonicalIdentityCollision):
         await reg.register_experiment(session, _identity(params={"p": "second"}))
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize("diff", ["strategy_key", "strategy_version"])
+async def test_replay_rejects_key_or_version_mismatch_even_if_manifest_matches(
+    registry_tables, monkeypatch, diff
+) -> None:
+    # The manifest does NOT carry strategy_key/version, so a manifest-only check
+    # would miss these. The full-identity guard must still fail closed.
+    session = registry_tables
+    common_version = "v-" + uuid.uuid4().hex[:8]
+    common_key = "K-" + uuid.uuid4().hex[:8]
+    common_params = {"roi": 0.05}
+
+    first = await reg.register_experiment(
+        session,
+        _identity(
+            strategy_key=common_key,
+            strategy_version=common_version,
+            params=common_params,
+        ),
+    )
+    await session.flush()
+
+    overrides: dict[str, str] = {
+        "strategy_key": common_key,
+        "strategy_version": common_version,
+    }
+    overrides[diff] = overrides[diff] + "-DIFFERENT"
+
+    monkeypatch.setattr(
+        reg, "derive_experiment_id", lambda *a, **k: first.experiment_id
+    )
+    with pytest.raises(reg.CanonicalIdentityCollision):
+        await reg.register_experiment(
+            session,
+            _identity(params=common_params, **overrides),
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_edge_floats_roundtrip_and_replay_without_false_collision(
+    registry_tables,
+) -> None:
+    # Blocker 1: edge floats must survive a real Postgres JSONB store/read and
+    # replay from a FRESH session without a false CanonicalIdentityCollision.
+    from app.core.db import engine
+    from app.services.research_canonical_hash import compute_identity_hashes_from_ast
+
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    edge = {
+        "neg_zero": -0.0,
+        "pos_zero": 0.0,
+        "e20": 1e20,
+        "max_fin": 1.7976931348623157e308,
+        "min_sub": 5e-324,
+        "point1": 0.1,
+    }
+    ident = _identity(
+        strategy_key="FLOAT-" + uuid.uuid4().hex[:8], params={"edge": edge}
+    )
+
+    async with Session() as writer:
+        exp = await reg.register_experiment(writer, ident)
+        await writer.commit()
+        experiment_id = exp.experiment_id
+        params_hash = exp.params_hash
+
+    async with Session() as reader:
+        # Replay the identical identity against the persisted (JSONB-roundtripped)
+        # row — must return the same row, not raise.
+        replay = await reg.register_experiment(reader, ident)
+        assert replay.experiment_id == experiment_id
+
+        stored = (
+            await reader.execute(
+                text(
+                    "SELECT manifest, params_hash "
+                    "FROM research.strategy_experiments WHERE experiment_id = :e"
+                ),
+                {"e": experiment_id},
+            )
+        ).one()
+        manifest, stored_params_hash = stored
+        assert stored_params_hash == params_hash
+        # AST re-hash of the persisted manifest reproduces the same digest.
+        assert compute_identity_hashes_from_ast(manifest)["params_hash"] == params_hash
+
+    async with Session() as check:
+        count = await check.scalar(
+            select(func.count())
+            .select_from(reg.ResearchStrategyExperiment)
+            .where(reg.ResearchStrategyExperiment.experiment_id == experiment_id)
+        )
+    assert count == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_concurrent_forced_collision_fails_closed_on_winner_path(
+    registry_tables, monkeypatch
+) -> None:
+    # Two different identities forced to the same experiment_id, registered
+    # concurrently: exactly one wins the unique race and one fails closed
+    # (whether it catches the collision at the initial SELECT or the winner
+    # re-read after the IntegrityError). Never two rows, never a wrong replay.
+    from app.core.db import engine
+
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    fixed_id = uuid.uuid4().hex + uuid.uuid4().hex  # 64-hex, unique per run
+    monkeypatch.setattr(reg, "derive_experiment_id", lambda *a, **k: fixed_id)
+
+    ident_a = _identity(strategy_key="A-" + uuid.uuid4().hex[:8], params={"p": "A"})
+    ident_b = _identity(strategy_key="B-" + uuid.uuid4().hex[:8], params={"p": "B"})
+
+    async def worker(ident) -> str:
+        async with Session() as s:
+            try:
+                await reg.register_experiment(s, ident)
+                await s.commit()
+                return "ok"
+            except reg.CanonicalIdentityCollision:
+                await s.rollback()
+                return "collision"
+
+    results = sorted(await asyncio.gather(worker(ident_a), worker(ident_b)))
+    assert results == ["collision", "ok"]
+
+    async with Session() as check:
+        count = await check.scalar(
+            select(func.count())
+            .select_from(reg.ResearchStrategyExperiment)
+            .where(reg.ResearchStrategyExperiment.experiment_id == fixed_id)
+        )
+    assert count == 1
