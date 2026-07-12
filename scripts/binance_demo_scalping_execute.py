@@ -130,9 +130,12 @@ async def _run(args: argparse.Namespace) -> int:
     from app.core.db import AsyncSessionLocal
     from app.services.brokers.binance.demo_scalping.market_data import (
         DemoScalpingMarketData,
+        MarketConditionsUnavailable,
+        build_market_conditions,
     )
     from app.services.brokers.binance.demo_scalping_exec.executor import (
         DemoScalpingExecutor,
+        ExecutionResult,
     )
     from app.services.brokers.binance.demo_scalping_exec.reference import (
         DemoReferenceData,
@@ -152,8 +155,43 @@ async def _run(args: argparse.Namespace) -> int:
         client = BinanceFuturesDemoExecutionClient.from_env()
 
     reference = DemoReferenceData()
-    market_data = DemoScalpingMarketData() if args.monitor else None
+    # ROB-841: the executor now fails closed without a server-derived market
+    # snapshot, so build one for BOTH the immediate and monitored paths.
+    market_data = DemoScalpingMarketData()
+    # Built up-front (pure; no DB/broker) so an unavailable-market blocked
+    # result can carry the correct product/symbol/side in its evidence.
+    intent = build_manual_intent(
+        product=args.product,
+        symbol=args.symbol,
+        side=args.side,
+        now=now,
+        limits=limits,
+    )
     try:
+        try:
+            # ROB-841: the builder samples its own clock after both observations
+            # complete, so fetch latency counts toward staleness.
+            market = await build_market_conditions(
+                market_data,
+                product=args.product,
+                symbol=args.symbol,
+            )
+        except MarketConditionsUnavailable as exc:
+            # CLI boundary: an untrustworthy server market snapshot is a
+            # blocked outcome (exit 1), NOT a runtime failure (exit 2). We
+            # return before opening a DB session or constructing the executor,
+            # so no broker submit / ledger touch occurs. Any OTHER exception
+            # keeps propagating to the top-level runtime guard (exit 2).
+            logger.warning(
+                "demo scalping market conditions unavailable: %s", exc.reason
+            )
+            result = ExecutionResult(
+                intent=intent,
+                status="blocked",
+                reason_codes=("market_conditions_unavailable",),
+            )
+            _evidence({"event": "demo_scalping_execute", **result.to_evidence_dict()})
+            return _EXIT_BY_STATUS["blocked"]
         async with AsyncSessionLocal() as session:
             executor = DemoScalpingExecutor(
                 product=args.product,
@@ -164,24 +202,21 @@ async def _run(args: argparse.Namespace) -> int:
                 limits=limits,
                 market_data=market_data,
             )
-            intent = build_manual_intent(
-                product=args.product,
-                symbol=args.symbol,
-                side=args.side,
-                now=now,
-                limits=limits,
-            )
             if args.monitor:
                 result = await executor.execute_monitored(
-                    intent, confirm=args.confirm, max_poll_count=args.max_poll_count
+                    intent,
+                    confirm=args.confirm,
+                    market=market,
+                    max_poll_count=args.max_poll_count,
                 )
             else:
-                result = await executor.execute(intent, confirm=args.confirm)
+                result = await executor.execute(
+                    intent, confirm=args.confirm, market=market
+                )
             await session.commit()
     finally:
         await reference.aclose()
-        if market_data is not None:
-            await market_data.aclose()
+        await market_data.aclose()
         aclose = getattr(client, "aclose", None)
         if aclose is not None:
             await aclose()

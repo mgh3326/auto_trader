@@ -17,7 +17,10 @@ import pytest
 from sqlalchemy import select
 
 from app.models.crypto_instruments import CryptoInstrument
-from app.services.brokers.binance.demo_scalping.contract import ScalpingRiskLimits
+from app.services.brokers.binance.demo_scalping.contract import (
+    MarketConditions,
+    ScalpingRiskLimits,
+)
 from app.services.brokers.binance.demo_scalping.order_intent import OrderIntent
 from app.services.brokers.binance.demo_scalping_exec.executor import (
     DemoScalpingExecutor,
@@ -25,6 +28,14 @@ from app.services.brokers.binance.demo_scalping_exec.executor import (
 from app.services.brokers.binance.demo_scalping_exec.reference import SymbolReference
 
 _NOW = dt.datetime(2026, 5, 24, 12, 0, 0, tzinfo=dt.UTC)
+# ROB-841: the executor now fails closed without a server-derived market
+# snapshot, so every execute()/execute_monitored() call supplies a fresh,
+# tight one (spread/age well within the gates) unless it is testing the gates.
+_FRESH_MARKET = MarketConditions(
+    spread_bps=Decimal("2"),
+    data_age_seconds=5.0,
+    spot_free_base_qty=Decimal("0"),
+)
 
 
 # The shared db_session is never rolled back, so the 3 real allowlisted
@@ -245,7 +256,9 @@ async def test_spot_happy_path_reconciles_flat(db_session) -> None:
         now=_NOW,
         limits=_limits_for("EXESPOTAUSDT"),
     )
-    result = await executor.execute(_intent("spot", "EXESPOTAUSDT"), confirm=True)
+    result = await executor.execute(
+        _intent("spot", "EXESPOTAUSDT"), confirm=True, market=_FRESH_MARKET
+    )
     assert result.status == "reconciled"
     assert result.final_open_orders == 0
     # A BUY then a SELL were submitted with confirm=True.
@@ -265,7 +278,9 @@ async def test_dry_run_places_no_order(db_session) -> None:
         now=_NOW,
         limits=_limits_for("EXESPOTBUSDT"),
     )
-    result = await executor.execute(_intent("spot", "EXESPOTBUSDT"), confirm=False)
+    result = await executor.execute(
+        _intent("spot", "EXESPOTBUSDT"), confirm=False, market=_FRESH_MARKET
+    )
     assert result.status == "dry_run"
     assert client.submits == []  # zero broker mutation
 
@@ -281,7 +296,9 @@ async def test_risk_block_aborts_without_broker_call(db_session) -> None:
         reference=_FakeReference(_SPOT_REF),
         now=_NOW,
     )
-    result = await executor.execute(_intent("spot", "ETHUSDT"), confirm=True)
+    result = await executor.execute(
+        _intent("spot", "ETHUSDT"), confirm=True, market=_FRESH_MARKET
+    )
     assert result.status == "blocked"
     assert "symbol_not_allowlisted" in result.reason_codes
     assert client.submits == []
@@ -299,7 +316,7 @@ async def test_futures_happy_path_pins_leverage_and_reconciles_flat(db_session) 
         limits=_limits_for("EXEFUTAUSDT"),
     )
     result = await executor.execute(
-        _intent("usdm_futures", "EXEFUTAUSDT"), confirm=True
+        _intent("usdm_futures", "EXEFUTAUSDT"), confirm=True, market=_FRESH_MARKET
     )
     assert result.status == "reconciled"
     assert result.final_flat is True
@@ -321,7 +338,7 @@ async def test_futures_new_status_polls_to_filled(db_session) -> None:
         limits=_limits_for("EXEFUTBUSDT"),
     )
     result = await executor.execute(
-        _intent("usdm_futures", "EXEFUTBUSDT"), confirm=True
+        _intent("usdm_futures", "EXEFUTBUSDT"), confirm=True, market=_FRESH_MARKET
     )
     assert result.status == "reconciled"
     assert result.final_flat is True

@@ -13,7 +13,10 @@ from decimal import Decimal
 
 import pytest
 
-from app.services.brokers.binance.demo_scalping.contract import ScalpingRiskLimits
+from app.services.brokers.binance.demo_scalping.contract import (
+    MarketConditions,
+    ScalpingRiskLimits,
+)
 from app.services.brokers.binance.demo_scalping.market_data import BookTicker
 from app.services.brokers.binance.demo_scalping.order_intent import OrderIntent
 from app.services.brokers.binance.demo_scalping_exec.executor import (
@@ -27,6 +30,12 @@ _REF = SymbolReference(
     step_size=Decimal("0.1"),
     min_notional=Decimal("5"),
     tick_size=Decimal("0.01"),
+)
+# ROB-841: execute_monitored now fails closed without a server market snapshot.
+_FRESH_MARKET = MarketConditions(
+    spread_bps=Decimal("2"),
+    data_age_seconds=5.0,
+    spot_free_base_qty=Decimal("0"),
 )
 
 
@@ -190,7 +199,12 @@ async def test_spot_monitor_take_profit(db_session) -> None:
     client = _FakeSpot()
     result = await _executor(
         "spot", client, md, db_session, "MONSPOTAUSDT"
-    ).execute_monitored(_intent("spot", "MONSPOTAUSDT"), confirm=True, max_poll_count=5)
+    ).execute_monitored(
+        _intent("spot", "MONSPOTAUSDT"),
+        confirm=True,
+        market=_FRESH_MARKET,
+        max_poll_count=5,
+    )
     assert result.status == "reconciled"
     assert result.exit_reason == "take_profit"
     assert client.submits == ["BUY", "SELL"]
@@ -202,7 +216,12 @@ async def test_spot_monitor_stop_loss(db_session) -> None:
     client = _FakeSpot()
     result = await _executor(
         "spot", client, md, db_session, "MONSPOTBUSDT"
-    ).execute_monitored(_intent("spot", "MONSPOTBUSDT"), confirm=True, max_poll_count=5)
+    ).execute_monitored(
+        _intent("spot", "MONSPOTBUSDT"),
+        confirm=True,
+        market=_FRESH_MARKET,
+        max_poll_count=5,
+    )
     assert result.status == "reconciled"
     assert result.exit_reason == "stop_loss"
 
@@ -213,7 +232,12 @@ async def test_spot_monitor_timeout_failsafe_close(db_session) -> None:
     client = _FakeSpot()
     result = await _executor(
         "spot", client, md, db_session, "MONSPOTCUSDT"
-    ).execute_monitored(_intent("spot", "MONSPOTCUSDT"), confirm=True, max_poll_count=3)
+    ).execute_monitored(
+        _intent("spot", "MONSPOTCUSDT"),
+        confirm=True,
+        market=_FRESH_MARKET,
+        max_poll_count=3,
+    )
     assert result.status == "reconciled"
     assert result.exit_reason == "timeout"
     assert client.submits == ["BUY", "SELL"]  # failsafe close still flattens
@@ -226,7 +250,10 @@ async def test_futures_monitor_take_profit_flat(db_session) -> None:
     result = await _executor(
         "usdm_futures", client, md, db_session, "MONFUTAUSDT"
     ).execute_monitored(
-        _intent("usdm_futures", "MONFUTAUSDT"), confirm=True, max_poll_count=5
+        _intent("usdm_futures", "MONFUTAUSDT"),
+        confirm=True,
+        market=_FRESH_MARKET,
+        max_poll_count=5,
     )
     assert result.status == "reconciled"
     assert result.exit_reason == "take_profit"
@@ -240,7 +267,12 @@ async def test_monitor_dry_run_places_nothing(db_session) -> None:
     client = _FakeSpot()
     result = await _executor(
         "spot", client, md, db_session, "MONDRYUSDT"
-    ).execute_monitored(_intent("spot", "MONDRYUSDT"), confirm=False, max_poll_count=5)
+    ).execute_monitored(
+        _intent("spot", "MONDRYUSDT"),
+        confirm=False,
+        market=_FRESH_MARKET,
+        max_poll_count=5,
+    )
     assert result.status == "dry_run"
     assert client.submits == []
 
@@ -258,7 +290,10 @@ async def test_spot_monitor_error_still_closes_flat(db_session) -> None:
     result = await _executor(
         "spot", client, _RaisingMD(), db_session, "MONERRSPOTUSDT"
     ).execute_monitored(
-        _intent("spot", "MONERRSPOTUSDT"), confirm=True, max_poll_count=5
+        _intent("spot", "MONERRSPOTUSDT"),
+        confirm=True,
+        market=_FRESH_MARKET,
+        max_poll_count=5,
     )
     # Open succeeded, monitor raised -> still closed + reconciled flat.
     assert result.status == "reconciled"
@@ -273,7 +308,10 @@ async def test_futures_monitor_error_still_reduce_only_closes_flat(db_session) -
     result = await _executor(
         "usdm_futures", client, _RaisingMD(), db_session, "MONERRFUTUSDT"
     ).execute_monitored(
-        _intent("usdm_futures", "MONERRFUTUSDT"), confirm=True, max_poll_count=5
+        _intent("usdm_futures", "MONERRFUTUSDT"),
+        confirm=True,
+        market=_FRESH_MARKET,
+        max_poll_count=5,
     )
     assert result.status == "reconciled"
     assert result.exit_reason == "monitor_error"
