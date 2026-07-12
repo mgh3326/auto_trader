@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added (ROB-839 — crypto judgment rules policy promotion; migration 0)
+- **Crypto policy reads now return lane-filtered judgment rules.** `get_trading_policy(market="crypto", lane=...)` exposes an advisory `market_rules` block for the 2-of-4 recovery frame, support/resistance source priority, and no-chasing criteria while retaining the existing `{version, content_hash}` stamp.
+- **Missing report thresholds stay explicitly unknown.** Fear & Greed, kimchi premium, same-day gain, and 24-hour liquidity cutoffs remain `null`, so callers cannot invent model-specific numbers; the report-backed breadth (`>50%`) and BTC long/short (`<=1.5`) thresholds remain explicit.
+- **Execution safety boundaries are unchanged.** The new strict Pydantic/YAML contract is advisory only, does not alter loss-sale or ladder fail-closed guards, and requires no database migration.
+
 ### Added (ROB-832 — order proposal replace/cancel actions; migration 1)
 - **Operators can approve one-order replace or cancel proposals in Telegram.** Replace proposals bind one target broker-order snapshot to one new-order specification; cancel proposals bind one target snapshot to one cancel action. Existing place proposals keep multi-rung behavior and legacy `NULL` actions behave as `place`.
 - **Replace is fail-closed across cancel-and-new.** Approval re-fetches broker evidence, reruns preview/profit guards, confirms the old order cancellation, then submits the replacement. Any target drift, cancellation failure, missing confirmation, or ambiguous broker response prevents a new order and preserves reconciliation lineage.
