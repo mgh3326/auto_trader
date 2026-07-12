@@ -491,3 +491,70 @@ async def test_ensure_fresh_classifies_collector_results_against_post_collect_cl
     assert (
         response.freshness_summary["portfolio"]["as_of"] == collected_as_of.isoformat()
     )
+
+
+@pytest.mark.asyncio
+async def test_create_new_ignores_fresh_prior_bundle_and_collects(db_session):
+    purpose = "analysis_recheck"
+    prior_service = SnapshotBundleEnsureService(db_session, clock=_frozen_clock())
+    prior = await prior_service.ensure(
+        EnsureBundleRequest(
+            purpose=purpose,
+            market="kr",
+            account_scope="kis_live",
+            policy_version="analysis_snapshot_bundle_v1",
+            mode="ensure_fresh",
+            symbols=["005930"],
+            manual_snapshots={
+                "llm_input_frozen": [
+                    _manual_snapshot("llm_input_frozen", payload={"version": "prior"})
+                ]
+            },
+            requested_by="claude_code",
+            user_id=7,
+        )
+    )
+    await db_session.commit()
+
+    class _FakeFrozenInputCollector:
+        snapshot_kind = "llm_input_frozen"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def collect(self, request: CollectorRequest):
+            self.calls += 1
+            return [
+                SnapshotCollectResult(
+                    snapshot_kind="llm_input_frozen",
+                    market=request.market,
+                    account_scope=request.account_scope,
+                    source_kind="manual",
+                    payload_json={"version": "new"},
+                    as_of=_FIXED_NOW + dt.timedelta(seconds=1),
+                    freshness_status="fresh",
+                )
+            ]
+
+    collector = _FakeFrozenInputCollector()
+    registry = SnapshotCollectorRegistry()
+    registry.register(collector)
+    service = SnapshotBundleEnsureService(
+        db_session,
+        collectors=registry,
+        clock=lambda: _FIXED_NOW + dt.timedelta(seconds=1),
+    )
+    request = EnsureBundleRequest(
+        purpose="analysis_recheck",
+        market="kr",
+        account_scope="kis_live",
+        policy_version="analysis_snapshot_bundle_v1",
+        mode="create_new",
+        symbols=["005930"],
+        requested_by="claude_code",
+        user_id=7,
+    )
+    response = await service.ensure(request)
+    assert response.created is True
+    assert response.bundle_uuid != prior.bundle_uuid
+    assert collector.calls == 1

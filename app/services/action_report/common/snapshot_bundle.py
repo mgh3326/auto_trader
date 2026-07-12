@@ -86,12 +86,14 @@ class SnapshotBundleEnsureService:
         now = self._clock()
 
         # 1. Reuse path: most recent bundle within bundle_ttl wins.
-        latest = await self._repo.find_latest_bundle(
-            purpose=request.purpose,
-            market=request.market,
-            account_scope=request.account_scope,
-            policy_version=policy.policy_version,
-        )
+        latest = None
+        if request.mode != "create_new":
+            latest = await self._repo.find_latest_bundle(
+                purpose=request.purpose,
+                market=request.market,
+                account_scope=request.account_scope,
+                policy_version=policy.policy_version,
+            )
         if latest is not None:
             bundle_freshness = classify_freshness(
                 as_of=latest.as_of, now=now, policy=policy.bundle_ttl
