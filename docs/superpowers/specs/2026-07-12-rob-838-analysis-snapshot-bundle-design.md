@@ -135,4 +135,3 @@ The PR description must state this explicitly. Models must not receive live mark
 - policy judgment or proposal/order mutation
 - retroactive repair of an existing bundle
 - replacing general investment report bundles or Hermes composition
-

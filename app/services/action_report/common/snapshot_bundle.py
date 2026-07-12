@@ -137,7 +137,7 @@ class SnapshotBundleEnsureService:
                 run_uuid=None,
             )
 
-        # 3. ensure_fresh path — create a run + collect + persist.
+        # 3. collection/persistence path (ensure_fresh or create_new).
         run = await self._repo.insert_run(
             SnapshotRunCreate(
                 purpose="report_generation",

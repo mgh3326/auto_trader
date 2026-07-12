@@ -79,8 +79,10 @@ def test_get_policy_unknown_raises_keyerror_with_listed_options():
         get_policy("nonexistent_policy")
 
 
-def test_policy_registry_only_contains_v1_in_phase2():
-    # Phase 2 ships exactly one policy. Adding new policies should require an
-    # explicit reviewer pass; this test fails if a new policy is added without
-    # also updating the test (forces a reviewer touch).
-    assert set(POLICIES) == {"intraday_action_report_v1"}
+def test_policy_registry_contains_exact_expected_policies():
+    # Adding new policies should require an explicit reviewer pass; this test
+    # fails if a policy is added without also updating the expected set.
+    assert set(POLICIES) == {
+        "analysis_snapshot_bundle_v1",
+        "intraday_action_report_v1",
+    }
