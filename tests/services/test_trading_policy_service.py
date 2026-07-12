@@ -5,7 +5,7 @@ from app.services import trading_policy_service as svc
 
 def test_version_stamp_has_version_and_hash():
     stamp = svc.policy_version_stamp()
-    assert stamp["version"] == "2026-07-07.1"
+    assert stamp["version"] == "2026-07-12.1"
     assert len(stamp["content_hash"]) == 12
 
 
@@ -15,7 +15,7 @@ def test_content_hash_stable_across_calls():
 
 def test_get_policy_for_buy_kr_includes_cap_and_version():
     view = svc.get_policy_for("kr", "buy")
-    assert view["version"] == "2026-07-07.1"
+    assert view["version"] == "2026-07-12.1"
     assert view["content_hash"]
     t = view["thresholds"]
     # buy lane references these (playbook lane tags)
@@ -26,6 +26,32 @@ def test_get_policy_for_buy_kr_includes_cap_and_version():
     # sell-only threshold must NOT appear in the buy lane
     assert "sell.rsi_place_min" not in t
     assert view["decision_rules"] == {}
+
+
+def test_get_policy_for_crypto_buy_exposes_report_derived_market_rules():
+    view = svc.get_policy_for("crypto", "buy")
+
+    assert view["version"] == "2026-07-12.1"
+    assert set(view["market_rules"]) == {
+        "recovery_gate",
+        "support_resistance",
+        "no_chasing",
+    }
+    gate = view["market_rules"]["recovery_gate"]
+    assert gate["min_conditions_met"] == 2
+    assert gate["of"] == 4
+    assert "lanes" not in gate
+    assert view["market_rules"]["no_chasing"]["daily_change_pct_threshold"] is None
+
+
+def test_get_policy_for_filters_crypto_market_rules_by_lane():
+    discovery = svc.get_policy_for("crypto", "discovery")["market_rules"]
+    assert set(discovery) == {"support_resistance", "no_chasing"}
+
+    sell = svc.get_policy_for("crypto", "sell")["market_rules"]
+    assert set(sell) == {"support_resistance"}
+
+    assert svc.get_policy_for("kr", "buy")["market_rules"] == {}
 
 
 def test_get_policy_for_sell_lane_has_sell_keys():

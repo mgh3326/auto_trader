@@ -12,10 +12,21 @@ from tests._mcp_tooling_support import DummyMCP
 async def test_get_trading_policy_returns_thresholds_and_version():
     out = await get_trading_policy(market="kr", lane="buy")
     assert out["success"] is True
-    assert out["version"] == "2026-07-07.1"
+    assert out["version"] == "2026-07-12.1"
     assert out["content_hash"]
     assert out["thresholds"]["portfolio.sector_cluster_cap_pct"]["value"] == 10
     assert out["decision_rules"] == {}
+
+
+@pytest.mark.asyncio
+async def test_get_trading_policy_returns_crypto_market_rules_and_stamp():
+    out = await get_trading_policy(market="crypto", lane="buy")
+
+    assert out["success"] is True
+    assert out["version"] == "2026-07-12.1"
+    assert len(out["content_hash"]) == 12
+    assert out["market_rules"]["recovery_gate"]["min_conditions_met"] == 2
+    assert out["market_rules"]["no_chasing"]["daily_change_pct_threshold"] is None
 
 
 @pytest.mark.asyncio
