@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
+from app.core.config import settings
 from app.mcp_server.tooling.account_routing_registration import (
     register_account_routing_tools,
 )
@@ -13,6 +14,9 @@ from app.mcp_server.tooling.analysis_artifact_tools import (
 )
 from app.mcp_server.tooling.analysis_artifact_tools import (
     analysis_artifact_save as _analysis_artifact_save,
+)
+from app.mcp_server.tooling.analysis_bundle_handlers import (
+    register_analysis_bundle_tools,
 )
 from app.mcp_server.tooling.analysis_registration import register_analysis_tools
 from app.mcp_server.tooling.forecast_registration import register_forecast_tools
@@ -75,6 +79,7 @@ ANALYSIS_READONLY_TOOL_NAMES: set[str] = {
     "get_intraday_investor_flow",
     "analysis_artifact_save",
     "analysis_artifact_get",
+    "analysis_bundle_get",
     "forecast_save",
     "session_context_append",
     "session_context_get_recent",
@@ -90,6 +95,7 @@ ANALYSIS_READONLY_FORBIDDEN_TOOL_NAMES: set[str] = (
     | (TOSS_LIVE_ORDER_TOOL_NAMES - {"toss_get_positions"})
     | {
         "analysis_artifact_list",
+        "analysis_bundle_create",
         "forecast_resolve",
         "get_forecasts",
         "get_forecast_calibration",
@@ -240,6 +246,8 @@ def register_analysis_readonly_tools(mcp: FastMCP) -> None:
     register_toss_live_order_tools(filtered)
     register_forecast_tools(filtered)
     _register_persistence_tools(mcp)
+    if settings.ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED:
+        register_analysis_bundle_tools(mcp, allow_create=False)
 
 
 __all__ = [

@@ -275,18 +275,16 @@ def _build_market_index_quote_fn() -> IndexQuoteFn:
 def _build_altseason_fn() -> AltseasonFn:
     """Read-only adapter over the Upbit altseason source (ROB-381 PR3).
 
-    Returns the UBAI/UBMI ratio + 24h alt-vs-BTC breadth snapshot, or ``None`` on
-    any failure. Imported lazily and already fail-open inside the service, so the
-    crypto market snapshot degrades gracefully. No order/mutation surface.
+    Returns the UBAI/UBMI ratio + 24h alt-vs-BTC breadth snapshot. Failures are
+    deliberately allowed to reach ``MarketEventsSnapshotCollector`` so it can
+    retain the original diagnostic while degrading only the optional breadth
+    field. No order/mutation surface.
     """
 
     async def _altseason_fn() -> dict[str, Any] | None:
         from app.services.external.upbit_index import fetch_upbit_altseason
 
-        try:
-            return await fetch_upbit_altseason()
-        except Exception:  # noqa: BLE001 — best-effort altseason signal
-            return None
+        return await fetch_upbit_altseason()
 
     return _altseason_fn
 

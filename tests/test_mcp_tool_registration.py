@@ -129,6 +129,22 @@ async def test_snapshot_report_generator_tools_are_flag_registered(
 
 
 @pytest.mark.asyncio
+async def test_analysis_bundle_tools_are_default_off_and_flag_registered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gated = {"analysis_bundle_create", "analysis_bundle_get"}
+    monkeypatch.setattr(
+        settings, "ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED", False, raising=False
+    )
+    assert gated.isdisjoint(build_tools())
+
+    monkeypatch.setattr(
+        settings, "ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED", True, raising=False
+    )
+    assert gated <= set(build_tools())
+
+
+@pytest.mark.asyncio
 async def test_get_portfolio_allocation_registered_in_default_surface() -> None:
     tools = build_tools()
 

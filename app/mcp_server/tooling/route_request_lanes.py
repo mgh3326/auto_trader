@@ -260,6 +260,8 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "analysis_artifact_get",
         "analysis_artifact_list",
         "analysis_artifact_save",
+        "analysis_bundle_create",
+        "analysis_bundle_get",
         "analyze_portfolio",
         "analyze_stock",
         "analyze_stock_batch",

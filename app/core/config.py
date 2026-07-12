@@ -721,6 +721,9 @@ class Settings(BaseSettings):
     # importable but unreachable from caller surfaces until flipped post-merge.
     # See docs/superpowers/plans/2026-05-19-rob-269-phase-2-mcp-api.md §2.
     INVESTMENT_SNAPSHOTS_MCP_ENABLED: bool = False
+    # ROB-838 — frozen analysis evidence create/read MCP surface. Default off;
+    # disabled tools are physically absent from every MCP profile.
+    ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED: bool = False
     # ROB-459 P3 — context_get(draft_policy="advisory_only")에서 baseline으로 admit할
     # advisory 프로필을 운영자가 확장(default {HERMES_ADVISOR, CLAUDE_ADVISOR}와 UNION).
     # 빈 값이면 기본만. 스모크/테스트 프로필은 명시하지 않는 한 제외(fail-closed).
