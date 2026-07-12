@@ -74,7 +74,7 @@ Capture converts each result into a section envelope containing:
 
 The completed document is stored once as an `InvestmentSnapshot` with `snapshot_kind="llm_input_frozen"`, `source_kind="combined"`, and purpose `analysis_recheck`. `SnapshotBundleEnsureService` is extended with an explicit create-new mode so an event capture never silently reuses a previous bundle. The existing repository computes `canonical_payload_hash` over the whole document. That full 64-character SHA-256 is exposed as `content_hash`.
 
-Correction means capture again and receive a new bundle UUID. There is no update method. Existing snapshot dedup may reuse an identical immutable snapshot row, but every distinct corrected document has a different hash and new bundle identity.
+Correction means capture again and receive a new bundle UUID. There is no update method. `create_new` assigns a per-capture idempotency discriminator, so even byte-identical captures receive distinct immutable snapshot rows and bundle identities; their canonical document hashes may still match because the discriminator is not part of the stored payload.
 
 ### 3. Read path
 
@@ -101,7 +101,7 @@ Age is computed at read time from persisted timestamps. The underlying section p
 
 ### 5. Gate and safety boundary
 
-Use a new setting such as `ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED: bool = False`. When false, both tools are absent from MCP registration. The tools are classified read-only/advisory for routing; creation is a DB append of evidence only, not a trading mutation. `.claude/settings.readonly.json` may allow both because neither can place/cancel/modify orders or create proposals.
+Use `ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED: bool = False`. When false, both tools are absent from MCP registration. The tools are classified read-only/advisory for routing; creation is a DB append of evidence only, not a trading mutation. The default profile may expose create and get when enabled, while the `analysis_readonly` consumer profile exposes get only so model sessions cannot create a competing input.
 
 ## Error handling
 
