@@ -43,6 +43,8 @@ _CORR_PREFIX = "rob842-coord"
 async def _clean_rows(db_session):
     stmt = delete(AlpacaPaperOrderLedger).where(
         AlpacaPaperOrderLedger.lifecycle_correlation_id.like(f"{_CORR_PREFIX}%")
+        | AlpacaPaperOrderLedger.client_order_id.like("rob74-crypto-%")
+        | AlpacaPaperOrderLedger.client_order_id.like("rob73-%")
     )
     await db_session.execute(stmt)
     await db_session.commit()
@@ -106,11 +108,24 @@ def _packet(
     canonical: dict[str, Any],
     corr: str,
     snapshot_id: str | None = None,
+    *,
+    origin: str = "automated",
     **overrides: Any,
 ):
+    from app.services.alpaca_paper_submit_service import derive_client_order_id
     from app.services.paper_approval_packet import PaperApprovalPacket
 
     snap = snapshot_id if snapshot_id is not None else f"{corr}-snap"
+    if origin == "manual":
+        coid = derive_client_order_id(canonical)
+        corr_id = coid
+        snap_id = None
+    else:
+        coid = derive_automated_key(
+            correlation_id=corr, snapshot_id=snap, canonical=canonical
+        )
+        corr_id = corr
+        snap_id = snap
     defaults: dict[str, Any] = {
         "signal_source": "test",
         "artifact_id": uuid.uuid4(),
@@ -123,19 +138,18 @@ def _packet(
         "max_notional": Decimal("10"),
         "qty_source": "notional_estimate",
         "expected_lifecycle_step": "previewed",
-        "lifecycle_correlation_id": corr,
-        "client_order_id": derive_automated_key(
-            correlation_id=corr, snapshot_id=snap, canonical=canonical
-        ),
+        "lifecycle_correlation_id": corr_id,
+        "client_order_id": coid,
         "expires_at": _FUTURE,
         "account_mode": "alpaca_paper",
-        "origin": "automated",
+        "origin": origin,
         "market_data_asof": _NOW - timedelta(seconds=10),
         "market_data_source": "upbit_ticker",
         "preview_payload_hash": canonical_hash(canonical),
-        "snapshot_id": snap,
+        "snapshot_id": snap_id,
         "execution_order_type": canonical.get("type"),
         "execution_time_in_force": canonical.get("time_in_force"),
+        "reference_price": Decimal("50000"),
     }
     defaults.update(overrides)
     return PaperApprovalPacket(**defaults)
@@ -249,10 +263,11 @@ async def test_sell_without_current_position_rejected_before_broker(db_session):
     packet = _packet(
         canonical,
         f"{_CORR_PREFIX}-sell",
+        origin="manual",
         side="sell",
         max_notional=None,
         max_qty=Decimal("0.0001"),
-        qty_source="ledger_filled_qty",
+        qty_source="manual_operator",
     )
     coord = _coordinator(db_session, broker)
 

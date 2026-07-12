@@ -33,8 +33,13 @@ _CORR = "rob842-final"
 
 @pytest_asyncio.fixture(autouse=True)
 async def _clean(db_session):
+    # Manual sell rows key their correlation on the derived manual coid
+    # (rob74-crypto-…), so also clear manual keys to avoid a leftover open sell
+    # polluting the account+symbol reservation across tests.
     stmt = delete(AlpacaPaperOrderLedger).where(
         AlpacaPaperOrderLedger.lifecycle_correlation_id.like(f"{_CORR}%")
+        | AlpacaPaperOrderLedger.client_order_id.like("rob74-crypto-%")
+        | AlpacaPaperOrderLedger.client_order_id.like("rob73-%")
     )
     await db_session.execute(stmt)
     await db_session.commit()
@@ -94,10 +99,21 @@ def _canonical(side="buy", *, qty=None, notional="10", limit="50000"):
     )
 
 
-def _packet(canonical, corr, *, expires_at, **overrides):
+def _packet(canonical, corr, *, expires_at, origin="automated", **overrides):
+    from app.services.alpaca_paper_submit_service import derive_client_order_id
     from app.services.paper_approval_packet import PaperApprovalPacket
 
     snap = f"{corr}-snap"
+    if origin == "manual":
+        coid = derive_client_order_id(canonical)
+        corr_id = coid
+        snap_id = None
+    else:
+        coid = derive_automated_key(
+            correlation_id=corr, snapshot_id=snap, canonical=canonical
+        )
+        corr_id = corr
+        snap_id = snap
     defaults: dict[str, Any] = {
         "signal_source": "test",
         "artifact_id": uuid.uuid4(),
@@ -110,19 +126,18 @@ def _packet(canonical, corr, *, expires_at, **overrides):
         "max_notional": Decimal("10"),
         "qty_source": "notional_estimate",
         "expected_lifecycle_step": "previewed",
-        "lifecycle_correlation_id": corr,
-        "client_order_id": derive_automated_key(
-            correlation_id=corr, snapshot_id=snap, canonical=canonical
-        ),
+        "lifecycle_correlation_id": corr_id,
+        "client_order_id": coid,
         "expires_at": expires_at,
         "account_mode": "alpaca_paper",
-        "origin": "automated",
+        "origin": origin,
         "market_data_asof": _NOW - timedelta(seconds=10),
         "market_data_source": "upbit_ticker",
         "preview_payload_hash": canonical_hash(canonical),
-        "snapshot_id": snap,
+        "snapshot_id": snap_id,
         "execution_order_type": canonical.get("type"),
         "execution_time_in_force": canonical.get("time_in_force"),
+        "reference_price": Decimal("50000"),
     }
     defaults.update(overrides)
     return PaperApprovalPacket(**defaults)
@@ -187,19 +202,21 @@ async def test_distinct_sells_do_not_oversell_position(db_session):
         c06,
         corr,
         expires_at=_NOW + timedelta(hours=1),
+        origin="manual",
         side="sell",
         max_notional=None,
         max_qty=Decimal("1"),
-        qty_source="ledger_filled_qty",
+        qty_source="manual_operator",
     )
     p07 = _packet(
         c07,
         corr,
         expires_at=_NOW + timedelta(hours=1),
+        origin="manual",
         side="sell",
         max_notional=None,
         max_qty=Decimal("1"),
-        qty_source="ledger_filled_qty",
+        qty_source="manual_operator",
     )
     shared = FinalBroker(
         position=SimpleNamespace(symbol="BTCUSD", qty=Decimal("1")), delay_s=0.02
@@ -237,19 +254,21 @@ async def test_sequential_distinct_sells_reserve_across_calls(db_session):
         c06,
         corr,
         expires_at=_NOW + timedelta(hours=1),
+        origin="manual",
         side="sell",
         max_notional=None,
         max_qty=Decimal("1"),
-        qty_source="ledger_filled_qty",
+        qty_source="manual_operator",
     )
     p07 = _packet(
         c07,
         corr,
         expires_at=_NOW + timedelta(hours=1),
+        origin="manual",
         side="sell",
         max_notional=None,
         max_qty=Decimal("1"),
-        qty_source="ledger_filled_qty",
+        qty_source="manual_operator",
     )
     broker = FinalBroker(position=SimpleNamespace(symbol="BTCUSD", qty=Decimal("1")))
     ledger = AlpacaPaperLedgerService(db_session)

@@ -562,6 +562,10 @@ class AlpacaPaperLedgerService:
             text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": lock_key}
         )
 
+        # Only OPEN sells still consume sellable qty: a `filled` sell has already
+        # reduced the live position, and a canceled (`cancel_status` set) or
+        # `anomaly`/terminal sell releases its hold. Subtracting a filled sell would
+        # double-count it against the (already-reduced) live position.
         reserved_stmt = select(
             func.coalesce(func.sum(AlpacaPaperOrderLedger.requested_qty), 0)
         ).where(
@@ -569,9 +573,8 @@ class AlpacaPaperLedgerService:
             AlpacaPaperOrderLedger.side == "sell",
             AlpacaPaperOrderLedger.execution_symbol == execution_symbol,
             AlpacaPaperOrderLedger.account_mode == account_mode,
-            AlpacaPaperOrderLedger.lifecycle_state.in_(
-                [LIFECYCLE_SUBMITTED, LIFECYCLE_FILLED]
-            ),
+            AlpacaPaperOrderLedger.lifecycle_state == LIFECYCLE_SUBMITTED,
+            AlpacaPaperOrderLedger.cancel_status.is_(None),
             AlpacaPaperOrderLedger.client_order_id != client_order_id,
         )
         reserved_raw = (await self._db.execute(reserved_stmt)).scalar_one()

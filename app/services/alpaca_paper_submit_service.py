@@ -288,6 +288,19 @@ class AlpacaPaperSubmitCoordinator:
                 return await self._resolve_inflight(coid)
             return self._resolved_outcome(existing)
 
+        # --- (2b) Automated sell is disabled at the SUBMIT boundary (ROB-845) ----
+        # The persisted packet's own origin/side is re-checked here so a legacy
+        # automated-sell token cannot POST. Any prior terminal result was already
+        # replayed above; a brand-new automated sell fails closed with no claim.
+        if packet.origin == "automated" and packet.side == "sell":
+            return SubmitOutcome(
+                status="rejected",
+                client_order_id=coid,
+                broker_called=False,
+                reason_code="automated_sell_disabled",
+                message="automated sell is disabled at the submit boundary until ROB-845",
+            )
+
         # --- (3) Time-dependent evidence — NEW (not-yet-claimed) submits only ----
         # No origin bypass: every new submit must carry server-observed market
         # evidence and pass freshness. Sells additionally require live position.
@@ -328,7 +341,7 @@ class AlpacaPaperSubmitCoordinator:
                 return self._resolved_outcome(row)
             return await self._resolve_inflight(coid)
 
-        return await self._winner_submit(coid, submit_canonical)
+        return await self._winner_submit(packet, submit_canonical)
 
     async def _submit_sell(
         self, packet: PaperApprovalPacket, submit_canonical: dict[str, Any], coid: str
@@ -410,11 +423,39 @@ class AlpacaPaperSubmitCoordinator:
                 return self._resolved_outcome(row)
             return await self._resolve_inflight(coid)
 
-        return await self._winner_submit(coid, submit_canonical)
+        return await self._winner_submit(packet, submit_canonical)
 
     async def _winner_submit(
-        self, coid: str, submit_canonical: dict[str, Any]
+        self, packet: PaperApprovalPacket, submit_canonical: dict[str, Any]
     ) -> SubmitOutcome:
+        coid = packet.client_order_id
+
+        # --- Re-verify freshness at the moment of send --------------------------
+        # All the claim/position/DB awaits are done; the wall clock may have moved
+        # past the packet's freshness window since the initial check. Re-check with
+        # the CURRENT clock immediately before the broker POST. On failure, book a
+        # terminal outcome (no re-POST) and reject.
+        try:
+            now = self._now_fn()
+            verify_packet_freshness(packet, now=now)
+            verify_packet_market_data(packet, now=now, max_age=self._quote_max_age)
+        except PaperApprovalPacketError as exc:
+            try:
+                await self._ledger.record_submit_failure(
+                    coid,
+                    order_status="rejected",
+                    error_summary=f"stale_at_send: {exc.code}",
+                )
+            except Exception:  # noqa: BLE001 - best-effort; claim row still guards
+                pass
+            return SubmitOutcome(
+                status="rejected",
+                client_order_id=coid,
+                broker_called=False,
+                reason_code=exc.code,
+                message=f"stale at send: {exc}",
+            )
+
         broker = self._broker_factory()
         request = OrderRequest(
             symbol=submit_canonical["symbol"],

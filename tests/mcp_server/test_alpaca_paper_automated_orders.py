@@ -371,6 +371,92 @@ async def test_automated_sell_is_explicitly_disabled(broker):
 
 
 # ---------------------------------------------------------------------------
+# G1 — a LEGACY persisted automated-sell token is fail-closed at SUBMIT too
+# ---------------------------------------------------------------------------
+async def _persist_legacy_automated_sell_preview(sid_correlation: str) -> str:
+    """Directly persist an automated SELL preview (as a pre-fix token would look)."""
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+    from app.services.alpaca_paper_submit_service import (
+        build_canonical_payload,
+        canonical_hash,
+        derive_automated_key,
+    )
+    from app.services.paper_approval_packet import PaperApprovalPacket
+
+    canonical = build_canonical_payload(
+        symbol="BTC/USD",
+        side="sell",
+        type="limit",
+        time_in_force="gtc",
+        qty=Decimal("0.0001"),
+        notional=None,
+        limit_price=Decimal("50000"),
+        asset_class="crypto",
+    )
+    snap = f"{sid_correlation}-snap"
+    coid = derive_automated_key(
+        correlation_id=sid_correlation, snapshot_id=snap, canonical=canonical
+    )
+    packet = PaperApprovalPacket(
+        signal_source="automated_preview",
+        artifact_id=__import__("uuid").uuid4(),
+        signal_symbol="KRW-BTC",
+        signal_venue="upbit",
+        execution_symbol="BTC/USD",
+        execution_venue="alpaca_paper",
+        execution_asset_class="crypto",
+        side="sell",
+        max_notional=None,
+        max_qty=Decimal("0.0001"),
+        qty_source="ledger_filled_qty",
+        expected_lifecycle_step="previewed",
+        lifecycle_correlation_id=sid_correlation,
+        client_order_id=coid,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        account_mode="alpaca_paper",
+        origin="automated",
+        market_data_asof=datetime.now(UTC) - timedelta(seconds=10),
+        market_data_source="upbit_ticker",
+        preview_payload_hash=canonical_hash(canonical),
+        snapshot_id=snap,
+        execution_order_type="limit",
+        execution_time_in_force="gtc",
+        reference_price=Decimal("50000"),
+    )
+    async with AsyncSessionLocal() as db:
+        ledger = AlpacaPaperLedgerService(db)
+        await ledger.record_preview(
+            client_order_id=coid,
+            lifecycle_correlation_id=sid_correlation,
+            execution_symbol="BTC/USD",
+            execution_venue="alpaca_paper",
+            instrument_type=__import__(
+                "app.models.trading", fromlist=["InstrumentType"]
+            ).InstrumentType.crypto,
+            side="sell",
+            order_type="limit",
+            time_in_force="gtc",
+            requested_qty=Decimal("0.0001"),
+            requested_price=Decimal("50000"),
+            preview_payload={
+                "canonical": canonical,
+                "approval_packet": packet.model_dump(mode="json"),
+            },
+        )
+    return coid
+
+
+async def test_legacy_automated_sell_token_fail_closed_at_submit(broker):
+    corr = f"{_CORR}legacy-sell"
+    token = await _persist_legacy_automated_sell_preview(corr)
+    result = await alpaca_paper_automated_submit_order(token, confirm=True)
+    assert result["status"] == "rejected"
+    assert result["reason_code"] == "automated_sell_disabled"
+    assert result["success"] is False
+    assert broker.submit_calls == []  # never POSTed
+
+
+# ---------------------------------------------------------------------------
 # F7 — a duplicate-token preview answers from the persisted packet
 # ---------------------------------------------------------------------------
 async def test_duplicate_preview_returns_persisted_expiry(broker):

@@ -28,6 +28,12 @@ from app.services.crypto_execution_mapping import (
 HARD_NOTIONAL_CAP_USD = Decimal("1000")
 CRYPTO_HARD_NOTIONAL_CAP_USD = Decimal("50")
 
+# raw_payload.provenance markers that identify a caller/order-derived (not
+# server-observed) snapshot — never usable as trusted evidence.
+_SYNTHETIC_PROVENANCE: frozenset[str] = frozenset(
+    {"smoke", "smoke_synthetic", "operator_synthetic", "order_derived"}
+)
+
 
 class MarketEvidenceError(Exception):
     """Raised with a stable reason code when trusted evidence is unusable."""
@@ -110,6 +116,18 @@ async def load_market_evidence(
     if snap is None:
         raise MarketEvidenceError(
             "no_trusted_snapshot", "no trusted market snapshot for reference"
+        )
+    # A caller/order-derived (smoke/operator) snapshot is NOT server-observed market
+    # evidence — reject it even though it lives in the trusted table under a real
+    # source, so a fabricated price can never back a production submit.
+    raw = snap.raw_payload if isinstance(snap.raw_payload, dict) else {}
+    if (
+        raw.get("synthetic") is True
+        or str(raw.get("provenance") or "") in _SYNTHETIC_PROVENANCE
+    ):
+        raise MarketEvidenceError(
+            "synthetic_snapshot",
+            "snapshot is caller/order-derived (synthetic) and cannot be trusted evidence",
         )
     if not _snapshot_matches(
         snap, execution_symbol=execution_symbol, asset_class=asset_class

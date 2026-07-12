@@ -202,50 +202,36 @@ async def _side_effect_account_ready(lines: list[SMOKE_LINE]) -> bool:
         return False
 
 
-async def _ensure_market_snapshot(args: argparse.Namespace) -> int:
-    """Persist a server-observed market_quote_snapshots row for the smoke order.
-
-    ROB-842 requires server-observed market evidence for every confirm=True submit.
-    The smoke observes its own reference price (the far-below-market limit price)
-    and records it as a trusted snapshot, returning its opaque id.
-    """
-    from datetime import UTC, datetime
-
-    from app.core.db import AsyncSessionLocal
-    from app.models.market_quote_snapshot import MarketQuoteSnapshot
-    from app.services.crypto_execution_mapping import map_alpaca_paper_to_upbit
-
-    if args.asset_class == "crypto":
-        market, source = "crypto", "upbit"
-        symbol = map_alpaca_paper_to_upbit(args.symbol or DEFAULT_CRYPTO_SYMBOL)
-        price = args.limit_price if args.limit_price is not None else SMOKE_LIMIT_PRICE
-    else:
-        market, source = "us", "yahoo"
-        symbol = args.symbol or DEFAULT_EQUITY_SYMBOL
-        price = SMOKE_LIMIT_PRICE
-    async with AsyncSessionLocal() as db:
-        row = MarketQuoteSnapshot(
-            market=market,
-            symbol=symbol,
-            source=source,
-            snapshot_at=datetime.now(UTC),
-            price=Decimal(str(price)),
-        )
-        db.add(row)
-        await db.commit()
-        return row.id
-
-
 async def _side_effect_submit(
     lines: list[SMOKE_LINE], args: argparse.Namespace
 ) -> str | None:
+    # ROB-842 G5: the smoke never fabricates a trusted market snapshot from the
+    # order/limit price. A confirm=True submit needs a REAL, server-observed
+    # snapshot; the operator must reference it explicitly via --quote-snapshot-id.
+    if args.quote_snapshot_id is None:
+        lines.append(
+            (
+                "submit_order(confirm=True)",
+                False,
+                "BLOCKED: --quote-snapshot-id (a real server-observed snapshot) is required",
+            )
+        )
+        return None
     try:
-        snapshot_id = await _ensure_market_snapshot(args)
         submit_result = await alpaca_paper_submit_order(
             **_order_payload(args),
-            quote_snapshot_id=snapshot_id,
+            quote_snapshot_id=args.quote_snapshot_id,
             confirm=True,
         )
+        if not submit_result.get("submitted"):
+            lines.append(
+                (
+                    "submit_order(confirm=True)",
+                    False,
+                    f"BLOCKED reason={submit_result.get('reason_code')}",
+                )
+            )
+            return None
         submitted_id = submit_result["order"]["id"]
         lines.append(
             (
@@ -368,6 +354,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--qty", type=Decimal, default=SMOKE_QTY)
     parser.add_argument("--notional", type=Decimal)
     parser.add_argument("--limit-price", type=Decimal)
+    parser.add_argument(
+        "--quote-snapshot-id",
+        type=int,
+        help=(
+            "Opaque id of a REAL server-observed market_quote_snapshots row. "
+            "Required for a confirm=True side-effect submit; the smoke never "
+            "fabricates trusted market evidence from the order price."
+        ),
+    )
     parser.add_argument(
         "--time-in-force",
         choices=("day", "gtc", "ioc", "fok"),

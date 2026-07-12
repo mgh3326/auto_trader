@@ -143,16 +143,18 @@ def _validate_exact_order_id(order_id: str) -> str:
 def _manual_ceiling(
     validated: PreviewOrderInput,
 ) -> tuple[Decimal | None, Decimal | None]:
-    """Server hard-cap ceiling for a manual order (never caller-supplied)."""
+    """Server hard-cap NOTIONAL ceiling for a manual order (never caller-supplied).
+
+    Always a max_notional so that qty/market orders are bounded by
+    ``packet.reference_price × qty`` (the trusted price), not merely a qty cap —
+    a qty order at a high reference price must still respect the notional hard cap
+    (ROB-842 G2). The separate qty<=5 equity cap is enforced by the tool itself.
+    """
     hard_notional = (
         ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD
         if validated.asset_class == "crypto"
         else SUBMIT_MAX_NOTIONAL_USD
     )
-    if validated.notional is not None or validated.limit_price is not None:
-        return hard_notional, None
-    if validated.qty is not None:
-        return None, SUBMIT_MAX_QTY
     return hard_notional, None
 
 
@@ -356,11 +358,28 @@ async def alpaca_paper_cancel_order(
 
     order_payload: Any = None
     read_back_status = "ok"
+    cancelled_client_order_id: str | None = None
     try:
         order = await service.get_order(stripped)
         order_payload = _model_to_jsonable(order)
+        if isinstance(order_payload, dict):
+            cancelled_client_order_id = order_payload.get("client_order_id")
     except Exception:  # noqa: BLE001 — read-back is best-effort
         read_back_status = "unavailable"
+
+    # Release any sell reservation this order held: mark the ledger execution row
+    # canceled so its qty stops counting against sellable position (ROB-842 G4).
+    reservation_released = False
+    if cancelled_client_order_id:
+        try:
+            async with _session_factory()() as db:
+                ledger = AlpacaPaperLedgerService(db)
+                await ledger.record_cancel(
+                    cancelled_client_order_id, cancel_status="canceled"
+                )
+                reservation_released = True
+        except Exception:  # noqa: BLE001 — non-boundary orders have no ledger row
+            reservation_released = False
 
     return {
         "success": True,
@@ -370,6 +389,7 @@ async def alpaca_paper_cancel_order(
         "cancelled_order_id": stripped,
         "order": order_payload,
         "read_back_status": read_back_status,
+        "reservation_released": reservation_released,
     }
 
 

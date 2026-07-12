@@ -47,7 +47,7 @@ async def _clean():
         await db.commit()
 
 
-async def _seed_snapshot() -> int:
+async def _seed_snapshot(price: str = "150") -> int:
     from datetime import UTC, datetime, timedelta
 
     from app.models.market_quote_snapshot import MarketQuoteSnapshot
@@ -58,7 +58,7 @@ async def _seed_snapshot() -> int:
             symbol="AAPL",
             source="yahoo",
             snapshot_at=datetime.now(UTC) - timedelta(seconds=10),
-            price=Decimal("150"),
+            price=Decimal(price),
         )
         db.add(row)
         await db.commit()
@@ -202,3 +202,109 @@ async def test_manual_http_422_success_false(monkeypatch):
         assert len([c for c in service.calls if c[0] == "submit_order"]) == 1
     finally:
         reset_alpaca_paper_orders_service_factory()
+
+
+# ---------------------------------------------------------------------------
+# G2 — manual equity market qty is bound by trusted reference_price × qty
+# ---------------------------------------------------------------------------
+async def test_manual_market_qty_bypass_of_hard_cap_fails_close(fake_service):
+    # AAPL market qty=5 at trusted price 100,000 => $500,000 implied notional.
+    sid = await _seed_snapshot(price="100000")
+    payload = await alpaca_paper_submit_order(
+        symbol="AAPL",
+        side="buy",
+        type="market",
+        qty=Decimal("5"),
+        quote_snapshot_id=sid,
+        confirm=True,
+    )
+    assert payload["success"] is False
+    assert payload["reason_code"] == "notional_exceeds_max"
+    assert [c for c in fake_service.calls if c[0] == "submit_order"] == []
+
+
+async def test_manual_notional_within_cap_still_posts(fake_service):
+    # Regression: a normal small order still goes through.
+    sid = await _seed_snapshot(price="150")
+    payload = await alpaca_paper_submit_order(
+        symbol="AAPL",
+        side="buy",
+        type="market",
+        notional=Decimal("300"),
+        quote_snapshot_id=sid,
+        confirm=True,
+    )
+    assert payload["submitted"] is True
+    assert len([c for c in fake_service.calls if c[0] == "submit_order"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# G4c — the cancel tool releases a sell reservation via the ledger
+# ---------------------------------------------------------------------------
+async def test_cancel_tool_releases_sell_reservation(fake_service):
+    from datetime import UTC, datetime
+
+    from app.mcp_server.tooling.alpaca_paper_orders import alpaca_paper_cancel_order
+    from app.models.trading import InstrumentType
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+    from app.services.brokers.alpaca.schemas import Order
+
+    coid = "rob74-crypto-cxlreserve"
+    # Seed an OPEN (submitted) sell reservation row.
+    async with AsyncSessionLocal() as db:
+        db.add(
+            AlpacaPaperOrderLedger(
+                client_order_id=coid,
+                lifecycle_correlation_id=coid,
+                record_kind="execution",
+                broker="alpaca",
+                account_mode="alpaca_paper",
+                lifecycle_state="submitted",
+                execution_symbol="BTC/USD",
+                execution_venue="alpaca_paper",
+                instrument_type=InstrumentType.crypto,
+                side="sell",
+                order_type="limit",
+                currency="USD",
+                requested_qty=Decimal("0.5"),
+                submitted_at=datetime.now(UTC),
+                broker_order_id="paper-cxl-1",
+                confirm_flag=True,
+            )
+        )
+        await db.commit()
+
+    # The cancel read-back returns the order carrying the client_order_id.
+    async def _get_order(_id):
+        return Order(
+            id="paper-cxl-1",
+            client_order_id=coid,
+            symbol="BTC/USD",
+            filled_qty=Decimal("0"),
+            side="sell",
+            type="limit",
+            time_in_force="gtc",
+            status="canceled",
+        )
+
+    fake_service.get_order = _get_order  # type: ignore[assignment]
+    result = await alpaca_paper_cancel_order(order_id="paper-cxl-1", confirm=True)
+    assert result["reservation_released"] is True
+
+    # The row is now canceled -> no longer counts against sellable position.
+    from app.services.alpaca_paper_ledger_service import (
+        AlpacaPaperLedgerService as _L,
+    )
+
+    async with AsyncSessionLocal() as db:
+        claim = await _L(db).reserve_sell_and_claim(
+            client_order_id="rob74-crypto-afterc",
+            lifecycle_correlation_id="rob74-crypto-afterc",
+            execution_symbol="BTC/USD",
+            execution_venue="alpaca_paper",
+            instrument_type=InstrumentType.crypto,
+            requested_qty=Decimal("1"),
+            position_qty=Decimal("1"),
+        )
+        assert claim.insufficient is False  # reservation released -> full position free
+        _ = AlpacaPaperLedgerService  # keep import used
