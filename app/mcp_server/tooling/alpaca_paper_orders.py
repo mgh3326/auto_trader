@@ -356,40 +356,57 @@ async def alpaca_paper_cancel_order(
     service = _service_factory()
     await service.cancel_order(stripped)
 
+    # A DELETE 204 only ACCEPTS the cancel request; it is not a terminal
+    # `canceled`. Read the order back and act on its actual status (ROB-842 H1).
     order_payload: Any = None
     read_back_status = "ok"
-    cancelled_client_order_id: str | None = None
+    broker_status: str | None = None
+    client_order_id: str | None = None
     try:
         order = await service.get_order(stripped)
         order_payload = _model_to_jsonable(order)
         if isinstance(order_payload, dict):
-            cancelled_client_order_id = order_payload.get("client_order_id")
+            broker_status = order_payload.get("status")
+            client_order_id = order_payload.get("client_order_id")
     except Exception:  # noqa: BLE001 — read-back is best-effort
         read_back_status = "unavailable"
 
-    # Release any sell reservation this order held: mark the ledger execution row
-    # canceled so its qty stops counting against sellable position (ROB-842 G4).
+    # `canceled` is the ONLY status that confirms the cancel released the order.
+    # pending_cancel / new / accepted / any open state, and an unavailable/unknown
+    # read-back, keep the sell reservation. Terminal non-canceled states
+    # (filled/rejected/expired) are still recorded so the ledger reflects broker
+    # truth (a fill that raced the cancel converges to `filled`, not `canceled`).
+    cancel_confirmed = read_back_status == "ok" and broker_status == "canceled"
     reservation_released = False
-    if cancelled_client_order_id:
+    lifecycle_synced = False
+    if client_order_id and read_back_status == "ok" and broker_status is not None:
         try:
             async with _session_factory()() as db:
                 ledger = AlpacaPaperLedgerService(db)
-                await ledger.record_cancel(
-                    cancelled_client_order_id, cancel_status="canceled"
-                )
-                reservation_released = True
+                await ledger.record_status(client_order_id, order_payload)
+                if cancel_confirmed:
+                    await ledger.record_cancel(
+                        client_order_id, cancel_status="canceled"
+                    )
+                    reservation_released = True
+                lifecycle_synced = True
         except Exception:  # noqa: BLE001 — non-boundary orders have no ledger row
-            reservation_released = False
+            lifecycle_synced = False
 
     return {
         "success": True,
         "account_mode": "alpaca_paper",
         "source": "alpaca_paper",
-        "cancelled": True,
+        # honest: cancel_requested was accepted; cancelled is True only once the
+        # broker confirms the terminal `canceled` status.
+        "cancel_requested": True,
+        "cancelled": cancel_confirmed,
+        "order_status": broker_status,
         "cancelled_order_id": stripped,
         "order": order_payload,
         "read_back_status": read_back_status,
         "reservation_released": reservation_released,
+        "lifecycle_synced": lifecycle_synced,
     }
 
 

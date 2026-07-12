@@ -634,6 +634,31 @@ class AlpacaPaperLedgerService:
             row=row,
         )
 
+    async def list_open_sells(
+        self, *, account_mode: str, execution_symbol: str
+    ) -> list[AlpacaPaperOrderLedger]:
+        """Return OPEN sell execution rows (lifecycle='submitted', not canceled).
+
+        These are the rows the reservation sum treats as still consuming sellable
+        position. Callers reconcile them against broker truth before computing
+        availability so a stale ``submitted`` row (actually filled/canceled at the
+        broker) is not double-counted.
+        """
+        stmt = (
+            select(AlpacaPaperOrderLedger)
+            .where(
+                AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
+                AlpacaPaperOrderLedger.side == "sell",
+                AlpacaPaperOrderLedger.execution_symbol == execution_symbol,
+                AlpacaPaperOrderLedger.account_mode == account_mode,
+                AlpacaPaperOrderLedger.lifecycle_state == LIFECYCLE_SUBMITTED,
+                AlpacaPaperOrderLedger.cancel_status.is_(None),
+            )
+            .order_by(AlpacaPaperOrderLedger.id.asc())
+        )
+        result = await self._db.execute(stmt)
+        return list(result.scalars().all())
+
     async def _find_execution_row(
         self, client_order_id: str
     ) -> AlpacaPaperOrderLedger | None:

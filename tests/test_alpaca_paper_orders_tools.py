@@ -609,7 +609,7 @@ async def test_cancel_signature_has_no_bulk_or_filter_params() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_cancel_read_back_failure_marks_unavailable_but_succeeds(
+async def test_cancel_read_back_failure_is_honest_and_keeps_reservation(
     fake_orders_service: FakeOrdersService,
 ) -> None:
     from app.services.brokers.alpaca.exceptions import AlpacaPaperRequestError
@@ -623,7 +623,11 @@ async def test_cancel_read_back_failure_marks_unavailable_but_succeeds(
         order_id="paper-order-123",
         confirm=True,
     )
-    assert payload["cancelled"] is True
+    # ROB-842 H1: an unavailable read-back cannot confirm the terminal cancel, so
+    # the tool reports honestly and does NOT release any reservation.
+    assert payload["cancel_requested"] is True
+    assert payload["cancelled"] is False
+    assert payload["reservation_released"] is False
     assert payload["read_back_status"] == "unavailable"
     assert payload["order"] is None
 

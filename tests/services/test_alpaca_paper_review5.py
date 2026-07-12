@@ -24,6 +24,7 @@ from app.services.alpaca_paper_submit_service import (
     derive_automated_key,
     derive_client_order_id,
 )
+from app.services.brokers.alpaca.exceptions import AlpacaPaperRequestError
 from app.services.brokers.alpaca.schemas import Order
 
 pytestmark = [pytest.mark.asyncio]
@@ -320,3 +321,176 @@ async def test_canceled_sell_releases_reservation(db_session):
     )
     assert allowed.insufficient is False
     assert allowed.available == Decimal("1")  # full position free again
+
+
+# ---------------------------------------------------------------------------
+# H2 — a NEW sell reconciles OPEN submitted sells to broker truth first
+# ---------------------------------------------------------------------------
+class ReconcileBroker:
+    """Broker whose get_order_by_client_order_id is keyed per client_order_id."""
+
+    def __init__(self, *, position, orders=None, raise_lookup=None):
+        self.submit_calls: list[Any] = []
+        self.position = position
+        self._orders = orders or {}
+        self._raise_lookup = raise_lookup or set()
+
+    async def submit_order(self, request: Any) -> Order:
+        self.submit_calls.append(request)
+        return Order(
+            id=f"paper-{len(self.submit_calls)}",
+            client_order_id=getattr(request, "client_order_id", None),
+            symbol="BTC/USD",
+            filled_qty=Decimal("0"),
+            side="sell",
+            type="limit",
+            time_in_force="gtc",
+            status="accepted",
+        )
+
+    async def get_position(self, symbol):
+        return self.position
+
+    async def get_order_by_client_order_id(self, client_order_id):
+        if client_order_id in self._raise_lookup:
+            raise AlpacaPaperRequestError("boom", status_code=500)
+        return self._orders.get(client_order_id)
+
+
+def _order(coid, status, qty="0"):
+    return Order(
+        id=f"b-{coid}",
+        client_order_id=coid,
+        symbol="BTC/USD",
+        filled_qty=Decimal(qty),
+        side="sell",
+        type="limit",
+        time_in_force="gtc",
+        status=status,
+    )
+
+
+async def test_new_sell_reconciles_async_filled_open_sell(db_session):
+    # Open sell 0.6 was accepted, then asynchronously FILLED -> live position 0.4.
+    # A new 0.4 sell must be allowed once the stale submitted row is reconciled.
+    open_coid = f"{_CORR}-async-open"
+    await _seed_sell_row(
+        db_session, coid=open_coid, symbol="BTC/USD", qty="0.6", lifecycle="submitted"
+    )
+    broker = ReconcileBroker(
+        position=SimpleNamespace(symbol="BTCUSD", qty=Decimal("0.4")),
+        orders={open_coid: _order(open_coid, "filled", qty="0.6")},
+    )
+    canonical = _canonical("sell", qty="0.4", notional=None)
+    packet = _packet(
+        canonical,
+        f"{_CORR}-async",
+        origin="manual",
+        max_notional=None,
+        max_qty=Decimal("1"),
+    )
+    coord = AlpacaPaperSubmitCoordinator(
+        AlpacaPaperLedgerService(db_session), lambda: broker, now_fn=lambda: _NOW
+    )
+    outcome = await coord.submit(packet, submit_canonical=canonical)
+    assert outcome.status == "submitted"
+    assert len(broker.submit_calls) == 1
+
+
+async def test_new_sell_keeps_reservation_when_open_still_open(db_session):
+    # Open sell 0.6 still OPEN at the broker -> stays reserved; a 0.6 new sell is
+    # blocked (position 1 minus 0.6 open = 0.4).
+    open_coid = f"{_CORR}-still-open"
+    await _seed_sell_row(
+        db_session, coid=open_coid, symbol="BTC/USD", qty="0.6", lifecycle="submitted"
+    )
+    broker = ReconcileBroker(
+        position=SimpleNamespace(symbol="BTCUSD", qty=Decimal("1")),
+        orders={open_coid: _order(open_coid, "accepted")},
+    )
+    canonical = _canonical("sell", qty="0.6", notional=None)
+    packet = _packet(
+        canonical,
+        f"{_CORR}-stillopen",
+        origin="manual",
+        max_notional=None,
+        max_qty=Decimal("1"),
+    )
+    coord = AlpacaPaperSubmitCoordinator(
+        AlpacaPaperLedgerService(db_session), lambda: broker, now_fn=lambda: _NOW
+    )
+    outcome = await coord.submit(packet, submit_canonical=canonical)
+    assert outcome.status == "rejected"
+    assert outcome.reason_code == "qty_exceeds_available"
+    assert broker.submit_calls == []
+
+
+async def test_concurrent_reconcile_and_new_sells_no_oversell(db_session):
+    # A stale open sell 0.6 has actually FILLED (position -> 0.4). Two concurrent
+    # DISTINCT new sells (0.4 and 0.35) both reconcile it, then serialize on the
+    # account+symbol lock: their sum 0.75 > 0.4 so exactly one POSTs.
+    from app.core.db import AsyncSessionLocal
+
+    open_coid = f"{_CORR}-conc-open"
+    await _seed_sell_row(
+        db_session, coid=open_coid, symbol="BTC/USD", qty="0.6", lifecycle="submitted"
+    )
+    shared = ReconcileBroker(
+        position=SimpleNamespace(symbol="BTCUSD", qty=Decimal("0.4")),
+        orders={open_coid: _order(open_coid, "filled", qty="0.6")},
+    )
+    barrier = asyncio.Barrier(2)
+
+    async def _run(qty):
+        canonical = _canonical("sell", qty=qty, notional=None)
+        packet = _packet(
+            canonical,
+            f"{_CORR}-conc-{qty}",
+            origin="manual",
+            max_notional=None,
+            max_qty=Decimal("1"),
+        )
+        async with AsyncSessionLocal() as s:
+            coord = AlpacaPaperSubmitCoordinator(
+                AlpacaPaperLedgerService(s),
+                lambda: shared,
+                now_fn=lambda: _NOW,
+                inflight_max_polls=20,
+                inflight_poll_interval_s=0.02,
+            )
+            await barrier.wait()
+            return await coord.submit(packet, submit_canonical=canonical)
+
+    outcomes = await asyncio.gather(_run("0.4"), _run("0.35"))
+    assert len(shared.submit_calls) == 1, shared.submit_calls
+    assert sum(1 for o in outcomes if o.status == "submitted") == 1
+    other = [o for o in outcomes if o.status != "submitted"][0]
+    assert other.reason_code == "qty_exceeds_available"
+
+
+async def test_new_sell_fail_closes_when_broker_lookup_fails(db_session):
+    # Broker lookup raises -> keep the open reservation (fail-close): the 0.6 open
+    # sell is NOT released, so a 0.6 new sell is blocked.
+    open_coid = f"{_CORR}-lookupfail"
+    await _seed_sell_row(
+        db_session, coid=open_coid, symbol="BTC/USD", qty="0.6", lifecycle="submitted"
+    )
+    broker = ReconcileBroker(
+        position=SimpleNamespace(symbol="BTCUSD", qty=Decimal("1")),
+        raise_lookup={open_coid},
+    )
+    canonical = _canonical("sell", qty="0.6", notional=None)
+    packet = _packet(
+        canonical,
+        f"{_CORR}-lf",
+        origin="manual",
+        max_notional=None,
+        max_qty=Decimal("1"),
+    )
+    coord = AlpacaPaperSubmitCoordinator(
+        AlpacaPaperLedgerService(db_session), lambda: broker, now_fn=lambda: _NOW
+    )
+    outcome = await coord.submit(packet, submit_canonical=canonical)
+    assert outcome.status == "rejected"
+    assert outcome.reason_code == "qty_exceeds_available"
+    assert broker.submit_calls == []

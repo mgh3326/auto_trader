@@ -365,6 +365,13 @@ class AlpacaPaperSubmitCoordinator:
             return self._sell_reject(
                 packet, "position_unavailable", "broker cannot read positions"
             )
+
+        # H2: sync existing OPEN submitted sells to broker truth BEFORE computing
+        # availability, so a row that has since filled/canceled at the broker stops
+        # (or keeps) consuming sellable position correctly. Fail-close: a broker
+        # error / unknown / unparseable status leaves the reservation in place.
+        await self._reconcile_open_sells(packet, broker)
+
         broker_symbol = _broker_position_symbol(packet.execution_symbol)
         try:
             position = await getter(broker_symbol)
@@ -510,6 +517,48 @@ class AlpacaPaperSubmitCoordinator:
             broker_called=True,
             order=order_dict,
         )
+
+    async def _reconcile_open_sells(
+        self, packet: PaperApprovalPacket, broker: Any
+    ) -> None:
+        """Refresh OPEN submitted sells for this account+symbol from broker truth.
+
+        For each open sell, look it up by client_order_id and record the broker
+        status into the ledger. A terminal broker status (filled/canceled/rejected/
+        expired) transitions the row out of ``submitted`` (releasing its hold);
+        an open status keeps it reserved. Any broker error / missing / unparseable
+        status is skipped, leaving the reservation intact (fail-close). This runs
+        before the reservation lock and is idempotent, so concurrent sells converge
+        to the same truth without breaking the account+symbol serialization.
+        """
+        getter = getattr(broker, "get_order_by_client_order_id", None)
+        if getter is None:
+            return
+        self._ledger.session.expire_all()
+        try:
+            open_rows = await self._ledger.list_open_sells(
+                account_mode=packet.account_mode,
+                execution_symbol=packet.execution_symbol,
+            )
+        except Exception:  # noqa: BLE001 - keep reservations on read failure
+            return
+        for row in open_rows:
+            coid = getattr(row, "client_order_id", None)
+            if not coid:
+                continue
+            try:
+                order = await getter(coid)
+            except AlpacaPaperRequestError:
+                continue  # broker error -> keep reserved (fail-close)
+            if order is None:
+                continue  # unknown at broker -> keep reserved (fail-close)
+            order_dict = _order_to_dict(order)
+            if order_dict.get("status") is None:
+                continue  # unparseable status -> keep reserved
+            try:
+                await self._ledger.record_status(coid, order_dict)
+            except Exception:  # noqa: BLE001 - keep reserved on write failure
+                continue
 
     def _sell_reject(
         self, packet: PaperApprovalPacket, code: str, message: str

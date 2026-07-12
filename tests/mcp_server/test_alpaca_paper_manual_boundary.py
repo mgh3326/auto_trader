@@ -17,6 +17,7 @@ from sqlalchemy import delete, select
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.alpaca_paper_orders import (
+    alpaca_paper_cancel_order,
     alpaca_paper_submit_order,
     reset_alpaca_paper_orders_service_factory,
     set_alpaca_paper_orders_service_factory,
@@ -308,3 +309,104 @@ async def test_cancel_tool_releases_sell_reservation(fake_service):
         )
         assert claim.insufficient is False  # reservation released -> full position free
         _ = AlpacaPaperLedgerService  # keep import used
+
+
+# ---------------------------------------------------------------------------
+# H1 — cancel releases the reservation ONLY on a confirmed terminal `canceled`
+# ---------------------------------------------------------------------------
+async def _seed_open_sell(coid: str, qty: str = "0.5") -> None:
+    from datetime import UTC, datetime
+
+    from app.models.trading import InstrumentType
+
+    async with AsyncSessionLocal() as db:
+        db.add(
+            AlpacaPaperOrderLedger(
+                client_order_id=coid,
+                lifecycle_correlation_id=coid,
+                record_kind="execution",
+                broker="alpaca",
+                account_mode="alpaca_paper",
+                lifecycle_state="submitted",
+                execution_symbol="BTC/USD",
+                execution_venue="alpaca_paper",
+                instrument_type=InstrumentType.crypto,
+                side="sell",
+                order_type="limit",
+                currency="USD",
+                requested_qty=Decimal(qty),
+                submitted_at=datetime.now(UTC),
+                broker_order_id=f"b-{coid}",
+                confirm_flag=True,
+            )
+        )
+        await db.commit()
+
+
+async def _open_reserved_qty() -> Decimal:
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    async with AsyncSessionLocal() as db:
+        rows = await AlpacaPaperLedgerService(db).list_open_sells(
+            account_mode="alpaca_paper", execution_symbol="BTC/USD"
+        )
+        return sum((Decimal(str(r.requested_qty)) for r in rows), Decimal("0"))
+
+
+def _cancel_readback(coid: str, status: str):
+    from app.services.brokers.alpaca.schemas import Order
+
+    async def _get_order(_id):
+        return Order(
+            id="b-cxl",
+            client_order_id=coid,
+            symbol="BTC/USD",
+            filled_qty=Decimal("0"),
+            side="sell",
+            type="limit",
+            time_in_force="gtc",
+            status=status,
+        )
+
+    return _get_order
+
+
+async def test_cancel_pending_cancel_keeps_reservation(fake_service):
+    coid = "rob74-crypto-pendcxl"
+    await _seed_open_sell(coid, qty="0.6")
+    fake_service.get_order = _cancel_readback(coid, "pending_cancel")  # type: ignore[assignment]
+
+    result = await alpaca_paper_cancel_order(order_id="b-cxl", confirm=True)
+
+    assert result["cancel_requested"] is True
+    assert result["cancelled"] is False  # NOT terminal-canceled
+    assert result["order_status"] == "pending_cancel"
+    assert result["reservation_released"] is False
+    assert await _open_reserved_qty() == Decimal("0.6")  # still reserved
+
+
+async def test_cancel_confirmed_canceled_releases_reservation(fake_service):
+    coid = "rob74-crypto-realcxl"
+    await _seed_open_sell(coid, qty="0.6")
+    fake_service.get_order = _cancel_readback(coid, "canceled")  # type: ignore[assignment]
+
+    result = await alpaca_paper_cancel_order(order_id="b-cxl", confirm=True)
+
+    assert result["cancelled"] is True
+    assert result["reservation_released"] is True
+    assert await _open_reserved_qty() == Decimal("0")  # released
+
+
+async def test_cancel_racing_fill_converges_to_filled_not_canceled(fake_service):
+    coid = "rob74-crypto-racefill"
+    await _seed_open_sell(coid, qty="0.6")
+    fake_service.get_order = _cancel_readback(coid, "filled")  # type: ignore[assignment]
+
+    result = await alpaca_paper_cancel_order(order_id="b-cxl", confirm=True)
+
+    # A cancel that raced a fill converges to filled, not canceled.
+    assert result["cancelled"] is False
+    assert result["order_status"] == "filled"
+    assert result["reservation_released"] is False
+    # ...but the open reservation is cleared because the row is now `filled`.
+    assert await _open_reserved_qty() == Decimal("0")
