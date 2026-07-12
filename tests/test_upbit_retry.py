@@ -79,6 +79,27 @@ async def test_exhausts_retries_raises_rate_limit_error():
 
 
 @pytest.mark.asyncio
+async def test_order_post_429_is_not_retried(monkeypatch):
+    from app.services.brokers.upbit.client import _retry_with_backoff
+
+    response = _make_response(429)
+    send = AsyncMock(return_value=response)
+    sleep = AsyncMock()
+    monkeypatch.setattr("app.services.brokers.upbit.client.asyncio.sleep", sleep)
+
+    with pytest.raises(RateLimitExceededError):
+        await _retry_with_backoff(
+            _make_limiter(),
+            send,
+            url="https://api.upbit.com/v1/orders",
+            max_retries=0,
+            retry_request_errors=False,
+        )
+
+    assert send.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_retries_on_request_error_then_succeeds():
     from app.services.brokers.upbit.client import _retry_with_backoff
 
@@ -130,7 +151,7 @@ async def test_no_retry_on_request_error_when_disabled():
 
 @pytest.mark.asyncio
 async def test_order_post_disables_request_error_retry(monkeypatch):
-    """ROB-645: _request_with_auth POST /orders threads retry_request_errors=False."""
+    """ROB-837: _request_with_auth POST /orders selects one-shot transport."""
     from unittest.mock import MagicMock
 
     from app.services.brokers.upbit import client
@@ -151,6 +172,7 @@ async def test_order_post_disables_request_error_retry(monkeypatch):
     )
 
     assert captured["retry_request_errors"] is False
+    assert captured["max_retries"] == 0
 
 
 @pytest.mark.asyncio

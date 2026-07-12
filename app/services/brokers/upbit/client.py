@@ -883,9 +883,9 @@ async def _request_with_auth(
             else:
                 raise ValueError(f"지원하지 않는 HTTP 메서드: {method}")
 
-    # ROB-645: order-creation POSTs (POST /v1/orders) must not retry RequestError —
-    # a timed-out order may have reached the broker, so a retry would double-submit.
-    # Reads (GET) and cancels (DELETE /order) keep the existing RequestError retry.
+    # ROB-645: order-creation POSTs (POST /v1/orders) must not retry transport
+    # errors or 429 responses — an order may have reached the broker, so a retry
+    # would double-submit. Reads (GET) and cancels (DELETE /order) keep retries.
     #
     # ROB-659 constraint note: submission is detected purely by the trailing
     # ``/orders`` path segment (method POST + api_path suffix). This holds because
@@ -897,7 +897,11 @@ async def _request_with_auth(
         "/orders"
     )
     return await _retry_with_backoff(
-        limiter, send, url=url, retry_request_errors=not is_order_submission
+        limiter,
+        send,
+        url=url,
+        max_retries=0 if is_order_submission else None,
+        retry_request_errors=not is_order_submission,
     )
 
 
