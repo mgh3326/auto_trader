@@ -60,6 +60,11 @@ IndexQuoteFn = Callable[[list[str]], Awaitable[list[dict[str, Any]]]]
 AltseasonFn = Callable[[], Awaitable[dict[str, Any] | None]]
 
 
+def _error_text(exc: Exception) -> str:
+    detail = str(exc).strip() or type(exc).__name__
+    return f"{type(exc).__name__}: {detail}"
+
+
 class MarketEventsSnapshotCollector:
     """Required-kind ``market`` collector backed by ``market_events``."""
 
@@ -126,7 +131,7 @@ class MarketEventsSnapshotCollector:
                 payload["index_session_note"] = (
                     "KRX 정규장 미개장, 전일 종가 기준(frozen)"
                 )
-        altseason = await self._collect_altseason(request.market)
+        altseason, altseason_error = await self._collect_altseason(request.market)
         if altseason:
             payload["altseason"] = altseason
         return [
@@ -144,6 +149,14 @@ class MarketEventsSnapshotCollector:
                     "index_count": len(payload.get("indices", {})),
                     "has_altseason": bool(altseason),
                 },
+                errors=(
+                    {"altseason": altseason_error}
+                    if altseason_error is not None
+                    else {}
+                ),
+                freshness_status=(
+                    "partial" if altseason_error is not None else "fresh"
+                ),
             )
         ]
 
@@ -199,18 +212,20 @@ class MarketEventsSnapshotCollector:
             indices[str(symbol)] = adapted
         return indices
 
-    async def _collect_altseason(self, market: str) -> dict[str, Any] | None:
+    async def _collect_altseason(
+        self, market: str
+    ) -> tuple[dict[str, Any] | None, str | None]:
         """Attach the Upbit altseason snapshot to the crypto market dimension.
 
-        Crypto-only and best-effort: returns ``None`` for non-crypto markets, when
-        no altseason source is wired, or on any fetch error — the rest of the
-        market snapshot is emitted regardless (never fabricated).
+        Crypto-only and best-effort. The second tuple value retains a raw fetch
+        diagnostic while the first remains ``None``, so the rest of the market
+        snapshot is still emitted without fabricating altseason data.
         """
         if market != "crypto" or self._altseason_fn is None:
-            return None
+            return None, None
         try:
             altseason = await self._altseason_fn()
         except Exception as exc:  # noqa: BLE001 — altseason is best-effort
             _logger.info("altseason fetch failed for %s: %r", market, exc)
-            return None
-        return altseason if isinstance(altseason, dict) else None
+            return None, _error_text(exc)
+        return (altseason if isinstance(altseason, dict) else None), None

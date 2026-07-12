@@ -1194,7 +1194,7 @@ async def test_market_collector_altseason_only_for_crypto():
 async def test_market_collector_altseason_failure_is_soft():
     # Altseason is best-effort: a fetch error leaves the rest of the snapshot.
     async def fake_altseason_fn():
-        raise RuntimeError("upbit down")
+        raise RuntimeError("provider off")
 
     collector = MarketEventsSnapshotCollector(
         MagicMock(),
@@ -1202,7 +1202,8 @@ async def test_market_collector_altseason_failure_is_soft():
         altseason_fn=fake_altseason_fn,
     )
     results = await collector.collect(_request(market="crypto"))
-    assert results[0].freshness_status == "fresh"
+    assert results[0].freshness_status == "partial"
+    assert results[0].errors_json["altseason"] == "RuntimeError: provider off"
     assert "events" in results[0].payload_json
     assert "altseason" not in results[0].payload_json
 
