@@ -41,10 +41,7 @@ def test_get_policy_for_crypto_buy_exposes_report_derived_market_rules():
     assert gate["min_conditions_met"] == 2
     assert gate["of"] == 4
     assert "lanes" not in gate
-    assert (
-        view["market_rules"]["no_chasing"]["daily_change_pct_threshold"]
-        is None
-    )
+    assert view["market_rules"]["no_chasing"]["daily_change_pct_threshold"] is None
 
 
 def test_get_policy_for_filters_crypto_market_rules_by_lane():

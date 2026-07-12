@@ -26,9 +26,7 @@ async def test_get_trading_policy_returns_crypto_market_rules_and_stamp():
     assert out["version"] == "2026-07-12.1"
     assert len(out["content_hash"]) == 12
     assert out["market_rules"]["recovery_gate"]["min_conditions_met"] == 2
-    assert (
-        out["market_rules"]["no_chasing"]["daily_change_pct_threshold"] is None
-    )
+    assert out["market_rules"]["no_chasing"]["daily_change_pct_threshold"] is None
 
 
 @pytest.mark.asyncio
