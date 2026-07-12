@@ -1193,18 +1193,39 @@ async def test_market_collector_altseason_only_for_crypto():
 @pytest.mark.asyncio
 async def test_market_collector_altseason_failure_is_soft():
     # Altseason is best-effort: a fetch error leaves the rest of the snapshot.
+    index_rows = [
+        {
+            "symbol": "CRYPTO",
+            "name": "Crypto Total Market",
+            "current": 3_100_000_000_000.0,
+            "change_pct": 1.85,
+        }
+    ]
+
+    async def fake_index_quote_fn(symbols):
+        assert symbols == ["CRYPTO"]
+        return index_rows
+
     async def fake_altseason_fn():
         raise RuntimeError("provider off")
 
     collector = MarketEventsSnapshotCollector(
         MagicMock(),
         query_service=_empty_events_query(),
+        index_quote_fn=fake_index_quote_fn,
         altseason_fn=fake_altseason_fn,
     )
     results = await collector.collect(_request(market="crypto"))
     assert results[0].freshness_status == "partial"
     assert results[0].errors_json["altseason"] == "RuntimeError: provider off"
     assert "events" in results[0].payload_json
+    assert results[0].payload_json["indices"] == {
+        "CRYPTO": {
+            "change_percent": 1.85,
+            "name": "Crypto Total Market",
+            "current": 3_100_000_000_000.0,
+        }
+    }
     assert "altseason" not in results[0].payload_json
 
 

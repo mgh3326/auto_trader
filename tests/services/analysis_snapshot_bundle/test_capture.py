@@ -138,7 +138,7 @@ async def load_frozen_document(repo):
 
 @pytest.mark.asyncio
 async def test_capture_persists_one_frozen_snapshot_with_all_sections(
-    service, capture_request, repo, bundle
+    service, capture_request, repo, bundle, portfolio, symbol, market
 ):
     response = await service.capture(capture_request)
     stored_bundle = await bundle(response.bundle_id)
@@ -150,6 +150,9 @@ async def test_capture_persists_one_frozen_snapshot_with_all_sections(
         snapshot.payload_json
     )
     assert set(snapshot.payload_json["sections"]) == set(ANALYSIS_SECTION_NAMES)
+    portfolio.collect.assert_awaited_once()
+    symbol.collect.assert_awaited_once()
+    market.collect.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -162,6 +165,53 @@ async def test_capture_stores_provider_error_without_retry(
     section = document["sections"]["investor_flow"]
     assert section["status"] == "unavailable"
     assert section["error"] == "RuntimeError: provider off"
+    investor_flow.collect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_capture_preserves_all_collector_results_when_one_is_unavailable(
+    service, capture_request, investor_flow, load_frozen_document
+):
+    fresh = _result("investor_flow", symbol="005930")
+    unavailable = SnapshotCollectResult(
+        snapshot_kind="investor_flow",
+        market="kr",
+        account_scope="kis_live",
+        symbol="000660",
+        source_kind="manual",
+        payload_json={"foreign_net": None},
+        source_timestamps_json={"provider": NOW.isoformat()},
+        coverage_json={"covered": False},
+        errors_json={"provider": "RuntimeError: provider off"},
+        as_of=NOW,
+        freshness_status="unavailable",
+    )
+    investor_flow.collect.return_value = [fresh, unavailable]
+
+    response = await service.capture(capture_request)
+    document = await load_frozen_document(response.bundle_id)
+    section = document["sections"]["investor_flow"]
+
+    assert section["status"] == "unavailable"
+    assert section["error"] == "RuntimeError: provider off"
+    assert section["data"] == [
+        {
+            "payload_json": fresh.payload_json,
+            "errors_json": fresh.errors_json,
+            "coverage_json": fresh.coverage_json,
+            "source_timestamps_json": fresh.source_timestamps_json,
+            "freshness_status": fresh.freshness_status,
+            "symbol": fresh.symbol,
+        },
+        {
+            "payload_json": unavailable.payload_json,
+            "errors_json": unavailable.errors_json,
+            "coverage_json": unavailable.coverage_json,
+            "source_timestamps_json": unavailable.source_timestamps_json,
+            "freshness_status": unavailable.freshness_status,
+            "symbol": unavailable.symbol,
+        },
+    ]
     investor_flow.collect.assert_awaited_once()
 
 

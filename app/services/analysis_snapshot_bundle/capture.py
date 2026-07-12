@@ -227,13 +227,15 @@ class AnalysisInputFrozenCollector:
             result.freshness_status == "unavailable" for result in results
         )
         diagnostic = _first_diagnostic(results, kind)
+        data = [_result_payload(result) for result in results]
         if unavailable:
-            return _unavailable_section(
+            section = _unavailable_section(
                 name,
                 now,
                 source,
                 diagnostic or f"{kind} collector returned unavailable data",
             )
+            return section.model_copy(update={"data": data})
         partial = any(result.freshness_status == "partial" for result in results)
         partial = partial or any(result.errors_json for result in results)
         partial = partial or diagnostic is not None
@@ -242,7 +244,7 @@ class AnalysisInputFrozenCollector:
             now,
             min(result.as_of for result in results),
             source,
-            [_result_payload(result) for result in results],
+            data,
             partial=partial,
             error=diagnostic,
         )
