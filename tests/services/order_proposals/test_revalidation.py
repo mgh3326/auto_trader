@@ -1618,6 +1618,8 @@ async def test_replace_confirmation_exception_returns_unverified_no_submit(db_se
 async def test_replace_submit_ambiguity_persists_reconcile_lineage(
     db_session, submit_result
 ):
+    from app.services.order_proposals import revalidation as mod
+
     service, group = await _create_target_proposal(db_session, action="replace")
     snapshots = iter([_target_snapshot(), _target_snapshot(status="cancelled")])
 
@@ -1637,6 +1639,9 @@ async def test_replace_submit_ambiguity_persists_reconcile_lineage(
             raise TimeoutError("submit outcome unknown")
         return {"success": True, "status": "unknown"}
 
+    async def evidence_fn(**kwargs):
+        return SubmitEvidence("unknown", reason="lookup unavailable")
+
     outcomes = await revalidate_and_submit(
         service=service,
         proposal_id=group.proposal_id,
@@ -1645,12 +1650,71 @@ async def test_replace_submit_ambiguity_persists_reconcile_lineage(
         fetch_target_fn=fetch_target_fn,
         cancel_target_fn=cancel_target_fn,
         correlation_mint=lambda **kwargs: "corr-replace-1",
+        fetch_submit_evidence_fn=evidence_fn,
     )
 
     assert outcomes[0].result == "unverified"
     _, rungs = await service.get_proposal(group.proposal_id)
     assert rungs[0].correlation_id == "corr-replace-1"
-    assert rungs[0].idempotency_key == "idem-replace-1"
+    assert rungs[0].idempotency_key == mod._proposal_client_order_id(
+        group.proposal_id, 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_replace_submit_failure_found_evidence_converges_resting(
+    db_session, monkeypatch
+):
+    from app.services.order_proposals import revalidation as mod
+
+    service, group = await _create_target_proposal(db_session, action="replace")
+    monkeypatch.setattr(mod, "_proposal_client_order_id", lambda *_: "oprop-replace")
+    snapshots = iter([_target_snapshot(), _target_snapshot(status="cancelled")])
+    place_calls: list[dict] = []
+    evidence_calls: list[dict] = []
+
+    async def fetch_target_fn(**kwargs):
+        return next(snapshots)
+
+    async def cancel_target_fn(**kwargs):
+        return {"success": True}
+
+    async def place_order_fn(**kwargs):
+        place_calls.append(kwargs)
+        if kwargs["dry_run"]:
+            return await _matching_preview(**kwargs)
+        return {"success": False, "error": "duplicate identifier"}
+
+    async def evidence_fn(**kwargs):
+        evidence_calls.append(kwargs)
+        return SubmitEvidence("found", "replacement-order", "wait")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order_fn,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+        fetch_submit_evidence_fn=evidence_fn,
+    )
+
+    assert outcomes[0].result == "submitted_resting"
+    assert [call["proposal_client_order_id"] for call in place_calls] == [
+        "oprop-replace",
+        "oprop-replace",
+    ]
+    assert evidence_calls == [
+        {
+            "identifier": "oprop-replace",
+            "account_mode": "upbit",
+            "market": "crypto",
+        }
+    ]
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "resting"
+    assert rungs[0].broker_order_id == "replacement-order"
+    assert rungs[0].idempotency_key == "oprop-replace"
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import AsyncSessionLocal
 from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.services.brokers.upbit import fetch_order_detail
+from app.services.order_proposals.service import OrderProposalsService
 
 _INCIDENT_PROPOSAL_PREFIX = "b81ffd0e"
 _INCIDENT_BROKER_ORDER_PREFIX = "35bee07f"
@@ -60,6 +61,7 @@ def _validate_broker_order(
     broker_order: dict[str, Any],
     *,
     broker_order_id: str,
+    group: OrderProposal,
     rung: OrderProposalRung,
 ) -> None:
     if broker_order.get("uuid") != broker_order_id:
@@ -69,6 +71,15 @@ def _validate_broker_order(
             raise ValueError(f"broker order {field} does not match ROB-837 evidence")
     if not str(broker_order.get("identifier") or "").strip():
         raise ValueError("broker order identifier is empty")
+    if group.symbol != broker_order.get("market"):
+        raise ValueError("proposal symbol does not match broker order market")
+    if group.side != rung.side:
+        raise ValueError("proposal side does not match proposal rung side")
+    expected_broker_side = {"buy": "bid", "sell": "ask"}.get(rung.side)
+    if expected_broker_side != broker_order.get("side"):
+        raise ValueError("proposal side does not match broker order side")
+    if group.order_type != broker_order.get("ord_type"):
+        raise ValueError("proposal order type does not match broker order type")
     if Decimal(str(broker_order.get("price"))) != Decimal(str(rung.limit_price)):
         raise ValueError("broker order price does not match proposal rung")
     if Decimal(str(broker_order.get("volume"))) != Decimal(str(rung.quantity)):
@@ -80,7 +91,7 @@ async def _get_locked_group_and_rung(
     *,
     proposal_id: uuid.UUID,
     rung_index: int,
-) -> tuple[OrderProposal, OrderProposalRung]:
+) -> tuple[OrderProposal, OrderProposalRung, list[OrderProposalRung]]:
     group = (
         await session.execute(
             select(OrderProposal)
@@ -93,21 +104,22 @@ async def _get_locked_group_and_rung(
     if group.account_mode != "upbit" or group.market != "crypto":
         raise ValueError("proposal is not an Upbit crypto proposal")
 
-    rung = (
-        await session.execute(
-            select(OrderProposalRung)
-            .where(
-                OrderProposalRung.proposal_pk == group.id,
-                OrderProposalRung.rung_index == rung_index,
+    rungs = list(
+        (
+            await session.execute(
+                select(OrderProposalRung)
+                .where(OrderProposalRung.proposal_pk == group.id)
+                .order_by(OrderProposalRung.rung_index)
+                .with_for_update()
             )
-            .with_for_update()
-        )
-    ).scalar_one_or_none()
+        ).scalars()
+    )
+    rung = next((row for row in rungs if row.rung_index == rung_index), None)
     if rung is None:
         raise ValueError("proposal rung was not found")
     if rung.state != "rejected":
         raise ValueError("proposal rung state is not rejected")
-    return group, rung
+    return group, rung, rungs
 
 
 async def _assert_no_other_broker_binding(
@@ -147,7 +159,7 @@ async def repair_incident(
     try:
         _validate_incident_ids(proposal_id, broker_order_id)
         broker_order = await fetch_order_fn(broker_order_id)
-        group, rung = await _get_locked_group_and_rung(
+        group, rung, rungs = await _get_locked_group_and_rung(
             session,
             proposal_id=proposal_id,
             rung_index=rung_index,
@@ -155,6 +167,7 @@ async def repair_incident(
         _validate_broker_order(
             broker_order,
             broker_order_id=broker_order_id,
+            group=group,
             rung=rung,
         )
         await _assert_no_other_broker_binding(
@@ -165,17 +178,15 @@ async def repair_incident(
 
         now = datetime.now(UTC)
         before = _snapshot(group, rung)
-        after = {
-            **before,
-            "state": "resting",
-            "broker_order_id": broker_order_id,
-            "idempotency_key": broker_order["identifier"],
-            "void_reason": None,
-            "validated_at": now.isoformat(),
-            "updated_at": now.isoformat(),
-            "group_lifecycle_state": "submitted",
-            "group_updated_at": now.isoformat(),
-        }
+        rung.state = "resting"
+        rung.broker_order_id = broker_order_id
+        rung.idempotency_key = broker_order["identifier"]
+        rung.void_reason = None
+        rung.validated_at = now
+        rung.updated_at = now
+        group.lifecycle_state = OrderProposalsService._recompute_group_state(rungs)
+        group.updated_at = now
+        after = _snapshot(group, rung)
         result = {
             "mode": "commit" if commit else "dry-run",
             "proposal_id": str(proposal_id),
@@ -189,14 +200,6 @@ async def repair_incident(
             await session.rollback()
             return result
 
-        rung.state = "resting"
-        rung.broker_order_id = broker_order_id
-        rung.idempotency_key = broker_order["identifier"]
-        rung.void_reason = None
-        rung.validated_at = now
-        rung.updated_at = now
-        group.lifecycle_state = "submitted"
-        group.updated_at = now
         await session.commit()
         return result
     except Exception:

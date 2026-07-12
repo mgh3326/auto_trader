@@ -386,6 +386,7 @@ async def revalidate_and_submit(
                 fetch_target_fn=fetch_target_fn,
                 cancel_target_fn=cancel_target_fn,
                 correlation_mint=correlation_mint,
+                fetch_submit_evidence_fn=fetch_submit_evidence_fn,
             )
         elif action == "cancel":
             outcome = await _revalidate_cancel_rung(
@@ -678,6 +679,7 @@ async def _revalidate_replace_preview(
     rung: OrderProposalRung,
     now: datetime,
     place_order_fn: PlaceOrderFn,
+    proposal_client_order_id: str | None,
 ) -> tuple[dict[str, Any] | None, RungOutcome | None]:
     proposal_id = group.proposal_id
     rung_index = rung.rung_index
@@ -699,6 +701,12 @@ async def _revalidate_replace_preview(
                 approval_issue_id=group.approval_issue_id,
                 reason=_PREVIEW_REASON.format(rung=rung_index),
                 rung=rung_index,
+                account_mode=group.account_mode,
+                **(
+                    {"proposal_client_order_id": proposal_client_order_id}
+                    if proposal_client_order_id is not None
+                    else {}
+                ),
             )
         )
     except Exception as exc:
@@ -832,7 +840,13 @@ async def _revalidate_replace_rung(
     fetch_target_fn: TargetFetchFn,
     cancel_target_fn: TargetCancelFn,
     correlation_mint: CorrelationMint,
+    fetch_submit_evidence_fn: SubmitEvidenceFetchFn,
 ) -> RungOutcome:
+    proposal_client_order_id = (
+        _proposal_client_order_id(group.proposal_id, rung.rung_index)
+        if group.account_mode == "upbit"
+        else None
+    )
     target_outcome = await _validate_target_action(
         service=service,
         group=group,
@@ -849,6 +863,7 @@ async def _revalidate_replace_rung(
         rung=rung,
         now=now,
         place_order_fn=place_order_fn,
+        proposal_client_order_id=proposal_client_order_id,
     )
     if preview_outcome is not None:
         return preview_outcome
@@ -889,9 +904,29 @@ async def _revalidate_replace_rung(
                 approval_hash=preview.get("approval_hash"),
                 rung=rung_index,
                 correlation_id=corr,
+                account_mode=group.account_mode,
+                **(
+                    {"proposal_client_order_id": proposal_client_order_id}
+                    if proposal_client_order_id is not None
+                    else {}
+                ),
             )
         )
     except Exception as exc:
+        if group.account_mode == "upbit":
+            return await _classify_submit(
+                service=service,
+                proposal_id=proposal_id,
+                rung_index=rung_index,
+                preview=preview,
+                submit={"success": False, "error": str(exc)},
+                corr=corr,
+                now=now,
+                account_mode=group.account_mode,
+                market=group.market,
+                identifier=proposal_client_order_id,
+                fetch_submit_evidence_fn=fetch_submit_evidence_fn,
+            )
         await service.record_unverified(
             proposal_id,
             rung_index,
@@ -911,8 +946,8 @@ async def _revalidate_replace_rung(
         now=now,
         account_mode=group.account_mode,
         market=group.market,
-        identifier=None,
-        fetch_submit_evidence_fn=fetch_submit_evidence,
+        identifier=proposal_client_order_id,
+        fetch_submit_evidence_fn=fetch_submit_evidence_fn,
     )
 
 
@@ -1074,7 +1109,9 @@ async def _classify_submit(
         now=now,
         correlation_id=corr,
         idempotency_key=(
-            submit.get("idempotency_key") or preview.get("idempotency_key")
+            identifier
+            or submit.get("idempotency_key")
+            or preview.get("idempotency_key")
         ),
     )
     return RungOutcome(rung_index, "unverified", {"submit": submit})

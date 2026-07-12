@@ -118,7 +118,7 @@ async def _retry_with_backoff(
     retry_request_errors
         Whether to retry on ``httpx.RequestError`` (timeouts/network). ROB-645:
         order-creation POSTs pass ``False`` so a timed-out order is never re-sent
-        (429 rate-limit retries are unaffected and still apply).
+        (ROB-837 also gives order creation a zero retry budget, including 429).
     """
     if max_retries is None:
         max_retries = settings.api_rate_limit_retry_429_max

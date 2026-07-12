@@ -174,6 +174,75 @@ async def test_repair_rejects_bad_incident_or_broker_evidence_without_mutation(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    [
+        ("symbol", "KRW-ETH", "symbol"),
+        ("side", "sell", "side"),
+        ("order_type", "market", "order type"),
+    ],
+)
+async def test_repair_rejects_local_order_mismatch_without_mutation(
+    db_session, monkeypatch, field, value, match
+):
+    group, rung = await _seed_rejected_proposal(db_session, monkeypatch)
+    group_id, rung_id = group.id, rung.id
+    if field == "side":
+        group.side = value
+        rung.side = value
+    else:
+        setattr(group, field, value)
+    await db_session.commit()
+
+    with pytest.raises(ValueError, match=match):
+        await cli.repair_incident(
+            db_session,
+            proposal_id=group.proposal_id,
+            rung_index=0,
+            broker_order_id=BROKER_ORDER_ID,
+            commit=True,
+            fetch_order_fn=AsyncMock(return_value=_broker_order()),
+        )
+
+    fresh_group, fresh_rung = await _reload(db_session, group_id, rung_id)
+    assert fresh_rung.state == "rejected"
+    assert fresh_rung.broker_order_id is None
+    assert fresh_group.lifecycle_state == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_repair_recomputes_group_lifecycle_from_all_rungs(
+    db_session, monkeypatch
+):
+    group, rung = await _seed_rejected_proposal(db_session, monkeypatch)
+    group_id, rung_id = group.id, rung.id
+    db_session.add(
+        OrderProposalRung(
+            proposal_pk=group.id,
+            rung_index=1,
+            side="buy",
+            quantity=Decimal("0.0005"),
+            limit_price=Decimal("88000000"),
+            state="pending_approval",
+        )
+    )
+    await db_session.commit()
+
+    await cli.repair_incident(
+        db_session,
+        proposal_id=group.proposal_id,
+        rung_index=0,
+        broker_order_id=BROKER_ORDER_ID,
+        commit=True,
+        fetch_order_fn=AsyncMock(return_value=_broker_order()),
+    )
+
+    fresh_group, fresh_rung = await _reload(db_session, group_id, rung_id)
+    assert fresh_rung.state == "resting"
+    assert fresh_group.lifecycle_state == "partially_submitted"
+
+
+@pytest.mark.asyncio
 async def test_repair_rejects_non_rejected_rung_without_mutation(
     db_session, monkeypatch
 ):
