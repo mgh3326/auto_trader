@@ -35,6 +35,8 @@ from app.services.brokers.kis import KISClient
 from app.services.brokers.kis.mock_scalping.contract import (
     LedgerSnapshot,
     MarketConditions,
+    ReasonCode,
+    ScalpingRiskLimits,
     Side,
 )
 from app.services.brokers.kis.mock_scalping_exec.executor import (
@@ -55,6 +57,9 @@ from app.services.brokers.kis.mock_scalping_exec.holdings_delta_confirm import (
 from app.services.brokers.kis.mock_scalping_exec.ledger_state import (
     MockOrderHistory,
     load_kis_mock_order_history,
+)
+from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
+    is_ledger_tracking_unavailable,
 )
 from app.services.brokers.kis.mock_scalping_ws.state import MarketState
 
@@ -94,10 +99,38 @@ def _is_mock_unsupported(message: str) -> bool:
 class KisMockBroker:
     """BrokerPort over the KIS mock order path. Mock-only; confirm-gated HTTP."""
 
-    def __init__(self, *, get_state: StateProvider, strategy_id: str = "kis-mock-v1"):
+    def __init__(
+        self,
+        *,
+        get_state: StateProvider,
+        strategy_id: str = "kis-mock-v1",
+        limits: ScalpingRiskLimits | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ):
         self._get_state = get_state
         self._strategy_id = strategy_id
+        self._limits = limits or ScalpingRiskLimits()
+        self._clock = clock
         self._mock_client: KISClient | None = None
+
+    def _make_pre_send_hook(self, symbol: str):
+        """A pre-send freshness re-check bound to ``symbol`` (ROB-843 P1-1).
+
+        Invoked by ``_place_order_impl`` immediately before the real KIS POST —
+        after the risk gate's holdings/history awaits AND the broker's own
+        baseline/preflight awaits — so a book that went stale/crossed in between
+        blocks the send with ZERO POSTs.
+        """
+
+        async def _hook() -> None:
+            assert_market_fresh_for_send(
+                self._get_state(symbol),
+                now=self._clock(),
+                max_data_age_seconds=self._limits.max_data_age_seconds,
+                max_spread_bps=self._limits.max_spread_bps,
+            )
+
+        return _hook
 
     async def submit_buy(
         self,
@@ -128,6 +161,12 @@ class KisMockBroker:
             is_mock=True,
             reason=f"scalp_entry:{correlation_id}",
             strategy=self._strategy_id,
+            # Share the executor correlation_id so native + synthetic evidence
+            # link for the daily-count de-dup (ROB-843 P1-2).
+            correlation_id=correlation_id,
+            # Final freshness re-check right before the POST (entry only; an
+            # exit must always be allowed to close a live position).
+            pre_send_hook=self._make_pre_send_hook(symbol),
         )
         if isinstance(result, dict) and baseline is not None:
             result["_baseline"] = baseline
@@ -166,6 +205,9 @@ class KisMockBroker:
             scalping_exit=True,
             scalping_strategy_id=strategy_id,
             scalping_exit_reason=exit_reason,
+            # Link native + synthetic exit evidence (ROB-843 P1-2). No pre-send
+            # freshness gate on the exit: a live position must always be closable.
+            correlation_id=correlation_id,
         )
         if isinstance(result, dict) and baseline is not None:
             result["_baseline"] = baseline
@@ -319,6 +361,51 @@ def _is_finite_positive(x: float | None) -> bool:
     return x is not None and math.isfinite(x) and x > 0
 
 
+class PreSendFreshnessError(RuntimeError):
+    """Raised by the pre-send re-check when the live book is no longer tradeable
+    immediately before the broker POST (ROB-843 P1-1)."""
+
+    def __init__(self, reason_codes: tuple[str, ...]) -> None:
+        self.reason_codes = tuple(reason_codes)
+        super().__init__(",".join(self.reason_codes) or "pre_send_freshness")
+
+
+def assert_market_fresh_for_send(
+    state: MarketState | None,
+    *,
+    now: float,
+    max_data_age_seconds: float,
+    max_spread_bps: Decimal,
+) -> None:
+    """Re-validate the CURRENT live book immediately before the broker POST.
+
+    Raises :class:`PreSendFreshnessError` on a missing/stale/invalid quote so a
+    BUY that passed the earlier risk gate is not sent against a book that went
+    stale/crossed during the intervening holdings/history/baseline awaits.
+    """
+    if state is None:
+        raise PreSendFreshnessError(("no_market_state",))
+    book_age = state.book_age_seconds(now=now)
+    bid, ask = state.bid, state.ask
+    reasons: list[str] = []
+    if book_age is None or not math.isfinite(book_age) or book_age < 0:
+        reasons.append("invalid_book_timestamp")
+    elif book_age > max_data_age_seconds:
+        reasons.append(ReasonCode.STALE_DATA)
+    if not _is_finite_positive(bid) or not _is_finite_positive(ask):
+        reasons.append("invalid_quote")
+    elif ask < bid:
+        reasons.append("crossed_book")
+    else:
+        spread = state.spread_bps()
+        if spread is None or not math.isfinite(spread) or spread < 0:
+            reasons.append("invalid_spread")
+        elif Decimal(str(spread)) > max_spread_bps:
+            reasons.append(ReasonCode.SPREAD_TOO_WIDE)
+    if reasons:
+        raise PreSendFreshnessError(tuple(reasons))
+
+
 class KisMockRiskGate:
     """RiskGatePort: fresh position + market + order-history snapshot (ROB-843).
 
@@ -393,6 +480,10 @@ class KisMockRiskGate:
         return has_open, open_count
 
     async def load(self, *, symbol: str, side: Side) -> RiskInputs:
+        # ROB-843 P1-2: if a prior order's durable bookkeeping was lost, the
+        # daily count can no longer be trusted — fail-close the next order.
+        if is_ledger_tracking_unavailable():
+            raise RuntimeError("ledger_tracking_unavailable")
         market = self._market(symbol)
         has_open, open_count = await self._position(symbol)
         history = await self._load_history(symbol=to_db_symbol(symbol))

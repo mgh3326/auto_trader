@@ -21,7 +21,7 @@ from app.mcp_server.tooling.kis_mock_ledger import (
 from app.models.review import KISMockOrderLedger
 from app.services.brokers.kis.mock_scalping_exec.ledger_state import (
     _start_of_kst_day,
-    daily_broker_order_count_stmt,
+    count_daily_broker_orders,
     load_kis_mock_order_history,
 )
 
@@ -169,10 +169,7 @@ async def test_legacy_close_missing_reconciled_at_fail_closes(db_session) -> Non
 async def _count(symbol: str) -> int:
     since = _start_of_kst_day(now_kst())
     async with _order_session_factory()() as db:
-        return int(
-            await db.scalar(daily_broker_order_count_stmt(since=since, symbol=symbol))
-            or 0
-        )
+        return await count_daily_broker_orders(db, since=since, symbol=symbol)
 
 
 @pytest.mark.integration
@@ -215,6 +212,92 @@ async def test_preview_blocked_and_synthetic_count_zero(db_session) -> None:
     # synthetic audit row (mirrors a submission; excluded)
     await _ins(symbol=sym, order_no=f"X1-{sym}-exit", scalping_role="exit")
     assert await _count(sym) == 0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_native_plus_synthetic_fill_counts_once(db_session) -> None:
+    """P1-2: a native row + a real synthetic fill (shared correlation_id+side)
+    is one submission, not two."""
+    sym = "900206"
+    await _reset(sym)
+    cid = f"cid-{sym}"
+    await _ins(symbol=sym, side="buy", order_no=f"N-{sym}", correlation_id=cid)
+    await _ins(
+        symbol=sym,
+        side="buy",
+        order_no=f"N-{sym}-entry",
+        scalping_role="entry",
+        lifecycle_state="fill",
+        correlation_id=cid,
+    )
+    assert await _count(sym) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_synthetic_only_fill_is_counted_as_fallback(db_session) -> None:
+    """P1-2: native write lost — a synthetic fill is the only durable evidence,
+    so it still counts the submission (no undercount)."""
+    sym = "900207"
+    await _reset(sym)
+    cid = f"cid-{sym}"
+    await _ins(
+        symbol=sym,
+        side="buy",
+        order_no=f"S-{sym}-entry",
+        scalping_role="entry",
+        lifecycle_state="fill",
+        correlation_id=cid,
+    )
+    assert await _count(sym) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_synthetic_anomaly_fallback_is_counted(db_session) -> None:
+    """P1-2: an unfilled/anomaly synthetic (native lost) still counts once."""
+    sym = "900208"
+    await _reset(sym)
+    cid = f"cid-{sym}"
+    await _ins(
+        symbol=sym,
+        side="sell",
+        order_no=f"A-{sym}",
+        scalping_role="native_fallback",
+        lifecycle_state="anomaly",
+        status="unknown",
+        correlation_id=cid,
+    )
+    assert await _count(sym) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_fallback_and_later_synthetic_dedupe(db_session) -> None:
+    """P1-2: a tracking-fallback row and the later synthetic fill share
+    (correlation_id, side) and de-dup to a single count."""
+    sym = "900209"
+    await _reset(sym)
+    cid = f"cid-{sym}"
+    await _ins(
+        symbol=sym,
+        side="buy",
+        order_no=None,
+        scalping_role="native_fallback",
+        lifecycle_state="anomaly",
+        status="unknown",
+        correlation_id=cid,
+    )
+    await _ins(
+        symbol=sym,
+        side="buy",
+        order_no=f"L-{sym}-entry",
+        scalping_role="entry",
+        lifecycle_state="fill",
+        correlation_id=cid,
+    )
+    assert await _count(sym) == 1
 
 
 @pytest.mark.integration

@@ -225,6 +225,17 @@ class MockScalpingExecutor:
             correlation_id=cid,
             confirm=confirm,
         )
+        # ROB-843 P1-1: the broker's final pre-send freshness re-check blocked the
+        # POST (book went stale/crossed after the risk gate). Zero broker calls,
+        # no fill, no ledger — surface as a clean blocked result.
+        if isinstance(buy, dict) and buy.get("pre_send_blocked"):
+            return RoundTripResult(
+                correlation_id=cid,
+                status="blocked",
+                quantity=qty,
+                reason_codes=tuple(buy.get("reason_codes") or ("pre_send_freshness",)),
+                detail=buy.get("detail"),
+            )
         if not confirm:
             logger.info("dry-run scalping entry symbol=%s qty=%s", intent.symbol, qty)
             return RoundTripResult(correlation_id=cid, status="dry_run", quantity=qty)

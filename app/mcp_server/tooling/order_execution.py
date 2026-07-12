@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from decimal import Decimal
 from typing import Any, Literal
@@ -723,6 +724,7 @@ async def _execute_and_record(
     idempotency_key: str | None = None,
     mirror_cohort: str | None = None,
     mirror_source_bucket: str | None = None,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Execute a live order, record history, fills, and journals."""
     # ROB-102: capture pre-order KIS mock holdings as the reconciler baseline.
@@ -826,6 +828,32 @@ async def _execute_and_record(
             )
             return True
         return False
+
+    # ROB-843 P1-1: final pre-send freshness re-check, invoked immediately
+    # before the real broker POST (after baseline/preflight). KIS-mock-scalping
+    # only — live callers pass no hook, so live behavior is unchanged. On a
+    # freshness violation the POST is skipped entirely (zero broker calls) and a
+    # structured pre_send_blocked result is returned.
+    if pre_send_hook is not None:
+        try:
+            await pre_send_hook()
+        except Exception as hook_exc:  # noqa: BLE001 — abort the send, never POST
+            reason_codes = list(getattr(hook_exc, "reason_codes", ()) or ())
+            logger.info(
+                "pre-send freshness block symbol=%s side=%s reasons=%s",
+                normalized_symbol,
+                side,
+                reason_codes,
+            )
+            await _release_reserved_mock_mirror_intent_after_send_failure(hook_exc)
+            return {
+                "success": False,
+                "pre_send_blocked": True,
+                "reason_codes": reason_codes,
+                "detail": f"{type(hook_exc).__name__}: {hook_exc}"[:200],
+                "account_mode": "kis_mock" if is_mock else market_type,
+                "dry_run": False,
+            }
 
     try:
         execution_result = await _execute_order(
@@ -1217,6 +1245,7 @@ async def _place_order_impl(
     mirror_cohort: str | None = None,
     mirror_source_bucket: str | None = None,
     client_order_id: str | None = None,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     symbol, side_lower, order_type_lower = _validate_inputs(
         symbol,
@@ -1556,6 +1585,7 @@ async def _place_order_impl(
             idempotency_key=idempotency_key,
             mirror_cohort=mirror_cohort,
             mirror_source_bucket=mirror_source_bucket,
+            pre_send_hook=pre_send_hook,
         )
     except Exception as exc:
         logger.exception(

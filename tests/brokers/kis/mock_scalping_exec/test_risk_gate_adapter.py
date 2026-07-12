@@ -69,6 +69,32 @@ def _gate(state, *, holdings=_empty_holdings, history=_no_history):
     )
 
 
+@pytest.fixture(autouse=True)
+def _reset_tracking_state():
+    """Keep the process-local ledger-tracking flag from leaking between tests."""
+    from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
+        reset_ledger_tracking_state,
+    )
+
+    reset_ledger_tracking_state()
+    yield
+    reset_ledger_tracking_state()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_gate_fail_closes_when_tracking_unavailable() -> None:
+    """ROB-843 P1-2: a degraded ledger-tracking flag fail-closes the next order
+    before any market/holdings read."""
+    from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
+        mark_ledger_tracking_unavailable,
+    )
+
+    mark_ledger_tracking_unavailable()
+    with pytest.raises(RuntimeError, match="ledger_tracking_unavailable"):
+        await _gate(_FakeState()).load(symbol="005930", side="BUY")
+
+
 # --- Market snapshot fail-close (Blocker 3) -----------------------------------
 
 

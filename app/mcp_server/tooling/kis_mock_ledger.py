@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from typing import cast as typing_cast
 
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -19,6 +20,10 @@ from app.jobs.kis_mock_reconciliation_job import run_kis_mock_reconciliation
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
 from app.models.review import KISMockOrderLedger
+from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
+    LedgerWriteError,
+    mark_ledger_tracking_unavailable,
+)
 from app.services.brokers.kis.order_id import normalize_broker_order_id
 from app.services.kis_mock_lifecycle_service import KISMockLifecycleService
 from app.services.live_correlation import live_correlation_id
@@ -305,10 +310,14 @@ async def _save_kis_mock_order_ledger(
     report_item_uuid: uuid.UUID | None = None,
     mirror_cohort: str | None = None,
     mirror_source_bucket: str | None = None,
+    raise_on_error: bool = False,
 ) -> int | None:
     """Insert one row into review.kis_mock_order_ledger.
 
-    Returns the new primary-key id, or None on conflict / error.
+    Returns the new primary-key id, or None on a benign on-conflict no-op. When
+    ``raise_on_error`` is set, a real DB error raises ``LedgerWriteError`` so the
+    caller can distinguish a conflict (row already durable) from a lost write
+    (ROB-843 P1-2); otherwise a DB error is swallowed and returns None (legacy).
     """
     resolved_lifecycle = lifecycle_state or _status_to_lifecycle_state(status)
     # ROB-843: a row inserted directly as ``reconciled`` (e.g. a scalping exit
@@ -365,7 +374,73 @@ async def _save_kis_mock_order_ledger(
             return None
     except Exception as exc:
         logger.warning("Failed to save kis_mock order ledger row: %s", exc)
+        if raise_on_error:
+            raise LedgerWriteError(str(exc) or exc.__class__.__name__) from exc
         return None
+
+
+async def _native_row_exists(order_no: str | None) -> bool:
+    """True if a durable native (non-scalping) row exists for ``order_no``.
+
+    Used after an on-conflict no-op to confirm the existing row is durable
+    (ROB-843 P1-2) rather than treating the write as lost.
+    """
+    if not order_no:
+        return False
+    try:
+        async with _order_session_factory()() as db:
+            found = await db.scalar(
+                select(func.count())
+                .select_from(KISMockOrderLedger)
+                .where(
+                    func.trim(KISMockOrderLedger.order_no) == order_no.strip(),
+                    KISMockOrderLedger.scalping_role.is_(None),
+                )
+            )
+        return bool(found or 0)
+    except Exception as exc:  # noqa: BLE001 — lookup failure => not durable
+        logger.warning("native row lookup failed for order_no=%s: %s", order_no, exc)
+        return False
+
+
+async def _persist_tracking_fallback(
+    *,
+    correlation_id: str | None,
+    side: str,
+    normalized_symbol: str,
+    market_type: str,
+) -> int | None:
+    """Write a durable fallback evidence row (correlation_id + side) so the daily
+    broker-order count still counts a submitted order whose native row was lost.
+
+    Keyed on the same correlation_id the synthetic scalping fill/exit row uses,
+    so native/fallback/synthetic evidence for one order de-dup to a single count.
+    """
+    currency = "KRW" if market_type != "equity_us" else "USD"
+    return await _save_kis_mock_order_ledger(
+        symbol=normalized_symbol,
+        instrument_type=market_type,
+        side=side,
+        order_type="limit",
+        quantity=0.0,
+        price=0.0,
+        amount=0.0,
+        currency=currency,
+        order_no=None,
+        order_time=None,
+        krx_fwdg_ord_orgno=None,
+        status="unknown",
+        response_code=None,
+        response_message="native ledger write lost; tracking fallback",
+        raw_response=None,
+        reason="ledger_tracking_fallback",
+        thesis=None,
+        strategy=None,
+        notes=None,
+        lifecycle_state="anomaly",
+        correlation_id=correlation_id,
+        scalping_role="native_fallback",
+    )
 
 
 async def _record_kis_mock_order(
@@ -465,33 +540,61 @@ async def _record_kis_mock_order(
     # (order id / result code / message) are preserved.
     redacted_exec = _redact_evidence(raw_exec)
 
-    ledger_id = await _save_kis_mock_order_ledger(
-        symbol=normalized_symbol,
-        instrument_type=market_type,
-        side=side,
-        order_type=order_type,
-        quantity=qty_val,
-        price=price_val,
-        amount=amt_val,
-        currency=currency,
-        order_no=order_no,
-        order_time=order_time,
-        krx_fwdg_ord_orgno=krx_orgno,
-        status=status,
-        response_code=rt_cd,
-        response_message=msg,
-        raw_response=redacted_exec,
-        reason=reason,
-        thesis=thesis,
-        strategy=strategy,
-        notes=notes,
-        lifecycle_state=_status_to_lifecycle_state(status),
-        holdings_baseline_qty=holdings_baseline_qty,
-        correlation_id=correlation_id,
-        report_item_uuid=report_item_uuid,
-        mirror_cohort=mirror_cohort,
-        mirror_source_bucket=mirror_source_bucket,
-    )
+    # ROB-843 P1-2: distinguish a benign on-conflict no-op from a lost write. A
+    # lost native write must not silently drop the order from the daily count —
+    # fall back to a durable evidence row, and if that also fails, degrade
+    # tracking so subsequent automated orders fail closed.
+    ledger_tracking_unavailable = False
+    try:
+        ledger_id = await _save_kis_mock_order_ledger(
+            symbol=normalized_symbol,
+            instrument_type=market_type,
+            side=side,
+            order_type=order_type,
+            quantity=qty_val,
+            price=price_val,
+            amount=amt_val,
+            currency=currency,
+            order_no=order_no,
+            order_time=order_time,
+            krx_fwdg_ord_orgno=krx_orgno,
+            status=status,
+            response_code=rt_cd,
+            response_message=msg,
+            raw_response=redacted_exec,
+            reason=reason,
+            thesis=thesis,
+            strategy=strategy,
+            notes=notes,
+            lifecycle_state=_status_to_lifecycle_state(status),
+            holdings_baseline_qty=holdings_baseline_qty,
+            correlation_id=correlation_id,
+            report_item_uuid=report_item_uuid,
+            mirror_cohort=mirror_cohort,
+            mirror_source_bucket=mirror_source_bucket,
+            raise_on_error=True,
+        )
+    except LedgerWriteError as exc:
+        logger.warning(
+            "native kis_mock ledger write lost (symbol=%s order_no=%s): %s",
+            normalized_symbol,
+            order_no,
+            exc,
+        )
+        ledger_id = None
+
+    if accepted:
+        native_durable = ledger_id is not None or await _native_row_exists(order_no)
+        if not native_durable:
+            fallback_id = await _persist_tracking_fallback(
+                correlation_id=correlation_id,
+                side=side,
+                normalized_symbol=normalized_symbol,
+                market_type=market_type,
+            )
+            if fallback_id is None:
+                ledger_tracking_unavailable = True
+                mark_ledger_tracking_unavailable()
 
     # ROB-730: emit the place-time forecast only for accepted orders (mirrors
     # kis_live). publish_place_time_forecast is itself buy+target-gated and runs
@@ -534,6 +637,9 @@ async def _record_kis_mock_order(
         "correlation_id": correlation_id,
         "fill_recorded": False,
         "journal_created": False,
+        # ROB-843 P1-2: broker success is preserved; this flags that durable
+        # bookkeeping was lost so the caller can fail-close the NEXT order.
+        "ledger_tracking_unavailable": ledger_tracking_unavailable,
         "message": (_accepted_or_failed_message(accepted, status, ledger_id)),
     }
 

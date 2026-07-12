@@ -39,27 +39,62 @@ def _start_of_kst_day(now: datetime) -> datetime:
     return now.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
-def daily_broker_order_count_stmt(*, since: datetime, symbol: str | None = None):
-    """Count DISTINCT actually-submitted broker orders since ``since``.
+# Synthetic scalping rows count as durable submission evidence only once they
+# represent a real broker outcome (a fill / reconcile / anomaly), never a mere
+# audit placeholder.
+_SYNTHETIC_EVIDENCE_STATES: frozenset[str] = frozenset(
+    {"fill", "reconciled", "anomaly"}
+)
 
-    Counts one per unique (trimmed) broker order id, excluding synthetic
-    scalping audit rows (``scalping_role`` set — they mirror a native
-    submission) and rows with no valid broker order id (preview / blocked /
-    pre-submit failure / rejected / id-less never reached the broker). The
-    optional ``symbol`` scope is for deterministic per-symbol testing;
+
+async def count_daily_broker_orders(
+    db, *, since: datetime, symbol: str | None = None
+) -> int:
+    """Count actually-submitted broker orders since ``since`` (ROB-843 P1-2).
+
+    A submission is counted once, evidenced by EITHER a native ledger row (real
+    broker order id) OR — when the native write was lost — a synthetic
+    fill/anomaly/fallback row keyed by ``(correlation_id, side)``. Synthetic
+    evidence whose logical order already has a native row (matched by
+    ``(correlation_id, side)``) is not double-counted; rows that never reached
+    the broker (preview / blocked / pre-submit failure / rejected / id-less
+    native, or audit-only synthetic) are excluded.
+
+    The optional ``symbol`` scope is for deterministic per-symbol testing;
     production passes ``None`` (account-wide daily cap).
     """
-    stmt = select(
-        func.count(func.distinct(func.trim(KISMockOrderLedger.order_no)))
+    native_q = select(
+        KISMockOrderLedger.order_no,
+        KISMockOrderLedger.correlation_id,
+        KISMockOrderLedger.side,
     ).where(
         KISMockOrderLedger.trade_date >= since,
         KISMockOrderLedger.scalping_role.is_(None),
-        KISMockOrderLedger.order_no.is_not(None),
-        func.trim(KISMockOrderLedger.order_no) != "",
+    )
+    synthetic_q = select(
+        KISMockOrderLedger.correlation_id,
+        KISMockOrderLedger.side,
+    ).where(
+        KISMockOrderLedger.trade_date >= since,
+        KISMockOrderLedger.scalping_role.is_not(None),
+        KISMockOrderLedger.lifecycle_state.in_(_SYNTHETIC_EVIDENCE_STATES),
     )
     if symbol is not None:
-        stmt = stmt.where(KISMockOrderLedger.symbol == symbol)
-    return stmt
+        native_q = native_q.where(KISMockOrderLedger.symbol == symbol)
+        synthetic_q = synthetic_q.where(KISMockOrderLedger.symbol == symbol)
+
+    native_ids: set[str] = set()
+    native_pairs: set[tuple[str | None, str]] = set()
+    for order_no, corr_id, side in (await db.execute(native_q)).all():
+        native_pairs.add((corr_id, side))
+        if order_no is not None and order_no.strip():
+            native_ids.add(order_no.strip())
+
+    synthetic_pairs = {
+        (corr_id, side) for corr_id, side in (await db.execute(synthetic_q)).all()
+    }
+    orphaned = synthetic_pairs - native_pairs
+    return len(native_ids) + len(orphaned)
 
 
 async def load_kis_mock_order_history(
@@ -72,7 +107,7 @@ async def load_kis_mock_order_history(
     since = _start_of_kst_day(now)
 
     async with _order_session_factory()() as db:
-        orders_today = await db.scalar(daily_broker_order_count_stmt(since=since))
+        orders_today = await count_daily_broker_orders(db, since=since)
         realized_loss = await db.scalar(
             select(func.coalesce(func.sum(-KISMockOrderLedger.net_pnl), 0)).where(
                 KISMockOrderLedger.lifecycle_state == _CLOSED_STATE,

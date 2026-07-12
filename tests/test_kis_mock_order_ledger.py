@@ -1163,6 +1163,119 @@ async def test_record_redacts_sensitive_evidence(monkeypatch):
     assert "sid=abc" not in blob
 
 
+async def _record_accepted(monkeypatch, **over):
+    """Run _record_kis_mock_order for an accepted order with publish stubbed."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    monkeypatch.setattr(
+        kis_mock_ledger, "publish_place_time_forecast", AsyncMock(return_value=None)
+    )
+    kw = {
+        "normalized_symbol": "005930",
+        "market_type": "equity_kr",
+        "side": "buy",
+        "order_type": "limit",
+        "dry_run_result": _mock_preview(),
+        "execution_result": {"rt_cd": "0", "odno": "0001234567"},
+        "reason": "t",
+        "thesis": None,
+        "strategy": None,
+        "notes": None,
+        "correlation_id": "cid-x",
+    }
+    kw.update(over)
+    return await kis_mock_ledger._record_kis_mock_order(**kw)
+
+
+@pytest.mark.asyncio
+async def test_record_native_conflict_requeries_existing_row(monkeypatch):
+    """ROB-843 P1-2: an on-conflict no-op with an existing native row is durable —
+    no fallback, tracking stays available, success preserved."""
+    from app.mcp_server.tooling import kis_mock_ledger
+    from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
+        reset_ledger_tracking_state,
+    )
+
+    reset_ledger_tracking_state()
+    monkeypatch.setattr(
+        kis_mock_ledger, "_save_kis_mock_order_ledger", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        kis_mock_ledger, "_native_row_exists", AsyncMock(return_value=True)
+    )
+    fallback = AsyncMock(return_value=1)
+    monkeypatch.setattr(kis_mock_ledger, "_persist_tracking_fallback", fallback)
+    try:
+        result = await _record_accepted(monkeypatch)
+        assert result["success"] is True
+        assert result["ledger_tracking_unavailable"] is False
+        fallback.assert_not_awaited()  # existing row is durable, no fallback
+    finally:
+        reset_ledger_tracking_state()
+
+
+@pytest.mark.asyncio
+async def test_record_native_error_writes_synthetic_fallback(monkeypatch):
+    """ROB-843 P1-2: a lost native write falls back to a durable evidence row;
+    tracking stays available and broker success is preserved."""
+    from app.mcp_server.tooling import kis_mock_ledger
+    from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
+        LedgerWriteError,
+        reset_ledger_tracking_state,
+    )
+
+    reset_ledger_tracking_state()
+    monkeypatch.setattr(
+        kis_mock_ledger,
+        "_save_kis_mock_order_ledger",
+        AsyncMock(side_effect=LedgerWriteError("db down")),
+    )
+    monkeypatch.setattr(
+        kis_mock_ledger, "_native_row_exists", AsyncMock(return_value=False)
+    )
+    fallback = AsyncMock(return_value=99)
+    monkeypatch.setattr(kis_mock_ledger, "_persist_tracking_fallback", fallback)
+    try:
+        result = await _record_accepted(monkeypatch)
+        assert result["success"] is True  # broker accepted; bookkeeping recovered
+        assert result["ledger_tracking_unavailable"] is False
+        fallback.assert_awaited_once()
+    finally:
+        reset_ledger_tracking_state()
+
+
+@pytest.mark.asyncio
+async def test_record_all_evidence_lost_marks_tracking_unavailable(monkeypatch):
+    """ROB-843 P1-2: native AND fallback both fail to persist → tracking degraded
+    (subsequent orders fail-close) while broker success stays true."""
+    from app.mcp_server.tooling import kis_mock_ledger
+    from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
+        LedgerWriteError,
+        is_ledger_tracking_unavailable,
+        reset_ledger_tracking_state,
+    )
+
+    reset_ledger_tracking_state()
+    monkeypatch.setattr(
+        kis_mock_ledger,
+        "_save_kis_mock_order_ledger",
+        AsyncMock(side_effect=LedgerWriteError("db down")),
+    )
+    monkeypatch.setattr(
+        kis_mock_ledger, "_native_row_exists", AsyncMock(return_value=False)
+    )
+    monkeypatch.setattr(
+        kis_mock_ledger, "_persist_tracking_fallback", AsyncMock(return_value=None)
+    )
+    try:
+        result = await _record_accepted(monkeypatch)
+        assert result["success"] is True
+        assert result["ledger_tracking_unavailable"] is True
+        assert is_ledger_tracking_unavailable() is True
+    finally:
+        reset_ledger_tracking_state()
+
+
 @pytest.mark.asyncio
 async def test_record_rejected_order_mints_but_does_not_publish(monkeypatch):
     """ROB-730: a rejected order still gets a correlation_id (spine), but no
