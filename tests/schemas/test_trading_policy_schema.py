@@ -64,6 +64,7 @@ def test_crypto_market_rules_preserve_report_derived_and_null_thresholds():
         "fibonacci",
         "value_area",
         "bb_lower",
+        "bb_upper",
         "bb_middle",
         "volume_poc",
     ]

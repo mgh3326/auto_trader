@@ -60,6 +60,7 @@ def test_crypto_market_rules_preserve_report_derived_and_null_thresholds():
         "fibonacci",
         "value_area",
         "bb_lower",
+        "bb_upper",
         "bb_middle",
         "volume_poc",
     ]
@@ -195,7 +196,7 @@ market_rules:
       advisory: true
       semantics: rank fresh levels by independent-source confluence before source priority
       selection_rule: confluence_first_then_source_priority
-      source_priority: [fibonacci, value_area, bb_lower, bb_middle, volume_poc]
+      source_priority: [fibonacci, value_area, bb_lower, bb_upper, bb_middle, volume_poc]
       confluence_examples:
         - [fib_0, value_area_low, bb_lower]
         - [bb_middle, fib_23_6]
@@ -412,4 +413,3 @@ git status --short
 ```
 
 Expected: no whitespace errors; only the policy, schema, service, tests, MCP README, and superpowers design/plan docs differ; no Alembic revision exists; worktree is clean.
-

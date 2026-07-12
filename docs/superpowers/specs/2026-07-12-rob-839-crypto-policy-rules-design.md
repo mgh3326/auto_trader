@@ -96,8 +96,9 @@ report combinations:
 1. Fibonacci levels
 2. value-area levels
 3. Bollinger lower band
-4. Bollinger middle band
-5. volume POC
+4. Bollinger upper band
+5. Bollinger middle band
+6. volume POC
 
 The policy also records representative report-derived combinations, including
 `fib_0 + value_area_low + bb_lower`, `bb_middle + fib_23_6`, and
@@ -181,4 +182,3 @@ Implementation follows TDD:
 
 Targeted tests run after each red/green cycle. Final verification runs the
 relevant schema/service/MCP suites and `make lint`.
-

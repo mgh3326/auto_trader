@@ -1506,7 +1506,8 @@ Response shape:
     and no-chasing criteria. A `null` threshold is intentional and callers must
     not replace it with an inferred number. These rules do not replace
     code-owned fail-closed order guards.
-  - Success returns `{market, lane, version, content_hash, thresholds, decision_rules}`.
+  - Success returns
+    `{market, lane, version, content_hash, thresholds, decision_rules, market_rules}`.
     `decision_rules` is lane-filtered and empty when no rule applies. For sell,
     `decision_rules["sell.trim_preplace"]` encodes the ROB-751 resistance-near
     vs upside-rich tie-break: RSI-confirmed resistance or ultra-near resistance
