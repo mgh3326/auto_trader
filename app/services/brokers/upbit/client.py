@@ -118,7 +118,7 @@ async def _retry_with_backoff(
     retry_request_errors
         Whether to retry on ``httpx.RequestError`` (timeouts/network). ROB-645:
         order-creation POSTs pass ``False`` so a timed-out order is never re-sent
-        (429 rate-limit retries are unaffected and still apply).
+        (ROB-837 also gives order creation a zero retry budget, including 429).
     """
     if max_retries is None:
         max_retries = settings.api_rate_limit_retry_429_max
@@ -883,9 +883,9 @@ async def _request_with_auth(
             else:
                 raise ValueError(f"지원하지 않는 HTTP 메서드: {method}")
 
-    # ROB-645: order-creation POSTs (POST /v1/orders) must not retry RequestError —
-    # a timed-out order may have reached the broker, so a retry would double-submit.
-    # Reads (GET) and cancels (DELETE /order) keep the existing RequestError retry.
+    # ROB-645: order-creation POSTs (POST /v1/orders) must not retry transport
+    # errors or 429 responses — an order may have reached the broker, so a retry
+    # would double-submit. Reads (GET) and cancels (DELETE /order) keep retries.
     #
     # ROB-659 constraint note: submission is detected purely by the trailing
     # ``/orders`` path segment (method POST + api_path suffix). This holds because
@@ -897,7 +897,11 @@ async def _request_with_auth(
         "/orders"
     )
     return await _retry_with_backoff(
-        limiter, send, url=url, retry_request_errors=not is_order_submission
+        limiter,
+        send,
+        url=url,
+        max_retries=0 if is_order_submission else None,
+        retry_request_errors=not is_order_submission,
     )
 
 
@@ -909,6 +913,7 @@ def __getattr__(name: str) -> Any:
         "cancel_orders",
         "fetch_closed_orders",
         "fetch_open_orders",
+        "fetch_order_by_identifier",
         "fetch_order_detail",
         "place_buy_order",
         "place_market_buy_order",

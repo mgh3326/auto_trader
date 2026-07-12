@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from app.services.order_proposals.broker_gateway import (
@@ -215,3 +217,112 @@ async def test_cancel_rejects_unsupported_target_tuple():
             account_mode="kis_live",
             cancel_fn=lambda **_kwargs: pytest.fail("cancel must not be called"),
         )
+
+
+def _http_status_error(status_code: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://api.upbit.com/v1/order")
+    response = httpx.Response(status_code, request=request)
+    return httpx.HTTPStatusError(
+        "broker lookup failed", request=request, response=response
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_submit_evidence_returns_found_order():
+    from app.services.order_proposals.broker_gateway import (
+        SubmitEvidence,
+        fetch_submit_evidence,
+    )
+
+    found = await fetch_submit_evidence(
+        identifier="oprop-fixed",
+        account_mode="upbit",
+        market="crypto",
+        lookup_fn=AsyncMock(return_value={"uuid": "35bee07f-full", "state": "wait"}),
+    )
+
+    assert found == SubmitEvidence("found", "35bee07f-full", "wait", None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_submit_evidence_treats_only_404_as_absent():
+    from app.services.order_proposals.broker_gateway import fetch_submit_evidence
+
+    absent = await fetch_submit_evidence(
+        identifier="oprop-fixed",
+        account_mode="upbit",
+        market="crypto",
+        lookup_fn=AsyncMock(side_effect=_http_status_error(404)),
+    )
+    unknown = await fetch_submit_evidence(
+        identifier="oprop-fixed",
+        account_mode="upbit",
+        market="crypto",
+        lookup_fn=AsyncMock(side_effect=_http_status_error(403)),
+    )
+
+    assert absent.outcome == "absent"
+    assert absent.reason is None
+    assert unknown.outcome == "unknown"
+    assert unknown.reason == "broker lookup failed"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "lookup_result",
+    [
+        {"uuid": "", "state": "wait"},
+        {"uuid": "35bee07f-full", "state": " "},
+    ],
+)
+async def test_fetch_submit_evidence_treats_incomplete_broker_results_as_unknown(
+    lookup_result,
+):
+    from app.services.order_proposals.broker_gateway import fetch_submit_evidence
+
+    evidence = await fetch_submit_evidence(
+        identifier="oprop-fixed",
+        account_mode="upbit",
+        market="crypto",
+        lookup_fn=AsyncMock(return_value=lookup_result),
+    )
+
+    assert evidence.outcome == "unknown"
+    assert evidence.reason == "broker lookup returned incomplete order evidence"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_submit_evidence_treats_read_timeout_as_unknown():
+    from app.services.order_proposals.broker_gateway import fetch_submit_evidence
+
+    evidence = await fetch_submit_evidence(
+        identifier="oprop-fixed",
+        account_mode="upbit",
+        market="crypto",
+        lookup_fn=AsyncMock(side_effect=httpx.ReadTimeout("")),
+    )
+
+    assert evidence.outcome == "unknown"
+    assert evidence.reason == "ReadTimeout"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_submit_evidence_returns_unknown_for_unsupported_tuple():
+    from app.services.order_proposals.broker_gateway import fetch_submit_evidence
+
+    lookup = AsyncMock()
+    evidence = await fetch_submit_evidence(
+        identifier="oprop-fixed",
+        account_mode="kis_live",
+        market="crypto",
+        lookup_fn=lookup,
+    )
+
+    assert evidence.outcome == "unknown"
+    assert evidence.reason == "submit evidence lookup unsupported for kis_live/crypto"
+    lookup.assert_not_awaited()

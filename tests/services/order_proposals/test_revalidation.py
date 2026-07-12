@@ -3,9 +3,11 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from app.services.order_proposals import OrderProposalsService
+from app.services.order_proposals.broker_gateway import SubmitEvidence
 from app.services.order_proposals.revalidation import (
     _adapt_live_submit_response,
     revalidate_and_submit,
@@ -972,6 +974,273 @@ def test_toss_proposal_client_ids_are_stable_and_rung_scoped():
     assert same.startswith("tosprop-")
 
 
+def test_upbit_proposal_client_ids_are_stable_and_rung_scoped():
+    from app.services.order_proposals import revalidation as mod
+
+    proposal_id = uuid.UUID("12345678-1234-5678-1234-567812345678")
+    first = mod._proposal_client_order_id(proposal_id, 0)
+    assert first == mod._proposal_client_order_id(proposal_id, 0)
+    assert first != mod._proposal_client_order_id(proposal_id, 1)
+    assert first != mod._proposal_client_order_id(uuid.uuid4(), 0)
+    assert first.startswith("oprop-")
+    assert len(first) <= 40
+
+
+@pytest.mark.asyncio
+async def test_upbit_revalidation_binds_same_proposal_client_id_to_preview_and_submit(
+    db_session,
+):
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="KRW-BTC",
+        market="crypto",
+        account_mode="upbit",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("0.01"), Decimal("70000000"), None)],
+    )
+    await db_session.commit()
+    calls: list[dict] = []
+
+    async def accepted(**kwargs):
+        calls.append(kwargs)
+        if kwargs["dry_run"]:
+            return {
+                "success": True,
+                "approval_hash": "upbit-token",
+                "price": "70000000",
+                "quantity": "0.01",
+            }
+        return {"success": True, "status": "resting", "broker_order_id": "upbit-1"}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=accepted,
+    )
+
+    from app.services.order_proposals import revalidation as mod
+
+    expected = mod._proposal_client_order_id(group.proposal_id, 0)
+    assert outcomes[0].result == "submitted_resting"
+    assert [call["proposal_client_order_id"] for call in calls] == [
+        expected,
+        expected,
+    ]
+
+
+async def _create_upbit_submit_proposal(db_session):
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="KRW-BTC",
+        market="crypto",
+        account_mode="upbit",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("0.01"), Decimal("70000000"), None)],
+    )
+    await db_session.commit()
+    return service, group
+
+
+def _upbit_preview() -> dict[str, str | bool]:
+    return {
+        "success": True,
+        "approval_hash": "upbit-approval",
+        "price": "70000000",
+        "quantity": "0.01",
+    }
+
+
+@pytest.mark.asyncio
+async def test_upbit_submit_failure_found_evidence_converges_resting(
+    db_session, monkeypatch
+):
+    from app.services.order_proposals import revalidation as mod
+
+    service, group = await _create_upbit_submit_proposal(db_session)
+    monkeypatch.setattr(mod, "_proposal_client_order_id", lambda *_: "oprop-expected")
+    live_calls: list[str] = []
+    evidence_calls: list[dict] = []
+
+    async def place_order_fn(**kwargs):
+        if kwargs["dry_run"]:
+            return _upbit_preview()
+        live_calls.append(kwargs["proposal_client_order_id"])
+        return {"success": False}
+
+    async def evidence_fn(**kwargs):
+        evidence_calls.append(kwargs)
+        return SubmitEvidence("found", "35bee07f-full", "wait")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order_fn,
+        fetch_submit_evidence_fn=evidence_fn,
+    )
+
+    assert live_calls == ["oprop-expected"]
+    assert len(evidence_calls) == 1
+    assert outcomes[0].result == "submitted_resting"
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "resting"
+    assert rungs[0].broker_order_id == "35bee07f-full"
+    assert rungs[0].idempotency_key == "oprop-expected"
+
+
+@pytest.mark.asyncio
+async def test_upbit_true_rejection_absent_evidence_is_rejected(
+    db_session, monkeypatch
+):
+    from app.services.order_proposals import revalidation as mod
+
+    service, group = await _create_upbit_submit_proposal(db_session)
+    monkeypatch.setattr(mod, "_proposal_client_order_id", lambda *_: "oprop-expected")
+    live_calls: list[str] = []
+    evidence_calls = 0
+
+    async def place_order_fn(**kwargs):
+        if kwargs["dry_run"]:
+            return _upbit_preview()
+        live_calls.append(kwargs["proposal_client_order_id"])
+        return {"success": False, "error": "insufficient balance"}
+
+    async def evidence_fn(**kwargs):
+        nonlocal evidence_calls
+        evidence_calls += 1
+        return SubmitEvidence("absent")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order_fn,
+        fetch_submit_evidence_fn=evidence_fn,
+    )
+
+    assert outcomes[0].result == "error"
+    assert live_calls == ["oprop-expected"]
+    assert evidence_calls == 1
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "rejected"
+    assert rungs[0].void_reason == "insufficient balance"
+
+
+@pytest.mark.asyncio
+async def test_upbit_submit_evidence_unknown_is_unverified(db_session, monkeypatch):
+    from app.services.order_proposals import revalidation as mod
+
+    service, group = await _create_upbit_submit_proposal(db_session)
+    monkeypatch.setattr(mod, "_proposal_client_order_id", lambda *_: "oprop-expected")
+    live_calls: list[str] = []
+    evidence_calls = 0
+
+    async def place_order_fn(**kwargs):
+        if kwargs["dry_run"]:
+            return _upbit_preview()
+        live_calls.append(kwargs["proposal_client_order_id"])
+        return {"success": False, "error": "submit not confirmed"}
+
+    async def evidence_fn(**kwargs):
+        nonlocal evidence_calls
+        evidence_calls += 1
+        return SubmitEvidence("unknown", reason="timeout")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order_fn,
+        correlation_mint=lambda **_: "corr-expected",
+        fetch_submit_evidence_fn=evidence_fn,
+    )
+
+    assert outcomes[0].result == "unverified"
+    assert live_calls == ["oprop-expected"]
+    assert evidence_calls == 1
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "unverified"
+    assert rungs[0].idempotency_key == "oprop-expected"
+    assert rungs[0].correlation_id == "corr-expected"
+    assert rungs[0].void_reason == "submit_evidence_unknown:timeout"
+
+
+@pytest.mark.asyncio
+async def test_upbit_submit_exception_found_evidence_converges_resting(
+    db_session, monkeypatch
+):
+    from app.services.order_proposals import revalidation as mod
+
+    service, group = await _create_upbit_submit_proposal(db_session)
+    monkeypatch.setattr(mod, "_proposal_client_order_id", lambda *_: "oprop-expected")
+    live_calls: list[str] = []
+    evidence_calls = 0
+
+    async def place_order_fn(**kwargs):
+        if kwargs["dry_run"]:
+            return _upbit_preview()
+        live_calls.append(kwargs["proposal_client_order_id"])
+        raise httpx.ReadTimeout("submit timeout")
+
+    async def evidence_fn(**kwargs):
+        nonlocal evidence_calls
+        evidence_calls += 1
+        return SubmitEvidence("found", "35bee07f-full", "watch")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order_fn,
+        fetch_submit_evidence_fn=evidence_fn,
+    )
+
+    assert outcomes[0].result == "submitted_resting"
+    assert live_calls == ["oprop-expected"]
+    assert evidence_calls == 1
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "resting"
+    assert rungs[0].broker_order_id == "35bee07f-full"
+
+
+@pytest.mark.asyncio
+async def test_default_place_order_forwards_proposal_client_id_to_preview_and_submit(
+    monkeypatch,
+):
+    import app.mcp_server.tooling.order_execution as order_execution
+    from app.services.order_proposals import revalidation as mod
+
+    calls: list[dict] = []
+
+    async def fake_impl(**kwargs):
+        calls.append(kwargs)
+        return {"success": True}
+
+    monkeypatch.setattr(order_execution, "_place_order_impl", fake_impl)
+    expected = mod._proposal_client_order_id(
+        uuid.UUID("12345678-1234-5678-1234-567812345678"), 0
+    )
+    for dry_run in (True, False):
+        await mod._default_place_order_fn(
+            dry_run=dry_run,
+            account_mode="upbit",
+            symbol="KRW-BTC",
+            side="buy",
+            market="crypto",
+            order_type="limit",
+            quantity=Decimal("0.01"),
+            price=Decimal("70000000"),
+            proposal_client_order_id=expected,
+        )
+
+    assert [call["client_order_id"] for call in calls] == [expected, expected]
+
+
 @pytest.mark.asyncio
 async def test_toss_kr_routes_preview_and_accepted_submit(db_session, monkeypatch):
     svc = OrderProposalsService(db_session)
@@ -1349,6 +1618,8 @@ async def test_replace_confirmation_exception_returns_unverified_no_submit(db_se
 async def test_replace_submit_ambiguity_persists_reconcile_lineage(
     db_session, submit_result
 ):
+    from app.services.order_proposals import revalidation as mod
+
     service, group = await _create_target_proposal(db_session, action="replace")
     snapshots = iter([_target_snapshot(), _target_snapshot(status="cancelled")])
 
@@ -1368,6 +1639,9 @@ async def test_replace_submit_ambiguity_persists_reconcile_lineage(
             raise TimeoutError("submit outcome unknown")
         return {"success": True, "status": "unknown"}
 
+    async def evidence_fn(**kwargs):
+        return SubmitEvidence("unknown", reason="lookup unavailable")
+
     outcomes = await revalidate_and_submit(
         service=service,
         proposal_id=group.proposal_id,
@@ -1376,12 +1650,71 @@ async def test_replace_submit_ambiguity_persists_reconcile_lineage(
         fetch_target_fn=fetch_target_fn,
         cancel_target_fn=cancel_target_fn,
         correlation_mint=lambda **kwargs: "corr-replace-1",
+        fetch_submit_evidence_fn=evidence_fn,
     )
 
     assert outcomes[0].result == "unverified"
     _, rungs = await service.get_proposal(group.proposal_id)
     assert rungs[0].correlation_id == "corr-replace-1"
-    assert rungs[0].idempotency_key == "idem-replace-1"
+    assert rungs[0].idempotency_key == mod._proposal_client_order_id(
+        group.proposal_id, 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_replace_submit_failure_found_evidence_converges_resting(
+    db_session, monkeypatch
+):
+    from app.services.order_proposals import revalidation as mod
+
+    service, group = await _create_target_proposal(db_session, action="replace")
+    monkeypatch.setattr(mod, "_proposal_client_order_id", lambda *_: "oprop-replace")
+    snapshots = iter([_target_snapshot(), _target_snapshot(status="cancelled")])
+    place_calls: list[dict] = []
+    evidence_calls: list[dict] = []
+
+    async def fetch_target_fn(**kwargs):
+        return next(snapshots)
+
+    async def cancel_target_fn(**kwargs):
+        return {"success": True}
+
+    async def place_order_fn(**kwargs):
+        place_calls.append(kwargs)
+        if kwargs["dry_run"]:
+            return await _matching_preview(**kwargs)
+        return {"success": False, "error": "duplicate identifier"}
+
+    async def evidence_fn(**kwargs):
+        evidence_calls.append(kwargs)
+        return SubmitEvidence("found", "replacement-order", "wait")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order_fn,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+        fetch_submit_evidence_fn=evidence_fn,
+    )
+
+    assert outcomes[0].result == "submitted_resting"
+    assert [call["proposal_client_order_id"] for call in place_calls] == [
+        "oprop-replace",
+        "oprop-replace",
+    ]
+    assert evidence_calls == [
+        {
+            "identifier": "oprop-replace",
+            "account_mode": "upbit",
+            "market": "crypto",
+        }
+    ]
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "resting"
+    assert rungs[0].broker_order_id == "replacement-order"
+    assert rungs[0].idempotency_key == "oprop-replace"
 
 
 @pytest.mark.asyncio
