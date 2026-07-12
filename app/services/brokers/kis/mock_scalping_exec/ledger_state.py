@@ -39,6 +39,29 @@ def _start_of_kst_day(now: datetime) -> datetime:
     return now.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
+def daily_broker_order_count_stmt(*, since: datetime, symbol: str | None = None):
+    """Count DISTINCT actually-submitted broker orders since ``since``.
+
+    Counts one per unique (trimmed) broker order id, excluding synthetic
+    scalping audit rows (``scalping_role`` set — they mirror a native
+    submission) and rows with no valid broker order id (preview / blocked /
+    pre-submit failure / rejected / id-less never reached the broker). The
+    optional ``symbol`` scope is for deterministic per-symbol testing;
+    production passes ``None`` (account-wide daily cap).
+    """
+    stmt = select(
+        func.count(func.distinct(func.trim(KISMockOrderLedger.order_no)))
+    ).where(
+        KISMockOrderLedger.trade_date >= since,
+        KISMockOrderLedger.scalping_role.is_(None),
+        KISMockOrderLedger.order_no.is_not(None),
+        func.trim(KISMockOrderLedger.order_no) != "",
+    )
+    if symbol is not None:
+        stmt = stmt.where(KISMockOrderLedger.symbol == symbol)
+    return stmt
+
+
 async def load_kis_mock_order_history(
     *, symbol: str, now: datetime | None = None
 ) -> MockOrderHistory:
@@ -49,11 +72,7 @@ async def load_kis_mock_order_history(
     since = _start_of_kst_day(now)
 
     async with _order_session_factory()() as db:
-        orders_today = await db.scalar(
-            select(func.count())
-            .select_from(KISMockOrderLedger)
-            .where(KISMockOrderLedger.trade_date >= since)
-        )
+        orders_today = await db.scalar(daily_broker_order_count_stmt(since=since))
         realized_loss = await db.scalar(
             select(func.coalesce(func.sum(-KISMockOrderLedger.net_pnl), 0)).where(
                 KISMockOrderLedger.lifecycle_state == _CLOSED_STATE,
@@ -61,17 +80,29 @@ async def load_kis_mock_order_history(
                 KISMockOrderLedger.net_pnl < 0,
             )
         )
-        # Cooldown is measured from the actual close/reconcile time, so a held
-        # position (no reconciled close yet) imposes no cooldown.
-        last_close = await db.scalar(
-            select(func.max(KISMockOrderLedger.trade_date)).where(
-                KISMockOrderLedger.symbol == symbol,
-                KISMockOrderLedger.lifecycle_state == _CLOSED_STATE,
+        # Cooldown anchors on the actual position-closing SELL reconcile time.
+        # Only reconciled SELL rows count (BUY/preview/failed/rejected/no-fill
+        # are not closes). reconciled_at is the canonical reconcile timestamp;
+        # a legacy close row missing it must fail-close, never silently bypass.
+        close_ts_rows = (
+            await db.execute(
+                select(KISMockOrderLedger.reconciled_at).where(
+                    KISMockOrderLedger.symbol == symbol,
+                    KISMockOrderLedger.side == "sell",
+                    KISMockOrderLedger.lifecycle_state == _CLOSED_STATE,
+                )
             )
-        )
+        ).all()
 
     seconds_since_close: float | None = None
-    if last_close is not None:
+    if close_ts_rows:
+        reconciled_ats = [row[0] for row in close_ts_rows]
+        if any(ts is None for ts in reconciled_ats):
+            raise RuntimeError(
+                f"reconciled SELL close for {symbol} is missing reconciled_at; "
+                "cannot compute cooldown (fail-close)"
+            )
+        last_close = max(reconciled_ats)
         seconds_since_close = (now - last_close).total_seconds()
 
     return MockOrderHistory(

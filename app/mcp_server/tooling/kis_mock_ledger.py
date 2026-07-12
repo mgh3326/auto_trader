@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
@@ -18,9 +19,40 @@ from app.jobs.kis_mock_reconciliation_job import run_kis_mock_reconciliation
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
 from app.models.review import KISMockOrderLedger
+from app.services.brokers.kis.order_id import normalize_broker_order_id
 from app.services.kis_mock_lifecycle_service import KISMockLifecycleService
 from app.services.live_correlation import live_correlation_id
 from app.services.live_place_provenance import publish_place_time_forecast
+
+# ROB-843: sensitive-key fragments to redact from raw broker evidence before it
+# is persisted or returned. Matched case-insensitively as a substring of the key
+# (covers appkey/appsecret/approval_key/approval_hash/authorization/cookie/token).
+_SENSITIVE_KEY_RE = re.compile(
+    r"(token|authorization|cookie|secret|credential|password|passwd|"
+    r"api[_-]?key|app[_-]?key|approval|account[_-]?no)",
+    re.IGNORECASE,
+)
+_REDACTED = "[REDACTED]"
+
+
+def _redact_evidence(payload: Any) -> Any:
+    """Recursively redact sensitive keys from a mapping/list (non-mutating).
+
+    Returns a fresh structure; the original object is never modified. Only keys
+    are matched — scalar values under non-sensitive keys (order id, result code,
+    message) are preserved verbatim for diagnostics.
+    """
+    if isinstance(payload, Mapping):
+        return {
+            k: _REDACTED
+            if isinstance(k, str) and _SENSITIVE_KEY_RE.search(k)
+            else _redact_evidence(v)
+            for k, v in payload.items()
+        }
+    if isinstance(payload, (list, tuple)):
+        return [_redact_evidence(item) for item in payload]
+    return payload
+
 
 KIS_MOCK_SHADOW_PENDING_SOURCE = "kis_mock_ledger_shadow"
 KIS_MOCK_SHADOW_PENDING_CONFIDENCE = "db_shadow_pending"
@@ -269,6 +301,7 @@ async def _save_kis_mock_order_ledger(
     exit_reason: str | None = None,
     gross_pnl: Decimal | None = None,
     net_pnl: Decimal | None = None,
+    reconciled_at: Any | None = None,
     report_item_uuid: uuid.UUID | None = None,
     mirror_cohort: str | None = None,
     mirror_source_bucket: str | None = None,
@@ -278,6 +311,11 @@ async def _save_kis_mock_order_ledger(
     Returns the new primary-key id, or None on conflict / error.
     """
     resolved_lifecycle = lifecycle_state or _status_to_lifecycle_state(status)
+    # ROB-843: a row inserted directly as ``reconciled`` (e.g. a scalping exit
+    # close) must carry an authoritative ``reconciled_at`` so cooldown can key
+    # off the real close time; the reconciler sets it on job-driven transitions.
+    if reconciled_at is None and resolved_lifecycle == "reconciled":
+        reconciled_at = now_kst()
     try:
         async with _order_session_factory()() as db:
             stmt = (
@@ -313,6 +351,7 @@ async def _save_kis_mock_order_ledger(
                     exit_reason=exit_reason,
                     gross_pnl=gross_pnl,
                     net_pnl=net_pnl,
+                    reconciled_at=reconciled_at,
                     report_item_uuid=report_item_uuid,
                     mirror_cohort=mirror_cohort,
                     mirror_source_bucket=mirror_source_bucket,
@@ -365,7 +404,10 @@ async def _record_kis_mock_order(
     else:
         raw_exec = {"_malformed": str(execution_result)[:500]}
 
-    order_no = raw_exec.get("odno") or raw_exec.get("ord_no")
+    # ROB-843: normalize the broker order id (strip; reject blank/whitespace/
+    # malformed) so "   " is never treated as an accepted order. Domestic and
+    # overseas results share this helper.
+    order_no = normalize_broker_order_id(raw_exec.get("odno") or raw_exec.get("ord_no"))
     order_time = raw_exec.get("ord_tmd")
     raw_output = raw_exec.get("output") or {}
     krx_orgno = raw_exec.get("krx_fwdg_ord_orgno") or (
@@ -377,9 +419,9 @@ async def _record_kis_mock_order(
     msg = raw_exec.get("msg") or raw_exec.get("msg1")
 
     # Accepted success REQUIRES all of: a mapping payload, provider success
-    # status (rt_cd == "0"), and a non-empty broker order ID. Anything else is
-    # rejected (provider error code) or unknown (id-less / malformed / no code).
-    accepted = is_mapping and rt_cd == "0" and bool(order_no)
+    # status (rt_cd == "0"), and a valid (non-blank) broker order ID. Anything
+    # else is rejected (provider error code) or unknown (id-less / malformed).
+    accepted = is_mapping and rt_cd == "0" and order_no is not None
     if accepted:
         status = "accepted"
     elif is_mapping and rt_cd and rt_cd != "0":
@@ -418,6 +460,11 @@ async def _record_kis_mock_order(
             rung=0,
         )
 
+    # ROB-843: redact sensitive keys from the raw broker evidence before it is
+    # persisted or returned. Recursive, non-mutating; non-sensitive diagnostics
+    # (order id / result code / message) are preserved.
+    redacted_exec = _redact_evidence(raw_exec)
+
     ledger_id = await _save_kis_mock_order_ledger(
         symbol=normalized_symbol,
         instrument_type=market_type,
@@ -427,13 +474,13 @@ async def _record_kis_mock_order(
         price=price_val,
         amount=amt_val,
         currency=currency,
-        order_no=str(order_no) if order_no else None,
+        order_no=order_no,
         order_time=order_time,
         krx_fwdg_ord_orgno=krx_orgno,
         status=status,
         response_code=rt_cd,
         response_message=msg,
-        raw_response=raw_exec,
+        raw_response=redacted_exec,
         reason=reason,
         thesis=thesis,
         strategy=strategy,
@@ -470,12 +517,12 @@ async def _record_kis_mock_order(
         "success": accepted,
         "dry_run": False,
         "preview": dry_run_result,
-        "execution": execution_result,
+        "execution": redacted_exec,
         "account_mode": "kis_mock",
         "broker": "kis",
         "ledger_id": ledger_id,
-        "order_no": str(order_no) if order_no else None,
-        "odno": str(order_no) if order_no else None,
+        "order_no": order_no,
+        "odno": order_no,
         "order_time": order_time,
         "ord_tmd": order_time,
         "krx_fwdg_ord_orgno": krx_orgno,

@@ -1019,6 +1019,151 @@ async def test_record_malformed_payload_returns_false(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_record_whitespace_order_id_is_not_accepted(monkeypatch):
+    """ROB-843 Blocker 2: a blank/whitespace odno is never an accepted order."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    monkeypatch.setattr(
+        kis_mock_ledger, "_save_kis_mock_order_ledger", AsyncMock(return_value=5)
+    )
+    monkeypatch.setattr(
+        kis_mock_ledger, "publish_place_time_forecast", AsyncMock(return_value=None)
+    )
+    result = await kis_mock_ledger._record_kis_mock_order(
+        normalized_symbol="005930",
+        market_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        dry_run_result=_mock_preview(),
+        execution_result={"rt_cd": "0", "odno": "   "},
+        reason="t",
+        thesis=None,
+        strategy=None,
+        notes=None,
+    )
+    assert result["success"] is False
+    assert result["status"] == "unknown"
+    assert result["reason"] == "missing_broker_order_id"
+    assert result["order_no"] is None
+
+
+@pytest.mark.asyncio
+async def test_record_strips_valid_order_id(monkeypatch):
+    """ROB-843 Blocker 2: a valid id with surrounding whitespace is normalized
+    (stripped) and stored/returned that way."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    save = AsyncMock(return_value=5)
+    monkeypatch.setattr(kis_mock_ledger, "_save_kis_mock_order_ledger", save)
+    monkeypatch.setattr(
+        kis_mock_ledger, "publish_place_time_forecast", AsyncMock(return_value=None)
+    )
+    result = await kis_mock_ledger._record_kis_mock_order(
+        normalized_symbol="005930",
+        market_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        dry_run_result=_mock_preview(),
+        execution_result={"rt_cd": "0", "odno": "  0001234567  "},
+        reason="t",
+        thesis=None,
+        strategy=None,
+        notes=None,
+    )
+    assert result["success"] is True
+    assert result["order_no"] == "0001234567"
+    assert result["odno"] == "0001234567"
+    assert save.await_args.kwargs["order_no"] == "0001234567"
+
+
+@pytest.mark.asyncio
+async def test_record_provider_failure_with_order_id_still_rejected(monkeypatch):
+    """ROB-843 Blocker 2: a valid order id does NOT rescue a provider failure."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    monkeypatch.setattr(
+        kis_mock_ledger, "_save_kis_mock_order_ledger", AsyncMock(return_value=5)
+    )
+    monkeypatch.setattr(
+        kis_mock_ledger, "publish_place_time_forecast", AsyncMock(return_value=None)
+    )
+    result = await kis_mock_ledger._record_kis_mock_order(
+        normalized_symbol="005930",
+        market_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        dry_run_result=_mock_preview(),
+        execution_result={"rt_cd": "40", "odno": "0001234567", "msg": "거부"},
+        reason="t",
+        thesis=None,
+        strategy=None,
+        notes=None,
+    )
+    assert result["success"] is False
+    assert result["status"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_record_redacts_sensitive_evidence(monkeypatch):
+    """ROB-843 Blocker 3: sensitive keys are redacted (recursively, case-variant,
+    nested) from stored + returned evidence; original is not mutated; non-secret
+    diagnostics survive; no raw secret remains in the persisted payload."""
+    import copy
+    import json
+
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    save = AsyncMock(return_value=5)
+    monkeypatch.setattr(kis_mock_ledger, "_save_kis_mock_order_ledger", save)
+    monkeypatch.setattr(
+        kis_mock_ledger, "publish_place_time_forecast", AsyncMock(return_value=None)
+    )
+    exec_result = {
+        "rt_cd": "0",
+        "odno": "0001234567",
+        "msg": "정상처리",
+        "AppKey": "SECRETKEY",
+        "approval_key": "APKEY-XYZ",
+        "headers": {"Authorization": "Bearer tok123", "Cookie": "sid=abc"},
+        "echoes": [{"api-key": "k1"}, {"safe": "keep-me"}],
+    }
+    original = copy.deepcopy(exec_result)
+    result = await kis_mock_ledger._record_kis_mock_order(
+        normalized_symbol="005930",
+        market_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        dry_run_result=_mock_preview(),
+        execution_result=exec_result,
+        reason="t",
+        thesis=None,
+        strategy=None,
+        notes=None,
+    )
+    saved = save.await_args.kwargs["raw_response"]
+    assert saved["AppKey"] == "[REDACTED]"
+    assert saved["approval_key"] == "[REDACTED]"
+    assert saved["headers"]["Authorization"] == "[REDACTED]"
+    assert saved["headers"]["Cookie"] == "[REDACTED]"
+    assert saved["echoes"][0]["api-key"] == "[REDACTED]"
+    # non-sensitive diagnostics preserved
+    assert saved["echoes"][1]["safe"] == "keep-me"
+    assert saved["odno"] == "0001234567"
+    assert saved["rt_cd"] == "0"
+    assert saved["msg"] == "정상처리"
+    # returned execution is also redacted (no secret leaves the boundary)
+    assert result["execution"]["AppKey"] == "[REDACTED]"
+    # original object was not mutated
+    assert exec_result == original
+    # no raw secret string survives in the persisted payload
+    blob = json.dumps(saved, ensure_ascii=False)
+    assert "SECRETKEY" not in blob
+    assert "APKEY-XYZ" not in blob
+    assert "Bearer tok123" not in blob
+    assert "sid=abc" not in blob
+
+
+@pytest.mark.asyncio
 async def test_record_rejected_order_mints_but_does_not_publish(monkeypatch):
     """ROB-730: a rejected order still gets a correlation_id (spine), but no
     place-time forecast is emitted (mirrors live: publish only when accepted)."""

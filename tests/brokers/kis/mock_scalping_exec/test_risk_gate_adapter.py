@@ -201,12 +201,26 @@ async def test_cooldown_and_daily_counters_come_from_order_history() -> None:
 async def test_order_history_loader_reads_ledger(db_session) -> None:
     """A reconciled loss row for a unique symbol drives cooldown basis + realized
     loss; open-order rows do NOT become positions (position isn't read here)."""
-    from app.mcp_server.tooling.kis_mock_ledger import _save_kis_mock_order_ledger
+    from sqlalchemy import delete
+
+    from app.mcp_server.tooling.kis_mock_ledger import (
+        _order_session_factory,
+        _save_kis_mock_order_ledger,
+    )
+    from app.models.review import KISMockOrderLedger
     from app.services.brokers.kis.mock_scalping_exec.ledger_state import (
         load_kis_mock_order_history,
     )
 
     symbol = "900843"
+    # Deterministic across re-runs of the persistent shared test DB (clear any
+    # prior-run rows, including legacy closes written before reconciled_at was
+    # stamped).
+    async with _order_session_factory()() as _db:
+        await _db.execute(
+            delete(KISMockOrderLedger).where(KISMockOrderLedger.symbol == symbol)
+        )
+        await _db.commit()
     await _save_kis_mock_order_ledger(
         symbol=symbol,
         instrument_type="equity_kr",
