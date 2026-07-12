@@ -291,6 +291,18 @@ async def fetch_order_detail(order_uuid: str) -> dict[str, Any]:
     return await _client._request_with_auth("GET", url, query_params=params)
 
 
+async def fetch_order_by_identifier(identifier: str) -> dict[str, Any]:
+    """클라이언트 식별자로 단건 주문을 조회합니다."""
+    candidate = str(identifier or "").strip()
+    if not candidate:
+        raise ValueError("identifier is required")
+    return await _client._request_with_auth(
+        "GET",
+        f"{_client.UPBIT_REST}/order",
+        query_params={"identifier": candidate},
+    )
+
+
 def adjust_price_to_upbit_unit(price: float) -> float:
     """업비트 가격 단위에 맞게 가격을 조정합니다.
 

@@ -913,6 +913,7 @@ def __getattr__(name: str) -> Any:
         "cancel_orders",
         "fetch_closed_orders",
         "fetch_open_orders",
+        "fetch_order_by_identifier",
         "fetch_order_detail",
         "place_buy_order",
         "place_market_buy_order",
