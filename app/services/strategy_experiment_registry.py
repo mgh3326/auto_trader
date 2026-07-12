@@ -59,6 +59,10 @@ class SupersedesNotFound(StrategyExperimentRegistryError):
     """A registration supersedes an experiment_id that does not exist."""
 
 
+class SupersedesStrategyMismatch(StrategyExperimentRegistryError):
+    """A registration tried to supersede a different strategy's experiment."""
+
+
 class InvalidTrialStatus(StrategyExperimentRegistryError):
     """A trial was recorded with a status outside the terminal outcome set."""
 
@@ -152,6 +156,11 @@ async def register_experiment(
             raise SupersedesNotFound(
                 f"supersedes_experiment_id {identity.supersedes_experiment_id!r} "
                 "is not registered"
+            )
+        if parent.strategy_key != identity.strategy_key:
+            raise SupersedesStrategyMismatch(
+                f"supersedes_experiment_id {identity.supersedes_experiment_id!r} "
+                f"belongs to a different strategy_key {parent.strategy_key!r}"
             )
 
     existing = await _get_experiment(session, experiment_id)

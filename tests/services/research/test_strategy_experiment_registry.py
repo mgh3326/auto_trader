@@ -225,6 +225,45 @@ async def test_supersedes_unknown_experiment_fails(registry_tables) -> None:
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_supersedes_different_strategy_fails_before_child_insert(
+    registry_tables,
+) -> None:
+    session = registry_tables
+    parent = await reg.register_experiment(
+        session,
+        _identity(
+            strategy_key="PARENT-" + uuid.uuid4().hex[:8],
+            strategy_version="v1",
+        ),
+    )
+    await session.flush()
+    child_key = "CHILD-" + uuid.uuid4().hex[:8]
+
+    with pytest.raises(
+        reg.StrategyExperimentRegistryError,
+        match="different strategy_key",
+    ) as exc_info:
+        await reg.register_experiment(
+            session,
+            _identity(
+                strategy_key=child_key,
+                strategy_version="v2",
+                params={"roi": {"0": 0.07}, "stoploss": -0.08},
+                supersedes_experiment_id=parent.experiment_id,
+            ),
+        )
+
+    assert type(exc_info.value) is reg.SupersedesStrategyMismatch
+    child_count = await session.scalar(
+        select(func.count())
+        .select_from(reg.ResearchStrategyExperiment)
+        .where(reg.ResearchStrategyExperiment.strategy_key == child_key)
+    )
+    assert child_count == 0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_correction_creates_new_lineage_without_changing_old_hashes(
     registry_tables,
 ) -> None:
@@ -655,16 +694,15 @@ async def test_invalid_identity_creates_no_experiment_row(registry_tables) -> No
         mdd={},
         supersedes_experiment_id=None,
     )
-    before = await session.scalar(
-        select(func.count()).select_from(reg.ResearchStrategyExperiment)
-    )
     with pytest.raises((ValueError, TypeError)):
         await reg.register_experiment(session, bad)
     await session.rollback()
     after = await session.scalar(
-        select(func.count()).select_from(reg.ResearchStrategyExperiment)
+        select(func.count())
+        .select_from(reg.ResearchStrategyExperiment)
+        .where(reg.ResearchStrategyExperiment.strategy_key == bad.strategy_key)
     )
-    assert after == before
+    assert after == 0
 
 
 @pytest.mark.integration
@@ -972,13 +1010,13 @@ async def test_unknown_supersedes_fails_before_existing_fast_path(
 @pytest.mark.asyncio
 async def test_replay_rejects_valid_but_different_supersedes(registry_tables) -> None:
     session = registry_tables
+    common = _fixed_components()
     # A real parent to supersede.
     parent = await reg.register_experiment(
-        session, _identity(strategy_key="PARENT-" + uuid.uuid4().hex[:8])
+        session, _identity(strategy_key=common["strategy_key"])
     )
     await session.flush()
 
-    common = _fixed_components()
     await reg.register_experiment(session, _identity(**common))  # supersedes=None
     await session.flush()
     # Same components, but now claiming a (valid) different lineage parent.
@@ -993,13 +1031,14 @@ async def test_replay_rejects_valid_but_different_supersedes(registry_tables) ->
 @pytest.mark.asyncio
 async def test_identical_metadata_replay_returns_same_row(registry_tables) -> None:
     session = registry_tables
+    common = _fixed_components()
     # Build a real parent, then an identity with BOTH hypothesis and supersedes.
     parent = await reg.register_experiment(
-        session, _identity(strategy_key="PARENT-" + uuid.uuid4().hex[:8])
+        session, _identity(strategy_key=common["strategy_key"])
     )
     await session.flush()
     ident = _identity(
-        **_fixed_components(),
+        **common,
         hypothesis="stable thesis",
         supersedes_experiment_id=parent.experiment_id,
     )
@@ -1053,15 +1092,16 @@ async def test_concurrent_identical_metadata_replay_converges(registry_tables) -
     from app.core.db import engine
 
     Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    common = _fixed_components()
     async with Session() as setup:
         parent = await reg.register_experiment(
-            setup, _identity(strategy_key="PARENT-" + uuid.uuid4().hex[:8])
+            setup, _identity(strategy_key=common["strategy_key"])
         )
         await setup.commit()
         parent_id = parent.experiment_id
 
     ident = _identity(
-        **_fixed_components(),
+        **common,
         hypothesis="thesis",
         supersedes_experiment_id=parent_id,
     )
