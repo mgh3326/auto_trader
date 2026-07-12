@@ -154,9 +154,11 @@ class MarketEventsSnapshotCollector:
                     if altseason_error is not None
                     else {}
                 ),
-                freshness_status=(
-                    "partial" if altseason_error is not None else "fresh"
-                ),
+                # ROB-287 compatibility: optional breadth failure never
+                # downgrades the shared market snapshot. Consumers that care
+                # about the diagnostic inspect errors_json (the frozen analysis
+                # collector maps any non-empty errors to a partial section).
+                freshness_status="fresh",
             )
         ]
 

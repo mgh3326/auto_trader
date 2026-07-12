@@ -370,3 +370,121 @@ async def test_sections_stamp_completion_time_and_preserve_timestamp_provenance(
         assert sections[name]["source"]["as_of_provenance"] == (
             "collection_completion_fallback: provider/domain as_of absent"
         )
+
+
+@pytest.mark.asyncio
+async def test_service_wiring_uses_live_clock_for_section_completion_times(
+    db_session,
+    capture_request,
+    portfolio,
+    symbol,
+    market,
+    investor_flow,
+    analysis_fn,
+    decision_history_fn,
+    load_frozen_document,
+):
+    ticks = iter(NOW + dt.timedelta(seconds=offset) for offset in range(40))
+    registry = SnapshotCollectorRegistry()
+    for collector in (portfolio, symbol, market, investor_flow):
+        registry.register(collector)
+    service = AnalysisBundleCaptureService(
+        db_session,
+        collectors=registry,
+        analysis_fn=analysis_fn,
+        decision_history_fn=decision_history_fn,
+        clock=lambda: next(ticks),
+    )
+
+    response = await service.capture(capture_request)
+    document = await load_frozen_document(response.bundle_id)
+    collected_at = {
+        section["collected_at"] for section in document["sections"].values()
+    }
+
+    assert len(collected_at) == len(ANALYSIS_SECTION_NAMES)
+
+
+@pytest.mark.asyncio
+async def test_collector_source_preserves_kind_and_payload_timestamp_metadata():
+    quote_as_of = "2026-07-12T11:58:00+09:00"
+    symbol_result = _result("symbol", symbol="005930")
+    symbol_result.source_timestamps_json = {}
+    symbol_result.payload_json["quote"]["as_of"] = quote_as_of
+    registry = SnapshotCollectorRegistry()
+    for kind in ("portfolio", "market", "investor_flow"):
+        registry.register(FakeCollector(kind, [_result(kind)]))
+    registry.register(FakeCollector("symbol", [symbol_result]))
+    collector = AnalysisInputFrozenCollector(
+        registry,
+        analysis_fn=AsyncMock(return_value={"005930": {"rsi": 52.1}}),
+        decision_history_fn=AsyncMock(return_value={"recent": []}),
+        clock=lambda: NOW,
+    )
+
+    [result] = await collector.collect(
+        CollectorRequest(
+            market="kr",
+            account_scope="kis_live",
+            symbols=["005930"],
+            policy_snapshot={},
+        )
+    )
+    section = result.payload_json["sections"]["quotes_orderbooks"]
+
+    assert section["source"]["source_kind"] == "manual"
+    assert section["source"]["source_timestamps_json"] == [{}]
+    assert section["source"]["payload_timestamp_metadata"] == [
+        {"quote.as_of": quote_as_of}
+    ]
+    assert "fallback" not in section["source"]["as_of_provenance"]
+    assert dt.datetime.fromisoformat(section["as_of"]) == dt.datetime.fromisoformat(
+        quote_as_of
+    )
+
+
+@pytest.mark.asyncio
+async def test_market_error_marks_frozen_section_partial_even_when_collector_is_fresh(
+    service, capture_request, market, load_frozen_document
+):
+    market_result = _result("market")
+    market_result.freshness_status = "fresh"
+    market_result.errors_json = {"altseason": "RuntimeError: provider off"}
+    market.collect.return_value = [market_result]
+
+    response = await service.capture(capture_request)
+    document = await load_frozen_document(response.bundle_id)
+    section = document["sections"]["market_gate_inputs"]
+
+    assert response.status == "partial"
+    assert section["status"] == "partial"
+    assert section["error"] == "RuntimeError: provider off"
+
+
+@pytest.mark.asyncio
+async def test_slow_section_times_out_locally_and_other_evidence_persists(
+    monkeypatch,
+    service,
+    capture_request,
+    portfolio,
+    load_frozen_document,
+):
+    from app.services.analysis_snapshot_bundle import capture as capture_module
+
+    monkeypatch.setitem(capture_module._SECTION_TIMEOUT_SECONDS, "portfolio", 0.01)
+
+    async def never_finishes(*args, **kwargs):
+        await asyncio.sleep(0.02)
+        return [_result("portfolio")]
+
+    portfolio.collect.side_effect = never_finishes
+
+    response = await service.capture(capture_request)
+    document = await load_frozen_document(response.bundle_id)
+
+    assert response.status == "partial"
+    assert document["sections"]["portfolio"]["status"] == "unavailable"
+    assert document["sections"]["portfolio"]["error"] == (
+        "TimeoutError: portfolio collection timed out after 0.01s"
+    )
+    assert document["sections"]["quotes_orderbooks"]["status"] == "ok"

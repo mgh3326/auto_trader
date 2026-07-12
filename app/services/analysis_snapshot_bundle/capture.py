@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 from collections.abc import Awaitable, Callable
@@ -39,6 +40,24 @@ _SECTION_TTLS: dict[str, tuple[int, int]] = {
     "decision_history": (300, 900),
 }
 
+_SECTION_TIMEOUT_SECONDS: dict[AnalysisSectionName, float] = {
+    "portfolio": 30.0,
+    "quotes_orderbooks": 30.0,
+    "indicators_support_resistance": 60.0,
+    "market_gate_inputs": 30.0,
+    "investor_flow": 30.0,
+    "decision_history": 30.0,
+}
+
+_PAYLOAD_TIMESTAMP_KEYS = {
+    "as_of",
+    "fetched_at",
+    "quote_asof",
+    "snapshot_date",
+    "timestamp",
+    "updated_at",
+}
+
 
 def _utcnow() -> dt.datetime:
     return dt.datetime.now(tz=dt.UTC)
@@ -46,6 +65,49 @@ def _utcnow() -> dt.datetime:
 
 def _error_text(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {str(exc).strip() or type(exc).__name__}"
+
+
+def _timeout_error(name: AnalysisSectionName, timeout: float) -> str:
+    return f"TimeoutError: {name} collection timed out after {timeout:g}s"
+
+
+def _timestamp_metadata(value: Any, *, prefix: str = "") -> dict[str, Any]:
+    """Return timestamp-shaped payload leaves verbatim, keyed by JSON path."""
+    found: dict[str, Any] = {}
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if str(key).lower() in _PAYLOAD_TIMESTAMP_KEYS and nested is not None:
+                found[path] = nested
+            if isinstance(nested, (dict, list)):
+                found.update(_timestamp_metadata(nested, prefix=path))
+    elif isinstance(value, list):
+        for index, nested in enumerate(value):
+            path = f"{prefix}[{index}]"
+            if isinstance(nested, (dict, list)):
+                found.update(_timestamp_metadata(nested, prefix=path))
+    return found
+
+
+def _leaf_values(value: Any) -> list[Any]:
+    if isinstance(value, dict):
+        return [leaf for nested in value.values() for leaf in _leaf_values(nested)]
+    if isinstance(value, list):
+        return [leaf for nested in value for leaf in _leaf_values(nested)]
+    return [value]
+
+
+def _as_datetime(value: Any) -> dt.datetime | None:
+    if isinstance(value, dt.datetime):
+        parsed = value
+    elif isinstance(value, str) and "T" in value:
+        try:
+            parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 def _unavailable_section(
@@ -129,16 +191,18 @@ class AnalysisInputFrozenCollector:
         analysis_fn: AnalysisFn,
         decision_history_fn: DecisionHistoryFn,
         clock: Clock | None = None,
+        captured_at: dt.datetime | None = None,
         requested_by: str = "claude_code",
     ) -> None:
         self._collectors = collectors
         self._analysis_fn = analysis_fn
         self._decision_history_fn = decision_history_fn
         self._clock = clock or _utcnow
+        self._captured_at = captured_at
         self._requested_by = requested_by
 
     async def collect(self, request: CollectorRequest) -> list[SnapshotCollectResult]:
-        captured_at = self._clock()
+        captured_at = self._captured_at or self._clock()
         # The production collectors and decision-history function share the
         # request's AsyncSession. AsyncSession does not permit overlapping
         # operations, so capture these read-only surfaces in contract order.
@@ -216,8 +280,19 @@ class AnalysisInputFrozenCollector:
             return _unavailable_section(
                 name, completed_at, source, f"{kind} collector unavailable"
             )
+        timeout = _SECTION_TIMEOUT_SECONDS[name]
         try:
-            results = list(await collector.collect(request))
+            results = list(
+                await asyncio.wait_for(collector.collect(request), timeout=timeout)
+            )
+        except TimeoutError:
+            completed_at = self._clock()
+            source["as_of_provenance"] = (
+                "collection_completion_fallback: provider/domain as_of absent"
+            )
+            return _unavailable_section(
+                name, completed_at, source, _timeout_error(name, timeout)
+            )
         except Exception as exc:  # noqa: BLE001 - each section fails independently
             completed_at = self._clock()
             source["as_of_provenance"] = (
@@ -237,11 +312,30 @@ class AnalysisInputFrozenCollector:
             )
         source_timestamps = [result.source_timestamps_json for result in results]
         source["source_timestamps_json"] = source_timestamps
-        has_upstream_as_of = any(bool(value) for value in source_timestamps)
-        if has_upstream_as_of:
+        source_kinds = [result.source_kind for result in results]
+        source["source_kind"] = (
+            source_kinds[0] if len(set(source_kinds)) == 1 else source_kinds
+        )
+        payload_timestamps = [
+            _timestamp_metadata(result.payload_json) for result in results
+        ]
+        source["payload_timestamp_metadata"] = payload_timestamps
+        has_upstream_metadata = any(bool(value) for value in source_timestamps) or any(
+            bool(value) for value in payload_timestamps
+        )
+        upstream_datetimes = [
+            parsed
+            for value in (*source_timestamps, *payload_timestamps)
+            for leaf in _leaf_values(value)
+            if (parsed := _as_datetime(leaf)) is not None
+        ]
+        if upstream_datetimes:
+            section_as_of = min(upstream_datetimes)
+            source["as_of_provenance"] = "upstream source/payload timestamp metadata"
+        elif has_upstream_metadata:
             section_as_of = min(result.as_of for result in results)
             source["as_of_provenance"] = (
-                "collector_result.as_of with upstream source_timestamps_json"
+                "upstream timestamp metadata preserved; collector_result.as_of retained"
             )
         else:
             section_as_of = completed_at
@@ -282,14 +376,26 @@ class AnalysisInputFrozenCollector:
                 "collection_completion_fallback: provider/domain as_of absent"
             ),
         }
+        timeout = _SECTION_TIMEOUT_SECONDS["indicators_support_resistance"]
         try:
-            data = await self._analysis_fn(
-                list(request.symbols or []),
-                market=request.market,
-                include_peers=False,
-                quick=False,
-                include_position=False,
-                refresh=False,
+            data = await asyncio.wait_for(
+                self._analysis_fn(
+                    list(request.symbols or []),
+                    market=request.market,
+                    include_peers=False,
+                    quick=False,
+                    include_position=False,
+                    refresh=False,
+                ),
+                timeout=timeout,
+            )
+        except TimeoutError:
+            completed_at = self._clock()
+            return _unavailable_section(
+                "indicators_support_resistance",
+                completed_at,
+                source,
+                _timeout_error("indicators_support_resistance", timeout),
             )
         except Exception as exc:  # noqa: BLE001 - section-local diagnostic
             completed_at = self._clock()
@@ -319,15 +425,26 @@ class AnalysisInputFrozenCollector:
         }
         symbols = list(request.symbols or [])
         outcomes: list[Any | BaseException] = []
-        for symbol in symbols:
-            try:
-                outcome = await self._decision_history_fn(
-                    symbol, request.market, request.account_scope
-                )
-            except Exception as exc:  # noqa: BLE001 - retain per-symbol diagnostic
-                outcomes.append(exc)
-            else:
-                outcomes.append(outcome)
+        timeout = _SECTION_TIMEOUT_SECONDS["decision_history"]
+        try:
+            async with asyncio.timeout(timeout):
+                for symbol in symbols:
+                    try:
+                        outcome = await self._decision_history_fn(
+                            symbol, request.market, request.account_scope
+                        )
+                    except Exception as exc:  # noqa: BLE001 - per-symbol diagnostic
+                        outcomes.append(exc)
+                    else:
+                        outcomes.append(outcome)
+        except TimeoutError:
+            completed_at = self._clock()
+            return _unavailable_section(
+                "decision_history",
+                completed_at,
+                source,
+                _timeout_error("decision_history", timeout),
+            )
         completed_at = self._clock()
         data: dict[str, Any] = {}
         errors: list[str] = []
@@ -379,7 +496,8 @@ class AnalysisBundleCaptureService:
             self._collectors,
             analysis_fn=self._analysis_fn,
             decision_history_fn=self._decision_history_fn,
-            clock=lambda: captured_at,
+            clock=self._clock,
+            captured_at=captured_at,
             requested_by=request.requested_by,
         )
         frozen_registry = SnapshotCollectorRegistry()

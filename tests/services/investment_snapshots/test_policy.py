@@ -86,3 +86,8 @@ def test_policy_registry_contains_exact_expected_policies():
         "analysis_snapshot_bundle_v1",
         "intraday_action_report_v1",
     }
+
+
+def test_analysis_bundle_outer_timeout_fits_mcp_budget():
+    policy = get_policy("analysis_snapshot_bundle_v1")
+    assert policy.kinds[0].collector_timeout == dt.timedelta(seconds=225)

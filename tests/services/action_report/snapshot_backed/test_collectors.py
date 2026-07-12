@@ -1216,7 +1216,7 @@ async def test_market_collector_altseason_failure_is_soft():
         altseason_fn=fake_altseason_fn,
     )
     results = await collector.collect(_request(market="crypto"))
-    assert results[0].freshness_status == "partial"
+    assert results[0].freshness_status == "fresh"
     assert results[0].errors_json["altseason"] == "RuntimeError: provider off"
     assert "events" in results[0].payload_json
     assert results[0].payload_json["indices"] == {
@@ -1273,7 +1273,7 @@ async def test_production_registry_preserves_altseason_error_diagnostic(monkeypa
 
     results = await collector.collect(_request(market="crypto"))
 
-    assert results[0].freshness_status == "partial"
+    assert results[0].freshness_status == "fresh"
     assert results[0].errors_json["altseason"] == "RuntimeError: upbit down"
     assert "altseason" not in results[0].payload_json
     assert results[0].payload_json["events"] == []

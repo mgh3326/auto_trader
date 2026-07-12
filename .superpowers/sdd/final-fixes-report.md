@@ -95,3 +95,72 @@ Result:
 ## Residual concerns
 
 No new functional concern identified. Serialization intentionally trades capture latency for AsyncSession correctness. The UUID discriminator is audit-visible through the persisted bundle idempotency key but intentionally absent from canonical content, preserving content-addressed snapshot semantics.
+
+---
+
+## Follow-up final review fixes
+
+### 5. Production service clock and upstream provenance
+
+Root cause: `AnalysisBundleCaptureService` passed `lambda: captured_at` into `AnalysisInputFrozenCollector`, defeating the collector's completion-time stamping in real service wiring. Collector section provenance also omitted `result.source_kind` and only considered `source_timestamps_json`, even though production payloads carry timestamps such as `quote.as_of`, index `quote_asof`, portfolio `provenance.fetched_at`, and investor-flow `snapshot_date`.
+
+Fix:
+
+- The service passes the live `self._clock` into the frozen collector and separately passes the capture-start value for document identity.
+- Each collector section stores its result source kind and preserves the full upstream `source_timestamps_json` list.
+- Timestamp-shaped production payload leaves are copied verbatim into `payload_timestamp_metadata` with JSON paths.
+- Parseable upstream datetimes drive section `as_of`; non-parseable upstream metadata remains preserved and avoids a false fallback note. Completion fallback is used only when neither upstream source nor payload timestamp metadata exists.
+
+Regressions:
+
+- `test_service_wiring_uses_live_clock_for_section_completion_times` proves all six persisted section completion timestamps differ through actual `AnalysisBundleCaptureService` wiring.
+- `test_collector_source_preserves_kind_and_payload_timestamp_metadata` proves source kind, empty source timestamps, nested quote `as_of`, and the actual section `as_of` survive without recomputation.
+
+### 6. ROB-287 shared market compatibility
+
+Root cause: preserving the altseason error had also changed the shared `MarketEventsSnapshotCollector` freshness from legacy `fresh` to `partial`.
+
+Fix: altseason failure retains exact `errors_json.altseason` and the legacy fresh status. `AnalysisInputFrozenCollector` independently maps any non-empty collector errors to a partial frozen section, so ROB-838 still exposes the degraded market-gate input.
+
+Regressions:
+
+- Both direct and production-registry market tests assert fresh status plus the exact altseason error.
+- `test_market_error_marks_frozen_section_partial_even_when_collector_is_fresh` proves the analysis bundle remains partial with the original diagnostic.
+
+### 7. Section-local timeout isolation
+
+Root cause: serialized sections had no local timeout. The only guard was the 60-second outer frozen-collector timeout, so one blocked source canceled the entire collector and no other evidence was persisted.
+
+Fix: every serialized section has an explicit local budget (30 seconds, with 60 seconds for full analysis). Timeout is caught at the section boundary and persisted as `TimeoutError: <section> collection timed out after <seconds>s`; collection then proceeds to later sections. The total local budget is 210 seconds. The outer `analysis_snapshot_bundle_v1` timeout is 225 seconds, leaving headroom inside the 240-second MCP budget.
+
+Regression: `test_slow_section_times_out_locally_and_other_evidence_persists` reduces the portfolio timeout to 0.01 seconds, verifies a partial capture with the exact timeout diagnostic, and verifies quote/orderbook evidence still persists.
+
+## Follow-up TDD evidence
+
+Targeted RED command covered the production clock, provenance, frozen partial mapping, slow-section isolation, production registry, and outer policy timeout. Observed result: `4 failed, 2 passed`. Exact missing behaviors were one shared service timestamp instead of six, absent `source_kind`, no local timeout (`complete` instead of `partial`), and a 60-second outer timeout instead of 225 seconds.
+
+The broader compatibility run then exposed the remaining legacy expectation directly: `test_market_collector_altseason_failure_is_soft` failed because production returned the restored `fresh` status while the test still expected `partial`. Updating that compatibility assertion completed the ROB-287 restoration.
+
+Targeted GREEN result: `6 passed, 2 warnings`.
+
+Final focused command:
+
+```text
+uv run pytest tests/services/analysis_snapshot_bundle \
+  tests/services/action_report/snapshot_backed/test_collectors.py \
+  tests/services/investment_snapshots/test_policy.py \
+  tests/services/investment_snapshots/test_bundle_ensure_service.py \
+  tests/services/investment_snapshots/test_repository.py \
+  tests/mcp_server/test_analysis_bundle_tools.py \
+  tests/mcp_server/test_investment_snapshots_tools.py -q
+```
+
+Final result: `166 passed, 2 warnings in 4.79s`. The warnings remain the pre-existing Pydantic class-config deprecations in `app/auth/schemas.py`.
+
+Final static command: `make lint`.
+
+Final result: Ruff passed, all 2522 files are formatted, and ty passed with warnings treated as errors.
+
+## Follow-up residual concerns
+
+No functional blocker remains. The timestamp extractor intentionally recognizes a narrow set of timestamp-shaped keys and preserves their exact values; new provider payload conventions will need an explicit key addition rather than heuristic conversion. The 15-second gap between summed local budgets and the outer guard is reserved for section transitions and persistence within the 240-second MCP limit.
