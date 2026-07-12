@@ -917,3 +917,161 @@ async def test_concurrent_forced_collision_fails_closed_on_winner_path(
             .where(reg.ResearchStrategyExperiment.experiment_id == fixed_id)
         )
     assert count == 1
+
+
+# --------------------------------------------------------------------------- #
+# Immutable provenance metadata (hypothesis / supersedes) replay              #
+# --------------------------------------------------------------------------- #
+
+
+def _fixed_components(**overrides) -> dict[str, object]:
+    # Same canonical components across calls → same experiment_id; only metadata
+    # (hypothesis / supersedes) varies.
+    base = {
+        "strategy_key": "META-" + uuid.uuid4().hex[:8],
+        "strategy_version": "v-" + uuid.uuid4().hex[:8],
+        "params": {"roi": {"0": 0.05}},
+    }
+    base.update(overrides)
+    return base
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_replay_rejects_hypothesis_change(registry_tables) -> None:
+    session = registry_tables
+    common = _fixed_components()
+    await reg.register_experiment(session, _identity(**common, hypothesis="H1"))
+    await session.flush()
+    with pytest.raises(reg.CanonicalIdentityCollision):
+        await reg.register_experiment(session, _identity(**common, hypothesis="H2"))
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_unknown_supersedes_fails_before_existing_fast_path(
+    registry_tables,
+) -> None:
+    session = registry_tables
+    common = _fixed_components()
+    # Register the base row first so its experiment_id already exists.
+    await reg.register_experiment(session, _identity(**common))
+    await session.flush()
+    # Re-register identical components but pointing at an unknown lineage parent
+    # (random id, guaranteed absent from the shared test DB): SupersedesNotFound
+    # must win over the existing fast path.
+    unknown_parent = uuid.uuid4().hex + uuid.uuid4().hex
+    with pytest.raises(reg.SupersedesNotFound):
+        await reg.register_experiment(
+            session,
+            _identity(**common, supersedes_experiment_id=unknown_parent),
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_replay_rejects_valid_but_different_supersedes(registry_tables) -> None:
+    session = registry_tables
+    # A real parent to supersede.
+    parent = await reg.register_experiment(
+        session, _identity(strategy_key="PARENT-" + uuid.uuid4().hex[:8])
+    )
+    await session.flush()
+
+    common = _fixed_components()
+    await reg.register_experiment(session, _identity(**common))  # supersedes=None
+    await session.flush()
+    # Same components, but now claiming a (valid) different lineage parent.
+    with pytest.raises(reg.CanonicalIdentityCollision):
+        await reg.register_experiment(
+            session,
+            _identity(**common, supersedes_experiment_id=parent.experiment_id),
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_identical_metadata_replay_returns_same_row(registry_tables) -> None:
+    session = registry_tables
+    # Build a real parent, then an identity with BOTH hypothesis and supersedes.
+    parent = await reg.register_experiment(
+        session, _identity(strategy_key="PARENT-" + uuid.uuid4().hex[:8])
+    )
+    await session.flush()
+    ident = _identity(
+        **_fixed_components(),
+        hypothesis="stable thesis",
+        supersedes_experiment_id=parent.experiment_id,
+    )
+    first = await reg.register_experiment(session, ident)
+    await session.flush()
+    second = await reg.register_experiment(session, ident)
+    assert first.id == second.id
+    assert second.hypothesis == "stable thesis"
+    assert second.supersedes_experiment_id == parent.experiment_id
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_concurrent_hypothesis_mismatch_fails_closed(registry_tables) -> None:
+    # Two concurrent registrations of the same components but different
+    # hypothesis: exactly one succeeds, one fails closed, single row persisted.
+    from app.core.db import engine
+
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    common = _fixed_components()
+    ident_a = _identity(**common, hypothesis="HA")
+    ident_b = _identity(**common, hypothesis="HB")
+
+    async def worker(ident) -> str:
+        async with Session() as s:
+            try:
+                await reg.register_experiment(s, ident)
+                await s.commit()
+                return "ok"
+            except reg.CanonicalIdentityCollision:
+                await s.rollback()
+                return "collision"
+
+    results = sorted(await asyncio.gather(worker(ident_a), worker(ident_b)))
+    assert results == ["collision", "ok"]
+
+    async with Session() as check:
+        count = await check.scalar(
+            select(func.count())
+            .select_from(reg.ResearchStrategyExperiment)
+            .where(
+                reg.ResearchStrategyExperiment.strategy_key == common["strategy_key"]
+            )
+        )
+    assert count == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_concurrent_identical_metadata_replay_converges(registry_tables) -> None:
+    from app.core.db import engine
+
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    async with Session() as setup:
+        parent = await reg.register_experiment(
+            setup, _identity(strategy_key="PARENT-" + uuid.uuid4().hex[:8])
+        )
+        await setup.commit()
+        parent_id = parent.experiment_id
+
+    ident = _identity(
+        **_fixed_components(),
+        hypothesis="thesis",
+        supersedes_experiment_id=parent_id,
+    )
+
+    async def worker() -> str:
+        async with Session() as s:
+            row = await reg.register_experiment(s, ident)
+            experiment_id = row.experiment_id
+            await s.commit()
+            return experiment_id
+
+    left, right = await asyncio.gather(worker(), worker())
+    assert left == right

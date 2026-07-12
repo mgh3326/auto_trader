@@ -95,8 +95,11 @@ def _assert_same_identity(
     Guards every replay of an existing immutable row (both the initial
     existing-row lookup and the concurrent unique-conflict winner re-read).
     Compares the FULL identity — strategy key/version, the canonical manifest,
-    and every persisted component hash — so a row reached under a colliding
-    ``experiment_id`` (different key/version/params/manifest) is never replayed.
+    every persisted component hash, AND the immutable provenance metadata
+    (``hypothesis`` and ``supersedes_experiment_id``). The metadata does not feed
+    the experiment_id hash, but it is immutable lineage truth (AC#3) that DB
+    triggers forbid amending, so a replay under a different hypothesis or lineage
+    must fail closed rather than silently return the original row.
     """
     mismatches: list[str] = []
     if stored.strategy_key != identity.strategy_key:
@@ -109,6 +112,10 @@ def _assert_same_identity(
             mismatches.append(column)
     if canonical_ast_json(stored.manifest) != canonical_ast_json(incoming_manifest):
         mismatches.append("manifest")
+    if stored.hypothesis != identity.hypothesis:
+        mismatches.append("hypothesis")
+    if stored.supersedes_experiment_id != identity.supersedes_experiment_id:
+        mismatches.append("supersedes_experiment_id")
     if mismatches:
         raise CanonicalIdentityCollision(
             f"experiment_id {stored.experiment_id!r} already exists with a different "
@@ -136,17 +143,9 @@ async def register_experiment(
     )
     incoming_manifest = encode_manifest(identity.components())
 
-    existing = await _get_experiment(session, experiment_id)
-    if existing is not None:
-        # Idempotent replay — but only for the SAME complete identity.
-        _assert_same_identity(
-            existing,
-            identity=identity,
-            component_hashes=component_hashes,
-            incoming_manifest=incoming_manifest,
-        )
-        return existing
-
+    # Validate the supersedes parent BEFORE the existing fast path: an unknown
+    # lineage parent must always fail closed (SupersedesNotFound), even when the
+    # canonical components already resolved to an existing experiment_id.
     if identity.supersedes_experiment_id is not None:
         parent = await _get_experiment(session, identity.supersedes_experiment_id)
         if parent is None:
@@ -154,6 +153,17 @@ async def register_experiment(
                 f"supersedes_experiment_id {identity.supersedes_experiment_id!r} "
                 "is not registered"
             )
+
+    existing = await _get_experiment(session, experiment_id)
+    if existing is not None:
+        # Idempotent replay — but only for the SAME complete identity + metadata.
+        _assert_same_identity(
+            existing,
+            identity=identity,
+            component_hashes=component_hashes,
+            incoming_manifest=incoming_manifest,
+        )
+        return existing
 
     # Persist the SAME typed canonical AST that was hashed, so a JSONB read-back
     # re-hashes (via hash_canonical_ast, without re-encoding) to the identical
