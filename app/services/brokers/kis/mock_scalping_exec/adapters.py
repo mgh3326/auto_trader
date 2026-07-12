@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import datetime
 import logging
-from collections.abc import Callable
+import time
+from collections.abc import Awaitable, Callable
 from decimal import Decimal
 from typing import Any
 
@@ -30,7 +31,16 @@ from app.core.symbol import to_db_symbol
 from app.mcp_server.tooling.kis_mock_ledger import _save_kis_mock_order_ledger
 from app.mcp_server.tooling.order_execution import _create_kis_client, _place_order_impl
 from app.services.brokers.kis import KISClient
-from app.services.brokers.kis.mock_scalping_exec.executor import Fill, Quote
+from app.services.brokers.kis.mock_scalping.contract import (
+    LedgerSnapshot,
+    MarketConditions,
+    Side,
+)
+from app.services.brokers.kis.mock_scalping_exec.executor import (
+    Fill,
+    Quote,
+    RiskInputs,
+)
 from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
     EvidenceCategory,
     FillEvidence,
@@ -41,11 +51,15 @@ from app.services.brokers.kis.mock_scalping_exec.holdings_delta_confirm import (
     BaselineSnapshot,
     confirm_fill_from_holdings_delta,
 )
+from app.services.brokers.kis.mock_scalping_exec.ledger_state import (
+    load_kis_mock_ledger_snapshot,
+)
 from app.services.brokers.kis.mock_scalping_ws.state import MarketState
 
 logger = logging.getLogger("rob321.kis_mock_scalping_exec")
 
 StateProvider = Callable[[str], MarketState | None]
+LedgerSnapshotLoader = Callable[..., Awaitable[LedgerSnapshot]]
 
 
 def _to_decimal(value: Any) -> Decimal | None:
@@ -286,6 +300,46 @@ class KisMockBroker:
             ask=_to_decimal(state.ask),
             last=_to_decimal(state.last_price),
         )
+
+
+class KisMockRiskGate:
+    """RiskGatePort: fresh live-market + durable-ledger snapshot (ROB-843).
+
+    ``load`` raises on any missing/stale market field or ledger read fault so
+    the executor fail-closes to zero broker mutation. The market snapshot comes
+    from the live per-symbol ``MarketState`` (same source the broker reads); the
+    durable snapshot comes from ``review.kis_mock_order_ledger``.
+    """
+
+    def __init__(
+        self,
+        *,
+        get_state: StateProvider,
+        clock: Callable[[], float] = time.monotonic,
+        snapshot_loader: LedgerSnapshotLoader = load_kis_mock_ledger_snapshot,
+    ) -> None:
+        self._get_state = get_state
+        self._clock = clock
+        self._load_ledger = snapshot_loader
+
+    async def load(self, *, symbol: str, side: Side) -> RiskInputs:
+        state = self._get_state(symbol)
+        if state is None:
+            raise RuntimeError(f"no live market state for {symbol}")
+        now = self._clock()
+        book_age = state.book_age_seconds(now=now)
+        spread = state.spread_bps()
+        if state.bid is None or state.ask is None or book_age is None or spread is None:
+            raise RuntimeError(
+                f"incomplete live market snapshot for {symbol} "
+                f"(bid={state.bid} ask={state.ask} book_age={book_age})"
+            )
+        market = MarketConditions(
+            spread_bps=Decimal(str(spread)),
+            data_age_seconds=float(book_age),
+        )
+        ledger = await self._load_ledger(symbol=to_db_symbol(symbol))
+        return RiskInputs(ledger=ledger, market=market)
 
 
 class KisMockLedgerWriter:

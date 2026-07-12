@@ -829,6 +829,123 @@ async def test_record_preserves_explicit_correlation_id(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_record_accepted_returns_success_true(monkeypatch):
+    """ROB-843: accepted requires provider success (rt_cd==0) AND broker order ID."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    monkeypatch.setattr(
+        kis_mock_ledger, "_save_kis_mock_order_ledger", AsyncMock(return_value=5)
+    )
+    monkeypatch.setattr(
+        kis_mock_ledger, "publish_place_time_forecast", AsyncMock(return_value=None)
+    )
+    result = await kis_mock_ledger._record_kis_mock_order(
+        normalized_symbol="005930",
+        market_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        dry_run_result=_mock_preview(),
+        execution_result=_mock_exec_result(rt_cd="0", odno="0001234567"),
+        reason="t",
+        thesis=None,
+        strategy=None,
+        notes=None,
+    )
+    assert result["success"] is True
+    assert result["status"] == "accepted"
+    assert result["order_no"] == "0001234567"
+
+
+@pytest.mark.asyncio
+async def test_record_rejected_returns_success_false(monkeypatch):
+    """ROB-843: a provider rejection (rt_cd != 0) is never a success."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    save = AsyncMock(return_value=5)
+    monkeypatch.setattr(kis_mock_ledger, "_save_kis_mock_order_ledger", save)
+    monkeypatch.setattr(
+        kis_mock_ledger, "publish_place_time_forecast", AsyncMock(return_value=None)
+    )
+    exec_result = {"odno": "", "ord_tmd": None, "msg": "거부", "rt_cd": "40"}
+    result = await kis_mock_ledger._record_kis_mock_order(
+        normalized_symbol="005930",
+        market_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        dry_run_result=_mock_preview(),
+        execution_result=exec_result,
+        reason="t",
+        thesis=None,
+        strategy=None,
+        notes=None,
+    )
+    assert result["success"] is False
+    assert result["status"] == "rejected"
+    assert result["reason"] == "broker_rejected"
+    # native lifecycle truth + raw evidence preserved
+    assert save.await_args.kwargs["status"] == "rejected"
+    assert result["execution"] == exec_result
+    assert result["response_message"] == "거부"
+
+
+@pytest.mark.asyncio
+async def test_record_idless_success_code_returns_unknown_false(monkeypatch):
+    """ROB-843: rt_cd==0 but no broker order ID is unknown, not success."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    save = AsyncMock(return_value=5)
+    monkeypatch.setattr(kis_mock_ledger, "_save_kis_mock_order_ledger", save)
+    pub = AsyncMock(return_value=None)
+    monkeypatch.setattr(kis_mock_ledger, "publish_place_time_forecast", pub)
+    result = await kis_mock_ledger._record_kis_mock_order(
+        normalized_symbol="005930",
+        market_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        dry_run_result=_mock_preview(),
+        execution_result={"rt_cd": "0", "odno": ""},
+        reason="t",
+        thesis=None,
+        strategy=None,
+        notes=None,
+        target_price=80000.0,
+    )
+    assert result["success"] is False
+    assert result["status"] == "unknown"
+    assert result["reason"] == "missing_broker_order_id"
+    assert result["order_no"] is None
+    pub.assert_not_awaited()  # no forecast for a non-accepted order
+
+
+@pytest.mark.asyncio
+async def test_record_malformed_payload_returns_false(monkeypatch):
+    """ROB-843: a non-mapping broker response is malformed, never success."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    save = AsyncMock(return_value=5)
+    monkeypatch.setattr(kis_mock_ledger, "_save_kis_mock_order_ledger", save)
+    monkeypatch.setattr(
+        kis_mock_ledger, "publish_place_time_forecast", AsyncMock(return_value=None)
+    )
+    result = await kis_mock_ledger._record_kis_mock_order(
+        normalized_symbol="005930",
+        market_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        dry_run_result=_mock_preview(),
+        execution_result="totally not a dict",  # type: ignore[arg-type]
+        reason="t",
+        thesis=None,
+        strategy=None,
+        notes=None,
+    )
+    assert result["success"] is False
+    assert result["status"] == "unknown"
+    assert result["reason"] == "malformed_response"
+    assert save.await_args.kwargs["status"] == "unknown"
+
+
+@pytest.mark.asyncio
 async def test_record_rejected_order_mints_but_does_not_publish(monkeypatch):
     """ROB-730: a rejected order still gets a correlation_id (spine), but no
     place-time forecast is emitted (mirrors live: publish only when accepted)."""

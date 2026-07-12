@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from typing import cast as typing_cast
@@ -40,6 +41,17 @@ def _status_to_lifecycle_state(status: str | None) -> str:
     if status is None:
         return "anomaly"
     return _LEDGER_STATUS_TO_LIFECYCLE.get(status, "anomaly")
+
+
+def _accepted_or_failed_message(
+    accepted: bool, status: str, ledger_id: int | None
+) -> str:
+    """Human-readable outcome message for the normalized mock-order response."""
+    if not accepted:
+        return f"KIS mock order not accepted (status={status}); evidence recorded"
+    if ledger_id:
+        return "KIS mock order recorded to kis_mock_order_ledger"
+    return "KIS mock order accepted but ledger insert returned no id"
 
 
 def _to_decimal(val: Any) -> Decimal | None:
@@ -343,21 +355,53 @@ async def _record_kis_mock_order(
     amt_val = _to_float(dry_run_result.get("estimated_value"), default=0.0)
     currency = "KRW" if market_type != "equity_us" else "USD"
 
-    order_no = execution_result.get("odno") or execution_result.get("ord_no")
-    order_time = execution_result.get("ord_tmd")
-    raw_output = execution_result.get("output") or {}
-    krx_orgno = execution_result.get("krx_fwdg_ord_orgno") or raw_output.get(
-        "KRX_FWDG_ORD_ORGNO"
-    )
-    rt_cd = str(execution_result.get("rt_cd", "")) or None
-    msg = execution_result.get("msg") or execution_result.get("msg1")
+    # ROB-843: normalize the native submit response truthfully. A malformed
+    # (non-mapping) payload carries no order fields — treat as unknown and keep
+    # a redacted marker as evidence rather than crashing on ``.get``.
+    is_mapping = isinstance(execution_result, Mapping)
+    raw_exec: dict[str, Any]
+    if is_mapping:
+        raw_exec = dict(execution_result)
+    else:
+        raw_exec = {"_malformed": str(execution_result)[:500]}
 
-    if rt_cd == "0":
+    order_no = raw_exec.get("odno") or raw_exec.get("ord_no")
+    order_time = raw_exec.get("ord_tmd")
+    raw_output = raw_exec.get("output") or {}
+    krx_orgno = raw_exec.get("krx_fwdg_ord_orgno") or (
+        raw_output.get("KRX_FWDG_ORD_ORGNO")
+        if isinstance(raw_output, Mapping)
+        else None
+    )
+    rt_cd = str(raw_exec.get("rt_cd", "")) or None
+    msg = raw_exec.get("msg") or raw_exec.get("msg1")
+
+    # Accepted success REQUIRES all of: a mapping payload, provider success
+    # status (rt_cd == "0"), and a non-empty broker order ID. Anything else is
+    # rejected (provider error code) or unknown (id-less / malformed / no code).
+    accepted = is_mapping and rt_cd == "0" and bool(order_no)
+    if accepted:
         status = "accepted"
-    elif rt_cd and rt_cd != "0":
+    elif is_mapping and rt_cd and rt_cd != "0":
         status = "rejected"
     else:
-        status = "accepted" if order_no else "unknown"
+        status = "unknown"
+
+    if accepted:
+        failure_reason: str | None = None
+        failure_detail: str | None = None
+    elif not is_mapping:
+        failure_reason = "malformed_response"
+        failure_detail = raw_exec["_malformed"]
+    elif status == "rejected":
+        failure_reason = "broker_rejected"
+        failure_detail = msg or f"rt_cd={rt_cd}"
+    elif rt_cd == "0":
+        failure_reason = "missing_broker_order_id"
+        failure_detail = msg or "provider success without broker order id"
+    else:
+        failure_reason = "unknown_response"
+        failure_detail = msg or f"rt_cd={rt_cd} order_no={order_no}"
 
     # ROB-730 provenance spine: mint a deterministic place-time correlation_id so
     # this mock order joins forecast → fill → journal → retrospective, mirroring
@@ -389,7 +433,7 @@ async def _record_kis_mock_order(
         status=status,
         response_code=rt_cd,
         response_message=msg,
-        raw_response=execution_result,
+        raw_response=raw_exec,
         reason=reason,
         thesis=thesis,
         strategy=strategy,
@@ -420,7 +464,10 @@ async def _record_kis_mock_order(
         )
 
     return {
-        "success": True,
+        # ROB-843: success is truthful — accepted iff mapping + rt_cd==0 +
+        # non-empty broker order ID. Rejected/malformed/unknown/id-less never
+        # report success, and the native failure/unknown evidence is preserved.
+        "success": accepted,
         "dry_run": False,
         "preview": dry_run_result,
         "execution": execution_result,
@@ -435,14 +482,12 @@ async def _record_kis_mock_order(
         "status": status,
         "response_code": rt_cd,
         "response_message": msg,
+        "reason": failure_reason,
+        "detail": failure_detail,
         "correlation_id": correlation_id,
         "fill_recorded": False,
         "journal_created": False,
-        "message": (
-            "KIS mock order recorded to kis_mock_order_ledger"
-            if ledger_id
-            else "KIS mock order accepted but ledger insert returned no id"
-        ),
+        "message": (_accepted_or_failed_message(accepted, status, ledger_id)),
     }
 
 

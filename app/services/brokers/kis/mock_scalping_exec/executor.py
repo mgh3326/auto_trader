@@ -27,6 +27,13 @@ from dataclasses import dataclass, field
 from decimal import ROUND_DOWN, Decimal
 from typing import Any, Protocol
 
+from app.services.brokers.kis.mock_scalping.contract import (
+    LedgerSnapshot,
+    MarketConditions,
+    ScalpingRiskLimits,
+    Side,
+    evaluate_risk,
+)
 from app.services.brokers.kis.mock_scalping.order_intent import OrderIntent
 from app.services.brokers.kis.mock_scalping_exec.exit_policy import (
     TIME_STOP,
@@ -77,6 +84,24 @@ class BrokerPort(Protocol):
     async def confirm_fill(self, submit_result: dict[str, Any]) -> Fill | None: ...
 
     def quote(self, symbol: str) -> Quote | None: ...
+
+
+@dataclass(frozen=True)
+class RiskInputs:
+    """Fresh durable + market snapshot for the executor-owned final risk gate."""
+
+    ledger: LedgerSnapshot
+    market: MarketConditions
+
+
+class RiskGatePort(Protocol):
+    """Loads a fresh ledger/position + market snapshot immediately before send.
+
+    ``load`` MUST raise on any snapshot load/parse/freshness fault so the
+    executor can fail-close to zero broker mutation (ROB-843).
+    """
+
+    async def load(self, *, symbol: str, side: Side) -> RiskInputs: ...
 
 
 class LedgerPort(Protocol):
@@ -131,6 +156,7 @@ class RoundTripResult:
     net_pnl: Decimal | None = None
     fees: Decimal | None = None
     reason_codes: tuple[str, ...] = field(default_factory=tuple)
+    detail: str | None = None
 
 
 class MockScalpingExecutor:
@@ -142,6 +168,8 @@ class MockScalpingExecutor:
         config: ExecutorConfig | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] = None,  # type: ignore[assignment]
+        risk: RiskGatePort | None = None,
+        limits: ScalpingRiskLimits | None = None,
     ) -> None:
         import time
 
@@ -150,6 +178,10 @@ class MockScalpingExecutor:
         self._config = config or ExecutorConfig()
         self._sleep = sleep
         self._clock = clock or time.monotonic
+        # ROB-843: executor-owned final risk re-check. Production wiring MUST
+        # inject a gate; a confirm-mode executor without one fail-closes.
+        self._risk = risk
+        self._limits = limits or ScalpingRiskLimits()
 
     def _new_correlation_id(self) -> str:
         return f"kis-mock-scalp-{uuid.uuid4().hex[:16]}"
@@ -176,6 +208,14 @@ class MockScalpingExecutor:
             )
         entry_ref = intent.entry_reference_price
         assert entry_ref is not None  # _size guards None/<=0
+
+        # 0. Executor-owned final risk re-check (ROB-843). Reloads a fresh
+        # ledger/position + market snapshot and runs evaluate_risk immediately
+        # before any submit. Caller-computed risk is advisory only; any denial
+        # or snapshot fault fail-closes here with ZERO broker calls.
+        blocked = await self._final_risk_gate(intent, cid=cid, confirm=confirm)
+        if blocked is not None:
+            return blocked
 
         # 1. Submit BUY (confirm-gated).
         buy = await self._broker.submit_buy(
@@ -269,6 +309,61 @@ class MockScalpingExecutor:
             net_pnl=net,
             fees=fees,
         )
+
+    async def _final_risk_gate(
+        self, intent: OrderIntent, *, cid: str, confirm: bool
+    ) -> RoundTripResult | None:
+        """Executor-owned pre-send risk gate. Returns a blocked ``RoundTripResult``
+        to short-circuit (zero broker calls), or ``None`` to proceed.
+
+        * No wired gate + ``confirm`` → fail-close (``risk_gate_unconfigured``);
+          the executor never mutates without owning the final check.
+        * No wired gate + dry-run → legacy passthrough (no mutation happens).
+        * Snapshot load/parse/freshness fault → ``risk_snapshot_unavailable``.
+        * Any risk denial → the accumulated stable reason codes.
+        """
+        if self._risk is None:
+            if confirm:
+                return RoundTripResult(
+                    correlation_id=cid,
+                    status="blocked",
+                    reason_codes=("risk_gate_unconfigured",),
+                )
+            return None
+
+        try:
+            inputs = await self._risk.load(symbol=intent.symbol, side=intent.side)
+        except Exception as exc:  # noqa: BLE001 — any snapshot fault fails closed
+            logger.warning(
+                "risk snapshot unavailable symbol=%s: %s", intent.symbol, exc
+            )
+            return RoundTripResult(
+                correlation_id=cid,
+                status="blocked",
+                reason_codes=("risk_snapshot_unavailable",),
+                detail=f"{type(exc).__name__}: {exc}"[:200],
+            )
+
+        decision = evaluate_risk(
+            symbol=intent.symbol,
+            side=intent.side,
+            target_notional_krw=intent.target_notional_krw,
+            limits=self._limits,
+            ledger=inputs.ledger,
+            market=inputs.market,
+        )
+        if not decision.allowed:
+            logger.info(
+                "scalping entry blocked by final risk gate symbol=%s reasons=%s",
+                intent.symbol,
+                decision.reason_codes,
+            )
+            return RoundTripResult(
+                correlation_id=cid,
+                status="blocked",
+                reason_codes=decision.reason_codes,
+            )
+        return None
 
     async def _monitor(self, intent: OrderIntent) -> str:
         assert intent.tp_price is not None and intent.sl_price is not None
