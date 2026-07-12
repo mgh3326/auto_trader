@@ -987,12 +987,12 @@ async def _classify_submit(
             )
             if evidence.outcome == "found":
                 status = (
-                    "resting"
-                    if evidence.broker_state in {"wait", "watch"}
-                    else "acked"
+                    "resting" if evidence.broker_state in {"wait", "watch"} else "acked"
                 )
                 record_fn = (
-                    service.record_resting if status == "resting" else service.record_ack
+                    service.record_resting
+                    if status == "resting"
+                    else service.record_ack
                 )
                 await record_fn(
                     proposal_id,
@@ -1016,8 +1016,7 @@ async def _classify_submit(
                     proposal_id,
                     rung_index,
                     reason=(
-                        "submit_evidence_unknown:"
-                        f"{evidence.reason or original_error}"
+                        f"submit_evidence_unknown:{evidence.reason or original_error}"
                     ),
                     now=now,
                     correlation_id=corr,

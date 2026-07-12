@@ -1056,7 +1056,9 @@ def _upbit_preview() -> dict[str, str | bool]:
 
 
 @pytest.mark.asyncio
-async def test_upbit_submit_failure_found_evidence_converges_resting(db_session, monkeypatch):
+async def test_upbit_submit_failure_found_evidence_converges_resting(
+    db_session, monkeypatch
+):
     from app.services.order_proposals import revalidation as mod
 
     service, group = await _create_upbit_submit_proposal(db_session)
@@ -1092,7 +1094,9 @@ async def test_upbit_submit_failure_found_evidence_converges_resting(db_session,
 
 
 @pytest.mark.asyncio
-async def test_upbit_true_rejection_absent_evidence_is_rejected(db_session, monkeypatch):
+async def test_upbit_true_rejection_absent_evidence_is_rejected(
+    db_session, monkeypatch
+):
     from app.services.order_proposals import revalidation as mod
 
     service, group = await _create_upbit_submit_proposal(db_session)

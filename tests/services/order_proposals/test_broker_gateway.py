@@ -222,7 +222,9 @@ async def test_cancel_rejects_unsupported_target_tuple():
 def _http_status_error(status_code: int) -> httpx.HTTPStatusError:
     request = httpx.Request("GET", "https://api.upbit.com/v1/order")
     response = httpx.Response(status_code, request=request)
-    return httpx.HTTPStatusError("broker lookup failed", request=request, response=response)
+    return httpx.HTTPStatusError(
+        "broker lookup failed", request=request, response=response
+    )
 
 
 @pytest.mark.unit

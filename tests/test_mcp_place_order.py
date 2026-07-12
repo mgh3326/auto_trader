@@ -3028,7 +3028,9 @@ async def test_place_order_impl_client_order_id_override_reaches_execution(monke
     monkeypatch.setattr(
         order_execution,
         "_get_crypto_trade_cooldown_service",
-        lambda: type("Cooldown", (), {"is_in_cooldown": AsyncMock(return_value=False)})(),
+        lambda: type(
+            "Cooldown", (), {"is_in_cooldown": AsyncMock(return_value=False)}
+        )(),
     )
     monkeypatch.setattr(order_execution, "_execute_and_record", executed)
 

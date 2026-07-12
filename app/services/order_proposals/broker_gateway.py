@@ -85,9 +85,7 @@ async def fetch_submit_evidence(
     if (account_mode, market) != ("upbit", "crypto"):
         return SubmitEvidence(
             "unknown",
-            reason=(
-                f"submit evidence lookup unsupported for {account_mode}/{market}"
-            ),
+            reason=(f"submit evidence lookup unsupported for {account_mode}/{market}"),
         )
     if lookup_fn is None:
         from app.services.brokers.upbit.orders import fetch_order_by_identifier

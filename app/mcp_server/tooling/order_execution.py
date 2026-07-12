@@ -1239,7 +1239,9 @@ async def _place_order_impl(
         or not client_order_id.strip()
         or len(client_order_id) > 40
     ):
-        return _order_error("client_order_id must be non-blank and at most 40 characters")
+        return _order_error(
+            "client_order_id must be non-blank and at most 40 characters"
+        )
 
     # Validate buy order journal requirements before any external API calls.
     # Skipped for KIS mock: mock orders write to kis_mock_order_ledger and
