@@ -1,16 +1,23 @@
 """Backtest data preparation and engine."""
 
+import math
+import statistics
 from dataclasses import dataclass, field
+from datetime import date as calendar_date
 from pathlib import Path
+from statistics import NormalDist
 from typing import Any, Protocol
 
 import numpy as np
 import pandas as pd
 
+from research_contracts.evaluation_windows import CANONICAL_EVALUATION_WINDOWS
+
 # Constants
 INITIAL_CAPITAL = 10_000_000
 TRADING_FEE = 0.0005  # 0.05%
 SLIPPAGE_BPS = 2.0  # 2 basis points
+HALF_SPREAD_BPS = 0.0
 LOOKBACK_BARS = 200
 BAR_INTERVAL = "1d"
 
@@ -21,11 +28,7 @@ DEFAULT_SYMBOLS = ["BTC", "ETH", "SOL", "XRP", "LINK", "ADA", "DOT", "AVAX"]
 # Proposal A: train has bull+bear mix, val includes Nov 2025 bear,
 # test is the most recent holdout period.
 # BTC RSI<30 days: train=12, val=16, test=7
-SPLITS = {
-    "train": {"start": "2024-04-01", "end": "2025-06-30"},
-    "val": {"start": "2025-07-01", "end": "2026-01-31"},
-    "test": {"start": "2026-02-01", "end": "2026-03-22"},
-}
+SPLITS = CANONICAL_EVALUATION_WINDOWS.to_splits()
 
 # Data directory
 DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -88,32 +91,75 @@ def validate_and_fill(df: pd.DataFrame, interval: str) -> pd.DataFrame:
 # Each fold: train period expands, val is next 3 months
 # train_start/train_end are documented for context (warmup window);
 # cross_validate() evaluates only on the val window.
-CV_FOLDS = [
-    {
-        "train_start": "2024-04-01",
-        "train_end": "2025-03-31",
-        "val_start": "2025-04-01",
-        "val_end": "2025-06-30",
-    },
-    {
-        "train_start": "2024-04-01",
-        "train_end": "2025-06-30",
-        "val_start": "2025-07-01",
-        "val_end": "2025-09-30",
-    },
-    {
-        "train_start": "2024-04-01",
-        "train_end": "2025-09-30",
-        "val_start": "2025-10-01",
-        "val_end": "2025-12-31",
-    },
-    {
-        "train_start": "2024-04-01",
-        "train_end": "2025-12-31",
-        "val_start": "2026-01-01",
-        "val_end": "2026-03-22",
-    },
-]
+CV_FOLDS = CANONICAL_EVALUATION_WINDOWS.to_cv_folds()
+
+
+class EvaluationWindowError(ValueError):
+    """Fail-closed evaluation-window admission error."""
+
+    def __init__(self, reason_code: str, *window_names: str) -> None:
+        self.reason_code = reason_code
+        self.window_names = tuple(sorted(window_names))
+        names = ", ".join(self.window_names)
+        super().__init__(f"{reason_code}: {names}")
+
+
+def _closed_window(
+    *, name: str, start: str, end: str
+) -> tuple[str, calendar_date, calendar_date]:
+    try:
+        start_date = calendar_date.fromisoformat(start)
+        end_date = calendar_date.fromisoformat(end)
+    except (TypeError, ValueError) as exc:
+        raise EvaluationWindowError("invalid_evaluation_window", name) from exc
+    if start_date > end_date:
+        raise EvaluationWindowError("invalid_evaluation_window", name)
+    return name, start_date, end_date
+
+
+def validate_evaluation_windows(
+    *, folds: list[dict[str, str]], sealed_oos: dict[str, str]
+) -> None:
+    """Reject scored validation/OOS overlap before any backtest executes.
+
+    Expanding train windows intentionally overlap one another. Admission checks
+    each fold's train-to-validation boundary, then pairwise checks the scored
+    validation windows and sealed OOS closed interval.
+    """
+    scored: list[tuple[str, calendar_date, calendar_date]] = []
+    for index, fold in enumerate(folds, start=1):
+        train_name = f"cv_fold_{index}_train"
+        validation_name = f"cv_fold_{index}_validation"
+        _, train_start, train_end = _closed_window(
+            name=train_name,
+            start=fold["train_start"],
+            end=fold["train_end"],
+        )
+        del train_start
+        validation = _closed_window(
+            name=validation_name,
+            start=fold["val_start"],
+            end=fold["val_end"],
+        )
+        if train_end >= validation[1]:
+            raise EvaluationWindowError(
+                "overlapping_evaluation_windows", train_name, validation_name
+            )
+        scored.append(validation)
+
+    scored.append(
+        _closed_window(
+            name="sealed_oos",
+            start=sealed_oos["start"],
+            end=sealed_oos["end"],
+        )
+    )
+    for left_index, (left_name, left_start, left_end) in enumerate(scored):
+        for right_name, right_start, right_end in scored[left_index + 1 :]:
+            if left_start <= right_end and right_start <= left_end:
+                raise EvaluationWindowError(
+                    "overlapping_evaluation_windows", left_name, right_name
+                )
 
 
 @dataclass(frozen=True)
@@ -143,6 +189,18 @@ class Signal:
         float  # Target portfolio weight (0-1) for buy, fraction to sell (0-1) for sell
     )
     reason: str = ""  # Reason for the signal
+
+
+@dataclass(frozen=True)
+class ExecutionCost:
+    """Frozen transaction-cost inputs applied only at causal fill time."""
+
+    fee_rate: float = TRADING_FEE
+    half_spread_bps: float = HALF_SPREAD_BPS
+    slippage_bps: float = SLIPPAGE_BPS
+
+
+DEFAULT_EXECUTION_COST = ExecutionCost()
 
 
 @dataclass
@@ -199,6 +257,42 @@ class CVResult:
     std_score: float
     min_score: float
     cv_score: float  # Final score with penalties
+
+
+@dataclass(frozen=True)
+class TrialStatistics:
+    """Canonical trial statistic derived from every evaluated CV fold."""
+
+    sharpe: float
+    p_value: float
+    sample_size: int
+
+
+class TrialStatisticsError(ValueError):
+    """Raised when CV output cannot form honest finite trial evidence."""
+
+
+def summarize_trial_statistics(
+    fold_results: list[BacktestResult],
+) -> TrialStatistics:
+    """Aggregate fold Sharpes and a one-sided normal p-value for mean > 0."""
+    sharpes = [float(result.sharpe) for result in fold_results]
+    if len(sharpes) < 2 or not all(math.isfinite(value) for value in sharpes):
+        raise TrialStatisticsError("insufficient or non-finite fold Sharpe sample")
+    mean_sharpe = statistics.mean(sharpes)
+    sample_std = statistics.stdev(sharpes)
+    if sample_std == 0:
+        p_value = 0.0 if mean_sharpe > 0 else 1.0 if mean_sharpe < 0 else 0.5
+    else:
+        z_score = mean_sharpe / (sample_std / math.sqrt(len(sharpes)))
+        p_value = 1.0 - NormalDist().cdf(z_score)
+    if not math.isfinite(p_value):
+        raise TrialStatisticsError("non-finite trial p-value")
+    return TrialStatistics(
+        sharpe=mean_sharpe,
+        p_value=p_value,
+        sample_size=len(sharpes),
+    )
 
 
 class Strategy(Protocol):
@@ -300,18 +394,21 @@ def load_data(
 
 
 def _calc_execution_price(
-    bar: BarData, action: str, slippage_bps: float = SLIPPAGE_BPS
+    bar: BarData,
+    action: str,
+    execution_cost: ExecutionCost = DEFAULT_EXECUTION_COST,
 ) -> float:
-    """Calculate execution price with slippage.
+    """Calculate a next-open execution price with spread and slippage.
 
     For buys: price moves up (higher price)
     For sells: price moves down (lower price)
     """
-    slippage = bar.close * (slippage_bps / 10000)
+    impact_bps = execution_cost.half_spread_bps + execution_cost.slippage_bps
+    impact = bar.open * (impact_bps / 10000)
     if action == "buy":
-        return bar.close + slippage
+        return bar.open + impact
     else:  # sell
-        return bar.close - slippage
+        return bar.open - impact
 
 
 def _calc_fee(amount: float, fee_rate: float = TRADING_FEE) -> float:
@@ -324,6 +421,7 @@ def _calc_buy_quantity(
     weight: float,
     portfolio_value: float,
     price: float,
+    fee_rate: float = TRADING_FEE,
 ) -> float:
     """Calculate quantity to buy for target weight, accounting for fees.
 
@@ -339,7 +437,7 @@ def _calc_buy_quantity(
     target_value = portfolio_value * weight
     target_qty = target_value / price
     # Calculate max affordable accounting for fees: cost + fee = cost * (1 + fee_rate)
-    max_affordable_qty = cash / (price * (1 + TRADING_FEE))
+    max_affordable_qty = cash / (price * (1 + fee_rate))
     quantity = min(target_qty, max_affordable_qty)
     return max(0.0, quantity)
 
@@ -392,21 +490,32 @@ def _execute_signal(
     state: PortfolioState,
     bar_data: dict[str, BarData],
     portfolio_value: float,
+    *,
+    signal_date: str | None = None,
+    execution_cost: ExecutionCost = DEFAULT_EXECUTION_COST,
 ) -> PortfolioState:
-    """Execute a trading signal and return new state."""
+    """Execute a prior-bar signal at this bar's valid open."""
     if signal.symbol not in bar_data:
         return state
 
     bar = bar_data[signal.symbol]
+    if not np.isfinite(bar.open) or bar.open <= 0:
+        return state
     new_state = state.copy()
 
     if signal.action == "buy":
-        price = _calc_execution_price(bar, "buy")
-        quantity = _calc_buy_quantity(state.cash, signal.weight, portfolio_value, price)
+        price = _calc_execution_price(bar, "buy", execution_cost)
+        quantity = _calc_buy_quantity(
+            state.cash,
+            signal.weight,
+            portfolio_value,
+            price,
+            execution_cost.fee_rate,
+        )
 
         if quantity > 0:
             cost = quantity * price
-            fee = _calc_fee(cost)
+            fee = _calc_fee(cost, execution_cost.fee_rate)
             total_cost = cost + fee
 
             if total_cost <= state.cash:
@@ -426,6 +535,7 @@ def _execute_signal(
                 new_state.trade_log.append(
                     {
                         "date": bar.date,
+                        "signal_date": signal_date or bar.date,
                         "symbol": signal.symbol,
                         "action": "buy",
                         "quantity": quantity,
@@ -438,12 +548,12 @@ def _execute_signal(
     elif signal.action == "sell":
         current_qty = state.positions.get(signal.symbol, 0)
         if current_qty > 0:
-            price = _calc_execution_price(bar, "sell")
+            price = _calc_execution_price(bar, "sell", execution_cost)
             quantity = _calc_sell_quantity(current_qty, signal.weight)
 
             if quantity > 0:
                 proceeds = quantity * price
-                fee = _calc_fee(proceeds)
+                fee = _calc_fee(proceeds, execution_cost.fee_rate)
                 net_proceeds = proceeds - fee
                 avg_price = state.avg_prices.get(signal.symbol, 0)
                 realized_pnl = _calc_realized_pnl(quantity, avg_price, price, fee)
@@ -462,6 +572,7 @@ def _execute_signal(
                 new_state.trade_log.append(
                     {
                         "date": bar.date,
+                        "signal_date": signal_date or bar.date,
                         "symbol": signal.symbol,
                         "action": "sell",
                         "quantity": quantity,
@@ -480,6 +591,8 @@ def run_backtest(
     strategy: Strategy,
     initial_capital: float = INITIAL_CAPITAL,
     bar_interval: str = "1d",
+    *,
+    execution_cost: ExecutionCost = DEFAULT_EXECUTION_COST,
 ) -> BacktestResult:
     """Run backtest with given data and strategy.
 
@@ -541,6 +654,7 @@ def run_backtest(
     equity_curve = [initial_capital]
     equity_dates = [dates[0]]
     days_in_market = 0
+    pending_signals: list[tuple[Signal, str]] = []
 
     # Iterate through dates
     for date in dates:
@@ -580,7 +694,25 @@ def run_backtest(
                     history=history,
                 )
 
-        # Calculate current portfolio value
+        # Fill only signals emitted after the preceding bar, using current opens.
+        execution_portfolio_value = state.cash
+        for symbol, qty in state.positions.items():
+            if symbol in bar_data:
+                open_price = bar_data[symbol].open
+                if np.isfinite(open_price) and open_price > 0:
+                    execution_portfolio_value += qty * open_price
+
+        for signal, signal_date in pending_signals:
+            state = _execute_signal(
+                signal,
+                state,
+                bar_data,
+                execution_portfolio_value,
+                signal_date=signal_date,
+                execution_cost=execution_cost,
+            )
+
+        # Mark the portfolio only after fills, using data observable at bar close.
         portfolio_value = state.cash
         for symbol, qty in state.positions.items():
             if symbol in bar_data:
@@ -592,10 +724,7 @@ def run_backtest(
 
         # Get signals from strategy (new two-argument interface)
         signals = strategy.on_bar(bar_data, state)
-
-        # Execute signals
-        for signal in signals:
-            state = _execute_signal(signal, state, bar_data, portfolio_value)
+        pending_signals = [(signal, date) for signal in signals]
 
         # Recalculate equity after execution
         equity = state.cash
@@ -679,7 +808,7 @@ def _calc_sharpe(
     annualize_factor: float | None = None,
 ) -> float:
     """Calculate annualized Sharpe ratio."""
-    if not returns:
+    if len(returns) < 2:
         return 0.0
 
     arr = np.array(returns)
@@ -828,6 +957,7 @@ def cross_validate(
     folds: list[dict[str, str]] | None = None,
     initial_capital: float = INITIAL_CAPITAL,
     bar_interval: str = BAR_INTERVAL,
+    execution_cost: ExecutionCost = DEFAULT_EXECUTION_COST,
 ) -> CVResult:
     """Run walk-forward cross-validation.
 
@@ -847,6 +977,8 @@ def cross_validate(
     if folds is None:
         folds = CV_FOLDS
 
+    validate_evaluation_windows(folds=folds, sealed_oos=SPLITS["test"])
+
     fold_scores: list[float] = []
     fold_results: list[BacktestResult] = []
     fold_indices: list[int] = []
@@ -862,7 +994,11 @@ def cross_validate(
 
         strat = strategy_class()
         result = run_backtest(
-            val_data, strat, initial_capital, bar_interval=bar_interval
+            val_data,
+            strat,
+            initial_capital,
+            bar_interval,
+            execution_cost=execution_cost,
         )
         score = compute_score(result)
 

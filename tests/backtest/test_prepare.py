@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from research_contracts.evaluation_windows import CANONICAL_EVALUATION_WINDOWS
+
 # Add backtest directory to path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest"))
 
@@ -476,13 +478,13 @@ class TestFeeAwarePnL:
 
         btc_df = pd.DataFrame(
             {
-                "date": ["2025-07-01", "2025-07-02"],
-                "open": [100.0, 100.06],
-                "high": [100.0, 100.06],
-                "low": [100.0, 100.06],
-                "close": [100.0, 100.06],
-                "volume": [1000.0, 1000.0],
-                "value": [100000.0, 100060.0],
+                "date": ["2025-07-01", "2025-07-02", "2025-07-03"],
+                "open": [100.0, 100.0, 100.06],
+                "high": [100.0, 100.06, 100.06],
+                "low": [100.0, 100.0, 100.06],
+                "close": [100.0, 100.06, 100.06],
+                "volume": [1000.0, 1000.0, 1000.0],
+                "value": [100000.0, 100060.0, 100060.0],
             }
         )
         btc_df.to_parquet(data_dir / "KRW-BTC.parquet", index=False)
@@ -492,7 +494,7 @@ class TestFeeAwarePnL:
         monkeypatch.setattr(
             prepare,
             "SPLITS",
-            {"val": {"start": "2025-07-01", "end": "2025-07-02"}},
+            {"val": {"start": "2025-07-01", "end": "2025-07-03"}},
         )
 
         class RoundTripStrategy:
@@ -521,13 +523,13 @@ class TestFeeAwarePnL:
 
         btc_df = pd.DataFrame(
             {
-                "date": ["2025-07-01", "2025-07-02"],
-                "open": [100.0, 100.06],
-                "high": [100.0, 100.06],
-                "low": [100.0, 100.06],
-                "close": [100.0, 100.06],
-                "volume": [1000.0, 1000.0],
-                "value": [100000.0, 100060.0],
+                "date": ["2025-07-01", "2025-07-02", "2025-07-03"],
+                "open": [100.0, 100.0, 100.06],
+                "high": [100.0, 100.06, 100.06],
+                "low": [100.0, 100.0, 100.06],
+                "close": [100.0, 100.06, 100.06],
+                "volume": [1000.0, 1000.0, 1000.0],
+                "value": [100000.0, 100060.0, 100060.0],
             }
         )
         btc_df.to_parquet(data_dir / "KRW-BTC.parquet", index=False)
@@ -537,7 +539,7 @@ class TestFeeAwarePnL:
         monkeypatch.setattr(
             prepare,
             "SPLITS",
-            {"val": {"start": "2025-07-01", "end": "2025-07-02"}},
+            {"val": {"start": "2025-07-01", "end": "2025-07-03"}},
         )
 
         class RoundTripStrategy:
@@ -857,6 +859,132 @@ class TestScoreFormulaHardening:
 class TestRunBacktest:
     """Tests for run_backtest function."""
 
+    @staticmethod
+    def _bars(
+        *,
+        dates: list[str],
+        opens: list[float],
+        closes: list[float],
+    ) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "date": dates,
+                "open": opens,
+                "high": [max(o, c) for o, c in zip(opens, closes, strict=True)],
+                "low": [min(o, c) for o, c in zip(opens, closes, strict=True)],
+                "close": closes,
+                "volume": [1000.0] * len(dates),
+                "value": [100000.0] * len(dates),
+            }
+        )
+
+    def test_same_close_only_alpha_is_removed_by_next_open_execution(self):
+        data = {
+            "BTC": self._bars(
+                dates=["2025-01-01", "2025-01-02", "2025-01-03"],
+                opens=[100.0, 200.0, 100.0],
+                closes=[100.0, 200.0, 100.0],
+            )
+        }
+
+        class SameCloseOnlyStrategy:
+            def on_bar(self, bar_data, portfolio):
+                if portfolio.date == "2025-01-01":
+                    return [prepare.Signal("BTC", "buy", 1.0)]
+                if portfolio.date == "2025-01-02":
+                    return [prepare.Signal("BTC", "sell", 1.0)]
+                return []
+
+        result = prepare.run_backtest(
+            data, SameCloseOnlyStrategy(), initial_capital=1000.0
+        )
+
+        assert result.total_return_pct < 0
+        assert [trade["date"] for trade in result.trade_log] == [
+            "2025-01-02",
+            "2025-01-03",
+        ]
+        assert result.trade_log[0]["signal_date"] == "2025-01-01"
+        assert result.trade_log[1]["signal_date"] == "2025-01-02"
+
+    def test_causal_next_open_alpha_is_retained(self):
+        data = {
+            "BTC": self._bars(
+                dates=["2025-01-01", "2025-01-02", "2025-01-03"],
+                opens=[90.0, 100.0, 130.0],
+                closes=[95.0, 120.0, 130.0],
+            )
+        }
+
+        class CausalStrategy:
+            def on_bar(self, bar_data, portfolio):
+                if portfolio.date == "2025-01-01":
+                    return [prepare.Signal("BTC", "buy", 1.0)]
+                if portfolio.date == "2025-01-02":
+                    return [prepare.Signal("BTC", "sell", 1.0)]
+                return []
+
+        result = prepare.run_backtest(data, CausalStrategy(), initial_capital=1000.0)
+
+        assert result.total_return_pct > 0
+        assert result.trade_log[0]["price"] == pytest.approx(100.02)
+        assert result.trade_log[1]["price"] == pytest.approx(129.974)
+
+    @pytest.mark.parametrize("malformed_open", [float("nan"), 0.0, -1.0])
+    def test_malformed_next_open_leaves_signal_unfilled(self, malformed_open):
+        data = {
+            "BTC": self._bars(
+                dates=["2025-01-01", "2025-01-02", "2025-01-03"],
+                opens=[100.0, malformed_open, 120.0],
+                closes=[100.0, 110.0, 120.0],
+            )
+        }
+
+        class BuyOnce:
+            def on_bar(self, bar_data, portfolio):
+                if portfolio.date == "2025-01-01":
+                    return [prepare.Signal("BTC", "buy", 1.0)]
+                return []
+
+        result = prepare.run_backtest(data, BuyOnce(), initial_capital=1000.0)
+
+        assert result.num_trades == 0
+
+    def test_missing_immediate_symbol_bar_leaves_signal_unfilled(self):
+        data = {
+            "BTC": self._bars(
+                dates=["2025-01-01", "2025-01-03"],
+                opens=[100.0, 120.0],
+                closes=[100.0, 120.0],
+            ),
+            "ETH": self._bars(
+                dates=["2025-01-02"],
+                opens=[50.0],
+                closes=[50.0],
+            ),
+        }
+
+        class BuyOnce:
+            def on_bar(self, bar_data, portfolio):
+                if portfolio.date == "2025-01-01":
+                    return [prepare.Signal("BTC", "buy", 1.0)]
+                return []
+
+        result = prepare.run_backtest(data, BuyOnce(), initial_capital=1000.0)
+
+        assert result.num_trades == 0
+
+    def test_last_bar_signal_is_never_filled(self):
+        data = {"BTC": self._bars(dates=["2025-01-01"], opens=[100.0], closes=[100.0])}
+
+        class BuyLastBar:
+            def on_bar(self, bar_data, portfolio):
+                return [prepare.Signal("BTC", "buy", 1.0)]
+
+        result = prepare.run_backtest(data, BuyLastBar(), initial_capital=1000.0)
+
+        assert result.num_trades == 0
+
     def test_run_backtest_executes_strategy(self):
         """Test that run_backtest properly executes strategy signals."""
         # Create simple mock data
@@ -1051,6 +1179,40 @@ class TestRunBacktestInterval:
 
 class TestCVFolds:
     """Tests for walk-forward CV fold definitions."""
+
+    def test_historical_fold_four_overlaps_sealed_oos(self):
+        historical_folds = [
+            {
+                "train_start": "2024-04-01",
+                "train_end": "2025-12-31",
+                "val_start": "2026-01-01",
+                "val_end": "2026-03-22",
+            }
+        ]
+
+        with pytest.raises(prepare.EvaluationWindowError) as exc_info:
+            prepare.validate_evaluation_windows(
+                folds=historical_folds,
+                sealed_oos=prepare.SPLITS["test"],
+            )
+
+        error = exc_info.value
+        assert error.reason_code == "overlapping_evaluation_windows"
+        assert error.window_names == ("cv_fold_1_validation", "sealed_oos")
+
+    def test_default_evaluation_windows_do_not_overlap(self):
+        prepare.validate_evaluation_windows(
+            folds=prepare.CV_FOLDS,
+            sealed_oos=prepare.SPLITS["test"],
+        )
+
+    def test_prepare_consumes_the_neutral_canonical_window_contract(self):
+        assert prepare.SPLITS == CANONICAL_EVALUATION_WINDOWS.to_splits()
+        assert prepare.CV_FOLDS == CANONICAL_EVALUATION_WINDOWS.to_cv_folds()
+
+        source = Path(prepare.__file__).read_text(encoding="utf-8")
+        assert '"2024-04-01"' not in source
+        assert '"2026-03-22"' not in source
 
     def test_cv_folds_exist(self):
         assert hasattr(prepare, "CV_FOLDS")
@@ -1322,6 +1484,44 @@ class TestCVResult:
         assert len(result.fold_scores) == 3
         assert result.fold_indices == [0, 1, 2]
 
+    def test_trial_statistics_use_mean_fold_sharpe_and_full_sample(self):
+        def result(sharpe: float) -> prepare.BacktestResult:
+            return prepare.BacktestResult(
+                total_return_pct=1.0,
+                sharpe=sharpe,
+                max_drawdown_pct=1.0,
+                num_trades=2,
+                win_rate_pct=0.5,
+                profit_factor=1.0,
+                avg_holding_days=2.0,
+            )
+
+        statistics = prepare.summarize_trial_statistics(
+            [result(1.0), result(2.0), result(3.0), result(4.0)]
+        )
+
+        assert statistics.sharpe == pytest.approx(2.5)
+        assert statistics.sample_size == 4
+        assert 0.0 <= statistics.p_value <= 1.0
+
+    @pytest.mark.parametrize("sharpes", [[], [1.0], [1.0, float("nan")]])
+    def test_trial_statistics_reject_insufficient_or_nonfinite_sample(self, sharpes):
+        results = [
+            prepare.BacktestResult(
+                total_return_pct=1.0,
+                sharpe=sharpe,
+                max_drawdown_pct=1.0,
+                num_trades=2,
+                win_rate_pct=0.5,
+                profit_factor=1.0,
+                avg_holding_days=2.0,
+            )
+            for sharpe in sharpes
+        ]
+
+        with pytest.raises(prepare.TrialStatisticsError):
+            prepare.summarize_trial_statistics(results)
+
 
 class TestCrossValidate:
     """Tests for cross_validate function."""
@@ -1329,6 +1529,70 @@ class TestCrossValidate:
     def test_cross_validate_exists(self):
         assert hasattr(prepare, "cross_validate")
         assert callable(prepare.cross_validate)
+
+    def test_cross_validate_forwards_frozen_execution_cost(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cost = prepare.ExecutionCost(
+            fee_rate=0.0004,
+            half_spread_bps=1.0,
+            slippage_bps=3.0,
+        )
+        observed: list[prepare.ExecutionCost] = []
+        data = {
+            "BTC": pd.DataFrame(
+                {
+                    "date": ["2025-01-02"],
+                    "open": [100.0],
+                    "high": [101.0],
+                    "low": [99.0],
+                    "close": [100.0],
+                    "volume": [1.0],
+                    "value": [100.0],
+                }
+            )
+        }
+        monkeypatch.setattr(prepare, "load_data_range", lambda *a, **k: data)
+
+        def fake_run_backtest(
+            data,
+            strategy,
+            initial_capital,
+            bar_interval,
+            *,
+            execution_cost,
+        ):
+            observed.append(execution_cost)
+            return prepare.BacktestResult(
+                total_return_pct=1.0,
+                sharpe=1.0,
+                max_drawdown_pct=1.0,
+                num_trades=2,
+                win_rate_pct=0.5,
+                profit_factor=1.0,
+                avg_holding_days=2.0,
+            )
+
+        monkeypatch.setattr(prepare, "run_backtest", fake_run_backtest)
+
+        class PassiveStrategy:
+            def on_bar(self, bar_data, portfolio):
+                return []
+
+        prepare.cross_validate(
+            PassiveStrategy,
+            folds=[
+                {
+                    "train_start": "2024-01-01",
+                    "train_end": "2024-12-31",
+                    "val_start": "2025-01-01",
+                    "val_end": "2025-01-31",
+                }
+            ],
+            execution_cost=cost,
+        )
+
+        assert observed == [cost]
 
     def test_cv_score_penalizes_variance(self):
         """Higher variance should produce lower cv_score."""

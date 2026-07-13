@@ -1,5 +1,6 @@
 """Tests for the backtest autoresearch orchestrator."""
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -116,6 +117,64 @@ def test_apply_status_treats_auto_no_commit_as_skip() -> None:
     assert stats.reverted == 0
     assert stats.crashed == 0
     assert stats.consecutive_reverts == 0
+
+
+@pytest.mark.parametrize("status", ["crash", "crashed", "timeout"])
+def test_apply_status_accepts_legacy_and_canonical_failure_statuses(
+    status: str,
+) -> None:
+    stats = orchestrator.Stats(initial_best_score=4.0, current_best_score=4.0)
+
+    orchestrator.apply_status(stats, status=status)
+
+    assert stats.crashed == 1
+    assert stats.valid_rounds == 1
+    assert stats.consecutive_reverts == 0
+
+
+@pytest.mark.parametrize("status", ["crash", "crashed", "timeout"])
+def test_orchestrator_e2e_consumes_legacy_and_canonical_failure_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+) -> None:
+    results_path = tmp_path / "results.tsv"
+    _write_results(results_path, [])
+    monkeypatch.setattr(orchestrator, "RESULTS_TSV", results_path)
+    monkeypatch.setattr(orchestrator.signal, "signal", lambda *args: None)
+    monkeypatch.setattr(orchestrator, "check_disk_space", lambda: None)
+    monkeypatch.setattr(orchestrator, "git_status_porcelain", lambda: "")
+    monkeypatch.setattr(orchestrator, "current_head", lambda: "new-head")
+    monkeypatch.setattr(
+        orchestrator,
+        "wait_for_new_commit",
+        lambda **kwargs: "new-head",
+    )
+    monkeypatch.setattr(orchestrator, "head_commit_subject", lambda: "experiment")
+    monkeypatch.setattr(orchestrator, "timed_out", lambda *args: False)
+    monkeypatch.setattr(
+        orchestrator,
+        "parse_args",
+        lambda: argparse.Namespace(
+            mode="manual",
+            rounds=1,
+            timeout=60,
+            max_consecutive_reverts=3,
+            ai_cli="unused",
+            description="experiment",
+            poll_interval=0.01,
+            ai_timeout=30,
+        ),
+    )
+
+    def append_failure_result(description: str) -> int:
+        with results_path.open("a", encoding="utf-8") as output:
+            output.write(f"exp1\t0.0\t0.0\t0.0\t0.0\tNA\t{status}\t{description}\n")
+        return 2
+
+    monkeypatch.setattr(orchestrator, "run_experiment_round", append_failure_result)
+
+    assert orchestrator.main() == 0
 
 
 def test_revert_limit_triggers_only_after_exceeding_threshold() -> None:

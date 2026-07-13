@@ -121,7 +121,7 @@ constraint-dependencies = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["app"]
+packages = ["app", "research_contracts"]
 
 [tool.ruff]
 target-version = "py313"
@@ -154,7 +154,7 @@ ignore = [
 "tests/conftest.py" = ["E402"]  # Delayed import after env setup
 
 [tool.ruff.lint.isort]
-known-first-party = ["app"]
+known-first-party = ["app", "research_contracts"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -167,7 +167,7 @@ python-version = "3.13"
 extra-paths = ["app/stubs"]
 
 [tool.ty.src]
-include = ["app"]
+include = ["app", "research_contracts"]
 
 [tool.ty.rules]
 all = "warn"

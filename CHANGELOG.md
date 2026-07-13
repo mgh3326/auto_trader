@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added (ROB-847 — honest offline research promotion gate; migration 0)
+- **Research signals now execute causally.** A signal observed at bar `t` can fill only at the next valid executable open, with frozen fees, spread, and slippage; missing, malformed, and final-bar signals remain unfilled, and overlapping CV/sealed-OOS windows fail closed.
+- **Promotion now requires sealed, point-in-time evidence.** One-time OOS finalization validates the PIT manifest and information cutoff, keeps sealed results out of parameter ranking, computes trial-aware DSR/PBO/FDR and baseline/cost/MDD evidence, and links the deterministic artifact through the ROB-846 experiment registry using exact experiment/config/data hashes.
+- **Every registered trial remains auditable before rollback.** Completed, rejected, crashed, and timed-out experiment runs are recorded once through ROB-846 append-only trial accounting before any safe revert; legacy identity-less results remain non-promotable. No database migration or broker execution surface is added.
+
 ### Added (ROB-858 — Toss live loss-cut proposals; migration 1)
 - **Toss KR/US loss-cut proposals now use the shared live authorization contract.** Preview and submit both require a matching fresh retrospective, dedicated completed Paperclip issue, allowed caller, and limit-sell slip band; only that validated context bypasses the ordinary `average_purchase_price * 1.01` floor, and live submit always requires the supplied preview token.
 - **Broker polling now closes proposal state without a websocket.** Toss reconcile projects cumulative partial/fill/cancel evidence onto proposal rungs, preserves partial quantity on cancel, and runs an idempotent terminal-ledger repair sweep after projection failures. Dry runs and pending/unknown evidence remain write-free/non-terminal.

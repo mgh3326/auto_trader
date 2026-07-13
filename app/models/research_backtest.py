@@ -6,6 +6,7 @@ from decimal import Decimal
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
+    DateTime,
     ForeignKey,
     Index,
     Integer,
@@ -138,8 +139,12 @@ class ResearchBacktestRun(Base):
     timeframe: Mapped[str] = mapped_column(String(16), nullable=False)
     timerange: Mapped[str | None] = mapped_column(String(64), nullable=True)
     runner: Mapped[str] = mapped_column(String(16), nullable=False)
-    started_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    ended_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     total_trades: Mapped[int] = mapped_column(nullable=False, default=0)
     profit_factor: Mapped[Decimal] = mapped_column(
         Numeric(18, 8), nullable=False, default=0
@@ -174,7 +179,9 @@ class ResearchBacktestRun(Base):
     )
     trial_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     seed: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    information_cutoff: Mapped[datetime | None] = mapped_column(nullable=True)
+    information_cutoff: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     trial_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
     gate_artifact_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     trial_idempotency_key: Mapped[str | None] = mapped_column(

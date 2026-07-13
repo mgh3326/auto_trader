@@ -260,3 +260,29 @@ def test_derive_experiment_id_is_deterministic_and_identity_sensitive() -> None:
     assert exp_id != derive_experiment_id(
         "NFIX", "v1", compute_identity_hashes(mutated)
     )
+
+
+def test_typed_canonical_ast_and_experiment_id_golden_bytes() -> None:
+    """Moving the authority must not rewrite any ROB-846 persisted identity."""
+    payload = {
+        "alpha": Decimal("1.30"),
+        "when": datetime(2026, 1, 1, tzinfo=UTC),
+        "kinds": ("x", 2),
+        "config": {"fee": 0.0004},
+    }
+    expected_ast = (
+        '["dict",[["alpha",["decimal","1.30"]],'
+        '["config",["dict",[["fee",["float","0x1.a36e2eb1c432dp-12"]]]]],'
+        '["kinds",["tuple",[["str","x"],["int",2]]]],'
+        '["when",["datetime","2026-01-01T00:00:00+00:00"]]]]'
+    )
+    assert canonical_json(payload) == expected_ast
+    assert canonical_sha256(payload) == (
+        "744bd5ac919e9577150f5cc639167a6f7d66bb0cd29edbc08d2f8c50041ae5b2"
+    )
+
+    components = {name: {"component": name, "value": 1} for name in IDENTITY_COMPONENTS}
+    hashes = compute_identity_hashes(components)
+    assert derive_experiment_id("ROB-847-golden", "v1", hashes) == (
+        "3073fdcbb7d8e0ca515ed667e1b6d452244d07009000c9ed02d1789924699460"
+    )
