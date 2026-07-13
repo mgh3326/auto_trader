@@ -24,6 +24,10 @@ class CampaignConfig:
     target_t: float = 2.0
     fdr_alpha: float = 0.05
     block_size: int = 10
+    dsr_probability_threshold: float = 0.95
+    dsr_min_observations: int = 30
+    pbo_slices: int = 4
+    pbo_max: float = 0.5
     # economic-triviality floor (Codex: sign>0 is too low)
     economic_triviality_floor_bps: float = 0.5
     # achievable-execution envelope (Binance USDⓈ-M demo)
@@ -33,18 +37,32 @@ class CampaignConfig:
     min_seasoning: int = 0
     # analytic taker fee grid
     fee_grid_bps: tuple[float, ...] = (10.0, 7.5, 5.0, 2.0, 0.0)
+    baseline_names: tuple[str, ...] = (
+        "cash",
+        "btc_eth_equal_weight",
+        "same_turnover_random",
+    )
+    random_baseline_seed: int = 847
+    random_baseline_repetitions: int = 100
+    half_spread_bps: float = 0.0
+    slippage_bps: float = 2.0
+    cost_stress_multipliers: tuple[float, ...] = (1.0, 1.5, 2.0)
+    mdd_target_pct: float = 20.0
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d["fee_grid_bps"] = list(self.fee_grid_bps)
+        d["baseline_names"] = list(self.baseline_names)
+        d["cost_stress_multipliers"] = list(self.cost_stress_multipliers)
         return d
 
     @classmethod
     def from_dict(cls, d: dict) -> CampaignConfig:
         allowed = {f.name for f in fields(cls)}
         kw = {k: v for k, v in d.items() if k in allowed}
-        if "fee_grid_bps" in kw:
-            kw["fee_grid_bps"] = tuple(kw["fee_grid_bps"])
+        for name in ("fee_grid_bps", "baseline_names", "cost_stress_multipliers"):
+            if name in kw:
+                kw[name] = tuple(kw[name])
         return cls(**kw)
 
     def config_hash(self) -> str:
