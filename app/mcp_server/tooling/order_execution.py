@@ -1323,6 +1323,7 @@ async def _place_order_impl(
     scalping_exit_reason: str | None = None,
     correlation_id: str | None = None,
     report_item_uuid: str | None = None,
+    proposal_flow: bool = False,
     approval_hash: str | None = None,
     rung: str | int | None = None,
     mirror_cohort: str | None = None,
@@ -1395,6 +1396,7 @@ async def _place_order_impl(
             order_type=order_type_lower,
             is_mock=is_mock,
             symbol=normalized_symbol,
+            proposal_flow=proposal_flow,
         )
         if loss_cut_errors:
             return {

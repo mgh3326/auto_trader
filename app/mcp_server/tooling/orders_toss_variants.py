@@ -26,7 +26,12 @@ from app.mcp_server.tooling.account_modes import (
     ACCOUNT_MODE_TOSS_LIVE,
     normalize_account_mode,
 )
-from app.mcp_server.tooling.order_validation import evaluate_sector_concentration
+from app.mcp_server.tooling.order_validation import (
+    LossCutContext,
+    _validate_loss_cut_preconditions,
+    evaluate_sector_concentration,
+    evaluate_sell_price_guards,
+)
 from app.mcp_server.tooling.portfolio_cash import get_account_costs_setting
 from app.mcp_server.tooling.toss_approval import (
     APPROVAL_TTL_SECONDS,
@@ -535,6 +540,10 @@ async def _sell_loss_guard(
     order_type: Literal["limit", "market"],
     price: Decimal | None,
     base: dict[str, Any],
+    *,
+    loss_cut_ctx: LossCutContext | None = None,
+    current_price: Decimal | None = None,
+    evidence_context: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     try:
         holding = await _find_holding(client, symbol)
@@ -561,6 +570,40 @@ async def _sell_loss_guard(
         }
 
     floor = avg * Decimal("1.01")
+
+    if loss_cut_ctx is not None:
+        if evidence_context is not None:
+            evidence_context["avg_buy_price"] = _stringify_decimal(avg)
+        if price is None:
+            return {
+                "success": False,
+                **base,
+                "error": "loss_cut requires a limit sell price.",
+            }
+        curr_price = current_price
+        if curr_price is None:
+            try:
+                curr_price = await _latest_price(client, symbol)
+            except Exception as exc:
+                return {
+                    "success": False,
+                    **base,
+                    "error": (
+                        "Failed to retrieve current price for loss_cut slip-band "
+                        f"validation (fail closed): {exc}"
+                    ),
+                }
+        error = evaluate_sell_price_guards(
+            price=float(price),
+            current_price=float(curr_price),
+            avg_price=float(avg),
+            defensive_trim_ctx=None,
+            scalping_exit_ctx=None,
+            loss_cut_ctx=loss_cut_ctx,
+        )
+        if error is not None:
+            return {"success": False, **base, "error": error}
+        return None
 
     if order_type == "limit":
         if price is None:
@@ -759,11 +802,41 @@ async def toss_preview_order(
     account_mode: str | None = None,
     account_type: str | None = None,
     rung: str | int | None = None,
+    exit_intent: str | None = None,
+    exit_reason: str | None = None,
+    retrospective_id: int | None = None,
+    approval_issue_id: str | None = None,
 ) -> dict[str, Any]:
     if (guard := _entry_guard(account_mode, account_type)) is not None:
         return guard
 
     mkt = _infer_market(symbol, market)
+    if exit_intent is not None and exit_intent != "loss_cut":
+        return {
+            "success": False,
+            "source": "toss",
+            "account_mode": ACCOUNT_MODE_TOSS_LIVE,
+            "error": f"unknown exit_intent {exit_intent!r} (only 'loss_cut')",
+        }
+    loss_cut_ctx, loss_cut_errors = await _validate_loss_cut_preconditions(
+        exit_intent=exit_intent,
+        retrospective_id=retrospective_id,
+        exit_reason=exit_reason,
+        approval_issue_id=approval_issue_id,
+        side=side,
+        order_type=order_type,
+        is_mock=False,
+        symbol=symbol,
+        proposal_flow=_order_proposal_context.get() is not None,
+    )
+    if loss_cut_errors:
+        return {
+            "success": False,
+            "source": "toss",
+            "account_mode": ACCOUNT_MODE_TOSS_LIVE,
+            "error": "loss_cut_preconditions_failed",
+            "violations": loss_cut_errors,
+        }
     quantity_dec = (
         _decimal_string(quantity, "quantity") if quantity is not None else None
     )
@@ -860,6 +933,37 @@ async def toss_preview_order(
     if price_context_message is not None:
         order_warnings.append(_PRICE_CONTEXT_UNAVAILABLE)
 
+    loss_cut_evidence: dict[str, Any] = {}
+    if loss_cut_ctx is not None:
+        if current_price_dec is None:
+            return {
+                "success": False,
+                "source": "toss",
+                "account_mode": ACCOUNT_MODE_TOSS_LIVE,
+                "preview": True,
+                "error": (
+                    "Failed to retrieve current price for loss_cut slip-band "
+                    "validation (fail closed)."
+                ),
+            }
+        async with _client_context() as client:
+            loss_cut_guard = await _sell_loss_guard(
+                client,
+                symbol,
+                order_type,
+                price_dec,
+                {
+                    "source": "toss",
+                    "account_mode": ACCOUNT_MODE_TOSS_LIVE,
+                    "preview": True,
+                },
+                loss_cut_ctx=loss_cut_ctx,
+                current_price=current_price_dec,
+                evidence_context=loss_cut_evidence,
+            )
+        if loss_cut_guard is not None:
+            return loss_cut_guard
+
     fill_warnings, fill_distance = _limit_fill_context(
         market=mkt,
         side=side,
@@ -927,6 +1031,13 @@ async def toss_preview_order(
         response["price_context_message"] = price_context_message
     if fill_distance is not None:
         response["fill_distance"] = fill_distance
+    if loss_cut_ctx is not None:
+        response["exit_intent"] = "loss_cut"
+        response["retrospective_id"] = loss_cut_ctx.retrospective_id
+        response["loss_cut_slip_band"] = float(current_price_dec) * (
+            1.0 - loss_cut_ctx.max_slip
+        )
+        response.update(loss_cut_evidence)
     return response
 
 
@@ -943,7 +1054,10 @@ async def _toss_place_order_impl(
     confirm: bool = False,
     confirm_high_value_order: bool = False,
     reason: str | None = None,
+    exit_intent: str | None = None,
     exit_reason: str | None = None,
+    retrospective_id: int | None = None,
+    approval_issue_id: str | None = None,
     thesis: str | None = None,
     strategy: str | None = None,
     target_price: str | int | None = None,
@@ -963,6 +1077,34 @@ async def _toss_place_order_impl(
 
     proposal_context = _order_proposal_context.get()
     mkt = _infer_market(symbol, market)
+    if exit_intent is not None and exit_intent != "loss_cut":
+        return {
+            "success": False,
+            "source": "toss",
+            "account_mode": ACCOUNT_MODE_TOSS_LIVE,
+            "error": f"unknown exit_intent {exit_intent!r} (only 'loss_cut')",
+        }
+    loss_cut_ctx, loss_cut_errors = await _validate_loss_cut_preconditions(
+        exit_intent=exit_intent,
+        retrospective_id=retrospective_id,
+        exit_reason=exit_reason,
+        approval_issue_id=approval_issue_id,
+        side=side,
+        order_type=order_type,
+        is_mock=False,
+        symbol=symbol,
+        proposal_flow=proposal_context is not None,
+    )
+    if loss_cut_errors:
+        return {
+            "success": False,
+            "source": "toss",
+            "account_mode": ACCOUNT_MODE_TOSS_LIVE,
+            "dry_run": dry_run,
+            "mutation_sent": False,
+            "error": "loss_cut_preconditions_failed",
+            "violations": loss_cut_errors,
+        }
     quantity_dec = (
         _decimal_string(quantity, "quantity") if quantity is not None else None
     )
@@ -1046,7 +1188,29 @@ async def _toss_place_order_impl(
     ) is not None:
         return id_guard
     mode = getattr(settings, "toss_approval_hash_mode", "optional")
-    if mode != "off":
+    if loss_cut_ctx is not None and not dry_run:
+        if approval_hash is None:
+            return {
+                "success": False,
+                **base_response,
+                "error": (
+                    "loss_cut live send requires approval_hash "
+                    "(re-run toss_preview_order and pass the returned token)"
+                ),
+                "error_code": "loss_cut_approval_hash_required",
+            }
+        result = verify_approval_token(approval_hash, canonical, now=now)
+        if not result.ok:
+            err = {
+                "success": False,
+                **base_response,
+                "error": result.message,
+                "error_code": result.error_code,
+            }
+            if result.diff is not None:
+                err["diff"] = result.diff
+            return err
+    elif mode != "off":
         if approval_hash is not None:
             result = verify_approval_token(approval_hash, canonical, now=now)
             if not result.ok:
@@ -1122,6 +1286,9 @@ async def _toss_place_order_impl(
             "payload_preview": payload,
             "sector_concentration": sector_conc,
         }
+        if loss_cut_ctx is not None:
+            dry_run_res["exit_intent"] = "loss_cut"
+            dry_run_res["retrospective_id"] = loss_cut_ctx.retrospective_id
         if order_warnings:
             dry_run_res["order_warnings"] = order_warnings
         return dry_run_res
@@ -1177,7 +1344,12 @@ async def _toss_place_order_impl(
         if side == "sell":
             if (
                 sell_guard := await _sell_loss_guard(
-                    client, symbol, order_type, price_dec, base_response
+                    client,
+                    symbol,
+                    order_type,
+                    price_dec,
+                    base_response,
+                    loss_cut_ctx=loss_cut_ctx,
                 )
             ) is not None:
                 return sell_guard
@@ -1234,7 +1406,10 @@ async def _toss_place_order_impl(
                 broker_order_id=res.order_id,
                 raw_response=raw_response,
                 reason=reason,
+                exit_intent=exit_intent,
                 exit_reason=exit_reason,
+                retrospective_id=retrospective_id,
+                approval_issue_id=approval_issue_id,
                 thesis=thesis,
                 strategy=strategy,
                 target_price=target_price_dec,
@@ -1294,7 +1469,10 @@ async def toss_place_order(
     confirm: bool = False,
     confirm_high_value_order: bool = False,
     reason: str | None = None,
+    exit_intent: str | None = None,
     exit_reason: str | None = None,
+    retrospective_id: int | None = None,
+    approval_issue_id: str | None = None,
     thesis: str | None = None,
     strategy: str | None = None,
     target_price: str | int | None = None,
@@ -1322,7 +1500,10 @@ async def toss_place_order(
         confirm=confirm,
         confirm_high_value_order=confirm_high_value_order,
         reason=reason,
+        exit_intent=exit_intent,
         exit_reason=exit_reason,
+        retrospective_id=retrospective_id,
+        approval_issue_id=approval_issue_id,
         thesis=thesis,
         strategy=strategy,
         target_price=target_price,
@@ -1797,7 +1978,11 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "tick-normalized order, 5-minute TTL), approval_expires_at, and a "
             "content-based idempotency_key. Pass the optional rung (ladder level) "
             "to keep sibling ladder orders on the same day distinct. Hand the "
-            "returned approval_hash (and matching rung) back to toss_place_order."
+            "returned approval_hash (and matching rung) back to toss_place_order. "
+            "exit_intent='loss_cut' is disabled for direct MCP calls. Use "
+            "order_proposal_create; its Telegram two-click flow revalidates the "
+            "<=72h retrospective, current-price slip band, and approval hash before "
+            "submission. approval_issue_id is only an optional audit note."
         ),
     )(toss_preview_order)
     mcp.tool(
@@ -1821,7 +2006,9 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "warn = same as optional but logs a hash-less live send; required = "
             "a valid, unexpired approval_hash is mandatory. Order-proposal "
             "preview/submit identity and correlation are bound internally and "
-            "cannot be supplied by MCP callers."
+            "cannot be supplied by MCP callers. Direct loss_cut is disabled; use "
+            "order_proposal_create for Telegram two-click confirmation and a full "
+            "second-click preview/retrospective/slip/hash revalidation."
         ),
     )(toss_place_order)
     mcp.tool(
@@ -1878,6 +2065,10 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "review.toss_live_order_ledger against single-order broker evidence "
             "from GET /orders/{orderId}. Books fill/journal/realized_pnl only "
             "from confirmed execution evidence and is delta-idempotent. "
+            "It also projects partial/fill/cancel evidence onto matching order-"
+            "proposal rungs and repairs terminal-ledger projection drift on later "
+            "non-dry runs. Toss loss-cut support requires either an enabled fill "
+            "poller cadence or a targeted non-dry reconcile after execution. "
             "ROB-568: Surfaces US FX PnL split (security_pnl_krw, fx_pnl_krw) "
             "for overseas equity fills with fx_rate_source/fx_pnl_accuracy labels. "
             "dry_run=True by default."

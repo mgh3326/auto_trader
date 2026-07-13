@@ -293,7 +293,7 @@ def _loss_cut_create_kwargs(*, now: datetime):
         "exit_intent": "loss_cut",
         "exit_reason": "stop_loss",
         "retrospective_id": 42,
-        "approval_issue_id": "ROB-800",
+        "approval_issue_id": None,
         "now": now,
     }
 
@@ -317,15 +317,8 @@ async def test_create_defaults_valid_until_to_next_kst_midnight(db_session):
 
 @pytest.mark.asyncio
 async def test_loss_cut_requires_all_group_fields_without_paperclip_lookup(
-    db_session, monkeypatch
+    db_session,
 ):
-    async def paperclip_must_not_run(*args, **kwargs):
-        raise AssertionError("Paperclip status belongs to click-time revalidation")
-
-    monkeypatch.setattr(
-        "app.mcp_server.tooling.order_validation._fetch_approval_issue_status",
-        paperclip_must_not_run,
-    )
     service = OrderProposalsService(db_session)
     with pytest.raises(OrderProposalError, match="exit_reason"):
         await service.create_proposal(
@@ -348,7 +341,6 @@ async def test_loss_cut_requires_all_group_fields_without_paperclip_lookup(
     ("overrides", "message"),
     [
         ({"retrospective_id": None}, "retrospective_id"),
-        ({"approval_issue_id": None}, "approval_issue_id"),
         ({"exit_reason": None}, "exit_reason"),
         ({"exit_intent": "emergency"}, "unknown exit_intent"),
     ],
@@ -402,7 +394,25 @@ async def test_valid_loss_cut_persists_exact_group_binding(db_session, monkeypat
         group.exit_reason,
         group.retrospective_id,
         group.approval_issue_id,
-    ) == ("loss_cut", "stop_loss", 42, "ROB-800")
+    ) == ("loss_cut", "stop_loss", 42, None)
+
+
+@pytest.mark.asyncio
+async def test_loss_cut_preserves_optional_approval_issue_as_audit_note(
+    db_session, monkeypatch
+):
+    async def fake_lookup(session, retrospective_id):
+        return _retro()
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    kwargs = _loss_cut_create_kwargs(now=datetime.now(UTC))
+    kwargs["approval_issue_id"] = "legacy Paperclip note / operator context"
+
+    group = await OrderProposalsService(db_session).create_proposal(**kwargs)
+
+    assert group.approval_issue_id == "legacy Paperclip note / operator context"
 
 
 @pytest.mark.asyncio
@@ -435,7 +445,7 @@ async def test_upbit_crypto_loss_cut_is_valid(db_session, monkeypatch):
     ("market", "symbol"),
     [("equity_kr", "005930"), ("equity_us", "AAPL")],
 )
-async def test_toss_live_loss_cut_remains_unsupported(
+async def test_toss_live_loss_cut_supports_kr_and_us(
     db_session, monkeypatch, market, symbol
 ):
     async def fake_lookup(session, retrospective_id):
@@ -444,13 +454,98 @@ async def test_toss_live_loss_cut_remains_unsupported(
     monkeypatch.setattr(
         "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
     )
-    with pytest.raises(
-        OrderProposalError,
-        match="loss_cut requires a supported live account and market",
-    ):
+    group = await OrderProposalsService(db_session).create_proposal(
+        symbol=symbol,
+        market=market,
+        account_mode="toss_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "sell", Decimal("1"), Decimal("100"), None)],
+        exit_intent="loss_cut",
+        exit_reason="stop_loss",
+        retrospective_id=42,
+        approval_issue_id="ROB-800",
+        now=datetime.now(UTC),
+    )
+
+    assert (group.account_mode, group.market, group.exit_intent) == (
+        "toss_live",
+        market,
+        "loss_cut",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("market", "side", "order_type", "message"),
+    [
+        ("crypto", "sell", "limit", "unsupported account_mode/market/action"),
+        ("equity_kr", "buy", "limit", "loss_cut requires side='sell'"),
+        ("equity_us", "sell", "market", "loss_cut requires order_type='limit'"),
+    ],
+)
+async def test_toss_live_loss_cut_rejects_invalid_contract(
+    db_session, monkeypatch, market, side, order_type, message
+):
+    symbol = "KRW-BTC" if market == "crypto" else "005930"
+
+    async def fake_lookup(session, retrospective_id):
+        return _retro(symbol=symbol)
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    with pytest.raises(OrderProposalError, match=message):
         await OrderProposalsService(db_session).create_proposal(
             symbol=symbol,
             market=market,
+            account_mode="toss_live",
+            side=side,
+            order_type=order_type,
+            proposer="p",
+            rungs=[
+                RungInput(
+                    0,
+                    side,
+                    Decimal("1"),
+                    Decimal("100") if order_type == "limit" else None,
+                    None,
+                )
+            ],
+            exit_intent="loss_cut",
+            exit_reason="stop_loss",
+            retrospective_id=42,
+            approval_issue_id="ROB-800",
+            now=datetime.now(UTC),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("retro", "message"),
+    [
+        (_retro(symbol="AAPL"), "symbol mismatch"),
+        (
+            _retro(created_at=datetime.now(UTC) - timedelta(hours=73)),
+            "stale \\(> 72h old\\)",
+        ),
+    ],
+    ids=["symbol_mismatch", "stale"],
+)
+async def test_toss_live_loss_cut_rejects_invalid_retrospective(
+    db_session, monkeypatch, retro, message
+):
+    async def fake_lookup(session, retrospective_id):
+        return retro
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    with pytest.raises(OrderProposalError, match=message):
+        await OrderProposalsService(db_session).create_proposal(
+            symbol="005930",
+            market="equity_kr",
             account_mode="toss_live",
             side="sell",
             order_type="limit",
@@ -459,7 +554,7 @@ async def test_toss_live_loss_cut_remains_unsupported(
             exit_intent="loss_cut",
             exit_reason="stop_loss",
             retrospective_id=42,
-            approval_issue_id="ROB-800",
+            approval_issue_id="ROB-858",
             now=datetime.now(UTC),
         )
 

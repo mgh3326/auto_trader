@@ -119,8 +119,7 @@ def test_scalping_and_allow_loss_sell_unchanged_bypass_all():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_loss_cut_preconditions_collects_all_violations():
-    # side=buy, order_type=market, no exit_reason, bad approval fmt, no retrospective_id,
-    # caller not allowlisted -> every violation surfaced in one list.
+    # Proposal validation still aggregates every order/retro/caller violation.
     with patch.object(ov, "get_caller_agent_id", return_value="not-allowed"):
         ctx, errors = await ov._validate_loss_cut_preconditions(
             exit_intent="loss_cut",
@@ -131,6 +130,7 @@ async def test_loss_cut_preconditions_collects_all_violations():
             order_type="market",
             is_mock=False,
             symbol="KRW-DOT",
+            proposal_flow=True,
         )
     assert ctx is None
     joined = " | ".join(errors)
@@ -138,9 +138,8 @@ async def test_loss_cut_preconditions_collects_all_violations():
     assert "order_type='limit'" in joined
     assert "exit_reason" in joined
     assert "retrospective_id" in joined
-    assert "approval_issue_id" in joined
     assert "not permitted" in joined
-    assert len(errors) >= 6
+    assert len(errors) >= 5
 
 
 @pytest.mark.unit
@@ -166,11 +165,6 @@ async def test_loss_cut_preconditions_pass_builds_context():
         ),
         patch.object(
             ov,
-            "_fetch_approval_issue_status",
-            new=AsyncMock(return_value="done"),
-        ),
-        patch.object(
-            ov,
             "_get_retrospective_by_id_for_loss_cut",
             new=AsyncMock(return_value=fake_retro),
         ),
@@ -179,14 +173,16 @@ async def test_loss_cut_preconditions_pass_builds_context():
             exit_intent="loss_cut",
             retrospective_id=42,
             exit_reason="stop_loss",
-            approval_issue_id="ROB-800",
+            approval_issue_id=None,
             side="sell",
             order_type="limit",
             is_mock=False,
             symbol="KRW-DOT",
+            proposal_flow=True,
         )
     assert errors == []
     assert ctx is not None and ctx.retrospective_id == 42 and ctx.max_slip > 0
+    assert ctx.approval_issue_id is None
 
 
 @pytest.mark.unit
@@ -213,11 +209,6 @@ async def test_loss_cut_preconditions_reject_stale_retrospective():
         ),
         patch.object(
             ov,
-            "_fetch_approval_issue_status",
-            new=AsyncMock(return_value="done"),
-        ),
-        patch.object(
-            ov,
             "_get_retrospective_by_id_for_loss_cut",
             new=AsyncMock(return_value=fake_retro),
         ),
@@ -231,6 +222,25 @@ async def test_loss_cut_preconditions_reject_stale_retrospective():
             order_type="limit",
             is_mock=False,
             symbol="KRW-DOT",
+            proposal_flow=True,
         )
     assert ctx is None
     assert any("72h" in e or "stale" in e.lower() for e in errors)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_direct_loss_cut_fails_closed_with_proposal_guidance():
+    ctx, errors = await ov._validate_loss_cut_preconditions(
+        exit_intent="loss_cut",
+        retrospective_id=42,
+        exit_reason="stop_loss",
+        approval_issue_id="legacy-note",
+        side="sell",
+        order_type="limit",
+        is_mock=False,
+        symbol="KRW-DOT",
+    )
+
+    assert ctx is None
+    assert errors == ["loss_cut_direct_path_disabled_use_order_proposal_create"]

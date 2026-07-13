@@ -121,6 +121,10 @@ async def order_proposal_create(
 ) -> dict[str, Any]:
     """Create a place, replace, or cancel proposal without broker mutation.
 
+    ``loss_cut`` keeps retrospective/price/hash guards and is approved only by
+    Telegram's two-click confirmation. ``approval_issue_id`` is an optional
+    free-text audit note; no external issue tracker is queried.
+
     Args:
         market: Canonical market in {equity_kr, equity_us, crypto}; aliases
                 kr→equity_kr and us→equity_us are accepted. Supported place
@@ -311,7 +315,9 @@ def register_order_proposal_tools(mcp: FastMCP) -> None:
             "Create a place, replace, or cancel order proposal (SOT ledger row). "
             "Replace/cancel read target-order evidence before persistence, but never "
             "mutate a broker. Approval/submission happens via Telegram (PR 2), not "
-            "through this tool."
+            "through this tool. loss_cut requires a two-click confirmation with a "
+            "single-use nonce and full second-click revalidation; approval_issue_id "
+            "is an optional audit note and is never externally queried."
         ),
     )(order_proposal_create)
     _ = mcp.tool(

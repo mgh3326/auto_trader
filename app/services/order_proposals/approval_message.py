@@ -11,9 +11,9 @@ from typing import Any
 
 from app.core.timezone import KST
 
-_ALLOWED_ACTIONS = frozenset({"op", "dn"})
+_ALLOWED_ACTIONS = frozenset({"op", "dn", "lc"})
 _CALLBACK_PATTERN = re.compile(
-    r"^(?P<action>op|dn):(?P<proposal_short>[0-9a-f]{8}):"
+    r"^(?P<action>op|dn|lc):(?P<proposal_short>[0-9a-f]{8}):"
     r"(?P<nonce>[A-Za-z0-9_-]+)$"
 )
 _MAX_CALLBACK_BYTES = 64
@@ -34,7 +34,7 @@ def build_callback_data(
 ) -> str:
     """Build compact Telegram callback data for an approval action."""
     if action not in _ALLOWED_ACTIONS:
-        raise ValueError("action must be one of: op, dn")
+        raise ValueError("action must be one of: op, dn, lc")
     if not isinstance(proposal_id, uuid.UUID):
         raise ValueError("proposal_id must be a UUID")
     if not isinstance(nonce, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", nonce):
@@ -232,6 +232,93 @@ def build_approval_message(
         ]
     }
     return text, inline_keyboard
+
+
+def build_loss_cut_confirmation_message(
+    *,
+    group: Any,
+    rungs: Sequence[Any],
+    evidence: Mapping[str, Any],
+) -> tuple[str, dict]:
+    """Render the explicit second-step loss-cut confirmation prompt."""
+    nonce = getattr(group, "approval_nonce", None)
+    if not nonce:
+        raise ValueError("group.approval_nonce is required")
+    proposal_id = getattr(group, "proposal_id", None)
+    market = str(getattr(group, "market", "") or "미기재")
+    symbol = str(getattr(group, "symbol", "") or "미기재")
+    currency = _currency_for_market(market=market, symbol=symbol)
+    quantity_unit = "주" if market in {"equity_kr", "equity_us"} else ""
+    evidence_by_rung = {
+        int(item.get("rung_index", 0)): item
+        for item in evidence.get("rungs", [])
+        if isinstance(item, Mapping)
+    }
+
+    lines = [
+        "*⚠️ 손절 확인*",
+        f"- 종목: `{_escape_inline_code(symbol)}`",
+        "",
+        "*주문 및 손실 요약*",
+    ]
+    for rung in sorted(rungs, key=lambda value: getattr(value, "rung_index", 0)):
+        index = int(getattr(rung, "rung_index", 0))
+        item = evidence_by_rung.get(index, {})
+        quantity = _format_decimal(getattr(rung, "quantity", None))
+        limit_price = _format_money(
+            getattr(rung, "limit_price", None), currency=currency, none_label="시장가"
+        )
+        current_price = _format_money(
+            item.get("current_price"), currency=currency, none_label="조회 실패"
+        )
+        slip_band = _format_money(
+            item.get("loss_cut_slip_band"), currency=currency, none_label="조회 실패"
+        )
+        loss_pct = str(item.get("loss_pct") or "조회 실패")
+        if loss_pct != "조회 실패" and not loss_pct.endswith("%"):
+            loss_pct = f"{loss_pct}%"
+        lines.extend(
+            [
+                f"- #{index + 1}: {quantity}{quantity_unit} × {limit_price}",
+                f"  현재가 {current_price} / 손실률 {loss_pct}",
+                f"  허용 slip 밴드 하단 {slip_band}",
+            ]
+        )
+
+    retrospective_id = evidence.get("retrospective_id")
+    lesson = str(evidence.get("lesson_excerpt") or "미기재")
+    lines.extend(
+        [
+            "",
+            "*회고 근거*",
+            f"- 회고: #{retrospective_id}",
+            f"- 교훈: {_escape_markdown(lesson)}",
+        ]
+    )
+    approval_note = str(getattr(group, "approval_issue_id", None) or "").strip()
+    if approval_note:
+        lines.append(f"- 승인 감사 메모: {_escape_markdown(approval_note)}")
+    lines.extend(["", "이 손절 주문을 다시 확인해 주세요."])
+    text = "\n".join(lines).replace(str(nonce), "[비공개]")
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "⚠️ 손절 확인",
+                    "callback_data": build_callback_data(
+                        action="lc", proposal_id=proposal_id, nonce=nonce
+                    ),
+                },
+                {
+                    "text": "❌ 거부",
+                    "callback_data": build_callback_data(
+                        action="dn", proposal_id=proposal_id, nonce=nonce
+                    ),
+                },
+            ]
+        ]
+    }
+    return text, keyboard
 
 
 def _build_time_lines(group: Any) -> list[str]:

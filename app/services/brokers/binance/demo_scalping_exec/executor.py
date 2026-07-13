@@ -86,6 +86,18 @@ _FILL_POLL_DELAY_SECONDS = 1.0
 _BPS = Decimal("10000")
 
 
+@dataclass(frozen=True)
+class _ExposureSlotTaken:
+    """Sentinel: the atomic root reservation lost the race (ROB-844).
+
+    Returned by ``_open_leg`` instead of ``(cid, submit)`` when another process
+    already holds the exposure slot. The caller converts it to a ``blocked``
+    result with ``EXPOSURE_SLOT_TAKEN`` and performs no broker I/O.
+    """
+
+    reason: str | None = None
+
+
 def _new_cid() -> str:
     return "rob307-" + uuid.uuid4().hex[:24]
 
@@ -659,9 +671,10 @@ class DemoScalpingExecutor:
                     status="blocked",
                     reason_codes=("futures_leverage_mismatch",),
                 )
-            open_cid, submit = await self._open_leg(
-                intent, instrument_id, qty, notional
-            )
+            opened = await self._open_leg(intent, instrument_id, qty, notional)
+            if isinstance(opened, _ExposureSlotTaken):
+                return None, self._exposure_slot_taken_result(intent, opened)
+            open_cid, submit = opened
             proven, polled_price = await self._fill_proven(
                 intent.symbol, open_cid, submit.status
             )
@@ -703,7 +716,10 @@ class DemoScalpingExecutor:
                     )
             return open_cid, None
 
-        open_cid, submit = await self._open_leg(intent, instrument_id, qty, notional)
+        opened = await self._open_leg(intent, instrument_id, qty, notional)
+        if isinstance(opened, _ExposureSlotTaken):
+            return None, self._exposure_slot_taken_result(intent, opened)
+        open_cid, submit = opened
         if submit.status != "FILLED":
             reason = f"spot_open_not_filled: {submit.status}"
             await self.ledger.record_anomaly(
@@ -806,6 +822,16 @@ class DemoScalpingExecutor:
                 return False, None
         return False, None  # fail-closed: fill not proven
 
+    def _exposure_slot_taken_result(
+        self, intent, slot_taken: _ExposureSlotTaken
+    ) -> ExecutionResult:
+        """Blocked result for a lost root reservation (ROB-844) — no broker I/O."""
+        return ExecutionResult(
+            intent=intent,
+            status="blocked",
+            reason_codes=(ReasonCode.EXPOSURE_SLOT_TAKEN,),
+        )
+
     async def _open_leg(
         self,
         intent,
@@ -817,7 +843,7 @@ class DemoScalpingExecutor:
         role="open",
         tp_price: Decimal | None = None,
         sl_price: Decimal | None = None,
-    ) -> tuple[str, Any]:
+    ) -> tuple[str, Any] | _ExposureSlotTaken:
         cid = _new_cid()
         meta = {
             "source": "rob-307-pr2-executor",
@@ -826,7 +852,13 @@ class DemoScalpingExecutor:
         }
         if intent.product == "usdm_futures":
             meta["leverage"] = 1
-        await self.ledger.record_planned(
+        # ROB-844: the open leg is the ROOT lifecycle. Atomically reserve its
+        # exposure slot (advisory-locked recount + planned-root insert in one
+        # transaction) BEFORE any broker I/O. A loser of the cross-process race
+        # returns here with ZERO broker submit — only the reservation winner
+        # proceeds. Close/reduce-only child legs keep using record_planned and
+        # never consume a slot.
+        reservation = await self.ledger.reserve_root_planned(
             instrument_id=instrument_id,
             product=intent.product,
             venue_host=_VENUE_HOST[intent.product],
@@ -839,8 +871,11 @@ class DemoScalpingExecutor:
             sl_price=sl_price if sl_price is not None else intent.sl_price,
             notional_usdt=notional,
             extra_metadata=meta,
+            global_open_root_cap=self.limits.global_open_lifecycle_cap,
             now=self.now,
         )
+        if reservation.status != "reserved":
+            return _ExposureSlotTaken(reason=reservation.reason)
         await self.ledger.record_previewed(client_order_id=cid, now=self.now)
         await self.ledger.record_validated(client_order_id=cid, now=self.now)
         submit_kwargs: dict[str, Any] = {

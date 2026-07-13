@@ -12,7 +12,7 @@ from app.core.db import AsyncSessionLocal
 from app.mcp_server.caller_identity import caller_agent_id_var, get_caller_agent_id
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.approval_message import parse_callback_data
-from app.services.order_proposals.revalidation import RungOutcome
+from app.services.order_proposals.revalidation import RungOutcome, revalidate_and_submit
 from app.services.order_proposals.service import RungInput
 from app.services.order_proposals.telegram_callback import (
     _build_result_summary,
@@ -95,6 +95,69 @@ async def _seed_proposal(db_session, *, nonce="nonce-abc123", symbol="A", rungs=
     await service.set_approval_nonce(group.proposal_id, nonce)
     await db_session.commit()
     return group
+
+
+async def _seed_loss_cut_proposal(
+    db_session, monkeypatch, *, nonce="loss-cut-first", rungs=1
+):
+    retro = type(
+        "Retro",
+        (),
+        {
+            "id": 42,
+            "symbol": "AAPL",
+            "trigger_type": "stop_loss",
+            "created_at": datetime.now(UTC),
+            "lesson": "손절 기준을 늦추지 않는다",
+        },
+    )()
+
+    async def fake_lookup(session, retrospective_id):
+        assert retrospective_id == 42
+        return retro
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="AAPL",
+        market="equity_us",
+        account_mode="toss_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        rungs=[
+            RungInput(i, "sell", Decimal("1"), Decimal("99"), None)
+            for i in range(rungs)
+        ],
+        exit_intent="loss_cut",
+        exit_reason="stop_loss",
+        retrospective_id=42,
+    )
+    await service.set_approval_nonce(group.proposal_id, nonce)
+    await db_session.commit()
+    return group
+
+
+async def _fake_loss_cut_preview(**kwargs):
+    return {
+        "rungs": [
+            {
+                "rung_index": 0,
+                "current_price": "100",
+                "avg_buy_price": "200",
+                "loss_pct": "-50.00",
+                "loss_cut_slip_band": "98",
+            }
+        ],
+        "retrospective_id": 42,
+        "lesson_excerpt": "손절 기준을 늦추지 않는다",
+    }
+
+
+async def _fake_noop_revalidate(**kwargs):
+    return []
 
 
 def _allow_chat(monkeypatch, chat_id=CHAT_ID):
@@ -228,6 +291,225 @@ async def test_approve_happy_path_submits_and_edits(monkeypatch, db_session):
     assert refreshed.approval_nonce_used_at is not None
     assert refreshed.approved_by_telegram_user_id == str(USER_ID)
     assert refreshed.approved_at is not None
+
+
+@pytest.mark.asyncio
+async def test_loss_cut_requires_second_click_before_submit(monkeypatch, db_session):
+    _allow_chat(monkeypatch)
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_SUBMIT_AGENT_ID", "proposal-agent")
+    group = await _seed_loss_cut_proposal(db_session, monkeypatch)
+    notifier = _FakeNotifier()
+    submit_calls = []
+
+    async def fake_revalidate(**kwargs):
+        submit_calls.append(kwargs)
+        return [RungOutcome(0, "submitted_resting", {})]
+
+    async def identity_checked_preview(**kwargs):
+        assert get_caller_agent_id() == "proposal-agent"
+        return await _fake_loss_cut_preview(**kwargs)
+
+    issued = datetime(2026, 7, 13, 10, 0, tzinfo=UTC)
+    first = await handle_callback_update(
+        _make_update(data=f"op:{str(group.proposal_id)[:8]}:loss-cut-first"),
+        now=issued,
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+        loss_cut_preview_fn=identity_checked_preview,
+    )
+
+    assert first["reason"] == "loss_cut_confirmation_required"
+    assert submit_calls == []
+    text, keyboard = notifier.edited[-1][2], notifier.edited[-1][3]
+    assert "손절 확인" in text
+    callback_data = keyboard["inline_keyboard"][0][0]["callback_data"]
+    action, _short, second_nonce = parse_callback_data(callback_data)
+    assert action == "lc"
+    service = OrderProposalsService(db_session)
+    refreshed, _ = await service.get_proposal(group.proposal_id)
+    audit = refreshed.source_asof["loss_cut_confirmation"]
+    assert audit["first_click"]["telegram_user_id"] == str(USER_ID)
+    assert audit["first_click"]["nonce"] == "loss-cut-first"
+    assert audit["rungs"] == [{"rung_index": 0, "approval_revision": 0}]
+
+    second = await handle_callback_update(
+        _make_update(data=callback_data, callback_id="cbq-2"),
+        now=issued + timedelta(seconds=30),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+
+    assert second["reason"] == "approved"
+    assert len(submit_calls) == 1
+    refreshed, _ = await service.get_proposal(group.proposal_id)
+    audit = refreshed.source_asof["loss_cut_confirmation"]
+    assert audit["second_click"]["telegram_user_id"] == str(USER_ID)
+    assert audit["second_click"]["nonce"] == second_nonce
+
+
+@pytest.mark.asyncio
+async def test_loss_cut_second_nonce_replay_is_rejected(monkeypatch, db_session):
+    _allow_chat(monkeypatch)
+    group = await _seed_loss_cut_proposal(db_session, monkeypatch)
+    notifier = _FakeNotifier()
+
+    first = await handle_callback_update(
+        _make_update(data=f"op:{str(group.proposal_id)[:8]}:loss-cut-first"),
+        now=datetime(2026, 7, 13, 10, 0, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=_fake_noop_revalidate,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+    callback_data = notifier.edited[-1][3]["inline_keyboard"][0][0]["callback_data"]
+    second_now = datetime(2026, 7, 13, 10, 0, 30, tzinfo=UTC)
+    await handle_callback_update(
+        _make_update(data=callback_data, callback_id="cbq-2"),
+        now=second_now,
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=_fake_noop_revalidate,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+    replay = await handle_callback_update(
+        _make_update(data=callback_data, callback_id="cbq-3"),
+        now=second_now + timedelta(seconds=1),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=_fake_noop_revalidate,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+
+    assert first["reason"] == "loss_cut_confirmation_required"
+    assert replay["reason"] == "nonce_replay"
+
+
+@pytest.mark.asyncio
+async def test_loss_cut_second_nonce_expires_after_90_seconds(monkeypatch, db_session):
+    _allow_chat(monkeypatch)
+    group = await _seed_loss_cut_proposal(db_session, monkeypatch)
+    notifier = _FakeNotifier()
+    issued = datetime(2026, 7, 13, 10, 0, tzinfo=UTC)
+    await handle_callback_update(
+        _make_update(data=f"op:{str(group.proposal_id)[:8]}:loss-cut-first"),
+        now=issued,
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=_fake_noop_revalidate,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+    callback_data = notifier.edited[-1][3]["inline_keyboard"][0][0]["callback_data"]
+
+    expired = await handle_callback_update(
+        _make_update(data=callback_data, callback_id="cbq-expired"),
+        now=issued + timedelta(seconds=91),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=_fake_noop_revalidate,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+
+    assert expired["reason"] == "loss_cut_confirmation_expired"
+
+
+@pytest.mark.asyncio
+async def test_loss_cut_second_nonce_rejects_changed_rung_revision(
+    monkeypatch, db_session
+):
+    _allow_chat(monkeypatch)
+    group = await _seed_loss_cut_proposal(db_session, monkeypatch)
+    notifier = _FakeNotifier()
+    issued = datetime(2026, 7, 13, 10, 0, tzinfo=UTC)
+    await handle_callback_update(
+        _make_update(data=f"op:{str(group.proposal_id)[:8]}:loss-cut-first"),
+        now=issued,
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=_fake_noop_revalidate,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+    callback_data = notifier.edited[-1][3]["inline_keyboard"][0][0]["callback_data"]
+    service = OrderProposalsService(db_session)
+    await service.transition_rung(group.proposal_id, 0, new_state="revalidating")
+    await service.mark_needs_reconfirm(group.proposal_id, 0, now=issued)
+    await db_session.commit()
+
+    mismatch = await handle_callback_update(
+        _make_update(data=callback_data, callback_id="cbq-mismatch"),
+        now=issued + timedelta(seconds=30),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=_fake_noop_revalidate,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+
+    assert mismatch["reason"] == "loss_cut_confirmation_binding_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("guard_error", "violations"),
+    [
+        ("loss_cut retrospective is stale (>72h)", ["retrospective_stale_72h"]),
+        ("loss_cut price below current slip band", ["loss_cut_slip_band"]),
+    ],
+)
+@pytest.mark.asyncio
+async def test_loss_cut_second_click_revalidation_blocks_stale_retro_or_slip(
+    monkeypatch,
+    db_session,
+    guard_error,
+    violations,
+):
+    _allow_chat(monkeypatch)
+    group = await _seed_loss_cut_proposal(db_session, monkeypatch)
+    notifier = _FakeNotifier()
+    issued = datetime(2026, 7, 13, 10, 0, tzinfo=UTC)
+    await handle_callback_update(
+        _make_update(data=f"op:{str(group.proposal_id)[:8]}:loss-cut-first"),
+        now=issued,
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+    callback_data = notifier.edited[-1][3]["inline_keyboard"][0][0]["callback_data"]
+    submit_attempts = 0
+
+    async def guarded_place_order(**kwargs):
+        nonlocal submit_attempts
+        if kwargs["dry_run"] is False:
+            submit_attempts += 1
+            raise AssertionError("a second-click guard failure must not submit")
+        return {
+            "success": False,
+            "error": guard_error,
+            "violations": violations,
+        }
+
+    async def real_revalidate(**kwargs):
+        return await revalidate_and_submit(
+            **kwargs,
+            place_order_fn=guarded_place_order,
+        )
+
+    blocked = await handle_callback_update(
+        _make_update(data=callback_data, callback_id="cbq-guard-blocked"),
+        now=issued + timedelta(seconds=30),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=real_revalidate,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+
+    assert blocked["reason"] == "approved"
+    assert blocked["results"] == ["guard_blocked"]
+    assert submit_attempts == 0
+    _group, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert rungs[0].state == "pending_approval"
 
 
 @pytest.mark.asyncio

@@ -146,6 +146,7 @@ async def forecast_resolve(
                         "symbol": row.symbol,
                         "status": r["status"],
                         "changed": bool(r.get("changed")),
+                        "auto_close": bool(r.get("auto_close")),
                         "computed": r.get("computed"),
                         "reason": r.get("reason"),
                     }

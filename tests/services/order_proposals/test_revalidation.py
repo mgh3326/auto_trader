@@ -11,6 +11,7 @@ from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.broker_gateway import SubmitEvidence
 from app.services.order_proposals.revalidation import (
     _adapt_live_submit_response,
+    preview_loss_cut_confirmation,
     revalidate_and_submit,
 )
 from app.services.order_proposals.service import RungInput
@@ -342,6 +343,80 @@ async def test_loss_cut_bindings_forwarded_to_preview_and_submit(
         expected,
         expected,
     ]
+
+
+@pytest.mark.asyncio
+async def test_loss_cut_confirmation_preview_is_read_only_and_builds_evidence(
+    db_session, monkeypatch
+):
+    retro = SimpleNamespace(
+        id=42,
+        symbol="005930",
+        trigger_type="stop_loss",
+        created_at=datetime.now(UTC),
+        lesson="손절 기준을 늦추지 않는다",
+    )
+
+    async def fake_lookup(session, retrospective_id):
+        return retro
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "sell", Decimal("2"), Decimal("99"), None)],
+        exit_intent="loss_cut",
+        exit_reason="stop_loss",
+        retrospective_id=42,
+    )
+    calls = []
+
+    async def fake_preview(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "price": "99",
+            "quantity": "2",
+            "current_price": "100",
+            "avg_buy_price": "200",
+            "loss_cut_slip_band": "98",
+        }
+
+    async def fake_retro_lookup(retrospective_id):
+        assert retrospective_id == 42
+        return retro
+
+    evidence = await preview_loss_cut_confirmation(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=fake_preview,
+        retrospective_lookup_fn=fake_retro_lookup,
+    )
+
+    assert [call["dry_run"] for call in calls] == [True]
+    assert evidence == {
+        "rungs": [
+            {
+                "rung_index": 0,
+                "current_price": "100",
+                "avg_buy_price": "200",
+                "loss_pct": "-50.00",
+                "loss_cut_slip_band": "98",
+            }
+        ],
+        "retrospective_id": 42,
+        "lesson_excerpt": "손절 기준을 늦추지 않는다",
+    }
+    _group, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "pending_approval"
 
 
 @pytest.mark.asyncio
@@ -977,6 +1052,61 @@ def test_toss_proposal_client_ids_are_stable_and_rung_scoped():
     assert same.startswith("tosprop-")
     assert len(same) <= toss_client_order_id_max_length
     assert re.fullmatch(r"[a-zA-Z0-9\-_]+", same)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dry_run", [True, False], ids=["preview", "submit"])
+async def test_toss_adapter_forwards_loss_cut_binding(monkeypatch, dry_run):
+    import app.mcp_server.tooling.orders_toss_variants as toss
+    from app.services.order_proposals import revalidation as mod
+
+    calls: list[dict] = []
+
+    async def fake_preview(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "approval_hash": "preview-token",
+            "payload_preview": {
+                "clientOrderId": "tosprop-loss-cut",
+                "price": "50000",
+                "quantity": "1",
+            },
+        }
+
+    async def fake_submit(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "order_id": "toss-loss-cut-1",
+            "client_order_id": "tosprop-loss-cut",
+            "approval_hash_digest": "loss-cut-digest",
+        }
+
+    monkeypatch.setattr(toss, "toss_preview_order", fake_preview)
+    monkeypatch.setattr(toss, "toss_place_order", fake_submit)
+
+    await mod._default_place_order_fn(
+        dry_run=dry_run,
+        account_mode="toss_live",
+        symbol="005930",
+        side="sell",
+        market="equity_kr",
+        order_type="limit",
+        quantity=Decimal("1"),
+        price=Decimal("50000"),
+        proposal_client_order_id="tosprop-loss-cut",
+        approval_hash="preview-token",
+        exit_intent="loss_cut",
+        exit_reason="stop_loss",
+        retrospective_id=42,
+        approval_issue_id="ROB-858",
+    )
+
+    assert calls[0]["exit_intent"] == "loss_cut"
+    assert calls[0]["exit_reason"] == "stop_loss"
+    assert calls[0]["retrospective_id"] == 42
+    assert calls[0]["approval_issue_id"] == "ROB-858"
 
 
 @pytest.mark.asyncio
