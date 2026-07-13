@@ -282,10 +282,12 @@ The default-off `paper_execution` profile is one exact union under
 `PAPER_VALIDATION_TOOL_NAMES`. The broker registrar does not import validation;
 the two surfaces meet only in the profile registry composition branch.
 
-Validation caller identity is taken from the authenticated MCP request context.
-`PAPER_VALIDATION_ACTOR_ROLES` maps that server-derived ID to `researcher`,
-`reviewer`, `operator`, or `system`; the default empty map and every unmapped or
-invalid role fail closed. Actor ID and role are absent from all tool payloads.
+Validation caller identity is bound server-side to the authenticated profile
+token through `PAPER_VALIDATION_AUTHENTICATED_ACTOR_ID`; caller headers are not
+trusted for validation authorization. `PAPER_VALIDATION_ACTOR_ROLES` maps that
+server-derived ID to `researcher`, `reviewer`, `operator`, or `system`; both
+settings default empty and every absent, unmapped, or invalid role fails closed.
+Actor ID and role are absent from all tool payloads.
 Frozen-input and policy providers are injected contracts. Until their production
 composition is supplied by their owning follow-ups, evidence-requiring mutations
 return `evidence_stamp_unavailable` and never reach a broker, adapter, or ledger.

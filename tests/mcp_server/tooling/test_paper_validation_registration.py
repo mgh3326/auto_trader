@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.core.config import settings
 from app.mcp_server.caller_identity import caller_agent_id_var
 from app.mcp_server.tooling.paper_validation_registration import (
     PAPER_VALIDATION_MUTATION_TOOL_NAMES,
@@ -55,7 +56,9 @@ def test_validation_payloads_never_accept_actor_identity_or_role() -> None:
 
 
 @pytest.mark.asyncio
-async def test_handler_uses_request_context_caller_and_json_safe_result() -> None:
+async def test_handler_uses_server_bound_actor_and_json_safe_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     application = type(
         "FakeApplication",
         (),
@@ -70,13 +73,12 @@ async def test_handler_uses_request_context_caller_and_json_safe_result() -> Non
         mcp,
         application_provider=lambda: application,  # type: ignore[arg-type]
     )
-    token = caller_agent_id_var.set("authenticated-operator")
-    try:
-        result = await mcp.tools["paper_validation_get_audit"](
-            validation_id="validation-1"
-        )
-    finally:
-        caller_agent_id_var.reset(token)
+    monkeypatch.setattr(
+        settings,
+        "PAPER_VALIDATION_AUTHENTICATED_ACTOR_ID",
+        "authenticated-operator",
+    )
+    result = await mcp.tools["paper_validation_get_audit"](validation_id="validation-1")
 
     application.get_audit.assert_awaited_once_with(
         "authenticated-operator", "validation-1"
@@ -102,4 +104,34 @@ async def test_missing_request_context_identity_fails_closed_before_application(
     result = await mcp.tools["paper_validation_get_audit"](validation_id="validation-1")
 
     assert result == {"status": "blocked", "reason_code": "actor_identity_unavailable"}
+    application.get_audit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_caller_header_cannot_spoof_configured_operator_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = type(
+        "FakeApplication",
+        (),
+        {"get_audit": AsyncMock()},
+    )()
+    mcp = DummyMCP()
+    register_paper_validation_tools(
+        mcp,
+        application_provider=lambda: application,  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(settings, "PAPER_VALIDATION_AUTHENTICATED_ACTOR_ID", "")
+    token = caller_agent_id_var.set("configured-operator")
+    try:
+        result = await mcp.tools["paper_validation_get_audit"](
+            validation_id="validation-1"
+        )
+    finally:
+        caller_agent_id_var.reset(token)
+
+    assert result == {
+        "status": "blocked",
+        "reason_code": "actor_identity_unavailable",
+    }
     application.get_audit.assert_not_awaited()

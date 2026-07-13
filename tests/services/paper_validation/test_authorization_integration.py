@@ -1,16 +1,25 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import inspect
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import AsyncSessionLocal
 from app.models.paper_validation import (
     PaperValidationPostmortemReview,
     StrategyHypothesisDraft,
+)
+from app.services.brokers.capabilities import Broker
+from app.services.brokers.paper.application import PaperExecutionApplication
+from app.services.brokers.paper.contracts import (
+    PaperOrderRequest,
+    VerifiedExperimentProvenance,
+    VerifiedPaperOrderIntent,
 )
 from app.services.paper_validation.contracts import (
     ActorRole,
@@ -33,24 +42,88 @@ from tests.services.paper_validation.conftest import (
 )
 
 
-@dataclass
-class ForbiddenSideEffects:
-    adapter_calls: list[str] = field(default_factory=list)
-    broker_calls: list[str] = field(default_factory=list)
-    ledger_calls: list[str] = field(default_factory=list)
-    verifier_calls: list[str] = field(default_factory=list)
+class _ForbiddenVerifier:
+    def __init__(self) -> None:
+        self.calls = 0
 
-    @property
-    def total(self) -> int:
-        return sum(
-            len(calls)
-            for calls in (
-                self.adapter_calls,
-                self.broker_calls,
-                self.ledger_calls,
-                self.verifier_calls,
+    async def verify(self, request: PaperOrderRequest) -> VerifiedExperimentProvenance:
+        self.calls += 1
+        raise AssertionError("forbidden validation must not reach provenance")
+
+
+class _ForbiddenAdapter:
+    broker = Broker.BINANCE
+
+    def __init__(self) -> None:
+        self.adapter_calls = 0
+        self.client_calls = 0
+        self.ledger_calls = 0
+
+    async def submit(self, intent: VerifiedPaperOrderIntent):  # noqa: ANN201
+        self.adapter_calls += 1
+        self.client_calls += 1
+        self.ledger_calls += 1
+        raise AssertionError("forbidden validation must not reach an adapter")
+
+
+class _ForbiddenRegistry:
+    def __init__(self, adapter: _ForbiddenAdapter) -> None:
+        self.adapter = adapter
+        self.broker_calls = 0
+
+    def resolve(self, broker: Broker) -> _ForbiddenAdapter:
+        self.broker_calls += 1
+        return self.adapter
+
+
+def _paper_order_request(identity: ValidationIdentity) -> PaperOrderRequest:
+    return PaperOrderRequest(
+        intent_id="intent-forbidden",
+        experiment_id=identity.experiment_id,
+        run_id="run-forbidden",
+        cohort_id=identity.cohort_id,
+        strategy_version_id=identity.strategy_version_id,
+        strategy_hash=identity.strategy_hash,
+        config_hash=identity.config_hash,
+        policy_hash=identity.policy_hash,
+        venue=Broker.BINANCE,
+        account_mode="demo",
+        product="spot",
+        symbol="BTCUSDT",
+        side="buy",
+        order_type="market",
+        notional=Decimal("10"),
+        market_snapshot_id="snapshot-forbidden",
+        market_snapshot_hash="sha256:snapshot-forbidden",
+        market_snapshot_as_of=datetime(2026, 7, 13, tzinfo=UTC),
+        market_snapshot_source="binance_public_spot",
+    )
+
+
+async def _rob849_contract_harness(
+    validation: PaperValidationService,
+    execution: PaperExecutionApplication,
+    caller_id: str,
+    identity: ValidationIdentity,
+) -> None:
+    """Exercise the future ROB-849 ordering without implementing its verifier."""
+    await validation.authorize_order_submission(caller_id, identity)
+    await execution.submit(_paper_order_request(identity))
+
+
+class _LockProbeFrozenProvider(FakeFrozenInputHashProvider):
+    async def get_stamp(self, identity: ValidationIdentity):  # noqa: ANN201
+        async with AsyncSessionLocal() as probe, probe.begin():
+            acquired = await probe.scalar(
+                text(
+                    "SELECT pg_try_advisory_xact_lock("
+                    "hashtextextended(:validation_id, 0))"
+                ),
+                {"validation_id": identity.validation_id},
             )
-        )
+        if not acquired:
+            raise RuntimeError("provider invoked while validation lock was held")
+        return await super().get_stamp(identity)
 
 
 def _service(
@@ -164,8 +237,10 @@ async def test_role_separated_hypothesis_review_and_complete_audit(
     [
         ("reviewer-1", "hypothesis"),
         ("operator-1", "hypothesis"),
+        ("system-1", "hypothesis"),
         ("researcher-1", "review"),
         ("operator-1", "review"),
+        ("system-1", "review"),
     ],
 )
 @pytest.mark.asyncio
@@ -179,6 +254,7 @@ async def test_narrative_append_role_matrix_fails_closed(
         "researcher-1": ActorRole.RESEARCHER,
         "reviewer-1": ActorRole.REVIEWER,
         "operator-1": ActorRole.OPERATOR,
+        "system-1": ActorRole.SYSTEM,
     }
     app = _service(db_session, validation_identity, roles)
     await _advance_to(app, validation_identity, ValidationState.DRAFT)
@@ -198,6 +274,22 @@ async def test_narrative_append_role_matrix_fails_closed(
                     cited_evidence=("evidence",),
                 ),
             )
+
+
+@pytest.mark.asyncio
+async def test_system_role_can_register_and_transition(
+    db_session: AsyncSession,
+    validation_identity: ValidationIdentity,
+) -> None:
+    app = _service(db_session, validation_identity, {"system-1": ActorRole.SYSTEM})
+
+    event = await app.transition(
+        "system-1",
+        _transition(validation_identity, ValidationState.DRAFT, None),
+    )
+
+    assert event.actor_id == "system-1"
+    assert event.actor_role == "system"
 
 
 @pytest.mark.asyncio
@@ -243,13 +335,20 @@ async def test_forbidden_order_authorization_has_zero_external_side_effects(
     validation_identity: ValidationIdentity,
     role: ActorRole,
 ) -> None:
-    effects = ForbiddenSideEffects()
     app = _service(db_session, validation_identity, {"caller-1": role})
+    verifier = _ForbiddenVerifier()
+    adapter = _ForbiddenAdapter()
+    registry = _ForbiddenRegistry(adapter)
+    execution = PaperExecutionApplication(registry=registry, verifier=verifier)
 
     with pytest.raises(PaperValidationError, match="forbidden"):
-        await app.authorize_order_submission("caller-1", validation_identity)
+        await _rob849_contract_harness(app, execution, "caller-1", validation_identity)
 
-    assert effects.total == 0
+    assert verifier.calls == 0
+    assert registry.broker_calls == 0
+    assert adapter.adapter_calls == 0
+    assert adapter.client_calls == 0
+    assert adapter.ledger_calls == 0
 
 
 @pytest.mark.asyncio
@@ -301,12 +400,54 @@ async def test_order_authorization_requires_allowed_state_and_exact_identity(
 
 
 @pytest.mark.asyncio
+async def test_external_evidence_providers_run_before_validation_lock(
+    db_session: AsyncSession,
+    validation_identity: ValidationIdentity,
+) -> None:
+    seed = _service(
+        db_session,
+        validation_identity,
+        {
+            "researcher-1": ActorRole.RESEARCHER,
+            "operator-1": ActorRole.OPERATOR,
+        },
+    )
+    await _advance_to(seed, validation_identity, ValidationState.PAPER_ACTIVE)
+    await db_session.commit()
+
+    app = PaperValidationService(
+        db_session,
+        actor_role_provider=FakeActorRoleProvider(
+            {
+                "researcher-1": ActorRole.RESEARCHER,
+                "operator-1": ActorRole.OPERATOR,
+            }
+        ),
+        frozen_input_provider=_LockProbeFrozenProvider(validation_identity.input_hash),
+        policy_provider=FakePolicyHashProvider(validation_identity.policy_hash),
+    )
+
+    hypothesis = await app.append_hypothesis(
+        "researcher-1", _hypothesis(validation_identity.validation_id)
+    )
+    await db_session.commit()
+    authorization = await app.authorize_order_submission(
+        "operator-1", validation_identity
+    )
+
+    assert hypothesis.validation_id == validation_identity.validation_id
+    assert authorization.state is ValidationState.PAPER_ACTIVE
+
+
+@pytest.mark.asyncio
 async def test_promotion_requires_explicit_exact_confirmation(
     db_session: AsyncSession,
     validation_identity: ValidationIdentity,
 ) -> None:
     app = _service(db_session, validation_identity, {"operator-1": ActorRole.OPERATOR})
     await _advance_to(app, validation_identity, ValidationState.PROMOTION_ELIGIBLE)
+
+    assert "_promotion_confirmed" not in inspect.signature(app.transition).parameters
 
     with pytest.raises(PaperValidationError, match="promotion_confirmation_required"):
         await app.transition(

@@ -11,6 +11,8 @@ from app.models.paper_validation import PaperValidationStateTransition
 from app.models.research_backtest import ResearchStrategyExperiment
 from app.services.paper_validation.contracts import (
     ActorRole,
+    FrozenInputStamp,
+    PromotionEligibilityEvidence,
     TransitionRequest,
     ValidationIdentity,
     ValidationState,
@@ -72,11 +74,17 @@ def _request(
     )
 
 
-def _service(session, identity: ValidationIdentity) -> PaperValidationService:
+def _service(
+    session,
+    identity: ValidationIdentity,
+    frozen_provider=None,
+) -> PaperValidationService:
     return PaperValidationService(
         session,
         actor_role_provider=FakeActorRoleProvider({"operator-1": ActorRole.OPERATOR}),
-        frozen_input_provider=FakeFrozenInputHashProvider(identity.input_hash),
+        frozen_input_provider=(
+            frozen_provider or FakeFrozenInputHashProvider(identity.input_hash)
+        ),
         policy_provider=FakePolicyHashProvider(identity.policy_hash),
     )
 
@@ -85,9 +93,10 @@ async def _run_at_barrier(
     barrier: asyncio.Barrier,
     identity: ValidationIdentity,
     transition: TransitionRequest,
+    frozen_provider=None,
 ) -> tuple[str, int | str]:
     async with AsyncSessionLocal() as session, session.begin():
-        app = _service(session, identity)
+        app = _service(session, identity, frozen_provider)
         await barrier.wait()
         try:
             event = await app.transition("operator-1", transition)
@@ -145,6 +154,69 @@ async def test_concurrent_identical_retry_appends_once_and_returns_same_event() 
     assert count == 1
 
 
+class _ChangingPromotionEvidenceProvider:
+    def __init__(self, content_hash: str) -> None:
+        self.content_hash = content_hash
+        self.calls = 0
+
+    async def get_stamp(self, identity: ValidationIdentity) -> FrozenInputStamp:
+        count = 30 + self.calls
+        self.calls += 1
+        return FrozenInputStamp(
+            bundle_id="changing-bundle",
+            content_hash=self.content_hash,
+            verified=True,
+            promotion_eligibility=PromotionEligibilityEvidence(
+                deterministic_gate_passed=True,
+                resolved_negative_class_count=count,
+                evidence_ids=(f"calibration-{count}",),
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_identical_retry_ignores_mutable_provider_metadata() -> None:
+    identity = await _persisted_identity()
+    transition = _request(
+        identity, ValidationState.DRAFT, None, "provider-change-duplicate-key"
+    )
+    frozen = _ChangingPromotionEvidenceProvider(identity.input_hash)
+    barrier = asyncio.Barrier(2)
+
+    results = await asyncio.gather(
+        _run_at_barrier(barrier, identity, transition, frozen),
+        _run_at_barrier(barrier, identity, transition, frozen),
+    )
+
+    assert results[0][0] == results[1][0] == "event"
+    assert results[0][1] == results[1][1]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_same_key_different_payload_has_one_conflict() -> None:
+    identity = await _persisted_identity()
+    first = _request(identity, ValidationState.DRAFT, None, "concurrent-conflict-key")
+    changed = first.model_copy(update={"reason_code": "changed_registration_reason"})
+    barrier = asyncio.Barrier(2)
+
+    results = await asyncio.gather(
+        _run_at_barrier(barrier, identity, first),
+        _run_at_barrier(barrier, identity, changed),
+    )
+
+    assert sorted(kind for kind, _ in results) == ["error", "event"]
+    assert ("error", "idempotency_conflict") in results
+    async with AsyncSessionLocal() as session:
+        count = await session.scalar(
+            select(func.count())
+            .select_from(PaperValidationStateTransition)
+            .where(
+                PaperValidationStateTransition.validation_id == identity.validation_id
+            )
+        )
+    assert count == 1
+
+
 @pytest.mark.asyncio
 async def test_concurrent_distinct_terminal_transitions_have_one_winner() -> None:
     identity = await _persisted_identity()
@@ -190,3 +262,30 @@ async def test_concurrent_distinct_terminal_transitions_have_one_winner() -> Non
         events = list(history)
     assert [event.sequence for event in events] == [1, 2, 3, 4, 5, 6]
     assert events[-1].new_state in {"aborted", "rejected"}
+
+
+@pytest.mark.asyncio
+async def test_audit_read_holds_validation_lock_until_transaction_ends() -> None:
+    identity = await _persisted_identity()
+    await _seed_to(identity, ValidationState.DRAFT)
+    transition = _request(
+        identity,
+        ValidationState.OFFLINE_ELIGIBLE,
+        ValidationState.DRAFT,
+        "writer-after-audit",
+    )
+    writer: asyncio.Task[tuple[str, int | str]]
+
+    async with AsyncSessionLocal() as reader, reader.begin():
+        audit = await _service(reader, identity).get_audit(
+            "operator-1", identity.validation_id
+        )
+        writer = asyncio.create_task(
+            _run_at_barrier(asyncio.Barrier(1), identity, transition)
+        )
+        await asyncio.sleep(0.1)
+
+        assert len(audit["transitions"]) == 1
+        assert not writer.done()
+
+    assert (await writer)[0] == "event"

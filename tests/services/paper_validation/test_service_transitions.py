@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -257,6 +259,46 @@ async def test_provider_exception_fails_closed_with_stable_reason(
 
 @pytest.mark.parametrize("provider", ["frozen", "policy"])
 @pytest.mark.asyncio
+async def test_malformed_or_unverified_provider_stamp_fails_closed(
+    db_session: AsyncSession,
+    validation_identity: ValidationIdentity,
+    provider: str,
+) -> None:
+    frozen = FakeFrozenInputHashProvider(validation_identity.input_hash)
+    policy = FakePolicyHashProvider(validation_identity.policy_hash)
+    invalid = SimpleNamespace(
+        bundle_id="bundle-untrusted",
+        version="policy-untrusted",
+        content_hash=(
+            validation_identity.input_hash
+            if provider == "frozen"
+            else validation_identity.policy_hash
+        ),
+        verified=False,
+    )
+    if provider == "frozen":
+        frozen.get_stamp = AsyncMock(return_value=invalid)  # type: ignore[method-assign]
+    else:
+        policy.get_stamp = AsyncMock(return_value=invalid)  # type: ignore[method-assign]
+    app, _, _, _ = service(
+        db_session,
+        validation_identity,
+        frozen=frozen,
+        policy=policy,
+    )
+
+    with pytest.raises(PaperValidationError) as exc_info:
+        await app.transition(
+            "caller-1",
+            request(validation_identity, target=ValidationState.DRAFT, prior=None),
+        )
+
+    assert exc_info.value.reason_code == "evidence_stamp_unavailable"
+    assert await count_transitions(db_session, validation_identity.validation_id) == 0
+
+
+@pytest.mark.parametrize("provider", ["frozen", "policy"])
+@pytest.mark.asyncio
 async def test_verified_hash_mismatch_fails_closed(
     db_session: AsyncSession,
     validation_identity: ValidationIdentity,
@@ -289,12 +331,94 @@ async def test_verified_hash_mismatch_fails_closed(
     assert await count_transitions(db_session, validation_identity.validation_id) == 0
 
 
+@pytest.mark.parametrize(
+    ("gate_passed", "negative_count", "reason_code"),
+    [
+        (False, 30, "promotion_gate_blocked"),
+        (True, 29, "calibration_gate_blocked"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_promotion_eligibility_uses_trusted_stamp_not_narrative(
+    db_session: AsyncSession,
+    validation_identity: ValidationIdentity,
+    gate_passed: bool,
+    negative_count: int,
+    reason_code: str,
+) -> None:
+    frozen = FakeFrozenInputHashProvider(
+        validation_identity.input_hash,
+        promotion_gate_passed=gate_passed,
+        resolved_negative_class_count=negative_count,
+    )
+    app, _, _, _ = service(db_session, validation_identity, frozen=frozen)
+    prior: ValidationState | None = None
+    for target in (
+        ValidationState.DRAFT,
+        ValidationState.OFFLINE_ELIGIBLE,
+        ValidationState.SHADOW_SOAK,
+        ValidationState.PAPER_ACTIVE,
+    ):
+        await app.transition(
+            "caller-1", request(validation_identity, target=target, prior=prior)
+        )
+        prior = target
+
+    with pytest.raises(PaperValidationError) as exc_info:
+        await app.transition(
+            "caller-1",
+            TransitionRequest(
+                identity=validation_identity,
+                expected_prior_state=ValidationState.PAPER_ACTIVE,
+                target_state=ValidationState.PROMOTION_ELIGIBLE,
+                idempotency_key=f"untrusted-narrative-{uuid4().hex}",
+                reason_code="all_gates_passed",
+                reason_text="LLM claims every metric and gate passed",
+                evidence_ids=("caller-claimed-evidence",),
+            ),
+        )
+
+    assert exc_info.value.reason_code == reason_code
+    assert await count_transitions(db_session, validation_identity.validation_id) == 4
+
+
+@pytest.mark.asyncio
+async def test_trusted_gate_evidence_is_stamped_only_on_eligibility_event(
+    db_session: AsyncSession,
+    validation_identity: ValidationIdentity,
+) -> None:
+    app, _, _, _ = service(db_session, validation_identity)
+    prior: ValidationState | None = None
+    events = []
+    for target in (
+        ValidationState.DRAFT,
+        ValidationState.OFFLINE_ELIGIBLE,
+        ValidationState.SHADOW_SOAK,
+        ValidationState.PAPER_ACTIVE,
+        ValidationState.PROMOTION_ELIGIBLE,
+    ):
+        events.append(
+            await app.transition(
+                "caller-1", request(validation_identity, target=target, prior=prior)
+            )
+        )
+        prior = target
+
+    assert all(
+        "trusted-promotion-gate" not in event.evidence_ids for event in events[:-1]
+    )
+    assert events[-1].evidence_ids == [
+        "evidence-promotion_eligible",
+        "trusted-promotion-gate",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_sequential_duplicate_returns_original_event(
     db_session: AsyncSession,
     validation_identity: ValidationIdentity,
 ) -> None:
-    app, _, _, _ = service(db_session, validation_identity)
+    app, _, frozen, policy = service(db_session, validation_identity)
     transition = request(
         validation_identity,
         target=ValidationState.DRAFT,
@@ -303,6 +427,8 @@ async def test_sequential_duplicate_returns_original_event(
     )
 
     first = await app.transition("caller-1", transition)
+    frozen.error = RuntimeError("provider unavailable after committed event")
+    policy.error = RuntimeError("provider unavailable after committed event")
     second = await app.transition("caller-1", transition)
 
     assert second.id == first.id
@@ -374,19 +500,48 @@ async def test_skip_reversal_and_terminal_transition_append_nothing(
     assert reversal.value.reason_code == "invalid_transition"
 
 
+@pytest.mark.parametrize(
+    ("updates", "reason_code"),
+    [
+        ({"validation_version": 2}, "experiment_identity_mismatch"),
+        (
+            {
+                "experiment_id": stable_hash("different-experiment"),
+                "experiment_hash": stable_hash("different-experiment"),
+            },
+            "experiment_identity_mismatch",
+        ),
+        ({"strategy_version_id": "strategy-v2"}, "experiment_identity_mismatch"),
+        ({"cohort_id": "cohort-opaque-2"}, "experiment_identity_mismatch"),
+        (
+            {"cohort_hash": stable_hash("different-cohort")},
+            "experiment_identity_mismatch",
+        ),
+        (
+            {"strategy_hash": stable_hash("different-strategy")},
+            "experiment_identity_mismatch",
+        ),
+        (
+            {"config_hash": stable_hash("different-config")},
+            "experiment_identity_mismatch",
+        ),
+        ({"policy_hash": stable_hash("different-policy")}, "evidence_hash_mismatch"),
+        ({"input_hash": stable_hash("different-input")}, "evidence_hash_mismatch"),
+    ],
+)
 @pytest.mark.asyncio
 async def test_identity_drift_from_registered_validation_is_rejected(
     db_session: AsyncSession,
     validation_identity: ValidationIdentity,
+    updates: dict[str, object],
+    reason_code: str,
 ) -> None:
     app, _, _, _ = service(db_session, validation_identity)
     await app.transition(
         "caller-1",
         request(validation_identity, target=ValidationState.DRAFT, prior=None),
     )
-    drifted = validation_identity.model_copy(
-        update={"cohort_hash": stable_hash("different-cohort")}
-    )
+    drifted = validation_identity.model_copy(update=updates)
 
     with pytest.raises(PaperValidationError) as exc_info:
         await app.transition(
@@ -398,4 +553,4 @@ async def test_identity_drift_from_registered_validation_is_rejected(
             ),
         )
 
-    assert exc_info.value.reason_code == "experiment_identity_mismatch"
+    assert exc_info.value.reason_code == reason_code

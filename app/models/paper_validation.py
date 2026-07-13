@@ -51,7 +51,7 @@ class PaperValidationStateTransition(Base):
             name="uq_paper_validation_transition_idempotency",
         ),
         CheckConstraint(
-            "actor_role IN ('researcher','reviewer','operator','system')",
+            "actor_role IN ('operator','system')",
             name=conv("ck_paper_validation_transition_actor_role"),
         ),
         CheckConstraint(

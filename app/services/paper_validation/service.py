@@ -78,8 +78,14 @@ class PaperValidationService:
         if self._frozen_input_provider is None or self._policy_provider is None:
             raise PaperValidationError("evidence_stamp_unavailable")
         try:
-            frozen = await self._frozen_input_provider.get_stamp(identity)
-            policy = await self._policy_provider.get_stamp(identity)
+            frozen = FrozenInputStamp.model_validate(
+                await self._frozen_input_provider.get_stamp(identity),
+                from_attributes=True,
+            )
+            policy = PolicyStamp.model_validate(
+                await self._policy_provider.get_stamp(identity),
+                from_attributes=True,
+            )
         except Exception as exc:
             raise PaperValidationError("evidence_stamp_unavailable") from exc
         if (
@@ -156,15 +162,11 @@ class PaperValidationService:
     def _request_hash(
         request: TransitionRequest,
         actor: ActorIdentity,
-        frozen: FrozenInputStamp,
-        policy: PolicyStamp,
     ) -> str:
         return canonical_sha256(
             {
                 "request": request.model_dump(mode="python"),
                 "actor": actor.model_dump(mode="python"),
-                "input_bundle_id": frozen.bundle_id,
-                "policy_version": policy.version,
             }
         )
 
@@ -172,18 +174,42 @@ class PaperValidationService:
         self,
         caller_id: str,
         request: TransitionRequest,
+    ) -> PaperValidationStateTransition:
+        return await self._append_transition(
+            caller_id, request, promotion_confirmed=False
+        )
+
+    async def _append_transition(
+        self,
+        caller_id: str,
+        request: TransitionRequest,
         *,
-        _promotion_confirmed: bool = False,
+        promotion_confirmed: bool,
     ) -> PaperValidationStateTransition:
         actor = await self._resolve_actor(caller_id)
         self._require_role(actor, _MUTATION_ROLES)
-        if (
-            request.target_state is ValidationState.PROMOTED
-            and not _promotion_confirmed
-        ):
+        if request.target_state is ValidationState.PROMOTED and not promotion_confirmed:
             raise PaperValidationError("promotion_confirmation_required")
+        request_hash = self._request_hash(request, actor)
+        replay = await self._by_idempotency(
+            request.identity.validation_id, request.idempotency_key
+        )
+        if replay is not None:
+            if replay.request_hash == request_hash:
+                return replay
+            raise PaperValidationError("idempotency_conflict")
+
         frozen, policy = await self._resolve_evidence(request.identity)
-        request_hash = self._request_hash(request, actor, frozen, policy)
+        promotion_evidence = frozen.promotion_eligibility
+        trusted_gate_evidence: tuple[str, ...] = ()
+        if request.target_state is ValidationState.PROMOTION_ELIGIBLE:
+            if promotion_evidence is None:
+                raise PaperValidationError("evidence_stamp_unavailable")
+            if not promotion_evidence.deterministic_gate_passed:
+                raise PaperValidationError("promotion_gate_blocked")
+            if promotion_evidence.resolved_negative_class_count < 30:
+                raise PaperValidationError("calibration_gate_blocked")
+            trusted_gate_evidence = promotion_evidence.evidence_ids
 
         await self._lock_validation(request.identity.validation_id)
         replay = await self._by_idempotency(
@@ -229,7 +255,14 @@ class PaperValidationService:
             input_hash=identity.input_hash,
             input_bundle_id=frozen.bundle_id,
             policy_version=policy.version,
-            evidence_ids=list(request.evidence_ids),
+            evidence_ids=list(
+                dict.fromkeys(
+                    (
+                        *request.evidence_ids,
+                        *trusted_gate_evidence,
+                    )
+                )
+            ),
         )
         self._session.add(event)
         await self._session.flush()
@@ -248,10 +281,6 @@ class PaperValidationService:
     ) -> StrategyHypothesisDraft:
         actor = await self._resolve_actor(caller_id)
         self._require_role(actor, (ActorRole.RESEARCHER,))
-        await self._lock_validation(request.validation_id)
-        latest = await self._trusted_current(request.validation_id)
-        identity = self._identity_from_event(latest)
-        await self._resolve_evidence(identity)
         request_hash = canonical_sha256(
             {
                 "request": request.model_dump(mode="python"),
@@ -268,6 +297,24 @@ class PaperValidationService:
             if replay.request_hash == request_hash:
                 return replay
             raise PaperValidationError("idempotency_conflict")
+        observed = await self._trusted_current(request.validation_id)
+        identity = self._identity_from_event(observed)
+        await self._resolve_evidence(identity)
+
+        await self._lock_validation(request.validation_id)
+        replay = await self._session.scalar(
+            select(StrategyHypothesisDraft).where(
+                StrategyHypothesisDraft.validation_id == request.validation_id,
+                StrategyHypothesisDraft.idempotency_key == request.idempotency_key,
+            )
+        )
+        if replay is not None:
+            if replay.request_hash == request_hash:
+                return replay
+            raise PaperValidationError("idempotency_conflict")
+        latest = await self._trusted_current(request.validation_id)
+        if not self._identity_matches(latest, identity):
+            raise PaperValidationError("experiment_identity_mismatch")
         row = StrategyHypothesisDraft(
             validation_id=identity.validation_id,
             validation_version=identity.validation_version,
@@ -305,10 +352,6 @@ class PaperValidationService:
     ) -> PaperValidationPostmortemReview:
         actor = await self._resolve_actor(caller_id)
         self._require_role(actor, (ActorRole.REVIEWER,))
-        await self._lock_validation(request.validation_id)
-        latest = await self._trusted_current(request.validation_id)
-        identity = self._identity_from_event(latest)
-        await self._resolve_evidence(identity)
         request_hash = canonical_sha256(
             {
                 "request": request.model_dump(mode="python"),
@@ -326,6 +369,25 @@ class PaperValidationService:
             if replay.request_hash == request_hash:
                 return replay
             raise PaperValidationError("idempotency_conflict")
+        observed = await self._trusted_current(request.validation_id)
+        identity = self._identity_from_event(observed)
+        await self._resolve_evidence(identity)
+
+        await self._lock_validation(request.validation_id)
+        replay = await self._session.scalar(
+            select(PaperValidationPostmortemReview).where(
+                PaperValidationPostmortemReview.validation_id == request.validation_id,
+                PaperValidationPostmortemReview.idempotency_key
+                == request.idempotency_key,
+            )
+        )
+        if replay is not None:
+            if replay.request_hash == request_hash:
+                return replay
+            raise PaperValidationError("idempotency_conflict")
+        latest = await self._trusted_current(request.validation_id)
+        if not self._identity_matches(latest, identity):
+            raise PaperValidationError("experiment_identity_mismatch")
         row = PaperValidationPostmortemReview(
             validation_id=identity.validation_id,
             validation_version=identity.validation_version,
@@ -354,6 +416,13 @@ class PaperValidationService:
     ) -> PaperOrderAuthorization:
         actor = await self._resolve_actor(caller_id)
         self._require_role(actor, _MUTATION_ROLES)
+        observed = await self._trusted_current(identity.validation_id)
+        if not self._identity_matches(observed, identity):
+            raise PaperValidationError("authorization_identity_mismatch")
+        if not is_order_authorizable(ValidationState(observed.new_state)):
+            raise PaperValidationError("order_state_not_authorized")
+        frozen, policy = await self._resolve_evidence(identity)
+
         await self._lock_validation(identity.validation_id)
         latest = await self._trusted_current(identity.validation_id)
         if not self._identity_matches(latest, identity):
@@ -361,7 +430,6 @@ class PaperValidationService:
         state = ValidationState(latest.new_state)
         if not is_order_authorizable(state):
             raise PaperValidationError("order_state_not_authorized")
-        frozen, policy = await self._resolve_evidence(identity)
         return PaperOrderAuthorization(
             identity=identity,
             state=state,
@@ -390,8 +458,10 @@ class PaperValidationService:
             evidence_ids=confirmation.evidence_ids,
         )
         try:
-            return await self.transition(
-                caller_id, request, _promotion_confirmed=confirmation.confirmed
+            return await self._append_transition(
+                caller_id,
+                request,
+                promotion_confirmed=confirmation.confirmed,
             )
         except PaperValidationError as exc:
             if exc.reason_code in {
@@ -404,6 +474,8 @@ class PaperValidationService:
             raise
 
     async def get_audit(self, caller_id: str, validation_id: str) -> dict[str, list]:
+        await self._resolve_actor(caller_id)
+        await self._lock_validation(validation_id)
         transitions = await self.get_history(caller_id, validation_id)
         hypotheses = list(
             (

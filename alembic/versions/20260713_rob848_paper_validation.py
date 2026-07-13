@@ -87,6 +87,81 @@ _TRIGGER_DDL = (
     END;
     $$ LANGUAGE plpgsql
     """,
+    """
+    CREATE OR REPLACE FUNCTION research.validate_paper_validation_transition_history()
+    RETURNS trigger AS $$
+    DECLARE
+        previous research.paper_validation_state_transitions%ROWTYPE;
+    BEGIN
+        PERFORM pg_advisory_xact_lock(hashtextextended(NEW.validation_id, 0));
+        SELECT * INTO previous
+          FROM research.paper_validation_state_transitions
+         WHERE validation_id = NEW.validation_id
+         ORDER BY sequence DESC
+         LIMIT 1;
+        IF NOT FOUND THEN
+            IF NEW.sequence <> 1 OR NEW.prior_state IS NOT NULL
+               OR NEW.new_state <> 'draft' THEN
+                RAISE EXCEPTION
+                    'paper validation history continuity mismatch for %',
+                    NEW.validation_id
+                    USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+        ELSIF NEW.sequence = previous.sequence THEN
+            RETURN NEW;
+        ELSIF NEW.sequence <> previous.sequence + 1
+           OR NEW.prior_state IS DISTINCT FROM previous.new_state
+           OR NEW.validation_version <> previous.validation_version
+           OR NEW.experiment_id <> previous.experiment_id
+           OR NEW.strategy_version_id <> previous.strategy_version_id
+           OR NEW.cohort_id <> previous.cohort_id
+           OR NEW.experiment_hash <> previous.experiment_hash
+           OR NEW.cohort_hash <> previous.cohort_hash
+           OR NEW.strategy_hash <> previous.strategy_hash
+           OR NEW.config_hash <> previous.config_hash
+           OR NEW.policy_hash <> previous.policy_hash
+           OR NEW.input_hash <> previous.input_hash THEN
+            RAISE EXCEPTION
+                'paper validation history continuity mismatch for %',
+                NEW.validation_id
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    """
+    CREATE OR REPLACE FUNCTION research.validate_paper_validation_audit_link()
+    RETURNS trigger AS $$
+    DECLARE
+        current research.paper_validation_state_transitions%ROWTYPE;
+    BEGIN
+        PERFORM pg_advisory_xact_lock(hashtextextended(NEW.validation_id, 0));
+        SELECT * INTO current
+          FROM research.paper_validation_state_transitions
+         WHERE validation_id = NEW.validation_id
+         ORDER BY sequence DESC
+         LIMIT 1;
+        IF NOT FOUND
+           OR NEW.validation_version <> current.validation_version
+           OR NEW.experiment_id <> current.experiment_id
+           OR NEW.strategy_version_id <> current.strategy_version_id
+           OR NEW.cohort_id <> current.cohort_id
+           OR NEW.experiment_hash <> current.experiment_hash
+           OR NEW.cohort_hash <> current.cohort_hash
+           OR NEW.strategy_hash <> current.strategy_hash
+           OR NEW.config_hash <> current.config_hash
+           OR NEW.policy_hash <> current.policy_hash
+           OR NEW.input_hash <> current.input_hash THEN
+            RAISE EXCEPTION
+                'paper validation audit stream identity mismatch for %',
+                NEW.validation_id
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql
+    """,
 )
 
 
@@ -150,7 +225,7 @@ def upgrade() -> None:
             name="uq_paper_validation_transition_idempotency",
         ),
         sa.CheckConstraint(
-            "actor_role IN ('researcher','reviewer','operator','system')",
+            "actor_role IN ('operator','system')",
             name="ck_paper_validation_transition_actor_role",
         ),
         sa.CheckConstraint(
@@ -269,16 +344,41 @@ def upgrade() -> None:
     _create_audit_triggers(
         "paper_validation_state_transitions", "transitions"
     )
+    op.execute(
+        "CREATE TRIGGER trg_paper_validation_transitions_history "
+        "BEFORE INSERT ON research.paper_validation_state_transitions "
+        "FOR EACH ROW EXECUTE FUNCTION "
+        "research.validate_paper_validation_transition_history()"
+    )
     _create_audit_triggers("strategy_hypothesis_drafts", "hypotheses")
     _create_audit_triggers("paper_validation_postmortem_reviews", "reviews")
+    for table, suffix in (
+        ("strategy_hypothesis_drafts", "hypotheses"),
+        ("paper_validation_postmortem_reviews", "reviews"),
+    ):
+        op.execute(
+            f"CREATE TRIGGER trg_paper_validation_{suffix}_audit_link "
+            f"BEFORE INSERT ON research.{table} FOR EACH ROW EXECUTE FUNCTION "
+            "research.validate_paper_validation_audit_link()"
+        )
 
 
 def downgrade() -> None:
+    op.execute(
+        "DROP TRIGGER IF EXISTS trg_paper_validation_transitions_history "
+        "ON research.paper_validation_state_transitions"
+    )
     for table, suffix in (
         ("paper_validation_postmortem_reviews", "reviews"),
         ("strategy_hypothesis_drafts", "hypotheses"),
         ("paper_validation_state_transitions", "transitions"),
     ):
+        if suffix in {"reviews", "hypotheses"}:
+            op.execute(
+                f"DROP TRIGGER IF EXISTS "
+                f"trg_paper_validation_{suffix}_audit_link "
+                f"ON research.{table}"
+            )
         op.execute(
             f"DROP TRIGGER IF EXISTS trg_paper_validation_{suffix}_immutable "
             f"ON research.{table}"
@@ -291,6 +391,13 @@ def downgrade() -> None:
     op.execute(
         "DROP FUNCTION IF EXISTS "
         "research.validate_paper_validation_experiment_identity()"
+    )
+    op.execute(
+        "DROP FUNCTION IF EXISTS "
+        "research.validate_paper_validation_transition_history()"
+    )
+    op.execute(
+        "DROP FUNCTION IF EXISTS research.validate_paper_validation_audit_link()"
     )
     op.execute(
         "DROP FUNCTION IF EXISTS research.reject_paper_validation_audit_mutation()"

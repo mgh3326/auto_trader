@@ -12,7 +12,6 @@ from sqlalchemy.inspection import inspect as sqlalchemy_inspect
 
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
-from app.mcp_server.caller_identity import get_caller_agent_id
 from app.services.paper_validation.contracts import (
     ActorIdentity,
     ActorRole,
@@ -159,7 +158,7 @@ class _DefaultPaperValidationApplication:
 
     async def get_audit(self, caller_id: str, validation_id: str) -> object:
         try:
-            async with AsyncSessionLocal() as session:
+            async with AsyncSessionLocal() as session, session.begin():
                 result = await self._service(session).get_audit(
                     caller_id, validation_id
                 )
@@ -201,7 +200,8 @@ def register_paper_validation_tools(
     application = (application_provider or _default_application_provider)()
 
     def caller_id() -> str | None:
-        return get_caller_agent_id()
+        actor_id = settings.PAPER_VALIDATION_AUTHENTICATED_ACTOR_ID.strip()
+        return actor_id or None
 
     def unavailable() -> dict[str, str]:
         return {"status": "blocked", "reason_code": "actor_identity_unavailable"}

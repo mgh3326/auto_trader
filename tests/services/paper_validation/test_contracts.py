@@ -13,6 +13,7 @@ from app.services.paper_validation.contracts import (
     PaperOrderAuthorization,
     PolicyStamp,
     PostmortemReviewInput,
+    PromotionEligibilityEvidence,
     TransitionRequest,
     ValidationIdentity,
     ValidationState,
@@ -86,6 +87,29 @@ def test_transition_payload_cannot_spoof_actor_identity_or_role() -> None:
             TransitionRequest(**(payload | spoof))
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("idempotency_key", "k" * 129),
+        ("reason_code", "r" * 65),
+    ],
+)
+def test_transition_string_limits_match_database_columns(
+    field: str, value: str
+) -> None:
+    payload = {
+        "identity": identity_payload(),
+        "expected_prior_state": None,
+        "target_state": "draft",
+        "idempotency_key": "key-1",
+        "reason_code": "registered",
+        "reason_text": "registered",
+    }
+
+    with pytest.raises(ValidationError):
+        TransitionRequest(**(payload | {field: value}))
+
+
 def test_verified_provider_stamps_require_positive_verification() -> None:
     assert FrozenInputStamp(
         bundle_id="bundle-1", content_hash=HASH, verified=True
@@ -96,6 +120,35 @@ def test_verified_provider_stamps_require_positive_verification() -> None:
         FrozenInputStamp(bundle_id="bundle-1", content_hash=HASH, verified=False)
     with pytest.raises(ValidationError):
         PolicyStamp(version="policy-v1", content_hash=HASH, verified=False)
+
+
+def test_promotion_eligibility_is_trusted_stamp_evidence_not_transition_payload() -> (
+    None
+):
+    evidence = PromotionEligibilityEvidence(
+        deterministic_gate_passed=True,
+        resolved_negative_class_count=30,
+        evidence_ids=("calibration-cohort-1",),
+    )
+    stamp = FrozenInputStamp(
+        bundle_id="bundle-1",
+        content_hash="1" * 64,
+        verified=True,
+        promotion_eligibility=evidence,
+    )
+
+    assert stamp.promotion_eligibility == evidence
+    with pytest.raises(ValidationError):
+        TransitionRequest(
+            identity=ValidationIdentity(**identity_payload()),
+            expected_prior_state="paper_active",
+            target_state="promotion_eligible",
+            idempotency_key="promotion-1",
+            reason_code="claimed",
+            reason_text="claimed",
+            evidence_ids=("claimed",),
+            resolved_negative_class_count=30,  # type: ignore[call-arg]
+        )
 
 
 def test_actor_identity_is_server_owned_and_closed_to_four_roles() -> None:

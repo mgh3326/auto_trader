@@ -13,6 +13,7 @@ from app.services.paper_validation.contracts import (
     ActorRole,
     FrozenInputStamp,
     PolicyStamp,
+    PromotionEligibilityEvidence,
     ValidationIdentity,
 )
 
@@ -92,6 +93,8 @@ class FakeFrozenInputHashProvider:
     bundle_id: str = "bundle-1"
     calls: list[str] = field(default_factory=list)
     error: Exception | None = None
+    promotion_gate_passed: bool = True
+    resolved_negative_class_count: int = 30
 
     async def get_stamp(self, identity: ValidationIdentity) -> FrozenInputStamp:
         self.calls.append(identity.validation_id)
@@ -101,6 +104,11 @@ class FakeFrozenInputHashProvider:
             bundle_id=self.bundle_id,
             content_hash=self.content_hash,
             verified=True,
+            promotion_eligibility=PromotionEligibilityEvidence(
+                deterministic_gate_passed=self.promotion_gate_passed,
+                resolved_negative_class_count=self.resolved_negative_class_count,
+                evidence_ids=("trusted-promotion-gate",),
+            ),
         )
 
 

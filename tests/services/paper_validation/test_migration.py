@@ -189,9 +189,107 @@ async def test_direct_invalid_graph_insert_is_rejected(
     invalid = _transition(experiment)
     invalid.new_state = "promoted"
 
-    with pytest.raises(IntegrityError, match="violates check constraint"):
+    with pytest.raises(IntegrityError, match="history continuity mismatch"):
         async with db_session.begin_nested():
             db_session.add(invalid)
+            await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_direct_researcher_transition_is_rejected(
+    db_session: AsyncSession,
+) -> None:
+    experiment = await _experiment(db_session)
+    invalid = _transition(experiment)
+    invalid.actor_role = "researcher"
+
+    with pytest.raises(IntegrityError, match="transition_actor_role"):
+        async with db_session.begin_nested():
+            db_session.add(invalid)
+            await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_direct_sequence_gap_and_prior_mismatch_are_rejected(
+    db_session: AsyncSession,
+) -> None:
+    experiment = await _experiment(db_session)
+    validation_id = f"validation-{uuid4().hex}"
+
+    missing_first = _transition(
+        experiment,
+        validation_id=validation_id,
+        sequence=2,
+    )
+    missing_first.prior_state = "draft"
+    missing_first.new_state = "offline_eligible"
+    with pytest.raises(DBAPIError, match="history continuity mismatch"):
+        async with db_session.begin_nested():
+            db_session.add(missing_first)
+            await db_session.flush()
+
+    first = _transition(experiment, validation_id=validation_id)
+    db_session.add(first)
+    await db_session.flush()
+
+    gap = _transition(experiment, validation_id=validation_id, sequence=99)
+    gap.prior_state = "promotion_eligible"
+    gap.new_state = "promoted"
+    with pytest.raises(DBAPIError, match="history continuity mismatch"):
+        async with db_session.begin_nested():
+            db_session.add(gap)
+            await db_session.flush()
+
+    wrong_prior = _transition(experiment, validation_id=validation_id, sequence=2)
+    wrong_prior.prior_state = "offline_eligible"
+    wrong_prior.new_state = "shadow_soak"
+    with pytest.raises(DBAPIError, match="history continuity mismatch"):
+        async with db_session.begin_nested():
+            db_session.add(wrong_prior)
+            await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_direct_narrative_must_exact_match_existing_validation_stream(
+    db_session: AsyncSession,
+) -> None:
+    experiment = await _experiment(db_session)
+    validation_id = f"validation-{uuid4().hex}"
+    transition = _transition(experiment, validation_id=validation_id)
+    db_session.add(transition)
+    await db_session.flush()
+    mismatched = StrategyHypothesisDraft(
+        validation_id=validation_id,
+        validation_version=1,
+        experiment_id=experiment.experiment_id,
+        strategy_version_id=experiment.strategy_version,
+        cohort_id="different-cohort",
+        idempotency_key=f"hypothesis-{uuid4().hex}",
+        request_hash=_hash(f"request-{uuid4().hex}"),
+        author_id="researcher-1",
+        author_role="researcher",
+        mechanism="mechanism",
+        universe=["KRX:005930"],
+        horizon="5d",
+        entry_criteria=["entry"],
+        exit_criteria=["exit"],
+        invalidation_criteria=["invalidate"],
+        data_requirements=["PIT bars"],
+        expected_cost_hurdle="0.003",
+        turnover_bound="0.25",
+        risk_bound="0.02",
+        cited_evidence=["evidence-1"],
+        experiment_hash=experiment.experiment_id,
+        cohort_hash=transition.cohort_hash,
+        strategy_hash=experiment.strategy_hash,
+        config_hash=experiment.frozen_config_hash,
+        policy_hash=experiment.policy_hash,
+        input_hash=transition.input_hash,
+    )
+
+    with pytest.raises(DBAPIError, match="audit stream identity mismatch"):
+        async with db_session.begin_nested():
+            db_session.add(mismatched)
             await db_session.flush()
 
 
@@ -231,20 +329,23 @@ async def test_hypothesis_and_review_update_delete_are_rejected(
     changed_value: str,
 ) -> None:
     experiment = await _experiment(db_session)
+    transition = _transition(experiment)
+    db_session.add(transition)
+    await db_session.flush()
     common = {
-        "validation_id": f"validation-{uuid4().hex}",
-        "validation_version": 1,
-        "experiment_id": experiment.experiment_id,
-        "strategy_version_id": experiment.strategy_version,
-        "cohort_id": "cohort-opaque-1",
+        "validation_id": transition.validation_id,
+        "validation_version": transition.validation_version,
+        "experiment_id": transition.experiment_id,
+        "strategy_version_id": transition.strategy_version_id,
+        "cohort_id": transition.cohort_id,
         "idempotency_key": f"audit-{uuid4().hex}",
         "request_hash": _hash(f"request-{uuid4().hex}"),
-        "experiment_hash": experiment.experiment_id,
-        "cohort_hash": _hash("cohort"),
-        "strategy_hash": experiment.strategy_hash,
-        "config_hash": experiment.frozen_config_hash,
-        "policy_hash": experiment.policy_hash,
-        "input_hash": _hash("input"),
+        "experiment_hash": transition.experiment_hash,
+        "cohort_hash": transition.cohort_hash,
+        "strategy_hash": transition.strategy_hash,
+        "config_hash": transition.config_hash,
+        "policy_hash": transition.policy_hash,
+        "input_hash": transition.input_hash,
     }
     if model is StrategyHypothesisDraft:
         row = StrategyHypothesisDraft(

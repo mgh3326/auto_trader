@@ -17,6 +17,12 @@ from pydantic import (
 
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+Identifier128 = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)
+]
+ReasonCode64 = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)
+]
 
 
 class ActorRole(StrEnum):
@@ -42,16 +48,22 @@ class FrozenContract(BaseModel):
 
 
 class ActorIdentity(FrozenContract):
-    actor_id: NonBlank
+    actor_id: Identifier128
     role: ActorRole
 
 
+class PromotionEligibilityEvidence(FrozenContract):
+    deterministic_gate_passed: bool
+    resolved_negative_class_count: int = Field(ge=0)
+    evidence_ids: tuple[NonBlank, ...] = Field(min_length=1)
+
+
 class ValidationIdentity(FrozenContract):
-    validation_id: NonBlank
+    validation_id: Identifier128
     validation_version: int = Field(ge=1)
     experiment_id: Sha256
-    strategy_version_id: NonBlank
-    cohort_id: NonBlank
+    strategy_version_id: Identifier128
+    cohort_id: Identifier128
     experiment_hash: Sha256
     cohort_hash: Sha256
     strategy_hash: Sha256
@@ -67,13 +79,14 @@ class ValidationIdentity(FrozenContract):
 
 
 class FrozenInputStamp(FrozenContract):
-    bundle_id: NonBlank
+    bundle_id: Identifier128
     content_hash: Sha256
     verified: Literal[True]
+    promotion_eligibility: PromotionEligibilityEvidence | None = None
 
 
 class PolicyStamp(FrozenContract):
-    version: NonBlank
+    version: Identifier128
     content_hash: Sha256
     verified: Literal[True]
 
@@ -94,8 +107,8 @@ class TransitionRequest(FrozenContract):
     identity: ValidationIdentity
     expected_prior_state: ValidationState | None
     target_state: ValidationState
-    idempotency_key: NonBlank
-    reason_code: NonBlank
+    idempotency_key: Identifier128
+    reason_code: ReasonCode64
     reason_text: NonBlank
     evidence_ids: tuple[NonBlank, ...] = ()
 
@@ -106,11 +119,11 @@ class TransitionDecision(FrozenContract):
 
 
 class HypothesisDraftInput(FrozenContract):
-    validation_id: NonBlank
-    idempotency_key: NonBlank
+    validation_id: Identifier128
+    idempotency_key: Identifier128
     mechanism: NonBlank
     universe: tuple[NonBlank, ...] = Field(min_length=1)
-    horizon: NonBlank
+    horizon: Identifier128
     entry_criteria: tuple[NonBlank, ...] = Field(min_length=1)
     exit_criteria: tuple[NonBlank, ...] = Field(min_length=1)
     invalidation_criteria: tuple[NonBlank, ...] = Field(min_length=1)
@@ -122,15 +135,15 @@ class HypothesisDraftInput(FrozenContract):
 
 
 class PostmortemReviewInput(FrozenContract):
-    validation_id: NonBlank
-    idempotency_key: NonBlank
+    validation_id: Identifier128
+    idempotency_key: Identifier128
     review_text: NonBlank
     cited_evidence: tuple[NonBlank, ...] = Field(min_length=1)
 
 
 class PromotionConfirmationInput(FrozenContract):
     identity: ValidationIdentity
-    idempotency_key: NonBlank
+    idempotency_key: Identifier128
     reason: NonBlank
     evidence_ids: tuple[NonBlank, ...] = Field(min_length=1)
     confirmed: Literal[True] = True
@@ -140,7 +153,7 @@ class PaperOrderAuthorization(FrozenContract):
     identity: ValidationIdentity
     state: ValidationState
     actor: ActorIdentity
-    authorization_id: NonBlank
+    authorization_id: Identifier128
     authorized_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -156,6 +169,7 @@ __all__ = [
     "PolicyStamp",
     "PostmortemReviewInput",
     "PromotionConfirmationInput",
+    "PromotionEligibilityEvidence",
     "Sha256",
     "TransitionDecision",
     "TransitionRequest",
