@@ -1,5 +1,11 @@
 # ROB-858 — Toss `loss_cut` 지원 결정과 `approval_issue_id` 계약
 
+> **ROB-864로 대체됨 (2026-07-13):** 이 문서의 Paperclip
+> `approval_issue_id=status=done` 승인 계약은 폐기되었다. 현재 계약은
+> `approval_issue_id` optional audit note + Telegram 주문별 2단계 확인이며,
+> 직접 loss-cut/defensive-trim 경로는 proposal 생성 안내와 함께 fail-close한다.
+> Toss reconcile 및 broker-evidence projection 결정은 그대로 유효하다.
+
 - 결정일: 2026-07-13 KST
 - 조사 기준: canonical `~/work/auto_trader` `main` at `9ff505575bf0b1025f489037a5ee16fdf62128be`
 - 범위: 정적 코드·git history·PR 본문·read-only retrospective 조회. 브로커 주문 및 DB mutation 없음.

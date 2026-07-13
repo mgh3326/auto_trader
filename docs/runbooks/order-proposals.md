@@ -87,14 +87,14 @@ See the full design in
   — distinct from the `ORDER_PROPOSALS_TELEGRAM_TOKEN` webhook secret, which
   only proves the request came from Telegram (authn), not that it came from
   an approved chat (authz).
-- **Fresh broker-specific checks at every click.** A Telegram approve does not
+- **Fresh broker-specific checks at every submit-capable click.** A Telegram approve does not
   submit the payload that was true at proposal-create time. KIS/Upbit rerun
-  their applicable Paperclip/ROB-800 checks through the shared
+  their applicable ROB-800 checks through the shared
   `_place_order_impl` dry-run preview and repeat final guards at submit. Toss
   instead calls `toss_preview_order`, never `_place_order_impl`; that preview
   supplies the normalized payload/tick plus its actual read-only warning,
   price/cost, NXT-context, and advisory sector-concentration checks. A Toss
-  `loss_cut` preview also reruns the shared Paperclip/caller/retrospective gate
+  `loss_cut` preview also reruns the shared caller/retrospective gate
   and validates the current-price slip band. On unchanged payload,
   `toss_place_order` applies the mutation activation/confirmation gates,
   high-value check, warnings guard, opposite-pending-order guard, sell-loss
@@ -113,10 +113,14 @@ See the full design in
   this contract.
 - **Loss-cut binding scope.** `exit_intent="loss_cut"` proposals are supported
   for `kis_live|toss_live` + `equity_kr|equity_us` and `upbit` + `crypto`.
-  All lanes remain limit-sell/live only and rerun the shared Paperclip,
-  caller, retrospective-symbol/trigger, and 72-hour freshness checks at
-  preview and submit. The second freshness check is intentional: a valid
-  create can become stale while waiting for Telegram approval.
+  All lanes remain limit-sell/live only. The first approve click submits
+  nothing: it renders symbol/quantity/limit/current price/loss/slip band and
+  retrospective evidence with a new `⚠️ 손절 확인` button. That second button
+  carries a 90-second single-use nonce bound to proposal, rung, and approval
+  revision. Only the second click reruns caller, retrospective-symbol/trigger,
+  72-hour freshness, fresh preview, slip-band, and approval-hash checks and may
+  submit. The second freshness check is intentional: a valid create can become
+  stale while waiting for Telegram approval.
 - **Native Toss routing and exact handoff.** `toss_live` +
   `equity_kr|equity_us` proposals route through `toss_preview_order` and
   `toss_place_order`, never the shared `_place_order_impl`. Preview supplies
@@ -260,12 +264,12 @@ linked on the new row.
 
 When `valid_until` is omitted, the service assigns the next `00:00 KST`. The
 loss-cut fields `exit_intent`, `exit_reason`, `retrospective_id`, and
-`approval_issue_id` are nullable for non-loss-cut proposals. For
-`exit_intent="loss_cut"`, all three companion fields are required. At create
+`approval_issue_id` are nullable. For `exit_intent="loss_cut"`, `exit_reason`
+and `retrospective_id` are required; `approval_issue_id` is an optional
+free-text audit note. At create
 time, the retrospective must exist, belong to the same symbol, have
 `trigger_type="stop_loss"` or `trigger_type="thesis_change"`, and be no more
-than 72 hours old. The Paperclip
-approval issue is revalidated later at the Telegram click; passing this
+than 72 hours old. No external issue tracker is queried. Passing this
 create-time validation never authorizes a future click by itself.
 
 ### `order_proposal_get(proposal_id)`
@@ -443,30 +447,19 @@ ORDER_PROPOSALS_SUBMIT_AGENT_ID=<proposal-submit-agent-id>
 LOSS_CUT_ALLOWED_AGENT_IDS=<existing-allowed-agent-ids>,<proposal-submit-agent-id>
 ```
 
-### Paperclip issue contract for each loss-cut order
+### Loss-cut two-click confirmation contract (ROB-864)
 
-`approval_issue_id` is a Paperclip issue key, not a Telegram callback ID or an
-internal approval row. It must match `^[A-Z]+-\d+$`, and the execution
-environment must receive HTTP 200 JSON with exact lowercase `status="done"`
-from `$PAPERCLIP_API_URL/api/issues/<key>`. Issue lookup failure, malformed
-JSON, timeout, non-200, or any other status fails closed.
+The human signature is the Telegram click audit, not an external issue status.
+The initial `✅ 승인` click is recorded with Telegram user, time, and consumed
+nonce, but cannot submit. It edits the message to show the exact loss-cut
+evidence and issues `⚠️ 손절 확인` with a new 90-second nonce. That nonce is
+single-use and bound to proposal ID plus every eligible rung's index and
+`approval_revision`; expiry, replay, or any binding change fails closed.
 
-Create a new issue for each order. Record account, symbol, `side=sell`, limit,
-quantity, retrospective ID, and expiry in its title/body, obtain the human
-decision, then mark it done. Do not reuse ROB-800/ROB-858 or another unrelated
-completed implementation/umbrella issue: the current verifier checks status
-but cannot yet prove that issue metadata matches the order payload.
-
-Verify the dedicated issue read-only in the execution environment without
-printing the API token:
-
-```bash
-APPROVAL_ISSUE_ID=ROB-<number>
-curl -fsS \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  "$PAPERCLIP_API_URL/api/issues/$APPROVAL_ISSUE_ID" \
-  | jq -e '.status == "done"'
-```
+The confirmation click records its own user/time/nonce audit, then executes the
+existing click-time revalidation and possible submit. `approval_issue_id` is
+optional free text retained only for audit/display. It is never parsed and no
+Paperclip/Linear/API lookup occurs.
 
 Create a fresh retrospective for the execution decision. Its symbol and
 trigger (`stop_loss|thesis_change`) must match, and its `created_at` must still
@@ -605,17 +598,25 @@ submitted blind would defeat the entire point of a human-approval gate.
    fresh nonce has already been minted for a newer message (e.g. a
    `NEEDS_RECONFIRM` cycle) raises `nonce_mismatch` — see Troubleshooting
    for the distinction.
-4. **Commit lease.** For approve only, `acquire_commit_lease` takes a
+4. **Loss-cut first click.** For `exit_intent="loss_cut"`, the initial `op`
+   click stops here after a fresh read-only evidence preview. It consumes and
+   audits the first nonce, edits the message with order/price/loss/slip/retro
+   evidence, and mints a 90-second `lc` nonce bound to proposal/rung/revision.
+   It never calls `revalidate_and_submit`. A valid `lc` click consumes and
+   audits the second nonce, then continues below. Non-loss-cut proposals keep
+   the existing one-click flow.
+5. **Commit lease.** For a normal approve or valid loss-cut confirmation,
+   `acquire_commit_lease` takes a
    short-lived (`lease_seconds=10` default) in-flight lock on the group row
    — this is what prevents a double-tap on the approve button (two Telegram
    updates arriving almost simultaneously) from racing two submits. If the
    lease is already held, the second click is answered "처리 중" and does
    nothing further.
-5. **Fresh dry-run preview → broker-specific checks.** `revalidate_and_submit`
+6. **Fresh dry-run preview → broker-specific checks.** `revalidate_and_submit`
    re-runs every `pending_approval` rung through a fresh
    `place_order_fn(dry_run=True, ...)` call. For `kis_live` equities and
    `upbit` crypto this delegates to `_place_order_impl`, which enforces the
-   applicable Paperclip and ROB-800 guards and repeats final guards on live
+   applicable ROB-800 guards and repeats final guards on live
    submit. For `toss_live` equities it delegates to `toss_preview_order`,
    never `_place_order_impl`; Toss preview returns the canonical wire
    `payload_preview`, including KR tick normalization, and performs only its
@@ -629,14 +630,14 @@ submitted blind would defeat the entire point of a human-approval gate.
    click regardless of the create-time retrospective check. A preview guard
    rejection comes back as `guard_blocked` and the rung returns to
    `pending_approval` (retryable, not terminal).
-6. **Price/qty comparison against what the operator approved.** The fresh
+7. **Price/qty comparison against what the operator approved.** The fresh
    preview's normalized `price`/`quantity` is compared (`_norm`, which
    canonicalizes `NUMERIC(38,12)` DB values against fresh preview values so
    `Decimal("2226000.000000000000")` and `Decimal("2226000")` compare equal)
    against the rung's stored `limit_price`/`quantity`. Market-order rungs
    compare quantity only (`limit_price` is always `None` by design for
    market orders, so comparing it would always spuriously mismatch).
-7. **Unchanged → submit; changed → `NEEDS_RECONFIRM`.** If the comparison
+8. **Unchanged → submit; changed → `NEEDS_RECONFIRM`.** If the comparison
    matches, the rung transitions `approved → submitting` and is actually
    submitted (`dry_run=False`) using the **freshly minted** `approval_hash`
    from step 5's preview — never the one from the original proposal-create
@@ -657,7 +658,7 @@ submitted blind would defeat the entire point of a human-approval gate.
    distinction: auto-revalidation is not the same as auto-approving a
    payload change.** The system re-checks freely; it never silently accepts
    a different price/qty on the operator's behalf.
-8. **Submit outcome classification.** `_classify_submit` records `acked`
+9. **Submit outcome classification.** `_classify_submit` records `acked`
    (market orders) or `resting` (limit orders) on explicit broker success,
    `rejected` on explicit broker/guard rejection, and `unverified` — never a
    terminal state — on anything ambiguous (submit exception, unrecognized
@@ -667,10 +668,9 @@ submitted blind would defeat the entire point of a human-approval gate.
    after the row left the open scan. See Safety
    Boundaries above for why `unverified` is never auto-voided.
 
-For a loss-cut proposal, the Telegram approval text shows the operator-facing
-`손절 근거` and `회고 #<retrospective_id>`. It intentionally does **not** expose
-the internal `approval_issue_id`; that identifier remains an audit and
-revalidation input rather than an operator instruction.
+For a loss-cut proposal, the second-stage Telegram text shows symbol, quantity,
+limit, current price, loss rate, slip band, `손절 근거`, and the retrospective
+ID/lesson excerpt. An optional `approval_issue_id` is only an audit note.
 
 **The four time concepts** (all columns on `order_proposals` /
 `order_proposal_rungs`, see `app/models/order_proposals.py`):
@@ -715,8 +715,9 @@ live action.
   proposal and verify the Upbit accepted-only ledger/correlation record, then
   cancel or reconcile as planned.
 - [ ] **Toss KR loss-cut canary during market hours:** create a fresh <=72h
-  retrospective and dedicated completed Paperclip issue, then approve a
-  minimal KR limit-sell proposal. Verify tick normalization, the supplied
+  retrospective, then perform both Telegram clicks on a minimal KR limit-sell
+  proposal. Verify the first click submits nothing, the confirmation expires
+  after 90 seconds, tick normalization, the supplied
   `approval_hash`/rung handoff, exact preview `clientOrderId`, accepted-only
   Toss audit fields, and no KIS submission. Acceptance alone must not be
   reported as filled. Prove either the enabled fill-poller cadence or run

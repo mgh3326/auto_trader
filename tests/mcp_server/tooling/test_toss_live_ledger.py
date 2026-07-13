@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import contextlib
 from contextlib import ExitStack
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -471,9 +471,11 @@ async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
             "Retro",
             (),
             {
+                "id": 42,
                 "symbol": "AAPL",
                 "trigger_type": "stop_loss",
                 "created_at": now,
+                "lesson": "손절 기준을 늦추지 않는다",
             },
         )()
 
@@ -493,7 +495,7 @@ async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
         exit_intent="loss_cut",
         exit_reason="stop_loss",
         retrospective_id=42,
-        approval_issue_id="ROB-858",
+        approval_issue_id=None,
         now=now,
     )
     nonce = f"nonce-{unique}"
@@ -562,18 +564,22 @@ async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
     client = _Client()
     observed_submit_identities: list[str | None] = []
 
-    async def paperclip_done(issue_id):
-        observed_submit_identities.append(get_caller_agent_id())
-        return "done"
-
     retro = type(
         "Retro",
         (),
-        {"id": 42, "symbol": "AAPL", "trigger_type": "stop_loss", "created_at": now},
+        {
+            "id": 42,
+            "symbol": "AAPL",
+            "trigger_type": "stop_loss",
+            "created_at": now,
+            "lesson": "손절 기준을 늦추지 않는다",
+        },
     )()
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "42")
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_SUBMIT_AGENT_ID", submit_agent_id)
     monkeypatch.setattr(settings, "LOSS_CUT_ALLOWED_AGENT_IDS", [submit_agent_id])
+    monkeypatch.setattr(settings, "paperclip_api_url", None)
+    monkeypatch.setattr(settings, "paperclip_api_key", None)
     monkeypatch.setattr(toss_orders, "validate_toss_api_config", lambda: [])
     monkeypatch.setattr(toss_orders.TossReadClient, "from_settings", lambda: client)
     monkeypatch.setattr(toss_orders.settings, "toss_api_enabled", True)
@@ -602,20 +608,23 @@ async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
         "_invalidate_sellable_after_sell_mutation",
         AsyncMock(return_value=None),
     )
-    monkeypatch.setattr(validation, "_is_cached_approved", lambda issue_id: False)
-    monkeypatch.setattr(validation, "_cache_approved", lambda issue_id: None)
-    monkeypatch.setattr(validation, "_fetch_approval_issue_status", paperclip_done)
+
+    async def loss_cut_retro_lookup(retrospective_id):
+        observed_submit_identities.append(get_caller_agent_id())
+        return retro
+
     monkeypatch.setattr(
         validation,
         "_get_retrospective_by_id_for_loss_cut",
-        AsyncMock(return_value=retro),
+        loss_cut_retro_lookup,
     )
     monkeypatch.setattr(validation, "_loss_cut_max_slip_value", lambda: 0.02)
     monkeypatch.setattr(
         mod, "publish_place_time_forecast", AsyncMock(return_value=None)
     )
 
-    callback = await handle_callback_update(
+    notifier = _Notifier()
+    first_callback = await handle_callback_update(
         {
             "callback_query": {
                 "id": f"callback-{unique}",
@@ -626,12 +635,29 @@ async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
         },
         now=now,
         service_factory=service_factory,
-        notifier=_Notifier(),
+        notifier=notifier,
     )
 
-    assert callback["reason"] == "approved"
-    assert callback["results"] == ["submitted_resting"]
-    assert observed_submit_identities == [submit_agent_id, submit_agent_id]
+    assert first_callback["reason"] == "loss_cut_confirmation_required"
+    assert client.placed_payloads == []
+    confirmation_data = notifier.edited[-1][3]["inline_keyboard"][0][0]["callback_data"]
+    second_callback = await handle_callback_update(
+        {
+            "callback_query": {
+                "id": f"confirmation-{unique}",
+                "from": {"id": 777},
+                "message": {"chat": {"id": 42}, "message_id": 555},
+                "data": confirmation_data,
+            }
+        },
+        now=now + timedelta(seconds=30),
+        service_factory=service_factory,
+        notifier=notifier,
+    )
+
+    assert second_callback["reason"] == "approved"
+    assert second_callback["results"] == ["submitted_resting"]
+    assert observed_submit_identities == [submit_agent_id] * 4
     assert len(client.placed_payloads) == 1
     row = (
         await db_session.execute(
@@ -643,13 +669,17 @@ async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
     assert (row.exit_intent, row.retrospective_id, row.approval_issue_id) == (
         "loss_cut",
         42,
-        "ROB-858",
+        None,
     )
 
     partial = _toss_evidence(
         verdict="partial", local_status="partial", filled_qty="0.5"
     )
-    await _reconcile_with_evidence(mod, row, partial)
+    partial_result = await _reconcile_with_evidence(mod, row, partial)
+    assert partial_result.get("proposal_rung") == {
+        "converged": True,
+        "proposal_rung_state": "partially_filled",
+    }
     await db_session.refresh(row)
     if terminal_status == "filled":
         terminal = _toss_evidence(
@@ -659,16 +689,11 @@ async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
         terminal = _toss_evidence(
             verdict="none", local_status="cancelled", filled_qty="0"
         )
-    await _reconcile_with_evidence(mod, row, terminal)
-
-    refreshed_group, rungs = await service.get_proposal(group.proposal_id)
-    await db_session.refresh(refreshed_group)
-    await db_session.refresh(rungs[0])
-    assert refreshed_group.lifecycle_state == "terminal"
-    assert rungs[0].state == terminal_status
-    assert rungs[0].filled_qty == (
-        Decimal("2") if terminal_status == "filled" else Decimal("0.5")
-    )
+    terminal_result = await _reconcile_with_evidence(mod, row, terminal)
+    assert terminal_result.get("proposal_rung") == {
+        "converged": True,
+        "proposal_rung_state": terminal_status,
+    }
 
     due = await build_retrospective_pending(
         db_session,

@@ -89,7 +89,6 @@ def _configure_loss_cut_preconditions(
     monkeypatch,
     *,
     caller_agent_id: str = _TRADER_AGENT_ID,
-    approval_status: str = "done",
 ) -> None:
     retro = SimpleNamespace(
         id=42,
@@ -98,13 +97,6 @@ def _configure_loss_cut_preconditions(
         created_at=datetime.now(UTC),
     )
     monkeypatch.setattr(ov, "get_caller_agent_id", lambda: caller_agent_id)
-    monkeypatch.setattr(ov, "_is_cached_approved", lambda issue_id: False)
-    monkeypatch.setattr(ov, "_cache_approved", lambda issue_id: None)
-    monkeypatch.setattr(
-        ov,
-        "_fetch_approval_issue_status",
-        AsyncMock(return_value=approval_status),
-    )
     monkeypatch.setattr(
         ov,
         "_get_retrospective_by_id_for_loss_cut",
@@ -114,28 +106,33 @@ def _configure_loss_cut_preconditions(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("approval_issue_id", "approval_status", "caller_agent_id", "message"),
-    [
-        (None, "done", _TRADER_AGENT_ID, "requires approval_issue_id"),
-        ("ROB-858", "in_progress", _TRADER_AGENT_ID, "not in 'done' status"),
-        ("ROB-858", "done", "caller-denied", "not permitted"),
-    ],
-    ids=["missing_issue", "issue_not_done", "caller_denied"],
-)
-async def test_toss_loss_cut_preview_revalidates_preconditions(
+async def test_toss_proposal_loss_cut_allows_missing_issue_without_paperclip(
     monkeypatch,
-    approval_issue_id,
-    approval_status,
-    caller_agent_id,
-    message,
 ):
     _configure_toss(monkeypatch)
-    _configure_loss_cut_preconditions(
-        monkeypatch,
-        caller_agent_id=caller_agent_id,
-        approval_status=approval_status,
-    )
+    _configure_loss_cut_preconditions(monkeypatch)
+
+    result = await _preview_loss_cut(approval_issue_id=None)
+
+    assert result["success"] is True
+    assert result["retrospective_id"] == 42
+
+
+@pytest.mark.asyncio
+async def test_toss_proposal_loss_cut_still_rejects_denied_caller(monkeypatch):
+    _configure_toss(monkeypatch)
+    _configure_loss_cut_preconditions(monkeypatch, caller_agent_id="caller-denied")
+
+    result = await _preview_loss_cut()
+
+    assert result["success"] is False
+    assert any("not permitted" in item for item in result["violations"])
+
+
+@pytest.mark.asyncio
+async def test_toss_direct_loss_cut_points_to_proposal_flow(monkeypatch):
+    _configure_toss(monkeypatch)
+    _configure_loss_cut_preconditions(monkeypatch)
 
     result = await otv.toss_preview_order(
         symbol="AAPL",
@@ -148,12 +145,12 @@ async def test_toss_loss_cut_preview_revalidates_preconditions(
         exit_intent="loss_cut",
         exit_reason="stop_loss",
         retrospective_id=42,
-        approval_issue_id=approval_issue_id,
     )
 
     assert result["success"] is False
-    assert result["error"] == "loss_cut_preconditions_failed"
-    assert any(message in violation for violation in result["violations"])
+    assert result["violations"] == [
+        "loss_cut_direct_path_disabled_use_order_proposal_create"
+    ]
 
 
 @pytest.mark.asyncio
@@ -166,25 +163,14 @@ async def test_toss_loss_cut_preview_applies_slip_band(monkeypatch, price, succe
     _configure_toss(monkeypatch)
     _configure_loss_cut_preconditions(monkeypatch)
 
-    result = await otv.toss_preview_order(
-        symbol="AAPL",
-        side="sell",
-        order_type="limit",
-        quantity="1",
-        price=price,
-        market="us",
-        account_mode="toss_live",
-        exit_intent="loss_cut",
-        exit_reason="stop_loss",
-        retrospective_id=42,
-        approval_issue_id="ROB-858",
-    )
+    result = await _preview_loss_cut(price=price)
 
     assert result["success"] is success
     if success:
         assert result["exit_intent"] == "loss_cut"
         assert result["retrospective_id"] == 42
         assert result["loss_cut_slip_band"] == pytest.approx(98.0)
+        assert result["avg_buy_price"] == "200"
     else:
         assert "slip band floor" in result["error"]
 
@@ -205,20 +191,25 @@ async def test_toss_loss_cut_preview_fails_closed_without_current_price(monkeypa
     assert "current price" in result["error"]
 
 
-async def _preview_loss_cut() -> dict:
-    return await otv.toss_preview_order(
-        symbol="AAPL",
-        side="sell",
-        order_type="limit",
-        quantity="1",
-        price="99",
-        market="us",
-        account_mode="toss_live",
-        exit_intent="loss_cut",
-        exit_reason="stop_loss",
-        retrospective_id=42,
-        approval_issue_id="ROB-858",
-    )
+async def _preview_loss_cut(
+    *, price: str = "99", approval_issue_id: str | None = "ROB-858"
+) -> dict:
+    with otv._bind_order_proposal_context(
+        client_order_id="tosprop-loss-cut", correlation_id=None, rung=0
+    ):
+        return await otv.toss_preview_order(
+            symbol="AAPL",
+            side="sell",
+            order_type="limit",
+            quantity="1",
+            price=price,
+            market="us",
+            account_mode="toss_live",
+            exit_intent="loss_cut",
+            exit_reason="stop_loss",
+            retrospective_id=42,
+            approval_issue_id=approval_issue_id,
+        )
 
 
 @pytest.mark.asyncio
@@ -237,22 +228,25 @@ async def test_toss_loss_cut_submit_records_audit_binding(monkeypatch):
     monkeypatch.setattr(otv, "record_toss_place_order", record_send)
     preview = await _preview_loss_cut()
 
-    result = await otv.toss_place_order(
-        symbol="AAPL",
-        side="sell",
-        order_type="limit",
-        quantity="1",
-        price="99",
-        market="us",
-        dry_run=False,
-        confirm=True,
-        account_mode="toss_live",
-        approval_hash=preview["approval_hash"],
-        exit_intent="loss_cut",
-        exit_reason="stop_loss",
-        retrospective_id=42,
-        approval_issue_id="ROB-858",
-    )
+    with otv._bind_order_proposal_context(
+        client_order_id="tosprop-loss-cut", correlation_id="corr", rung=0
+    ):
+        result = await otv.toss_place_order(
+            symbol="AAPL",
+            side="sell",
+            order_type="limit",
+            quantity="1",
+            price="99",
+            market="us",
+            dry_run=False,
+            confirm=True,
+            account_mode="toss_live",
+            approval_hash=preview["approval_hash"],
+            exit_intent="loss_cut",
+            exit_reason="stop_loss",
+            retrospective_id=42,
+            approval_issue_id="ROB-858",
+        )
 
     assert result["success"] is True
     assert len(client.placed_payloads) == 1
@@ -262,33 +256,32 @@ async def test_toss_loss_cut_submit_records_audit_binding(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_toss_loss_cut_submit_revalidates_paperclip_done_status(monkeypatch):
+async def test_toss_loss_cut_submit_does_not_query_paperclip(monkeypatch):
     client = _configure_toss(monkeypatch)
     _configure_loss_cut_preconditions(monkeypatch)
     preview = await _preview_loss_cut()
-    ov._fetch_approval_issue_status.return_value = "in_progress"
+    with otv._bind_order_proposal_context(
+        client_order_id="tosprop-loss-cut", correlation_id="corr", rung=0
+    ):
+        result = await otv.toss_place_order(
+            symbol="AAPL",
+            side="sell",
+            order_type="limit",
+            quantity="1",
+            price="99",
+            market="us",
+            dry_run=False,
+            confirm=True,
+            account_mode="toss_live",
+            approval_hash=preview["approval_hash"],
+            exit_intent="loss_cut",
+            exit_reason="stop_loss",
+            retrospective_id=42,
+            approval_issue_id=None,
+        )
 
-    result = await otv.toss_place_order(
-        symbol="AAPL",
-        side="sell",
-        order_type="limit",
-        quantity="1",
-        price="99",
-        market="us",
-        dry_run=False,
-        confirm=True,
-        account_mode="toss_live",
-        approval_hash=preview["approval_hash"],
-        exit_intent="loss_cut",
-        exit_reason="stop_loss",
-        retrospective_id=42,
-        approval_issue_id="ROB-858",
-    )
-
-    assert result["success"] is False
-    assert result["error"] == "loss_cut_preconditions_failed"
-    assert any("not in 'done' status" in item for item in result["violations"])
-    assert client.placed_payloads == []
+    assert result["success"] is True
+    assert len(client.placed_payloads) == 1
 
 
 @pytest.mark.asyncio
@@ -318,22 +311,25 @@ async def test_toss_loss_cut_submit_requires_supplied_valid_hash_in_off_mode(
             lambda: issued + timedelta(seconds=301),
         )
 
-    result = await otv.toss_place_order(
-        symbol="AAPL",
-        side="sell",
-        order_type="limit",
-        quantity="1",
-        price=price,
-        market="us",
-        dry_run=False,
-        confirm=True,
-        account_mode="toss_live",
-        approval_hash=approval_hash,
-        exit_intent="loss_cut",
-        exit_reason="stop_loss",
-        retrospective_id=42,
-        approval_issue_id="ROB-858",
-    )
+    with otv._bind_order_proposal_context(
+        client_order_id="tosprop-loss-cut", correlation_id="corr", rung=0
+    ):
+        result = await otv.toss_place_order(
+            symbol="AAPL",
+            side="sell",
+            order_type="limit",
+            quantity="1",
+            price=price,
+            market="us",
+            dry_run=False,
+            confirm=True,
+            account_mode="toss_live",
+            approval_hash=approval_hash,
+            exit_intent="loss_cut",
+            exit_reason="stop_loss",
+            retrospective_id=42,
+            approval_issue_id=None,
+        )
 
     assert result["success"] is False
     assert result["error_code"] == error_code

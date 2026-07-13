@@ -11,6 +11,7 @@ from app.services.order_proposals.approval_message import (
     build_action_diff,
     build_approval_message,
     build_callback_data,
+    build_loss_cut_confirmation_message,
     parse_callback_data,
 )
 
@@ -101,6 +102,53 @@ def test_callback_data_roundtrip_and_length():
     assert action == "op"
     assert proposal_short == str(proposal_id)[:8]
     assert nonce == "abc123def4560000"
+
+
+@pytest.mark.unit
+def test_loss_cut_confirmation_callback_and_summary():
+    group = _group(
+        exit_intent="loss_cut",
+        exit_reason="stop_loss",
+        retrospective_id=42,
+        approval_issue_id="operator note: desk A",
+        approval_nonce="second-step-nonce",
+    )
+    text, keyboard = build_loss_cut_confirmation_message(
+        group=group,
+        rungs=[_rung(quantity=Decimal("3"), limit_price=Decimal("99"))],
+        evidence={
+            "rungs": [
+                {
+                    "rung_index": 0,
+                    "current_price": "100",
+                    "avg_buy_price": "200",
+                    "loss_pct": "-50.00",
+                    "loss_cut_slip_band": "98",
+                }
+            ],
+            "retrospective_id": 42,
+            "lesson_excerpt": "손절 기준을 늦추지 않는다",
+        },
+    )
+
+    assert "손절 확인" in text
+    assert "3주" in text
+    assert "99" in text
+    assert "100" in text
+    assert "-50.00%" in text
+    assert "#42" in text
+    assert "손절 기준을 늦추지 않는다" in text
+    assert "승인 감사 메모" in text
+    assert "operator note: desk A" in text
+    assert "98" in text
+    button = keyboard["inline_keyboard"][0][0]
+    assert button["text"] == "⚠️ 손절 확인"
+    action, proposal_short, nonce = parse_callback_data(button["callback_data"])
+    assert (action, proposal_short, nonce) == (
+        "lc",
+        str(group.proposal_id)[:8],
+        "second-step-nonce",
+    )
 
 
 @pytest.mark.unit

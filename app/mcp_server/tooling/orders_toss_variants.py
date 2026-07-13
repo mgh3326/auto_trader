@@ -543,6 +543,7 @@ async def _sell_loss_guard(
     *,
     loss_cut_ctx: LossCutContext | None = None,
     current_price: Decimal | None = None,
+    evidence_context: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     try:
         holding = await _find_holding(client, symbol)
@@ -571,6 +572,8 @@ async def _sell_loss_guard(
     floor = avg * Decimal("1.01")
 
     if loss_cut_ctx is not None:
+        if evidence_context is not None:
+            evidence_context["avg_buy_price"] = _stringify_decimal(avg)
         if price is None:
             return {
                 "success": False,
@@ -824,6 +827,7 @@ async def toss_preview_order(
         order_type=order_type,
         is_mock=False,
         symbol=symbol,
+        proposal_flow=_order_proposal_context.get() is not None,
     )
     if loss_cut_errors:
         return {
@@ -929,6 +933,7 @@ async def toss_preview_order(
     if price_context_message is not None:
         order_warnings.append(_PRICE_CONTEXT_UNAVAILABLE)
 
+    loss_cut_evidence: dict[str, Any] = {}
     if loss_cut_ctx is not None:
         if current_price_dec is None:
             return {
@@ -954,6 +959,7 @@ async def toss_preview_order(
                 },
                 loss_cut_ctx=loss_cut_ctx,
                 current_price=current_price_dec,
+                evidence_context=loss_cut_evidence,
             )
         if loss_cut_guard is not None:
             return loss_cut_guard
@@ -1031,6 +1037,7 @@ async def toss_preview_order(
         response["loss_cut_slip_band"] = float(current_price_dec) * (
             1.0 - loss_cut_ctx.max_slip
         )
+        response.update(loss_cut_evidence)
     return response
 
 
@@ -1086,6 +1093,7 @@ async def _toss_place_order_impl(
         order_type=order_type,
         is_mock=False,
         symbol=symbol,
+        proposal_flow=proposal_context is not None,
     )
     if loss_cut_errors:
         return {
@@ -1971,12 +1979,10 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "content-based idempotency_key. Pass the optional rung (ladder level) "
             "to keep sibling ladder orders on the same day distinct. Hand the "
             "returned approval_hash (and matching rung) back to toss_place_order. "
-            "For exit_intent='loss_cut', also pass exit_reason, a <=72h matching "
-            "retrospective_id, and a dedicated per-order Paperclip "
-            "approval_issue_id whose API status is exactly 'done'. The preview "
-            "revalidates caller authorization and applies the configured current-"
-            "price slip band while exempting only that valid request from the "
-            "average-cost floor."
+            "exit_intent='loss_cut' is disabled for direct MCP calls. Use "
+            "order_proposal_create; its Telegram two-click flow revalidates the "
+            "<=72h retrospective, current-price slip band, and approval hash before "
+            "submission. approval_issue_id is only an optional audit note."
         ),
     )(toss_preview_order)
     mcp.tool(
@@ -2000,11 +2006,9 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "warn = same as optional but logs a hash-less live send; required = "
             "a valid, unexpired approval_hash is mandatory. Order-proposal "
             "preview/submit identity and correlation are bound internally and "
-            "cannot be supplied by MCP callers. A valid loss_cut repeats the "
-            "Paperclip/caller/retrospective checks immediately before send and "
-            "requires the supplied preview approval_hash even when "
-            "TOSS_APPROVAL_HASH_MODE=off; unrelated completed issues must not be "
-            "reused."
+            "cannot be supplied by MCP callers. Direct loss_cut is disabled; use "
+            "order_proposal_create for Telegram two-click confirmation and a full "
+            "second-click preview/retrospective/slip/hash revalidation."
         ),
     )(toss_place_order)
     mcp.tool(
