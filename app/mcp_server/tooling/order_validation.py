@@ -4,12 +4,8 @@ from __future__ import annotations
 
 import datetime
 import json
-import re
-import time
 from dataclasses import dataclass
 from typing import Any
-
-import httpx
 
 import app.services.brokers.upbit.client as upbit_service
 import app.services.market_data as market_data_service
@@ -55,9 +51,6 @@ async def _call_kis(method: Any, *args: Any, is_mock: bool, **kwargs: Any) -> An
     return await method(*args, **kwargs)
 
 
-_DEFENSIVE_TRIM_APPROVAL_REGEX = re.compile(r"^[A-Z]+-\d+$")
-_DEFENSIVE_TRIM_CACHE_TTL_SECONDS = 60.0
-_defensive_trim_success_cache: dict[str, float] = {}
 _TRADER_AGENT_ID_DEFAULT = "6b2192cc-14fa-4335-b572-2fe1e0cb54a7"
 
 
@@ -92,7 +85,7 @@ class LossCutContext:
 
     retrospective_id: int
     exit_reason: str
-    approval_issue_id: str
+    approval_issue_id: str | None
     requester_agent_id: str
     max_slip: float
     approval_verified_at: datetime.datetime
@@ -348,22 +341,6 @@ async def evaluate_sector_concentration(
         return {"verdict": "unknown", "fail_open": True, "reason": str(exc)}
 
 
-def _is_cached_approved(approval_issue_id: str) -> bool:
-    expires_at = _defensive_trim_success_cache.get(approval_issue_id)
-    if expires_at is None:
-        return False
-    if expires_at <= time.time():
-        _defensive_trim_success_cache.pop(approval_issue_id, None)
-        return False
-    return True
-
-
-def _cache_approved(approval_issue_id: str) -> None:
-    _defensive_trim_success_cache[approval_issue_id] = (
-        time.time() + _DEFENSIVE_TRIM_CACHE_TTL_SECONDS
-    )
-
-
 def _log_defensive_trim_bypass(
     *,
     symbol: str,
@@ -443,36 +420,6 @@ def _log_mock_loss_sell_bypass(
     )
 
 
-async def _fetch_approval_issue_status(approval_issue_id: str) -> str | None:
-    api_url = getattr(settings, "paperclip_api_url", None)
-    api_key = getattr(settings, "paperclip_api_key", None)
-    if not api_url or not api_key:
-        logger.warning(
-            "defensive_trim disabled: missing PAPERCLIP_API_URL or PAPERCLIP_API_KEY"
-        )
-        return None
-
-    issue_api_url = f"{api_url.rstrip('/')}/api/issues/{approval_issue_id}"
-    headers = {"Authorization": f"Bearer {api_key}"}
-
-    try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            response = await client.get(issue_api_url, headers=headers)
-    except Exception:
-        return None
-
-    if response.status_code != 200:
-        return None
-
-    try:
-        payload = response.json()
-    except ValueError:
-        return None
-
-    status = payload.get("status")
-    return str(status) if status is not None else None
-
-
 async def _validate_defensive_trim_preconditions(
     *,
     defensive_trim: bool,
@@ -483,54 +430,7 @@ async def _validate_defensive_trim_preconditions(
     """Validate defensive_trim gates using middleware-extracted caller identity."""
     if not defensive_trim:
         return None
-
-    if side != "sell":
-        raise ValueError(
-            "defensive_trim requires side='sell' (buy orders always use existing path)"
-        )
-    if order_type != "limit":
-        raise ValueError(
-            "defensive_trim requires order_type='limit' (market orders are blocked)"
-        )
-    if not approval_issue_id:
-        raise ValueError("defensive_trim=True requires approval_issue_id")
-    if not _DEFENSIVE_TRIM_APPROVAL_REGEX.match(approval_issue_id):
-        raise ValueError("approval_issue_id format invalid (expected e.g. 'ROB-164')")
-
-    caller_agent_id = get_caller_agent_id()
-    if not caller_agent_id:
-        raise ValueError(
-            "caller identity unavailable — defensive_trim requires authenticated MCP caller"
-        )
-
-    trader_agent_id = getattr(settings, "trader_agent_id", _TRADER_AGENT_ID_DEFAULT)
-    if caller_agent_id != trader_agent_id:
-        raise ValueError(
-            "defensive_trim requires Trader agent caller "
-            f"(got caller_agent_id={caller_agent_id})"
-        )
-
-    approval_status: str | None
-    if _is_cached_approved(approval_issue_id):
-        approval_status = "done"
-    else:
-        try:
-            approval_status = await _fetch_approval_issue_status(approval_issue_id)
-        except Exception:
-            approval_status = None
-        if approval_status == "done":
-            _cache_approved(approval_issue_id)
-
-    if approval_status != "done":
-        raise ValueError(
-            f"approval_issue_id {approval_issue_id} not found or not in 'done' status"
-        )
-
-    return DefensiveTrimContext(
-        approval_issue_id=approval_issue_id,
-        requester_agent_id=caller_agent_id,
-        approval_verified_at=datetime.datetime.now(datetime.UTC),
-    )
+    raise ValueError("defensive_trim_direct_path_disabled_use_order_proposal_create")
 
 
 _LOSS_CUT_EXIT_REASONS = frozenset({"stop_loss", "thesis_change"})
@@ -559,6 +459,7 @@ async def _validate_loss_cut_preconditions(
     order_type: str,
     is_mock: bool,
     symbol: str,
+    proposal_flow: bool = False,
 ) -> tuple[LossCutContext | None, list[str]]:
     """ROB-800 — fail-closed loss_cut gate. Collects EVERY violation so a
     dry_run preview can return them all in one response. Returns (None, []) when
@@ -566,6 +467,8 @@ async def _validate_loss_cut_preconditions(
     """
     if exit_intent != "loss_cut":
         return None, []
+    if not proposal_flow:
+        return None, ["loss_cut_direct_path_disabled_use_order_proposal_create"]
 
     errors: list[str] = []
 
@@ -596,26 +499,6 @@ async def _validate_loss_cut_preconditions(
             f"caller agent {caller_agent_id} not permitted for loss_cut "
             "(add to LOSS_CUT_ALLOWED_AGENT_IDS)"
         )
-
-    approval_status: str | None = None
-    if not approval_issue_id:
-        errors.append("loss_cut requires approval_issue_id")
-    elif not _DEFENSIVE_TRIM_APPROVAL_REGEX.match(approval_issue_id):
-        errors.append("approval_issue_id format invalid (expected e.g. 'ROB-800')")
-    else:
-        if _is_cached_approved(approval_issue_id):
-            approval_status = "done"
-        else:
-            try:
-                approval_status = await _fetch_approval_issue_status(approval_issue_id)
-            except Exception:
-                approval_status = None
-            if approval_status == "done":
-                _cache_approved(approval_issue_id)
-        if approval_status != "done":
-            errors.append(
-                f"approval_issue_id {approval_issue_id} not found or not in 'done' status"
-            )
 
     retro = None
     if retrospective_id is None:
@@ -658,7 +541,7 @@ async def _validate_loss_cut_preconditions(
         LossCutContext(
             retrospective_id=retrospective_id,  # type: ignore[arg-type]
             exit_reason=resolved_exit_reason,
-            approval_issue_id=approval_issue_id,  # type: ignore[arg-type]
+            approval_issue_id=approval_issue_id,
             requester_agent_id=caller_agent_id,  # type: ignore[arg-type]
             max_slip=_loss_cut_max_slip_value(),
             approval_verified_at=datetime.datetime.now(datetime.UTC),

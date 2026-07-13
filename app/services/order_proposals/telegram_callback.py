@@ -54,6 +54,7 @@ from app.mcp_server.caller_identity import caller_agent_id_var
 from app.services.order_proposals.approval_message import (
     _escape_markdown,
     build_approval_message,
+    build_loss_cut_confirmation_message,
     parse_callback_data,
 )
 from app.services.order_proposals.errors import OrderProposalError
@@ -122,7 +123,11 @@ async def _safe_answer(
 
 
 async def _safe_edit_message(
-    notifier: Any, chat_id: Any, message_id: int, text: str
+    notifier: Any,
+    chat_id: Any,
+    message_id: int,
+    text: str,
+    reply_markup: dict | None = None,
 ) -> None:
     """Best-effort ``edit_message`` that never raises.
 
@@ -134,7 +139,9 @@ async def _safe_edit_message(
     action as ``"internal_error"``).
     """
     try:
-        await notifier.edit_message(chat_id, message_id, text)
+        await notifier.edit_message(
+            chat_id, message_id, text, reply_markup=reply_markup
+        )
     except Exception:  # noqa: BLE001 - best-effort, never propagate
         logger.exception("order_proposals telegram edit_message failed")
 
@@ -274,6 +281,7 @@ async def _handle_approve(
     callback_query_id: str | None,
     telegram_user_id: str,
     revalidate_fn: RevalidateFn,
+    loss_cut_confirmation: bool = False,
 ) -> dict[str, Any]:
     # Lock the broker target before taking any proposal row lock. Independently
     # created proposals may point at the same manual/session order, so the
@@ -293,7 +301,15 @@ async def _handle_approve(
         }
 
     try:
-        await service.consume_approval_nonce(proposal_id, nonce, now=now)
+        if loss_cut_confirmation:
+            await service.consume_loss_cut_confirmation(
+                proposal_id,
+                nonce,
+                telegram_user_id=telegram_user_id,
+                now=now,
+            )
+        else:
+            await service.consume_approval_nonce(proposal_id, nonce, now=now)
     except OrderProposalError as exc:
         # See `_handle_deny`'s matching comment: no mutation happened above,
         # but commit anyway to release the row lock.
@@ -416,6 +432,62 @@ async def _handle_approve(
     }
 
 
+async def _handle_loss_cut_first_click(
+    *,
+    session: AsyncSession,
+    service: OrderProposalsService,
+    proposal_id: uuid.UUID,
+    nonce: str,
+    now: datetime,
+    notifier: Any,
+    chat_id: Any,
+    message_id: int | None,
+    telegram_user_id: str,
+    loss_cut_preview_fn: RevalidateFn,
+) -> dict[str, Any]:
+    """Consume step one and edit the message into a bound confirmation."""
+    submit_agent_id = settings.ORDER_PROPOSALS_SUBMIT_AGENT_ID.strip() or None
+    caller_agent_id_token = caller_agent_id_var.set(submit_agent_id)
+    try:
+        evidence = await loss_cut_preview_fn(
+            service=service, proposal_id=proposal_id, now=now
+        )
+    finally:
+        caller_agent_id_var.reset(caller_agent_id_token)
+    try:
+        await service.consume_approval_nonce(proposal_id, nonce, now=now)
+    except OrderProposalError as exc:
+        await session.commit()
+        return {"handled": False, "reason": str(exc), "proposal_id": str(proposal_id)}
+
+    confirmation_nonce = _generate_nonce()
+    await service.issue_loss_cut_confirmation(
+        proposal_id,
+        first_nonce=nonce,
+        confirmation_nonce=confirmation_nonce,
+        telegram_user_id=telegram_user_id,
+        now=now,
+    )
+    group, rungs = await service.get_proposal(proposal_id)
+    text, keyboard = build_loss_cut_confirmation_message(
+        group=group, rungs=rungs, evidence=evidence
+    )
+    await session.commit()
+    if message_id is not None:
+        await _safe_edit_message(
+            notifier,
+            chat_id,
+            message_id,
+            text,
+            reply_markup=keyboard,
+        )
+    return {
+        "handled": True,
+        "reason": "loss_cut_confirmation_required",
+        "proposal_id": str(proposal_id),
+    }
+
+
 async def handle_callback_update(
     update: dict[str, Any],
     *,
@@ -423,6 +495,7 @@ async def handle_callback_update(
     service_factory: ServiceFactory = AsyncSessionLocal,
     notifier: Any = None,
     revalidate_fn: RevalidateFn = revalidate_and_submit,
+    loss_cut_preview_fn: RevalidateFn | None = None,
 ) -> dict[str, Any]:
     """Handle one Telegram webhook update. Never raises (fail-closed)."""
     callback_query_id: str | None = None
@@ -475,6 +548,47 @@ async def handle_callback_update(
                     message_id=message_id,
                     callback_query_id=callback_query_id,
                 )
+            elif action == "op":
+                group, _rungs = await service.get_proposal(proposal_id)
+                if group.exit_intent == "loss_cut":
+                    if loss_cut_preview_fn is None:
+                        from app.services.order_proposals.revalidation import (
+                            preview_loss_cut_confirmation,
+                        )
+
+                        loss_cut_preview_fn = preview_loss_cut_confirmation
+                    result = await _handle_loss_cut_first_click(
+                        session=session,
+                        service=service,
+                        proposal_id=proposal_id,
+                        nonce=nonce,
+                        now=now,
+                        notifier=active_notifier,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        telegram_user_id=(
+                            str(telegram_user_id)
+                            if telegram_user_id is not None
+                            else ""
+                        ),
+                        loss_cut_preview_fn=loss_cut_preview_fn,
+                    )
+                    return result
+                result = await _handle_approve(
+                    session=session,
+                    service=service,
+                    proposal_id=proposal_id,
+                    nonce=nonce,
+                    now=now,
+                    notifier=active_notifier,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    callback_query_id=callback_query_id,
+                    telegram_user_id=(
+                        str(telegram_user_id) if telegram_user_id is not None else ""
+                    ),
+                    revalidate_fn=revalidate_fn,
+                )
             else:
                 result = await _handle_approve(
                     session=session,
@@ -490,6 +604,7 @@ async def handle_callback_update(
                         str(telegram_user_id) if telegram_user_id is not None else ""
                     ),
                     revalidate_fn=revalidate_fn,
+                    loss_cut_confirmation=True,
                 )
             # `_handle_deny`/`_handle_approve` each commit their own
             # mutating work internally before making any Telegram notify

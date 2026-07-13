@@ -88,6 +88,8 @@ _VOIDABLE_RUNG_STATES = frozenset(
 _EVIDENCE_ACCEPTING_RUNG_STATES = frozenset(
     {"acked", "resting", "partially_filled", "unverified"}
 )
+_LOSS_CUT_CONFIRMATION_KEY = "loss_cut_confirmation"
+_LOSS_CUT_CONFIRMABLE_RUNG_STATES = frozenset({"pending_approval", "needs_reconfirm"})
 
 
 def _validate_action_contract(
@@ -358,8 +360,6 @@ class OrderProposalsService:
             )
         if retrospective_id is None:
             errors.append("loss_cut requires retrospective_id")
-        if not (approval_issue_id or "").strip():
-            errors.append("loss_cut requires approval_issue_id")
         if (account_mode, market) not in {
             ("kis_live", "equity_kr"),
             ("kis_live", "equity_us"),
@@ -582,6 +582,120 @@ class OrderProposalsService:
         if group.approval_nonce_used_at is not None:
             raise OrderProposalError("nonce_replay")
         return await self._repo.update_group(group, approval_nonce_used_at=now)
+
+    async def issue_loss_cut_confirmation(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        first_nonce: str,
+        confirmation_nonce: str,
+        telegram_user_id: str,
+        now: datetime,
+        ttl_seconds: int = 90,
+    ) -> OrderProposal:
+        """Replace a consumed first-step nonce with a bound second-step nonce."""
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        if group.exit_intent != "loss_cut":
+            raise OrderProposalError("loss_cut_confirmation_requires_loss_cut")
+        if group.approval_nonce != first_nonce or group.approval_nonce_used_at is None:
+            raise OrderProposalError("loss_cut_first_nonce_not_consumed")
+        rungs = await self._repo.list_rungs(group.id)
+        binding = [
+            {
+                "rung_index": rung.rung_index,
+                "approval_revision": rung.approval_revision or 0,
+            }
+            for rung in sorted(rungs, key=lambda item: item.rung_index)
+            if rung.state in _LOSS_CUT_CONFIRMABLE_RUNG_STATES
+        ]
+        if not binding:
+            raise OrderProposalError("loss_cut_confirmation_has_no_eligible_rungs")
+        envelope = {
+            "proposal_id": str(proposal_id),
+            "rungs": binding,
+            "nonce": confirmation_nonce,
+            "issued_at": now.isoformat(),
+            "expires_at": (now + timedelta(seconds=ttl_seconds)).isoformat(),
+            "first_click": {
+                "telegram_user_id": telegram_user_id,
+                "clicked_at": now.isoformat(),
+                "nonce": first_nonce,
+            },
+            "second_click": None,
+        }
+        source_asof = {
+            **(group.source_asof or {}),
+            _LOSS_CUT_CONFIRMATION_KEY: envelope,
+        }
+        return await self._repo.update_group(
+            group,
+            source_asof=source_asof,
+            approval_nonce=confirmation_nonce,
+            approval_nonce_used_at=None,
+        )
+
+    async def consume_loss_cut_confirmation(
+        self,
+        proposal_id: uuid.UUID,
+        nonce: str,
+        *,
+        telegram_user_id: str,
+        now: datetime,
+    ) -> OrderProposal:
+        """Atomically validate, audit, and consume a loss-cut second-step nonce."""
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        if group.approval_nonce != nonce:
+            raise OrderProposalError("nonce_mismatch")
+        if group.approval_nonce_used_at is not None:
+            raise OrderProposalError("nonce_replay")
+        envelope = (group.source_asof or {}).get(_LOSS_CUT_CONFIRMATION_KEY)
+        if not isinstance(envelope, dict):
+            raise OrderProposalError("loss_cut_confirmation_missing")
+        try:
+            expires_at = datetime.fromisoformat(str(envelope["expires_at"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise OrderProposalError("loss_cut_confirmation_invalid") from exc
+        self._require_timezone_aware(expires_at)
+        if now > expires_at:
+            raise OrderProposalError("loss_cut_confirmation_expired")
+        rungs = await self._repo.list_rungs(group.id)
+        current_binding = [
+            {
+                "rung_index": rung.rung_index,
+                "approval_revision": rung.approval_revision or 0,
+            }
+            for rung in sorted(rungs, key=lambda item: item.rung_index)
+            if rung.state in _LOSS_CUT_CONFIRMABLE_RUNG_STATES
+        ]
+        if (
+            envelope.get("proposal_id") != str(proposal_id)
+            or envelope.get("nonce") != nonce
+            or envelope.get("rungs") != current_binding
+        ):
+            raise OrderProposalError("loss_cut_confirmation_binding_mismatch")
+        updated_envelope = {
+            **envelope,
+            "second_click": {
+                "telegram_user_id": telegram_user_id,
+                "clicked_at": now.isoformat(),
+                "nonce": nonce,
+            },
+        }
+        source_asof = {
+            **(group.source_asof or {}),
+            _LOSS_CUT_CONFIRMATION_KEY: updated_envelope,
+        }
+        return await self._repo.update_group(
+            group,
+            source_asof=source_asof,
+            approval_nonce_used_at=now,
+        )
 
     async def record_approval(
         self,

@@ -156,7 +156,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - 실매도 성공 시 동일 symbol의 active journal을 FIFO 기준으로 auto-close 시도
   - 부분 매도는 quantity를 수정하지 않고, fully-consumed journal만 close한다
   - journal close 실패는 주문 성공을 되돌리지 않고 `journal_warning` 으로 응답한다
-  - `defensive_trim=True` 는 ROB-164/ROB-166 승인 기반 제한 경로이며 `(a) side="sell"`, `(b) order_type="limit"`, `(c) `approval_issue_id` 가 Paperclip `done` 상태, `(d) middleware-extracted caller identity 가 Trader agent 와 일치할 때만 평균단가 1% 매도 floor 를 우회한다
+  - 직접 `defensive_trim=True` 및 `exit_intent="loss_cut"` 경로는 fail-close하며 `order_proposal_create`를 안내한다. proposal loss-cut만 Telegram 2단계 확인 후 평균단가 1% floor를 우회할 수 있다
 - `modify_order(order_id, symbol, market=None, new_price=None, new_quantity=None, dry_run=True, account_mode=None)`
 - `cancel_order(order_id, symbol=None, market=None, account_mode=None)`
   - US equities: resolves exchange from symbol DB, open orders, and recent history before cancel
@@ -610,32 +610,28 @@ order mutation.
     `kis_live/equity_kr`, `kis_live/equity_us`, and `upbit/crypto`.
   - When `valid_until` is omitted, it defaults to the next `00:00 KST`.
   - It accepts nullable `exit_intent`, `exit_reason`, `retrospective_id`, and
-    `approval_issue_id` fields for a loss-cut proposal. For
-    `exit_intent="loss_cut"`, all of `exit_reason`, `retrospective_id`, and
-    `approval_issue_id` are required.
+    `approval_issue_id` fields. For `exit_intent="loss_cut"`, `exit_reason`
+    and `retrospective_id` are required. `approval_issue_id` is optional
+    free-text audit metadata.
   - The referenced retrospective is checked at create time for existence,
     matching symbol, an eligible loss-cut trigger type (`stop_loss` or
     `thesis_change`), and freshness within 72 hours.
     This create-time check does not replace approval-time checks.
-  - `approval_issue_id` is a Paperclip issue key (`^[A-Z]+-\d+$`) and must be a
-    dedicated per-order approval; unrelated completed issues must not be
-    reused. Before creating the proposal, verify the execution environment
-    returns exact status `done` without printing the token:
-
-    ```bash
-    APPROVAL_ISSUE_ID=ROB-<number>
-    curl -fsS -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-      "$PAPERCLIP_API_URL/api/issues/$APPROVAL_ISSUE_ID" \
-      | jq -e '.status == "done"'
-    ```
+  - No external issue tracker is queried. A loss-cut first approval click
+    submits nothing: it edits the message with order/current-price/loss/slip
+    and retrospective evidence and issues `⚠️ 손절 확인`. That second button
+    has a 90-second single-use nonce bound to proposal/rung/revision. Only the
+    second click reruns full preview, <=72h retrospective, slip-band, price
+    diff, and approval-hash checks and may submit.
 - `order_proposal_void(proposal_id, reason)`
   - Requires a non-blank operator reason.
   - Refuses to mutate a proposal if any rung can have outstanding broker state.
     Rungs at or after submit cause the whole request to fail closed, with no
     partial local void.
 
-Telegram approval runs fresh broker-specific checks at the click. KIS/Upbit
-rerun their applicable Paperclip/ROB-800 checks through `_place_order_impl`.
+Telegram approval runs fresh broker-specific checks at the submit-capable
+click. KIS/Upbit rerun their applicable ROB-800 checks through
+`_place_order_impl`.
 `ORDER_PROPOSALS_SUBMIT_AGENT_ID` has no default identity (`""`) and is used
 only while the Telegram callback revalidates and submits the approved proposal.
 Operators must set it explicitly and add the exact same trimmed identity to
@@ -650,9 +646,9 @@ route through `toss_preview_order` and `toss_place_order`. Toss preview owns the
 wire price/quantity used for revalidation, including KR tick normalization, and
 provides its read-only warning, price/cost, NXT-context, and advisory sector
 concentration checks. For `loss_cut`, preview and submit both reuse the shared
-ROB-800 validator (Paperclip `done`, caller allowlist, matching fresh
-retrospective), exempt only the validated request from the average-cost floor,
-and enforce the configured current-price slip band.
+ROB-800 validator (caller allowlist and matching fresh retrospective), exempt
+only the validated request from the average-cost floor, and enforce the
+configured current-price slip band. No external approval backend is queried.
 `toss_place_order` runs the confirmation/activation, high-value, warnings,
 opposite-pending-order, sell-loss, and configured NXT guards immediately before
 POST. A Toss loss-cut live send requires the exact supplied preview approval
@@ -781,7 +777,7 @@ Operator activation and the one-share live smoke are documented in
 - **Account Mode Routing**: All Toss tools require `account_mode="toss_live"` (or `account_type="toss_live"`) and reject any mismatched account parameters.
 - **Mutation Safety (Dry-Run, Confirm, and Activation Gate)**: All mutation tools (`toss_place_order`, `toss_modify_order`, `toss_cancel_order`) default to `dry_run=True`. They perform actual HTTP requests (POSTs) to Toss Securities only when `dry_run=False`, `confirm=True`, and `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true` are explicitly set. Keep `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=false` until the accepted-order ledger and operator live-smoke hold are cleared.
 - **Accepted-only ledger and reconcile**: Real `toss_place_order` writes only an accepted/rejected row to `review.toss_live_order_ledger`. It does not create fills, journals, or realized PnL at send time. `toss_reconcile_orders(dry_run=True)` previews broker evidence from `GET /orders/{orderId}`; `dry_run=False` books only confirmed execution deltas. GET order-detail `403 non-json-response` failures are retried once after token reissue; unresolved failures are persisted as `requires_manual_review=true`. Mutation POSTs are not implicitly retried on that error.
-- **Loss-cut authorization**: `toss_preview_order` and `toss_place_order` accept `exit_intent="loss_cut"` only for a live limit sell with `exit_reason="stop_loss"|"thesis_change"`, a matching retrospective created within 72 hours, an allowed caller, and an `approval_issue_id` matching `^[A-Z]+-\d+$` whose `$PAPERCLIP_API_URL/api/issues/<id>` response has `status="done"`. The issue must be a dedicated per-order approval containing account, symbol, side, quantity, limit, retrospective ID, and expiry; the current verifier does not compare that metadata, so reusing an unrelated completed issue is prohibited. Submit repeats every check, and the retrospective may expire between create and approval. Toss ledger rows retain `exit_intent`, `retrospective_id`, and `approval_issue_id` for audit.
+- **Loss-cut authorization**: Direct `toss_preview_order`/`toss_place_order` loss-cut calls fail closed and point callers to `order_proposal_create`. A loss-cut proposal requires a live limit sell, eligible `exit_reason`, matching <=72h retrospective, allowed submit identity, slip-band compliance, and a valid approval hash. Telegram's first approval click only renders evidence and issues a proposal/rung/revision-bound 90-second `⚠️ 손절 확인` nonce; the second click reruns every guard and may submit. `approval_issue_id` is optional audit text and is never externally queried. Toss ledger rows retain `exit_intent`, `retrospective_id`, and `approval_issue_id` for audit.
 - **Loss-cut polling SLA**: Toss has no fill push in this path and both automatic polling paths are default-off. Before enabling Toss loss-cut, either enable and operationally verify `TOSS_FILL_POLL_ENABLED` with an approved `TOSS_FILL_POLL_CRON`, or require a targeted `toss_reconcile_orders(order_id=<broker-order-id>, dry_run=False)` immediately after execution. Non-dry reconcile projects broker evidence to proposal rungs and idempotently repairs terminal-ledger projection misses.
 - **Proposal identity handoff**: Order-proposal flows privately bind a stable client ID derived from `proposal_id + rung` around both `toss_preview_order` and `toss_place_order`, then require preview to return that exact ID. The proposal correlation and rung are carried through the same internal binding into the Toss ledger. These values are not exposed as operator-controlled MCP parameters. Accepted responses expose `approval_hash_digest`, the canonical ledger digest; the raw approval token is used only as the `approval_hash` submit input.
 - **US FX PnL split**: Toss order detail does not provide fill-time FX. For US rows only, `toss_reconcile_orders(dry_run=False)` captures USD/KRW through `exchange_rate_service` at reconcile time. Buy rows persist `buy_fx_rate`; sell rows persist `sell_fx_rate`, FIFO-attributed `fx_pnl_krw`, `security_pnl_usd`, `security_pnl_krw`, and `total_pnl_krw`. Automatic values are labelled `fx_rate_source="reconcile_spot"` and `fx_pnl_accuracy="approximate"`. Legacy lots with no buy FX keep FX PnL fields null until an operator backfills exact values through `modify_journal_entry`.

@@ -464,10 +464,8 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             "dry_run=True by default for safety. "
             "For buy orders (dry_run=False), thesis and strategy are required. "
             "Normal weight-management trims do NOT need defensive_trim — leave "
-            "it False. defensive_trim=True only bypasses the sell-side price "
-            "floor and requires side='sell', order_type='limit', and an "
-            "approval_issue_id (e.g. 'ROB-164'); approval_issue_id is mandatory "
-            "whenever defensive_trim=True, including dry_run (ROB-164 audit gate). "
+            "it False. defensive_trim=True is disabled on this direct tool; use "
+            "order_proposal_create for the human-confirmed proposal path. "
             "Orders auto-route via SOR (NXT-eligible) / KRX as day orders. "
             "venue (krx|nxt|unified), order_validity (day|예약|gtc), and "
             "reserved_time are accepted but NOT yet enabled — NXT/TIF/예약주문 "
@@ -493,15 +491,10 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             "live send; required=mandatory (this live tool must supply a hash). "
             "account_mode='kis_live' is accepted but redundant; "
             "any other account_mode value is rejected."
-            'ROB-800 exit_intent: Optional[str] — set to "loss_cut" (live sell-only '
-            "sanctioned path; mutually exclusive with defensive_trim=True). When set, "
-            "the caller must also provide retrospective_id (≤72h, symbol match, "
-            "trigger_type ∈ {stop_loss, thesis_change}), approval_issue_id (Paperclip "
-            "status=done), and an approval_hash (independent of "
-            "ORDER_APPROVAL_HASH_MODE). The four preconditions are aggregated: a "
-            "dry_run preview returns ALL violations in one response. exit_intent is "
-            "recorded on the live order ledger. loss_cut is LIVE-ONLY — mock "
-            "callers will receive a precondition violation."
+            ' ROB-864 exit_intent="loss_cut" is disabled on this direct tool. Use '
+            "order_proposal_create; Telegram performs two-click confirmation with a "
+            "single-use nonce and second-click full revalidation. approval_issue_id "
+            "is only an optional audit note."
         ),
     )
     async def kis_live_place_order(  # NOSONAR - public MCP order schema mirrors legacy tool.

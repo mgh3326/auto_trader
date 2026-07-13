@@ -293,7 +293,7 @@ def _loss_cut_create_kwargs(*, now: datetime):
         "exit_intent": "loss_cut",
         "exit_reason": "stop_loss",
         "retrospective_id": 42,
-        "approval_issue_id": "ROB-800",
+        "approval_issue_id": None,
         "now": now,
     }
 
@@ -317,15 +317,8 @@ async def test_create_defaults_valid_until_to_next_kst_midnight(db_session):
 
 @pytest.mark.asyncio
 async def test_loss_cut_requires_all_group_fields_without_paperclip_lookup(
-    db_session, monkeypatch
+    db_session,
 ):
-    async def paperclip_must_not_run(*args, **kwargs):
-        raise AssertionError("Paperclip status belongs to click-time revalidation")
-
-    monkeypatch.setattr(
-        "app.mcp_server.tooling.order_validation._fetch_approval_issue_status",
-        paperclip_must_not_run,
-    )
     service = OrderProposalsService(db_session)
     with pytest.raises(OrderProposalError, match="exit_reason"):
         await service.create_proposal(
@@ -348,7 +341,6 @@ async def test_loss_cut_requires_all_group_fields_without_paperclip_lookup(
     ("overrides", "message"),
     [
         ({"retrospective_id": None}, "retrospective_id"),
-        ({"approval_issue_id": None}, "approval_issue_id"),
         ({"exit_reason": None}, "exit_reason"),
         ({"exit_intent": "emergency"}, "unknown exit_intent"),
     ],
@@ -402,7 +394,25 @@ async def test_valid_loss_cut_persists_exact_group_binding(db_session, monkeypat
         group.exit_reason,
         group.retrospective_id,
         group.approval_issue_id,
-    ) == ("loss_cut", "stop_loss", 42, "ROB-800")
+    ) == ("loss_cut", "stop_loss", 42, None)
+
+
+@pytest.mark.asyncio
+async def test_loss_cut_preserves_optional_approval_issue_as_audit_note(
+    db_session, monkeypatch
+):
+    async def fake_lookup(session, retrospective_id):
+        return _retro()
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    kwargs = _loss_cut_create_kwargs(now=datetime.now(UTC))
+    kwargs["approval_issue_id"] = "legacy Paperclip note / operator context"
+
+    group = await OrderProposalsService(db_session).create_proposal(**kwargs)
+
+    assert group.approval_issue_id == "legacy Paperclip note / operator context"
 
 
 @pytest.mark.asyncio

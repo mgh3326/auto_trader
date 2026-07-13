@@ -40,6 +40,7 @@ from app.services.order_proposals.broker_gateway import (
     fetch_submit_evidence,
     fetch_target_order,
 )
+from app.services.order_proposals.errors import OrderProposalError
 from app.services.order_proposals.service import OrderProposalsService
 from app.services.order_proposals.target_order import TargetOrderSnapshot
 
@@ -66,6 +67,7 @@ CorrelationMint = Callable[..., Any]
 TargetFetchFn = Callable[..., Any]
 TargetCancelFn = Callable[..., Any]
 SubmitEvidenceFetchFn = Callable[..., Any]
+RetrospectiveLookupFn = Callable[[int], Any]
 
 _PREVIEW_REASON = "order_proposal revalidation (rung {rung})"
 _SUBMIT_REASON = "order_proposal submit after revalidation (rung {rung})"
@@ -384,12 +386,110 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
     if proposal_client_order_id is not None:
         kwargs["client_order_id"] = str(proposal_client_order_id)
 
-    submit = await _place_order_impl(**kwargs)
+    submit = await _place_order_impl(**kwargs, proposal_flow=True)
     if kwargs.get("dry_run") is False:
         return _adapt_live_submit_response(
             submit, order_type=str(kwargs.get("order_type"))
         )
     return submit
+
+
+async def _default_retrospective_lookup(retrospective_id: int) -> Any:
+    from app.mcp_server.tooling.order_validation import (
+        _get_retrospective_by_id_for_loss_cut,
+    )
+
+    return await _get_retrospective_by_id_for_loss_cut(retrospective_id)
+
+
+async def preview_loss_cut_confirmation(
+    *,
+    service: OrderProposalsService,
+    proposal_id: uuid.UUID,
+    now: datetime,
+    place_order_fn: PlaceOrderFn = _default_place_order_fn,
+    retrospective_lookup_fn: RetrospectiveLookupFn = _default_retrospective_lookup,
+) -> dict[str, Any]:
+    """Build read-only, fresh evidence for Telegram's loss-cut second step."""
+    group, rungs = await service.get_proposal(proposal_id)
+    if group.exit_intent != "loss_cut" or group.retrospective_id is None:
+        raise OrderProposalError("loss_cut_confirmation_requires_loss_cut")
+    retrospective = await _maybe_await(retrospective_lookup_fn(group.retrospective_id))
+    if retrospective is None:
+        raise OrderProposalError("loss_cut_confirmation_retrospective_missing")
+
+    evidence_rungs: list[dict[str, Any]] = []
+    for rung in rungs:
+        if rung.state not in {"pending_approval", "needs_reconfirm"}:
+            continue
+        proposal_client_order_id = (
+            _toss_proposal_client_order_id(proposal_id, rung.rung_index)
+            if group.account_mode == "toss_live"
+            else _proposal_client_order_id(proposal_id, rung.rung_index)
+            if group.account_mode == "upbit"
+            else None
+        )
+        preview = await _maybe_await(
+            place_order_fn(
+                dry_run=True,
+                account_mode=group.account_mode,
+                symbol=group.symbol,
+                side=rung.side,
+                market=group.market,
+                order_type=group.order_type,
+                quantity=rung.quantity,
+                price=rung.limit_price,
+                thesis=group.thesis,
+                strategy=group.strategy,
+                exit_intent=group.exit_intent,
+                exit_reason=group.exit_reason,
+                retrospective_id=group.retrospective_id,
+                approval_issue_id=group.approval_issue_id,
+                reason=_PREVIEW_REASON.format(rung=rung.rung_index),
+                rung=rung.rung_index,
+                **(
+                    {"proposal_client_order_id": proposal_client_order_id}
+                    if proposal_client_order_id is not None
+                    else {}
+                ),
+            )
+        )
+        if preview.get("success") is False:
+            raise OrderProposalError(
+                str(preview.get("error") or "loss_cut_confirmation_preview_blocked")
+            )
+        try:
+            current_price = Decimal(str(preview["current_price"]))
+            avg_buy_price = Decimal(str(preview["avg_buy_price"]))
+            slip_band = Decimal(str(preview["loss_cut_slip_band"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise OrderProposalError(
+                "loss_cut_confirmation_preview_missing_price_context"
+            ) from exc
+        if avg_buy_price <= 0:
+            raise OrderProposalError("loss_cut_confirmation_invalid_average_cost")
+        loss_pct = ((current_price - avg_buy_price) / avg_buy_price * 100).quantize(
+            Decimal("0.01")
+        )
+        evidence_rungs.append(
+            {
+                "rung_index": rung.rung_index,
+                "current_price": _norm(current_price),
+                "avg_buy_price": _norm(avg_buy_price),
+                "loss_pct": format(loss_pct, "f"),
+                "loss_cut_slip_band": _norm(slip_band),
+            }
+        )
+    if not evidence_rungs:
+        raise OrderProposalError("loss_cut_confirmation_has_no_eligible_rungs")
+    lesson = " ".join(str(getattr(retrospective, "lesson", None) or "미기재").split())
+    if len(lesson) > 240:
+        lesson = lesson[:239] + "…"
+    return {
+        "rungs": evidence_rungs,
+        "retrospective_id": group.retrospective_id,
+        "lesson_excerpt": lesson,
+    }
 
 
 def _default_correlation_mint(

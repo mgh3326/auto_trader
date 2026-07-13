@@ -1,43 +1,26 @@
-"""Unit tests for defensive_trim gating in place_order."""
+"""Regression tests for the fail-closed defensive_trim direct path."""
 
 from __future__ import annotations
 
 import inspect
 import json
-import uuid
 from unittest.mock import AsyncMock
 
 import pytest
-import pytest_asyncio
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
 from app.mcp_server.caller_identity import caller_agent_id_var, caller_source_var
-from app.mcp_server.tooling import order_execution, order_validation
+from app.mcp_server.tooling import order_validation
 from app.mcp_server.tooling.orders_registration import register_order_tools
 from tests._mcp_tooling_support import build_tools
 
-TRADER_AGENT_ID = "6b2192cc-14fa-4335-b572-2fe1e0cb54a7"
 
-
-@pytest_asyncio.fixture(autouse=True)
-async def _ensure_live_order_ledger_schema(db_session):
-    """ROB-407: defensive-trim live crypto sell writes to review.live_order_ledger.
-    Depend on db_session so create_all builds the table before any direct insert."""
-    yield
-
-
-def _mock_crypto_sell_context(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    current_price: float = 1000.0,
-    balance: str = "2.0",
-    avg_buy_price: str = "1000.0",
-) -> None:
+def _mock_crypto_sell_context(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         upbit_service,
         "fetch_multiple_current_prices",
-        AsyncMock(return_value={"KRW-BTC": current_price}),
+        AsyncMock(return_value={"KRW-BTC": 1000.0}),
     )
     monkeypatch.setattr(
         upbit_service,
@@ -46,61 +29,97 @@ def _mock_crypto_sell_context(
             return_value=[
                 {
                     "currency": "BTC",
-                    "balance": balance,
+                    "balance": "2.0",
                     "locked": "0",
-                    "avg_buy_price": avg_buy_price,
+                    "avg_buy_price": "1000.0",
                 }
             ]
         ),
     )
 
 
-@pytest.fixture(autouse=True)
-def _set_defaults(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(settings, "trader_agent_id", TRADER_AGENT_ID, raising=False)
-    monkeypatch.setattr(
-        settings,
-        "paperclip_api_url",
-        "https://paperclip.local",
-        raising=False,
-    )
-    monkeypatch.setattr(settings, "paperclip_api_key", "test-token", raising=False)
-    order_validation._defensive_trim_success_cache.clear()
-    agent_token = caller_agent_id_var.set(TRADER_AGENT_ID)
-    source_token = caller_source_var.set("http_header")
-    try:
-        yield
-    finally:
-        caller_source_var.reset(source_token)
-        caller_agent_id_var.reset(agent_token)
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_direct_defensive_trim_fails_closed_with_proposal_guidance() -> None:
+    with pytest.raises(
+        ValueError,
+        match="defensive_trim_direct_path_disabled_use_order_proposal_create",
+    ):
+        await order_validation._validate_defensive_trim_preconditions(
+            defensive_trim=True,
+            approval_issue_id="legacy audit note",
+            side="sell",
+            order_type="limit",
+        )
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_defensive_trim_schema_blocks_market_even_with_flag() -> None:
-    """defensive_trim path rejects market orders."""
-    tools = build_tools()
-
-    result = await tools["place_order"](
+@pytest.mark.parametrize("order_type", ["limit", "market"])
+async def test_place_order_defensive_trim_direct_path_returns_guidance(
+    order_type,
+) -> None:
+    result = await build_tools()["place_order"](
         symbol="KRW-BTC",
         side="sell",
-        order_type="market",
+        order_type=order_type,
+        quantity=1.0,
+        price=1005.0,
         defensive_trim=True,
-        approval_issue_id="ROB-164",
+        approval_issue_id="legacy audit note",
         dry_run=True,
     )
 
     assert result["success"] is False
-    assert (
-        result["error"]
-        == "defensive_trim requires order_type='limit' (market orders are blocked)"
+    assert result["error"] == (
+        "defensive_trim_direct_path_disabled_use_order_proposal_create"
     )
 
 
 @pytest.mark.unit
-def test_place_order_description_documents_four_and_defensive_trim_gate() -> None:
-    """Public tool description documents every defensive_trim gate."""
+@pytest.mark.asyncio
+async def test_generic_paper_loss_cut_cannot_bypass_proposal_path() -> None:
+    result = await build_tools()["place_order"](
+        symbol="KRW-BTC",
+        side="sell",
+        order_type="limit",
+        quantity=1.0,
+        price=1005.0,
+        exit_intent="loss_cut",
+        exit_reason="stop_loss",
+        retrospective_id=42,
+        account_type="paper",
+        dry_run=True,
+    )
 
+    assert result["success"] is False
+    assert result["error"] == (
+        "loss_cut_direct_path_disabled_use_order_proposal_create"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_non_defensive_sell_keeps_existing_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_crypto_sell_context(monkeypatch)
+
+    result = await build_tools()["place_order"](
+        symbol="KRW-BTC",
+        side="sell",
+        order_type="limit",
+        quantity=1.0,
+        price=1005.0,
+        dry_run=True,
+    )
+
+    assert result["success"] is False
+    assert "below minimum" in result["error"]
+
+
+@pytest.mark.unit
+def test_place_order_description_routes_defensive_trim_to_proposals() -> None:
     class CapturingMCP:
         def __init__(self) -> None:
             self.descriptions: dict[str, str] = {}
@@ -118,386 +137,15 @@ def test_place_order_description_documents_four_and_defensive_trim_gate() -> Non
 
     description = mcp.descriptions["place_order"]
     assert "defensive_trim=True" in description
-    assert "(a) side='sell'" in description
-    assert "(b) order_type='limit'" in description
-    assert "(c) valid approval_issue_id" in description
-    assert (
-        "(d) middleware-extracted caller identity matching Trader agent" in description
-    )
-    assert "approval issue status=done" in description
+    assert "order_proposal_create" in description
+    assert "approval issue status=done" not in description
     assert "requester_agent_id" not in description
-    assert "ROB-164/ROB-166" in description
 
 
 @pytest.mark.unit
 def test_place_order_signature_removes_requester_agent_id() -> None:
-    """Public MCP place_order signature no longer accepts caller-asserted identity."""
-    tools = build_tools()
-
-    signature = inspect.signature(tools["place_order"])
-
+    signature = inspect.signature(build_tools()["place_order"])
     assert "requester_agent_id" not in signature.parameters
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_flag_off_limit_below_floor_rejected(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """defensive_trim=False keeps avg*1.01 floor enforcement."""
-    tools = build_tools()
-    _mock_crypto_sell_context(monkeypatch, current_price=1000.0, avg_buy_price="1000.0")
-
-    result = await tools["place_order"](
-        symbol="KRW-BTC",
-        side="sell",
-        order_type="limit",
-        quantity=1.0,
-        price=1005.0,
-        dry_run=True,
-    )
-
-    assert result["success"] is False
-    assert "below minimum" in result["error"]
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_flag_on_with_valid_approval_and_trader_caller_allowed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Valid 4-gate combination allows floor bypass in preview."""
-    tools = build_tools()
-    _mock_crypto_sell_context(monkeypatch, current_price=1000.0, avg_buy_price="1000.0")
-    monkeypatch.setattr(
-        order_validation,
-        "_fetch_approval_issue_status",
-        AsyncMock(return_value="done"),
-    )
-
-    result = await tools["place_order"](
-        symbol="KRW-BTC",
-        side="sell",
-        order_type="limit",
-        quantity=1.0,
-        price=1005.0,
-        defensive_trim=True,
-        approval_issue_id="ROB-164",
-        dry_run=True,
-    )
-
-    assert result["success"] is True
-    assert result["dry_run"] is True
-    assert result["defensive_trim"] is True
-    assert result["approval_issue_id"] == "ROB-164"
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_flag_on_floor_bypass_logs_structured_warning(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """defensive_trim floor bypass emits the ST-2 audit warning fields."""
-    tools = build_tools()
-    _mock_crypto_sell_context(monkeypatch, current_price=1000.0, avg_buy_price="1000.0")
-    monkeypatch.setattr(
-        order_validation,
-        "_fetch_approval_issue_status",
-        AsyncMock(return_value="done"),
-    )
-
-    result = await tools["place_order"](
-        symbol="KRW-BTC",
-        side="sell",
-        order_type="limit",
-        quantity=1.0,
-        price=1005.0,
-        defensive_trim=True,
-        approval_issue_id="ROB-164",
-        dry_run=True,
-    )
-
-    assert result["success"] is True
-    warning_records = [
-        record
-        for record in caplog.records
-        if record.message.startswith("defensive_trim_bypass_active")
-    ]
-    assert {record.phase for record in warning_records} == {"execution", "preview"}
-    for record in warning_records:
-        assert record.approval_issue_id == "ROB-164"
-        assert record.requester_agent_id == TRADER_AGENT_ID
-        assert record.symbol == "KRW-BTC"
-        assert record.price == pytest.approx(1005.0)
-        assert record.min_sell_price == pytest.approx(1010.0)
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_flag_on_missing_approval_id_rejected() -> None:
-    """defensive_trim requires approval_issue_id."""
-    tools = build_tools()
-
-    result = await tools["place_order"](
-        symbol="KRW-BTC",
-        side="sell",
-        order_type="limit",
-        quantity=1.0,
-        price=1005.0,
-        defensive_trim=True,
-        dry_run=True,
-    )
-
-    assert result["success"] is False
-    assert result["error"] == "defensive_trim=True requires approval_issue_id"
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_flag_on_malformed_approval_id_rejected() -> None:
-    """approval_issue_id must match ticket-like format."""
-    tools = build_tools()
-
-    result = await tools["place_order"](
-        symbol="KRW-BTC",
-        side="sell",
-        order_type="limit",
-        quantity=1.0,
-        price=1005.0,
-        defensive_trim=True,
-        approval_issue_id="bad-format",
-        dry_run=True,
-    )
-
-    assert result["success"] is False
-    assert (
-        result["error"] == "approval_issue_id format invalid (expected e.g. 'ROB-164')"
-    )
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_flag_on_approval_not_done_rejected(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Approval must exist and be in done status."""
-    tools = build_tools()
-    monkeypatch.setattr(
-        order_validation,
-        "_fetch_approval_issue_status",
-        AsyncMock(return_value="in_progress"),
-    )
-
-    result = await tools["place_order"](
-        symbol="KRW-BTC",
-        side="sell",
-        order_type="limit",
-        quantity=1.0,
-        price=1005.0,
-        defensive_trim=True,
-        approval_issue_id="ROB-164",
-        dry_run=True,
-    )
-
-    assert result["success"] is False
-    assert (
-        result["error"] == "approval_issue_id ROB-164 not found or not in 'done' status"
-    )
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_flag_on_paperclip_api_timeout_fail_closed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Paperclip API timeout fails closed."""
-    tools = build_tools()
-    monkeypatch.setattr(
-        order_validation,
-        "_fetch_approval_issue_status",
-        AsyncMock(side_effect=TimeoutError("timeout")),
-    )
-
-    result = await tools["place_order"](
-        symbol="KRW-BTC",
-        side="sell",
-        order_type="limit",
-        quantity=1.0,
-        price=1005.0,
-        defensive_trim=True,
-        approval_issue_id="ROB-164",
-        dry_run=True,
-    )
-
-    assert result["success"] is False
-    assert (
-        result["error"] == "approval_issue_id ROB-164 not found or not in 'done' status"
-    )
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_flag_on_non_trader_caller_rejected() -> None:
-    """Only trader agent can use defensive_trim."""
-    tools = build_tools()
-    caller_agent_id_var.set("other-agent")
-
-    result = await tools["place_order"](
-        symbol="KRW-BTC",
-        side="sell",
-        order_type="limit",
-        quantity=1.0,
-        price=1005.0,
-        defensive_trim=True,
-        approval_issue_id="ROB-164",
-        dry_run=True,
-    )
-
-    assert result["success"] is False
-    assert (
-        result["error"]
-        == "defensive_trim requires Trader agent caller (got caller_agent_id=other-agent)"
-    )
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_flag_on_missing_caller_id_rejected() -> None:
-    """defensive_trim requires caller identity."""
-    tools = build_tools()
-    caller_agent_id_var.set(None)
-
-    result = await tools["place_order"](
-        symbol="KRW-BTC",
-        side="sell",
-        order_type="limit",
-        quantity=1.0,
-        price=1005.0,
-        defensive_trim=True,
-        approval_issue_id="ROB-164",
-        dry_run=True,
-    )
-
-    assert result["success"] is False
-    assert (
-        result["error"]
-        == "caller identity unavailable — defensive_trim requires authenticated MCP caller"
-    )
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_flag_on_still_rejects_below_current_price(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """defensive_trim bypasses floor only, not current-price guard."""
-    tools = build_tools()
-    _mock_crypto_sell_context(monkeypatch, current_price=1000.0, avg_buy_price="900.0")
-    monkeypatch.setattr(
-        order_validation,
-        "_fetch_approval_issue_status",
-        AsyncMock(return_value="done"),
-    )
-
-    result = await tools["place_order"](
-        symbol="KRW-BTC",
-        side="sell",
-        order_type="limit",
-        quantity=1.0,
-        price=990.0,
-        defensive_trim=True,
-        approval_issue_id="ROB-164",
-        dry_run=True,
-    )
-
-    assert result["success"] is False
-    assert "below current price" in result["error"]
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_defensive_trim_sell_accepted_only_persists_audit_to_ledger(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """ROB-407: live crypto defensive-trim sell records accepted-only. The
-    order-history approval audit is still recorded at send; the journal close is
-    deferred to evidence-gated reconcile, so the defensive-trim approval fields are
-    persisted on the live_order_ledger row (re-attached to the journal at reconcile,
-    see tests/mcp_server/tooling/test_live_order_ledger.py)."""
-    tools = build_tools()
-    _mock_crypto_sell_context(monkeypatch, current_price=1000.0, avg_buy_price="1000.0")
-    monkeypatch.setattr(
-        order_validation,
-        "_fetch_approval_issue_status",
-        AsyncMock(return_value="done"),
-    )
-    order_uuid = f"defensive-trim-{uuid.uuid4()}"
-
-    record_mock = AsyncMock()
-    monkeypatch.setattr(order_execution, "_record_order_history", record_mock)
-    monkeypatch.setattr(
-        upbit_service,
-        "place_sell_order",
-        AsyncMock(return_value={"uuid": order_uuid}),
-    )
-    monkeypatch.setattr(
-        order_execution, "_save_order_fill", AsyncMock(return_value=9191)
-    )
-    monkeypatch.setattr(order_execution, "_link_journal_to_fill", AsyncMock())
-    close_mock = AsyncMock()
-    monkeypatch.setattr(order_execution, "_close_journals_on_sell", close_mock)
-
-    result = await tools["place_order"](
-        symbol="KRW-BTC",
-        side="sell",
-        order_type="limit",
-        quantity=1.0,
-        price=1005.0,
-        defensive_trim=True,
-        approval_issue_id="ROB-164",
-        dry_run=False,
-    )
-
-    assert result["success"] is True
-    assert result["fill_recorded"] is False
-    assert result["broker_status"] == "accepted"
-    assert "journals_closed" not in result
-
-    # order-history approval audit is still recorded at send
-    record_mock.assert_awaited_once()
-    kwargs = record_mock.await_args.kwargs
-    assert kwargs["defensive_trim"] is True
-    assert kwargs["approval_issue_id"] == "ROB-164"
-    assert kwargs["requester_agent_id"] == TRADER_AGENT_ID
-    assert kwargs["caller_source"] == "http_header"
-
-    # journal close is deferred to reconcile — never attempted at send
-    close_mock.assert_not_awaited()
-
-    # approval audit is persisted on the ledger row so reconcile can re-attach
-    # the defensive-trim note to the closed journal.
-    from sqlalchemy import select
-
-    from app.mcp_server.tooling.live_order_ledger import _order_session_factory
-    from app.models.review import LiveOrderLedger
-
-    async with _order_session_factory()() as db:
-        row = (
-            (
-                await db.execute(
-                    select(LiveOrderLedger).where(
-                        LiveOrderLedger.order_no == order_uuid
-                    )
-                )
-            )
-            .scalars()
-            .first()
-        )
-    assert row is not None
-    assert row.dt_approval_issue_id == "ROB-164"
-    assert row.dt_requester_agent_id == TRADER_AGENT_ID
-    assert row.dt_caller_source == "http_header"
 
 
 @pytest.mark.unit
@@ -505,8 +153,6 @@ async def test_defensive_trim_sell_accepted_only_persists_audit_to_ledger(
 async def test_record_order_history_persists_caller_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Redis order history audit records the middleware caller source."""
-
     class FakeRedis:
         def __init__(self) -> None:
             self.pushed: list[tuple[str, str]] = []
@@ -519,77 +165,45 @@ async def test_record_order_history_persists_caller_source(
 
     fake_redis = FakeRedis()
     monkeypatch.setattr(settings, "redis_url", "redis://test", raising=False)
-    monkeypatch.setattr(
-        "redis.asyncio.from_url",
-        AsyncMock(return_value=fake_redis),
-    )
+    monkeypatch.setattr("redis.asyncio.from_url", AsyncMock(return_value=fake_redis))
+    agent_token = caller_agent_id_var.set("trader-test")
+    source_token = caller_source_var.set("http_header")
+    try:
+        await order_validation._record_order_history(
+            symbol="KRW-BTC",
+            side="sell",
+            order_type="limit",
+            quantity=1.0,
+            price=1005.0,
+            amount=1005.0,
+            reason="defensive trim",
+            dry_run=False,
+            defensive_trim=True,
+            approval_issue_id="legacy audit note",
+            requester_agent_id="trader-test",
+        )
+    finally:
+        caller_source_var.reset(source_token)
+        caller_agent_id_var.reset(agent_token)
 
-    await order_validation._record_order_history(
-        symbol="KRW-BTC",
-        side="sell",
-        order_type="limit",
-        quantity=1.0,
-        price=1005.0,
-        amount=1005.0,
-        reason="defensive trim",
-        dry_run=False,
-        defensive_trim=True,
-        approval_issue_id="ROB-164",
-        requester_agent_id=TRADER_AGENT_ID,
-    )
-
-    assert len(fake_redis.pushed) == 1
-    _, raw_record = fake_redis.pushed[0]
-    record = json.loads(raw_record)
-    assert record["requester_agent_id"] == TRADER_AGENT_ID
+    record = json.loads(fake_redis.pushed[0][1])
     assert record["caller_source"] == "http_header"
 
 
 @pytest.mark.unit
-@pytest.mark.asyncio
-async def test_flag_on_buy_side_rejected() -> None:
-    """defensive_trim is sell-only."""
-    tools = build_tools()
-
-    result = await tools["place_order"](
-        symbol="KRW-BTC",
-        side="buy",
-        order_type="limit",
-        quantity=1.0,
-        price=1000.0,
-        defensive_trim=True,
-        approval_issue_id="ROB-164",
-        dry_run=True,
-    )
-
-    assert result["success"] is False
-    assert (
-        result["error"]
-        == "defensive_trim requires side='sell' (buy orders always use existing path)"
-    )
-
-
-def test_kis_live_place_order_documents_defensive_trim_approval_dependency():
-    """ROB-466: the kis_live_place_order schema description must surface that
-    defensive_trim=True requires approval_issue_id, so callers discover the
-    dependency before a runtime rejection (even in dry_run)."""
-    from app.mcp_server.tooling.orders_kis_variants import (
-        register_kis_live_order_tools,
-    )
+def test_kis_live_description_routes_defensive_trim_to_proposals() -> None:
+    from app.mcp_server.tooling.orders_kis_variants import register_kis_live_order_tools
 
     captured: dict[str, str] = {}
 
-    class _CaptureMCP:
+    class CapturingMCP:
         def tool(self, *, name: str, description: str = ""):
             captured[name] = description
 
-            def _decorator(func):
+            def decorator(func):
                 return func
 
-            return _decorator
+            return decorator
 
-    register_kis_live_order_tools(_CaptureMCP())
-
-    desc = captured["kis_live_place_order"]
-    assert "defensive_trim" in desc
-    assert "approval_issue_id" in desc
+    register_kis_live_order_tools(CapturingMCP())
+    assert "order_proposal_create" in captured["kis_live_place_order"]
