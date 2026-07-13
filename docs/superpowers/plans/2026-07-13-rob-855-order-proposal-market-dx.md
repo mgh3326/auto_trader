@@ -335,4 +335,3 @@ one PR against `main` titled
 mode/deployment after three retries, first KR execution produced zero orders),
 lists tests, enumerates normalization callsites, and states no migration is
 required because existing valid rows are canonical.
-
