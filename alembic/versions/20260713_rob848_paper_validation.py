@@ -119,6 +119,8 @@ def upgrade() -> None:
         sa.Column("reason_code", sa.String(64), nullable=False),
         sa.Column("reason_text", sa.Text(), nullable=False),
         *_hash_columns(),
+        sa.Column("input_bundle_id", sa.String(128), nullable=False),
+        sa.Column("policy_version", sa.String(128), nullable=False),
         sa.Column(
             "evidence_ids",
             postgresql.JSONB(astext_type=sa.Text()),

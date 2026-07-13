@@ -92,6 +92,7 @@ class PolicyHashProvider(Protocol):
 
 class TransitionRequest(FrozenContract):
     identity: ValidationIdentity
+    expected_prior_state: ValidationState | None
     target_state: ValidationState
     idempotency_key: NonBlank
     reason_code: NonBlank
@@ -127,6 +128,14 @@ class PostmortemReviewInput(FrozenContract):
     cited_evidence: tuple[NonBlank, ...] = Field(min_length=1)
 
 
+class PromotionConfirmationInput(FrozenContract):
+    identity: ValidationIdentity
+    idempotency_key: NonBlank
+    reason: NonBlank
+    evidence_ids: tuple[NonBlank, ...] = Field(min_length=1)
+    confirmed: Literal[True] = True
+
+
 class PaperOrderAuthorization(FrozenContract):
     identity: ValidationIdentity
     state: ValidationState
@@ -146,6 +155,7 @@ __all__ = [
     "PolicyHashProvider",
     "PolicyStamp",
     "PostmortemReviewInput",
+    "PromotionConfirmationInput",
     "Sha256",
     "TransitionDecision",
     "TransitionRequest",

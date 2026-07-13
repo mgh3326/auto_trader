@@ -67,6 +67,7 @@ def test_identity_rejects_non_canonical_sha256(field: str, value: object) -> Non
 def test_transition_payload_cannot_spoof_actor_identity_or_role() -> None:
     payload = {
         "identity": identity_payload(),
+        "expected_prior_state": "draft",
         "target_state": "offline_eligible",
         "idempotency_key": "transition-1",
         "reason_code": "offline_gate_passed",

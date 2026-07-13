@@ -9,7 +9,11 @@ from sqlalchemy import delete, text, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.paper_validation import PaperValidationStateTransition
+from app.models.paper_validation import (
+    PaperValidationPostmortemReview,
+    PaperValidationStateTransition,
+    StrategyHypothesisDraft,
+)
 from app.models.research_backtest import ResearchStrategyExperiment
 
 HASH_FIELDS = (
@@ -76,6 +80,8 @@ def _transition(
         config_hash=experiment.frozen_config_hash,
         policy_hash=experiment.policy_hash,
         input_hash=_hash("input"),
+        input_bundle_id="bundle-1",
+        policy_version="policy-v1",
         evidence_ids=["experiment-registry"],
     )
 
@@ -208,3 +214,78 @@ async def test_all_three_audit_tables_have_immutable_triggers(
         "strategy_hypothesis_drafts",
         "paper_validation_postmortem_reviews",
     }
+
+
+@pytest.mark.parametrize(
+    ("model", "mutable_field", "changed_value"),
+    [
+        (StrategyHypothesisDraft, "mechanism", "mutated mechanism"),
+        (PaperValidationPostmortemReview, "review_text", "mutated review"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_hypothesis_and_review_update_delete_are_rejected(
+    db_session: AsyncSession,
+    model: type[StrategyHypothesisDraft | PaperValidationPostmortemReview],
+    mutable_field: str,
+    changed_value: str,
+) -> None:
+    experiment = await _experiment(db_session)
+    common = {
+        "validation_id": f"validation-{uuid4().hex}",
+        "validation_version": 1,
+        "experiment_id": experiment.experiment_id,
+        "strategy_version_id": experiment.strategy_version,
+        "cohort_id": "cohort-opaque-1",
+        "idempotency_key": f"audit-{uuid4().hex}",
+        "request_hash": _hash(f"request-{uuid4().hex}"),
+        "experiment_hash": experiment.experiment_id,
+        "cohort_hash": _hash("cohort"),
+        "strategy_hash": experiment.strategy_hash,
+        "config_hash": experiment.frozen_config_hash,
+        "policy_hash": experiment.policy_hash,
+        "input_hash": _hash("input"),
+    }
+    if model is StrategyHypothesisDraft:
+        row = StrategyHypothesisDraft(
+            **common,
+            author_id="researcher-1",
+            author_role="researcher",
+            mechanism="mechanism",
+            universe=["KRX:005930"],
+            horizon="5d",
+            entry_criteria=["entry"],
+            exit_criteria=["exit"],
+            invalidation_criteria=["invalidate"],
+            data_requirements=["PIT bars"],
+            expected_cost_hurdle="0.003",
+            turnover_bound="0.25",
+            risk_bound="0.02",
+            cited_evidence=["evidence-1"],
+        )
+    else:
+        row = PaperValidationPostmortemReview(
+            **common,
+            evaluator_id="reviewer-1",
+            evaluator_role="reviewer",
+            review_text="review",
+            cited_evidence=["evidence-1"],
+        )
+    db_session.add(row)
+    await db_session.flush()
+    row_id = row.id
+    await db_session.commit()
+
+    with pytest.raises(DBAPIError, match="append-only"):
+        await db_session.execute(
+            update(model)
+            .where(model.id == row_id)
+            .values({mutable_field: changed_value})
+        )
+        await db_session.commit()
+    await db_session.rollback()
+
+    with pytest.raises(DBAPIError, match="append-only"):
+        await db_session.execute(delete(model).where(model.id == row_id))
+        await db_session.commit()
+    await db_session.rollback()

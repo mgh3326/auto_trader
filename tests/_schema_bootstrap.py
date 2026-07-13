@@ -34,7 +34,7 @@ from sqlalchemy import text
 # replaces only a mismatched definition before CREATE IF NOT EXISTS.
 # v11 (ROB-866): review.toss_manual_activity_alerts (new ORM table) — create_all
 # builds it; bump forces a persistent local DB to re-bootstrap once.
-SCHEMA_BOOTSTRAP_VERSION = 12
+SCHEMA_BOOTSTRAP_VERSION = 13
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -688,6 +688,16 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "'research.% is append-only/immutable; % rejected', TG_TABLE_NAME, TG_OP "
     "USING ERRCODE = 'restrict_violation'; "
     "END; $$ LANGUAGE plpgsql",
+    "ALTER TABLE research.paper_validation_state_transitions "
+    "ADD COLUMN IF NOT EXISTS input_bundle_id VARCHAR(128) "
+    "NOT NULL DEFAULT 'bootstrap-legacy'",
+    "ALTER TABLE research.paper_validation_state_transitions "
+    "ALTER COLUMN input_bundle_id DROP DEFAULT",
+    "ALTER TABLE research.paper_validation_state_transitions "
+    "ADD COLUMN IF NOT EXISTS policy_version VARCHAR(128) "
+    "NOT NULL DEFAULT 'bootstrap-legacy'",
+    "ALTER TABLE research.paper_validation_state_transitions "
+    "ALTER COLUMN policy_version DROP DEFAULT",
     "CREATE OR REPLACE FUNCTION "
     "research.validate_paper_validation_experiment_identity() "
     "RETURNS trigger AS $$ DECLARE "
