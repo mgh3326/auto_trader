@@ -1174,7 +1174,7 @@ class TradeForecast(Base):
     __table_args__ = (
         UniqueConstraint("forecast_id", name="uq_trade_forecasts_forecast_id"),
         CheckConstraint(
-            "status IN ('open','closed')",
+            "status IN ('open','closed','closed_no_claim')",
             name="ck_trade_forecasts_status",
         ),
         CheckConstraint(

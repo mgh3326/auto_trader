@@ -2060,6 +2060,15 @@ Forbidden by physical non-registration:
 
 Authentication is mandatory for this profile. `MCP_PROFILE=tradingcodex_execution` fails at startup unless `MCP_AUTH_TOKEN` is non-empty, and the runtime also requires the TradingCodex approval-hash modes configured in `app/mcp_server/main.py`.
 
+### Forecast resolution semantics
+
+`forecast_resolve` auto-closes a due placeholder whose
+`forecast_target.kind` is `no_resolvable_forecast`. A dry run reports
+`would_close_no_claim`; a persisted run assigns `closed_no_claim`. These rows
+keep `outcome` and `brier_score` null and are excluded from calibration
+aggregates. Other non-price forecast kinds continue to require an explicit
+manual outcome and evidence.
+
 ### Typed KIS order tools
 
 The `default` and `hermes-paper-kis` profiles provide explicitly-named KIS

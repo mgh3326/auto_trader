@@ -81,6 +81,8 @@ _VALID_INSTRUMENTS = {t.value for t in InstrumentType}
 _AUTO_RESOLVABLE_INSTRUMENTS = {"equity_kr", "equity_us", "crypto"}
 _PRICE_DIRECTIONS = {"at_or_above", "at_or_below"}
 _GROUP_BY_FIELDS = {"created_by", "session_label", "model_label", "day"}
+_NO_RESOLVABLE_FORECAST_KIND = "no_resolvable_forecast"
+_CLOSED_NO_CLAIM_STATUS = "closed_no_claim"
 
 
 class ForecastValidationError(ValueError):
@@ -259,7 +261,7 @@ class ForecastRepository:
         if fid is not None:
             existing = await self.get_by_forecast_id(fid)
             if existing is not None:
-                if existing.status == "closed":
+                if existing.status != "open":
                     raise ForecastValidationError(
                         f"cannot modify a closed (resolved) forecast; forecast_id={fid}"
                     )
@@ -654,7 +656,7 @@ async def resolve_forecast(
     row = await repo.get_by_forecast_id(_coerce_forecast_id(forecast_id))
     if row is None:
         raise ForecastValidationError(f"forecast not found: {forecast_id}")
-    if row.status == "closed":
+    if row.status != "open":
         return {
             "status": "already_closed",
             "changed": False,
@@ -669,6 +671,36 @@ async def resolve_forecast(
         if hasattr(row.instrument_type, "value")
         else str(row.instrument_type)
     )
+
+    if kind == _NO_RESOLVABLE_FORECAST_KIND:
+        reason = "placeholder has no resolvable claim"
+        if not persist:
+            return {
+                "status": "would_close_no_claim",
+                "changed": False,
+                "auto_close": True,
+                "computed": None,
+                "reason": reason,
+                "forecast": serialize_forecast(row),
+            }
+
+        row.resolution_source = "not_applicable"
+        row.resolution_detail = {
+            "resolved_kind": kind,
+            "reason": reason,
+        }
+        row.resolved_at = resolved_now
+        row.status = _CLOSED_NO_CLAIM_STATUS
+        await db.flush()
+        await db.refresh(row)
+        return {
+            "status": _CLOSED_NO_CLAIM_STATUS,
+            "changed": True,
+            "auto_close": True,
+            "computed": None,
+            "reason": reason,
+            "forecast": serialize_forecast(row),
+        }
 
     if manual_outcome is not None:
         if not manual_evidence:
