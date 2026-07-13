@@ -82,7 +82,7 @@ class BinanceDemoLedgerService:
         """Resolve the independent transaction factory only when it is needed."""
         if self._reservation_session_factory is not None:
             return self._reservation_session_factory
-        bind = self._owner_session.bind
+        bind = getattr(self._owner_session, "bind", None)
         if isinstance(bind, AsyncConnection):
             # A session bound to a connection would otherwise reuse the caller's
             # transaction. Use its owning engine to obtain a new connection.

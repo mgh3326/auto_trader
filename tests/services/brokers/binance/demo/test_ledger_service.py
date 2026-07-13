@@ -9,6 +9,8 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.crypto_instruments import CryptoInstrument
 from app.services.brokers.binance.demo.errors import (
@@ -142,6 +144,30 @@ async def test_independent_boundaries_reject_invalid_product_before_db_work(
             global_open_root_cap=1,
             now=now,
         )
+
+
+@pytest.mark.asyncio
+async def test_independent_factory_uses_engine_for_connection_bound_session() -> None:
+    from app.core.db import engine
+
+    async with engine.connect() as connection:
+        owner = AsyncSession(bind=connection)
+        try:
+            factory = BinanceDemoLedgerService(owner).independent_session_factory()
+            async with factory() as independent:
+                assert await independent.scalar(text("SELECT 1")) == 1
+        finally:
+            await owner.close()
+
+
+@pytest.mark.asyncio
+async def test_independent_factory_rejects_unbound_session() -> None:
+    owner = AsyncSession()
+    try:
+        with pytest.raises(TypeError, match="AsyncEngine-bound"):
+            BinanceDemoLedgerService(owner).independent_session_factory()
+    finally:
+        await owner.close()
 
 
 @pytest.mark.asyncio
