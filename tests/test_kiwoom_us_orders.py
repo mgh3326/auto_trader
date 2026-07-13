@@ -39,14 +39,17 @@ def test_limit_and_market_body_format() -> None:
         "ord_uv": "213.0400",
         "trde_tp": "00",
     }
-    assert build_us_place_order_body(
-        side="buy",
-        symbol="NVDA",
-        stex_tp="ND",
-        quantity=1,
-        trde_tp="03",
-        price=None,
-    )["ord_uv"] == ""
+    assert (
+        build_us_place_order_body(
+            side="buy",
+            symbol="NVDA",
+            stex_tp="ND",
+            quantity=1,
+            trde_tp="03",
+            price=None,
+        )["ord_uv"]
+        == ""
+    )
 
 
 def test_market_rejects_price_and_limit_requires_price() -> None:

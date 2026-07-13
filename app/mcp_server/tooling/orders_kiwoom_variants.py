@@ -223,6 +223,7 @@ def _finalize_normalized_read_response(
         response["error_detail"] = str(exc)
     return response
 
+
 # Candidate Kiwoom cash fields, most specific first. Unknown shapes stay
 # unparsed (cash=None) rather than being faked (ROB-319 operator default).
 _ORDERABLE_CASH_KEYS = (

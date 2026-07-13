@@ -117,9 +117,7 @@ def _exception_response(operation: str, exc: Exception) -> dict[str, Any]:
         "success": False,
         "source": "kiwoom",
         "account_mode": ACCOUNT_MODE_KIWOOM_MOCK_US,
-        "error": (
-            f"kiwoom_mock_us_{operation} failed: {type(exc).__name__}: {exc}"
-        ),
+        "error": (f"kiwoom_mock_us_{operation} failed: {type(exc).__name__}: {exc}"),
     }
 
 
@@ -362,9 +360,7 @@ def register(mcp: FastMCP) -> None:
             client = KiwoomMockUsClient.from_app_settings()
             account = KiwoomUsAccountClient(cast(Any, client))
             method = (
-                account.get_open_orders
-                if scope == "open"
-                else account.get_today_orders
+                account.get_open_orders if scope == "open" else account.get_today_orders
             )
             raw = await method(
                 side_code=side_code,
@@ -423,9 +419,7 @@ def register(mcp: FastMCP) -> None:
             return guard
         try:
             client = KiwoomMockUsClient.from_app_settings()
-            raw = await KiwoomUsAccountClient(
-                cast(Any, client)
-            ).get_us_deposit_detail()
+            raw = await KiwoomUsAccountClient(cast(Any, client)).get_us_deposit_detail()
         except Exception as exc:  # noqa: BLE001 - stable MCP error envelope
             return _exception_response("get_orderable_cash", exc)
         value = extract_usd_deposit(raw)

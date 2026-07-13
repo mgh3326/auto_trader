@@ -32,8 +32,7 @@ def classify_capability_unsupported(
     except (TypeError, ValueError):
         return None
     if code == 20 and (
-        "RC9000" in message
-        or "모의투자에서는 해당업무가 제공되지 않습니다" in message
+        "RC9000" in message or "모의투자에서는 해당업무가 제공되지 않습니다" in message
     ):
         return "capability_unsupported"
     return None

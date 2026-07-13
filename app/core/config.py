@@ -1065,9 +1065,13 @@ def validate_kiwoom_mock_us_config(settings_obj: Any = settings) -> list[str]:
         missing.append("KIWOOM_MOCK_US_ENABLED")
     if not _has_nonempty_value(getattr(settings_obj, "kiwoom_mock_us_app_key", None)):
         missing.append("KIWOOM_MOCK_US_APP_KEY")
-    if not _has_nonempty_value(getattr(settings_obj, "kiwoom_mock_us_app_secret", None)):
+    if not _has_nonempty_value(
+        getattr(settings_obj, "kiwoom_mock_us_app_secret", None)
+    ):
         missing.append("KIWOOM_MOCK_US_APP_SECRET")
-    if not _has_nonempty_value(getattr(settings_obj, "kiwoom_mock_us_account_no", None)):
+    if not _has_nonempty_value(
+        getattr(settings_obj, "kiwoom_mock_us_account_no", None)
+    ):
         missing.append("KIWOOM_MOCK_US_ACCOUNT_NO")
     return missing
 

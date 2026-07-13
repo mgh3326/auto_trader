@@ -36,9 +36,7 @@ def test_registers_exact_seven_us_tools() -> None:
 
     assert set(_tools()) == KIWOOM_MOCK_US_TOOL_NAMES
     assert len(KIWOOM_MOCK_US_TOOL_NAMES) == 7
-    assert KIWOOM_MOCK_US_READ_TOOL_NAMES.isdisjoint(
-        KIWOOM_MOCK_US_MUTATION_TOOL_NAMES
-    )
+    assert KIWOOM_MOCK_US_READ_TOOL_NAMES.isdisjoint(KIWOOM_MOCK_US_MUTATION_TOOL_NAMES)
 
 
 @pytest.mark.asyncio
