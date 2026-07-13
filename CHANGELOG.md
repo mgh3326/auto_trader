@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added (ROB-858 — Toss live loss-cut proposals; migration 1)
+- **Toss KR/US loss-cut proposals now use the shared live authorization contract.** Preview and submit both require a matching fresh retrospective, dedicated completed Paperclip issue, allowed caller, and limit-sell slip band; only that validated context bypasses the ordinary `average_purchase_price * 1.01` floor, and live submit always requires the supplied preview token.
+- **Broker polling now closes proposal state without a websocket.** Toss reconcile projects cumulative partial/fill/cancel evidence onto proposal rungs, preserves partial quantity on cancel, and runs an idempotent terminal-ledger repair sweep after projection failures. Dry runs and pending/unknown evidence remain write-free/non-terminal.
+- **Execution audit and operations are explicit.** Additive migration `20260713_rob858_toss_loss_cut` stores `exit_intent`, `retrospective_id`, and `approval_issue_id` on the Toss ledger. Toss loss-cut activation requires an operating fill-poller cadence or targeted non-dry reconcile after each accepted order.
+
 ### Added (ROB-839 — crypto judgment rules policy promotion; migration 0)
 - **Crypto policy reads now return lane-filtered judgment rules.** `get_trading_policy(market="crypto", lane=...)` exposes an advisory `market_rules` block for the 2-of-4 recovery frame, support/resistance source priority, and no-chasing criteria while retaining the existing `{version, content_hash}` stamp.
 - **Missing report thresholds stay explicitly unknown.** Fear & Greed, kimchi premium, same-day gain, and 24-hour liquidity cutoffs remain `null`, so callers cannot invent model-specific numbers; the report-backed breadth (`>50%`) and BTC long/short (`<=1.5`) thresholds remain explicit.
