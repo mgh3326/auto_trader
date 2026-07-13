@@ -5,10 +5,18 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.order_proposals import OrderProposalRung
 from app.models.review import TossFillPollState, TossLiveOrderLedger
+
+_PROPOSAL_EVIDENCE_ACCEPTING_STATES = (
+    "acked",
+    "resting",
+    "partially_filled",
+    "unverified",
+)
 
 
 def _external_order_raw(order: Any) -> dict[str, Any]:
@@ -117,7 +125,10 @@ class TossLiveOrderLedgerService:
         stop_loss: Decimal | None = None,
         min_hold_days: int | None = None,
         notes: str | None = None,
+        exit_intent: str | None = None,
         exit_reason: str | None = None,
+        retrospective_id: int | None = None,
+        approval_issue_id: str | None = None,
         indicators_snapshot: dict[str, Any] | None = None,
         report_item_uuid: str | uuid.UUID | None = None,
         approval_hash: str | None = None,
@@ -173,7 +184,10 @@ class TossLiveOrderLedgerService:
             stop_loss=stop_loss,
             min_hold_days=min_hold_days,
             notes=notes,
+            exit_intent=exit_intent,
             exit_reason=exit_reason,
+            retrospective_id=retrospective_id,
+            approval_issue_id=approval_issue_id,
             indicators_snapshot=indicators_snapshot,
             report_item_uuid=parse_report_item_uuid(report_item_uuid),
             approval_hash=approval_hash,
@@ -242,6 +256,47 @@ class TossLiveOrderLedgerService:
             TossLiveOrderLedger.created_at.asc(), TossLiveOrderLedger.id.asc()
         ).limit(limit)
         rows = list((await self._db.execute(stmt)).scalars().all())
+        for row in rows:
+            self._db.expunge(row)
+        return rows
+
+    async def list_terminal_projection_candidates(
+        self,
+        *,
+        symbol: str | None = None,
+        order_id: str | None = None,
+        market: str | None = None,
+        limit: int = 100,
+    ) -> list[TossLiveOrderLedger]:
+        """Find terminal Toss rows whose proposal rung still needs projection."""
+        evidence_match = or_(
+            and_(
+                TossLiveOrderLedger.correlation_id.is_not(None),
+                TossLiveOrderLedger.correlation_id == OrderProposalRung.correlation_id,
+            ),
+            and_(
+                TossLiveOrderLedger.broker_order_id.is_not(None),
+                TossLiveOrderLedger.broker_order_id
+                == OrderProposalRung.broker_order_id,
+            ),
+        )
+        stmt = (
+            select(TossLiveOrderLedger)
+            .join(OrderProposalRung, evidence_match)
+            .where(
+                TossLiveOrderLedger.operation_kind == "place",
+                TossLiveOrderLedger.status.in_(("filled", "cancelled")),
+                OrderProposalRung.state.in_(_PROPOSAL_EVIDENCE_ACCEPTING_STATES),
+            )
+        )
+        if symbol:
+            stmt = stmt.where(TossLiveOrderLedger.symbol == symbol)
+        if order_id:
+            stmt = stmt.where(TossLiveOrderLedger.broker_order_id == order_id)
+        if market:
+            stmt = stmt.where(TossLiveOrderLedger.market == market)
+        stmt = stmt.order_by(TossLiveOrderLedger.id.asc()).limit(limit)
+        rows = list((await self._db.execute(stmt)).unique().scalars().all())
         for row in rows:
             self._db.expunge(row)
         return rows

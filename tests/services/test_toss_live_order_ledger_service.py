@@ -81,6 +81,31 @@ async def test_record_place_order_is_accepted_only(db_session):
     assert row.journal_id is None
 
 
+async def test_record_send_persists_loss_cut_audit_binding(db_session):
+    row = await TossLiveOrderLedgerService(db_session).record_send(
+        **_place_kwargs(
+            side="sell",
+            client_order_id="cid-loss-cut",
+            broker_order_id="ord-loss-cut",
+            exit_intent="loss_cut",
+            exit_reason="stop_loss",
+            retrospective_id=42,
+            approval_issue_id="ROB-858",
+        )
+    )
+
+    assert row.exit_intent == "loss_cut"
+    assert row.retrospective_id == 42
+    assert row.approval_issue_id == "ROB-858"
+
+
+async def test_toss_ledger_model_has_loss_cut_audit_columns():
+    columns = TossLiveOrderLedger.__table__.columns
+    assert "exit_intent" in columns
+    assert "retrospective_id" in columns
+    assert "approval_issue_id" in columns
+
+
 async def test_mark_replaced_links_original_to_replacement(db_session):
     svc = TossLiveOrderLedgerService(db_session)
     original = await svc.record_send(

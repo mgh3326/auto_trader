@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from app.models.execution_ledger import ExecutionLedger
 from app.models.review import TossLiveOrderLedger
@@ -67,6 +70,460 @@ async def _accepted(db_session, *, side: str = "buy", market: str = "us"):
         thesis="t" if side == "buy" else None,
         strategy="s" if side == "buy" else None,
         exit_reason="trim" if side == "sell" else None,
+    )
+
+
+async def _seed_toss_resting_proposal(
+    db_session, *, broker_order_id: str, correlation_id: str
+):
+    from datetime import UTC, datetime
+
+    from app.services.order_proposals import OrderProposalsService
+    from app.services.order_proposals.service import RungInput
+
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="AAPL",
+        market="equity_us",
+        account_mode="toss_live",
+        side="buy",
+        order_type="limit",
+        proposer="projection-test",
+        rungs=[RungInput(0, "buy", Decimal("2"), Decimal("190"), None)],
+    )
+    now = datetime.now(UTC)
+    for state in ("revalidating", "approved", "submitting"):
+        await service.transition_rung(group.proposal_id, 0, new_state=state)
+    await service.record_resting(
+        group.proposal_id,
+        0,
+        broker_order_id=broker_order_id,
+        correlation_id=correlation_id,
+        idempotency_key=f"idem-{broker_order_id}",
+        approval_hash_digest=f"digest-{broker_order_id}",
+        now=now,
+    )
+    await db_session.commit()
+    return group.proposal_id
+
+
+async def _proposal_rung(db_session, proposal_id):
+    from app.services.order_proposals import OrderProposalsService
+
+    _, rungs = await OrderProposalsService(db_session).get_proposal(proposal_id)
+    await db_session.refresh(rungs[0])
+    return rungs[0]
+
+
+async def _proposal_accepted_row(db_session, *, suffix: str):
+    unique = uuid4().hex
+    broker_order_id = f"ord-proposal-{suffix}-{unique}"
+    correlation_id = f"corr-proposal-{suffix}-{unique}"
+    proposal_id = await _seed_toss_resting_proposal(
+        db_session,
+        broker_order_id=broker_order_id,
+        correlation_id=correlation_id,
+    )
+    row = await TossLiveOrderLedgerService(db_session).record_send(
+        operation_kind="place",
+        market="us",
+        symbol="AAPL",
+        side="buy",
+        order_type="limit",
+        time_in_force="DAY",
+        quantity=Decimal("2"),
+        price=Decimal("190"),
+        order_amount=None,
+        currency="USD",
+        client_order_id=f"cid-proposal-{suffix}-{unique}",
+        broker_order_id=broker_order_id,
+        original_order_id=None,
+        status="accepted",
+        broker_status=None,
+        response_code="0",
+        response_message=None,
+        raw_response={},
+        thesis="projection test",
+        strategy="projection test",
+        correlation_id=correlation_id,
+    )
+    return proposal_id, row
+
+
+def _toss_evidence(*, verdict: str, local_status: str, filled_qty: str):
+    from app.mcp_server.tooling.toss_live_evidence import TossFillEvidence
+
+    return TossFillEvidence(
+        verdict=verdict,
+        local_status=local_status,
+        broker_status=local_status.upper(),
+        filled_qty=Decimal(filled_qty),
+        avg_price=Decimal("191.25"),
+        commission=Decimal("0.05"),
+        tax=Decimal("0.01"),
+        fee_total=Decimal("0.06"),
+        settlement_date=None,
+        raw_order={"status": local_status.upper()},
+        reason=verdict,
+    )
+
+
+def _projection_booking_patches(mod):
+    return (
+        patch.object(mod, "_save_order_fill", new=AsyncMock(return_value=555)),
+        patch.object(
+            mod,
+            "_create_trade_journal_for_buy",
+            new=AsyncMock(return_value={"journal_id": 77}),
+        ),
+        patch.object(mod, "_link_journal_to_fill", new=AsyncMock(return_value=None)),
+        patch.object(
+            mod,
+            "upsert_toss_execution_fill",
+            new=AsyncMock(return_value=("inserted", 858)),
+        ),
+        patch.object(mod, "_notify_toss_fill", new=AsyncMock(return_value=False)),
+        patch.object(mod, "_close_journals_on_sell", new=AsyncMock(return_value=None)),
+        patch.object(
+            mod, "capture_reconcile_spot_fx", new=AsyncMock(return_value=None)
+        ),
+    )
+
+
+async def _reconcile_with_evidence(mod, row, evidence):
+    source = AsyncMock()
+    source.evidence_for.return_value = evidence
+    with ExitStack() as stack:
+        for booking_patch in _projection_booking_patches(mod):
+            stack.enter_context(booking_patch)
+        return await mod._reconcile_one_toss_row(
+            row,
+            dry_run=False,
+            evidence_source=source,
+        )
+
+
+async def test_proposal_projection_partial_fill_and_duplicate_evidence_are_idempotent(
+    db_session,
+):
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
+    proposal_id, row = await _proposal_accepted_row(db_session, suffix="partial-fill")
+
+    partial = await _reconcile_with_evidence(
+        mod,
+        row,
+        _toss_evidence(verdict="partial", local_status="partial", filled_qty="0.5"),
+    )
+    rung = await _proposal_rung(db_session, proposal_id)
+    assert partial["proposal_rung"] == {
+        "converged": True,
+        "proposal_rung_state": "partially_filled",
+    }
+    assert rung.state == "partially_filled"
+    assert rung.filled_qty == Decimal("0.5")
+
+    await db_session.refresh(row)
+    filled = await _reconcile_with_evidence(
+        mod,
+        row,
+        _toss_evidence(verdict="filled", local_status="filled", filled_qty="2"),
+    )
+    rung = await _proposal_rung(db_session, proposal_id)
+    assert filled["proposal_rung"]["proposal_rung_state"] == "filled"
+    assert rung.state == "filled"
+    assert rung.filled_qty == Decimal("2")
+
+    await db_session.refresh(row)
+    duplicate = await _reconcile_with_evidence(
+        mod,
+        row,
+        _toss_evidence(verdict="filled", local_status="filled", filled_qty="2"),
+    )
+    rung = await _proposal_rung(db_session, proposal_id)
+    assert duplicate["action"] == "noop_already_booked"
+    assert "proposal_rung" not in duplicate
+    assert rung.state == "filled"
+    assert rung.filled_qty == Decimal("2")
+
+
+async def test_proposal_projection_cancel_preserves_existing_partial_quantity(
+    db_session,
+):
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
+    proposal_id, row = await _proposal_accepted_row(db_session, suffix="partial-cancel")
+    await _reconcile_with_evidence(
+        mod,
+        row,
+        _toss_evidence(verdict="partial", local_status="partial", filled_qty="0.5"),
+    )
+
+    await db_session.refresh(row)
+    cancelled = await _reconcile_with_evidence(
+        mod,
+        row,
+        _toss_evidence(verdict="none", local_status="cancelled", filled_qty="0"),
+    )
+    rung = await _proposal_rung(db_session, proposal_id)
+
+    assert cancelled["proposal_rung"]["proposal_rung_state"] == "cancelled"
+    assert rung.state == "cancelled"
+    assert rung.filled_qty == Decimal("0.5")
+
+
+async def test_proposal_projection_dry_run_is_read_only(db_session):
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
+    proposal_id, row = await _proposal_accepted_row(db_session, suffix="dry-run")
+    source = AsyncMock()
+    source.evidence_for.return_value = _toss_evidence(
+        verdict="filled", local_status="filled", filled_qty="2"
+    )
+
+    outcome = await mod._reconcile_one_toss_row(
+        row,
+        dry_run=True,
+        evidence_source=source,
+    )
+    rung = await _proposal_rung(db_session, proposal_id)
+
+    assert outcome["action"] == "would_book"
+    assert "proposal_rung" not in outcome
+    assert rung.state == "resting"
+    assert rung.filled_qty is None
+
+
+async def test_terminal_ledger_projection_failure_is_retried_by_sweep(db_session):
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.services.order_proposals import OrderProposalsService
+
+    proposal_id, row = await _proposal_accepted_row(db_session, suffix="retry-sweep")
+    evidence = _toss_evidence(verdict="filled", local_status="filled", filled_qty="2")
+
+    with patch.object(
+        OrderProposalsService,
+        "record_fill_evidence",
+        new=AsyncMock(side_effect=RuntimeError("projection unavailable")),
+    ):
+        failed = await _reconcile_with_evidence(mod, row, evidence)
+
+    await db_session.refresh(row)
+    rung = await _proposal_rung(db_session, proposal_id)
+    assert row.status == "filled"
+    assert failed["proposal_rung"] == {
+        "converged": False,
+        "error": "projection unavailable",
+    }
+    assert rung.state == "resting"
+
+    with (
+        patch.object(
+            mod.TossLiveOrderLedgerService,
+            "reopen_anomalies_for_reconcile",
+            new=AsyncMock(
+                return_value={
+                    "rows": [],
+                    "dry_run": False,
+                    "reopened": 0,
+                    "candidates": 0,
+                }
+            ),
+        ),
+        patch.object(
+            mod.TossLiveOrderLedgerService,
+            "list_open",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        repaired = await mod.toss_reconcile_orders_impl(dry_run=False)
+
+    rung = await _proposal_rung(db_session, proposal_id)
+    assert repaired["proposal_projection_repair"] == {
+        "candidates": 1,
+        "converged": 1,
+        "failed": 0,
+    }
+    assert rung.state == "filled"
+    assert rung.filled_qty == Decimal("2")
+
+
+@pytest.mark.parametrize("terminal_status", ["filled", "cancelled"])
+async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
+    db_session,
+    monkeypatch,
+    terminal_status,
+):
+    from app.mcp_server.tooling import orders_toss_variants as toss_orders
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.services.order_proposals import OrderProposalsService
+    from app.services.order_proposals.revalidation import revalidate_and_submit
+    from app.services.order_proposals.service import RungInput
+    from app.services.trade_journal.trade_retrospective_service import (
+        build_retrospective_pending,
+    )
+
+    unique = uuid4().hex
+    broker_order_id = f"toss-loss-cut-{terminal_status}-{unique}"
+    now = datetime.now(UTC)
+
+    async def fake_retrospective(session, retrospective_id):
+        return type(
+            "Retro",
+            (),
+            {
+                "symbol": "AAPL",
+                "trigger_type": "stop_loss",
+                "created_at": now,
+            },
+        )()
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id",
+        fake_retrospective,
+    )
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="AAPL",
+        market="equity_us",
+        account_mode="toss_live",
+        side="sell",
+        order_type="limit",
+        proposer="e2e-test",
+        rungs=[RungInput(0, "sell", Decimal("2"), Decimal("99"), None)],
+        exit_intent="loss_cut",
+        exit_reason="stop_loss",
+        retrospective_id=42,
+        approval_issue_id="ROB-858",
+        now=now,
+    )
+    await service.record_approval(
+        group.proposal_id,
+        telegram_user_id="telegram-operator",
+        now=now,
+    )
+    await db_session.commit()
+
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_preview(**kwargs):
+        calls.append(("preview", kwargs))
+        context = toss_orders._order_proposal_context.get()
+        return {
+            "success": True,
+            "approval_hash": "loss-cut-approval-token",
+            "payload_preview": {
+                "clientOrderId": context.client_order_id,
+                "price": "99",
+                "quantity": "2",
+            },
+        }
+
+    async def fake_submit(**kwargs):
+        calls.append(("submit", kwargs))
+        context = toss_orders._order_proposal_context.get()
+        ledger = await mod.record_toss_place_order(
+            market="us",
+            symbol="AAPL",
+            side="sell",
+            order_type="limit",
+            time_in_force="DAY",
+            quantity=Decimal("2"),
+            price=Decimal("99"),
+            order_amount=None,
+            currency="USD",
+            client_order_id=context.client_order_id,
+            broker_order_id=broker_order_id,
+            raw_response={"orderId": broker_order_id},
+            reason=kwargs.get("reason"),
+            exit_intent=kwargs.get("exit_intent"),
+            exit_reason=kwargs.get("exit_reason"),
+            retrospective_id=kwargs.get("retrospective_id"),
+            approval_issue_id=kwargs.get("approval_issue_id"),
+            thesis=None,
+            strategy=None,
+            target_price=None,
+            stop_loss=None,
+            min_hold_days=None,
+            notes=None,
+            indicators_snapshot=None,
+            report_item_uuid=None,
+            approval_hash="approval-digest",
+            correlation_id_override=context.correlation_id,
+            rung=context.rung,
+        )
+        return {
+            "success": True,
+            "order_id": broker_order_id,
+            "client_order_id": context.client_order_id,
+            "approval_hash_digest": "approval-digest",
+            **ledger,
+        }
+
+    monkeypatch.setattr(toss_orders, "toss_preview_order", fake_preview)
+    monkeypatch.setattr(toss_orders, "toss_place_order", fake_submit)
+    monkeypatch.setattr(
+        mod, "publish_place_time_forecast", AsyncMock(return_value=None)
+    )
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=now,
+        correlation_mint=lambda **_: f"corr-loss-cut-{unique}",
+    )
+
+    assert outcomes[0].result == "submitted_resting"
+    assert [phase for phase, _ in calls] == ["preview", "submit"]
+    assert all(call["exit_intent"] == "loss_cut" for _, call in calls)
+    assert all(call["approval_issue_id"] == "ROB-858" for _, call in calls)
+    row = (
+        await db_session.execute(
+            select(TossLiveOrderLedger).where(
+                TossLiveOrderLedger.broker_order_id == broker_order_id
+            )
+        )
+    ).scalar_one()
+    assert (row.exit_intent, row.retrospective_id, row.approval_issue_id) == (
+        "loss_cut",
+        42,
+        "ROB-858",
+    )
+
+    partial = _toss_evidence(
+        verdict="partial", local_status="partial", filled_qty="0.5"
+    )
+    await _reconcile_with_evidence(mod, row, partial)
+    await db_session.refresh(row)
+    if terminal_status == "filled":
+        terminal = _toss_evidence(
+            verdict="filled", local_status="filled", filled_qty="2"
+        )
+    else:
+        terminal = _toss_evidence(
+            verdict="none", local_status="cancelled", filled_qty="0"
+        )
+    await _reconcile_with_evidence(mod, row, terminal)
+
+    refreshed_group, rungs = await service.get_proposal(group.proposal_id)
+    await db_session.refresh(refreshed_group)
+    await db_session.refresh(rungs[0])
+    assert refreshed_group.lifecycle_state == "terminal"
+    assert rungs[0].state == terminal_status
+    assert rungs[0].filled_qty == (
+        Decimal("2") if terminal_status == "filled" else Decimal("0.5")
+    )
+
+    due = await build_retrospective_pending(
+        db_session,
+        kst_date_from="2000-01-01",
+        kst_date_to="2100-01-01",
+        account_mode="toss_live",
+        include_cancelled=True,
+    )
+    assert any(
+        item["suggested_correlation_id"] == f"toss_live:{broker_order_id}"
+        for item in due["pending"]
     )
 
 
