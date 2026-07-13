@@ -250,6 +250,13 @@ class Settings(BaseSettings):
     kiwoom_base_url: str = "https://api.kiwoom.com"  # live disabled in this PR
     kiwoom_mock_access_token: str | None = None
 
+    # ROB-867: US-only Kiwoom mock namespace. Same mock host, separate
+    # app_key/app_secret/account_no; never reads or falls back to KR settings.
+    kiwoom_mock_us_enabled: bool = False
+    kiwoom_mock_us_app_key: str | None = None
+    kiwoom_mock_us_app_secret: str | None = None
+    kiwoom_mock_us_account_no: str | None = None
+
     # Toss Securities Open API. Live-only, disabled by default. ROB-530 adds
     # read-only client support; order mutations are handled by follow-up issues.
     toss_api_enabled: bool = False
@@ -1039,6 +1046,25 @@ def validate_kiwoom_mock_config(settings_obj: Any = settings) -> list[str]:
         missing.append("KIWOOM_MOCK_APP_SECRET")
     if not _has_nonempty_value(getattr(settings_obj, "kiwoom_mock_account_no", None)):
         missing.append("KIWOOM_MOCK_ACCOUNT_NO")
+    return missing
+
+
+def validate_kiwoom_mock_us_config(settings_obj: Any = settings) -> list[str]:
+    """Return missing Kiwoom mock US env names without exposing configured values.
+
+    ROB-867: US namespace is completely independent from KR. It never reads or
+    falls back to ``kiwoom_mock_*`` credentials.
+    """
+
+    missing: list[str] = []
+    if not bool(getattr(settings_obj, "kiwoom_mock_us_enabled", False)):
+        missing.append("KIWOOM_MOCK_US_ENABLED")
+    if not _has_nonempty_value(getattr(settings_obj, "kiwoom_mock_us_app_key", None)):
+        missing.append("KIWOOM_MOCK_US_APP_KEY")
+    if not _has_nonempty_value(getattr(settings_obj, "kiwoom_mock_us_app_secret", None)):
+        missing.append("KIWOOM_MOCK_US_APP_SECRET")
+    if not _has_nonempty_value(getattr(settings_obj, "kiwoom_mock_us_account_no", None)):
+        missing.append("KIWOOM_MOCK_US_ACCOUNT_NO")
     return missing
 
 
