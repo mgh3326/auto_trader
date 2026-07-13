@@ -30,7 +30,7 @@ async def test_reconcile_task_two_key_gate_builds_no_clients(
 
     assert taskmod in task_package.TASKIQ_TASK_MODULES
 
-    monkeypatch.setattr(taskmod.settings, "BINANCE_DEMO_SCALPING_ENABLED", base_enabled)
+    monkeypatch.setattr(taskmod.settings, "binance_demo_scalping_enabled", base_enabled)
     monkeypatch.setattr(
         taskmod.settings,
         "BINANCE_DEMO_RESERVATION_RECONCILE_ENABLED",
@@ -60,7 +60,7 @@ async def test_reconcile_task_mutation_requires_confirm_gate(
 ) -> None:
     import app.tasks.binance_demo_root_reservation_reconcile_tasks as taskmod
 
-    monkeypatch.setattr(taskmod.settings, "BINANCE_DEMO_SCALPING_ENABLED", True)
+    monkeypatch.setattr(taskmod.settings, "binance_demo_scalping_enabled", True)
     monkeypatch.setattr(
         taskmod.settings, "BINANCE_DEMO_RESERVATION_RECONCILE_ENABLED", True
     )

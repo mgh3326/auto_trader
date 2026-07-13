@@ -27,7 +27,7 @@ def _utcnow() -> dt.datetime:
 @broker.task(task_name="binance.demo_root_reservation.reconcile")  # no schedule
 async def binance_demo_root_reservation_reconcile() -> dict[str, Any]:
     if not (
-        settings.BINANCE_DEMO_SCALPING_ENABLED
+        settings.binance_demo_scalping_enabled
         and settings.BINANCE_DEMO_RESERVATION_RECONCILE_ENABLED
     ):
         return {

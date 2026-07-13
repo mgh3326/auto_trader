@@ -683,10 +683,11 @@ class Settings(BaseSettings):
     KIS_MOCK_RECONCILE_PERIODIC_ENABLED: bool = False
 
     # ROB-844 — scheduleless Binance Demo abandoned-reservation reconcile.
-    # Master scalping + reconcile gates must both be enabled. Broker reads stay
-    # dry-run until the independent confirm gate is enabled; candidates younger
-    # than one hour are never queried.
-    BINANCE_DEMO_SCALPING_ENABLED: bool = False
+    # The canonical ``binance_demo_scalping_enabled`` master above and the
+    # reconcile gate must both be enabled. Do not duplicate the case-insensitive
+    # BINANCE_DEMO_SCALPING_ENABLED alias here. Broker reads stay dry-run until
+    # the independent confirm gate is enabled; candidates younger than one hour
+    # are never queried.
     BINANCE_DEMO_RESERVATION_RECONCILE_ENABLED: bool = False
     BINANCE_DEMO_RESERVATION_RECONCILE_CONFIRM: bool = False
     BINANCE_DEMO_RESERVATION_RECONCILE_MIN_AGE_SECONDS: int = 3600
