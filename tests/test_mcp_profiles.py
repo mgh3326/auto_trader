@@ -267,6 +267,9 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     McpProfile.ACCOUNT_READ: {
         "get_order_history",
         "kis_live_get_order_history",
+        "kiwoom_mock_get_order_history",
+        "kiwoom_mock_get_positions",
+        "kiwoom_mock_get_orderable_cash",
         "toss_get_order_history",
         "toss_get_positions",
         "toss_get_orderable_cash",
@@ -280,6 +283,7 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
         "kis_live_place_order",
         "kis_live_cancel_order",
         "kis_live_get_order_history",
+        *KIWOOM_MOCK_TOOL_NAMES,
         "toss_preview_order",
         "toss_place_order",
         "toss_cancel_order",
@@ -494,6 +498,10 @@ class TestAccountReadProfile:
             "kis_mock_place_order",
             "kis_mock_cancel_order",
             "kis_mock_modify_order",
+            "kiwoom_mock_preview_order",
+            "kiwoom_mock_place_order",
+            "kiwoom_mock_cancel_order",
+            "kiwoom_mock_modify_order",
             "live_reconcile_orders",
             "toss_preview_order",
             "toss_place_order",
@@ -516,6 +524,14 @@ class TestAccountReadProfile:
             f"account_read leaked write/persistence tools: {sorted(leaked)}"
         )
 
+    def test_registers_only_three_kiwoom_mock_reads(self) -> None:
+        mcp = _build_mcp(McpProfile.ACCOUNT_READ)
+        assert KIWOOM_MOCK_TOOL_NAMES & mcp.tools.keys() == {
+            "kiwoom_mock_get_positions",
+            "kiwoom_mock_get_orderable_cash",
+            "kiwoom_mock_get_order_history",
+        }
+
     def test_expected_account_read_tools_are_present(self) -> None:
         mcp = _build_mcp(McpProfile.ACCOUNT_READ)
         assert {
@@ -525,6 +541,9 @@ class TestAccountReadProfile:
             "toss_get_orderable_cash",
             "get_order_history",
             "kis_live_get_order_history",
+            "kiwoom_mock_get_positions",
+            "kiwoom_mock_get_orderable_cash",
+            "kiwoom_mock_get_order_history",
             "toss_get_order_history",
         } <= mcp.tools.keys()
 
@@ -561,6 +580,7 @@ class TestTradingCodexExecutionProfile:
             "cancel_order",
             "kis_live_place_order",
             "kis_live_cancel_order",
+            *KIWOOM_MOCK_TOOL_NAMES,
             "toss_preview_order",
             "toss_place_order",
             "toss_cancel_order",
@@ -579,6 +599,17 @@ class TestTradingCodexExecutionProfile:
             "get_trade_retrospectives",
             "trade_retrospective_pending",
         } <= mcp.tools.keys()
+
+    def test_registers_exact_typed_kiwoom_mock_surface(self) -> None:
+        mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
+        assert KIWOOM_MOCK_TOOL_NAMES & mcp.tools.keys() == KIWOOM_MOCK_TOOL_NAMES
+        assert {
+            "kiwoom_place_order",
+            "kiwoom_live_place_order",
+            "kiwoom_live_cancel_order",
+            "kiwoom_live_modify_order",
+            "kiwoom_live_get_order_history",
+        }.isdisjoint(mcp.tools.keys())
 
     def test_does_not_register_modify_reconcile_or_unsafe_persistence_tools(
         self,

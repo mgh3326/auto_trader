@@ -23,6 +23,14 @@ from app.services.brokers.kiwoom import constants
 from app.services.brokers.kiwoom.client import KiwoomMockClient
 from app.services.brokers.kiwoom.domestic_account import KiwoomDomesticAccountClient
 from app.services.brokers.kiwoom.domestic_orders import KiwoomDomesticOrderClient
+from app.services.brokers.kiwoom.normalization import (
+    KiwoomMockEvidenceError,
+    build_mock_provenance,
+    normalize_orders,
+    normalize_positions,
+    redact_broker_response,
+    validate_mock_response_provenance,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -169,11 +177,37 @@ def _finalize_broker_response(
     response = {
         "success": _derive_broker_success(broker_response),
         **base,
-        "broker_response": broker_response,
+        "broker_response": redact_broker_response(broker_response),
     }
     for key in _MUTATION_PASSTHROUGH_KEYS:
         if key in broker_response:
             response[key] = broker_response[key]
+    return response
+
+
+def _finalize_normalized_read_response(
+    base: dict[str, Any],
+    broker_response: dict[str, Any],
+    *,
+    api_id: str,
+    result_key: Literal["positions", "orders"],
+) -> dict[str, Any]:
+    response = _finalize_broker_response(base, broker_response)
+    response["provenance"] = build_mock_provenance(api_id)
+    response[result_key] = []
+    if not response["success"]:
+        return response
+    try:
+        validate_mock_response_provenance(broker_response)
+        response[result_key] = (
+            normalize_positions(broker_response)
+            if result_key == "positions"
+            else normalize_orders(broker_response)
+        )
+    except KiwoomMockEvidenceError as exc:
+        response["success"] = False
+        response["error"] = exc.code
+        response["error_detail"] = str(exc)
     return response
 
 
@@ -375,8 +409,11 @@ async def _kiwoom_mock_order_history_impl(**kwargs: Any) -> dict[str, Any]:
                 f"kiwoom_mock_get_order_history failed: {type(exc).__name__}: {exc}"
             ),
         }
-    return _finalize_broker_response(
-        {"source": "kiwoom", "account_mode": ACCOUNT_MODE_KIWOOM_MOCK}, broker_response
+    return _finalize_normalized_read_response(
+        {"source": "kiwoom", "account_mode": ACCOUNT_MODE_KIWOOM_MOCK},
+        broker_response,
+        api_id=constants.ACCOUNT_ORDER_STATUS_API_ID,
+        result_key="orders",
     )
 
 
@@ -396,8 +433,11 @@ async def _kiwoom_mock_positions_impl(**kwargs: Any) -> dict[str, Any]:
             "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
             "error": f"kiwoom_mock_get_positions failed: {type(exc).__name__}: {exc}",
         }
-    return _finalize_broker_response(
-        {"source": "kiwoom", "account_mode": ACCOUNT_MODE_KIWOOM_MOCK}, broker_response
+    return _finalize_normalized_read_response(
+        {"source": "kiwoom", "account_mode": ACCOUNT_MODE_KIWOOM_MOCK},
+        broker_response,
+        api_id=constants.ACCOUNT_BALANCE_API_ID,
+        result_key="positions",
     )
 
 
@@ -624,7 +664,13 @@ def register(mcp: FastMCP) -> None:
         next_key: str | None = None,
     ) -> dict[str, Any]:
         if (guard := _mock_config_error()) is not None:
-            return guard
+            return {
+                **guard,
+                "orders": [],
+                "provenance": build_mock_provenance(
+                    constants.ACCOUNT_ORDER_STATUS_API_ID
+                ),
+            }
         return await _kiwoom_mock_order_history_impl(cont_yn=cont_yn, next_key=next_key)
 
     @mcp.tool(
@@ -633,7 +679,11 @@ def register(mcp: FastMCP) -> None:
     )
     async def kiwoom_mock_get_positions() -> dict[str, Any]:
         if (guard := _mock_config_error()) is not None:
-            return guard
+            return {
+                **guard,
+                "positions": [],
+                "provenance": build_mock_provenance(constants.ACCOUNT_BALANCE_API_ID),
+            }
         return await _kiwoom_mock_positions_impl()
 
     @mcp.tool(

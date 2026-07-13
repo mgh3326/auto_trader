@@ -1934,15 +1934,15 @@ The `MCP_PROFILE` env var selects which tool subset is registered at startup.
 
 | Profile | Value | Order surface |
 |---|---|---|
-| Default | `default` (or unset) | Legacy `place_order`/`cancel_order`/`modify_order`/`get_order_history` + typed `kis_live_*` + typed `kis_mock_*`; crypto-only, Alpaca/us-dual paper, and Kiwoom tools are absent |
+| Default | `default` (or unset) | Legacy `place_order`/`cancel_order`/`modify_order`/`get_order_history` + typed `kis_live_*` + typed `kis_mock_*`; typed `kiwoom_mock_*` is added only by the existing `KIWOOM_MOCK_ENABLED=true` ROB-601 gate; Alpaca/us-dual paper tools are absent |
 | Paper/mock-only | `hermes-paper-kis` | Typed `kis_mock_*` only — live surface **physically absent** |
 | Crypto | `crypto` | Default read-only/research surface plus crypto-only tools (`get_crypto_fear_greed`, `get_crypto_market_regime`, `get_upbit_index`, ...) **plus** the generic `place_order`/`cancel_order`/`modify_order`/`get_order_history` (crypto live entry point) and `live_reconcile_orders`; typed `kis_live_*`/`kis_mock_*` are absent |
 | US paper | `us-paper` | Default read-only/research surface plus Alpaca paper and `us_dual_paper_*` tools; no KIS/generic order tools |
 | DB paper simulator | `db-paper` | Default read-only/research surface plus internal `paper.paper_*` simulator account, analytics, and journal bridge tools; no KIS/generic order tools |
 | Kiwoom mock | `kiwoom` | Default read-only/research surface plus typed `kiwoom_mock_*` variants only (no KIS/generic order tools) |
 | Analysis readonly | `analysis_readonly` | Codex/headless read/analysis allowlist only: `get_operating_briefing`, `route_request`, `get_trading_policy`, selected quote/fundamental/analysis tools, `suggest_order_account`, `get_holdings`, `toss_get_positions`, and explicitly labeled analysis persistence. No order/cancel/modify/reconcile/preview/settings/watch/admin/manual-holdings mutation tools are registered. |
-| Account read | `account_read` | TradingCodex account adapter allowlist only: `get_holdings`, `toss_get_positions`, `get_cash_balance`, `toss_get_orderable_cash`, `get_order_history`, `kis_live_get_order_history`, and `toss_get_order_history`. No order placement/cancel/modify/preview/reconcile, persistence, settings, watch, admin, report-writing, or manual-holdings mutation tools are registered. |
-| TradingCodex execution | `tradingcodex_execution` | Reviewed TradingCodex BrokerAdapter allowlist: account reads, `route_request`, `get_trading_policy`, `suggest_order_account`, `get_fx_rate`, watch read tools, `investment_watch_create` (guarded `created_by`), `forecast_save`/`get_forecasts`, `save_trade_retrospective`/`get_trade_retrospectives`/`trade_retrospective_pending`, preview/dry-run, live place, cancel, and ladder fill-preview tools. Requires dedicated auth token and required approval-hash modes. |
+| Account read | `account_read` | TradingCodex account adapter allowlist only: existing KIS/Toss account reads plus `kiwoom_mock_get_positions`, `kiwoom_mock_get_orderable_cash`, and `kiwoom_mock_get_order_history`. Kiwoom and all other mutations remain physically absent. |
+| TradingCodex execution | `tradingcodex_execution` | Reviewed TradingCodex BrokerAdapter allowlist: existing account/advisory/learning/execution tools plus the seven mock-pinned typed `kiwoom_mock_*` tools. Requires a dedicated auth token and required approval-hash modes; no Kiwoom live or generic unscoped Kiwoom order surface is registered. |
 
 ### Profile: `hermes-paper-kis`
 
@@ -2026,11 +2026,14 @@ Allowed tools:
 - `get_order_history`
 - `kis_live_get_order_history`
 - `toss_get_order_history`
+- `kiwoom_mock_get_positions`
+- `kiwoom_mock_get_orderable_cash`
+- `kiwoom_mock_get_order_history`
 
 Forbidden by physical non-registration:
 - order placement, cancel, modify, preview, and reconcile tools
 - KIS mock order variants
-- Kiwoom order variants
+- Kiwoom mock preview/place/cancel/modify variants
 - Alpaca/DB paper order surfaces
 - manual holdings mutation
 - user settings tools
@@ -2062,6 +2065,9 @@ Allowed read/advisory tools:
 - `get_order_history`
 - `kis_live_get_order_history`
 - `toss_get_order_history`
+- `kiwoom_mock_get_positions`
+- `kiwoom_mock_get_orderable_cash`
+- `kiwoom_mock_get_order_history`
 - `suggest_order_account`
 - `get_fx_rate`
 - `route_request`
@@ -2082,9 +2088,46 @@ Allowed write/order tools:
 - `toss_cancel_order`
 - `sell_ladder_fill_preview`
 - `buy_ladder_fill_preview`
+- `kiwoom_mock_preview_order`
+- `kiwoom_mock_place_order`
+- `kiwoom_mock_cancel_order`
+- `kiwoom_mock_modify_order`
 - `forecast_save`
 - `save_trade_retrospective`
 - `investment_watch_create`
+
+Kiwoom safety boundaries are unchanged on both restricted profiles:
+
+- `KIWOOM_MOCK_ENABLED` remains default-off. While disabled, the typed tools
+  fail closed and name the missing configuration keys without returning values.
+- If Kiwoom mock is enabled, restricted-profile startup requires all mock
+  credentials and the exact `https://mockapi.kiwoom.com` base URL.
+- Kiwoom mock tools remain KRX-only. A broker mutation still requires both
+  `dry_run=false` and `confirm=true`.
+- No `kiwoom_live_*`, generic `kiwoom_*`, or live-host routing is registered.
+
+#### Kiwoom mock stable read envelopes (ROB-824)
+
+`kiwoom_mock_get_positions` adds a normalized `positions` list whose rows have
+exactly `symbol`, `quantity`, `average_price`, and `currency`. The source is the
+official kt00018 `acnt_evlt_remn_indv_tot` array; KR symbols such as `A005930`
+are returned as `005930`, numeric fields are JSON integers, and currency is
+`KRW`.
+
+`kiwoom_mock_get_order_history` adds a normalized `orders` list whose rows have
+exactly `order_id`, `symbol`, `status`, `ordered_price`, `filled_quantity`,
+`average_price`, and `remaining_quantity`. The source is the official kt00009
+`acnt_ord_cntr_prst_array` array. Status is normalized to `open`,
+`partially_filled`, `filled`, or `cancelled` from the broker cancellation marker
+and ordered/filled quantities.
+
+Both responses retain the broker payload as `broker_response`, with nested
+authorization, token, app credential, and account identifier values replaced by
+`[REDACTED]`. They also add fixed `provenance` for broker `kiwoom`, environment
+`mock`, account mode `kiwoom_mock`, host `mockapi.kiwoom.com`, and the expected
+API ID. Missing/malformed required fields or raw evidence claiming a live,
+production, non-mock account mode, or non-mock host changes the response to
+`success=false`; no normalized rows are emitted.
 
 Write provenance requirements:
 - pass `created_by="tradingcodex"` to `forecast_save`
@@ -2095,7 +2138,7 @@ Write provenance requirements:
 Forbidden by physical non-registration:
 - modify and reconcile tools
 - KIS mock order variants
-- Kiwoom order variants
+- Kiwoom live/general unscoped order variants
 - Alpaca/DB paper order surfaces
 - manual holdings mutation
 - user settings tools

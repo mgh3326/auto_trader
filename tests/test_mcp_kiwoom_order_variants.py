@@ -961,7 +961,13 @@ async def test_get_positions_calls_balance_and_passes_through(monkeypatch):
             "balance": {
                 "return_code": 0,
                 "return_msg": "정상",
-                "acnt_evlt_remn_indv_tot": [{"stk_cd": "005930", "rmnd_qty": "3"}],
+                "acnt_evlt_remn_indv_tot": [
+                    {
+                        "stk_cd": "A005930",
+                        "rmnd_qty": "3",
+                        "pur_pric": "72300",
+                    }
+                ],
             },
             "order_status": {"return_code": 0},
         },
@@ -974,8 +980,18 @@ async def test_get_positions_calls_balance_and_passes_through(monkeypatch):
     assert response["success"] is True
     assert response["source"] == "kiwoom"
     assert (
-        response["broker_response"]["acnt_evlt_remn_indv_tot"][0]["stk_cd"] == "005930"
+        response["broker_response"]["acnt_evlt_remn_indv_tot"][0]["stk_cd"] == "A005930"
     )
+    assert response["positions"] == [
+        {
+            "symbol": "005930",
+            "quantity": 3,
+            "average_price": 72300,
+            "currency": "KRW",
+        }
+    ]
+    assert response["provenance"]["api_id"] == "kt00018"
+    assert response["provenance"]["environment"] == "mock"
     assert any(c.get("method") == "balance" for c in calls)
 
 
@@ -993,7 +1009,17 @@ async def test_get_order_history_calls_order_status_with_pagination(monkeypatch)
                 "return_code": 0,
                 "return_msg": "정상",
                 "continuation": {"cont_yn": "Y", "next_key": "page-2"},
-                "rows": [{"ord_no": "0000111222"}],
+                "acnt_ord_cntr_prst_array": [
+                    {
+                        "ord_no": "1112222",
+                        "stk_cd": "A005930",
+                        "ord_qty": "3",
+                        "ord_uv": "72300",
+                        "cntr_qty": "1",
+                        "cntr_uv": "72200",
+                        "mdfy_cncl_tp": "",
+                    }
+                ],
             },
         },
     )
@@ -1005,7 +1031,22 @@ async def test_get_order_history_calls_order_status_with_pagination(monkeypatch)
     )
 
     assert response["success"] is True
-    assert response["broker_response"]["rows"][0]["ord_no"] == "0000111222"
+    assert (
+        response["broker_response"]["acnt_ord_cntr_prst_array"][0]["ord_no"]
+        == "1112222"
+    )
+    assert response["orders"] == [
+        {
+            "order_id": "1112222",
+            "symbol": "005930",
+            "status": "partially_filled",
+            "ordered_price": 72300,
+            "filled_quantity": 1,
+            "average_price": 72200,
+            "remaining_quantity": 2,
+        }
+    ]
+    assert response["provenance"]["api_id"] == "kt00009"
     assert response["continuation"] == {"cont_yn": "Y", "next_key": "page-2"}
     status_call = next(c for c in calls if c.get("method") == "order_status")
     assert status_call["cont_yn"] == "Y"
@@ -1040,3 +1081,62 @@ async def test_get_positions_broker_error_is_fail_closed(monkeypatch):
 
     assert response["success"] is False
     assert "RuntimeError" in response["error"]
+
+
+@pytest.mark.asyncio
+async def test_get_order_history_fails_closed_on_live_provenance(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    _patch_fake_kiwoom_account_client(
+        monkeypatch,
+        mod,
+        payloads={
+            "orderable_amount": {"return_code": 0},
+            "balance": {"return_code": 0},
+            "order_status": {
+                "return_code": 0,
+                "provenance": {
+                    "environment": "live",
+                    "host": "api.kiwoom.com",
+                },
+                "acnt_ord_cntr_prst_array": [],
+            },
+        },
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_order_history"]()
+
+    assert response["success"] is False
+    assert response["orders"] == []
+    assert response["error"] == "kiwoom_mock_provenance_conflict"
+    assert response["account_mode"] == "kiwoom_mock"
+
+
+@pytest.mark.asyncio
+async def test_get_positions_fails_closed_on_malformed_row(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    _patch_fake_kiwoom_account_client(
+        monkeypatch,
+        mod,
+        payloads={
+            "orderable_amount": {"return_code": 0},
+            "balance": {
+                "return_code": 0,
+                "acnt_evlt_remn_indv_tot": [
+                    {"stk_cd": "A005930", "rmnd_qty": "invalid"}
+                ],
+            },
+            "order_status": {"return_code": 0},
+        },
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_positions"]()
+
+    assert response["success"] is False
+    assert response["positions"] == []
+    assert response["error"] == "kiwoom_mock_evidence_invalid"

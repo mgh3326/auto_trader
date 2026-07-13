@@ -7,8 +7,9 @@ Profile → tool surface mapping
   read-only portfolio tools +
   legacy ambiguous order tools (place_order / cancel_order / modify_order /
   get_order_history with account_mode switching) +
-  typed kis_live_* and kis_mock_* variants (additive). Split-profile tools
-  (Alpaca/us-dual paper, DB paper, Kiwoom mock) are omitted.
+  typed kis_live_* and kis_mock_* variants (additive). Typed kiwoom_mock_* is
+  additive only when the existing ROB-601 feature gate is enabled. Alpaca,
+  us-dual paper, and DB paper tools are omitted.
 
 "hermes-paper-kis" (McpProfile.HERMES_PAPER_KIS):
   All side-effect-free research tools + read-only portfolio tools +
@@ -48,19 +49,20 @@ Profile → tool surface mapping
 
 "account_read" (McpProfile.ACCOUNT_READ):
   TradingCodex adapter account-read allowlist only. Registers holdings, cash,
-  and read-only order-history tools needed for account synchronization. No
-  order placement, cancel, modify, preview, reconcile, persistence, settings,
-  watch, admin, report-write, or manual-holdings mutation tools are registered.
+  read-only order-history tools, and the three typed Kiwoom mock account reads
+  needed for account synchronization. No order placement, cancel, modify,
+  preview, reconcile, persistence, settings, watch, admin, report-write, or
+  manual-holdings mutation tools are registered.
 
 "tradingcodex_execution" (McpProfile.TRADINGCODEX_EXECUTION):
   TradingCodex broker execution allowlist only. Registers account reads,
   policy/route advisory reads, account-routing suggestion, USD/KRW FX read,
   watch read tools (active watches + delivered watch events), learning-loop
   reads/writes (forecasts + trade retrospectives with explicit created_by
-  provenance), dry-run/preview, live place, cancel, and ladder fill-preview
-  tools required by the reviewed BrokerAdapter. No modify, reconcile, settings,
-  watch mutation/activation, report-write, KIS mock, Kiwoom, Alpaca, or paper
-  simulator tools are registered.
+  provenance), dry-run/preview, live place, cancel, ladder fill-preview, and the
+  seven mock-pinned typed Kiwoom tools required by the reviewed BrokerAdapter.
+  No generic/live Kiwoom, reconcile, settings, watch mutation/activation,
+  report-write, KIS mock, Alpaca, or paper simulator tools are registered.
 
 See app/mcp_server/profiles.py and docs in app/mcp_server/README.md.
 """
