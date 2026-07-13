@@ -10,10 +10,25 @@ Exit codes: 0 = improved (keep), 1 = worse (reverted), 2 = crashed
 from __future__ import annotations
 
 import argparse
+import asyncio
+import json
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
+
+from app.core.db import AsyncSessionLocal
+from app.schemas.research_backtest import (
+    BacktestTrialRequest,
+    StrategyExperimentIdentity,
+)
+from app.services.strategy_experiment_registry import (
+    record_trial,
+    register_experiment,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULTS_TSV = REPO_ROOT / "results.tsv"
@@ -21,9 +36,30 @@ RUN_LOG = REPO_ROOT / "run.log"
 BACKTEST_TIMEOUT = 120  # seconds
 
 
+@dataclass(frozen=True)
+class BacktestInvocation:
+    returncode: int
+    stdout: str
+    timed_out: bool = False
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run one autoresearch experiment")
-    p.add_argument("--description", required=True, help="One-line experiment description")
+    p.add_argument(
+        "--description", required=True, help="One-line experiment description"
+    )
+    p.add_argument(
+        "--identity-json",
+        help="ROB-846 StrategyExperimentIdentity JSON; omitted means non-promotable legacy mode",
+    )
+    p.add_argument(
+        "--information-cutoff",
+        help="Timezone-aware ISO-8601 cutoff recorded on the canonical trial",
+    )
+    p.add_argument(
+        "--idempotency-key",
+        help="Stable invocation key; defaults to experiment_id + exp_id",
+    )
     return p.parse_args()
 
 
@@ -62,8 +98,8 @@ def get_best_cv_score() -> float:
     return best
 
 
-def run_backtest() -> tuple[int, str]:
-    """Run CV backtest, return (returncode, stdout)."""
+def run_backtest() -> BacktestInvocation:
+    """Run CV backtest and distinguish timeout from process failure."""
     try:
         result = subprocess.run(
             ["uv", "run", "backtest/backtest.py", "--mode", "cv"],
@@ -75,10 +111,10 @@ def run_backtest() -> tuple[int, str]:
         # Write combined output to run.log
         log_content = result.stdout + "\n" + result.stderr
         RUN_LOG.write_text(log_content)
-        return result.returncode, result.stdout
+        return BacktestInvocation(result.returncode, result.stdout)
     except subprocess.TimeoutExpired:
         RUN_LOG.write_text("TIMEOUT: backtest exceeded 120 seconds\n")
-        return -1, ""
+        return BacktestInvocation(-1, "", timed_out=True)
 
 
 def parse_metrics(stdout: str) -> dict[str, float] | None:
@@ -100,11 +136,86 @@ def parse_metrics(stdout: str) -> dict[str, float] | None:
 
 
 def git_revert() -> None:
-    """Revert last commit."""
-    subprocess.run(
-        ["git", "reset", "--hard", "HEAD~1"],
+    """Revert the experiment commit without discarding uncommitted work."""
+    result = subprocess.run(
+        ["git", "revert", "--no-edit", "HEAD"],
         cwd=REPO_ROOT,
         capture_output=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("git revert failed; canonical trial was recorded")
+
+
+async def prepare_registered_experiment(identity_json: str | None) -> str | None:
+    """Register canonical identity before running, or enter explicit legacy mode."""
+    if identity_json is None:
+        return None
+    payload = json.loads(Path(identity_json).read_text(encoding="utf-8"))
+    identity = StrategyExperimentIdentity.model_validate(payload)
+    async with AsyncSessionLocal() as session:
+        experiment = await register_experiment(session, identity)
+        await session.commit()
+        return experiment.experiment_id
+
+
+def _parse_information_cutoff(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    cutoff = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if cutoff.tzinfo is None:
+        raise ValueError("information_cutoff must be timezone-aware")
+    return cutoff
+
+
+async def record_terminal_trial(
+    *,
+    experiment_id: str,
+    exp_id: str,
+    status: str,
+    description: str,
+    information_cutoff: str | None,
+    idempotency_key: str | None,
+    metrics: dict[str, float],
+) -> None:
+    """Append exactly one terminal ROB-846 trial and commit it durably."""
+    request = BacktestTrialRequest(
+        status=status,
+        strategy_name="backtest.strategy",
+        timeframe="1d",
+        runner="backtest/run_experiment.py",
+        run_id=f"autoresearch-{experiment_id[:12]}-{exp_id}",
+        information_cutoff=_parse_information_cutoff(information_cutoff),
+        idempotency_key=idempotency_key or f"{experiment_id}:{exp_id}",
+        ended_at=datetime.now(UTC),
+        profit_factor=Decimal("0"),
+        max_drawdown=Decimal("0"),
+        raw_payload={"description": description, "metrics": metrics},
+    )
+    async with AsyncSessionLocal() as session:
+        await record_trial(session, experiment_id=experiment_id, request=request)
+        await session.commit()
+
+
+def _record_if_registered(
+    *,
+    experiment_id: str | None,
+    exp_id: str,
+    status: str,
+    args: argparse.Namespace,
+    metrics: dict[str, float],
+) -> None:
+    if experiment_id is None:
+        return
+    asyncio.run(
+        record_terminal_trial(
+            experiment_id=experiment_id,
+            exp_id=exp_id,
+            status=status,
+            description=args.description,
+            information_cutoff=args.information_cutoff,
+            idempotency_key=args.idempotency_key,
+            metrics=metrics,
+        )
     )
 
 
@@ -127,23 +238,41 @@ def main() -> int:
     args = parse_args()
     exp_id = next_experiment_id()
     best = get_best_cv_score()
+    experiment_id = asyncio.run(prepare_registered_experiment(args.identity_json))
+    if experiment_id is None:
+        print("NON_PROMOTABLE: missing_experiment_identity")
 
     print(f"=== {exp_id}: {args.description} ===")
     print(f"Current best cv_score: {best:.6f}")
     print("Running CV backtest...")
 
-    returncode, stdout = run_backtest()
+    invocation = run_backtest()
 
-    if returncode != 0:
-        print(f"CRASHED (exit code {returncode}). See run.log")
+    if invocation.returncode != 0:
+        status = "timeout" if invocation.timed_out else "crashed"
+        print(f"{status.upper()} (exit code {invocation.returncode}). See run.log")
+        _record_if_registered(
+            experiment_id=experiment_id,
+            exp_id=exp_id,
+            status=status,
+            args=args,
+            metrics={},
+        )
         git_revert()
-        append_result(exp_id, 0.0, 0.0, 0.0, 0.0, "crash", args.description)
+        append_result(exp_id, 0.0, 0.0, 0.0, 0.0, status, args.description)
         print("Reverted.")
         return 2
 
-    metrics = parse_metrics(stdout)
+    metrics = parse_metrics(invocation.stdout)
     if metrics is None:
         print("FAILED to parse cv_score from output. See run.log")
+        _record_if_registered(
+            experiment_id=experiment_id,
+            exp_id=exp_id,
+            status="crashed",
+            args=args,
+            metrics={},
+        )
         git_revert()
         append_result(exp_id, 0.0, 0.0, 0.0, 0.0, "crash", args.description)
         print("Reverted.")
@@ -158,10 +287,24 @@ def main() -> int:
 
     if cv > best:
         print(f"IMPROVED by {cv - best:.6f} — keeping.")
+        _record_if_registered(
+            experiment_id=experiment_id,
+            exp_id=exp_id,
+            status="completed",
+            args=args,
+            metrics=metrics,
+        )
         append_result(exp_id, cv, mean, std, min_fold, "keep", args.description)
         return 0
     else:
         print(f"No improvement ({cv:.6f} <= {best:.6f}) — reverting.")
+        _record_if_registered(
+            experiment_id=experiment_id,
+            exp_id=exp_id,
+            status="rejected",
+            args=args,
+            metrics=metrics,
+        )
         git_revert()
         append_result(exp_id, cv, mean, std, min_fold, "revert", args.description)
         return 1

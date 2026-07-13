@@ -9,6 +9,13 @@ The dataset was refreshed for reproducibility (PR #428), resetting the baseline.
 
 Your job: **push cv_score higher** by modifying `strategy.py`.
 
+> **ROB-847 promotion boundary:** this loop is exploratory. `results.tsv`,
+> keep/revert decisions, and git history are never promotion authority. A run is
+> promotion-capable only when it supplies a complete ROB-846 identity, records
+> its terminal trial, passes PIT/cutoff and honest offline gate checks, and is
+> linked through the one-time sealed-OOS finalize service. Identity-less runs
+> remain explicitly `missing_experiment_identity` / non-promotable.
+
 - **Market:** Upbit KRW spot (no futures, no leverage)
 - **Timeframe:** Daily bars (1시간봉 is future work)
 - **Universe:** BTC, ETH, SOL, XRP, LINK, ADA, DOT, AVAX
@@ -93,9 +100,20 @@ LOOP FOREVER:
 1. `git status` — ensure clean working tree
 2. Modify `strategy.py` with ONE experimental idea
 3. `git add backtest/strategy.py && git commit -m "exp<N>: <description>"`
-4. `uv run backtest/run_experiment.py --description "<description>"`
+4. Run a registered experiment (promotion evidence) or an explicit legacy run:
+   ```bash
+   uv run backtest/run_experiment.py \
+     --description "<description>" \
+     --identity-json path/to/strategy-experiment-identity.json \
+     --information-cutoff 2026-01-01T00:00:00Z \
+     --idempotency-key <stable-invocation-key>
+   ```
+   Omitting `--identity-json` keeps legacy exploratory behavior and prints
+   `NON_PROMOTABLE: missing_experiment_identity`.
    - This runs CV backtest, parses score, compares to best, keeps or reverts automatically
    - Exit code: 0 = improved (kept), 1 = worse (reverted), 2 = crashed (reverted)
+   - Registered terminal status: `completed` | `rejected` | `crashed` | `timeout`
+   - Rejected/crashed/timeout trials are committed to ROB-846 before `git revert`
 5. Check `results.tsv` for the recorded result
 6. If reverted: think about why, try a different approach
 7. Go to step 1
@@ -181,7 +199,8 @@ experiment  cv_score  mean  std  min_fold  test_score  status  description
 ```
 
 - `test_score`: `NA` during experimentation (evaluated at the end only)
-- `status`: `keep` | `revert` | `crash`
+- `status`: exploratory display status such as `keep`, `revert`, `crashed`, or
+  `timeout`; it has no promotion authority
 
 ## Strategy Interface
 
