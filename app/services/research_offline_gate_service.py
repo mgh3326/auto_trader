@@ -19,6 +19,7 @@ from app.models.research_backtest import (
     ResearchPromotionCandidate,
 )
 from app.schemas.research_backtest import PromotionLinkRequest
+from app.services.research_canonical_hash import canonical_sha256
 from app.services.strategy_experiment_registry import (
     PromotionHashMismatch,
     get_trial_accounting,
@@ -43,6 +44,11 @@ class OfflineGateFinalizeError(Exception):
     def __init__(self, reason_code: str) -> None:
         self.reason_code = reason_code
         super().__init__(reason_code)
+
+
+def registry_config_hash(config: HonestGateConfig) -> str:
+    """Hash frozen config exactly as the ROB-846 identity component does."""
+    return canonical_sha256(config.to_dict())
 
 
 def _completed_trial_sharpes(
@@ -90,7 +96,7 @@ async def finalize_offline_gate(
         raise OfflineGateFinalizeError("promotion_hash_mismatch")
     if run.strategy_experiment_id is None:
         raise OfflineGateFinalizeError("missing_experiment_identity")
-    if expected_config_hash != config.config_hash():
+    if expected_config_hash != registry_config_hash(config):
         raise OfflineGateFinalizeError("frozen_config_hash_mismatch")
 
     accounting = await get_trial_accounting(session, experiment_id)

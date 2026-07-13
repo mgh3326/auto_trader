@@ -54,7 +54,7 @@ def _inputs(config: HonestGateConfig | None = None) -> dict:
     cutoff = datetime(2026, 1, 1, tzinfo=UTC)
     return {
         "experiment_id": "experiment-id",
-        "expected_config_hash": config.config_hash(),
+        "expected_config_hash": service.registry_config_hash(config),
         "expected_data_hash": "data-hash",
         "selection": select_parameters(
             [

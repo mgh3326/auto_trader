@@ -7,8 +7,6 @@ import frozen_config as fc
 import honest_offline_gate as hog
 import pytest
 
-from app.services.research_canonical_hash import canonical_sha256
-
 
 def _candidate(key: str, score: float) -> hog.SelectionCandidate:
     return hog.SelectionCandidate(
@@ -252,8 +250,5 @@ def test_every_honest_gate_definition_changes_config_hash() -> None:
         )
 
 
-def test_honest_gate_reuses_campaign_config_and_rob846_canonical_hash() -> None:
-    config = hog.HonestGateConfig()
-
+def test_honest_gate_reuses_campaign_config() -> None:
     assert hog.HonestGateConfig is fc.CampaignConfig
-    assert config.config_hash() == canonical_sha256(config.to_dict())

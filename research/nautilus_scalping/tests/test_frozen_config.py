@@ -5,6 +5,9 @@ PR2 OOS read. The run records ``config_hash``; changing a threshold after the
 fact changes the hash, making an ex-post tweak detectable rather than a promise.
 """
 
+import ast
+from pathlib import Path
+
 import frozen_config as fc
 
 
@@ -49,3 +52,15 @@ def test_honest_gate_definitions_are_frozen_in_campaign_hash():
 def test_to_dict_round_trip():
     c = fc.FROZEN_CONFIG
     assert fc.CampaignConfig.from_dict(c.to_dict()) == c
+
+
+def test_frozen_config_keeps_isolated_stdlib_boundary():
+    path = Path(fc.__file__)
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    imported = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    }
+
+    assert not {module for module in imported if module.startswith("app.")}
