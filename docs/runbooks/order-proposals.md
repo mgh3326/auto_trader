@@ -3,8 +3,9 @@
 ## Purpose
 
 `review.order_proposals` + `review.order_proposal_rungs` is the SOT (source-of-truth)
-ledger for **proposed** orders awaiting human approval, prior to any broker
-submission. It replaces ad-hoc "propose in chat, submit blind" flows with a
+ledger for **proposed** orders awaiting human approval or the default-off
+ROB-871 resting-order policy, prior to any broker submission. It replaces
+ad-hoc "propose in chat, submit blind" flows with a
 persisted, replayable record: one `order_proposals` row per proposal group
 (symbol/side/market/account context + thesis/rationale), and one or more
 `order_proposal_rungs` child rows (one per execution ladder rung — price/qty
@@ -39,8 +40,8 @@ proposal execution and ROB-858 Toss loss-cut/reconcile convergence:
 
 There is still **no**
 `order_proposal_approve` / `order_proposal_submit` MCP tool in any slice —
-the only path from a proposal row to a live broker order is the Telegram
-button flow described below.
+the only paths from a proposal row to a live broker order are the Telegram
+button flow and ROB-871's independently default-off resting-class dispatch.
 
 See the full design in
 [`docs/plans/2026-07-10-rob-816-order-proposals-telegram-approval-implementation-plan.md`](../plans/2026-07-10-rob-816-order-proposals-telegram-approval-implementation-plan.md).
@@ -54,16 +55,16 @@ See the full design in
   AST guard test (`tests/services/order_proposals/test_no_repository_imports.py`)
   enforces this. Direct SQL INSERT/UPDATE/DELETE against `review.order_proposals`
   / `review.order_proposal_rungs` is not permitted.
-- **Proposal creation is NOT a broker mutation.** `order_proposal_create`
-  persists a row describing an intended order; it never calls a broker
-  client, never submits, and never touches `_place_order_impl` or any
-  existing order-send path.
-- **No submit without Telegram approval.** There is deliberately no
+- **Proposal persistence precedes every broker mutation.**
+  `order_proposal_create` first commits the intended order. With
+  `ORDER_PROPOSALS_AUTO_APPROVE=false` (default), creation does not submit.
+  When the independent ROB-871 gate is enabled, post-create dispatch may call
+  the same fresh revalidation path for a policy-qualified resting order.
+- **No public submit tool.** There is deliberately no
   `order_proposal_approve` / `order_proposal_submit` MCP tool in either PR.
-  The only way a proposal reaches a live broker order is the Telegram
-  approve/deny flow shipped in PR 2 (`app/services/order_proposals/telegram_callback.py`
-  → `app/services/order_proposals/revalidation.py`). See "Telegram Approval
-  — Activation" below for how to turn it on.
+  A proposal reaches a broker only through the Telegram approve flow or the
+  default-off ROB-871 resting-class dispatch; both reuse
+  `app/services/order_proposals/revalidation.py`.
 - **Accepted != filled.** A broker ACK (`record_ack`) or resting-order
   confirmation (`record_resting`) is recorded on the rung as `acked` /
   `resting` — never as a fill. The Telegram approval flow itself never writes
@@ -439,11 +440,36 @@ The approval settings live in `app/core/config.py`:
 | Env var | Default | Purpose |
 |---|---|---|
 | `ORDER_PROPOSALS_TELEGRAM_ENABLED` | `false` | Master gate. When `false`: `order_proposal_create` never dispatches an approval message (best-effort no-op — see `order_proposal_tools.py`), and `POST /trading/api/telegram/callback` returns `503 {"error": "order_proposals_telegram_disabled", ...}` without touching the DB. |
+| `ORDER_PROPOSALS_AUTO_APPROVE` | `false` | Independent ROB-871 master gate. When true, eligible `limit` + `place` + no-exit-intent proposals use the fresh revalidation/submit path before human dispatch. Any policy/guard/cap/reconfirmation miss falls back to the existing approval message. Thresholds come from `config/trading_policy.yaml::order_proposals.auto_approve`; the policy version and exact decision evidence are stored in `source_asof.auto_approved`. |
 | `ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN` | `""` | Defined in the config schema for this feature, but **not currently read by any runtime code path** — confirmed by repo-wide grep (only referenced in the plan doc and this config declaration). The Telegram Bot API calls that actually send/edit/answer approval messages go through the existing process-wide `TradeNotifier` singleton, which is configured from the **pre-existing** `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_IDS_STR` settings (`app/monitoring/trade_notifier/runtime.py::configure_trade_notifier_from_settings`) — the same bot/token already used for every other trade notification in this repo (Task 10's "reuse `TradeNotifier`, no regression" design). **Set `TELEGRAM_TOKEN` (not this variable) to the BotFather token that should actually send approval messages.** |
 | `ORDER_PROPOSALS_TELEGRAM_TOKEN` | `""` | The webhook **secret token** — a value you choose, registered with Telegram via `setWebhook`'s `secret_token` param (see "Telegram Bot Setup" below). Distinct from the bot token. Gates every request under `/trading/api/telegram/` in `AuthMiddleware` (`TELEGRAM_CALLBACK_PATH_PREFIX`). |
 | `ORDER_PROPOSALS_TELEGRAM_TOKEN_HEADER` | `X-Telegram-Bot-Api-Secret-Token` | The HTTP header Telegram sends the secret token back in. Telegram's own webhook mechanism hard-codes this header name — only override if you're proxying through something that renames headers. |
 | `ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR` | `""` | Comma-separated Telegram chat IDs, parsed via `settings.order_proposals_telegram_chat_allowlist`. Does double duty: (1) `handle_callback_update` uses the full list as the approve/deny **authz allowlist** (any chat not in it gets `chat_not_allowed`); (2) `send_proposal_for_approval` (`dispatch.py`) sends the initial approval message to `allowlist[0]` only — the **first** entry. Empty means no chat is allowed to approve/deny and no message is ever dispatched (`dispatch.py` no-ops). This is a distinct setting from the pre-existing `TELEGRAM_CHAT_IDS_STR` (used by `TradeNotifier`'s other, non-approval notifications) — the two lists are not required to match. |
 | `ORDER_PROPOSALS_SUBMIT_AGENT_ID` | `""` | Caller identity temporarily bound only during Telegram approval revalidation/submission. There is no default submit identity. The operator must set a non-blank value and add the exact same trimmed identity to `LOSS_CUT_ALLOWED_AGENT_IDS`. Missing or whitespace-only input becomes no identity and keeps `loss_cut` fail-closed. Never solve this with a hardcoded UUID. |
+
+### Resting-class automatic submission (ROB-871)
+
+The checked-in policy seed is 3% minimum distance. Per-order/daily settlement-
+currency caps are KR `200,000/500,000 KRW`, US `150/400 USD`, and crypto
+`100,000/300,000 KRW`. The env gate remains the master switch.
+
+Eligibility is evaluated from the fresh dry-run preview immediately before
+submit: buy limit at or below `current × (1-distance)`, or sell limit at or
+above `current × (1+distance)` after the existing average-cost loss guard.
+Only account/market pairs with the existing target-order cancel adapter are
+eligible (`kis_live` equities and `upbit` crypto); Toss and multi-rung ladders
+remain human-gated so the veto and all-or-human fallback stay lossless.
+Daily usage is the KST-day sum of DB rungs whose group already carries an
+`auto_approved` audit; the account/day check is transaction-serialized. A
+successful submit sends a summary tagged `auto:policy@<version>` with a
+single-use `취소` button. Veto invokes the existing broker cancellation adapter,
+re-fetches broker status, writes `source_asof.auto_approved.veto`, and edits the
+message to `취소됨`, `체결됨`, or an explicit failure.
+
+Canary sequence: deploy with the flag off; enable only the smallest checked-in
+caps and confirm one resting order plus veto; verify DB/broker convergence;
+then raise caps in a reviewed policy PR. Never enable by changing both the env
+gate and caps broadly in the same operational step.
 
 For a deployment that will approve loss cuts, configure both sides of the
 identity binding with an operator-managed identity (placeholder shown; do not

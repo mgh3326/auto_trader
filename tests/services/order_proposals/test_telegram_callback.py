@@ -14,6 +14,7 @@ from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.approval_message import parse_callback_data
 from app.services.order_proposals.revalidation import RungOutcome, revalidate_and_submit
 from app.services.order_proposals.service import RungInput
+from app.services.order_proposals.target_order import TargetOrderSnapshot
 from app.services.order_proposals.telegram_callback import (
     _build_result_summary,
     _resolve_proposal_id,
@@ -91,6 +92,43 @@ async def _seed_proposal(db_session, *, nonce="nonce-abc123", symbol="A", rungs=
         order_type="limit",
         proposer="p",
         rungs=rung_inputs,
+    )
+    await service.set_approval_nonce(group.proposal_id, nonce)
+    await db_session.commit()
+    return group
+
+
+async def _seed_auto_resting(db_session, *, nonce="veto-nonce"):
+    service = OrderProposalsService(db_session)
+    now = datetime.now(UTC)
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("97000"), None)],
+        source_asof={
+            "auto_approved": {
+                "policy_version": "test-policy",
+                "approved_at": now.isoformat(),
+                "eligibility": [],
+                "outcomes": ["submitted_resting"],
+            }
+        },
+    )
+    await service.transition_rung(group.proposal_id, 0, new_state="revalidating")
+    await service.transition_rung(group.proposal_id, 0, new_state="approved")
+    await service.transition_rung(group.proposal_id, 0, new_state="submitting")
+    await service.record_resting(
+        group.proposal_id,
+        0,
+        broker_order_id="broker-auto-1",
+        correlation_id="corr-auto-1",
+        idempotency_key="idem-auto-1",
+        approval_hash_digest="digest-auto-1",
+        now=now,
     )
     await service.set_approval_nonce(group.proposal_id, nonce)
     await db_session.commit()
@@ -179,6 +217,102 @@ def test_result_summary_includes_bounded_escaped_guard_reason():
 def test_result_summary_labels_confirmed_cancel():
     summary = _build_result_summary([RungOutcome(0, "cancelled", {})])
     assert "취소 확인" in summary
+
+
+@pytest.mark.asyncio
+async def test_auto_veto_cancels_broker_and_rung_once(monkeypatch, db_session):
+    _allow_chat(monkeypatch)
+    group = await _seed_auto_resting(db_session)
+    notifier = _FakeNotifier()
+    cancel_calls = []
+
+    async def cancel_fn(**kwargs):
+        cancel_calls.append(kwargs)
+        return {"success": True}
+
+    async def fetch_fn(**kwargs):
+        return TargetOrderSnapshot(
+            broker_order_id="broker-auto-1",
+            symbol="005930",
+            side="buy",
+            order_type="limit",
+            limit_price="97000",
+            remaining_quantity="1",
+            status="cancelled",
+            observed_at=kwargs["now"].isoformat(),
+        )
+
+    update = _make_update(data=f"vc:{str(group.proposal_id)[:8]}:veto-nonce")
+    result = await handle_callback_update(
+        update,
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        veto_cancel_fn=cancel_fn,
+        veto_fetch_fn=fetch_fn,
+    )
+
+    assert result["reason"] == "auto_veto_cancelled"
+    assert cancel_calls[0]["order_id"] == "broker-auto-1"
+    refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert rungs[0].state == "cancelled"
+    assert refreshed.source_asof["auto_approved"]["veto"]["telegram_user_id"] == str(
+        USER_ID
+    )
+    assert "취소됨" in notifier.edited[-1][2]
+
+    replay = await handle_callback_update(
+        update,
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        veto_cancel_fn=cancel_fn,
+        veto_fetch_fn=fetch_fn,
+    )
+    assert replay["reason"] == "nonce_replay"
+    assert len(cancel_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_auto_veto_cancel_failure_that_is_filled_edits_filled(
+    monkeypatch, db_session
+):
+    _allow_chat(monkeypatch)
+    group = await _seed_auto_resting(db_session)
+    notifier = _FakeNotifier()
+
+    async def cancel_fn(**kwargs):
+        return {"success": False, "error": "already filled"}
+
+    async def fetch_fn(**kwargs):
+        return TargetOrderSnapshot(
+            broker_order_id="broker-auto-1",
+            symbol="005930",
+            side="buy",
+            order_type="limit",
+            limit_price="97000",
+            remaining_quantity="0",
+            status="filled",
+            observed_at=kwargs["now"].isoformat(),
+        )
+
+    result = await handle_callback_update(
+        _make_update(data=f"vc:{str(group.proposal_id)[:8]}:veto-nonce"),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        veto_cancel_fn=cancel_fn,
+        veto_fetch_fn=fetch_fn,
+    )
+
+    assert result["reason"] == "auto_veto_filled"
+    _refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert rungs[0].state == "filled"
+    assert "체결됨" in notifier.edited[-1][2]
 
 
 @pytest.mark.asyncio

@@ -780,6 +780,28 @@ class OrderProposalsService:
             raise OrderProposalError("nonce_replay")
         return await self._repo.update_group(group, approval_nonce_used_at=now)
 
+    async def consume_auto_veto_nonce(
+        self, proposal_id: uuid.UUID, nonce: str, *, now: datetime
+    ) -> OrderProposal:
+        """Consume an auto-submit veto nonce, including after a broker fill."""
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        if group.superseded_by_proposal_id is not None:
+            raise OrderProposalError(
+                f"proposal_superseded_by:{group.superseded_by_proposal_id}"
+            )
+        if group.lifecycle_state == "superseded":
+            raise OrderProposalError("proposal_superseded_by:unknown")
+        if not isinstance((group.source_asof or {}).get("auto_approved"), dict):
+            raise OrderProposalError("auto_veto_not_available")
+        if group.approval_nonce != nonce:
+            raise OrderProposalError("nonce_mismatch")
+        if group.approval_nonce_used_at is not None:
+            raise OrderProposalError("nonce_replay")
+        return await self._repo.update_group(group, approval_nonce_used_at=now)
+
     async def issue_loss_cut_confirmation(
         self,
         proposal_id: uuid.UUID,
@@ -942,6 +964,72 @@ class OrderProposalsService:
             "approval_sent_at": now.isoformat(),
         }
         return await self._repo.update_group(group, source_asof=merged)
+
+    async def record_auto_approval(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        policy_version: str,
+        eligibility: list[dict[str, Any]],
+        outcomes: list[str],
+        now: datetime,
+    ) -> OrderProposal:
+        """Persist machine approval provenance without impersonating a human."""
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        source_asof = {
+            **(group.source_asof or {}),
+            "auto_approved": {
+                "policy_version": policy_version,
+                "approved_at": now.isoformat(),
+                "eligibility": eligibility,
+                "outcomes": outcomes,
+            },
+        }
+        return await self._repo.update_group(group, source_asof=source_asof)
+
+    async def record_auto_veto(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        telegram_user_id: str,
+        outcomes: list[dict[str, Any]],
+        now: datetime,
+    ) -> OrderProposal:
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        source_asof = dict(group.source_asof or {})
+        auto = dict(source_asof.get("auto_approved") or {})
+        auto["veto"] = {
+            "telegram_user_id": telegram_user_id,
+            "clicked_at": now.isoformat(),
+            "outcomes": outcomes,
+        }
+        source_asof["auto_approved"] = auto
+        return await self._repo.update_group(group, source_asof=source_asof)
+
+    async def auto_approved_daily_notional(
+        self, group: OrderProposal, *, now: datetime
+    ) -> Decimal:
+        """Return this account's KST-day cumulative auto-approved notional."""
+        self._require_timezone_aware(now)
+        local = now.astimezone(KST)
+        start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        account_key = group.broker_account_id or "default"
+        await self._repo.acquire_auto_approve_account_lock(
+            f"order_proposals:auto_approve:{group.account_mode}:{account_key}:{start.date()}"
+        )
+        return await self._repo.auto_approved_notional_between(
+            account_mode=group.account_mode,
+            broker_account_id=group.broker_account_id,
+            start=start,
+            end=end,
+        )
 
     async def acquire_commit_lease(
         self,

@@ -792,6 +792,9 @@ class Settings(BaseSettings):
     # ORDER PROPOSALS (ROB-816) — default-off SOT ledger + read/create MCP tools.
     # Gates MCP tool registration; the Telegram approval surface has its own gate (PR 2).
     ORDER_PROPOSALS_ENABLED: bool = False
+    # ROB-871 — master gate for resting-class automatic submission. Telegram
+    # approvals remain the fallback whenever this is off or eligibility fails.
+    ORDER_PROPOSALS_AUTO_APPROVE: bool = False
     # ROB-816 PR 2 — Telegram approval flow (default off)
     ORDER_PROPOSALS_TELEGRAM_ENABLED: bool = False
     ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN: str = ""
