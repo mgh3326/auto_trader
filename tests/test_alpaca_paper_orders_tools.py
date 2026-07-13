@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import pytest_asyncio
+from sqlalchemy import delete
 
 from app.mcp_server.profiles import McpProfile
 from app.mcp_server.tooling import alpaca_paper_orders as _orders_mod
@@ -19,9 +22,57 @@ from app.mcp_server.tooling.alpaca_paper_orders import (
     set_alpaca_paper_orders_service_factory,
 )
 from app.mcp_server.tooling.registry import register_all_tools
+from app.models.review import AlpacaPaperOrderLedger
 from app.services.brokers.alpaca.schemas import Order
 from tests._mcp_tooling_support import DummyMCP
 from tests.test_mcp_alpaca_paper_tools import FakeAlpacaPaperService
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_manual_ledger_rows():
+    """Manual submits now route through the durable ledger claim; keep the
+    server-derived manual keys (rob73-/rob74-crypto-) clean between tests."""
+    from app.core.db import AsyncSessionLocal
+    from app.models.market_quote_snapshot import MarketQuoteSnapshot
+
+    stmt = delete(AlpacaPaperOrderLedger).where(
+        AlpacaPaperOrderLedger.client_order_id.like("rob73-%")
+        | AlpacaPaperOrderLedger.client_order_id.like("rob74-crypto-%")
+    )
+    snap_stmt = delete(MarketQuoteSnapshot).where(
+        MarketQuoteSnapshot.symbol.in_(["KRW-BTC", "AAPL"])
+    )
+    async with AsyncSessionLocal() as db:
+        await db.execute(stmt)
+        await db.execute(snap_stmt)
+        await db.commit()
+    yield
+    async with AsyncSessionLocal() as db:
+        await db.execute(stmt)
+        await db.execute(snap_stmt)
+        await db.commit()
+
+
+async def _seed_quote_snapshot(
+    *, market="us", symbol="AAPL", source="yahoo", price="150", age_s=10
+) -> int:
+    """Seed a trusted market_quote_snapshots row and return its id."""
+    from datetime import UTC, datetime, timedelta
+
+    from app.core.db import AsyncSessionLocal
+    from app.models.market_quote_snapshot import MarketQuoteSnapshot
+
+    async with AsyncSessionLocal() as db:
+        row = MarketQuoteSnapshot(
+            market=market,
+            symbol=symbol,
+            source=source,
+            snapshot_at=datetime.now(UTC) - timedelta(seconds=age_s),
+            price=Decimal(price),
+        )
+        db.add(row)
+        await db.commit()
+        return row.id
 
 
 def test_module_exposes_expected_surface() -> None:
@@ -58,6 +109,16 @@ class FakeOrdersService(FakeAlpacaPaperService):
 
     async def cancel_order(self, order_id: str) -> None:  # type: ignore[override]
         self.calls.append(("cancel_order", {"order_id": order_id}))
+
+    async def get_position(self, symbol: str) -> Any:  # type: ignore[override]
+        # A covering current position so manual sells pass the live-position gate.
+        self.calls.append(("get_position", {"symbol": symbol}))
+        return SimpleNamespace(
+            symbol=symbol, qty=Decimal("100"), qty_available=Decimal("100")
+        )
+
+    async def get_order_by_client_order_id(self, client_order_id: str) -> Order | None:  # type: ignore[override]
+        return None
 
     async def get_order(self, order_id: str) -> Order:  # type: ignore[override]
         self.calls.append(("get_order", {"order_id": order_id}))
@@ -111,12 +172,14 @@ async def test_submit_without_confirm_is_blocked_no_op(
 async def test_submit_with_confirm_calls_service_once(
     fake_orders_service: FakeOrdersService,
 ) -> None:
+    sid = await _seed_quote_snapshot(market="us", symbol="AAPL", source="yahoo")
     payload = await alpaca_paper_submit_order(
         symbol="AAPL",
         side="buy",
         type="limit",
         qty=Decimal("1"),
         limit_price=Decimal("1.00"),
+        quote_snapshot_id=sid,
         confirm=True,
     )
     assert payload["submitted"] is True
@@ -196,6 +259,7 @@ async def test_crypto_submit_rejects_invalid_time_in_force_before_service_call(
 async def test_crypto_submit_with_confirm_calls_service_once(
     fake_orders_service: FakeOrdersService,
 ) -> None:
+    sid = await _seed_quote_snapshot(market="crypto", symbol="KRW-BTC", source="upbit")
     payload = await alpaca_paper_submit_order(
         symbol="BTC/USD",
         side="buy",
@@ -204,6 +268,7 @@ async def test_crypto_submit_with_confirm_calls_service_once(
         limit_price=Decimal("50000"),
         time_in_force="gtc",
         asset_class="crypto",
+        quote_snapshot_id=sid,
         confirm=True,
     )
     assert payload["submitted"] is True
@@ -256,7 +321,6 @@ async def test_crypto_sell_limit_submit_is_confirm_gated_and_single_order(
         type="limit",
         qty=Decimal("0.0001"),
         limit_price=Decimal("50000"),
-        client_order_id="rob86-sell-test",
         asset_class="crypto",
         confirm=False,
     )
@@ -265,19 +329,21 @@ async def test_crypto_sell_limit_submit_is_confirm_gated_and_single_order(
     assert dry_run["blocked_reason"] == "confirmation_required"
     assert fake_orders_service.calls == []
 
+    sid = await _seed_quote_snapshot(market="crypto", symbol="KRW-BTC", source="upbit")
     submitted = await alpaca_paper_submit_order(
         symbol="BTC/USD",
         side="sell",
         type="limit",
         qty=Decimal("0.0001"),
         limit_price=Decimal("50000"),
-        client_order_id="rob86-sell-test",
         asset_class="crypto",
+        quote_snapshot_id=sid,
         confirm=True,
     )
 
     assert submitted["submitted"] is True
-    assert submitted["client_order_id"] == "rob86-sell-test"
+    # server-derived key, not a caller-chosen id
+    assert submitted["client_order_id"].startswith("rob74-crypto-")
     submit_calls = [
         call for call in fake_orders_service.calls if call[0] == "submit_order"
     ]
@@ -290,23 +356,32 @@ async def test_crypto_sell_limit_submit_is_confirm_gated_and_single_order(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_submit_caller_client_order_id_passes_through(
+async def test_submit_has_no_caller_client_order_id_param(
     fake_orders_service: FakeOrdersService,
 ) -> None:
+    """Manual submit exposes no client_order_id — the claim key is server-derived
+    and cannot be injected by the caller (ROB-842 blocker 1/2)."""
+    import inspect
+
+    params = set(inspect.signature(alpaca_paper_submit_order).parameters)
+    assert "client_order_id" not in params
+    assert "origin" not in params
+
+    sid = await _seed_quote_snapshot(market="us", symbol="AAPL", source="yahoo")
     payload = await alpaca_paper_submit_order(
         symbol="AAPL",
         side="buy",
         type="limit",
         qty=Decimal("1"),
         limit_price=Decimal("1.00"),
-        client_order_id="dev-smoke-001",
+        quote_snapshot_id=sid,
         confirm=True,
     )
-    assert payload["client_order_id"] == "dev-smoke-001"
+    assert payload["client_order_id"].startswith("rob73-")
     sent = [c for c in fake_orders_service.calls if c[0] == "submit_order"][0][1][
         "request"
     ]
-    assert sent.client_order_id == "dev-smoke-001"
+    assert sent.client_order_id.startswith("rob73-")
 
 
 @pytest.mark.unit
@@ -536,7 +611,7 @@ async def test_cancel_signature_has_no_bulk_or_filter_params() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_cancel_read_back_failure_marks_unavailable_but_succeeds(
+async def test_cancel_read_back_failure_is_honest_and_keeps_reservation(
     fake_orders_service: FakeOrdersService,
 ) -> None:
     from app.services.brokers.alpaca.exceptions import AlpacaPaperRequestError
@@ -550,7 +625,11 @@ async def test_cancel_read_back_failure_marks_unavailable_but_succeeds(
         order_id="paper-order-123",
         confirm=True,
     )
-    assert payload["cancelled"] is True
+    # ROB-842 H1: an unavailable read-back cannot confirm the terminal cancel, so
+    # the tool reports honestly and does NOT release any reservation.
+    assert payload["cancel_requested"] is True
+    assert payload["cancelled"] is False
+    assert payload["reservation_released"] is False
     assert payload["read_back_status"] == "unavailable"
     assert payload["order"] is None
 
@@ -582,6 +661,7 @@ async def test_submit_fails_closed_on_live_endpoint(
     )
     mod.reset_alpaca_paper_orders_service_factory()
 
+    sid = await _seed_quote_snapshot(market="us", symbol="AAPL", source="yahoo")
     with pytest.raises(AlpacaPaperEndpointError):
         await alpaca_paper_submit_order(
             symbol="AAPL",
@@ -589,6 +669,7 @@ async def test_submit_fails_closed_on_live_endpoint(
             type="limit",
             qty=Decimal("1"),
             limit_price=Decimal("1.00"),
+            quote_snapshot_id=sid,
             confirm=True,
         )
 

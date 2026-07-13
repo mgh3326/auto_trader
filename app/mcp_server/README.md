@@ -421,6 +421,60 @@ estimated cost.
 There is still no Alpaca paper `place_order`, `replace_order`, `modify_order`,
 `cancel_all`, close-position/liquidate, or generic Alpaca order-routing surface.
 
+#### Unified submit boundary (ROB-842)
+
+Every real Alpaca Paper broker POST — manual and automated — passes through a
+single server-side boundary: **server-owned approval packet → existing
+`review.alpaca_paper_order_ledger` atomic claim → broker POST → stored-result
+replay**. There is no direct-POST fallback, and this holds for `us-paper` only.
+
+- **Roles.** `alpaca_paper_submit_order` is the **manual operator** tool
+  (confirm-gated $10-scale smoke). `alpaca_paper_automated_preview_order` +
+  `alpaca_paper_automated_submit_order` are the **automated cohort** tools —
+  registered only under `MCP_PROFILE=us-paper` and **default-off** behind
+  `ALPACA_PAPER_AUTOMATED_SUBMIT_ENABLED` (fail-closed when unset).
+- **Server-observed market evidence for every submit.** Both tools require an
+  opaque, server-issued `quote_snapshot_id` (a trusted `market_quote_snapshots`
+  row) at `confirm=True` — there is no origin-based bypass of market/freshness
+  checks. The caller never supplies correlation, snapshot, market-data as-of/
+  source, ceiling, `origin`, or `client_order_id`: the server loads identity,
+  market provenance and the trusted reference price from that row, and the ceiling
+  is the server **hard-cap** policy ($1,000 equity / $50 crypto). A market/qty
+  order's implied notional (trusted price × qty) is bounded by the same cap. A
+  missing / stale / symbol-mismatched / non-finite-priced snapshot fails closed
+  before any packet is built. Packet + policy hashes are recorded in the ledger
+  preview evidence.
+- **Replay before freshness.** Immutable token/key/hash/account binding is checked
+  first; a completed or terminally-failed order then replays its original result
+  even after the packet's freshness window has elapsed. Freshness / market-data /
+  live-position checks apply only to a not-yet-claimed new submit.
+- **Exactly once.** Duplicate intents (sequential or concurrent) produce exactly
+  one broker HTTP submit; every other caller replays the winner's result.
+- **Live sell eligibility + no oversell.** A sell is verified against the
+  **current** Alpaca paper position re-read right before the POST, with
+  `qty_available` required as a broker-owned upper bound. Position evidence,
+  lifecycle reconciliation, local reservations, and the atomic claim are bound
+  under one account+symbol advisory lock. Every sell claim stores its `qty` /
+  `qty_available` baseline in the existing `position_snapshot` JSONB; a later
+  immediate or crash-recovered open/partial, `filled`, and unknown/unparseable
+  statuses retain `submitted`; a `filled` status releases the hold only after the
+  position response proves the fill is reflected. Unknown statuses retain their
+  reservation, and ambiguous/stale fill evidence returns
+  `position_reconciliation_pending`, so two *different* sell intents cannot consume
+  the same shares. Cancel read-back syncs known broker truth while retaining the
+  hold for open/partial/filled. Automated sell is **explicitly disabled**
+  (reason `automated_sell_disabled`) until ROB-845 wires an opaque buy/position
+  source; manual sell is supported.
+- **Public success contract.** `success` is true only for
+  `submitted` / `replayed` / `recovered`; `failed`, `rejected` and
+  `idempotency_in_progress` are `success=false`.
+- **Deterministic failure vs uncertainty.** An HTTP 4xx/422 rejection is booked
+  as a terminal outcome and replayed on retry (no re-POST). A 5xx/timeout/
+  crash-after-send is reconciled via `get_order_by_client_order_id` — recovered
+  if the order exists, otherwise left in-flight — never re-POSTed.
+- **Paper only.** The only broker built is `AlpacaPaperBrokerService`
+  (paper-host-pinned); no live endpoint or live-credential path is imported.
+
 Read-only operator runbook: [`docs/runbooks/alpaca-paper-readonly-smoke.md`](../../docs/runbooks/alpaca-paper-readonly-smoke.md)
 Read-only smoke helper: `scripts/smoke/alpaca_paper_readonly_smoke.py` (argumentless, read-only, exits non-zero on failure)
 Dev submit/cancel smoke runbook: [`docs/runbooks/alpaca-paper-dev-smoke.md`](../../docs/runbooks/alpaca-paper-dev-smoke.md)

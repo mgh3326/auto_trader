@@ -19,6 +19,9 @@ from app.mcp_server.tooling.account_read_registration import (
     ACCOUNT_READ_TOOL_NAMES,
 )
 from app.mcp_server.tooling.alpaca_paper import ALPACA_PAPER_READONLY_TOOL_NAMES
+from app.mcp_server.tooling.alpaca_paper_automated_orders import (
+    ALPACA_PAPER_AUTOMATED_TOOL_NAMES,
+)
 from app.mcp_server.tooling.alpaca_paper_orders import (
     ALPACA_PAPER_MUTATING_TOOL_NAMES,
 )
@@ -250,7 +253,7 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     ),
     McpProfile.HERMES_PAPER_KIS: set(KIS_MOCK_ORDER_TOOL_NAMES),
     McpProfile.CRYPTO: _LEGACY_ORDER_TOOL_NAMES | LIVE_RECONCILE_TOOL_NAMES,
-    McpProfile.US_PAPER: set(_ALPACA_MUTATING),
+    McpProfile.US_PAPER: set(_ALPACA_MUTATING) | ALPACA_PAPER_AUTOMATED_TOOL_NAMES,
     McpProfile.DB_PAPER: set(),
     McpProfile.KIWOOM: set(KIWOOM_MOCK_TOOL_NAMES),
     # ROB-697 M1 — shadow-replay registers zero order/mutation tools by design
@@ -292,6 +295,7 @@ _ALL_ORDER_TOOL_NAMES = (
     | LIVE_RECONCILE_TOOL_NAMES
     | KIWOOM_MOCK_TOOL_NAMES
     | _ALPACA_MUTATING
+    | ALPACA_PAPER_AUTOMATED_TOOL_NAMES
     | TOSS_LIVE_ORDER_TOOL_NAMES
     | PAPER_LIMIT_ORDER_TOOL_NAMES
 )

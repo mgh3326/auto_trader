@@ -56,6 +56,7 @@ POSITION_DATA = [
         "asset_id": "asset-1",
         "symbol": "AAPL",
         "qty": "10",
+        "qty_available": "4",
         "avg_entry_price": "150.00",
         "current_price": "155.00",
         "market_value": "1550.00",
@@ -66,6 +67,7 @@ POSITION_DATA = [
         "asset_id": "asset-2",
         "symbol": "TSLA",
         "qty": "5",
+        "qty_available": "3",
         "avg_entry_price": "200.00",
         "current_price": "210.00",
         "market_value": "1050.00",
@@ -159,7 +161,9 @@ async def test_list_positions_parses_array():
 
     assert len(positions) == 2
     assert positions[0].symbol == "AAPL"
+    assert positions[0].qty_available == Decimal("4")
     assert positions[1].symbol == "TSLA"
+    assert positions[1].qty_available == Decimal("3")
 
 
 @pytest.mark.unit

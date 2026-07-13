@@ -306,7 +306,49 @@ Excludes pre-submit (`planned/previewed/validated`) and `anomaly`.
 
 `find_executed_by_client_order_id(client_order_id)` — returns the execution row if `record_kind='execution'` and `lifecycle_state` is in `EXECUTED_LIFECYCLE_STATES`; else `None`.
 
-`list_by_correlation_id(lifecycle_correlation_id)` — returns all rows sharing the correlation ID, ordered oldest-first. Used by the sell-source verifier.
+`list_by_correlation_id(lifecycle_correlation_id)` — returns all rows sharing the correlation ID, ordered oldest-first.
+
+## ROB-842 Submit Boundary (packet + atomic claim + replay)
+
+Every real Alpaca Paper broker POST — manual (`alpaca_paper_submit_order`) and
+automated (`alpaca_paper_automated_submit_order`) — is routed through
+`AlpacaPaperSubmitCoordinator`, which uses this ledger as the single idempotency +
+outcome store. No new table/column/migration was added.
+
+- **Atomic claim.** `claim_submit(...)` inserts the single `record_kind='execution'`
+  row for a `client_order_id` (`lifecycle_state='submitted'`, `submitted_at`/
+  `broker_order_id` NULL) via `INSERT ... ON CONFLICT DO NOTHING RETURNING`. The
+  winner (the caller that inserted the row) is the only one that POSTs.
+- **In-flight marker.** An execution row with both `submitted_at` and
+  `broker_order_id` NULL is a claimed-but-not-yet-recorded submit (`is_inflight_execution`).
+- **Success / terminal failure.** After a broker response, `record_submit(...)`
+  fills the same row (success). A deterministic broker rejection (HTTP 4xx/422) is
+  booked terminal by `record_submit_failure(...)` (`lifecycle_state='anomaly'`,
+  `submitted_at` stamped, redacted `error_summary`). Both make the row non-in-flight.
+- **Replay.** `get_execution_by_client_order_id(...)` returns the execution row in
+  ANY state; the coordinator replays a completed submit or a terminal failure
+  before applying any time-dependent (freshness/position) check, so an expired
+  packet never turns a completed order into `stale_packet`.
+- **Sell reservation (no oversell).** `reserve_sell_and_claim(...)` holds a
+  transaction-scoped advisory lock on `(account_mode, execution_symbol)`. Under
+  that same lock, broker order statuses and the current position are read, and
+  `available = min(qty_available, live qty − Σ(open sell requested_qty))` is used
+  before inserting the claim. The claim stores its `qty` / `qty_available` baseline
+  in the existing `position_snapshot` JSONB. Immediate and crash-recovered sell
+  responses remain `submitted` for open/partial, `filled`, and unknown/unparseable
+  statuses. A `filled` sell is released only after current position evidence proves
+  the fill is reflected; missing baseline or stale cross-endpoint evidence fails
+  closed with `position_reconciliation_pending`, while an unknown status retains its
+  reservation. Cancel read-back persists known open/partial/filled broker truth but
+  retains the same `submitted` hold. None of these ambiguous paths sends a new POST.
+- **Preview binding.** `record_preview(...)` persists the server-owned approval
+  packet + provenance (quote snapshot id, content/packet hashes) as the
+  `record_kind='preview'` row; `get_preview_by_client_order_id(...)` re-reads it so
+  a duplicate-token preview answers from the persisted expiry/hash.
+
+Market evidence for both paths is loaded from a trusted `market_quote_snapshots`
+row (`app.services.alpaca_paper_market_evidence.load_market_evidence`); the caller
+never supplies correlation/snapshot/market-data/ceiling.
 
 ---
 

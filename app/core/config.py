@@ -803,6 +803,10 @@ class Settings(BaseSettings):
     # ROB-326 — US dual-paper premarket preview/preflight path (read-only, default off)
     us_dual_paper_preview_enabled: bool = False
 
+    # ROB-842 — automated Alpaca paper submit boundary (preview→claim→POST). The
+    # automated cohort broker mutation is fail-closed unless this gate is armed.
+    alpaca_paper_automated_submit_enabled: bool = False
+
     @field_validator("alpaca_paper_base_url", mode="before")
     @classmethod
     def validate_alpaca_paper_base_url(cls, v: Any) -> str:
