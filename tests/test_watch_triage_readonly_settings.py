@@ -39,6 +39,10 @@ KNOWN_MUTATION_TOOLS = frozenset(
         "alpaca_paper_submit_order",
         "alpaca_paper_automated_submit_order",
         "alpaca_paper_cancel_order",
+        "paper_execution_preview_order",
+        "paper_execution_submit_order",
+        "paper_execution_cancel_order",
+        "paper_execution_reconcile",
         "kiwoom_mock_place_order",
         "kiwoom_mock_cancel_order",
         "kiwoom_mock_modify_order",
@@ -114,6 +118,27 @@ def test_no_new_order_mutation_tool_escapes_known_set():
         f"새 주문 mutation 도구가 deny-list/KNOWN_MUTATION_TOOLS에 없음: {sorted(escaped)} "
         "→ .claude/settings.readonly.json deny + KNOWN_MUTATION_TOOLS 둘 다 갱신"
     )
+
+
+def test_paper_execution_facade_denies_every_non_read_operation():
+    from app.mcp_server.tooling.paper_execution_registration import (
+        PAPER_EXECUTION_TOOL_NAMES,
+    )
+
+    read_only = {
+        "paper_execution_get_capabilities",
+        "paper_execution_get_order",
+    }
+    mutations = PAPER_EXECUTION_TOOL_NAMES - read_only
+
+    assert mutations == {
+        "paper_execution_preview_order",
+        "paper_execution_submit_order",
+        "paper_execution_cancel_order",
+        "paper_execution_reconcile",
+    }
+    assert mutations <= KNOWN_MUTATION_TOOLS
+    assert mutations <= _denied_mcp_suffixes()
 
 
 # report/stage/watch 도구 분류 가드: 모든 investment_report*/investment_stage*/investment_watch* 도구가

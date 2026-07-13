@@ -1,6 +1,6 @@
 import logging
 
-from app.core.config import settings
+from app.core.config import settings, validate_kiwoom_mock_config
 from app.mcp_server.env_utils import (
     _env,
     _env_int,
@@ -54,6 +54,7 @@ def _validate_profile_auth_token(profile: McpProfile, token: str | None) -> None
     token_required_profiles = {
         McpProfile.ACCOUNT_READ,
         McpProfile.TRADINGCODEX_EXECUTION,
+        McpProfile.PAPER_EXECUTION,
     }
     if profile in token_required_profiles and not (token or "").strip():
         raise RuntimeError(
@@ -62,18 +63,44 @@ def _validate_profile_auth_token(profile: McpProfile, token: str | None) -> None
 
 
 def _validate_profile_runtime_settings(profile: McpProfile) -> None:
-    if profile is not McpProfile.TRADINGCODEX_EXECUTION:
+    if profile is McpProfile.PAPER_EXECUTION:
+        if not settings.PAPER_EXECUTION_ENABLED:
+            raise RuntimeError(
+                "MCP_PROFILE=paper_execution requires PAPER_EXECUTION_ENABLED=true"
+            )
         return
-    if settings.order_approval_hash_mode != "required":
-        raise RuntimeError(
-            "MCP_PROFILE=tradingcodex_execution requires "
-            "ORDER_APPROVAL_HASH_MODE=required"
-        )
-    if settings.toss_approval_hash_mode != "required":
-        raise RuntimeError(
-            "MCP_PROFILE=tradingcodex_execution requires "
-            "TOSS_APPROVAL_HASH_MODE=required"
-        )
+
+    restricted_profiles = {
+        McpProfile.ACCOUNT_READ,
+        McpProfile.TRADINGCODEX_EXECUTION,
+    }
+    if profile in restricted_profiles and bool(
+        getattr(settings, "kiwoom_mock_enabled", False)
+    ):
+        missing = validate_kiwoom_mock_config(settings)
+        if missing:
+            raise RuntimeError(
+                f"MCP_PROFILE={profile.value} has incomplete Kiwoom mock config: "
+                + ", ".join(missing)
+            )
+        mock_base_url = str(settings.kiwoom_mock_base_url).rstrip("/")
+        if mock_base_url != "https://mockapi.kiwoom.com":
+            raise RuntimeError(
+                f"MCP_PROFILE={profile.value} requires Kiwoom mock host "
+                "https://mockapi.kiwoom.com"
+            )
+
+    if profile is McpProfile.TRADINGCODEX_EXECUTION:
+        if settings.order_approval_hash_mode != "required":
+            raise RuntimeError(
+                "MCP_PROFILE=tradingcodex_execution requires "
+                "ORDER_APPROVAL_HASH_MODE=required"
+            )
+        if settings.toss_approval_hash_mode != "required":
+            raise RuntimeError(
+                "MCP_PROFILE=tradingcodex_execution requires "
+                "TOSS_APPROVAL_HASH_MODE=required"
+            )
 
 
 _validate_profile_auth_token(_mcp_profile, _auth_token)

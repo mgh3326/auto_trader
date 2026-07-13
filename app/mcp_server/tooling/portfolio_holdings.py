@@ -869,6 +869,18 @@ async def _collect_portfolio_positions(
     )
 
     market_filter = _parse_holdings_market_filter(market)
+    account_filter = _normalize_account_filter(account)
+    if is_mock:
+        if account_filter not in (None, "kis"):
+            raise ValueError(
+                f"account={account_filter!r} is incompatible with "
+                "account_mode='kis_mock'"
+            )
+        if market_filter == "crypto":
+            raise ValueError(
+                "market='crypto' is incompatible with account_mode='kis_mock'"
+            )
+
     if is_paper_account_token(account):
         selector = parse_paper_account_token(account)
         positions, errors = await collect_paper_positions(
@@ -908,19 +920,18 @@ async def _collect_portfolio_positions(
         positions.sort(key=lambda p: (p["account"], p["market"], p["symbol"]))
         return positions, errors, market_filter, account
 
-    account_filter = _normalize_account_filter(account)
-
     tasks: list[Any] = []
     if market_filter != "crypto":
         if is_mock:
             tasks.append(_collect_kis_positions(market_filter, is_mock=True))
         else:
             tasks.append(_collect_kis_positions(market_filter))
-    if market_filter in (None, "crypto"):
-        tasks.append(_collect_upbit_positions(market_filter))
-    tasks.append(
-        _collect_manual_positions(user_id=user_id, market_filter=market_filter)
-    )
+    if not is_mock:
+        if market_filter in (None, "crypto"):
+            tasks.append(_collect_upbit_positions(market_filter))
+        tasks.append(
+            _collect_manual_positions(user_id=user_id, market_filter=market_filter)
+        )
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
     positions: list[dict[str, Any]] = []
@@ -942,7 +953,7 @@ async def _collect_portfolio_positions(
     toss_api_positions: list[dict[str, Any]] = []
     toss_api_errors: list[dict[str, Any]] = []
     toss_api_succeeded = False
-    if bool(getattr(settings, "toss_api_enabled", False)):
+    if not is_mock and bool(getattr(settings, "toss_api_enabled", False)):
         (
             toss_api_positions,
             toss_api_errors,

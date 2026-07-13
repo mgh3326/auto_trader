@@ -14,6 +14,7 @@ import pytest
 
 from app.core.config import settings
 from app.mcp_server.profiles import McpProfile, resolve_mcp_profile
+from app.mcp_server.tooling import tradingcodex_execution_registration
 from app.mcp_server.tooling.account_read_registration import (
     ACCOUNT_READ_FORBIDDEN_TOOL_NAMES,
     ACCOUNT_READ_TOOL_NAMES,
@@ -47,6 +48,9 @@ from app.mcp_server.tooling.orders_toss_variants import (
 from app.mcp_server.tooling.paper_account_registration import PAPER_ACCOUNT_TOOL_NAMES
 from app.mcp_server.tooling.paper_analytics_registration import (
     PAPER_ANALYTICS_TOOL_NAMES,
+)
+from app.mcp_server.tooling.paper_execution_registration import (
+    PAPER_EXECUTION_TOOL_NAMES,
 )
 from app.mcp_server.tooling.paper_journal_registration import PAPER_JOURNAL_TOOL_NAMES
 from app.mcp_server.tooling.paper_limit_order_handler import (
@@ -93,6 +97,16 @@ _REMOVED_GENERIC_TOOL_NAMES = {
     "get_funding_rate",
     "get_open_interest",
     "get_long_short_ratio",
+}
+
+_EXPECTED_KIWOOM_EXECUTION_TOOL_NAMES = {
+    "kiwoom_mock_preview_order",
+    "kiwoom_mock_place_order",
+    "kiwoom_mock_cancel_order",
+    "kiwoom_mock_modify_order",
+    "kiwoom_mock_get_order_history",
+    "kiwoom_mock_get_positions",
+    "kiwoom_mock_get_orderable_cash",
 }
 
 
@@ -287,6 +301,9 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     McpProfile.ACCOUNT_READ: {
         "get_order_history",
         "kis_live_get_order_history",
+        "kiwoom_mock_get_order_history",
+        "kiwoom_mock_get_positions",
+        "kiwoom_mock_get_orderable_cash",
         "toss_get_order_history",
         "toss_get_positions",
         "toss_get_orderable_cash",
@@ -300,6 +317,7 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
         "kis_live_place_order",
         "kis_live_cancel_order",
         "kis_live_get_order_history",
+        *KIWOOM_MOCK_TOOL_NAMES,
         "toss_preview_order",
         "toss_place_order",
         "toss_cancel_order",
@@ -307,6 +325,9 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
         "toss_get_positions",
         "toss_get_orderable_cash",
     },
+    # Default-off profile: the direct registry exposes zero tools until the
+    # dedicated feature flag is explicitly enabled.
+    McpProfile.PAPER_EXECUTION: set(),
 }
 _ALL_ORDER_TOOL_NAMES = (
     _LEGACY_ORDER_TOOL_NAMES
@@ -319,6 +340,7 @@ _ALL_ORDER_TOOL_NAMES = (
     | ALPACA_PAPER_AUTOMATED_TOOL_NAMES
     | TOSS_LIVE_ORDER_TOOL_NAMES
     | PAPER_LIMIT_ORDER_TOOL_NAMES
+    | PAPER_EXECUTION_TOOL_NAMES
 )
 
 
@@ -355,6 +377,7 @@ _PROFILES_WITH_RESEARCH_SURFACE = [
         McpProfile.ANALYSIS_READONLY,
         McpProfile.ACCOUNT_READ,
         McpProfile.TRADINGCODEX_EXECUTION,
+        McpProfile.PAPER_EXECUTION,
     )
 ]
 
@@ -515,6 +538,10 @@ class TestAccountReadProfile:
             "kis_mock_place_order",
             "kis_mock_cancel_order",
             "kis_mock_modify_order",
+            "kiwoom_mock_preview_order",
+            "kiwoom_mock_place_order",
+            "kiwoom_mock_cancel_order",
+            "kiwoom_mock_modify_order",
             "live_reconcile_orders",
             "toss_preview_order",
             "toss_place_order",
@@ -537,6 +564,14 @@ class TestAccountReadProfile:
             f"account_read leaked write/persistence tools: {sorted(leaked)}"
         )
 
+    def test_registers_only_three_kiwoom_mock_reads(self) -> None:
+        mcp = _build_mcp(McpProfile.ACCOUNT_READ)
+        assert KIWOOM_MOCK_TOOL_NAMES & mcp.tools.keys() == {
+            "kiwoom_mock_get_positions",
+            "kiwoom_mock_get_orderable_cash",
+            "kiwoom_mock_get_order_history",
+        }
+
     def test_expected_account_read_tools_are_present(self) -> None:
         mcp = _build_mcp(McpProfile.ACCOUNT_READ)
         assert {
@@ -546,11 +581,32 @@ class TestAccountReadProfile:
             "toss_get_orderable_cash",
             "get_order_history",
             "kis_live_get_order_history",
+            "kiwoom_mock_get_positions",
+            "kiwoom_mock_get_orderable_cash",
+            "kiwoom_mock_get_order_history",
             "toss_get_order_history",
         } <= mcp.tools.keys()
 
 
 class TestTradingCodexExecutionProfile:
+    def test_kiwoom_execution_allowlist_is_explicit_exact_seven(self) -> None:
+        explicit_allowlist = getattr(
+            tradingcodex_execution_registration,
+            "KIWOOM_MOCK_EXECUTION_TOOL_NAMES",
+            None,
+        )
+
+        assert explicit_allowlist is not None
+        assert set(explicit_allowlist) == _EXPECTED_KIWOOM_EXECUTION_TOOL_NAMES
+        assert (
+            TRADINGCODEX_EXECUTION_TOOL_NAMES & KIWOOM_MOCK_TOOL_NAMES
+            == _EXPECTED_KIWOOM_EXECUTION_TOOL_NAMES
+        )
+
+        mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
+        registered = {name for name in mcp.tools if name.startswith("kiwoom_mock_")}
+        assert registered == _EXPECTED_KIWOOM_EXECUTION_TOOL_NAMES
+
     def test_registers_exact_tradingcodex_execution_allowlist(self) -> None:
         mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
         # ROB-816: order_proposal_* tools are additionally gated by
@@ -582,6 +638,7 @@ class TestTradingCodexExecutionProfile:
             "cancel_order",
             "kis_live_place_order",
             "kis_live_cancel_order",
+            *_EXPECTED_KIWOOM_EXECUTION_TOOL_NAMES,
             "toss_preview_order",
             "toss_place_order",
             "toss_cancel_order",
@@ -600,6 +657,19 @@ class TestTradingCodexExecutionProfile:
             "get_trade_retrospectives",
             "trade_retrospective_pending",
         } <= mcp.tools.keys()
+
+    def test_registers_exact_typed_kiwoom_mock_surface(self) -> None:
+        mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
+        assert KIWOOM_MOCK_TOOL_NAMES & mcp.tools.keys() == (
+            _EXPECTED_KIWOOM_EXECUTION_TOOL_NAMES
+        )
+        assert {
+            "kiwoom_place_order",
+            "kiwoom_live_place_order",
+            "kiwoom_live_cancel_order",
+            "kiwoom_live_modify_order",
+            "kiwoom_live_get_order_history",
+        }.isdisjoint(mcp.tools.keys())
 
     def test_does_not_register_modify_reconcile_or_unsafe_persistence_tools(
         self,
@@ -753,6 +823,9 @@ class TestResolveMcpProfile:
             resolve_mcp_profile("tradingcodex_execution")
             is McpProfile.TRADINGCODEX_EXECUTION
         )
+
+    def test_paper_execution(self) -> None:
+        assert resolve_mcp_profile("paper_execution") is McpProfile.PAPER_EXECUTION
 
     def test_invalid_string_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="Unknown MCP_PROFILE"):

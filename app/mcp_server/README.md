@@ -71,6 +71,12 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Default thresholds: KR 25 bps, US 40 bps. US is stricter because FX basis and overseas tax lots split by account.
   - Always returns `cost_comparison` for both candidate accounts and `position_consolidation` with either `foregone_savings_krw` or `distribution_warning`.
 - `get_orderbook(symbol, market="kr")`
+- KR quote responses expose `price_as_of`, `price_freshness`
+  (`fresh|stale|unavailable`), `price_usable`, and a stable
+  `price_unavailable_reason` when unusable. Missing timestamps and epoch-zero
+  values are unavailable; prior-date timestamps are stale. NXT tradability
+  similarly returns `nxt_tradable=null` plus the observed value and reason when
+  its as-of is missing or stale.
 - US equity quote price resolution uses KIS overseas current price first when `settings.us_quote_kis_primary` is enabled, then falls back to Yahoo `fast_info`.
   - US quote response keeps `source: "kis_overseas"` or `source: "yahoo"` and includes `previous_close/open/high/low/volume` when the provider supplies them.
   - US quote response includes `session` (`premarket`, `regular`, `afterhours`, `closed`), `data_state` (`fresh` during the extended-hours envelope, `stale` when closed), `price_source` (`kis_overseas_last` or `yahoo_fast_info_close`), `delayed: true`, and optional `quote_asof` when KIS supplies parseable quote date/time fields.
@@ -79,6 +85,12 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `get_holdings(account=None, market=None, include_current_price=True, minimum_value=None, account_mode=None)`
   - Crypto positions may include optional `strategy_signal` field when Phase 2 exit logic triggers (4.5% stop-loss or RSI > 46 mean-reversion on profitable positions)
 - `get_position(symbol, market=None, account_mode=None)`
+- `get_financials(symbol, statement="income", freq="annual", market=None)`
+  - Provider payloads with no numeric financial values return
+    `status="unavailable"`, `scoreable=false`, the stable reason
+    `financial_metrics_unavailable`, and source/statement/frequency/period-count
+    evidence. The tool preserves the empty provider payload and does not invent
+    metrics.
 - `get_ohlcv(symbol, count=100, period="day", end_date=None, market=None, include_indicators=False)`
   - period: `day`, `week`, `month`, `1m`, `5m`, `15m`, `30m`, `4h`, `1h`
   - `include_indicators=True` adds `indicators_included` at the payload top level and appends `rsi_14`, `ema_20`, `bb_upper`, `bb_mid`, `bb_lower`, `vwap` to each row
@@ -1520,6 +1532,9 @@ Parameters:
 - `account`: optional account filter (`upbit`, `kis`, `kis_domestic`, `kis_overseas`)
 
 Broker-specific contract:
+- With `account_mode="kis_mock"`, this tool is a KIS-only data plane. It never
+  reads Upbit or Toss live cash, rejects non-KIS account selectors, and marks
+  KIS rows/errors with `account_mode="kis_mock"`.
 - **Upbit (`account="upbit"`)**
   - `balance`: total KRW (`balance + locked`)
   - `orderable`: orderable KRW (`balance`)
@@ -1552,6 +1567,8 @@ Behavior:
 - Converts USD orderable amounts to KRW equivalents using current exchange rate
 - Includes manual cash (Toss/non-API cash) when `include_manual=True`
 - Marks manual cash as stale when older than 3 days
+- With `account_mode="kis_mock"`, manual cash is not read or aggregated; the
+  result is derived only from the KIS mock cash response.
 
 Response shape:
 - `accounts`: per-account cash entries with `krw_equivalent` added for USD accounts
@@ -1569,6 +1586,9 @@ Parameters:
 - `minimum_value`: optional numeric threshold. When `None` (default), per-currency thresholds apply: KRW=5000, USD=10. Explicit number uses uniform threshold. Positions below threshold are excluded only when `include_current_price=True`
 
 Filtering rules:
+- With `account_mode="kis_mock"`, holdings collection is KIS-only. Upbit,
+  Toss API, and manual collectors are not called, and non-KIS account or crypto
+  selectors fail closed instead of returning a mixed-provenance response.
 - If `include_current_price=False`, `minimum_value` filtering is skipped
 - When `minimum_value=None`, per-currency thresholds are automatically applied based on `instrument_type`: `equity_kr` and `crypto` use 5000, `equity_us` uses 10
 - When `minimum_value` is a number, that uniform threshold is applied to all positions
@@ -1914,15 +1934,60 @@ The `MCP_PROFILE` env var selects which tool subset is registered at startup.
 
 | Profile | Value | Order surface |
 |---|---|---|
-| Default | `default` (or unset) | Legacy `place_order`/`cancel_order`/`modify_order`/`get_order_history` + typed `kis_live_*` + typed `kis_mock_*`; crypto-only, Alpaca/us-dual paper, and Kiwoom tools are absent |
+| Default | `default` (or unset) | Legacy `place_order`/`cancel_order`/`modify_order`/`get_order_history` + typed `kis_live_*` + typed `kis_mock_*`; typed `kiwoom_mock_*` is added only by the existing `KIWOOM_MOCK_ENABLED=true` ROB-601 gate; Alpaca/us-dual paper tools are absent |
 | Paper/mock-only | `hermes-paper-kis` | Typed `kis_mock_*` only — live surface **physically absent** |
 | Crypto | `crypto` | Default read-only/research surface plus crypto-only tools (`get_crypto_fear_greed`, `get_crypto_market_regime`, `get_upbit_index`, ...) **plus** the generic `place_order`/`cancel_order`/`modify_order`/`get_order_history` (crypto live entry point) and `live_reconcile_orders`; typed `kis_live_*`/`kis_mock_*` are absent |
 | US paper | `us-paper` | Default read-only/research surface plus Alpaca paper and `us_dual_paper_*` tools; no KIS/generic order tools |
 | DB paper simulator | `db-paper` | Default read-only/research surface plus internal `paper.paper_*` simulator account, analytics, and journal bridge tools; no KIS/generic order tools |
 | Kiwoom mock | `kiwoom` | Default read-only/research surface plus typed `kiwoom_mock_*` variants only (no KIS/generic order tools) |
 | Analysis readonly | `analysis_readonly` | Codex/headless read/analysis allowlist only: `get_operating_briefing`, `route_request`, `get_trading_policy`, selected quote/fundamental/analysis tools, `suggest_order_account`, `get_holdings`, `toss_get_positions`, and explicitly labeled analysis persistence. No order/cancel/modify/reconcile/preview/settings/watch/admin/manual-holdings mutation tools are registered. |
-| Account read | `account_read` | TradingCodex account adapter allowlist only: `get_holdings`, `toss_get_positions`, `get_cash_balance`, `toss_get_orderable_cash`, `get_order_history`, `kis_live_get_order_history`, and `toss_get_order_history`. No order placement/cancel/modify/preview/reconcile, persistence, settings, watch, admin, report-writing, or manual-holdings mutation tools are registered. |
-| TradingCodex execution | `tradingcodex_execution` | Reviewed TradingCodex BrokerAdapter allowlist: account reads, `route_request`, `get_trading_policy`, `suggest_order_account`, `get_fx_rate`, watch read tools, `investment_watch_create` (guarded `created_by`), `forecast_save`/`get_forecasts`, `save_trade_retrospective`/`get_trade_retrospectives`/`trade_retrospective_pending`, preview/dry-run, live place, cancel, and ladder fill-preview tools. Requires dedicated auth token and required approval-hash modes. |
+| Account read | `account_read` | TradingCodex account adapter allowlist only: existing KIS/Toss account reads plus `kiwoom_mock_get_positions`, `kiwoom_mock_get_orderable_cash`, and `kiwoom_mock_get_order_history`. Kiwoom and all other mutations remain physically absent. |
+| TradingCodex execution | `tradingcodex_execution` | Reviewed TradingCodex BrokerAdapter allowlist: existing account/advisory/learning/execution tools plus the seven mock-pinned typed `kiwoom_mock_*` tools. Requires a dedicated auth token and required approval-hash modes; no Kiwoom live or generic unscoped Kiwoom order surface is registered. |
+| Canonical paper execution | `paper_execution` | ROB-845 experiment façade only: capabilities plus typed preview/submit/cancel/get-order/reconcile. Default-off, auth-required, Binance Spot Demo and Alpaca Crypto Paper only; no generic, native, or live tools. |
+
+### Profile: `paper_execution` (ROB-845)
+
+This isolated profile is the canonical experiment-to-paper-broker boundary. It
+must be enabled explicitly with all of:
+
+- `MCP_PROFILE=paper_execution`
+- `PAPER_EXECUTION_ENABLED=true`
+- a non-empty `MCP_AUTH_TOKEN`
+
+The process fails before FastMCP registration when either the feature flag or
+authentication is missing. A direct registry call with the feature flag off
+registers zero tools.
+
+Exact tool allowlist:
+
+- `paper_execution_get_capabilities`
+- `paper_execution_preview_order`
+- `paper_execution_submit_order`
+- `paper_execution_cancel_order`
+- `paper_execution_get_order`
+- `paper_execution_reconcile`
+
+The request DTO contains the claimed experiment/run/cohort/strategy identity,
+canonical snapshot evidence, and order intent. It does not accept caller-owned
+`origin`, `idempotency_key`, broker `client_order_id`, or native order ID. Those
+identities are derived and verified server-side.
+
+V1 capability scope is deliberately narrow:
+
+- Binance Spot Demo: `BTCUSDT`/`ETHUSDT`, BUY MARKET, notional sizing; the
+  guarded native executor performs one open/close round trip. External cancel
+  and reconcile are unsupported.
+- Alpaca Crypto Paper: `BTC/USD`/`ETH/USD`, BUY/SELL LIMIT, quantity sizing,
+  GTC/IOC, through the approval-packet/coordinator boundary.
+
+No KIS, Kiwoom, Toss, Upbit, live broker, legacy order, or venue-native mutation
+tool is registered. Broker-native ledgers remain the lifecycle/fill/P&L source;
+the façade adds no common order ledger or migration.
+
+ROB-849 will provide the concrete immutable cohort/snapshot provenance verifier.
+Until that composition is installed, capability reads work but every experiment
+operation fails closed with `provenance_verifier_unavailable` before adapter,
+native-ledger, client, or broker activity.
 
 ### Profile: `hermes-paper-kis`
 
@@ -2006,11 +2071,14 @@ Allowed tools:
 - `get_order_history`
 - `kis_live_get_order_history`
 - `toss_get_order_history`
+- `kiwoom_mock_get_positions`
+- `kiwoom_mock_get_orderable_cash`
+- `kiwoom_mock_get_order_history`
 
 Forbidden by physical non-registration:
 - order placement, cancel, modify, preview, and reconcile tools
 - KIS mock order variants
-- Kiwoom order variants
+- Kiwoom mock preview/place/cancel/modify variants
 - Alpaca/DB paper order surfaces
 - manual holdings mutation
 - user settings tools
@@ -2042,6 +2110,9 @@ Allowed read/advisory tools:
 - `get_order_history`
 - `kis_live_get_order_history`
 - `toss_get_order_history`
+- `kiwoom_mock_get_positions`
+- `kiwoom_mock_get_orderable_cash`
+- `kiwoom_mock_get_order_history`
 - `suggest_order_account`
 - `get_fx_rate`
 - `route_request`
@@ -2062,9 +2133,63 @@ Allowed write/order tools:
 - `toss_cancel_order`
 - `sell_ladder_fill_preview`
 - `buy_ladder_fill_preview`
+- `kiwoom_mock_preview_order`
+- `kiwoom_mock_place_order`
+- `kiwoom_mock_cancel_order`
+- `kiwoom_mock_modify_order`
 - `forecast_save`
 - `save_trade_retrospective`
 - `investment_watch_create`
+
+Kiwoom safety boundaries are unchanged on both restricted profiles:
+
+- `KIWOOM_MOCK_ENABLED` remains default-off. While disabled, the typed tools
+  fail closed and name the missing configuration keys without returning values.
+- If Kiwoom mock is enabled, restricted-profile startup requires all mock
+  credentials and the exact `https://mockapi.kiwoom.com` base URL.
+- Kiwoom mock tools remain KRX-only. A broker mutation still requires both
+  `dry_run=false` and `confirm=true`.
+- Caller-supplied Kiwoom symbols are canonicalized after trimming and must be
+  exactly six ASCII digits (for example, `005930`). Provider evidence may use
+  the documented `A`/`J`/`Q` prefix, which read normalization removes; callers
+  cannot use those provider-only aliases for mutations.
+- No `kiwoom_live_*`, generic `kiwoom_*`, or live-host routing is registered.
+
+#### Kiwoom mock stable read envelopes (ROB-824)
+
+`kiwoom_mock_get_positions` adds a normalized `positions` list whose rows have
+exactly `symbol`, `quantity`, `average_price`, and `currency`. The source is the
+official kt00018 `acnt_evlt_remn_indv_tot` array; KR symbols such as `A005930`
+are returned as `005930`, numeric fields are JSON integers, and currency is
+`KRW`.
+
+`kiwoom_mock_get_order_history` adds a normalized `orders` list whose rows have
+exactly `order_id`, `symbol`, `status`, `ordered_price`, `filled_quantity`,
+`average_price`, and `remaining_quantity`. The source is the official kt00009
+`acnt_ord_cntr_prst_array` array. Status is normalized to `open`,
+`partially_filled`, `filled`, or `cancelled` from the broker cancellation marker
+and ordered/filled quantities. `ord_no` must be an all-digit broker string;
+length is not fixed because the official seven-digit contract and existing
+ten-digit broker fixtures both occur in this repository.
+
+All three account reads add fixed `provenance` for broker `kiwoom`, environment
+`mock`, account mode `kiwoom_mock`, host `mockapi.kiwoom.com`, and their expected
+API ID. Cash uses kt00010 when `symbol` is provided and kt00018 otherwise, and
+validates raw provenance before deriving broker success or returning cash.
+Only a canonical integer `0` or exact string `"0"` broker return code is
+successful. Missing, malformed, boolean, or floating-point return codes fail
+closed. Successful broker evidence without a parseable non-negative cash field
+also fails closed with `cash=null` and a stable `*_unavailable` source.
+
+The responses retain the broker payload as `broker_response`. Recursive
+redaction covers authorization/token/cookie/credential/password/approval,
+API/app key and secret, and account-identifier key aliases across case and
+separator variations. Top-level passthrough fields are copied only from this
+redacted payload. Missing/malformed fields or explicit non-mock provenance
+changes the response to `success=false`; cash becomes `null`, and positions or
+orders become `[]`. Config, transport, broker, provenance, and normalization
+failures use stable `kiwoom_mock_*` error codes while retaining canonical mock
+provenance.
 
 Write provenance requirements:
 - pass `created_by="tradingcodex"` to `forecast_save`
@@ -2075,7 +2200,7 @@ Write provenance requirements:
 Forbidden by physical non-registration:
 - modify and reconcile tools
 - KIS mock order variants
-- Kiwoom order variants
+- Kiwoom live/general unscoped order variants
 - Alpaca/DB paper order surfaces
 - manual holdings mutation
 - user settings tools

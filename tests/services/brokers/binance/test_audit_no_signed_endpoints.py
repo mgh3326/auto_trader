@@ -119,6 +119,19 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # under settings.binance_demo_scalping_enabled; references "Binance" only
         # via the import path + settings flag name (no HTTP/WS surface).
         "app/mcp_server/tooling/registry.py",
+        # ROB-845 — canonical paper-execution contracts and evidence vocabulary.
+        # These files mention Binance only as a capability/signal venue and
+        # delegate to the isolated in-package Demo adapter. They contain no
+        # Binance HTTP, signing, or API-key implementation.
+        "app/mcp_server/tooling/paper_execution_registration.py",
+        "app/services/alpaca_paper_order_application.py",
+        "app/services/brokers/alpaca/paper_adapter.py",
+        "app/services/brokers/capabilities.py",
+        # Lazy composition root only registers the in-package Demo adapter; it
+        # contains no Binance HTTP, signing, credential, or endpoint behavior.
+        "app/services/brokers/paper/composition.py",
+        "app/services/crypto_execution_mapping.py",
+        "app/services/paper_approval_packet.py",
         # ROB-323 / ROB-325 — the operator Naver remote-debug audit's Chrome
         # CDP host allowlist. Contains NO Binance HTTP/WS/signed surface; it is
         # a strict 127.0.0.1:9222 allowlist and references "binance" only in a

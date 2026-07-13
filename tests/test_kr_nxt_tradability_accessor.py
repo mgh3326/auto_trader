@@ -57,7 +57,7 @@ async def test_search_rows_carry_nxt_fields(db_session):
             is_active=True,
             nxt_eligible=True,
             nxt_trading_suspended=False,
-            toss_master_updated_at=dt.datetime(2026, 7, 3, 6, 0, tzinfo=_KST),
+            toss_master_updated_at=dt.datetime.now(_KST),
         )
     )
     await db_session.flush()

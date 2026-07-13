@@ -141,7 +141,12 @@ class TestRouteRequestRegisteredEveryProfile:
     # ROB-760: account_read is a physical account-sync allowlist and must not
     # inherit route/advisory tools.
     @pytest.mark.parametrize(
-        "profile", [p for p in McpProfile if p is not McpProfile.ACCOUNT_READ]
+        "profile",
+        [
+            p
+            for p in McpProfile
+            if p not in (McpProfile.ACCOUNT_READ, McpProfile.PAPER_EXECUTION)
+        ],
     )
     def test_route_request_present(self, profile: McpProfile) -> None:
         tools = build_tools(profile=profile)

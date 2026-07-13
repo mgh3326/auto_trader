@@ -18,7 +18,12 @@ from app.mcp_server.tooling.orders_kis_variants import (
 from app.mcp_server.tooling.orders_kiwoom_us_variants import (
     KIWOOM_MOCK_US_TOOL_NAMES,
 )
-from app.mcp_server.tooling.orders_kiwoom_variants import KIWOOM_MOCK_TOOL_NAMES
+from app.mcp_server.tooling.orders_kiwoom_variants import (
+    KIWOOM_MOCK_TOOL_NAMES,
+)
+from app.mcp_server.tooling.orders_kiwoom_variants import (
+    register as register_kiwoom_mock_tools,
+)
 from app.mcp_server.tooling.orders_registration import (
     ORDER_TOOL_NAMES,
     register_order_tools,
@@ -40,6 +45,12 @@ if TYPE_CHECKING:
     from fastmcp import FastMCP
 
 
+KIWOOM_MOCK_ACCOUNT_READ_TOOL_NAMES: set[str] = {
+    "kiwoom_mock_get_positions",
+    "kiwoom_mock_get_orderable_cash",
+    "kiwoom_mock_get_order_history",
+}
+
 ACCOUNT_READ_TOOL_NAMES: set[str] = {
     "get_holdings",
     "toss_get_positions",
@@ -48,14 +59,14 @@ ACCOUNT_READ_TOOL_NAMES: set[str] = {
     "get_order_history",
     "kis_live_get_order_history",
     "toss_get_order_history",
-}
+} | KIWOOM_MOCK_ACCOUNT_READ_TOOL_NAMES
 
 ACCOUNT_READ_FORBIDDEN_TOOL_NAMES: set[str] = (
     (ORDER_TOOL_NAMES - {"get_order_history"})
     | (KIS_LIVE_ORDER_TOOL_NAMES - {"kis_live_get_order_history"})
     | KIS_MOCK_ORDER_TOOL_NAMES
     | LIVE_RECONCILE_TOOL_NAMES
-    | KIWOOM_MOCK_TOOL_NAMES
+    | (KIWOOM_MOCK_TOOL_NAMES - KIWOOM_MOCK_ACCOUNT_READ_TOOL_NAMES)
     | KIWOOM_MOCK_US_TOOL_NAMES
     | PAPER_LIMIT_ORDER_TOOL_NAMES
     | (
@@ -86,10 +97,12 @@ def register_account_read_tools(mcp: FastMCP) -> None:
     register_order_tools(filtered)
     register_kis_live_order_tools(filtered)
     register_toss_live_order_tools(filtered)
+    register_kiwoom_mock_tools(filtered)
 
 
 __all__ = [
     "ACCOUNT_READ_FORBIDDEN_TOOL_NAMES",
     "ACCOUNT_READ_TOOL_NAMES",
+    "KIWOOM_MOCK_ACCOUNT_READ_TOOL_NAMES",
     "register_account_read_tools",
 ]

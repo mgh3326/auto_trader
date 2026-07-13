@@ -321,6 +321,10 @@ class Settings(BaseSettings):
     binance_demo_scalping_review_flow_enabled: bool = False
     # Phase 3 — gate for the LLM decision-injection MCP tool (default-off).
     binance_demo_scalping_enabled: bool = False
+    # ROB-845 — isolated canonical Binance Demo / Alpaca Paper experiment
+    # façade. The dedicated MCP profile must remain physically absent unless
+    # the operator opts in; startup also requires MCP bearer authentication.
+    PAPER_EXECUTION_ENABLED: bool = False
 
     # KIS Rate Limiting (HTTP API)
     kis_rate_limit_rate: int = 19  # 초당 최대 요청 수 (안전 마진으로 20-1)

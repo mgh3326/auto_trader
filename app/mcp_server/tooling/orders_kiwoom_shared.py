@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.brokers.kiwoom import constants
+from app.services.brokers.kiwoom.normalization import redact_broker_response
 
 _PASSTHROUGH_KEYS = (
     "return_code",
@@ -16,15 +17,10 @@ _PASSTHROUGH_KEYS = (
 
 
 def derive_broker_success(broker_response: dict[str, Any]) -> bool:
-    if "return_code" not in broker_response:
-        return False
-    value = broker_response["return_code"]
-    if value is None:
-        return False
-    try:
-        return int(value) == constants.SUCCESS_RETURN_CODE
-    except (TypeError, ValueError):
-        return False
+    value = broker_response.get("return_code")
+    if type(value) is int:  # bool is an int subclass and must fail closed.
+        return value == constants.SUCCESS_RETURN_CODE
+    return isinstance(value, str) and value == str(constants.SUCCESS_RETURN_CODE)
 
 
 def classify_capability_unsupported(
@@ -46,14 +42,15 @@ def classify_capability_unsupported(
 def finalize_broker_response(
     base: dict[str, Any], broker_response: dict[str, Any]
 ) -> dict[str, Any]:
+    redacted_broker_response = redact_broker_response(broker_response)
     response = {
         "success": derive_broker_success(broker_response),
         **base,
-        "broker_response": broker_response,
+        "broker_response": redacted_broker_response,
     }
     for key in _PASSTHROUGH_KEYS:
-        if key in broker_response:
-            response[key] = broker_response[key]
+        if key in redacted_broker_response:
+            response[key] = redacted_broker_response[key]
     if error_code := classify_capability_unsupported(broker_response):
         response["error_code"] = error_code
     return response

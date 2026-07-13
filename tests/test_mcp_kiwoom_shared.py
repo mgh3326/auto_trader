@@ -20,5 +20,5 @@ def test_rc9000_is_classified_without_losing_raw_evidence() -> None:
     result = finalize_broker_response({"source": "kiwoom"}, raw)
     assert result["success"] is False
     assert result["error_code"] == "capability_unsupported"
-    assert result["broker_response"] is raw
+    assert result["broker_response"] == raw
     assert result["return_msg"] == raw["return_msg"]

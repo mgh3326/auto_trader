@@ -50,16 +50,28 @@ _ROOT_RESERVATION_LOCK_KEY: int = int.from_bytes(
 # Normalized, stable reservation outcomes (never leak IntegrityError upward).
 RESERVATION_RESERVED = "reserved"
 RESERVATION_EXPOSURE_SLOT_TAKEN = "exposure_slot_taken"
+RESERVATION_REPLAYED = "replayed"
+RESERVATION_IDEMPOTENCY_IN_PROGRESS = "idempotency_in_progress"
+RESERVATION_IDEMPOTENCY_COLLISION = "idempotency_collision"
+
+_IDEMPOTENCY_TERMINAL_STATES = frozenset(
+    {
+        "cancelled",
+        "reconciled",
+        "anomaly",
+    }
+)
+_PAPER_EXECUTION_IDENTITY_KEY = "paper_execution_identity"
 
 
 @dataclass(frozen=True)
 class RootReservationResult:
     """Outcome of an atomic root-entry reservation (ROB-844).
 
-    ``status`` is one of ``reserved`` / ``exposure_slot_taken``. ``row`` is the
-    inserted planned root on success (``None`` otherwise). ``reason`` narrows a
-    slot-taken result: ``global_open_root_cap`` / ``instrument_open_root`` /
-    ``unique_conflict``.
+    ``status`` is one of ``reserved`` / ``replayed`` /
+    ``idempotency_in_progress`` / ``idempotency_collision`` /
+    ``exposure_slot_taken``. ``row`` is the inserted or existing root when the
+    outcome has native evidence. ``reason`` narrows a blocked outcome.
     """
 
     status: str
@@ -132,6 +144,7 @@ class BinanceDemoLedgerRepository:
         notional_usdt: Decimal | None = None,
         notional_override_reason: str | None = None,
         extra_metadata: dict[str, Any] | None = None,
+        idempotency_metadata: dict[str, Any] | None = None,
         global_open_root_cap: int,
         now: dt.datetime,
     ) -> RootReservationResult:
@@ -141,8 +154,10 @@ class BinanceDemoLedgerRepository:
         advisory lock (serializing every reserver on the single Demo account
         scope) this re-checks, *in the same transaction*:
 
-        1. the global open-*root* cap (``parent_client_order_id IS NULL`` only),
-        2. an existing open *root* for this ``(product, instrument)``,
+        1. a deterministic client-order-id replay/collision, when immutable
+           idempotency metadata is supplied,
+        2. the global open-*root* cap (``parent_client_order_id IS NULL`` only),
+        3. an existing open *root* for this ``(product, instrument)``,
 
         then inserts the planned root row. Transaction ownership belongs to the
         service's dedicated reservation session: this repository neither commits
@@ -159,6 +174,36 @@ class BinanceDemoLedgerRepository:
             text("SELECT pg_advisory_xact_lock(:key)"),
             {"key": _ROOT_RESERVATION_LOCK_KEY},
         )
+
+        stored_metadata = dict(extra_metadata or {})
+        if idempotency_metadata is not None:
+            immutable_metadata = dict(idempotency_metadata)
+            existing = await self.get_by_client_order_id(client_order_id)
+            if existing is not None:
+                existing_identity = (existing.extra_metadata or {}).get(
+                    _PAPER_EXECUTION_IDENTITY_KEY
+                )
+                if existing_identity != immutable_metadata:
+                    return RootReservationResult(
+                        status=RESERVATION_IDEMPOTENCY_COLLISION,
+                        row=existing,
+                        reason="immutable_metadata_mismatch",
+                    )
+                if existing.lifecycle_state in _IDEMPOTENCY_TERMINAL_STATES:
+                    return RootReservationResult(
+                        status=RESERVATION_REPLAYED,
+                        row=existing,
+                        reason="terminal_replay",
+                    )
+                return RootReservationResult(
+                    status=RESERVATION_IDEMPOTENCY_IN_PROGRESS,
+                    row=existing,
+                    reason="root_inflight",
+                )
+            # The separately supplied immutable metadata is authoritative.  It
+            # cannot be omitted or replaced inside the caller's general ledger
+            # evidence dictionary.
+            stored_metadata[_PAPER_EXECUTION_IDENTITY_KEY] = immutable_metadata
 
         global_open = await self.count_open_root_lifecycles()
         if global_open >= global_open_root_cap:
@@ -191,7 +236,7 @@ class BinanceDemoLedgerRepository:
             planned_at=now,
             notional_usdt=notional_usdt,
             notional_override_reason=notional_override_reason,
-            extra_metadata=extra_metadata,
+            extra_metadata=stored_metadata or None,
         )
         try:
             # The partial-unique fallback must not poison the dedicated outer
