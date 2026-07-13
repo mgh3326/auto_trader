@@ -191,7 +191,9 @@ REQUIRED_BASELINES = ("cash", "btc_eth_equal_weight", "same_turnover_random")
 ```
 
 The artifact includes accounting, DSR/PBO/FDR, fold/OOS metrics, baselines,
-cost stress, MDD, PIT, hashes, and canonical artifact hash.
+cost stress, PIT, hashes, and canonical artifact hash. Observed MDD comes only
+from the required finite, non-negative `max_drawdown_pct` in the hash-bound
+sealed-OOS artifact; finalize has no caller MDD input.
 
 - [x] **Step 4: Run GREEN and Nautilus pure-gate regressions**
 
@@ -279,8 +281,10 @@ git commit -m "feat(ROB-847): seal OOS promotion through ROB-846 registry"
 - [x] **Step 1: Write failing tests for every status and record-before-revert ordering**
 
 Parameterize `completed`, `rejected`, `crashed`, and `timeout`. Use call-order
-spies to assert `record_trial` completes before `git_revert`. Reinvoke with the
-same key and assert the registry returns the original row.
+spies to assert `record_trial` is attempted before `git_revert`. Reinvoke with
+the same key and assert the registry returns the original row. The final
+implementation must still attempt revert and the TSV audit if durable recording
+fails, preserving all finalization errors.
 
 - [x] **Step 2: Run RED**
 
@@ -359,3 +363,113 @@ correction is required, do not create an empty commit.
 Post root cause, formulas, red-to-green evidence, per-command counts, commit
 SHAs, known baseline limitations, and no-migration/no-execution-ledger scope.
 Verify ROB-847 remains `In Progress`; do not push, open a PR, or merge.
+
+## Independent review follow-up (P1)
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use
+> `superpowers:test-driven-development` for every blocker. This follow-up is
+> executed in the existing isolated ROB-847 worktree. Do not commit, push, open
+> a PR, merge, or update Linear in this session.
+
+### Task 7: Experiment candidate identity and exact target trial
+
+**Files:**
+- Modify: `app/services/research_offline_gate_service.py`
+- Modify: `research_contracts/honest_offline_gate.py`
+- Test: `tests/services/research/test_research_offline_gate_service.py`
+
+**Interfaces:**
+- Candidate keys are immutable `ResearchStrategyExperiment.experiment_id`
+  values, not `params_hash` values.
+- A server candidate retains `params_hash` provenance and the exact evaluated
+  `ResearchBacktestRun.id` that supplied evidence.
+- The target run must itself be the completed/rejected evidence row and the
+  server-selected experiment candidate.
+
+- [x] Add unit and real-PostgreSQL red tests for distinct experiments sharing
+  params, crashed target plus completed sibling, and missing exact target
+  evidence.
+- [x] Run the focused tests and verify they fail because params aliases and
+  sibling evidence are currently accepted.
+- [x] Key the campaign/evidence map by `experiment_id`, preserve a
+  candidate-to-params provenance map in the artifact, and add exact target-run
+  checks.
+- [x] Run the focused unit/PG/concurrency tests green.
+
+### Task 8: Canonical evaluation-window identity
+
+**Files:**
+- Create: `research_contracts/evaluation_windows.py`
+- Modify: `research_contracts/frozen_config.py`
+- Modify: `backtest/prepare.py`
+- Modify: `tests/backtest/test_prepare.py`
+- Modify: `research/nautilus_scalping/tests/test_frozen_config.py`
+- Modify: `tests/services/research/test_research_offline_gate_service.py`
+- Modify: `tests/services/research/test_research_contracts_wheel.py`
+
+**Interfaces:**
+- `CANONICAL_EVALUATION_WINDOWS` is the single immutable source for train,
+  validation, sealed-OOS, and CV fold closed intervals.
+- `CampaignConfig.evaluation_windows` serializes into both `config_hash()` and
+  `policy_identity()`.
+- `prepare.SPLITS` and `prepare.CV_FOLDS` are derived consumers only.
+
+- [x] Add red tests proving prepare consumes one authority, any window change
+  changes config/policy hashes, and different window identities are not pooled.
+- [x] Implement the neutral immutable window contract and config round trip.
+- [x] Run prepare/config/campaign and clean-wheel tests green.
+
+### Task 9: Complete trial-method provenance and strict JSON numbers
+
+**Files:**
+- Modify: `research_contracts/trial_evidence.py`
+- Modify: `app/services/research_offline_gate_service.py`
+- Modify: `tests/services/research/test_honest_trial_evidence.py`
+- Modify: `tests/services/research/test_research_offline_gate_service.py`
+
+**Interfaces:**
+- `TrialEvidence` preserves `sharpe_method`, `p_value_method`, and
+  `selection_score_method`.
+- Finalization compares all three values to the frozen config.
+- `_finite_number` accepts only finite non-boolean `int`/`float` JSON numbers;
+  strings, booleans, `Decimal`, and other coercible objects fail closed.
+
+- [x] Add red parser/builder/finalizer tests for custom method mismatches and
+  strict numeric types across costs, Sharpe, p-value, and validation score.
+- [x] Implement exact method preservation/comparison and non-coercive parsing.
+- [x] Run trial evidence and finalizer suites green, retaining v1 legacy
+  `missing_selection_evidence` behavior.
+
+### Task 10: Durable runner crash normalization
+
+**Files:**
+- Modify: `backtest/run_experiment.py`
+- Modify: `tests/backtest/test_run_experiment.py`
+
+**Interfaces:**
+- An `OSError` from subprocess launch or `RUN_LOG.write_text` after
+  registration records exactly one committed `crashed` terminal row before
+  revert/cleanup.
+- Results use status `crashed`; a failed revert propagates only after the
+  terminal commit (and result recording) is durable.
+
+- [x] Add unit red tests for record/revert/result ordering and actual-PG red
+  tests for launch, log-write, and revert failures.
+- [x] Normalize `asyncio.to_thread(run_backtest)` `OSError` paths through one
+  crash helper without weakening timeout/process-return handling.
+- [x] Run runner unit/PG tests green and assert exactly one terminal row.
+
+### Task 11: Documentation and full verification
+
+**Files:**
+- Modify: `docs/superpowers/specs/2026-07-13-rob-847-honest-offline-gate-design.md`
+- Modify: `backtest/program.md`
+- Modify pinned artifact/config hashes in their owning tests only after the
+  canonical payload is final.
+
+- [x] Update candidate identity, exact target row, canonical windows, trial
+  methods, strict JSON-number policy, crash normalization, and reason codes.
+- [x] Run backtest, research service, Nautilus, PostgreSQL, concurrency,
+  xdist, wheel, broker guard, Ruff/format on changed files, ty, and diff checks.
+- [x] Confirm no migration or broker/order/fill change and report the two
+  residual boundaries: caller-owned PBO returns and unsealed campaign closure.

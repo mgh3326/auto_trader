@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from research_contracts.evaluation_windows import CANONICAL_EVALUATION_WINDOWS
+
 # Add backtest directory to path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest"))
 
@@ -1204,6 +1206,14 @@ class TestCVFolds:
             sealed_oos=prepare.SPLITS["test"],
         )
 
+    def test_prepare_consumes_the_neutral_canonical_window_contract(self):
+        assert prepare.SPLITS == CANONICAL_EVALUATION_WINDOWS.to_splits()
+        assert prepare.CV_FOLDS == CANONICAL_EVALUATION_WINDOWS.to_cv_folds()
+
+        source = Path(prepare.__file__).read_text(encoding="utf-8")
+        assert '"2024-04-01"' not in source
+        assert '"2026-03-22"' not in source
+
     def test_cv_folds_exist(self):
         assert hasattr(prepare, "CV_FOLDS")
         assert len(prepare.CV_FOLDS) >= 3
@@ -1474,6 +1484,44 @@ class TestCVResult:
         assert len(result.fold_scores) == 3
         assert result.fold_indices == [0, 1, 2]
 
+    def test_trial_statistics_use_mean_fold_sharpe_and_full_sample(self):
+        def result(sharpe: float) -> prepare.BacktestResult:
+            return prepare.BacktestResult(
+                total_return_pct=1.0,
+                sharpe=sharpe,
+                max_drawdown_pct=1.0,
+                num_trades=2,
+                win_rate_pct=0.5,
+                profit_factor=1.0,
+                avg_holding_days=2.0,
+            )
+
+        statistics = prepare.summarize_trial_statistics(
+            [result(1.0), result(2.0), result(3.0), result(4.0)]
+        )
+
+        assert statistics.sharpe == pytest.approx(2.5)
+        assert statistics.sample_size == 4
+        assert 0.0 <= statistics.p_value <= 1.0
+
+    @pytest.mark.parametrize("sharpes", [[], [1.0], [1.0, float("nan")]])
+    def test_trial_statistics_reject_insufficient_or_nonfinite_sample(self, sharpes):
+        results = [
+            prepare.BacktestResult(
+                total_return_pct=1.0,
+                sharpe=sharpe,
+                max_drawdown_pct=1.0,
+                num_trades=2,
+                win_rate_pct=0.5,
+                profit_factor=1.0,
+                avg_holding_days=2.0,
+            )
+            for sharpe in sharpes
+        ]
+
+        with pytest.raises(prepare.TrialStatisticsError):
+            prepare.summarize_trial_statistics(results)
+
 
 class TestCrossValidate:
     """Tests for cross_validate function."""
@@ -1481,6 +1529,70 @@ class TestCrossValidate:
     def test_cross_validate_exists(self):
         assert hasattr(prepare, "cross_validate")
         assert callable(prepare.cross_validate)
+
+    def test_cross_validate_forwards_frozen_execution_cost(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cost = prepare.ExecutionCost(
+            fee_rate=0.0004,
+            half_spread_bps=1.0,
+            slippage_bps=3.0,
+        )
+        observed: list[prepare.ExecutionCost] = []
+        data = {
+            "BTC": pd.DataFrame(
+                {
+                    "date": ["2025-01-02"],
+                    "open": [100.0],
+                    "high": [101.0],
+                    "low": [99.0],
+                    "close": [100.0],
+                    "volume": [1.0],
+                    "value": [100.0],
+                }
+            )
+        }
+        monkeypatch.setattr(prepare, "load_data_range", lambda *a, **k: data)
+
+        def fake_run_backtest(
+            data,
+            strategy,
+            initial_capital,
+            bar_interval,
+            *,
+            execution_cost,
+        ):
+            observed.append(execution_cost)
+            return prepare.BacktestResult(
+                total_return_pct=1.0,
+                sharpe=1.0,
+                max_drawdown_pct=1.0,
+                num_trades=2,
+                win_rate_pct=0.5,
+                profit_factor=1.0,
+                avg_holding_days=2.0,
+            )
+
+        monkeypatch.setattr(prepare, "run_backtest", fake_run_backtest)
+
+        class PassiveStrategy:
+            def on_bar(self, bar_data, portfolio):
+                return []
+
+        prepare.cross_validate(
+            PassiveStrategy,
+            folds=[
+                {
+                    "train_start": "2024-01-01",
+                    "train_end": "2024-12-31",
+                    "val_start": "2025-01-01",
+                    "val_end": "2025-01-31",
+                }
+            ],
+            execution_cost=cost,
+        )
+
+        assert observed == [cost]
 
     def test_cv_score_penalizes_variance(self):
         """Higher variance should produce lower cv_score."""

@@ -25,6 +25,7 @@ GUARDED_FILES: tuple[pathlib.Path, ...] = (
     REPO_ROOT / "app" / "services" / "research_offline_gate_service.py",
     REPO_ROOT / "app" / "models" / "research_backtest.py",
     REPO_ROOT / "app" / "schemas" / "research_backtest.py",
+    *sorted((REPO_ROOT / "research_contracts").glob("*.py")),
 )
 
 # Module import prefixes that indicate a broker/order/fill surface.

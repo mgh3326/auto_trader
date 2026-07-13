@@ -1,12 +1,17 @@
 """Backtest data preparation and engine."""
 
+import math
+import statistics
 from dataclasses import dataclass, field
 from datetime import date as calendar_date
 from pathlib import Path
+from statistics import NormalDist
 from typing import Any, Protocol
 
 import numpy as np
 import pandas as pd
+
+from research_contracts.evaluation_windows import CANONICAL_EVALUATION_WINDOWS
 
 # Constants
 INITIAL_CAPITAL = 10_000_000
@@ -23,11 +28,7 @@ DEFAULT_SYMBOLS = ["BTC", "ETH", "SOL", "XRP", "LINK", "ADA", "DOT", "AVAX"]
 # Proposal A: train has bull+bear mix, val includes Nov 2025 bear,
 # test is the most recent holdout period.
 # BTC RSI<30 days: train=12, val=16, test=7
-SPLITS = {
-    "train": {"start": "2024-04-01", "end": "2025-06-30"},
-    "val": {"start": "2025-07-01", "end": "2026-01-31"},
-    "test": {"start": "2026-02-01", "end": "2026-03-22"},
-}
+SPLITS = CANONICAL_EVALUATION_WINDOWS.to_splits()
 
 # Data directory
 DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -90,32 +91,7 @@ def validate_and_fill(df: pd.DataFrame, interval: str) -> pd.DataFrame:
 # Each fold: train period expands, val is next 3 months
 # train_start/train_end are documented for context (warmup window);
 # cross_validate() evaluates only on the val window.
-CV_FOLDS = [
-    {
-        "train_start": "2024-04-01",
-        "train_end": "2025-03-31",
-        "val_start": "2025-04-01",
-        "val_end": "2025-06-30",
-    },
-    {
-        "train_start": "2024-04-01",
-        "train_end": "2025-06-30",
-        "val_start": "2025-07-01",
-        "val_end": "2025-09-30",
-    },
-    {
-        "train_start": "2024-04-01",
-        "train_end": "2025-09-30",
-        "val_start": "2025-10-01",
-        "val_end": "2025-12-31",
-    },
-    {
-        "train_start": "2024-04-01",
-        "train_end": "2025-12-31",
-        "val_start": "2026-01-01",
-        "val_end": "2026-01-31",
-    },
-]
+CV_FOLDS = CANONICAL_EVALUATION_WINDOWS.to_cv_folds()
 
 
 class EvaluationWindowError(ValueError):
@@ -281,6 +257,42 @@ class CVResult:
     std_score: float
     min_score: float
     cv_score: float  # Final score with penalties
+
+
+@dataclass(frozen=True)
+class TrialStatistics:
+    """Canonical trial statistic derived from every evaluated CV fold."""
+
+    sharpe: float
+    p_value: float
+    sample_size: int
+
+
+class TrialStatisticsError(ValueError):
+    """Raised when CV output cannot form honest finite trial evidence."""
+
+
+def summarize_trial_statistics(
+    fold_results: list[BacktestResult],
+) -> TrialStatistics:
+    """Aggregate fold Sharpes and a one-sided normal p-value for mean > 0."""
+    sharpes = [float(result.sharpe) for result in fold_results]
+    if len(sharpes) < 2 or not all(math.isfinite(value) for value in sharpes):
+        raise TrialStatisticsError("insufficient or non-finite fold Sharpe sample")
+    mean_sharpe = statistics.mean(sharpes)
+    sample_std = statistics.stdev(sharpes)
+    if sample_std == 0:
+        p_value = 0.0 if mean_sharpe > 0 else 1.0 if mean_sharpe < 0 else 0.5
+    else:
+        z_score = mean_sharpe / (sample_std / math.sqrt(len(sharpes)))
+        p_value = 1.0 - NormalDist().cdf(z_score)
+    if not math.isfinite(p_value):
+        raise TrialStatisticsError("non-finite trial p-value")
+    return TrialStatistics(
+        sharpe=mean_sharpe,
+        p_value=p_value,
+        sample_size=len(sharpes),
+    )
 
 
 class Strategy(Protocol):
@@ -579,6 +591,8 @@ def run_backtest(
     strategy: Strategy,
     initial_capital: float = INITIAL_CAPITAL,
     bar_interval: str = "1d",
+    *,
+    execution_cost: ExecutionCost = DEFAULT_EXECUTION_COST,
 ) -> BacktestResult:
     """Run backtest with given data and strategy.
 
@@ -695,6 +709,7 @@ def run_backtest(
                 bar_data,
                 execution_portfolio_value,
                 signal_date=signal_date,
+                execution_cost=execution_cost,
             )
 
         # Mark the portfolio only after fills, using data observable at bar close.
@@ -942,6 +957,7 @@ def cross_validate(
     folds: list[dict[str, str]] | None = None,
     initial_capital: float = INITIAL_CAPITAL,
     bar_interval: str = BAR_INTERVAL,
+    execution_cost: ExecutionCost = DEFAULT_EXECUTION_COST,
 ) -> CVResult:
     """Run walk-forward cross-validation.
 
@@ -978,7 +994,11 @@ def cross_validate(
 
         strat = strategy_class()
         result = run_backtest(
-            val_data, strat, initial_capital, bar_interval=bar_interval
+            val_data,
+            strat,
+            initial_capital,
+            bar_interval,
+            execution_cost=execution_cost,
         )
         score = compute_score(result)
 

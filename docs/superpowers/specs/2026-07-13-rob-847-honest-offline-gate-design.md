@@ -30,6 +30,14 @@ the durable one-time-finalize seal. Exact experiment/config/data hashes and the
 gate artifact payload fit the existing promotion-candidate identity columns and
 JSON `thresholds`/`metrics` columns.
 
+The stdlib-only canonical hash, frozen config, trial-evidence parser, and pure
+gate live in the small `research_contracts` package, which is explicitly
+included beside `app` in the production wheel. The historical
+`research/nautilus_scalping` module paths are compatibility re-exports only;
+the application never imports the unpackaged research tree. A clean built-wheel
+smoke test imports the app schema/finalizer and verifies the pinned canonical
+digest without packaging the larger research scripts or tests.
+
 ## Root causes
 
 1. `backtest/prepare.py` calls a strategy with history through bar `t`, then
@@ -77,10 +85,14 @@ auditable.
 
 ### Evaluation-window admission
 
-A pure window validator accepts named closed intervals. It checks valid ordering
-within each interval and pairwise intersection across train, every validation
-fold, and sealed OOS. Any intersection returns the stable reason
-`overlapping_evaluation_windows` plus both window names.
+The stdlib-only `research_contracts.evaluation_windows` module owns one
+immutable train, validation, sealed-OOS, and CV-fold schedule. Both
+`CampaignConfig` identity and `backtest/prepare.py` consume that authority;
+`prepare.SPLITS` and `prepare.CV_FOLDS` are derived views, not independent date
+definitions. A pure window validator accepts named closed intervals. It checks
+valid ordering within each interval and pairwise intersection across train,
+every validation fold, and sealed OOS. Any intersection returns the stable
+reason `overlapping_evaluation_windows` plus both window names.
 
 The historical fold-4/test pair remains in a regression fixture to preserve the
 bug evidence. The production default changes fold 4 to end before sealed OOS
@@ -102,28 +114,58 @@ promotion decision:
 - split/window definitions and PIT validation policy.
 
 Canonical serialization of that complete structure produces the frozen config
-hash. Benchmark, cost, and MDD definitions also remain explicit ROB-846 identity
-components. A changed definition cannot reuse the prior exact identity link:
-promotion fails unless the caller registers and uses the resulting new
+hash. The exact evaluation-window structure is also embedded in the policy
+identity, so experiments with different windows cannot enter the same campaign
+query. Benchmark, cost, and MDD definitions also remain explicit ROB-846
+identity components. A changed definition cannot reuse the prior exact identity
+link: promotion fails unless the caller registers and uses the resulting new
 experiment identity/version.
 
 ### Selection and sealed OOS
 
-Parameter selection consumes a dedicated input containing only train and
-validation fold observations. Its public type and function signature have no
-OOS field. Selection returns a parameter key, deterministic ranking evidence,
-and the frozen hashes used for the decision.
+The registered `autoresearch` runner at the frozen `1d` timeframe persists every
+evaluated candidate's finite canonical CV score in `honest_trial.v3` evidence
+together with immutable producer/version provenance and the declared Sharpe,
+p-value, and `canonical_cv_score` selection methods. Every statistical and cost value
+must be a finite native JSON number (`int` or `float`, excluding booleans);
+numeric strings, `Decimal`, and other coercible objects fail closed. Finalization
+requires v3 evidence and exact equality between runner, timeframe,
+schema/producer/version, and all three method identities in the frozen config.
+Legacy v1/v2 rows remain parseable for compatibility but have no final-gate
+producer authority and fail closed.
+The methods are part of both the frozen config hash and ROB-846 policy identity.
 
-Sealed OOS observations use a separate type accepted only by `finalize`. Finalize
-performs these steps once:
+Finalization treats each immutable `experiment_id` as a distinct candidate,
+even when multiple experiments share the same parameter hash. It requires
+exactly one completed/rejected evidence row for every visible candidate and
+retains both the evidence run id and parameter-hash provenance. The target
+`backtest_run_id` must itself be that candidate's evaluated evidence row and its
+experiment must be the server-selected winner; a crashed target cannot borrow a
+completed sibling run. The legacy caller-supplied `SelectionResult` remains an
+input for compatibility, but is accepted only when it exactly matches that
+server reconstruction; it has no decision or artifact authority. Duplicate or
+missing candidate evidence, non-finite scores, score ties, or a method mismatch
+are non-promotable. Selection types and signatures contain no OOS field.
+
+Sealed OOS observations are persisted first through the dedicated internal
+writer as an append-only `ResearchBacktestRun` artifact. The row has pinned
+runner/timeframe/path/status metadata and an exact JSON-native payload binding
+experiment, config, dataset, sealed window, returns, and metrics to its canonical
+hash. The metrics contract requires both net return and a finite, non-negative
+maximum-drawdown magnitude. `finalize` accepts only the opaque artifact row id;
+it reloads and verifies all metadata, identity, payload, and hash rather than
+accepting raw OOS values or a caller-selected drawdown.
+Finalize performs these steps once:
 
 1. reject an existing promotion candidate for the run;
 2. validate exact experiment, frozen-config, and dataset-manifest hashes;
-3. validate the PIT manifest and information cutoff;
-4. read total and outcome counts from ROB-846 trial accounting;
-5. calculate DSR, PBO, FDR, fold/OOS metrics, baselines, cost stress, and MDD;
-6. produce and hash the canonical gate artifact;
-7. call `link_promotion_candidate` with exact hashes and the artifact evidence.
+3. transaction-lock and claim the opaque sealed-OOS artifact, rejecting reuse;
+4. validate the PIT manifest and information cutoff;
+5. read total and outcome counts from ROB-846 trial accounting, excluding the
+   artifact control row;
+6. calculate DSR, PBO, FDR, fold/OOS metrics, baselines, cost stress, and MDD;
+7. produce and hash the canonical gate artifact;
+8. call `link_promotion_candidate` with exact hashes and the artifact evidence.
 
 The unique promotion-candidate constraint makes concurrent or repeated finalize
 calls fail closed. No API returns sealed OOS observations to the selection
@@ -199,18 +241,23 @@ or mismatch produces a stable reason code and cannot be promoted.
 
 The canonical artifact records:
 
-- schema version, experiment/run/config/data hashes, selected parameter, and
-  information cutoff;
+- schema version, experiment/run/config/data hashes, the claimed sealed-OOS
+  artifact id, the server-derived
+  selected experiment key, full validation ranking/score map,
+  experiment-to-parameter-hash provenance, and information cutoff;
 - total trial count and zero-filled completed/rejected/crashed/timeout counts;
 - DSR inputs/result, PBO inputs/result, and FDR decision;
 - economic edge, train/validation/OOS fold metrics, and exact window evidence;
 - frozen cash, BTC/ETH equal-weight, and seeded same-turnover random baselines;
 - base-cost and stressed-cost metrics;
-- configured MDD target and observed MDD;
+- configured MDD target and the hash-bound sealed-OOS observed MDD;
 - PIT evidence, promotable boolean, and sorted stable reason codes.
 
-Canonical typed-AST hashing makes repeated equivalent inputs produce the same
-artifact hash. Non-finite values are rejected before serialization.
+The builder constructs one exact JSON-native payload: timestamps are UTC ISO
+strings, sequences are lists, and numeric evidence is a finite native `int` or
+`float`. That same payload is directly JSON-serializable, canonically hashed,
+and persisted; a PostgreSQL JSONB round trip rehashes identically. Non-finite or
+coercible non-native numeric values are rejected before serialization.
 
 ## Trial lifecycle
 
@@ -221,10 +268,20 @@ Registered experiment execution records exactly one terminal ROB-846 trial:
 - process or parsing failure: `crashed`;
 - subprocess timeout: `timeout`.
 
-The idempotency key is stable per invocation. Duplicate or concurrent replay
-returns the original row through `record_trial`. Rejected, crashed, and timeout
-rows are committed before any legacy strategy git revert. TSV keep/revert/crash
-records remain exploratory diagnostics and have no promotion authority.
+The idempotency key is stable per invocation and the persisted runner enum is
+the <=16-character `autoresearch`. Duplicate or concurrent replay returns the
+original row through `record_trial`. Completed and rejected v3 evidence binds
+the actual canonical CV score as `validation_score`; rejected, crashed, and
+timeout rows are committed before any legacy strategy git revert. TSV
+keep/revert/crash records remain exploratory diagnostics and have no promotion
+authority.
+
+After registration, subprocess launch failures and run-log write failures are
+normalized through the same `crashed` path. The runner attempts the durable
+terminal row first, then independently attempts strategy revert and the
+exploratory TSV audit. A failure in one step does not suppress the later cleanup
+attempts; one error propagates directly and multiple errors are preserved as an
+exception group.
 
 An identity-less legacy invocation cannot create registered evidence. It may
 continue only as explicitly `non_promotable`, with no honest gate artifact and
@@ -233,22 +290,82 @@ no eligible promotion candidate.
 ## Failure normalization
 
 Reason codes are lowercase snake case, deterministic, de-duplicated, and sorted.
-The required stable codes include:
+The exhaustive implemented window, trial-evidence, artifact, and finalization
+codes are:
 
-- `overlapping_evaluation_windows`;
-- `missing_information_cutoff`, `missing_pit_manifest`,
+- window admission: `invalid_evaluation_window`,
+  `overlapping_evaluation_windows`;
+- PIT and campaign cutoff: `missing_information_cutoff`,
+  `invalid_information_cutoff`, `invalid_pit_evidence`,
+  `information_cutoff_mismatch`,
+  `campaign_information_cutoff_mismatch`, `missing_pit_manifest`,
   `pit_manifest_after_cutoff`, `pit_observation_after_cutoff`,
   `pit_manifest_hash_mismatch`;
-- `insufficient_dsr_sample`, `zero_dsr_variance`, `non_finite_dsr_input`;
-- `insufficient_pbo_sample`, `invalid_pbo_slices`, `non_finite_pbo_input`;
-- `missing_fdr_evidence`, `fdr_not_significant`,
+- canonical trial evidence: `missing_candidate_trial_evidence`,
+  `duplicate_candidate_trial_evidence`, `invalid_trial_evidence`,
+  `non_finite_trial_evidence`, `invalid_trial_p_value`,
+  `insufficient_trial_sample`, `trial_parameter_key_mismatch`,
+  `trial_provenance_mismatch`, `trial_producer_mismatch`,
+  `missing_selection_evidence`,
+  `selection_method_mismatch`, `trial_statistic_method_mismatch`;
+- exact campaign/selection universe: `selection_trial_universe_mismatch`,
+  `pbo_trial_universe_mismatch`, `selected_trial_mismatch`,
+  `invalid_selection_evidence`, `selection_ranking_mismatch`,
+  `selection_evidence_mismatch`, `ambiguous_selection_score`,
+  `target_trial_not_evaluated`, `target_trial_evidence_mismatch`;
+- DSR: `insufficient_dsr_sample`, `zero_dsr_variance`,
+  `non_finite_dsr_input`, `dsr_below_threshold`;
+- PBO: `insufficient_pbo_sample`, `invalid_pbo_slices`,
+  `non_finite_pbo_input`, `ambiguous_pbo_ranking`,
+  `pbo_above_threshold`;
+- FDR and economic edge: `missing_fdr_evidence`,
+  `non_finite_fdr_input`, `invalid_fdr_p_value`, `fdr_not_significant`,
   `economic_edge_below_minimum`;
-- `baseline_not_beaten`, `cost_stress_failed`, `mdd_target_exceeded`;
-- `sealed_oos_already_finalized`, `promotion_hash_mismatch`,
-  `missing_experiment_identity`, `missing_gate_artifact`.
+- baselines, costs, and MDD: `missing_required_baseline`,
+  `baseline_provenance_mismatch`, `baseline_not_beaten`,
+  `invalid_evidence_mapping`, `invalid_fold_metrics`,
+  `execution_cost_mismatch`, `random_baseline_provenance_mismatch`,
+  `cost_stress_provenance_mismatch`, `cost_stress_failed`,
+  `cost_stress_baseline_mismatch`, `mdd_target_exceeded`;
+- immutable identity and one-time finalization: `missing_experiment_identity`,
+  `frozen_config_hash_mismatch`, `policy_identity_mismatch`,
+  `benchmark_identity_mismatch`, `cost_identity_mismatch`,
+  `mdd_identity_mismatch`, `promotion_hash_mismatch`,
+  `invalid_sealed_oos_artifact`, `sealed_oos_artifact_identity_mismatch`,
+  `sealed_oos_artifact_conflict`, `sealed_oos_artifact_already_used`,
+  `sealed_oos_already_finalized`.
+
+A static contract test extracts reason literals from the implementation and
+requires this list to match exactly, so adding or removing a stable code cannot
+silently leave the design document stale.
 
 Unexpected statistical or evidence inputs fail closed; they do not become
 exceptions that accidentally bypass the gate.
+
+## Explicit residual trust boundaries
+
+The finalizer still receives the PBO return matrix as external sealed evidence.
+It enforces the exact registered candidate-key universe, finite CSCV inputs,
+deterministic ranking, and the one-time seal, but ROB-846 has no immutable
+per-candidate return-series artifact from which the matrix can be reconstructed.
+Moving that value authority behind a persisted producer contract requires a
+separate schema/ingestion change.
+
+The generic ROB-846 record_trial primitive remains an internal trust boundary:
+it does not itself authorize or attest the caller as autoresearch. The final
+gate therefore requires the frozen row runner/timeframe and v3 producer fields,
+while the dedicated sealed-OOS writer verifies exact replay semantics. Neither
+primitive is exposed here as an external mutation API. Production promotion
+must remain disabled until the approved autoresearch and sealed-OOS producers
+are wired through an authorized internal execution path.
+
+ROB-846 also has no campaign id or predeclared immutable candidate set. The gate
+therefore uses every comparable experiment visible at finalization time. A
+candidate registered after an eligible artifact (or deliberately withheld until
+after finalization) can enlarge the correct BH/DSR universe. Closing that gap
+requires predeclared campaign membership plus a registration-closed seal; the
+current artifact must be interpreted as a snapshot of the then-visible
+conservative universe.
 
 ## Test strategy
 
@@ -265,7 +382,15 @@ Focused tests then cover:
 - normal, boundary, non-finite, zero-variance, and small-sample DSR/PBO/FDR;
 - all three baselines plus cost/MDD/config-hash sensitivity;
 - selection invariance to OOS changes and one-time finalize;
+- opaque sealed-OOS writer/loader hash binding, JSONB round-trip identity,
+  campaign/accounting exclusion, idempotent replay/conflict, and concurrent
+  cross-run reuse rejection;
+- persisted-score reconstruction, caller-score forgery, missing/legacy,
+  non-finite, tied, duplicate, exact-target, strict-number, and all-method
+  mismatch evidence;
 - all terminal statuses, duplicate/concurrent idempotency, and accounting;
+- durable crash recording for subprocess launch, log-write, and revert errors;
+- evaluation-window hash sensitivity and cross-campaign isolation in PostgreSQL;
 - exact promotion hash linkage, mismatch rejection, and identity-less legacy
   non-promotion;
 - ROB-846 canonical hash, append-only, and AST import-guard regression.

@@ -110,10 +110,21 @@ LOOP FOREVER:
    ```
    Omitting `--identity-json` keeps legacy exploratory behavior and prints
    `NON_PROMOTABLE: missing_experiment_identity`.
+   A registered identity must exactly match the frozen config plus the
+   campaign-owned `policy`, `benchmark`, `cost`, and `mdd` identity components.
+   The config and policy both bind the canonical train/validation/sealed-OOS/CV
+   windows from `research_contracts.evaluation_windows`; changing any window
+   creates a different campaign identity.
+   Dataset, universe, and PIT components remain externally supplied immutable
+   evidence. A provenance mismatch fails before registration/backtest.
    - This runs CV backtest, parses score, compares to best, keeps or reverts automatically
    - Exit code: 0 = improved (kept), 1 = worse (reverted), 2 = crashed (reverted)
    - Registered terminal status: `completed` | `rejected` | `crashed` | `timeout`
-   - Rejected/crashed/timeout trials are committed to ROB-846 before `git revert`
+   - Rejected/crashed/timeout trials attempt the ROB-846 commit before `git revert`
+   - After registration, subprocess-launch and run-log-write errors are also
+     recorded exactly once as `crashed`. Terminal record, revert, and TSV audit
+     are attempted independently; any one failure propagates, and multiple
+     failures are preserved together rather than hiding later cleanup outcomes
 5. Check `results.tsv` for the recorded result
 6. If reverted: think about why, try a different approach
 7. Go to step 1
@@ -147,7 +158,27 @@ cv_score:           X.XXXXXX    ← PRIMARY metric
 mean_score:         X.XXXXXX
 std_score:          X.XXXXXX
 min_fold_score:     X.XXXXXX
+trial_sharpe:       X.XXXXXX    ← mean CV-fold Sharpe
+trial_p_value:      X.XXXXXXXXXXXX
+trial_sample_size:  N           ← evaluated CV folds
 ```
+
+Registered runs always invoke CV with the frozen execution-cost identity:
+`--fee-bps 4.0 --half-spread-bps 0.0 --slippage-bps 2.0`. The three canonical
+trial-statistic lines are required, finite, and persisted with their declared
+methods. The finite `cv_score` is persisted as the canonical v3
+`validation_score` under the frozen v3 `canonical_cv_score` selection method;
+finalization reconstructs ranking from those immutable rows and does not trust
+a caller-supplied score map. `honest_trial.v3` evidence binds the frozen
+autoresearch runner/timeframe and producer version, accepts only native JSON
+`int`/`float` numbers (never booleans, numeric strings, or `Decimal`), and
+finalization exactly matches that provenance plus the Sharpe, p-value, and
+selection methods to the frozen config. Raw sealed-OOS values are not a finalize
+argument: an authorized internal producer must first persist the dedicated
+hash-bound artifact and pass only its opaque row id. Until that producer wiring
+exists, production promotion remains disabled.
+Malformed or missing values record a `crashed` terminal trial instead of
+promotion evidence.
 
 Per-fold detail:
 ```
@@ -180,15 +211,21 @@ Higher is better. Penalizes high variance across folds and catastrophic individu
 
 ## CV Folds
 
+These displayed ranges are derived from the neutral immutable
+`CANONICAL_EVALUATION_WINDOWS` contract used by both preparation and campaign
+identity.
+
 ```
 Fold 1: Train [2024-04-01 ~ 2025-03-31]  Val [2025-04-01 ~ 2025-06-30]
 Fold 2: Train [2024-04-01 ~ 2025-06-30]  Val [2025-07-01 ~ 2025-09-30]
 Fold 3: Train [2024-04-01 ~ 2025-09-30]  Val [2025-10-01 ~ 2025-12-31]
-Fold 4: Train [2024-04-01 ~ 2025-12-31]  Val [2026-01-01 ~ 2026-03-22]
+Fold 4: Train [2024-04-01 ~ 2025-12-31]  Val [2026-01-01 ~ 2026-01-31]
 ```
 
 - **CV mode (`--mode cv`):** Used for all experiment scoring. Must generalize across 4 time periods.
 - **Single mode (default):** For debugging only. Do NOT use for experiment decisions.
+- **Sealed OOS:** `[2026-02-01 ~ 2026-03-22]`; it is disjoint from every
+  validation fold and is consumed only by one-time finalization.
 
 ## results.tsv
 
