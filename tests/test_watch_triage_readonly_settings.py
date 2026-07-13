@@ -37,6 +37,7 @@ KNOWN_MUTATION_TOOLS = frozenset(
         "toss_cancel_order",
         "toss_reconcile_orders",
         "alpaca_paper_submit_order",
+        "alpaca_paper_automated_submit_order",
         "alpaca_paper_cancel_order",
         "kiwoom_mock_place_order",
         "kiwoom_mock_cancel_order",

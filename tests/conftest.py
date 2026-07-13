@@ -3,7 +3,9 @@ Pytest configuration and common fixtures for auto-trader tests.
 """
 
 import asyncio
+import contextlib
 import os
+import tempfile
 from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,6 +13,31 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pandas as pd
 import pytest
 import pytest_asyncio
+
+# Cross-worker mutex serialising the Alpaca-paper suites that mutate the shared
+# `market_quote_snapshots` / `alpaca_paper_order_ledger` tables. See
+# `_serialize_alpaca_paper_db_suites` below. Lives in the temp dir so every
+# `pytest -n auto` worker process (same machine, same DB) contends on one file.
+# Uses stdlib fcntl.flock (posix; the Linux CI + macOS dev boxes) — no extra
+# dependency — and no-ops on the rare non-posix host.
+_ALPACA_PAPER_DB_LOCK_PATH = (
+    Path(tempfile.gettempdir()) / "auto_trader_alpaca_paper_db_suite.lock"
+)
+
+
+@contextlib.contextmanager
+def _alpaca_paper_db_suite_lock() -> Generator[None]:
+    try:
+        import fcntl
+    except ImportError:  # non-posix: cannot cross-process lock, run unserialised
+        yield
+        return
+    with open(_ALPACA_PAPER_DB_LOCK_PATH, "w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def _load_env_file(env_path: Path) -> None:
@@ -300,6 +327,36 @@ def _mock_kr_market_session_calendar(monkeypatch):
         "app.mcp_server.tooling.market_session._get_kr_calendar",
         lambda: _FastKrCalendar(),
     )
+
+
+@pytest.fixture(autouse=True)
+def _serialize_alpaca_paper_db_suites(request):
+    """Serialize Alpaca-paper suites that mutate shared DB tables across workers.
+
+    The Alpaca-paper test files seed committed rows into two globally shared
+    tables (`market_quote_snapshots`, `alpaca_paper_order_ledger`) and clean up
+    with broad committed DELETEs keyed on values that are IDENTICAL across every
+    such suite — the ``"AAPL"`` quote symbol and the server-derived
+    ``rob73-``/``rob74-crypto-`` ledger-key prefixes (which are server-owned, so
+    a test cannot make them unique). Under CI's ``pytest -n auto
+    --dist=loadfile`` these sibling files run in separate workers against one
+    database, so a peer's committed cleanup can delete another running suite's
+    live rows between insert and read — surfacing as flaky
+    ``no_trusted_snapshot`` / ``LedgerNotFoundError`` failures. (Latent on main;
+    duration-based ``--splits`` kept the hostile files in separate DB jobs.)
+
+    A cross-worker file lock lets only one such suite touch those tables at a
+    time. It is *outer* to each file's own ``_clean`` autouse fixture (conftest
+    autouse fixtures wrap module autouse fixtures), so a peer never runs while
+    another suite's committed cleanup is in flight. The intra-test
+    ``asyncio.gather`` concurrency the exactly-once claim tests rely on still
+    runs inside the lock (one process holds it for the whole test)."""
+    path = str(getattr(request.node, "fspath", "") or "")
+    if "alpaca_paper" not in path and "paper_approval_packet" not in path:
+        yield
+        return
+    with _alpaca_paper_db_suite_lock():
+        yield
 
 
 @pytest.fixture(autouse=True)

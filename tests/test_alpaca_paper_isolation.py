@@ -45,6 +45,8 @@ def test_only_explicit_readonly_mcp_tool_imports_alpaca_paper():
         mcp_dir / "tooling" / "alpaca_paper.py",
         mcp_dir / "tooling" / "alpaca_paper_preview.py",
         mcp_dir / "tooling" / "alpaca_paper_orders.py",  # ROB-73 guarded submit/cancel
+        # ROB-842 automated submit boundary (paper-pinned broker factory only)
+        mcp_dir / "tooling" / "alpaca_paper_automated_orders.py",
     }
     offenders = [
         p

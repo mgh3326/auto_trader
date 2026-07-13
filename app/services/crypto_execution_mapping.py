@@ -73,6 +73,21 @@ _ALLOWED_SIGNAL_TO_EXECUTION = {
 }
 
 
+def map_alpaca_paper_to_upbit(execution_symbol: str) -> str:
+    """Reverse map an Alpaca Paper USD pair back to its Upbit KRW signal symbol.
+
+    Used only to fill the packet's nominal signal identity for manual operator
+    submits (where the operator specifies the execution symbol directly).
+    """
+    normalized = (execution_symbol or "").strip().upper()
+    for signal, execution in _ALLOWED_SIGNAL_TO_EXECUTION.items():
+        if execution == normalized:
+            return signal
+    raise CryptoExecutionMappingError(
+        f"no Upbit signal maps to execution symbol {execution_symbol!r}"
+    )
+
+
 def map_upbit_to_alpaca_paper(signal_symbol: str) -> CryptoSignalExecutionMapping:
     """Map an explicit Upbit KRW signal symbol to an Alpaca Paper USD pair."""
     normalized = (signal_symbol or "").strip().upper()
@@ -172,5 +187,6 @@ __all__ = [
     "build_alpaca_paper_crypto_preview_payload",
     "build_crypto_paper_approval_metadata",
     "build_operator_candidate_crypto_metadata",
+    "map_alpaca_paper_to_upbit",
     "map_upbit_to_alpaca_paper",
 ]

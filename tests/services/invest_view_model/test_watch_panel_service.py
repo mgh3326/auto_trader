@@ -5,7 +5,6 @@ import uuid
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.investment_reports import InvestmentWatchAlert, InvestmentWatchEvent
@@ -16,9 +15,21 @@ from tests._investment_reports_helpers import session  # noqa: F401
 
 @pytest.mark.asyncio
 async def test_watch_panel_service_list_watches(session: AsyncSession) -> None:  # noqa: F811
-    # Delete from market_quote_snapshots (which is not in the reports helper cleanup)
-    # We do NOT commit; the rollback at teardown will restore previous state.
-    await session.execute(text("DELETE FROM market_quote_snapshots"))
+    # Clear only the snapshot symbols this test reasons about. We do NOT commit;
+    # the rollback at teardown restores previous state.
+    #
+    # An unscoped `DELETE FROM market_quote_snapshots` cannot isolate us from
+    # *concurrently committed* foreign rows anyway (under `pytest --dist=loadfile`
+    # another file commits in a separate session, landing between our DELETE and
+    # our read under READ COMMITTED) and it needlessly row-locks the whole table,
+    # blocking peer suites. Instead the "must-have-no-snapshot" US alert below
+    # uses a test-unique ticker (`WPUSNOSNAP`) that no other suite ever commits a
+    # quote for — real tickers like AAPL collide with the Alpaca-paper suites.
+    await session.execute(
+        MarketQuoteSnapshot.__table__.delete().where(
+            MarketQuoteSnapshot.symbol.in_(["005930", "WPUSNOSNAP", "BTC"])
+        )
+    )
     await session.flush()
 
     now = dt.datetime(2026, 6, 17, 12, 0, tzinfo=dt.UTC)
@@ -54,7 +65,10 @@ async def test_watch_panel_service_list_watches(session: AsyncSession) -> None: 
         source_item_uuid=uuid.uuid4(),
         market="us",
         target_kind="asset",
-        symbol="AAPL",
+        # Test-unique ticker: this alert must stay price-less to drive the
+        # `degraded` data_state; a real ticker (AAPL) would race concurrently
+        # committed snapshots from the Alpaca-paper suites under --dist=loadfile.
+        symbol="WPUSNOSNAP",
         metric="price_above",
         operator="above",
         threshold=Decimal("200"),
@@ -130,7 +144,7 @@ async def test_watch_panel_service_list_watches(session: AsyncSession) -> None: 
     # Test list all
     resp = await service.list_watches(market="all", status="all")
     assert resp.count == 3
-    assert resp.data_state == "degraded"  # AAPL has no snapshot price
+    assert resp.data_state == "degraded"  # WPUSNOSNAP has no snapshot price
     assert len(resp.warnings) == 1
 
     # Check alert1 fields (kr, 005930)
@@ -142,8 +156,8 @@ async def test_watch_panel_service_list_watches(session: AsyncSession) -> None: 
     # String checklist round-trips (ROB-599 regression guard).
     assert row1.trigger_checklist == ["005930 현재가 조회 확인", "실주문 없음 확인"]
 
-    # Check alert2 fields (us, AAPL)
-    row2 = next(item for item in resp.items if item.symbol == "AAPL")
+    # Check alert2 fields (us, WPUSNOSNAP — intentionally price-less)
+    row2 = next(item for item in resp.items if item.symbol == "WPUSNOSNAP")
     assert row2.near_expiry is False
     assert row2.current_price is None
     assert row2.proximity_band is None
