@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -15,6 +14,8 @@ from app.models.paper_validation import (
     StrategyHypothesisDraft,
 )
 from app.models.research_backtest import ResearchStrategyExperiment
+
+pytestmark = pytest.mark.integration
 
 HASH_FIELDS = (
     "strategy_hash",
@@ -86,18 +87,61 @@ def _transition(
     )
 
 
-def test_migration_descends_from_starting_head_and_defines_db_triggers() -> None:
-    source = (
-        Path(__file__).resolve().parents[3]
-        / "alembic"
-        / "versions"
-        / "20260713_rob848_paper_validation.py"
-    ).read_text()
+def _hypothesis(
+    transition: PaperValidationStateTransition,
+) -> StrategyHypothesisDraft:
+    return StrategyHypothesisDraft(
+        validation_id=transition.validation_id,
+        validation_version=transition.validation_version,
+        experiment_id=transition.experiment_id,
+        strategy_version_id=transition.strategy_version_id,
+        cohort_id=transition.cohort_id,
+        idempotency_key=f"hypothesis-{uuid4().hex}",
+        request_hash=_hash(f"request-{uuid4().hex}"),
+        author_id="researcher-1",
+        author_role="researcher",
+        mechanism="mechanism",
+        universe=["KRX:005930"],
+        horizon="5d",
+        entry_criteria=["entry"],
+        exit_criteria=["exit"],
+        invalidation_criteria=["invalidate"],
+        data_requirements=["PIT bars"],
+        expected_cost_hurdle="0.003",
+        turnover_bound="0.25",
+        risk_bound="0.02",
+        cited_evidence=["evidence-1"],
+        experiment_hash=transition.experiment_hash,
+        cohort_hash=transition.cohort_hash,
+        strategy_hash=transition.strategy_hash,
+        config_hash=transition.config_hash,
+        policy_hash=transition.policy_hash,
+        input_hash=transition.input_hash,
+    )
 
-    assert 'revision = "20260713_rob848_paper_validation"' in source
-    assert 'down_revision = "20260713_rob866_manual_alerts"' in source
-    assert "reject_paper_validation_audit_mutation" in source
-    assert "validate_paper_validation_experiment_identity" in source
+
+def _review(
+    transition: PaperValidationStateTransition,
+) -> PaperValidationPostmortemReview:
+    return PaperValidationPostmortemReview(
+        validation_id=transition.validation_id,
+        validation_version=transition.validation_version,
+        experiment_id=transition.experiment_id,
+        strategy_version_id=transition.strategy_version_id,
+        cohort_id=transition.cohort_id,
+        idempotency_key=f"review-{uuid4().hex}",
+        request_hash=_hash(f"request-{uuid4().hex}"),
+        evaluator_id="reviewer-1",
+        evaluator_role="reviewer",
+        review_text="review",
+        cited_evidence=["evidence-1"],
+        experiment_hash=transition.experiment_hash,
+        cohort_hash=transition.cohort_hash,
+        strategy_hash=transition.strategy_hash,
+        config_hash=transition.config_hash,
+        policy_hash=transition.policy_hash,
+        input_hash=transition.input_hash,
+    )
 
 
 @pytest.mark.asyncio
@@ -128,6 +172,61 @@ async def test_transition_update_and_delete_are_rejected_by_db_trigger(
         )
         await db_session.commit()
     await db_session.rollback()
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        "paper_validation_state_transitions",
+        "strategy_hypothesis_drafts",
+        "paper_validation_postmortem_reviews",
+    ],
+)
+@pytest.mark.asyncio
+async def test_all_audit_tables_reject_truncate(
+    db_session: AsyncSession,
+    table: str,
+) -> None:
+    try:
+        with pytest.raises(DBAPIError, match="append-only"):
+            await db_session.execute(text(f"TRUNCATE TABLE research.{table}"))
+    finally:
+        await db_session.rollback()
+
+
+@pytest.mark.parametrize(
+    ("model", "field"),
+    [
+        (StrategyHypothesisDraft, "universe"),
+        (StrategyHypothesisDraft, "entry_criteria"),
+        (StrategyHypothesisDraft, "exit_criteria"),
+        (StrategyHypothesisDraft, "invalidation_criteria"),
+        (StrategyHypothesisDraft, "data_requirements"),
+        (StrategyHypothesisDraft, "cited_evidence"),
+        (PaperValidationPostmortemReview, "cited_evidence"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_narrative_jsonb_list_columns_reject_non_arrays(
+    db_session: AsyncSession,
+    model: type[StrategyHypothesisDraft | PaperValidationPostmortemReview],
+    field: str,
+) -> None:
+    experiment = await _experiment(db_session)
+    transition = _transition(experiment)
+    db_session.add(transition)
+    await db_session.flush()
+    row = (
+        _hypothesis(transition)
+        if model is StrategyHypothesisDraft
+        else _review(transition)
+    )
+    setattr(row, field, {"malformed": True})
+
+    with pytest.raises(IntegrityError, match="array"):
+        async with db_session.begin_nested():
+            db_session.add(row)
+            await db_session.flush()
 
 
 @pytest.mark.asyncio

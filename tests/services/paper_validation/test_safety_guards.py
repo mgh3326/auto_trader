@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 from app.services.paper_validation.contracts import (
     HypothesisDraftInput,
     PostmortemReviewInput,
@@ -10,9 +12,12 @@ from app.services.paper_validation.contracts import (
 )
 
 REPO = Path(__file__).resolve().parents[3]
+REGISTRATION = REPO / "app/mcp_server/tooling/paper_validation_registration.py"
+HANDLERS = REPO / "app/mcp_server/tooling/paper_validation_handlers.py"
 SOURCES = [
     *sorted((REPO / "app/services/paper_validation").glob("*.py")),
-    REPO / "app/mcp_server/tooling/paper_validation_registration.py",
+    REGISTRATION,
+    *([HANDLERS] if HANDLERS.exists() else []),
 ]
 FORBIDDEN_IMPORT_FRAGMENTS = {
     "app.services.order_proposals",
@@ -105,3 +110,74 @@ def test_rob849_concrete_types_and_llm_gate_payloads_are_absent() -> None:
         TransitionRequest,
     ):
         assert "resolved_negative_class_count" not in caller_payload.model_fields
+
+
+def test_migration_descends_from_starting_head_and_defines_db_triggers() -> None:
+    source = (REPO / "alembic/versions/20260713_rob848_paper_validation.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'revision = "20260713_rob848_paper_validation"' in source
+    assert 'down_revision = "20260713_rob866_manual_alerts"' in source
+    assert "reject_paper_validation_audit_mutation" in source
+    assert "validate_paper_validation_experiment_identity" in source
+
+
+def test_migration_check_names_bypass_double_prefix_convention() -> None:
+    path = REPO / "alembic/versions/20260713_rob848_paper_validation.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    check_names: list[ast.AST] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if _qualified_name(node.func) != "sa.CheckConstraint":
+            continue
+        check_names.extend(
+            keyword.value for keyword in node.keywords if keyword.arg == "name"
+        )
+
+    assert check_names
+    assert all(
+        isinstance(name, ast.Call) and _qualified_name(name.func) == "op.f"
+        for name in check_names
+    )
+
+
+def test_registration_keeps_application_logic_in_handlers_module() -> None:
+    assert HANDLERS.is_file(), "paper validation handler module is missing"
+
+    registration = ast.parse(
+        REGISTRATION.read_text(encoding="utf-8"), filename=str(REGISTRATION)
+    )
+    class_names = {
+        node.name for node in registration.body if isinstance(node, ast.ClassDef)
+    }
+    imports = {
+        node.module
+        for node in registration.body
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    }
+
+    assert class_names == set()
+    assert "app.mcp_server.tooling.paper_validation_handlers" in imports
+
+
+@pytest.mark.parametrize(
+    "reason_code",
+    [
+        "promotion_confirmation_required",
+        "promotion_gate_blocked",
+        "calibration_gate_blocked",
+        "authorization_identity_mismatch",
+        "order_state_not_authorized",
+    ],
+)
+def test_closed_failure_vocabulary_lists_every_runtime_reason(
+    reason_code: str,
+) -> None:
+    spec = (
+        REPO / "docs/superpowers/specs/2026-07-13-rob-848-paper-validation-design.md"
+    ).read_text(encoding="utf-8")
+
+    assert f"`{reason_code}`" in spec

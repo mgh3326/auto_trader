@@ -28,9 +28,7 @@ _HASH_COLUMNS = (
     "policy_hash",
     "input_hash",
 )
-_HASH_CHECK = " AND ".join(
-    f"{name} ~ '^[0-9a-f]{{64}}$'" for name in _HASH_COLUMNS
-)
+_HASH_CHECK = " AND ".join(f"{name} ~ '^[0-9a-f]{{64}}$'" for name in _HASH_COLUMNS)
 
 
 def _identity_columns() -> list[sa.Column]:
@@ -176,6 +174,11 @@ def _create_audit_triggers(table: str, suffix: str) -> None:
         f"BEFORE UPDATE OR DELETE ON research.{table} FOR EACH ROW EXECUTE "
         "FUNCTION research.reject_paper_validation_audit_mutation()"
     )
+    op.execute(
+        f"CREATE TRIGGER trg_paper_validation_{suffix}_truncate_immutable "
+        f"BEFORE TRUNCATE ON research.{table} FOR EACH STATEMENT EXECUTE "
+        "FUNCTION research.reject_paper_validation_audit_mutation()"
+    )
 
 
 def upgrade() -> None:
@@ -226,11 +229,11 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "actor_role IN ('operator','system')",
-            name="ck_paper_validation_transition_actor_role",
+            name=op.f("ck_paper_validation_transition_actor_role"),
         ),
         sa.CheckConstraint(
             f"experiment_hash = experiment_id AND {_HASH_CHECK}",
-            name="ck_paper_validation_transition_hashes",
+            name=op.f("ck_paper_validation_transition_hashes"),
         ),
         sa.CheckConstraint(
             "(sequence = 1 AND prior_state IS NULL AND new_state = 'draft') OR "
@@ -241,11 +244,11 @@ def upgrade() -> None:
             "(prior_state = 'paper_active' AND new_state = 'promotion_eligible') OR "
             "(prior_state = 'promotion_eligible' AND new_state IN "
             "('promoted','rejected','aborted'))))",
-            name="ck_paper_validation_transition_graph",
+            name=op.f("ck_paper_validation_transition_graph"),
         ),
         sa.CheckConstraint(
             "jsonb_typeof(evidence_ids) = 'array'",
-            name="ck_paper_validation_transition_evidence_array",
+            name=op.f("ck_paper_validation_transition_evidence_array"),
         ),
         schema="research",
     )
@@ -295,10 +298,34 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "author_role = 'researcher'",
-            name="ck_strategy_hypothesis_draft_author_role",
+            name=op.f("ck_strategy_hypothesis_draft_author_role"),
         ),
         sa.CheckConstraint(
-            _HASH_CHECK, name="ck_strategy_hypothesis_draft_hashes"
+            _HASH_CHECK, name=op.f("ck_strategy_hypothesis_draft_hashes")
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(universe) = 'array'",
+            name=op.f("ck_strategy_hypothesis_draft_universe_array"),
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(entry_criteria) = 'array'",
+            name=op.f("ck_strategy_hypothesis_draft_entry_criteria_array"),
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(exit_criteria) = 'array'",
+            name=op.f("ck_strategy_hypothesis_draft_exit_criteria_array"),
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(invalidation_criteria) = 'array'",
+            name=op.f("ck_strategy_hypothesis_draft_invalidation_criteria_array"),
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(data_requirements) = 'array'",
+            name=op.f("ck_strategy_hypothesis_draft_data_requirements_array"),
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(cited_evidence) = 'array'",
+            name=op.f("ck_strategy_hypothesis_draft_cited_evidence_array"),
         ),
         schema="research",
     )
@@ -333,17 +360,19 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "evaluator_role = 'reviewer'",
-            name="ck_paper_validation_review_evaluator_role",
+            name=op.f("ck_paper_validation_review_evaluator_role"),
         ),
-        sa.CheckConstraint(_HASH_CHECK, name="ck_paper_validation_review_hashes"),
+        sa.CheckConstraint(_HASH_CHECK, name=op.f("ck_paper_validation_review_hashes")),
+        sa.CheckConstraint(
+            "jsonb_typeof(cited_evidence) = 'array'",
+            name=op.f("ck_paper_validation_review_cited_evidence_array"),
+        ),
         schema="research",
     )
 
     for statement in _TRIGGER_DDL:
         op.execute(statement)
-    _create_audit_triggers(
-        "paper_validation_state_transitions", "transitions"
-    )
+    _create_audit_triggers("paper_validation_state_transitions", "transitions")
     op.execute(
         "CREATE TRIGGER trg_paper_validation_transitions_history "
         "BEFORE INSERT ON research.paper_validation_state_transitions "
@@ -379,6 +408,11 @@ def downgrade() -> None:
                 f"trg_paper_validation_{suffix}_audit_link "
                 f"ON research.{table}"
             )
+        op.execute(
+            f"DROP TRIGGER IF EXISTS "
+            f"trg_paper_validation_{suffix}_truncate_immutable "
+            f"ON research.{table}"
+        )
         op.execute(
             f"DROP TRIGGER IF EXISTS trg_paper_validation_{suffix}_immutable "
             f"ON research.{table}"

@@ -27,6 +27,8 @@ from tests.services.paper_validation.conftest import (
     stable_hash,
 )
 
+pytestmark = pytest.mark.integration
+
 
 def request(
     identity: ValidationIdentity,

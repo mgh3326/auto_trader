@@ -157,7 +157,12 @@ The public failure vocabulary is closed around:
 - `terminal_state`
 - `idempotency_conflict`
 - `concurrent_transition_conflict`
+- `promotion_confirmation_required`
 - `promotion_confirmation_mismatch`
+- `promotion_gate_blocked`
+- `calibration_gate_blocked`
+- `authorization_identity_mismatch`
+- `order_state_not_authorized`
 
 Failures happen before side effects and never append an invalid transition.
 

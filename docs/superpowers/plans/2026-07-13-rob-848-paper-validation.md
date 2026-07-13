@@ -189,3 +189,32 @@ with pytest.raises(DBAPIError, match="append-only"):
 - [ ] **Step 5: Push `rob-848` and create a GitHub PR.** Include Linear link, state/role/concurrency design, migration evidence, MCP exact union, tests, rollback, and remaining ROB-849/850 risks. Do not merge.
 - [ ] **Step 6: Watch GitHub CI and review feedback.** Inspect every required check to a terminal state; fix failures test-first, push normal follow-up commits, and repeat until green or an external blocker is proven.
 - [ ] **Step 7: Record completion evidence in Linear while keeping In Progress.** Include RED→GREEN commands and actual pass counts, migration starting/final head, disposable lifecycle result, final SHA, PR URL, CI state, independent review outcomes, and remaining risks.
+
+### Task 8: Pre-merge review remediation
+
+**Files:**
+- Modify: `alembic/versions/20260713_rob848_paper_validation.py`
+- Modify: `app/models/paper_validation.py`
+- Modify: `tests/_schema_bootstrap.py`
+- Create: `app/mcp_server/tooling/paper_validation_handlers.py`
+- Modify: `app/mcp_server/tooling/paper_validation_registration.py`
+- Modify: `docs/superpowers/specs/2026-07-13-rob-848-paper-validation-design.md`
+- Modify: `tests/services/paper_validation/test_migration.py`
+- Modify: `tests/services/paper_validation/test_service_transitions.py`
+- Modify: `tests/services/paper_validation/test_service_concurrency.py`
+- Modify: `tests/services/paper_validation/test_authorization_integration.py`
+- Modify: `tests/mcp_server/tooling/test_paper_validation_registration.py`
+
+**Interfaces:**
+- Every audit table rejects `TRUNCATE` in addition to `UPDATE` and `DELETE`.
+- Every list-shaped narrative JSONB column has a matching database array-type check in model metadata, Alembic, and test bootstrap DDL.
+- `paper_validation_handlers.py` owns actor resolution, serialization, and the default DB-backed application; the registration module owns tool names and FastMCP wiring only.
+- The public failure vocabulary contains every stable runtime reason emitted by `PaperValidationService`.
+
+- [ ] **Step 1: Write DB RED tests.** Require one `BEFORE TRUNCATE FOR EACH STATEMENT` trigger per audit table and reject non-array JSONB values for all hypothesis/review list columns.
+- [ ] **Step 2: Run DB RED.** Run the new migration tests and confirm failure because the trigger/check constraints do not exist.
+- [ ] **Step 3: Implement DB GREEN.** Update model, migration, bootstrap DDL, downgrade cleanup, and trigger/constraint lifecycle assertions together.
+- [ ] **Step 4: Write MCP structure/wiring RED.** Require the registration module to import handler/application contracts from `paper_validation_handlers.py`; execute the real default composition for unmapped actor and missing evidence providers.
+- [ ] **Step 5: Run MCP RED, split the handler module, and rerun GREEN.** Preserve tool names, settings behavior, exact profile union, and stable blocked envelopes.
+- [ ] **Step 6: Correct test lanes and failure vocabulary.** Mark all PostgreSQL-backed tests as integration while leaving pure source/model tests in the unit lane; document all five previously omitted runtime failure reasons.
+- [ ] **Step 7: Verify and land.** Run focused suites, lint/type checks, migration lifecycle, full CI, independent review, resolve GitHub threads, push a normal follow-up commit, merge PR #1527, and verify the merge SHA on `origin/main`.

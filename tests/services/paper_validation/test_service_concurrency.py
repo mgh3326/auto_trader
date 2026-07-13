@@ -29,6 +29,8 @@ from tests.services.paper_validation.conftest import (
     stable_hash,
 )
 
+pytestmark = pytest.mark.integration
+
 
 async def _persisted_identity() -> ValidationIdentity:
     nonce = uuid4().hex

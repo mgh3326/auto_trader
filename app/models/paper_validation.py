@@ -136,6 +136,30 @@ class StrategyHypothesisDraft(Base):
             _HASH_CHECK,
             name=conv("ck_strategy_hypothesis_draft_hashes"),
         ),
+        CheckConstraint(
+            "jsonb_typeof(universe) = 'array'",
+            name=conv("ck_strategy_hypothesis_draft_universe_array"),
+        ),
+        CheckConstraint(
+            "jsonb_typeof(entry_criteria) = 'array'",
+            name=conv("ck_strategy_hypothesis_draft_entry_criteria_array"),
+        ),
+        CheckConstraint(
+            "jsonb_typeof(exit_criteria) = 'array'",
+            name=conv("ck_strategy_hypothesis_draft_exit_criteria_array"),
+        ),
+        CheckConstraint(
+            "jsonb_typeof(invalidation_criteria) = 'array'",
+            name=conv("ck_strategy_hypothesis_draft_invalidation_criteria_array"),
+        ),
+        CheckConstraint(
+            "jsonb_typeof(data_requirements) = 'array'",
+            name=conv("ck_strategy_hypothesis_draft_data_requirements_array"),
+        ),
+        CheckConstraint(
+            "jsonb_typeof(cited_evidence) = 'array'",
+            name=conv("ck_strategy_hypothesis_draft_cited_evidence_array"),
+        ),
         {"schema": "research"},
     )
 
@@ -196,6 +220,10 @@ class PaperValidationPostmortemReview(Base):
         CheckConstraint(
             _HASH_CHECK,
             name=conv("ck_paper_validation_review_hashes"),
+        ),
+        CheckConstraint(
+            "jsonb_typeof(cited_evidence) = 'array'",
+            name=conv("ck_paper_validation_review_cited_evidence_array"),
         ),
         {"schema": "research"},
     )

@@ -10,10 +10,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
-from app.models.paper_validation import (
-    PaperValidationPostmortemReview,
-    StrategyHypothesisDraft,
-)
+from app.models.paper_validation import StrategyHypothesisDraft
 from app.services.brokers.capabilities import Broker
 from app.services.brokers.paper.application import PaperExecutionApplication
 from app.services.brokers.paper.contracts import (
@@ -40,6 +37,8 @@ from tests.services.paper_validation.conftest import (
     FakePolicyHashProvider,
     stable_hash,
 )
+
+pytestmark = pytest.mark.integration
 
 
 class _ForbiddenVerifier:
@@ -493,12 +492,3 @@ async def test_promotion_requires_explicit_exact_confirmation(
         ),
     )
     assert replay.id == event.id
-
-
-def test_review_model_has_no_llm_controlled_metric_or_gate_fields() -> None:
-    assert "metrics" not in PaperValidationPostmortemReview.__table__.columns
-    assert "gate_results" not in PaperValidationPostmortemReview.__table__.columns
-    assert (
-        "active_strategy_payload"
-        not in PaperValidationPostmortemReview.__table__.columns
-    )

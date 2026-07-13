@@ -703,6 +703,42 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ALTER TABLE research.paper_validation_state_transitions "
     "ADD CONSTRAINT ck_paper_validation_transition_actor_role "
     "CHECK (actor_role IN ('operator','system'))",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "DROP CONSTRAINT IF EXISTS ck_strategy_hypothesis_draft_universe_array",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "ADD CONSTRAINT ck_strategy_hypothesis_draft_universe_array "
+    "CHECK (jsonb_typeof(universe) = 'array')",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "DROP CONSTRAINT IF EXISTS ck_strategy_hypothesis_draft_entry_criteria_array",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "ADD CONSTRAINT ck_strategy_hypothesis_draft_entry_criteria_array "
+    "CHECK (jsonb_typeof(entry_criteria) = 'array')",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "DROP CONSTRAINT IF EXISTS ck_strategy_hypothesis_draft_exit_criteria_array",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "ADD CONSTRAINT ck_strategy_hypothesis_draft_exit_criteria_array "
+    "CHECK (jsonb_typeof(exit_criteria) = 'array')",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "DROP CONSTRAINT IF EXISTS "
+    "ck_strategy_hypothesis_draft_invalidation_criteria_array",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "ADD CONSTRAINT ck_strategy_hypothesis_draft_invalidation_criteria_array "
+    "CHECK (jsonb_typeof(invalidation_criteria) = 'array')",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "DROP CONSTRAINT IF EXISTS ck_strategy_hypothesis_draft_data_requirements_array",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "ADD CONSTRAINT ck_strategy_hypothesis_draft_data_requirements_array "
+    "CHECK (jsonb_typeof(data_requirements) = 'array')",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "DROP CONSTRAINT IF EXISTS ck_strategy_hypothesis_draft_cited_evidence_array",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "ADD CONSTRAINT ck_strategy_hypothesis_draft_cited_evidence_array "
+    "CHECK (jsonb_typeof(cited_evidence) = 'array')",
+    "ALTER TABLE research.paper_validation_postmortem_reviews "
+    "DROP CONSTRAINT IF EXISTS ck_paper_validation_review_cited_evidence_array",
+    "ALTER TABLE research.paper_validation_postmortem_reviews "
+    "ADD CONSTRAINT ck_paper_validation_review_cited_evidence_array "
+    "CHECK (jsonb_typeof(cited_evidence) = 'array')",
     "CREATE OR REPLACE FUNCTION "
     "research.validate_paper_validation_experiment_identity() "
     "RETURNS trigger AS $$ DECLARE "
@@ -786,6 +822,12 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "BEFORE UPDATE OR DELETE ON research.paper_validation_state_transitions "
     "FOR EACH ROW EXECUTE FUNCTION "
     "research.reject_paper_validation_audit_mutation()",
+    "DROP TRIGGER IF EXISTS trg_paper_validation_transitions_truncate_immutable "
+    "ON research.paper_validation_state_transitions",
+    "CREATE TRIGGER trg_paper_validation_transitions_truncate_immutable "
+    "BEFORE TRUNCATE ON research.paper_validation_state_transitions "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "research.reject_paper_validation_audit_mutation()",
     "DROP TRIGGER IF EXISTS trg_paper_validation_hypotheses_audit_link "
     "ON research.strategy_hypothesis_drafts",
     "CREATE TRIGGER trg_paper_validation_hypotheses_audit_link "
@@ -803,6 +845,12 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "BEFORE UPDATE OR DELETE ON research.strategy_hypothesis_drafts "
     "FOR EACH ROW EXECUTE FUNCTION "
     "research.reject_paper_validation_audit_mutation()",
+    "DROP TRIGGER IF EXISTS trg_paper_validation_hypotheses_truncate_immutable "
+    "ON research.strategy_hypothesis_drafts",
+    "CREATE TRIGGER trg_paper_validation_hypotheses_truncate_immutable "
+    "BEFORE TRUNCATE ON research.strategy_hypothesis_drafts "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "research.reject_paper_validation_audit_mutation()",
     "DROP TRIGGER IF EXISTS trg_paper_validation_reviews_audit_link "
     "ON research.paper_validation_postmortem_reviews",
     "CREATE TRIGGER trg_paper_validation_reviews_audit_link "
@@ -819,6 +867,12 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "CREATE TRIGGER trg_paper_validation_reviews_immutable "
     "BEFORE UPDATE OR DELETE ON research.paper_validation_postmortem_reviews "
     "FOR EACH ROW EXECUTE FUNCTION "
+    "research.reject_paper_validation_audit_mutation()",
+    "DROP TRIGGER IF EXISTS trg_paper_validation_reviews_truncate_immutable "
+    "ON research.paper_validation_postmortem_reviews",
+    "CREATE TRIGGER trg_paper_validation_reviews_truncate_immutable "
+    "BEFORE TRUNCATE ON research.paper_validation_postmortem_reviews "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
     "research.reject_paper_validation_audit_mutation()",
     # ---- ROB-844: binance_demo_order_ledger root-exposure + broker-ack partial
     # uniqueness (mirrors migration 20260713_rob844_*). create_all skips these on
