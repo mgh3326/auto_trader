@@ -2,9 +2,9 @@
 # Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
 # (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
 # Repo is public; exposing these values is an accepted decision.
-version: "2026-07-12.1"
-captured_as_of: "2026-07-12"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12 (sonnet, opus, fable)"
+version: "2026-07-14.1"
+captured_as_of: "2026-07-14"
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed"
 
 authority:
   scope: judgment_policy_only
@@ -16,6 +16,20 @@ authority:
     - "symbol_trade_settings — live per-symbol sizing (separate authority)"
     - "sell_conditions — dormant/test-only (not authoritative)"
     - "trade_profile — dead since ROB-488 (not revived)"
+
+# ROB-871 — master-gated by ORDER_PROPOSALS_AUTO_APPROVE=false. Caps use the
+# settlement currency for each market (KRW for kr/crypto, USD for us).
+order_proposals:
+  auto_approve:
+    min_distance_pct: 3
+    per_order_cap:
+      kr: 200000
+      us: 150
+      crypto: 100000
+    daily_cap:
+      kr: 500000
+      us: 400
+      crypto: 300000
 
 # Raw-sector -> cluster grouping for the concentration cap. A member matches a
 # symbol's symbol_sectors label (name_kr / name_en / source_key) when the member

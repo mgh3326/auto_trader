@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Lane = Literal["buy", "sell", "discovery"]
 Market = Literal["kr", "us", "crypto"]
@@ -112,6 +112,45 @@ class PolicyAuthority(BaseModel):
     does_not_govern: list[str]
 
 
+class OrderProposalAutoApprovePolicy(BaseModel):
+    """Default-off resting-order auto-approval thresholds (ROB-871).
+
+    Caps are denominated in each market's settlement currency: KRW for KR
+    equities and crypto, USD for US equities.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    min_distance_pct: float = Field(gt=0, le=100)
+    per_order_cap: dict[Market, float]
+    daily_cap: dict[Market, float]
+
+    @field_validator("per_order_cap", "daily_cap")
+    @classmethod
+    def validate_market_caps(cls, value: dict[Market, float]) -> dict[Market, float]:
+        required = {"kr", "us", "crypto"}
+        if set(value) != required:
+            raise ValueError(f"market caps must contain exactly {sorted(required)}")
+        if any(cap <= 0 for cap in value.values()):
+            raise ValueError("market caps must be positive")
+        return value
+
+    @model_validator(mode="after")
+    def validate_daily_caps(self) -> OrderProposalAutoApprovePolicy:
+        if any(
+            self.daily_cap[market] < per_order
+            for market, per_order in self.per_order_cap.items()
+        ):
+            raise ValueError("daily cap must be at least the per-order cap")
+        return self
+
+
+class OrderProposalsPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    auto_approve: OrderProposalAutoApprovePolicy
+
+
 class TradingPolicyDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -119,6 +158,7 @@ class TradingPolicyDocument(BaseModel):
     captured_as_of: str
     source: str
     authority: PolicyAuthority
+    order_proposals: OrderProposalsPolicy
     sector_clusters: dict[str, list[str]]
     thresholds: dict[str, PolicyThreshold]
     decision_rules: dict[str, PolicyDecisionRule] = Field(default_factory=dict)

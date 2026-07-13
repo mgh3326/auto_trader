@@ -2,7 +2,9 @@
 
 READ + CREATE + VOID ONLY. There is deliberately no approve/submit tool —
 approval is Telegram-only (PR 2). ``order_proposal_create`` persists a proposal
-row; it performs NO broker mutation.
+row. Broker mutation remains behind Telegram dispatch; with ROB-871's separate
+default-off gate, a narrowly eligible resting order may submit only after the
+row has committed and the existing fresh revalidation path passes.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ from app.services.order_proposals.buying_power import (
     currency_for_market,
     default_buying_power_reader,
 )
-from app.services.order_proposals.dispatch import send_proposal_for_approval
+from app.services.order_proposals.dispatch import dispatch_proposal
 from app.services.order_proposals.errors import (
     OrderProposalError,
     OrderProposalNotFound,
@@ -329,7 +331,7 @@ async def order_proposal_create(
 
         # Best-effort Telegram dispatch (ROB-816 PR 2). The proposal's own
         # session above is already closed/committed by this point --
-        # `send_proposal_for_approval` opens a genuinely separate session, so
+        # `dispatch_proposal` opens a genuinely separate session, so
         # this is intentional, not a nested-session bug. A dispatch failure
         # (Telegram down, notifier misconfigured, etc.) must never fail this
         # tool's contract -- the proposal has already persisted successfully.
@@ -342,7 +344,7 @@ async def order_proposal_create(
                     get_trade_notifier,
                 )
 
-                await send_proposal_for_approval(
+                await dispatch_proposal(
                     proposal_id,
                     notifier=get_trade_notifier(),
                     now=now_kst(),

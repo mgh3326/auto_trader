@@ -186,6 +186,82 @@ async def test_price_change_needs_reconfirm_no_submit(db_session):
 
 
 @pytest.mark.asyncio
+async def test_submit_time_eligibility_veto_degrades_to_pending_approval(db_session):
+    svc, group = await _create_proposal(db_session)
+    broker_calls = []
+
+    async def place_order(**kwargs):
+        broker_calls.append(kwargs)
+        assert kwargs["dry_run"] is True
+        return {
+            "success": True,
+            "approval_hash": "TESTTOKEN",
+            "price": "2226000",
+            "quantity": "10",
+            "current_price": "2250000",
+        }
+
+    async def eligibility_gate(**kwargs):
+        assert kwargs["preview"]["current_price"] == "2250000"
+        return {
+            "eligible": False,
+            "reason": "distance_below_minimum",
+            "details": {"policy_version": "test-policy"},
+        }
+
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        eligibility_gate=eligibility_gate,
+    )
+
+    assert [call["dry_run"] for call in broker_calls] == [True]
+    assert outcomes[0].result == "approval_required"
+    assert outcomes[0].detail["reason"] == "distance_below_minimum"
+    _, rungs = await svc.get_proposal(group.proposal_id)
+    assert rungs[0].state == "pending_approval"
+
+
+@pytest.mark.asyncio
+async def test_auto_eligibility_multi_rung_degrades_before_any_preview(db_session):
+    svc = OrderProposalsService(db_session)
+    group = await svc.create_proposal(
+        symbol="A",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[
+            RungInput(0, "buy", Decimal("1"), Decimal("97"), None),
+            RungInput(1, "buy", Decimal("1"), Decimal("96"), None),
+        ],
+    )
+    await db_session.commit()
+
+    async def must_not_preview(**kwargs):
+        raise AssertionError("multi-rung auto approval must degrade before preview")
+
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=must_not_preview,
+        eligibility_gate=lambda **kwargs: {"eligible": True},
+    )
+
+    assert [outcome.result for outcome in outcomes] == [
+        "approval_required",
+        "approval_required",
+    ]
+    assert {outcome.detail["reason"] for outcome in outcomes} == {
+        "multi_rung_requires_approval"
+    }
+
+
+@pytest.mark.asyncio
 async def test_qty_change_needs_reconfirm_no_submit(db_session):
     svc = OrderProposalsService(db_session)
     g = await svc.create_proposal(
