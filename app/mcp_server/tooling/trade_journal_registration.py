@@ -88,7 +88,7 @@ def register_trade_journal_tools(mcp: FastMCP) -> None:
             "status defaults to 'draft' — set to 'active' after fill confirmation. "
             "account_type='paper'|'mock' for paper/mock journals (paper requires account name). "
             "paper_trade_id links to the paper trade record. "
-            "paperclip_issue_id links to the Paperclip issue tracking this trade. "
+            "paperclip_issue_id stores the external issue key (legacy Paperclip name; current Linear ROB key). "
             "metadata is an optional JSON dict for extensible fields."
         ),
     )(save_trade_journal)
@@ -101,7 +101,7 @@ def register_trade_journal_tools(mcp: FastMCP) -> None:
             "Each entry includes hold_remaining_days and hold_expired. "
             "account_type defaults to None (all); set 'live'|'paper'|'mock' to filter. "
             "account (optional) filters to a specific account name. "
-            "paperclip_issue_id (optional) reverse lookup by Paperclip issue ID. "
+            "paperclip_issue_id (optional) reverse lookup by external issue key (legacy Paperclip name; current Linear ROB key). "
             "enrich_live (optional, default False): fetch live quotes to compute current_price/pnl_pct_live/target_reached/stop_reached and near_target/near_stop. Slower (one quote per returned entry); fail-open per entry."
         ),
     )(get_trade_journal)

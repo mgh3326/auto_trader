@@ -2,14 +2,12 @@
 """CIO Scout Report Quality Gate CLI.
 
 Thin wrapper around :mod:`app.services.cio_quality_gate_service`. Reads a
-Scout Report markdown from a file, stdin, or a Paperclip issue comment thread,
-runs the G1~G6 gate sweep, and prints either the CIO runbook-shaped markdown
-summary or a JSON payload.
+Scout Report markdown from a file or stdin, runs the G1~G6 gate sweep, and
+prints either the CIO runbook-shaped markdown summary or a JSON payload.
 
 Usage:
     uv run python scripts/cio_quality_gate.py path/to/scout_report.md
     uv run python scripts/cio_quality_gate.py --stdin < scout.md
-    uv run python scripts/cio_quality_gate.py --paperclip-issue ROB-158
 
 Exit codes:
     0 = all gates pass (ACCEPT)
@@ -21,8 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -43,30 +39,6 @@ from app.services.cio_quality_gate_service import (  # noqa: E402
     render_report,
     run_gates,
 )
-
-
-def load_from_paperclip(issue_id: str) -> str:
-    api_url = os.environ.get("PAPERCLIP_API_URL")
-    api_key = os.environ.get("PAPERCLIP_API_KEY")
-    if not (api_url and api_key):
-        raise SystemExit(
-            "PAPERCLIP_API_URL and PAPERCLIP_API_KEY must be set to use "
-            "--paperclip-issue"
-        )
-    cmd = [
-        "curl",
-        "-sS",
-        "-H",
-        f"Authorization: Bearer {api_key}",
-        f"{api_url}/api/issues/{issue_id}/comments",
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-    comments = json.loads(result.stdout)
-    if not isinstance(comments, list) or not comments:
-        raise SystemExit(f"No comments found on {issue_id}")
-    largest = max(comments, key=lambda c: len(c.get("body", "")))
-    return largest["body"]
-
 
 def _json_payload(report: QualityGateReport) -> dict:
     return {
@@ -107,11 +79,6 @@ def main(argv: list[str] | None = None) -> int:
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("path", nargs="?", help="Path to Scout Report markdown file")
     src.add_argument("--stdin", action="store_true", help="Read markdown from stdin")
-    src.add_argument(
-        "--paperclip-issue",
-        dest="paperclip_issue",
-        help="Fetch largest comment from a Paperclip issue (e.g. ROB-158)",
-    )
     p.add_argument("--json", dest="as_json", action="store_true", help="Emit JSON")
     p.add_argument(
         "--cash",
@@ -130,8 +97,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.stdin:
         md = sys.stdin.read()
-    elif args.paperclip_issue:
-        md = load_from_paperclip(args.paperclip_issue)
     else:
         md = Path(args.path).read_text(encoding="utf-8")
 
@@ -161,7 +126,6 @@ __all__ = [
     "build_reopen_comment",
     "evaluate_scout_report",
     "extract_candidates",
-    "load_from_paperclip",
     "main",
     "render_report",
     "run_gates",
