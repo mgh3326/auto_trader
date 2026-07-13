@@ -465,6 +465,10 @@ successful submit sends a summary tagged `auto:policy@<version>` with a
 single-use `취소` button. Veto invokes the existing broker cancellation adapter,
 re-fetches broker status, writes `source_asof.auto_approved.veto`, and edits the
 message to `취소됨`, `체결됨`, or an explicit failure.
+If the post-submit Telegram message cannot be delivered, dispatch immediately
+uses the same cancel-and-confirm routine and records its result under
+`source_asof.auto_approved.notification_failure`; it never silently leaves a
+resting order without attempting compensating cancellation.
 
 Canary sequence: deploy with the flag off; enable only the smallest checked-in
 caps and confirm one resting order plus veto; verify DB/broker convergence;

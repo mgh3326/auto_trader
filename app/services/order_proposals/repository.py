@@ -78,6 +78,7 @@ class OrderProposalRepository:
         self,
         *,
         account_mode: str,
+        market: str,
         broker_account_id: str | None,
         start: datetime,
         end: datetime,
@@ -97,6 +98,7 @@ class OrderProposalRepository:
             )
             .where(
                 OrderProposal.account_mode == account_mode,
+                OrderProposal.market == market,
                 approved_at >= start,
                 approved_at < end,
                 OrderProposal.source_asof.op("?")("auto_approved"),
@@ -109,8 +111,8 @@ class OrderProposalRepository:
         value = (await self._session.execute(stmt)).scalar_one()
         return Decimal(value)
 
-    async def acquire_auto_approve_account_lock(self, lock_key: str) -> None:
-        """Serialize same-account/day cap checks until transaction commit."""
+    async def acquire_auto_approve_lock(self, lock_key: str) -> None:
+        """Serialize an auto-approval critical section until transaction commit."""
         await self._session.execute(
             select(func.pg_advisory_xact_lock(func.hashtextextended(lock_key, 0)))
         )

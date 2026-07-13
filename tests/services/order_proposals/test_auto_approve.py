@@ -153,6 +153,24 @@ async def test_daily_notional_uses_auto_approval_time_not_create_time(db_session
                 }
             },
         )
+    await service.create_proposal(
+        symbol="AAPL",
+        market="equity_us",
+        account_mode="kis_live",
+        broker_account_id=account_id,
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("100"), None)],
+        source_asof={
+            "auto_approved": {
+                "policy_version": "test-policy",
+                "approved_at": now.isoformat(),
+                "eligibility": [],
+                "outcomes": ["submitted_resting"],
+            }
+        },
+    )
     await db_session.commit()
     probe = await service.create_proposal(
         symbol="000660",
