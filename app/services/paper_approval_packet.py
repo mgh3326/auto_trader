@@ -58,6 +58,7 @@ _SELL_QTY_SOURCES: frozenset[str] = frozenset(
         "ledger_position_snapshot",
         "reconcile_filled_qty",
         "reconcile_position_snapshot",
+        "verified_native_buy",
     }
 )
 
@@ -137,7 +138,7 @@ class PaperApprovalPacket(BaseModel):
     signal_source: str
     artifact_id: uuid.UUID
     signal_symbol: str
-    signal_venue: Literal["upbit"]
+    signal_venue: Literal["upbit", "binance_public_spot"]
     execution_symbol: str
     execution_venue: Literal["alpaca_paper"]
     execution_asset_class: Literal["crypto", "us_equity"]
@@ -166,6 +167,11 @@ class PaperApprovalPacket(BaseModel):
     # ROB-842: trusted reference price (from the server-observed market snapshot),
     # used to bound notional for qty/market orders that carry no limit price.
     reference_price: Decimal | None = None
+    # ROB-845: exact native BUY authority for experiment-origin sells. Optional
+    # for legacy/manual packets; the coordinator requires both fields before a
+    # new automated SELL can claim or reach the broker.
+    source_client_order_id: str | None = None
+    decision_identity_hash: str | None = None
 
     @field_validator("expires_at")
     @classmethod
@@ -199,17 +205,23 @@ class PaperApprovalPacket(BaseModel):
 
     @model_validator(mode="after")
     def _validate_crypto_symbol_mapping(self) -> PaperApprovalPacket:
-        if self.signal_venue == "upbit" and self.execution_asset_class == "crypto":
+        if self.execution_asset_class == "crypto":
             from app.services.crypto_execution_mapping import (
                 CryptoExecutionMappingError,
+                map_binance_public_spot_to_alpaca_paper,
                 map_upbit_to_alpaca_paper,
             )
 
             try:
-                mapping = map_upbit_to_alpaca_paper(self.signal_symbol)
+                mapping = (
+                    map_upbit_to_alpaca_paper(self.signal_symbol)
+                    if self.signal_venue == "upbit"
+                    else map_binance_public_spot_to_alpaca_paper(self.signal_symbol)
+                )
             except CryptoExecutionMappingError as exc:
                 raise ValueError(
-                    f"signal_symbol {self.signal_symbol!r} is not supported for Upbit→Alpaca Paper mapping: {exc}"
+                    f"signal_symbol {self.signal_symbol!r} is not supported for "
+                    f"{self.signal_venue}→Alpaca Paper mapping: {exc}"
                 ) from exc
             if mapping.execution_symbol != self.execution_symbol:
                 raise ValueError(
@@ -288,6 +300,7 @@ async def verify_sell_packet_source(
     packet: PaperApprovalPacket,
     *,
     ledger: AlpacaPaperLedgerService,
+    requested_qty: Decimal | None = None,
 ) -> None:
     """For sell packets, verify exactly one prior reconciled buy source exists.
 
@@ -319,15 +332,38 @@ async def verify_sell_packet_source(
             ),
         )
 
-    rows = await ledger.list_by_correlation_id(packet.lifecycle_correlation_id)
+    exact_source_id = (packet.source_client_order_id or "").strip()
+    if exact_source_id:
+        source = await ledger.get_execution_by_client_order_id(exact_source_id)
+        if (
+            source is None
+            or str(_get_attr(source, "record_kind") or "") != "execution"
+            or str(_get_attr(source, "side") or "").lower() != "buy"
+        ):
+            raise PaperApprovalPacketError(
+                code="missing_source_order",
+                message=f"no native buy execution found for {exact_source_id!r}",
+            )
+        source_account_mode = str(_get_attr(source, "account_mode") or "")
+        if source_account_mode != packet.account_mode:
+            raise PaperApprovalPacketError(
+                code="wrong_account_mode",
+                message=(
+                    f"buy source account_mode {source_account_mode!r} does not match "
+                    f"packet {packet.account_mode!r}"
+                ),
+            )
+        buy_exec_rows = [source]
+    else:
+        rows = await ledger.list_by_correlation_id(packet.lifecycle_correlation_id)
 
-    # Filter to buy execution rows
-    buy_exec_rows = [
-        row
-        for row in rows
-        if str(_get_attr(row, "side") or "").lower() == "buy"
-        and str(_get_attr(row, "record_kind") or "") == "execution"
-    ]
+        # Legacy/manual correlation-scoped source lookup.
+        buy_exec_rows = [
+            row
+            for row in rows
+            if str(_get_attr(row, "side") or "").lower() == "buy"
+            and str(_get_attr(row, "record_kind") or "") == "execution"
+        ]
 
     if not buy_exec_rows:
         raise PaperApprovalPacketError(
@@ -386,16 +422,17 @@ async def verify_sell_packet_source(
             code="source_filled_qty_unknown",
             message=f"sell source filled_qty is unparseable: {source_filled_qty_raw!r}",
         ) from exc
-    if source_filled_qty <= 0:
+    if not source_filled_qty.is_finite() or source_filled_qty <= 0:
         raise PaperApprovalPacketError(
             code="source_filled_qty_unknown",
             message=f"sell source filled_qty is non-positive: {source_filled_qty}",
         )
-    if packet.max_qty is not None and packet.max_qty > source_filled_qty:
+    bounded_qty = requested_qty if requested_qty is not None else packet.max_qty
+    if bounded_qty is not None and bounded_qty > source_filled_qty:
         raise PaperApprovalPacketError(
             code="qty_exceeds_source",
             message=(
-                f"sell max_qty {packet.max_qty} exceeds buy source filled_qty "
+                f"sell qty {bounded_qty} exceeds buy source filled_qty "
                 f"{source_filled_qty}"
             ),
         )

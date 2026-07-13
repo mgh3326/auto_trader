@@ -79,6 +79,7 @@ def _mock_ledger(
     ledger.list_by_correlation_id = AsyncMock(
         return_value=list_by_correlation_result or []
     )
+    ledger.get_execution_by_client_order_id = AsyncMock(return_value=None)
     return ledger
 
 
@@ -384,6 +385,94 @@ async def test_sell_source_passes_with_valid_reconciled_buy():
     )
     ledger = _mock_ledger(list_by_correlation_result=[buy_row])
     await verify_sell_packet_source(packet, ledger=ledger)  # must not raise
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_sell_source_exact_client_order_id_binds_native_buy_and_requested_qty():
+    from app.services.paper_approval_packet import verify_sell_packet_source
+
+    source = _make_ledger_row(
+        client_order_id="native-buy-1",
+        side="buy",
+        record_kind="execution",
+        lifecycle_state="position_reconciled",
+        account_mode="alpaca_paper",
+        execution_symbol="BTC/USD",
+        filled_qty=Decimal("0.002"),
+    )
+    ledger = _mock_ledger()
+    ledger.get_execution_by_client_order_id.return_value = source
+    packet = _make_packet(
+        signal_symbol="BTCUSDT",
+        signal_venue="binance_public_spot",
+        side="sell",
+        max_notional=Decimal("50"),
+        qty_source="verified_native_buy",
+        source_client_order_id="native-buy-1",
+        decision_identity_hash="a" * 64,
+    )
+
+    await verify_sell_packet_source(
+        packet,
+        ledger=ledger,
+        requested_qty=Decimal("0.001"),
+    )
+
+    ledger.get_execution_by_client_order_id.assert_awaited_once_with("native-buy-1")
+    ledger.list_by_correlation_id.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source_overrides", "requested_qty", "reason"),
+    [
+        ({"record_kind": "preview"}, Decimal("0.001"), "missing_source_order"),
+        ({"side": "sell"}, Decimal("0.001"), "missing_source_order"),
+        ({"account_mode": "alpaca_live"}, Decimal("0.001"), "wrong_account_mode"),
+        ({"execution_symbol": "ETH/USD"}, Decimal("0.001"), "wrong_symbol"),
+        ({"lifecycle_state": "submitted"}, Decimal("0.001"), "source_not_reconciled"),
+        ({"filled_qty": None}, Decimal("0.001"), "source_filled_qty_unknown"),
+        ({"filled_qty": Decimal("NaN")}, Decimal("0.001"), "source_filled_qty_unknown"),
+        ({"filled_qty": Decimal("0")}, Decimal("0.001"), "source_filled_qty_unknown"),
+        ({"filled_qty": Decimal("0.001")}, Decimal("0.002"), "qty_exceeds_source"),
+    ],
+)
+async def test_sell_source_exact_binding_fails_closed(
+    source_overrides: dict[str, Any], requested_qty: Decimal, reason: str
+):
+    from app.services.paper_approval_packet import (
+        PaperApprovalPacketError,
+        verify_sell_packet_source,
+    )
+
+    source = _make_ledger_row(
+        **{
+            "client_order_id": "native-buy-1",
+            "account_mode": "alpaca_paper",
+            **source_overrides,
+        }
+    )
+    ledger = _mock_ledger()
+    ledger.get_execution_by_client_order_id.return_value = source
+    packet = _make_packet(
+        signal_symbol="BTCUSDT",
+        signal_venue="binance_public_spot",
+        side="sell",
+        max_notional=Decimal("50"),
+        qty_source="verified_native_buy",
+        source_client_order_id="native-buy-1",
+        decision_identity_hash="b" * 64,
+    )
+
+    with pytest.raises(PaperApprovalPacketError) as exc_info:
+        await verify_sell_packet_source(
+            packet,
+            ledger=ledger,
+            requested_qty=requested_qty,
+        )
+    assert exc_info.value.code == reason
 
 
 @pytest.mark.asyncio

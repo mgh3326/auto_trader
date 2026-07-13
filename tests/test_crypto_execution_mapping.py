@@ -39,6 +39,40 @@ def test_mapping_normalizes_whitespace_and_case():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("signal_symbol", "execution_symbol"),
+    [("BTCUSDT", "BTC/USD"), (" ethusdt ", "ETH/USD")],
+)
+def test_maps_binance_public_spot_symbols_to_alpaca_paper(
+    signal_symbol: str, execution_symbol: str
+):
+    from app.services.crypto_execution_mapping import (
+        map_binance_public_spot_to_alpaca_paper,
+    )
+
+    mapping = map_binance_public_spot_to_alpaca_paper(signal_symbol)
+
+    assert mapping.signal_symbol == signal_symbol.strip().upper()
+    assert mapping.signal_venue == "binance_public_spot"
+    assert mapping.execution_symbol == execution_symbol
+    assert mapping.execution_venue == "alpaca_paper"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("signal_symbol", ["SOLUSDT", "BTC/USD", "", "KRW-BTC"])
+def test_binance_public_spot_mapping_fails_closed_outside_v1(
+    signal_symbol: str,
+):
+    from app.services.crypto_execution_mapping import (
+        CryptoExecutionMappingError,
+        map_binance_public_spot_to_alpaca_paper,
+    )
+
+    with pytest.raises(CryptoExecutionMappingError):
+        map_binance_public_spot_to_alpaca_paper(signal_symbol)
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("signal_symbol", ["BTC/USD", "KRW-XRP", "USDT-BTC", "BTC", ""])
 def test_unsupported_symbols_fail_closed(signal_symbol: str):
     from app.services.crypto_execution_mapping import (
