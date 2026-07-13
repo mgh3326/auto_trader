@@ -8,6 +8,11 @@ operator automation plus env gate flips after safety review.
 Reuses the proven toss_reconcile_orders_impl kernel. Send-time Toss order rows
 remain accepted-only; fills, journals, and realized PnL are booked only from
 confirmed single-order broker evidence.
+
+For ``toss_live`` loss-cut proposals this polling path is part of the support
+contract, not optional observability: enable the fill poller with an operator-
+approved cadence or run a targeted non-dry reconcile after execution so the
+proposal rung can converge from broker evidence.
 """
 
 from __future__ import annotations

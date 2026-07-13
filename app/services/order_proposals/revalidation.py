@@ -327,6 +327,10 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
             "market": market,
             "account_mode": account_mode,
             "rung": kwargs.get("rung"),
+            "exit_intent": kwargs.get("exit_intent"),
+            "exit_reason": kwargs.get("exit_reason"),
+            "retrospective_id": kwargs.get("retrospective_id"),
+            "approval_issue_id": kwargs.get("approval_issue_id"),
         }
         if kwargs.get("dry_run") is True:
             with _bind_order_proposal_context(
@@ -359,7 +363,6 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
                 confirm=True,
                 approval_hash=approval_hash,
                 reason=kwargs.get("reason"),
-                exit_reason=kwargs.get("exit_reason"),
                 thesis=kwargs.get("thesis"),
                 strategy=kwargs.get("strategy"),
             )

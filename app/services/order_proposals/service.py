@@ -363,6 +363,8 @@ class OrderProposalsService:
         if (account_mode, market) not in {
             ("kis_live", "equity_kr"),
             ("kis_live", "equity_us"),
+            ("toss_live", "equity_kr"),
+            ("toss_live", "equity_us"),
             ("upbit", "crypto"),
         }:
             errors.append("loss_cut requires a supported live account and market")
@@ -748,6 +750,7 @@ class OrderProposalsService:
         filled_qty: Decimal | None = None,
         terminal_state: Literal["filled", "partially_filled", "cancelled"] = "filled",
         now: datetime,
+        account_mode: str | None = None,
     ) -> OrderProposalRung | None:
         """Converge a rung from broker fill/cancel evidence (ROB-816 PR-3c).
 
@@ -768,6 +771,7 @@ class OrderProposalsService:
             correlation_id=correlation_id,
             broker_order_id=broker_order_id,
             states=_EVIDENCE_ACCEPTING_RUNG_STATES,
+            account_mode=account_mode,
         )
         if match is None:
             return None

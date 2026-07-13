@@ -67,6 +67,7 @@ class OrderProposalRepository:
         correlation_id: str | None,
         broker_order_id: str | None,
         states: frozenset[str] | None = None,
+        account_mode: str | None = None,
     ) -> tuple[uuid.UUID, OrderProposalRung] | None:
         """Locate a rung by broker evidence.
 
@@ -93,6 +94,8 @@ class OrderProposalRepository:
             )
             if states is not None:
                 stmt = stmt.where(OrderProposalRung.state.in_(states))
+            if account_mode is not None:
+                stmt = stmt.where(OrderProposal.account_mode == account_mode)
             stmt = stmt.order_by(OrderProposalRung.id).limit(1)
             row = (await self._session.execute(stmt)).one_or_none()
             if row is not None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -80,7 +81,10 @@ async def record_toss_place_order(
     broker_order_id: str | None,
     raw_response: dict[str, Any],
     reason: str | None,
+    exit_intent: str | None = None,
     exit_reason: str | None,
+    retrospective_id: int | None = None,
+    approval_issue_id: str | None = None,
     thesis: str | None,
     strategy: str | None,
     target_price: Decimal | None,
@@ -126,6 +130,7 @@ async def record_toss_place_order(
             response_message=None,
             raw_response=raw_response,
             reason=reason,
+            exit_intent=exit_intent,
             thesis=thesis,
             strategy=strategy,
             target_price=target_price,
@@ -133,6 +138,8 @@ async def record_toss_place_order(
             min_hold_days=min_hold_days,
             notes=notes,
             exit_reason=exit_reason,
+            retrospective_id=retrospective_id,
+            approval_issue_id=approval_issue_id,
             indicators_snapshot=indicators_snapshot,
             report_item_uuid=report_item_uuid,
             approval_hash=approval_hash,
@@ -248,6 +255,96 @@ async def _notify_toss_fill(
         return False
 
 
+async def _converge_toss_proposal_rung(
+    row: TossLiveOrderLedger,
+    *,
+    ledger_status: str,
+    filled_qty: Decimal | None,
+) -> dict[str, Any] | None:
+    """Project committed Toss evidence in an independent committed session."""
+    from app.services.order_proposals import OrderProposalsService
+
+    if ledger_status not in {"partial", "filled", "cancelled"}:
+        return None
+
+    try:
+        async with _order_session_factory()() as db:
+            service = OrderProposalsService(db)
+            # A broker-confirmed cancel may carry a final cumulative partial fill.
+            # Project that quantity first, then cancel with filled_qty=None so the
+            # service preserves the partial audit value on the terminal rung.
+            if ledger_status == "cancelled" and filled_qty and filled_qty > 0:
+                partial = await service.record_fill_evidence(
+                    correlation_id=getattr(row, "correlation_id", None),
+                    broker_order_id=row.broker_order_id,
+                    filled_qty=filled_qty,
+                    terminal_state="partially_filled",
+                    now=datetime.now(UTC),
+                    account_mode="toss_live",
+                )
+                if partial is None:
+                    await db.commit()
+                    return None
+
+            terminal_state = {
+                "partial": "partially_filled",
+                "filled": "filled",
+                "cancelled": "cancelled",
+            }[ledger_status]
+            rung = await service.record_fill_evidence(
+                correlation_id=getattr(row, "correlation_id", None),
+                broker_order_id=row.broker_order_id,
+                filled_qty=None if terminal_state == "cancelled" else filled_qty,
+                terminal_state=terminal_state,
+                now=datetime.now(UTC),
+                account_mode="toss_live",
+            )
+            await db.commit()
+    except Exception as exc:  # noqa: BLE001 - ledger booking remains authoritative
+        logger.error(
+            "Toss proposal rung convergence failed ledger_id=%s order_id=%s "
+            "ledger_status=%s: %s",
+            row.id,
+            row.broker_order_id,
+            ledger_status,
+            exc,
+        )
+        return {"converged": False, "error": str(exc) or exc.__class__.__name__}
+    if rung is None:
+        return None
+    return {"converged": True, "proposal_rung_state": rung.state}
+
+
+async def _repair_terminal_toss_proposal_projections(
+    *,
+    symbol: str | None,
+    order_id: str | None,
+    market: str | None,
+    limit: int,
+) -> dict[str, int]:
+    """Idempotently repair terminal ledger rows skipped by the open-row scan."""
+    async with _order_session_factory()() as db:
+        rows = await TossLiveOrderLedgerService(db).list_terminal_projection_candidates(
+            symbol=symbol,
+            order_id=order_id,
+            market=market,
+            limit=limit,
+        )
+
+    report = {"candidates": len(rows), "converged": 0, "failed": 0}
+    for row in rows:
+        result = await _converge_toss_proposal_rung(
+            row,
+            ledger_status=row.status,
+            filled_qty=row.filled_qty,
+        )
+        if result is not None and result.get("converged") is False:
+            report["failed"] += 1
+        else:
+            report["converged"] += 1
+    return report
+
+
 async def _reconcile_one_toss_row(
     row: TossLiveOrderLedger,
     *,
@@ -307,6 +404,13 @@ async def _reconcile_one_toss_row(
     if evidence.verdict == "none":
         base["action"] = f"marked_{evidence.local_status}"
         if not dry_run:
+            converged = await _converge_toss_proposal_rung(
+                row,
+                ledger_status=evidence.local_status,
+                filled_qty=row.filled_qty,
+            )
+            if converged is not None:
+                base["proposal_rung"] = converged
             async with _order_session_factory()() as db:
                 await TossLiveOrderLedgerService(db).update_reconcile_outcome(
                     ledger_id=row.id,
@@ -326,6 +430,18 @@ async def _reconcile_one_toss_row(
     base["filled_qty"] = float(broker_cum)
     base["avg_price"] = float(avg_price)
     base["delta_qty"] = float(delta)
+
+    if not dry_run:
+        projection_status = (
+            "cancelled" if evidence.local_status == "cancelled" else evidence.verdict
+        )
+        converged = await _converge_toss_proposal_rung(
+            row,
+            ledger_status=projection_status,
+            filled_qty=broker_cum,
+        )
+        if converged is not None:
+            base["proposal_rung"] = converged
 
     if delta <= 0:
         base["action"] = "noop_already_booked"
@@ -603,6 +719,15 @@ async def toss_reconcile_orders_impl(
     dry_run: bool = True,
     limit: int = 100,
 ) -> dict[str, Any]:
+    projection_repair = {"candidates": 0, "converged": 0, "failed": 0}
+    if not dry_run:
+        projection_repair = await _repair_terminal_toss_proposal_projections(
+            symbol=symbol,
+            order_id=order_id,
+            market=market,
+            limit=limit,
+        )
+
     # Self-healing reopen + list_open run in ONE session block so both the
     # recoverable-anomaly rows and the open rows are live-session ORM objects that
     # detach together at block exit (matching the existing detached-row loop).
@@ -696,6 +821,7 @@ async def toss_reconcile_orders_impl(
         "counts": counts,
         "reconciled": reconciled,
         "reopened": reopen_report,  # {dry_run, reopened, candidates}
+        "proposal_projection_repair": projection_repair,
         "batch_build_error": batch_build_error,
         "message": (
             f"Reconciled {len(reconciled)} Toss live order(s) "
