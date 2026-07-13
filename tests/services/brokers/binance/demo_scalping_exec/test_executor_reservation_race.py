@@ -39,6 +39,7 @@ from app.services.brokers.binance.demo_scalping.contract import (
 from app.services.brokers.binance.demo_scalping.order_intent import OrderIntent
 from app.services.brokers.binance.demo_scalping_exec import executor as executor_mod
 from app.services.brokers.binance.demo_scalping_exec.executor import (
+    DemoExecutionIdentity,
     DemoScalpingExecutor,
 )
 from app.services.brokers.binance.demo_scalping_exec.reference import SymbolReference
@@ -159,6 +160,8 @@ async def _clean(symbol: str) -> None:
         await db.execute(
             delete(BinanceDemoOrderLedger).where(
                 BinanceDemoOrderLedger.client_order_id.like(f"{_CID_PREFIX}%")
+                | BinanceDemoOrderLedger.client_order_id.like("rob845r-%")
+                | BinanceDemoOrderLedger.client_order_id.like("rob845c-%")
             )
         )
         await db.commit()
@@ -317,6 +320,76 @@ async def test_concurrent_executors_at_most_one_broker_submit() -> None:
     assert root is not None
     assert root.extra_metadata["credential_fingerprint"] == _CREDENTIAL_FINGERPRINT
     assert "RAW" not in repr(root.extra_metadata)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_same_verified_identity_submits_one_round_trip() -> None:
+    symbol = "R845EXRACEUSDT"
+    await _instrument(symbol)
+    close_gate = asyncio.Event()
+    barrier = asyncio.Barrier(2)
+    identity = DemoExecutionIdentity.from_verified_metadata(
+        decision_id="decision-race",
+        idempotency_key="paper-binance-race-key",
+        immutable_metadata={
+            "experiment_id": "experiment-race",
+            "run_id": "run-race",
+            "cohort_id": "cohort-race",
+            "intent_hash": "1" * 64,
+        },
+    )
+
+    async def run(client):
+        async with AsyncSessionLocal() as session:
+            executor = DemoScalpingExecutor(
+                product="spot",
+                client=client,
+                session=session,
+                reference=_FakeReference(_REF),
+                now=_NOW,
+                limits=_limits(symbol),
+                execution_identity=identity,
+            )
+            await barrier.wait()
+            return await executor.execute(
+                _intent(symbol), confirm=True, market=_FRESH_MARKET
+            )
+
+    client_a = _GatedSpotClient(close_gate=close_gate)
+    client_b = _GatedSpotClient(close_gate=close_gate)
+    task_a = asyncio.create_task(run(client_a))
+    task_b = asyncio.create_task(run(client_b))
+    await asyncio.wait({task_a, task_b}, return_when=asyncio.FIRST_COMPLETED)
+    close_gate.set()
+    result_a, result_b = await asyncio.gather(task_a, task_b)
+
+    pairs = [(result_a, client_a), (result_b, client_b)]
+    winners = [
+        (result, client) for result, client in pairs if result.status == "reconciled"
+    ]
+    losers = [
+        (result, client) for result, client in pairs if result.status == "blocked"
+    ]
+    assert len(winners) == 1
+    assert len(losers) == 1
+    loser_result, loser_client = losers[0]
+    assert loser_result.reason_codes == ("idempotency_in_progress",)
+    assert loser_client.submits == []
+    assert winners[0][1].submits == ["BUY", "SELL"]
+    assert sum(client.submits.count("BUY") for _, client in pairs) == 1
+
+    async with AsyncSessionLocal() as verify:
+        roots = list(
+            (
+                await verify.scalars(
+                    select(BinanceDemoOrderLedger).where(
+                        BinanceDemoOrderLedger.client_order_id
+                        == identity.root_client_order_id
+                    )
+                )
+            ).all()
+        )
+    assert len(roots) == 1
 
 
 @pytest.mark.asyncio

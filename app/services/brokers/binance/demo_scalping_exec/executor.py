@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import hashlib
+import json
 import logging
 import time
 import uuid
@@ -33,6 +35,7 @@ from typing import Any
 from app.services.brokers.binance.demo.ledger import BinanceDemoLedgerService
 from app.services.brokers.binance.demo_scalping.contract import (
     DEMO_SCALPING_FEE_RATE_BPS,
+    LedgerSnapshot,
     MarketConditions,
     Product,
     ReasonCode,
@@ -95,8 +98,79 @@ class _ExposureSlotTaken:
     reason: str | None = None
 
 
+@dataclass(frozen=True)
+class _IdempotencyReservationOutcome:
+    """A deterministic root already exists, so no broker POST is allowed."""
+
+    status: str
+    reason: str | None = None
+
+
 def _new_cid() -> str:
     return "rob307-" + uuid.uuid4().hex[:24]
+
+
+def _deterministic_cid(*, idempotency_key: str, leg: str) -> str:
+    digest = hashlib.sha256(f"{idempotency_key}:{leg}".encode()).hexdigest()[:24]
+    prefix = "rob845r-" if leg == "root" else "rob845c-"
+    return prefix + digest
+
+
+@dataclass(frozen=True)
+class DemoExecutionIdentity:
+    """Immutable, server-derived identity for one paper round trip.
+
+    The canonical JSON string keeps the frozen dataclass genuinely immutable;
+    callers cannot mutate a retained dictionary after construction.  Existing
+    manual callers omit this object and retain their random ``rob307-*`` IDs.
+    """
+
+    decision_id: str
+    idempotency_key: str
+    root_client_order_id: str
+    close_client_order_id: str
+    _canonical_metadata: str = field(repr=False)
+
+    @classmethod
+    def from_verified_metadata(
+        cls,
+        *,
+        decision_id: str,
+        idempotency_key: str,
+        immutable_metadata: dict[str, Any],
+    ) -> DemoExecutionIdentity:
+        if not decision_id.strip() or not idempotency_key.strip():
+            raise ValueError("decision_id and idempotency_key must be non-empty")
+        canonical = json.dumps(
+            immutable_metadata,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        return cls(
+            decision_id=decision_id,
+            idempotency_key=idempotency_key,
+            root_client_order_id=_deterministic_cid(
+                idempotency_key=idempotency_key, leg="root"
+            ),
+            close_client_order_id=_deterministic_cid(
+                idempotency_key=idempotency_key, leg="close"
+            ),
+            _canonical_metadata=canonical,
+        )
+
+    def ledger_metadata(self, intent: OrderIntent) -> dict[str, Any]:
+        metadata = json.loads(self._canonical_metadata)
+        metadata.update(
+            {
+                "decision_id": self.decision_id,
+                "idempotency_key": self.idempotency_key,
+                "root_client_order_id": self.root_client_order_id,
+                "close_client_order_id": self.close_client_order_id,
+                "native_intent": intent.to_evidence_dict(),
+            }
+        )
+        return metadata
 
 
 def _base_asset(symbol: str) -> str:
@@ -140,6 +214,14 @@ class ExecutionResult:
     exit_reason: str | None = None
     # set when the monitor poll raised; the position is still closed flat
     monitor_error: str | None = None
+    # True only when a deterministic terminal native lifecycle was returned
+    # without entering market preflight or broker submission.
+    replayed: bool = False
+    # Native risk evidence captured by preflight.  It remains broker-neutral
+    # application data; adapters may map it without performing a second read.
+    ledger_snapshot: LedgerSnapshot | None = None
+    market_conditions: MarketConditions | None = None
+    reference_price: Decimal | None = None
 
     def to_evidence_dict(self) -> dict[str, Any]:
         return {
@@ -161,6 +243,40 @@ class ExecutionResult:
             ),
             "final_open_orders": self.final_open_orders,
             "final_flat": self.final_flat,
+            "replayed": self.replayed,
+            "ledger_snapshot": (
+                None
+                if self.ledger_snapshot is None
+                else {
+                    "has_open_lifecycle_for_symbol": (
+                        self.ledger_snapshot.has_open_lifecycle_for_symbol
+                    ),
+                    "global_open_lifecycle_count": (
+                        self.ledger_snapshot.global_open_lifecycle_count
+                    ),
+                    "orders_today": self.ledger_snapshot.orders_today,
+                    "realized_loss_today_usdt": str(
+                        self.ledger_snapshot.realized_loss_today_usdt
+                    ),
+                    "seconds_since_last_close_for_symbol": (
+                        self.ledger_snapshot.seconds_since_last_close_for_symbol
+                    ),
+                }
+            ),
+            "market_conditions": (
+                None
+                if self.market_conditions is None
+                else {
+                    "spread_bps": str(self.market_conditions.spread_bps),
+                    "data_age_seconds": self.market_conditions.data_age_seconds,
+                    "spot_free_base_qty": str(
+                        self.market_conditions.spot_free_base_qty
+                    ),
+                }
+            ),
+            "reference_price": (
+                None if self.reference_price is None else str(self.reference_price)
+            ),
         }
 
 
@@ -203,6 +319,7 @@ class DemoScalpingExecutor:
         now: dt.datetime,
         limits: ScalpingRiskLimits | None = None,
         market_data: Any | None = None,
+        execution_identity: DemoExecutionIdentity | None = None,
         poll_max: int = _FILL_POLL_MAX,
         poll_delay_seconds: float = _FILL_POLL_DELAY_SECONDS,
     ) -> None:
@@ -213,6 +330,7 @@ class DemoScalpingExecutor:
         self.now = now
         self.limits = limits or ScalpingRiskLimits()
         self.market_data = market_data  # required for execute_monitored
+        self.execution_identity = execution_identity
         self.ledger = BinanceDemoLedgerService(session)
         self.analytics = ScalpTradeAnalyticsService(session)
         self.poll_max = poll_max
@@ -398,8 +516,17 @@ class DemoScalpingExecutor:
         signal_snapshot: dict[str, Any] | None = None,
     ) -> ExecutionResult:
         """One-shot: open + immediate close-flat (no hold)."""
+        replay = await self._existing_identity_result(intent, confirm=confirm)
+        if replay is not None:
+            return replay
         prep = await self._preflight(intent, confirm, market)
         if isinstance(prep, ExecutionResult):
+            # A concurrent deterministic winner can appear after the initial
+            # fast lookup but before/during the advisory risk snapshot. Prefer
+            # exact native idempotency truth over a generic exposure-cap block.
+            replay = await self._existing_identity_result(intent, confirm=confirm)
+            if replay is not None:
+                return replay
             return prep
         ref, qty, notional, instrument_id = prep
         open_cid, error = await self._open_position(
@@ -430,6 +557,67 @@ class DemoScalpingExecutor:
             signal_snapshot=signal_snapshot,
         )
         return result
+
+    async def _existing_identity_result(
+        self, intent: OrderIntent, *, confirm: bool
+    ) -> ExecutionResult | None:
+        """Return deterministic native truth before market/risk work.
+
+        This read is only a fast path.  An absent row still enters the
+        advisory-locked reservation, which is the race authority.
+        """
+        identity = self.execution_identity
+        if not confirm or identity is None:
+            return None
+        row = await self.ledger.get_by_client_order_id(identity.root_client_order_id)
+        if row is None:
+            return None
+        expected = identity.ledger_metadata(intent)
+        actual = (row.extra_metadata or {}).get("paper_execution_identity")
+        if actual != expected:
+            return ExecutionResult(
+                intent=intent,
+                status="blocked",
+                open_client_order_id=identity.root_client_order_id,
+                reason_codes=("idempotency_collision",),
+            )
+        if row.lifecycle_state not in {"cancelled", "reconciled", "anomaly"}:
+            return ExecutionResult(
+                intent=intent,
+                status="blocked",
+                open_client_order_id=identity.root_client_order_id,
+                reason_codes=("idempotency_in_progress",),
+            )
+        close = await self.ledger.get_by_client_order_id(identity.close_client_order_id)
+        if row.lifecycle_state == "reconciled":
+            status = "reconciled"
+            reasons: tuple[str, ...] = ()
+        elif row.lifecycle_state == "anomaly":
+            status = "anomaly"
+            reasons = ()
+        else:
+            status = "blocked"
+            reasons = ("cancelled",)
+        return ExecutionResult(
+            intent=intent,
+            status=status,
+            open_client_order_id=identity.root_client_order_id,
+            close_client_order_id=(
+                identity.close_client_order_id if close is not None else None
+            ),
+            reason_codes=reasons,
+            anomaly_reason=row.anomaly_reason,
+            sized_qty=row.qty,
+            sized_notional_usdt=row.notional_usdt,
+            replayed=True,
+        )
+
+    async def resolve_existing_execution(
+        self, intent: OrderIntent
+    ) -> ExecutionResult | None:
+        """Read deterministic terminal/in-flight native truth without preflight."""
+
+        return await self._existing_identity_result(intent, confirm=True)
 
     async def execute_monitored(
         self,
@@ -641,13 +829,23 @@ class DemoScalpingExecutor:
         )
         if not risk.allowed:
             return ExecutionResult(
-                intent=intent, status="blocked", reason_codes=risk.reason_codes
+                intent=intent,
+                status="blocked",
+                reason_codes=risk.reason_codes,
+                ledger_snapshot=snapshot,
+                market_conditions=market,
+                reference_price=intent.entry_reference_price,
             )
         ref = await self.reference.fetch(intent.product, intent.symbol)
         sized = self._size(intent, ref)
         if isinstance(sized, str):
             return ExecutionResult(
-                intent=intent, status="blocked", reason_codes=(sized,)
+                intent=intent,
+                status="blocked",
+                reason_codes=(sized,),
+                ledger_snapshot=snapshot,
+                market_conditions=market,
+                reference_price=ref.price,
             )
         qty, notional = sized
         if not confirm:
@@ -656,6 +854,9 @@ class DemoScalpingExecutor:
                 status="dry_run",
                 sized_qty=qty,
                 sized_notional_usdt=notional,
+                ledger_snapshot=snapshot,
+                market_conditions=market,
+                reference_price=ref.price,
             )
         instrument_id = await self._resolve_or_create_instrument(intent.symbol)
         return (ref, qty, notional, instrument_id)
@@ -683,6 +884,8 @@ class DemoScalpingExecutor:
             opened = await self._open_leg(intent, instrument_id, qty, notional)
             if isinstance(opened, _ExposureSlotTaken):
                 return None, self._exposure_slot_taken_result(intent, opened)
+            if isinstance(opened, _IdempotencyReservationOutcome):
+                return None, await self._idempotency_reservation_result(intent, opened)
             open_cid, submit = opened
             proven, polled_price = await self._fill_proven(
                 intent.symbol, open_cid, submit.status
@@ -728,6 +931,8 @@ class DemoScalpingExecutor:
         opened = await self._open_leg(intent, instrument_id, qty, notional)
         if isinstance(opened, _ExposureSlotTaken):
             return None, self._exposure_slot_taken_result(intent, opened)
+        if isinstance(opened, _IdempotencyReservationOutcome):
+            return None, await self._idempotency_reservation_result(intent, opened)
         open_cid, submit = opened
         if submit.status != "FILLED":
             reason = f"spot_open_not_filled: {submit.status}"
@@ -832,6 +1037,21 @@ class DemoScalpingExecutor:
             reason_codes=(ReasonCode.EXPOSURE_SLOT_TAKEN,),
         )
 
+    async def _idempotency_reservation_result(
+        self, intent: OrderIntent, outcome: _IdempotencyReservationOutcome
+    ) -> ExecutionResult:
+        replay = await self._existing_identity_result(intent, confirm=True)
+        if replay is not None:
+            return replay
+        # Defensive fallback: the dedicated reservation returned an existing
+        # row but a concurrent delete made it unavailable to the owner read.
+        # Never POST when native idempotency truth cannot be reloaded.
+        return ExecutionResult(
+            intent=intent,
+            status="blocked",
+            reason_codes=(outcome.status,),
+        )
+
     async def _open_leg(
         self,
         intent,
@@ -843,8 +1063,9 @@ class DemoScalpingExecutor:
         role="open",
         tp_price: Decimal | None = None,
         sl_price: Decimal | None = None,
-    ) -> tuple[str, Any] | _ExposureSlotTaken:
-        cid = _new_cid()
+    ) -> tuple[str, Any] | _ExposureSlotTaken | _IdempotencyReservationOutcome:
+        identity = self.execution_identity
+        cid = identity.root_client_order_id if identity is not None else _new_cid()
         meta = {
             "source": "rob-307-pr2-executor",
             "role": role,
@@ -857,6 +1078,9 @@ class DemoScalpingExecutor:
             meta["credential_fingerprint"] = credential_fingerprint
         if intent.product == "usdm_futures":
             meta["leverage"] = 1
+        idempotency_metadata = (
+            identity.ledger_metadata(intent) if identity is not None else None
+        )
         # ROB-844: the open leg is the ROOT lifecycle. Atomically reserve its
         # exposure slot (advisory-locked recount + planned-root insert in one
         # transaction) BEFORE broker order submit. A loser of the cross-process
@@ -876,11 +1100,17 @@ class DemoScalpingExecutor:
             sl_price=sl_price if sl_price is not None else intent.sl_price,
             notional_usdt=notional,
             extra_metadata=meta,
+            idempotency_metadata=idempotency_metadata,
             global_open_root_cap=self.limits.global_open_lifecycle_cap,
             now=self.now,
         )
-        if reservation.status != "reserved":
+        if reservation.status == "exposure_slot_taken":
             return _ExposureSlotTaken(reason=reservation.reason)
+        if reservation.status != "reserved":
+            return _IdempotencyReservationOutcome(
+                status=reservation.status,
+                reason=reservation.reason,
+            )
         await self.ledger.record_previewed(client_order_id=cid, now=self.now)
         await self.ledger.record_validated(client_order_id=cid, now=self.now)
         submit_kwargs: dict[str, Any] = {
@@ -962,7 +1192,18 @@ class DemoScalpingExecutor:
         close_cid: str | None = None
         close_filled = False
         if isinstance(close, CloseQtyResult):
-            close_cid = _new_cid()
+            identity = self.execution_identity
+            close_cid = (
+                identity.close_client_order_id if identity is not None else _new_cid()
+            )
+            close_metadata: dict[str, Any] = {
+                "source": "rob-307-pr2-executor",
+                "role": "close",
+            }
+            if identity is not None:
+                close_metadata["paper_execution_identity"] = identity.ledger_metadata(
+                    intent
+                )
             await self.ledger.record_planned(
                 instrument_id=instrument_id,
                 product="spot",
@@ -974,7 +1215,7 @@ class DemoScalpingExecutor:
                 price=None,
                 parent_client_order_id=open_cid,
                 notional_usdt=close.notional_usdt,
-                extra_metadata={"source": "rob-307-pr2-executor", "role": "close"},
+                extra_metadata=close_metadata,
                 now=self.now,
             )
             await self.ledger.record_previewed(client_order_id=close_cid, now=self.now)
@@ -1072,7 +1313,19 @@ class DemoScalpingExecutor:
         close_cid: str | None = None
         close_filled = False
         if not position.is_flat:
-            close_cid = _new_cid()
+            identity = self.execution_identity
+            close_cid = (
+                identity.close_client_order_id if identity is not None else _new_cid()
+            )
+            close_metadata: dict[str, Any] = {
+                "source": "rob-307-pr2-executor",
+                "role": "close",
+                "reduce_only": True,
+            }
+            if identity is not None:
+                close_metadata["paper_execution_identity"] = identity.ledger_metadata(
+                    intent
+                )
             close_side = "SELL" if position.position_amt > 0 else "BUY"
             close_qty = abs(position.position_amt)
             await self.ledger.record_planned(
@@ -1085,11 +1338,7 @@ class DemoScalpingExecutor:
                 qty=close_qty,
                 price=None,
                 parent_client_order_id=open_cid,
-                extra_metadata={
-                    "source": "rob-307-pr2-executor",
-                    "role": "close",
-                    "reduce_only": True,
-                },
+                extra_metadata=close_metadata,
                 now=self.now,
             )
             await self.ledger.record_previewed(client_order_id=close_cid, now=self.now)
