@@ -10,8 +10,8 @@ persisted, replayable record: one `order_proposals` row per proposal group
 `order_proposal_rungs` child rows (one per execution ladder rung — price/qty
 pair) tracking each rung's own execution lifecycle independently.
 
-This runbook covers the deployed ROB-816 foundation, this branch's unmerged
-PR 3a-2/PR 3b changes, and the separate PR 3c follow-up:
+This runbook covers the deployed ROB-816 foundation through native Toss
+proposal execution and ROB-858 Toss loss-cut/reconcile convergence:
 
 - **PR 1** — data model + pure state machine + service + three read/create
   MCP tools (`order_proposal_create`/`get`/`list`). Merged as
@@ -29,15 +29,13 @@ PR 3a-2/PR 3b changes, and the separate PR 3c follow-up:
   below. Merged as
   [#1497](https://github.com/mgh3326/auto_trader/pull/1497) and deployed on
   `main`/production.
-- **This branch: PR 3a-2 + PR 3b** — fail-closed Telegram submit identity
-  binding, Upbit loss-cut support, and native Toss proposal preview/submit
-  routing. These changes are not merged or deployed yet. Their real-money
-  checks remain post-merge operator canaries; no live action is part of the
-  implementation or test run.
-- **PR 3c / #1498 follow-up** — separate work to converge proposal-rung state
-  from live reconcile evidence. It is not part of this branch, so current
-  broker reconcile can book broker-ledger fills without advancing the linked
-  proposal rung from `acked`/`resting`.
+- **PR 3a-2 + PR 3b** — fail-closed Telegram submit identity binding, Upbit
+  loss-cut support, and native Toss proposal preview/submit routing.
+- **PR 3c / #1498** — generic live-ledger proposal-rung projection.
+- **ROB-858** — opens `toss_live × equity_kr|equity_us` loss-cut only after
+  adding shared ROB-800 guards, Toss audit fields, broker-evidence projection,
+  and a terminal-row repair sweep. The canonical GO rationale and risks are in
+  [`docs/plans/2026-07-13-rob-858-toss-losscut-decision.md`](../plans/2026-07-13-rob-858-toss-losscut-decision.md).
 
 There is still **no**
 `order_proposal_approve` / `order_proposal_submit` MCP tool in any slice —
@@ -68,12 +66,11 @@ See the full design in
   — Activation" below for how to turn it on.
 - **Accepted != filled.** A broker ACK (`record_ack`) or resting-order
   confirmation (`record_resting`) is recorded on the rung as `acked` /
-  `resting` — never as a fill. `order_proposal_rungs` has no code path that
-  writes `filled`/`partially_filled` from the Telegram approval flow itself;
-  existing reconcile tools can book confirmed fill evidence in their broker
-  ledgers, but this branch does not call `record_fill_evidence` to converge the
-  linked proposal rung. That proposal-rung convergence is the separate PR 3c /
-  #1498 follow-up. See `revalidation.py`'s module docstring ("Principle #6").
+  `resting` — never as a fill. The Telegram approval flow itself never writes
+  `filled`/`partially_filled`; broker reconcile does so only from confirmed
+  evidence through `record_fill_evidence`. Toss non-dry reconcile also repairs
+  terminal ledger rows whose first proposal projection failed. See
+  `revalidation.py`'s module docstring ("Principle #6").
 - **Nonce replay defense.** Every Telegram button click must present the
   `approval_nonce` currently stored on the group row; `consume_approval_nonce`
   (`app/services/order_proposals/service.py`) takes a `for_update=True` row
@@ -96,8 +93,9 @@ See the full design in
   `_place_order_impl` dry-run preview and repeat final guards at submit. Toss
   instead calls `toss_preview_order`, never `_place_order_impl`; that preview
   supplies the normalized payload/tick plus its actual read-only warning,
-  price/cost, NXT-context, and advisory sector-concentration checks. It does
-  **not** run the Toss sell-loss or mutation guard chain. On unchanged payload,
+  price/cost, NXT-context, and advisory sector-concentration checks. A Toss
+  `loss_cut` preview also reruns the shared Paperclip/caller/retrospective gate
+  and validates the current-price slip band. On unchanged payload,
   `toss_place_order` applies the mutation activation/confirmation gates,
   high-value check, warnings guard, opposite-pending-order guard, sell-loss
   guard, and configured NXT preflight immediately before the POST. Sell-loss
@@ -114,10 +112,11 @@ See the full design in
   value in `LOSS_CUT_ALLOWED_AGENT_IDS`. Do not add a hardcoded UUID to satisfy
   this contract.
 - **Loss-cut binding scope.** `exit_intent="loss_cut"` proposals are supported
-  for `kis_live` + `equity_kr|equity_us` and `upbit` + `crypto`. Toss equity
-  proposals are submittable, but Toss is not a supported loss-cut binding in
-  this slice. The residual KRW-DOT loss-cut is a post-merge operator canary,
-  not a live action performed by tests or during this documentation change.
+  for `kis_live|toss_live` + `equity_kr|equity_us` and `upbit` + `crypto`.
+  All lanes remain limit-sell/live only and rerun the shared Paperclip,
+  caller, retrospective-symbol/trigger, and 72-hour freshness checks at
+  preview and submit. The second freshness check is intentional: a valid
+  create can become stale while waiting for Telegram approval.
 - **Native Toss routing and exact handoff.** `toss_live` +
   `equity_kr|equity_us` proposals route through `toss_preview_order` and
   `toss_place_order`, never the shared `_place_order_impl`. Preview supplies
@@ -131,6 +130,9 @@ See the full design in
   proposal correlation/rung into the Toss ledger. These values are not public
   MCP inputs. Submit reuses the preview's raw `approval_hash`; the proposal
   rung stores the actual `approval_hash_digest` returned by `toss_place_order`.
+  For `loss_cut`, that supplied token is mandatory even when
+  `TOSS_APPROVAL_HASH_MODE=off`. The Toss ledger also stores `exit_intent`,
+  `retrospective_id`, and `approval_issue_id` for durable audit.
   Broker acceptance is not a fill, and any post-send ambiguity remains
   `unverified` for reconciliation rather than being retried or voided.
 - **Default OFF.** `ORDER_PROPOSALS_ENABLED=false` by default
@@ -441,6 +443,55 @@ ORDER_PROPOSALS_SUBMIT_AGENT_ID=<proposal-submit-agent-id>
 LOSS_CUT_ALLOWED_AGENT_IDS=<existing-allowed-agent-ids>,<proposal-submit-agent-id>
 ```
 
+### Paperclip issue contract for each loss-cut order
+
+`approval_issue_id` is a Paperclip issue key, not a Telegram callback ID or an
+internal approval row. It must match `^[A-Z]+-\d+$`, and the execution
+environment must receive HTTP 200 JSON with exact lowercase `status="done"`
+from `$PAPERCLIP_API_URL/api/issues/<key>`. Issue lookup failure, malformed
+JSON, timeout, non-200, or any other status fails closed.
+
+Create a new issue for each order. Record account, symbol, `side=sell`, limit,
+quantity, retrospective ID, and expiry in its title/body, obtain the human
+decision, then mark it done. Do not reuse ROB-800/ROB-858 or another unrelated
+completed implementation/umbrella issue: the current verifier checks status
+but cannot yet prove that issue metadata matches the order payload.
+
+Verify the dedicated issue read-only in the execution environment without
+printing the API token:
+
+```bash
+APPROVAL_ISSUE_ID=ROB-<number>
+curl -fsS \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  "$PAPERCLIP_API_URL/api/issues/$APPROVAL_ISSUE_ID" \
+  | jq -e '.status == "done"'
+```
+
+Create a fresh retrospective for the execution decision. Its symbol and
+trigger (`stop_loss|thesis_change`) must match, and its `created_at` must still
+be within 72 hours at both proposal create and submit. Updating an older row
+does not renew `created_at`; create a new correlation/row instead.
+
+### Toss loss-cut fill polling requirement
+
+Toss acceptance is not fill evidence, and automatic polling is default-off.
+Do not enable Toss loss-cut proposals until one of these operational paths is
+owned and tested:
+
+1. Set `TOSS_FILL_POLL_ENABLED=true`, choose an operator-reviewed
+   `TOSS_FILL_POLL_CRON`, deploy the worker/scheduler, and verify
+   `toss_live.poll_fills_periodic` is firing during the relevant KR/US session;
+   or
+2. after every accepted order, run
+   `toss_reconcile_orders(order_id=<broker-order-id>, dry_run=False)` and repeat
+   until broker evidence is terminal.
+
+The non-dry reconcile books only cumulative broker-confirmed deltas, projects
+proposal rungs to `partially_filled|filled|cancelled`, and sweeps terminal Toss
+ledger rows whose earlier proposal projection failed. `dry_run=True` is useful
+for inspection but does not satisfy this convergence SLA.
+
 Restart the process that serves both the MCP tools and the FastAPI app after
 changing any of these (same restart as § Activation above).
 
@@ -510,11 +561,10 @@ this repo. It:
   `200 {"ok": true}` once past the enable gate, regardless of what happened
   inside).
 - Is driven purely by Telegram's own push (Telegram calls your server); there
-  is **no polling loop, no TaskIQ task, no cron, and no Prefect flow**
-  anywhere in this feature. "No standing scheduler in-repo" holds: the only
-  process touching `order_proposals`/`order_proposal_rungs` state outside a
-  synchronous MCP-tool or webhook-request call is a human clicking a Telegram
-  button.
+  is **no Telegram long-polling loop, TaskIQ receiver, cron, or Prefect flow**.
+  This receiver statement does not cover broker fill reconciliation: the
+  default-off Toss fill-poller TaskIQ path may later project confirmed broker
+  evidence onto proposal rungs, as required by the Toss loss-cut SLA above.
 
 **NOT implemented — long-polling alternative (documented only, out of
 scope).** `scripts/order_proposals_telegram_poller.py` is referenced in the
@@ -570,7 +620,8 @@ submitted blind would defeat the entire point of a human-approval gate.
    never `_place_order_impl`; Toss preview returns the canonical wire
    `payload_preview`, including KR tick normalization, and performs only its
    read-only warning, price/cost, NXT-context, and advisory sector-concentration
-   checks. It does not run the Toss sell-loss/mutation guards. After an
+   checks. For Toss `loss_cut`, it additionally runs the shared ROB-800
+   authorization and loss-cut slip-band guard. After an
    unchanged comparison, `toss_place_order` runs confirmation/activation,
    high-value, warnings, opposite-pending-order, sell-loss, and configured NXT
    guards immediately before POST. Sell-loss and required mutation gates fail
@@ -610,9 +661,10 @@ submitted blind would defeat the entire point of a human-approval gate.
    (market orders) or `resting` (limit orders) on explicit broker success,
    `rejected` on explicit broker/guard rejection, and `unverified` — never a
    terminal state — on anything ambiguous (submit exception, unrecognized
-   response shape, missing `broker_order_id`). Toss reconcile may later book
-   confirmed fill evidence in the Toss broker ledger, but proposal-rung
-   convergence is deferred to the separate PR 3c / #1498 follow-up. See Safety
+   response shape, missing `broker_order_id`). Toss reconcile later books
+   confirmed fill evidence and projects partial/fill/cancel states into the
+   proposal rung. A terminal-ledger sweep retries any projection that failed
+   after the row left the open scan. See Safety
    Boundaries above for why `unverified` is never auto-voided.
 
 For a loss-cut proposal, the Telegram approval text shows the operator-facing
@@ -662,12 +714,14 @@ live action.
 - [ ] **DOT residual loss-cut canary:** approve the residual KRW-DOT stop-loss
   proposal and verify the Upbit accepted-only ledger/correlation record, then
   cancel or reconcile as planned.
-- [ ] **Toss KR canary during market hours:** approve a minimal KR limit
-  proposal; verify Toss preview tick normalization, `approval_hash`/`rung`
-  handoff, the exact preview `clientOrderId`, accepted-only ledger state, and
-  no KIS submission. Reconcile later for broker-ledger fill evidence;
-  acceptance alone must not be reported as filled, and the proposal rung is
-  not expected to converge until the separate PR 3c / #1498 follow-up lands.
+- [ ] **Toss KR loss-cut canary during market hours:** create a fresh <=72h
+  retrospective and dedicated completed Paperclip issue, then approve a
+  minimal KR limit-sell proposal. Verify tick normalization, the supplied
+  `approval_hash`/rung handoff, exact preview `clientOrderId`, accepted-only
+  Toss audit fields, and no KIS submission. Acceptance alone must not be
+  reported as filled. Prove either the enabled fill-poller cadence or run
+  targeted `toss_reconcile_orders(order_id=<broker-order-id>, dry_run=False)`;
+  verify the proposal rung reaches partial/filled/cancelled from broker evidence.
 
 ### Preflight
 
@@ -917,8 +971,8 @@ see `docs/runbooks/kis-live-order-reconcile.md` /
 `docs/runbooks/live-order-reconcile.md`) — against the rung's
 `correlation_id`/`broker_order_id` (from the DB Verification query or the
 Evidence Template above) to pull real order-status evidence and determine
-whether it actually got submitted, filled, or rejected. `record_fill_evidence`
-(`service.py`) is the proposal-rung sink for that evidence, but this branch does
-not wire broker reconcile into it. That convergence is the separate PR 3c /
-#1498 follow-up. Until it lands, broker-ledger reconciliation does not imply the
-proposal rung has left `unverified`, `acked`, or `resting`.
+whether it actually got submitted, filled, or rejected. For Toss use targeted
+`toss_reconcile_orders(order_id=<broker-order-id>, dry_run=False)`; it projects
+confirmed partial/fill/cancel evidence through `record_fill_evidence` and
+retries terminal-row projection drift. Pending/unknown evidence never infers a
+terminal proposal state.
