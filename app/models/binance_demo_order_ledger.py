@@ -33,11 +33,34 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
+
+# ROB-844 — the root lifecycle states that still occupy an exposure slot: a
+# row is either in flight (planned..filled) or in an unresolved anomaly.
+# ``closed``/``cancelled``/``reconciled`` free the slot. Single source of
+# truth shared by the repository read-side count *and* the partial-unique
+# index predicate below (keep the two in lockstep — the DB index is the
+# defense-in-depth twin of the transactional recount).
+BLOCKING_ROOT_LIFECYCLE_STATES: tuple[str, ...] = (
+    "planned",
+    "previewed",
+    "validated",
+    "submitted",
+    "filled",
+    "anomaly",
+)
+
+# Rendered into the partial-index predicate as a SQL ``IN`` list. Values are
+# a fixed vocabulary (never user input), so literal interpolation is safe and
+# keeps the index predicate a single source with the tuple above.
+_BLOCKING_ROOT_STATES_SQL = ", ".join(
+    f"'{state}'" for state in BLOCKING_ROOT_LIFECYCLE_STATES
+)
 
 
 class BinanceDemoOrderLedger(Base):
@@ -73,6 +96,33 @@ class BinanceDemoOrderLedger(Base):
         Index(
             "ix_binance_demo_ledger_parent_client_order_id",
             "parent_client_order_id",
+        ),
+        # ROB-844 defense-in-depth #1 — at most one *blocking root* lifecycle
+        # per (product, instrument). Root == ``parent_client_order_id IS NULL``;
+        # close/reduce-only child legs carry a parent and are excluded, so they
+        # never consume a root exposure slot. This is the DB twin of the
+        # transactional recount in ``reserve_root_planned`` — it fail-closes a
+        # duplicate even if two writers somehow bypass the advisory lock.
+        Index(
+            "uq_binance_demo_ledger_open_root",
+            "product",
+            "instrument_id",
+            unique=True,
+            postgresql_where=text(
+                "parent_client_order_id IS NULL "
+                f"AND lifecycle_state IN ({_BLOCKING_ROOT_STATES_SQL})"
+            ),
+        ),
+        # ROB-844 defense-in-depth #2 — a non-null broker acknowledgement
+        # ``(product, venue_host, broker_order_id)`` may be attached to exactly
+        # one ledger row, so a replayed ack cannot populate a second row.
+        Index(
+            "uq_binance_demo_ledger_broker_ack",
+            "product",
+            "venue_host",
+            "broker_order_id",
+            unique=True,
+            postgresql_where=text("broker_order_id IS NOT NULL"),
         ),
     )
 

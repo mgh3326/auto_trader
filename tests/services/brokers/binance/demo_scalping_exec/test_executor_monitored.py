@@ -88,10 +88,11 @@ class _FakeMD:
 
 
 class _Order:
-    def __init__(self, status, coid, broker="b1"):
+    def __init__(self, status, coid, broker=None):
         self.status = status
         self.client_order_id = coid
-        self.broker_order_id = broker
+        # ROB-844: unique broker id per leg (see test_executor._Order note).
+        self.broker_order_id = broker if broker is not None else f"bk-{coid}"
         self.executed_qty = Decimal("0.1")
 
 

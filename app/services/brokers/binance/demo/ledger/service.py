@@ -39,6 +39,7 @@ from app.services.brokers.binance.demo.errors import (
 )
 from app.services.brokers.binance.demo.ledger.repository import (
     BinanceDemoLedgerRepository,
+    RootReservationResult,
 )
 
 _ALLOWED_PRODUCTS = frozenset({"spot", "usdm_futures"})
@@ -149,6 +150,60 @@ class BinanceDemoLedgerService:
             notional_usdt=notional_usdt,
             notional_override_reason=notional_override_reason,
             extra_metadata=extra_metadata,
+            now=now,
+        )
+
+    async def reserve_root_planned(
+        self,
+        *,
+        instrument_id: int,
+        product: str,
+        venue_host: str,
+        client_order_id: str,
+        side: str,
+        order_type: str,
+        qty: Decimal,
+        price: Decimal | None,
+        tp_price: Decimal | None = None,
+        sl_price: Decimal | None = None,
+        notional_usdt: Decimal | None = None,
+        notional_override_reason: str | None = None,
+        extra_metadata: dict[str, Any] | None = None,
+        global_open_root_cap: int,
+        now: dt.datetime,
+    ) -> RootReservationResult:
+        """Atomically reserve a root exposure slot + insert its planned row.
+
+        The single authoritative claim for a new root lifecycle (ROB-844): it
+        re-checks the global open-root cap and the per-instrument open root
+        *inside one advisory-locked transaction* and inserts the planned root,
+        so concurrent TaskIQ / MCP / websocket submits cannot both pass. Returns
+        a stable :class:`RootReservationResult` (``reserved`` /
+        ``exposure_slot_taken``) — the caller submits to the broker only when
+        the status is ``reserved``.
+
+        Validates ``product`` first; an unknown product raises
+        ``BinanceDemoInvalidProduct`` before any lock/DB work.
+        """
+        if product not in _ALLOWED_PRODUCTS:
+            raise BinanceDemoInvalidProduct(
+                f"product={product!r} not in {sorted(_ALLOWED_PRODUCTS)}"
+            )
+        return await self._repo.reserve_root_planned(
+            instrument_id=instrument_id,
+            product=product,
+            venue_host=venue_host,
+            client_order_id=client_order_id,
+            side=side,
+            order_type=order_type,
+            qty=qty,
+            price=price,
+            tp_price=tp_price,
+            sl_price=sl_price,
+            notional_usdt=notional_usdt,
+            notional_override_reason=notional_override_reason,
+            extra_metadata=extra_metadata,
+            global_open_root_cap=global_open_root_cap,
             now=now,
         )
 

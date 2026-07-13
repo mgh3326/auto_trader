@@ -37,6 +37,20 @@ class BinanceDemoDuplicateClientOrderId(BinanceDemoLedgerError):
     """Raised when an insert collides with an existing client_order_id."""
 
 
+class BinanceDemoDuplicateAcknowledgement(BinanceDemoLedgerError):
+    """Raised when a broker ack is replayed onto a second ledger row (ROB-844).
+
+    A non-null ``(product, venue_host, broker_order_id)`` may attach to exactly
+    one row (partial-unique index ``uq_binance_demo_ledger_broker_ack``). This
+    typed error is the normalized, stable ``duplicate_acknowledgement`` result —
+    the service converts the underlying ``IntegrityError`` here so it never
+    leaks to the executor / MCP boundary. Carries ``result`` for structured
+    callers.
+    """
+
+    result = "duplicate_acknowledgement"
+
+
 class BinanceDemoCredentialError(Exception):
     """Base class for shared Demo credential resolution errors (ROB-302).
 

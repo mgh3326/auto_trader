@@ -984,3 +984,41 @@ async def toss_ledger_cleanup_lock():
                 text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
                 {"lock_id": TOSS_LEDGER_TEST_LOCK_ID},
             )
+
+
+@pytest_asyncio.fixture
+async def binance_demo_reservation_lock():
+    """Serialize files that COMMIT open-root rows to ``binance_demo_order_ledger``.
+
+    ROB-844 makes ``reserve_root_planned`` commit the planned root so the claim
+    is durable and visible across processes. Consequently every executor test
+    running ``confirm=True`` leaves a committed open-root behind, and the
+    global open-*root* cap is a table-wide count. A concurrency test that asserts
+    "global cap N admits exactly one" therefore races any other file committing
+    open roots on another xdist worker (the ``--dist=loadfile`` shared-test_db
+    hazard, ROB-842). Same remedy as ``toss_ledger_cleanup_lock``: hold a
+    Postgres advisory lock for each test in the marked files so the
+    open-root-committing binance-demo family is serialized against itself. Apply
+    with ``pytestmark = pytest.mark.usefixtures("binance_demo_reservation_lock")``.
+
+    Distinct key from the production reservation advisory lock, so it never
+    blocks the reservation path under test — it only serializes test files.
+    """
+    from sqlalchemy import text
+
+    from app.core.db import engine
+
+    BINANCE_DEMO_RESERVATION_TEST_LOCK_ID = 844_000_844
+
+    async with engine.connect() as conn:
+        await conn.execute(
+            text("SELECT pg_advisory_lock(CAST(:lock_id AS bigint))"),
+            {"lock_id": BINANCE_DEMO_RESERVATION_TEST_LOCK_ID},
+        )
+        try:
+            yield
+        finally:
+            await conn.execute(
+                text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
+                {"lock_id": BINANCE_DEMO_RESERVATION_TEST_LOCK_ID},
+            )
