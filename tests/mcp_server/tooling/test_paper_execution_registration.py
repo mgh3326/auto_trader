@@ -16,6 +16,9 @@ from app.mcp_server.tooling.paper_execution_registration import (
     PaperOrderToolInput,
     register_paper_execution_tools,
 )
+from app.mcp_server.tooling.paper_validation_registration import (
+    PAPER_VALIDATION_TOOL_NAMES,
+)
 from app.mcp_server.tooling.registry import register_all_tools
 from app.services.brokers.alpaca.paper_adapter import AlpacaCryptoPaperAdapter
 from app.services.brokers.binance.paper_adapter import BinanceSpotDemoPaperAdapter
@@ -111,7 +114,7 @@ def test_direct_registry_flag_off_registers_nothing(
 
 
 @pytest.mark.unit
-def test_direct_registry_flag_on_registers_exact_facade_allowlist(
+def test_direct_registry_flag_on_registers_exact_profile_union(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "PAPER_EXECUTION_ENABLED", True)
@@ -120,7 +123,7 @@ def test_direct_registry_flag_on_registers_exact_facade_allowlist(
     register_all_tools(mcp, profile=McpProfile.PAPER_EXECUTION)  # type: ignore[arg-type]
 
     assert PAPER_EXECUTION_TOOL_NAMES == EXPECTED_TOOLS
-    assert set(mcp.tools) == EXPECTED_TOOLS
+    assert set(mcp.tools) == EXPECTED_TOOLS | PAPER_VALIDATION_TOOL_NAMES
     forbidden_fragments = {
         "alpaca_paper",
         "binance_demo",

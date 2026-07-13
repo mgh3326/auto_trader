@@ -43,6 +43,13 @@ KNOWN_MUTATION_TOOLS = frozenset(
         "paper_execution_submit_order",
         "paper_execution_cancel_order",
         "paper_execution_reconcile",
+        "paper_validation_register",
+        "paper_validation_advance",
+        "paper_validation_append_hypothesis",
+        "paper_validation_append_review",
+        "paper_validation_authorize_order_submit",
+        "paper_validation_confirm_promotion",
+        "paper_validation_reject_or_abort",
         "kiwoom_mock_place_order",
         "kiwoom_mock_cancel_order",
         "kiwoom_mock_modify_order",
@@ -135,6 +142,19 @@ def test_paper_execution_facade_denies_every_non_read_operation():
     }
     assert mutations <= KNOWN_MUTATION_TOOLS
     assert mutations <= _denied_mcp_suffixes()
+
+
+def test_paper_validation_denies_mutations_but_allows_audit_read() -> None:
+    from app.mcp_server.tooling.paper_validation_registration import (
+        PAPER_VALIDATION_MUTATION_TOOL_NAMES,
+        PAPER_VALIDATION_TOOL_NAMES,
+    )
+
+    assert PAPER_VALIDATION_TOOL_NAMES - PAPER_VALIDATION_MUTATION_TOOL_NAMES == {
+        "paper_validation_get_audit"
+    }
+    assert PAPER_VALIDATION_MUTATION_TOOL_NAMES <= KNOWN_MUTATION_TOOLS
+    assert PAPER_VALIDATION_MUTATION_TOOL_NAMES <= _denied_mcp_suffixes()
 
 
 # report/stage/watch 도구 분류 가드: 모든 investment_report*/investment_stage*/investment_watch* 도구가
