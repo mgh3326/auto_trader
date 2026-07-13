@@ -1514,11 +1514,12 @@ async def test_toss_insufficient_buying_power_prevents_submit(db_session):
         submit_calls += 1
         pytest.fail("broker POST must not run with known insufficient buying power")
 
-    async def buying_power_reader(**kwargs):
+    async def buying_power_claimer(**kwargs):
         assert kwargs == {
             "account_mode": "toss_live",
             "broker_account_id": None,
             "currency": "KRW",
+            "amount": Decimal("1070300"),
         }
         return Decimal("400000")
 
@@ -1527,7 +1528,7 @@ async def test_toss_insufficient_buying_power_prevents_submit(db_session):
         proposal_id=group.proposal_id,
         now=datetime.now(UTC),
         place_order_fn=place_order,
-        buying_power_reader=buying_power_reader,
+        buying_power_claimer=buying_power_claimer,
     )
 
     assert outcomes[0].result == "needs_reconfirm"
@@ -1598,7 +1599,7 @@ async def test_toss_sufficient_buying_power_preserves_submit_path(db_session):
         proposal_id=group.proposal_id,
         now=datetime.now(UTC),
         place_order_fn=place_order,
-        buying_power_reader=reader,
+        buying_power_claimer=reader,
     )
 
     assert [outcome.result for outcome in outcomes] == ["submitted_resting"]
@@ -1631,7 +1632,7 @@ async def test_toss_sell_rung_skips_buying_power_gate(db_session):
         proposal_id=group.proposal_id,
         now=datetime.now(UTC),
         place_order_fn=place_order,
-        buying_power_reader=forbidden_reader,
+        buying_power_claimer=forbidden_reader,
     )
 
     assert [outcome.result for outcome in outcomes] == ["submitted_resting"]
@@ -1662,7 +1663,7 @@ async def test_toss_buying_power_failure_fails_open_to_submit(db_session):
         proposal_id=group.proposal_id,
         now=datetime.now(UTC),
         place_order_fn=place_order,
-        buying_power_reader=failed_reader,
+        buying_power_claimer=failed_reader,
     )
 
     assert [outcome.result for outcome in outcomes] == ["submitted_resting"]
@@ -1694,7 +1695,7 @@ async def test_toss_deposit_then_same_proposal_reapproval_succeeds(db_session):
         proposal_id=group.proposal_id,
         now=datetime.now(UTC),
         place_order_fn=place_order,
-        buying_power_reader=reader,
+        buying_power_claimer=reader,
     )
     await service.transition_rung(group.proposal_id, 0, new_state="pending_approval")
     second = await revalidate_and_submit(
@@ -1702,7 +1703,7 @@ async def test_toss_deposit_then_same_proposal_reapproval_succeeds(db_session):
         proposal_id=group.proposal_id,
         now=datetime.now(UTC),
         place_order_fn=place_order,
-        buying_power_reader=reader,
+        buying_power_claimer=reader,
     )
 
     assert [outcome.result for outcome in first] == ["needs_reconfirm"]
@@ -1736,21 +1737,24 @@ async def test_toss_successful_rung_reserves_cached_power_for_next_rung(db_sessi
             "broker_order_id": f"toss-reserved-{kwargs['rung']}",
         }
 
-    async def reader(**kwargs):
-        return available
-
-    async def reserver(**kwargs):
+    async def claimer(**kwargs):
         nonlocal available
         reservations.append(kwargs["amount"])
-        available -= kwargs["amount"]
+        before = available
+        if before >= kwargs["amount"]:
+            available -= kwargs["amount"]
+        return before
+
+    async def forbidden_releaser(**kwargs):
+        pytest.fail(f"accepted claims must not be released: {kwargs}")
 
     outcomes = await revalidate_and_submit(
         service=service,
         proposal_id=group.proposal_id,
         now=datetime.now(UTC),
         place_order_fn=place_order,
-        buying_power_reader=reader,
-        buying_power_reserver=reserver,
+        buying_power_claimer=claimer,
+        buying_power_releaser=forbidden_releaser,
     )
 
     assert [outcome.result for outcome in outcomes] == [
@@ -1758,9 +1762,66 @@ async def test_toss_successful_rung_reserves_cached_power_for_next_rung(db_sessi
         "needs_reconfirm",
     ]
     assert submit_calls == 1
-    assert reservations == [Decimal("60000")]
+    assert reservations == [Decimal("60000"), Decimal("60000")]
     assert outcomes[1].detail["available"] == "40000"
     assert outcomes[1].detail["shortfall"] == "20000"
+
+
+@pytest.mark.asyncio
+async def test_toss_explicit_rejection_releases_provisional_power(db_session):
+    service, group = await _create_toss_gate_proposal(db_session)
+    released: list[Decimal] = []
+
+    async def place_order(**kwargs):
+        if kwargs["dry_run"]:
+            return _toss_gate_preview(kwargs)
+        return {"success": False, "error": "broker_rejected"}
+
+    async def claimer(**kwargs):
+        assert kwargs["amount"] == Decimal("100000")
+        return Decimal("150000")
+
+    async def releaser(**kwargs):
+        released.append(kwargs["amount"])
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        buying_power_claimer=claimer,
+        buying_power_releaser=releaser,
+    )
+
+    assert outcomes[0].result == "error"
+    assert released == [Decimal("100000")]
+
+
+@pytest.mark.asyncio
+async def test_toss_ambiguous_submit_keeps_provisional_power(db_session):
+    service, group = await _create_toss_gate_proposal(db_session)
+
+    async def place_order(**kwargs):
+        if kwargs["dry_run"]:
+            return _toss_gate_preview(kwargs)
+        raise TimeoutError("submit response lost")
+
+    async def claimer(**kwargs):
+        return Decimal("150000")
+
+    async def forbidden_releaser(**kwargs):
+        pytest.fail(f"ambiguous submission must keep its claim: {kwargs}")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        buying_power_claimer=claimer,
+        buying_power_releaser=forbidden_releaser,
+    )
+
+    assert outcomes[0].result == "unverified"
 
 
 @pytest.mark.asyncio

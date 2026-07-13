@@ -4,7 +4,9 @@
 
 **Goal:** Block known-underfunded Toss buy proposals before broker POST, keep them retryable, show exact Telegram shortfall amounts, and add a non-blocking create-time pending-buy advisory.
 
-**Architecture:** Add a focused `buying_power.py` boundary for normalized cash calculations, a one-second single-flight Toss cache, reservation adjustment, and pending-rung advisory queries. Inject the reader/reserver into revalidation after successful preview matching, and carry structured shortage details through the existing `needs_reconfirm` Telegram flow. Keep `service.py` and `state_machine.py` unchanged.
+**Architecture:** Add a focused `buying_power.py` boundary for normalized cash calculations, a one-second single-flight Toss cache, atomic provisional claims, and pending-rung advisory queries. Inject the claimer/releaser into revalidation after successful preview matching, and carry structured shortage details through the existing `needs_reconfirm` Telegram flow. Keep `service.py` and `state_machine.py` unchanged.
+
+**Review amendment:** The initial reader-then-reserver plan left a concurrency window between the balance read and broker POST. The implemented boundary atomically reads/checks/provisionally subtracts per account and currency before POST, tracks each claim with its own TTL/token, releases that exact token after explicit rejection, and retains accepted or ambiguous claims until their TTL expires.
 
 **Tech Stack:** Python 3.13, asyncio, Decimal, SQLAlchemy async, pytest/pytest-asyncio, Ruff, ty, uv.
 

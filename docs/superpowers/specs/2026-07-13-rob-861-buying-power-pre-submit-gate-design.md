@@ -14,7 +14,7 @@ buying power.
 This change implements the live buying-power reader for `toss_live` only.
 `kis_live` and `upbit` keep their existing submit behavior because their
 orderable-cash contracts differ by market and order type. The gate exposes a
-broker-agnostic injected reader/reservation boundary so those brokers can be
+broker-agnostic injected claim/release boundary so those brokers can be
 added later without changing the revalidation state flow.
 
 No real broker calls are allowed in tests. The existing `service.py` and
@@ -78,10 +78,12 @@ not supported for that account mode, the gate deliberately fails open and the
 existing broker submit path continues. This is an operator UX pre-check, not an
 authoritative safety control; the broker remains the final source of truth.
 
-After an accepted submit, the required amount is reserved in the short-lived
-cache. Ambiguous submits are also reserved conservatively until TTL expiry,
-because the broker may have accepted them. Explicit broker rejection does not
-reserve cash.
+Before broker POST, the required amount is provisionally claimed under the
+short-lived cache's per-account/currency lock. This prevents concurrent
+approvals from observing and spending the same cached balance. Each claim has
+its own TTL and opaque token, independent of snapshot refreshes. Accepted and
+ambiguous submits keep that claim until its TTL expires because the broker may
+have accepted them; an explicit broker rejection releases only its own token.
 
 ### Loss-cut ordering
 

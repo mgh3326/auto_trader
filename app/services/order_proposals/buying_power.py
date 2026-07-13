@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -24,9 +25,16 @@ class BuyingPowerKey:
     currency: str
 
 
+@dataclass(frozen=True)
+class BuyingPowerClaim:
+    available: Decimal
+    token: str | None
+
+
 BuyingPowerLoader = Callable[[], Awaitable[Decimal]]
 BuyingPowerReader = Callable[..., Awaitable[Decimal | None]]
-BuyingPowerReserver = Callable[..., Awaitable[None]]
+BuyingPowerClaimer = Callable[..., Awaitable[BuyingPowerClaim | Decimal | None]]
+BuyingPowerReleaser = Callable[..., Awaitable[None]]
 
 
 class BuyingPowerCache:
@@ -41,6 +49,9 @@ class BuyingPowerCache:
         self._ttl_seconds = ttl_seconds
         self._clock = clock
         self._entries: dict[BuyingPowerKey, tuple[float, Decimal]] = {}
+        self._claims: defaultdict[BuyingPowerKey, dict[str, tuple[float, Decimal]]] = (
+            defaultdict(dict)
+        )
         self._locks: defaultdict[BuyingPowerKey, asyncio.Lock] = defaultdict(
             asyncio.Lock
         )
@@ -52,21 +63,51 @@ class BuyingPowerCache:
             now = self._clock()
             cached = self._entries.get(key)
             if cached is not None and cached[0] > now:
-                return cached[1]
+                return max(cached[1] - self._active_claim_total(key, now), Decimal("0"))
 
             value = Decimal(await loader())
+            now = self._clock()
             self._entries[key] = (now + self._ttl_seconds, value)
-            return value
+            return max(value - self._active_claim_total(key, now), Decimal("0"))
 
-    async def reserve(self, key: BuyingPowerKey, amount: Decimal) -> None:
+    async def claim(
+        self,
+        key: BuyingPowerKey,
+        amount: Decimal,
+        loader: BuyingPowerLoader,
+    ) -> BuyingPowerClaim:
+        """Return current power and atomically reserve it when sufficient."""
         async with self._locks[key]:
+            now = self._clock()
             cached = self._entries.get(key)
-            if cached is None or cached[0] <= self._clock():
-                return
-            self._entries[key] = (
-                cached[0],
-                max(cached[1] - Decimal(amount), Decimal("0")),
+            if cached is None or cached[0] <= now:
+                value = Decimal(await loader())
+                now = self._clock()
+                cached = (now + self._ttl_seconds, value)
+                self._entries[key] = cached
+            available = max(
+                cached[1] - self._active_claim_total(key, now), Decimal("0")
             )
+            amount = Decimal(amount)
+            if available >= amount:
+                token = uuid.uuid4().hex
+                self._claims[key][token] = (now + self._ttl_seconds, amount)
+                return BuyingPowerClaim(available=available, token=token)
+            return BuyingPowerClaim(available=available, token=None)
+
+    async def release(self, key: BuyingPowerKey, token: str) -> None:
+        async with self._locks[key]:
+            self._active_claim_total(key, self._clock())
+            self._claims[key].pop(token, None)
+
+    def _active_claim_total(self, key: BuyingPowerKey, now: float) -> Decimal:
+        claims = self._claims[key]
+        expired = [
+            token for token, (expires_at, _) in claims.items() if expires_at <= now
+        ]
+        for token in expired:
+            claims.pop(token, None)
+        return sum((amount for _, amount in claims.values()), Decimal("0"))
 
 
 def _optional_decimal(value: Any) -> Decimal | None:
@@ -120,6 +161,17 @@ def format_currency_amount(value: Decimal, *, currency: str) -> str:
 _CACHE = BuyingPowerCache(ttl_seconds=1.0)
 
 
+async def _load_toss_buying_power(*, currency: str) -> Decimal:
+    from app.services.brokers.toss.client import TossReadClient
+
+    client = TossReadClient.from_settings()
+    try:
+        result = await client.buying_power(currency=currency)
+        return Decimal(result.cash_buying_power)
+    finally:
+        await client.aclose()
+
+
 async def default_buying_power_reader(
     *,
     account_mode: str,
@@ -134,30 +186,41 @@ async def default_buying_power_reader(
 
     key = BuyingPowerKey(account_mode, broker_account_id, currency)
 
-    async def load() -> Decimal:
-        from app.services.brokers.toss.client import TossReadClient
-
-        client = TossReadClient.from_settings()
-        try:
-            result = await client.buying_power(currency=currency)
-            return Decimal(result.cash_buying_power)
-        finally:
-            await client.aclose()
-
-    return await _CACHE.get_or_load(key, load)
+    return await _CACHE.get_or_load(
+        key, lambda: _load_toss_buying_power(currency=currency)
+    )
 
 
-async def default_buying_power_reserver(
+async def default_buying_power_claimer(
     *,
     account_mode: str,
     broker_account_id: str | None,
     currency: str,
     amount: Decimal,
-) -> None:
+) -> BuyingPowerClaim | None:
     if account_mode != "toss_live":
+        return None
+    if validate_toss_api_config():
+        return None
+    return await _CACHE.claim(
+        BuyingPowerKey(account_mode, broker_account_id, currency),
+        Decimal(amount),
+        lambda: _load_toss_buying_power(currency=currency),
+    )
+
+
+async def default_buying_power_releaser(
+    *,
+    account_mode: str,
+    broker_account_id: str | None,
+    currency: str,
+    claim_token: str | None,
+    amount: Decimal,
+) -> None:
+    if account_mode != "toss_live" or claim_token is None:
         return
-    await _CACHE.reserve(
-        BuyingPowerKey(account_mode, broker_account_id, currency), Decimal(amount)
+    await _CACHE.release(
+        BuyingPowerKey(account_mode, broker_account_id, currency), claim_token
     )
 
 

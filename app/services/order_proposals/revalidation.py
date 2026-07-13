@@ -42,12 +42,13 @@ from app.services.order_proposals.broker_gateway import (
     fetch_target_order,
 )
 from app.services.order_proposals.buying_power import (
-    BuyingPowerReader,
-    BuyingPowerReserver,
+    BuyingPowerClaim,
+    BuyingPowerClaimer,
+    BuyingPowerReleaser,
     currency_for_market,
     decimal_text,
-    default_buying_power_reader,
-    default_buying_power_reserver,
+    default_buying_power_claimer,
+    default_buying_power_releaser,
     required_cash,
 )
 from app.services.order_proposals.errors import OrderProposalError
@@ -528,8 +529,8 @@ async def revalidate_and_submit(
     fetch_target_fn: TargetFetchFn = fetch_target_order,
     cancel_target_fn: TargetCancelFn = cancel_target_order,
     fetch_submit_evidence_fn: SubmitEvidenceFetchFn = fetch_submit_evidence,
-    buying_power_reader: BuyingPowerReader = default_buying_power_reader,
-    buying_power_reserver: BuyingPowerReserver = default_buying_power_reserver,
+    buying_power_claimer: BuyingPowerClaimer = default_buying_power_claimer,
+    buying_power_releaser: BuyingPowerReleaser = default_buying_power_releaser,
 ) -> list[RungOutcome]:
     """Revalidate + (maybe) submit every ``pending_approval`` rung.
 
@@ -573,8 +574,8 @@ async def revalidate_and_submit(
                 place_order_fn=place_order_fn,
                 correlation_mint=correlation_mint,
                 fetch_submit_evidence_fn=fetch_submit_evidence_fn,
-                buying_power_reader=buying_power_reader,
-                buying_power_reserver=buying_power_reserver,
+                buying_power_claimer=buying_power_claimer,
+                buying_power_releaser=buying_power_releaser,
             )
         outcomes.append(outcome)
     return outcomes
@@ -589,8 +590,8 @@ async def _revalidate_place_rung(
     place_order_fn: PlaceOrderFn,
     correlation_mint: CorrelationMint,
     fetch_submit_evidence_fn: SubmitEvidenceFetchFn,
-    buying_power_reader: BuyingPowerReader,
-    buying_power_reserver: BuyingPowerReserver,
+    buying_power_claimer: BuyingPowerClaimer,
+    buying_power_releaser: BuyingPowerReleaser,
 ) -> RungOutcome:
     proposal_id = group.proposal_id
     rung_index = rung.rung_index
@@ -693,7 +694,7 @@ async def _revalidate_place_rung(
             rung_index, "needs_reconfirm", {"before": before, "after": after}
         )
 
-    buying_power_reservation: tuple[str, Decimal] | None = None
+    buying_power_reservation: tuple[str, Decimal, str | None] | None = None
     if rung.side == "buy" and rung.limit_price is not None:
         currency = currency_for_market(group.market)
         required = required_cash(
@@ -702,11 +703,16 @@ async def _revalidate_place_rung(
             preview=preview,
         )
         try:
-            available = await _maybe_await(
-                buying_power_reader(
+            # The default claimer reads and provisionally subtracts under one
+            # per-account/currency lock. This closes the gap where two rapid
+            # approvals could both observe the same cached balance before
+            # either broker POST was sent.
+            claim = await _maybe_await(
+                buying_power_claimer(
                     account_mode=group.account_mode,
                     broker_account_id=group.broker_account_id,
                     currency=currency,
+                    amount=required,
                 )
             )
         except Exception:  # noqa: BLE001 - UX gate deliberately fails open
@@ -718,7 +724,13 @@ async def _revalidate_place_rung(
                 "order proposal buying-power lookup failed; continuing fail-open",
                 exc_info=True,
             )
-            available = None
+            claim = None
+        claim_token: str | None = None
+        if isinstance(claim, BuyingPowerClaim):
+            available = claim.available
+            claim_token = claim.token
+        else:
+            available = claim
         if available is not None and Decimal(available) < required:
             available_decimal = Decimal(available)
             await service.mark_needs_reconfirm(proposal_id, rung_index, now=now)
@@ -734,7 +746,7 @@ async def _revalidate_place_rung(
                 },
             )
         if available is not None:
-            buying_power_reservation = (currency, required)
+            buying_power_reservation = (currency, required, claim_token)
 
     await service.transition_rung(proposal_id, rung_index, new_state="approved")
     await service.transition_rung(proposal_id, rung_index, new_state="submitting")
@@ -794,11 +806,6 @@ async def _revalidate_place_rung(
                 idempotency_key=preview.get("idempotency_key"),
             )
             outcome = RungOutcome(rung_index, "unverified", {"error": str(exc)})
-        await _reserve_after_submit(
-            buying_power_reserver=buying_power_reserver,
-            group=group,
-            reservation=buying_power_reservation,
-        )
         return outcome
 
     outcome = await _classify_submit(
@@ -814,36 +821,37 @@ async def _revalidate_place_rung(
         identifier=proposal_client_order_id,
         fetch_submit_evidence_fn=fetch_submit_evidence_fn,
     )
-    if outcome.result in {"submitted_acked", "submitted_resting", "unverified"}:
-        await _reserve_after_submit(
-            buying_power_reserver=buying_power_reserver,
+    if outcome.result == "error":
+        await _release_after_rejection(
+            buying_power_releaser=buying_power_releaser,
             group=group,
             reservation=buying_power_reservation,
         )
     return outcome
 
 
-async def _reserve_after_submit(
+async def _release_after_rejection(
     *,
-    buying_power_reserver: BuyingPowerReserver,
+    buying_power_releaser: BuyingPowerReleaser,
     group: OrderProposal,
-    reservation: tuple[str, Decimal] | None,
+    reservation: tuple[str, Decimal, str | None] | None,
 ) -> None:
     if reservation is None:
         return
-    currency, amount = reservation
+    currency, amount, claim_token = reservation
     try:
         await _maybe_await(
-            buying_power_reserver(
+            buying_power_releaser(
                 account_mode=group.account_mode,
                 broker_account_id=group.broker_account_id,
                 currency=currency,
+                claim_token=claim_token,
                 amount=amount,
             )
         )
     except Exception:  # noqa: BLE001 - cache adjustment never changes broker outcome
         logger.warning(
-            "order proposal buying-power reservation failed; ignoring",
+            "order proposal buying-power claim release failed; ignoring",
             exc_info=True,
         )
 

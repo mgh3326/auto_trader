@@ -59,13 +59,15 @@ async def test_cache_single_flight_and_reservation_adjustment():
         cache.get_or_load(key, loader),
         cache.get_or_load(key, loader),
     )
-    await cache.reserve(key, Decimal("30000"))
+    claim = await cache.claim(key, Decimal("30000"), loader)
 
     assert (first, second, calls) == (
         Decimal("100000"),
         Decimal("100000"),
         1,
     )
+    assert claim.available == Decimal("100000")
+    assert claim.token is not None
     assert await cache.get_or_load(key, loader) == Decimal("70000")
     assert calls == 1
 
@@ -88,6 +90,103 @@ async def test_cache_does_not_store_loader_failure():
 
     assert await cache.get_or_load(key, loader) == Decimal("50000")
     assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_cache_slow_loader_still_single_flights_waiters():
+    now = 0.0
+    cache = BuyingPowerCache(ttl_seconds=1.0, clock=lambda: now)
+    key = BuyingPowerKey("toss_live", None, "KRW")
+    calls = 0
+
+    async def loader():
+        nonlocal calls, now
+        calls += 1
+        await asyncio.sleep(0)
+        now = 2.0
+        return Decimal("100000")
+
+    first, second = await asyncio.gather(
+        cache.get_or_load(key, loader),
+        cache.get_or_load(key, loader),
+    )
+
+    assert (first, second) == (Decimal("100000"), Decimal("100000"))
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_cache_claim_allows_only_one_concurrent_underfunded_submit():
+    cache = BuyingPowerCache(ttl_seconds=1.0)
+    key = BuyingPowerKey("toss_live", None, "KRW")
+    loader_calls = 0
+    submit_calls = 0
+
+    async def loader():
+        nonlocal loader_calls
+        loader_calls += 1
+        await asyncio.sleep(0)
+        return Decimal("100000")
+
+    async def submit_if_claimed():
+        nonlocal submit_calls
+        claim = await cache.claim(key, Decimal("60000"), loader)
+        if claim.token is not None:
+            submit_calls += 1
+            await asyncio.sleep(0)
+        return claim
+
+    claims = await asyncio.gather(submit_if_claimed(), submit_if_claimed())
+
+    assert sorted(claim.available for claim in claims) == [
+        Decimal("40000"),
+        Decimal("100000"),
+    ]
+    assert sum(claim.token is not None for claim in claims) == 1
+    assert loader_calls == 1
+    assert submit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_expired_claim_release_cannot_erase_new_cache_generation_claim():
+    now = 0.0
+    cache = BuyingPowerCache(ttl_seconds=1.0, clock=lambda: now)
+    key = BuyingPowerKey("toss_live", None, "KRW")
+
+    async def loader():
+        return Decimal("100000")
+
+    old_claim = await cache.claim(key, Decimal("60000"), loader)
+    assert old_claim.token is not None
+
+    now = 2.0
+    new_claim = await cache.claim(key, Decimal("60000"), loader)
+    assert new_claim.token is not None
+    await cache.release(key, old_claim.token)
+
+    blocked = await cache.claim(key, Decimal("60000"), loader)
+    assert blocked.available == Decimal("40000")
+    assert blocked.token is None
+
+
+@pytest.mark.asyncio
+async def test_claim_ttl_starts_when_claim_is_created_not_snapshot_loaded():
+    now = 0.0
+    cache = BuyingPowerCache(ttl_seconds=1.0, clock=lambda: now)
+    key = BuyingPowerKey("toss_live", None, "KRW")
+
+    async def loader():
+        return Decimal("100000")
+
+    assert await cache.get_or_load(key, loader) == Decimal("100000")
+    now = 0.9
+    claim = await cache.claim(key, Decimal("60000"), loader)
+    assert claim.token is not None
+
+    now = 1.1
+    blocked = await cache.claim(key, Decimal("60000"), loader)
+    assert blocked.available == Decimal("40000")
+    assert blocked.token is None
 
 
 @pytest.mark.asyncio
