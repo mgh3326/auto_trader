@@ -12,17 +12,16 @@ uv run python scripts/cio_quality_gate.py path/to/scout_report.md
 
 # 표준입력 (Scout comment 본문 복붙)
 uv run python scripts/cio_quality_gate.py --stdin < scout.md
-
-# Paperclip 이슈에서 직접 (가장 큰 comment = Scout Report 가정)
-uv run python scripts/cio_quality_gate.py --paperclip-issue ROB-158
 ```
+
+입력은 로컬 Markdown 파일 경로 또는 표준입력을 통해 제공한다.
 
 Exit code:
 - `0` — 모든 gate pass
 - `1` — soft-gate만 fail (ACCEPT-WITH-FLAG)
 - `2` — hard-gate 위반 (REOPEN)
 
-`--json` 플래그로 머신리더블 출력 (CI/CD·Paperclip automation 편입 시 사용).
+`--json` 플래그로 머신리더블 출력 (CI/CD·자동화 워크플로 편입 시 사용).
 
 ## 2. Decision Flow
 

@@ -37,7 +37,15 @@ COMPATIBILITY_MARKERS = {
 
 def _tracked_texts() -> Iterator[tuple[Path, str]]:
     tracked = subprocess.run(
-        ["git", "ls-files", "-z", "--", "app", "scripts"],
+        [
+            "git",
+            "ls-files",
+            "-z",
+            "--",
+            "app",
+            "scripts",
+            "docs/runbooks/CIO_QUALITY_GATE.md",
+        ],
         cwd=ROOT,
         check=True,
         capture_output=True,

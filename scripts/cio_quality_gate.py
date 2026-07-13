@@ -40,6 +40,7 @@ from app.services.cio_quality_gate_service import (  # noqa: E402
     run_gates,
 )
 
+
 def _json_payload(report: QualityGateReport) -> dict:
     return {
         "candidates": [

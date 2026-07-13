@@ -31,6 +31,7 @@
 - Modify: `app/models/trade_journal.py`
 - Modify: `app/schemas/trade_retrospective.py`
 - Modify: `app/mcp_server/README.md`
+- Modify: `docs/runbooks/CIO_QUALITY_GATE.md`
 - Modify: `scripts/templates/mcp_call.sh.tmpl`
 - Modify: `tests/mcp_server/tooling/test_toss_live_ledger.py`
 - Local-only modify: `.env.prod`
@@ -82,7 +83,15 @@ COMPATIBILITY_MARKERS = {
 
 def _tracked_texts() -> Iterator[tuple[Path, str]]:
     tracked = subprocess.run(
-        ["git", "ls-files", "-z", "--", "app", "scripts"],
+        [
+            "git",
+            "ls-files",
+            "-z",
+            "--",
+            "app",
+            "scripts",
+            "docs/runbooks/CIO_QUALITY_GATE.md",
+        ],
         cwd=ROOT,
         check=True,
         capture_output=True,
@@ -139,17 +148,17 @@ Expected: FAIL because the settings, CIO loader/option, and dead tokens still ex
 
 - [ ] **Step 3: Implement the minimal cleanup**
 
-Delete the two unused settings, the CIO Paperclip loader/CLI branch/imports/export, the two obsolete Toss ledger test monkeypatches for those settings, and the two matching lines from the local `.env.prod`. Preserve the header constant and shell header emission. Preserve the trade-journal column/index/arguments and update their nearby comments and current MCP documentation to say `external issue key (legacy Paperclip name; current Linear ROB key)`.
+Delete the two unused settings, the CIO Paperclip loader/CLI branch/imports/export, the two obsolete Toss ledger test monkeypatches for those settings, and the two matching lines from the local `.env.prod`. Update the current CIO quality-gate runbook to document only the supported file/stdin inputs and use generic automation wording. Preserve the header constant and shell header emission. Preserve the trade-journal column/index/arguments and update their nearby comments and current MCP documentation to say `external issue key (legacy Paperclip name; current Linear ROB key)`.
 
 - [ ] **Step 4: Run focused tests and verify GREEN**
 
-Run: `uv run pytest --no-cov -q tests/test_paperclip_residue_inventory.py tests/test_mcp_call_template.py tests/test_mcp_caller_identity_middleware.py tests/test_trade_journal_model.py tests/test_mcp_trade_journal.py tests/test_mcp_execution_tools.py tests/mcp_server/tooling/test_toss_live_ledger.py`
+Run: `uv run pytest --no-cov -q tests/test_paperclip_residue_inventory.py tests/test_cio_quality_gate.py tests/test_cio_quality_gate_e2e.py tests/test_mcp_call_template.py tests/test_mcp_caller_identity_middleware.py tests/test_trade_journal_model.py tests/test_mcp_trade_journal.py tests/test_mcp_execution_tools.py tests/mcp_server/tooling/test_toss_live_ledger.py`
 
 Expected: all selected tests pass; only pre-existing warnings may remain.
 
 - [ ] **Step 5: Verify acceptance and quality gates**
 
-Run: `git grep -in paperclip -- app scripts ':!docs/plans/**'`
+Run: `git grep -in paperclip -- app scripts docs/runbooks/CIO_QUALITY_GATE.md ':!docs/plans/**'`
 
 Expected: every result is either the canonical legacy caller header/template or the retained trade-journal external-issue compatibility surface, with an explanatory comment.
 
@@ -165,7 +174,8 @@ git add app/core/config.py scripts/cio_quality_gate.py \
   app/mcp_server/tooling/trade_journal_tools.py \
   app/mcp_server/tooling/trade_journal_registration.py \
   app/models/trade_journal.py app/schemas/trade_retrospective.py \
-  app/mcp_server/README.md scripts/templates/mcp_call.sh.tmpl \
+  app/mcp_server/README.md docs/runbooks/CIO_QUALITY_GATE.md \
+  scripts/templates/mcp_call.sh.tmpl \
   tests/mcp_server/tooling/test_toss_live_ledger.py \
   tests/test_paperclip_residue_inventory.py
 git commit -m "chore(ROB-865): remove dead Paperclip integrations"
