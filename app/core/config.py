@@ -259,6 +259,12 @@ class Settings(BaseSettings):
     toss_api_base_url: str | None = None
     toss_live_order_mutations_enabled: bool = False
 
+    # ROB-866: gate for the scheduleless Toss manual-activity sweep TaskIQ task.
+    # Default off — the sweep runs manually (dry_run MCP tool) first; recurrence is
+    # a separate decision after manual reps. Only gates the auto-run task; the MCP
+    # tool itself is operator-driven and gated by TOSS_API_ENABLED for reads.
+    toss_manual_activity_sweep_enabled: bool = False
+
     # ROB-701/ROB-828: Redis cache-aside for the per-symbol Toss sellable-
     # quantity fanout on /invest home, account-panel, and MCP holdings.
     # Successful sell mutations and confirmed fills invalidate the symbol.
