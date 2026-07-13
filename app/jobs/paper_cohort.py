@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
-from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
@@ -12,14 +11,13 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.models.paper_cohort import (
+    PaperCohortDecision,
+    PaperCohortRunClaim,
     PaperValidationCohort,
     PaperValidationCohortAssignment,
 )
 from app.models.paper_validation import PaperValidationStateTransition
 from app.services.brokers.binance.rest_client import BinancePublicRestClient
-from app.services.crypto_execution_mapping import (
-    map_binance_public_spot_to_alpaca_paper,
-)
 from app.services.paper_cohort.contracts import PaperCohortError, RunMode
 from app.services.paper_cohort.market_snapshot import CanonicalSnapshotCapture
 from app.services.paper_cohort.provenance import (
@@ -28,7 +26,10 @@ from app.services.paper_cohort.provenance import (
     PaperCohortProvenanceVerifier,
 )
 from app.services.paper_cohort.runner import CohortRunInvocation, PaperCohortRunner
-from app.services.paper_cohort.signals import VenueQuote
+from app.services.paper_cohort.venue_quotes import (
+    AlpacaCryptoQuoteClient,
+    ProductionVenueQuoteProvider,
+)
 from app.services.paper_validation.contracts import ActorIdentity, ActorRole
 from app.services.paper_validation.service import PaperValidationService
 from app.services.research_canonical_hash import canonical_sha256
@@ -41,39 +42,6 @@ class _ConfiguredActorRoleProvider:
         except (KeyError, ValueError) as exc:
             raise PaperCohortError("actor_identity_unavailable") from exc
         return ActorIdentity(actor_id=caller_id, role=role)
-
-
-class _PostSignalPublicQuoteProvider:
-    """Fresh post-signal reference used only for sizing/rounding evidence.
-
-    The venue adapters remain authoritative for their own risk and market
-    conditions. This provider never signs or mutates and never feeds signal
-    calculation; it samples the approved unsigned public Spot source only
-    after the decision rows have been flushed.
-    """
-
-    def __init__(self, client: BinancePublicRestClient) -> None:
-        self._client = client
-
-    async def get_quote(self, venue: str, symbol: str) -> VenueQuote:
-        ticker = await self._client.book_ticker(symbol)
-        execution_symbol = (
-            symbol
-            if venue == "binance"
-            else map_binance_public_spot_to_alpaca_paper(symbol).execution_symbol
-        )
-        return VenueQuote(
-            venue=venue,
-            symbol=execution_symbol,
-            bid_price=ticker.bid_price,
-            ask_price=ticker.ask_price,
-            bid_qty=ticker.bid_qty,
-            ask_qty=ticker.ask_qty,
-            fetched_at=ticker.fetched_at,
-            qty_increment=Decimal("0.00000001"),
-            min_qty=Decimal("0.00000001"),
-            min_notional=Decimal("1"),
-        )
 
 
 async def _runtime_mode(session: Any, cohort_id: str) -> RunMode | None:
@@ -113,6 +81,41 @@ def _invocation(cohort_id: str, mode: RunMode, now: datetime) -> CohortRunInvoca
         cohort_id=cohort_id,
         run_id=f"scheduled-{identity[:40]}",
         round_decision_id=f"minute-{identity[:40]}",
+        mode=mode,
+    )
+
+
+async def _recoverable_invocation(
+    session: Any, cohort_id: str, mode: RunMode
+) -> CohortRunInvocation | None:
+    row = (
+        await session.execute(
+            select(PaperCohortRunClaim, PaperCohortDecision.mode)
+            .join(
+                PaperCohortDecision,
+                (PaperCohortDecision.cohort_id == PaperCohortRunClaim.cohort_id)
+                & (PaperCohortDecision.run_id == PaperCohortRunClaim.run_id)
+                & (
+                    PaperCohortDecision.round_decision_id
+                    == PaperCohortRunClaim.round_decision_id
+                ),
+            )
+            .where(
+                PaperCohortRunClaim.cohort_id == cohort_id,
+                PaperCohortRunClaim.completed_at.is_(None),
+                PaperCohortDecision.mode == mode.value,
+            )
+            .order_by(PaperCohortRunClaim.created_at)
+            .limit(1)
+        )
+    ).first()
+    if row is None:
+        return None
+    claim = row[0]
+    return CohortRunInvocation(
+        cohort_id=claim.cohort_id,
+        run_id=claim.run_id,
+        round_decision_id=claim.round_decision_id,
         mode=mode,
     )
 
@@ -166,7 +169,9 @@ async def run_active_paper_cohorts(
                 )
                 continue
             client = client_factory()
+            alpaca_quotes: AlpacaCryptoQuoteClient | None = None
             try:
+                alpaca_quotes = AlpacaCryptoQuoteClient()
                 validation = PaperValidationService(
                     session,
                     actor_role_provider=_ConfiguredActorRoleProvider(),
@@ -179,13 +184,14 @@ async def run_active_paper_cohorts(
                     caller_id=actor_id,
                     clock=lambda: now,
                 )
+                invocation = await _recoverable_invocation(session, cohort_id, mode)
                 result = await PaperCohortRunner(
                     session,
                     capture=CanonicalSnapshotCapture(client),
-                    quote_provider=_PostSignalPublicQuoteProvider(client),
+                    quote_provider=ProductionVenueQuoteProvider(client, alpaca_quotes),
                     verifier=verifier,
                     clock=lambda: now,
-                ).run(_invocation(cohort_id, mode, now))
+                ).run(invocation or _invocation(cohort_id, mode, now))
                 await session.commit()
                 outcomes.append(
                     {
@@ -204,6 +210,8 @@ async def run_active_paper_cohorts(
                     }
                 )
             finally:
+                if alpaca_quotes is not None:
+                    await alpaca_quotes.aclose()
                 await client.aclose()
     return {"status": "completed", "cohorts": outcomes}
 

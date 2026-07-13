@@ -144,6 +144,7 @@ class PaperCohortService:
             max_capture_skew_ms=request.max_capture_skew_ms,
             max_ticker_age_ms=request.max_ticker_age_ms,
             capital_notional_usd=request.capital_notional_usd,
+            assignment_count=len(request.assignments),
             activated_at=request.activated_at,
             stop_at=request.stop_at,
         )

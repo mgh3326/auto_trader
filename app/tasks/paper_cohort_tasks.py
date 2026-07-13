@@ -5,6 +5,7 @@ from __future__ import annotations
 from app.core.config import settings
 from app.core.taskiq_broker import broker
 from app.jobs.paper_cohort import run_active_paper_cohorts
+from app.services.paper_cohort.contracts import PaperCohortError
 
 
 def _scheduled_paper_cohort_labels() -> list[dict[str, str]]:
@@ -20,7 +21,13 @@ def _scheduled_paper_cohort_labels() -> list[dict[str, str]]:
 async def run_paper_cohorts() -> dict[str, object]:
     if not settings.PAPER_COHORT_ENABLED:
         return {"status": "disabled", "cohorts": []}
-    return await run_active_paper_cohorts()
+    result = await run_active_paper_cohorts()
+    cohorts = result.get("cohorts")
+    if isinstance(cohorts, list) and any(
+        isinstance(item, dict) and item.get("status") == "failed" for item in cohorts
+    ):
+        raise PaperCohortError("paper_cohort_retryable_failure")
+    return result
 
 
 __all__ = ["run_paper_cohorts"]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -65,6 +66,31 @@ class CrashOnce:
             raise RuntimeError("crash after submit before link")
 
 
+@dataclass
+class AdvancingClock:
+    now: datetime = CAPTURED_AT
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+@dataclass
+class ChangingCapture:
+    calls: int = 0
+
+    async def capture(self, request):
+        self.calls += 1
+        captured = await FakeCapture().capture(request)
+        if self.calls == 1:
+            return captured
+        return captured.model_copy(
+            update={
+                "capture_completed_at": captured.capture_completed_at
+                + timedelta(seconds=self.calls),
+            }
+        )
+
+
 @pytest.mark.asyncio
 async def test_crash_after_submit_recovers_native_truth_without_second_post(
     db_session,
@@ -82,6 +108,8 @@ async def test_crash_after_submit_recovers_native_truth_without_second_post(
     }
     native = FakeNativeResolver()
     crash = CrashOnce()
+    capture = ChangingCapture()
+    clock = AdvancingClock()
     invocation = CohortRunInvocation(
         cohort_id=activation.cohort_id,
         run_id=f"recovery-run-{nonce}",
@@ -96,27 +124,32 @@ async def test_crash_after_submit_recovers_native_truth_without_second_post(
 
     first = PaperCohortRunner(
         db_session,
-        capture=FakeCapture(),
+        capture=capture,
         quote_provider=FakeQuotes(db_session),
         verifier=verifier,
         application_factory=app_factory,
         native_resolver=native,
         after_submit_hook=crash,
+        clock=clock,
+        enablement=lambda _mode: True,
     )
     with pytest.raises(RuntimeError, match="crash after submit"):
         await first.run(invocation)
     await db_session.rollback()
     assert sum(adapter.broker_posts for adapter in adapters.values()) == 1
     assert native.calls == []
+    clock.now += timedelta(minutes=6)
 
     second = PaperCohortRunner(
         db_session,
-        capture=FakeCapture(),
+        capture=capture,
         quote_provider=FakeQuotes(db_session),
         verifier=verifier,
         application_factory=app_factory,
         native_resolver=native,
         after_submit_hook=crash,
+        clock=clock,
+        enablement=lambda _mode: True,
     )
     result = await second.run(invocation)
     await db_session.commit()
@@ -124,6 +157,7 @@ async def test_crash_after_submit_recovers_native_truth_without_second_post(
     assert result.intent_count == 4
     assert sum(adapter.broker_posts for adapter in adapters.values()) == 4
     assert sum(adapter.replay_count for adapter in adapters.values()) == 1
+    assert capture.calls == 1
     assert len(native.calls) == 4
     assert (
         await db_session.scalar(

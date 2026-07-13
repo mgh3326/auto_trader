@@ -48,13 +48,17 @@ class PaperValidationCohort(Base):
             "interval = '1m'", name=conv("ck_paper_validation_cohort_interval")
         ),
         CheckConstraint(
-            "required_lookback > 0 AND max_capture_skew_ms > 0 "
+            "required_lookback BETWEEN 1 AND 1000 AND max_capture_skew_ms > 0 "
             "AND max_ticker_age_ms > 0",
             name=conv("ck_paper_validation_cohort_capture_limits"),
         ),
         CheckConstraint(
             "capital_notional_usd > 0",
             name=conv("ck_paper_validation_cohort_capital"),
+        ),
+        CheckConstraint(
+            "assignment_count BETWEEN 1 AND 3",
+            name=conv("ck_paper_validation_cohort_assignment_count"),
         ),
         CheckConstraint(
             f"cohort_hash ~ '{_SHA256}'",
@@ -81,6 +85,7 @@ class PaperValidationCohort(Base):
     capital_notional_usd: Mapped[Decimal] = mapped_column(
         Numeric(24, 12), nullable=False
     )
+    assignment_count: Mapped[int] = mapped_column(Integer, nullable=False)
     activated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -279,7 +284,15 @@ class PaperCohortDecision(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     decision_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    cohort_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    cohort_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey(
+            "research.paper_validation_cohorts.cohort_id",
+            ondelete="RESTRICT",
+            name="fk_paper_cohort_decision_cohort",
+        ),
+        nullable=False,
+    )
     run_id: Mapped[str] = mapped_column(String(128), nullable=False)
     round_decision_id: Mapped[str] = mapped_column(String(128), nullable=False)
     assignment_id: Mapped[str] = mapped_column(
@@ -328,7 +341,15 @@ class PaperCohortVenueIntent(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     intent_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    cohort_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    cohort_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey(
+            "research.paper_validation_cohorts.cohort_id",
+            ondelete="RESTRICT",
+            name="fk_paper_cohort_venue_intent_cohort",
+        ),
+        nullable=False,
+    )
     run_id: Mapped[str] = mapped_column(String(128), nullable=False)
     decision_id: Mapped[str] = mapped_column(
         String(128),
@@ -339,7 +360,15 @@ class PaperCohortVenueIntent(Base):
         ),
         nullable=False,
     )
-    snapshot_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    snapshot_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey(
+            "research.canonical_market_snapshots.snapshot_id",
+            ondelete="RESTRICT",
+            name="fk_paper_cohort_venue_intent_snapshot",
+        ),
+        nullable=False,
+    )
     snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     venue: Mapped[str] = mapped_column(String(16), nullable=False)
     request_payload: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
@@ -372,7 +401,15 @@ class PaperCohortRunClaim(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    cohort_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    cohort_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey(
+            "research.paper_validation_cohorts.cohort_id",
+            ondelete="RESTRICT",
+            name="fk_paper_cohort_run_claim_cohort",
+        ),
+        nullable=False,
+    )
     run_id: Mapped[str] = mapped_column(String(128), nullable=False)
     round_decision_id: Mapped[str] = mapped_column(String(128), nullable=False)
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -428,10 +465,34 @@ class PaperRunOrderLink(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    cohort_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    cohort_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey(
+            "research.paper_validation_cohorts.cohort_id",
+            ondelete="RESTRICT",
+            name="fk_paper_run_order_link_cohort",
+        ),
+        nullable=False,
+    )
     run_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    decision_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    snapshot_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    decision_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey(
+            "research.paper_cohort_decisions.decision_id",
+            ondelete="RESTRICT",
+            name="fk_paper_run_order_link_decision",
+        ),
+        nullable=False,
+    )
+    snapshot_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey(
+            "research.canonical_market_snapshots.snapshot_id",
+            ondelete="RESTRICT",
+            name="fk_paper_run_order_link_snapshot",
+        ),
+        nullable=False,
+    )
     snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     venue: Mapped[str] = mapped_column(String(16), nullable=False)
     native_ledger_kind: Mapped[str] = mapped_column(String(64), nullable=False)

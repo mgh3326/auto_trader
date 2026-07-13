@@ -154,7 +154,8 @@ class CanonicalSnapshotCapture:
                     _aware(row.open_time),
                     _aware(row.close_time),
                     row.close_time <= end_time,
-                    row.close_time > row.open_time,
+                    row.close_time
+                    == row.open_time + timedelta(minutes=1) - timedelta(milliseconds=1),
                     row.trade_count is not None and row.trade_count > 0,
                     row.high >= max(row.open, row.close),
                     row.low <= min(row.open, row.close),

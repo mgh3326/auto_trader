@@ -65,9 +65,9 @@ class VenueQuote(FrozenSignalContract):
     bid_qty: Decimal = Field(gt=0, allow_inf_nan=False)
     ask_qty: Decimal = Field(gt=0, allow_inf_nan=False)
     fetched_at: datetime
-    qty_increment: Decimal = Field(gt=0, allow_inf_nan=False)
-    min_qty: Decimal = Field(gt=0, allow_inf_nan=False)
-    min_notional: Decimal = Field(gt=0, allow_inf_nan=False)
+    qty_increment: Decimal | None = Field(default=None, gt=0, allow_inf_nan=False)
+    min_qty: Decimal | None = Field(default=None, gt=0, allow_inf_nan=False)
+    min_notional: Decimal | None = Field(default=None, gt=0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def validate_quote(self) -> VenueQuote:
@@ -75,6 +75,11 @@ class VenueQuote(FrozenSignalContract):
             raise ValueError("venue quote is crossed or locked")
         if self.fetched_at.tzinfo is None:
             raise ValueError("venue quote timestamp must be timezone-aware")
+        if self.venue == "alpaca" and any(
+            value is None
+            for value in (self.qty_increment, self.min_qty, self.min_notional)
+        ):
+            raise ValueError("alpaca quote requires authoritative asset constraints")
         return self
 
 
@@ -129,6 +134,9 @@ def compute_target_signal(
 
 
 def _quote_evidence(quote: VenueQuote) -> dict[str, str]:
+    def optional(value: Decimal | None) -> str:
+        return "not_applicable" if value is None else _decimal_text(value)
+
     return {
         "venue": quote.venue,
         "symbol": quote.symbol,
@@ -137,9 +145,9 @@ def _quote_evidence(quote: VenueQuote) -> dict[str, str]:
         "bid_qty": _decimal_text(quote.bid_qty),
         "ask_qty": _decimal_text(quote.ask_qty),
         "fetched_at": quote.fetched_at.isoformat(),
-        "qty_increment": _decimal_text(quote.qty_increment),
-        "min_qty": _decimal_text(quote.min_qty),
-        "min_notional": _decimal_text(quote.min_notional),
+        "qty_increment": optional(quote.qty_increment),
+        "min_qty": optional(quote.min_qty),
+        "min_notional": optional(quote.min_notional),
     }
 
 
@@ -168,6 +176,9 @@ def build_would_order_evidence(
         )
 
     mapping = map_binance_public_spot_to_alpaca_paper(signal.symbol)
+    assert quote.qty_increment is not None
+    assert quote.min_qty is not None
+    assert quote.min_notional is not None
     if quote.symbol != mapping.execution_symbol:
         return WouldOrderEvidence(
             reason_code="unsupported_capability",

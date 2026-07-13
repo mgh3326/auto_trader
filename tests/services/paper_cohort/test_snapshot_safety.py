@@ -33,6 +33,7 @@ async def rejected(client: FakePublicClient) -> str:
         "open_candle",
         "short_lookback",
         "gap",
+        "invalid_duration",
         "duplicate",
         "unsorted",
         "wrong_symbol",
@@ -56,6 +57,8 @@ async def test_candle_fail_close_matrix(mutation: str) -> None:
             open_time=rows[1].open_time + timedelta(minutes=1),
             close_time=rows[1].close_time + timedelta(minutes=1),
         )
+    elif mutation == "invalid_duration":
+        rows[1] = replace(rows[1], close_time=rows[1].open_time + timedelta(seconds=30))
     elif mutation == "duplicate":
         rows[1] = rows[0]
     elif mutation == "unsorted":

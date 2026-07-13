@@ -35,7 +35,8 @@ from sqlalchemy import text
 # v11 (ROB-866): review.toss_manual_activity_alerts (new ORM table) — create_all
 # builds it; bump forces a persistent local DB to re-bootstrap once.
 # v15 (ROB-849): paper cohort immutable/composition triggers.
-SCHEMA_BOOTSTRAP_VERSION = 15
+# v16 (ROB-849 review): sealed assignment_count for immutable membership.
+SCHEMA_BOOTSTRAP_VERSION = 16
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -250,6 +251,10 @@ _PAPER_COHORT_AUDIT_TABLES = (
     "paper_run_order_links",
 )
 _PAPER_COHORT_TRIGGER_DDL: tuple[str, ...] = (
+    "ALTER TABLE research.paper_validation_cohorts ADD COLUMN IF NOT EXISTS "
+    "assignment_count INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE research.paper_validation_cohorts "
+    "ALTER COLUMN assignment_count DROP DEFAULT",
     "CREATE OR REPLACE FUNCTION research.reject_paper_cohort_audit_mutation() "
     "RETURNS trigger AS $$ BEGIN RAISE EXCEPTION "
     "'research.% is append-only/immutable; % rejected', TG_TABLE_NAME, TG_OP "
@@ -257,14 +262,19 @@ _PAPER_COHORT_TRIGGER_DDL: tuple[str, ...] = (
     "CREATE OR REPLACE FUNCTION research.validate_paper_cohort_composition() "
     "RETURNS trigger AS $$ DECLARE target_cohort_id text; "
     "champion_count integer; challenger_count integer; assignment_count integer; "
+    "expected_assignment_count integer; "
     "BEGIN target_cohort_id := NEW.cohort_id; "
     "SELECT count(*) FILTER (WHERE role = 'champion'), "
     "count(*) FILTER (WHERE role = 'challenger'), count(*) "
     "INTO champion_count, challenger_count, assignment_count "
     "FROM research.paper_validation_cohort_assignments "
     "WHERE cohort_id = target_cohort_id; "
+    "SELECT c.assignment_count INTO expected_assignment_count "
+    "FROM research.paper_validation_cohorts AS c "
+    "WHERE c.cohort_id = target_cohort_id; "
     "IF champion_count <> 1 OR challenger_count > 2 "
-    "OR assignment_count < 1 OR assignment_count > 3 THEN "
+    "OR assignment_count < 1 OR assignment_count > 3 "
+    "OR assignment_count <> expected_assignment_count THEN "
     "RAISE EXCEPTION 'paper cohort % requires exactly one champion and at most "
     "two challengers', target_cohort_id "
     "USING ERRCODE = 'integrity_constraint_violation'; END IF; "

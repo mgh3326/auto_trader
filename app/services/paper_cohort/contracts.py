@@ -23,6 +23,16 @@ Identifier128 = Annotated[
 ]
 
 
+def _normalize_hash_value(value: object) -> object:
+    if isinstance(value, Decimal):
+        return format(value.normalize(), "f")
+    if isinstance(value, dict):
+        return {key: _normalize_hash_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_normalize_hash_value(item) for item in value]
+    return value
+
+
 class PaperCohortError(Exception):
     """Stable fail-closed paper cohort error."""
 
@@ -92,10 +102,12 @@ class CohortActivation(FrozenContract):
     market: Literal["spot"]
     leverage: Decimal = Field(gt=0, allow_inf_nan=False)
     interval: Literal["1m"]
-    required_lookback: int = Field(gt=0)
+    required_lookback: int = Field(gt=0, le=1000)
     max_capture_skew_ms: int = Field(gt=0)
     max_ticker_age_ms: int = Field(gt=0)
-    capital_notional_usd: Decimal = Field(gt=0, allow_inf_nan=False)
+    capital_notional_usd: Decimal = Field(
+        gt=0, allow_inf_nan=False, max_digits=24, decimal_places=12
+    )
     activated_at: datetime
     stop_at: datetime | None = None
     assignments: tuple[CohortAssignmentInput, ...] = Field(min_length=1, max_length=3)
@@ -136,7 +148,9 @@ class CohortActivation(FrozenContract):
 
     def identity_payload(self) -> dict[str, object]:
         payload = self.model_dump(mode="python", exclude={"expected_cohort_hash"})
-        return {"schema_id": "paper_validation_cohort.v1", **payload}
+        normalized = _normalize_hash_value(payload)
+        assert isinstance(normalized, dict)
+        return {"schema_id": "paper_validation_cohort.v1", **normalized}
 
     def computed_cohort_hash(self) -> str:
         return canonical_sha256(self.identity_payload())

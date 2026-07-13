@@ -61,6 +61,7 @@ def _create_functions() -> None:
             champion_count integer;
             challenger_count integer;
             assignment_count integer;
+            expected_assignment_count integer;
         BEGIN
             target_cohort_id := NEW.cohort_id;
             SELECT
@@ -71,10 +72,15 @@ def _create_functions() -> None:
             FROM research.paper_validation_cohort_assignments
             WHERE cohort_id = target_cohort_id;
 
+            SELECT c.assignment_count INTO expected_assignment_count
+            FROM research.paper_validation_cohorts AS c
+            WHERE c.cohort_id = target_cohort_id;
+
             IF champion_count <> 1
                OR challenger_count > 2
                OR assignment_count < 1
-               OR assignment_count > 3 THEN
+               OR assignment_count > 3
+               OR assignment_count <> expected_assignment_count THEN
                 RAISE EXCEPTION
                     'paper cohort % requires exactly one champion and at most two challengers',
                     target_cohort_id
@@ -116,6 +122,7 @@ def upgrade() -> None:
         sa.Column("max_capture_skew_ms", sa.Integer(), nullable=False),
         sa.Column("max_ticker_age_ms", sa.Integer(), nullable=False),
         sa.Column("capital_notional_usd", sa.Numeric(24, 12), nullable=False),
+        sa.Column("assignment_count", sa.Integer(), nullable=False),
         sa.Column("activated_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("stop_at", sa.DateTime(timezone=True), nullable=True),
         _timestamps(),
@@ -138,13 +145,17 @@ def upgrade() -> None:
             "interval = '1m'", name=op.f("ck_paper_validation_cohort_interval")
         ),
         sa.CheckConstraint(
-            "required_lookback > 0 AND max_capture_skew_ms > 0 "
+            "required_lookback BETWEEN 1 AND 1000 AND max_capture_skew_ms > 0 "
             "AND max_ticker_age_ms > 0",
             name=op.f("ck_paper_validation_cohort_capture_limits"),
         ),
         sa.CheckConstraint(
             "capital_notional_usd > 0",
             name=op.f("ck_paper_validation_cohort_capital"),
+        ),
+        sa.CheckConstraint(
+            "assignment_count BETWEEN 1 AND 3",
+            name=op.f("ck_paper_validation_cohort_assignment_count"),
         ),
         sa.CheckConstraint(
             f"cohort_hash ~ '{_SHA256}'",
@@ -313,6 +324,12 @@ def upgrade() -> None:
         sa.Column("signal_hash", sa.String(64), nullable=False),
         _timestamps(),
         sa.ForeignKeyConstraint(
+            ["cohort_id"],
+            ["research.paper_validation_cohorts.cohort_id"],
+            ondelete="RESTRICT",
+            name="fk_paper_cohort_decision_cohort",
+        ),
+        sa.ForeignKeyConstraint(
             ["assignment_id"],
             ["research.paper_validation_cohort_assignments.assignment_id"],
             ondelete="RESTRICT",
@@ -363,10 +380,22 @@ def upgrade() -> None:
         sa.Column("would_order_evidence", postgresql.JSONB(), nullable=False),
         _timestamps(),
         sa.ForeignKeyConstraint(
+            ["cohort_id"],
+            ["research.paper_validation_cohorts.cohort_id"],
+            ondelete="RESTRICT",
+            name="fk_paper_cohort_venue_intent_cohort",
+        ),
+        sa.ForeignKeyConstraint(
             ["decision_id"],
             ["research.paper_cohort_decisions.decision_id"],
             ondelete="RESTRICT",
             name="fk_paper_cohort_venue_intent_decision",
+        ),
+        sa.ForeignKeyConstraint(
+            ["snapshot_id"],
+            ["research.canonical_market_snapshots.snapshot_id"],
+            ondelete="RESTRICT",
+            name="fk_paper_cohort_venue_intent_snapshot",
         ),
         sa.UniqueConstraint("intent_id", name="uq_paper_cohort_venue_intent_id"),
         sa.UniqueConstraint(
@@ -394,6 +423,12 @@ def upgrade() -> None:
         sa.Column("result_payload", postgresql.JSONB(), nullable=True),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
         _timestamps(),
+        sa.ForeignKeyConstraint(
+            ["cohort_id"],
+            ["research.paper_validation_cohorts.cohort_id"],
+            ondelete="RESTRICT",
+            name="fk_paper_cohort_run_claim_cohort",
+        ),
         sa.UniqueConstraint(
             "cohort_id",
             "run_id",
@@ -420,6 +455,24 @@ def upgrade() -> None:
         sa.Column("client_order_id", sa.String(128), nullable=False),
         sa.Column("broker_order_id", sa.String(128), nullable=False),
         _timestamps(),
+        sa.ForeignKeyConstraint(
+            ["cohort_id"],
+            ["research.paper_validation_cohorts.cohort_id"],
+            ondelete="RESTRICT",
+            name="fk_paper_run_order_link_cohort",
+        ),
+        sa.ForeignKeyConstraint(
+            ["decision_id"],
+            ["research.paper_cohort_decisions.decision_id"],
+            ondelete="RESTRICT",
+            name="fk_paper_run_order_link_decision",
+        ),
+        sa.ForeignKeyConstraint(
+            ["snapshot_id"],
+            ["research.canonical_market_snapshots.snapshot_id"],
+            ondelete="RESTRICT",
+            name="fk_paper_run_order_link_snapshot",
+        ),
         sa.UniqueConstraint(
             "cohort_id",
             "run_id",

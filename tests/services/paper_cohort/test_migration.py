@@ -42,6 +42,7 @@ def _cohort() -> PaperValidationCohort:
         max_capture_skew_ms=5_000,
         max_ticker_age_ms=5_000,
         capital_notional_usd="100",
+        assignment_count=1,
         activated_at=datetime.now(UTC),
     )
 
@@ -130,6 +131,7 @@ async def test_cohort_update_delete_and_truncate_are_rejected(
     )
     await db_session.flush()
     cohort_pk = row.id
+    cohort_id = row.cohort_id
     await db_session.commit()
 
     with pytest.raises(DBAPIError, match="append-only"):
@@ -152,4 +154,64 @@ async def test_cohort_update_delete_and_truncate_are_rejected(
         await db_session.execute(
             text("TRUNCATE TABLE research.paper_validation_cohorts CASCADE")
         )
+    await db_session.rollback()
+
+    challenger = ResearchStrategyExperiment(
+        experiment_id=_hash(f"{nonce}:challenger-experiment"),
+        strategy_key=f"challenger-{nonce}",
+        strategy_version="strategy-v1",
+        strategy_hash=_hash(f"{nonce}:challenger-strategy"),
+        code_hash=_hash(f"{nonce}:challenger-code"),
+        params_hash=_hash(f"{nonce}:challenger-params"),
+        dataset_manifest_hash=_hash(f"{nonce}:challenger-dataset"),
+        universe_hash=_hash(f"{nonce}:challenger-universe"),
+        pit_hash=_hash(f"{nonce}:challenger-pit"),
+        frozen_config_hash=_hash(f"{nonce}:challenger-config"),
+        policy_hash=_hash(f"{nonce}:challenger-policy"),
+        benchmark_hash=_hash(f"{nonce}:challenger-benchmark"),
+        cost_hash=_hash(f"{nonce}:challenger-cost"),
+        mdd_hash=_hash(f"{nonce}:challenger-mdd"),
+        manifest={},
+    )
+    db_session.add(challenger)
+    await db_session.flush()
+    challenger_run = ResearchBacktestRun(
+        run_id=f"challenger-run-{nonce}",
+        strategy_name=challenger.strategy_key,
+        strategy_version=challenger.strategy_version,
+        exchange="binance",
+        market="spot",
+        timeframe="1m",
+        runner="pytest",
+        total_trades=1,
+        profit_factor="1",
+        max_drawdown="0",
+        strategy_experiment_id=challenger.id,
+        trial_index=1,
+        trial_status="completed",
+        trial_idempotency_key=f"challenger-trial-{nonce}",
+    )
+    db_session.add(challenger_run)
+    await db_session.flush()
+    db_session.add(
+        PaperValidationCohortAssignment(
+            assignment_id=f"challenger-assignment-{nonce}",
+            cohort_id=cohort_id,
+            ordinal=1,
+            role="challenger",
+            validation_id=f"challenger-validation-{nonce}",
+            validation_version=1,
+            experiment_id=challenger.experiment_id,
+            source_backtest_run_id=challenger_run.id,
+            strategy_version_id=challenger.strategy_version,
+            target_weights={"BTCUSDT": "0.5", "ETHUSDT": "0.5"},
+            experiment_hash=challenger.experiment_id,
+            strategy_hash=challenger.strategy_hash,
+            config_hash=challenger.frozen_config_hash,
+            policy_hash=challenger.policy_hash,
+            input_hash=_hash(f"{nonce}:challenger-input"),
+        )
+    )
+    with pytest.raises(DBAPIError, match="requires exactly one champion"):
+        await db_session.commit()
     await db_session.rollback()

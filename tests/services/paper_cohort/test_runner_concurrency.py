@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select
@@ -28,7 +29,11 @@ from tests.services.paper_cohort.test_runner_paper_active import (
     _setup,
 )
 from tests.services.paper_cohort.test_runner_recovery import RecoveringAdapter
-from tests.services.paper_cohort.test_runner_shadow import FakeCapture, FakeQuotes
+from tests.services.paper_cohort.test_runner_shadow import (
+    FakeCapture,
+    FakeQuotes,
+    _active_cohort,
+)
 from tests.services.paper_validation.conftest import (
     FakeActorRoleProvider,
     FakeFrozenInputHashProvider,
@@ -51,11 +56,12 @@ class UnusedVerifier:
 async def test_two_postgresql_sessions_create_one_snapshot_and_intent_set(
     db_session,
 ) -> None:
-    nonce, activation, _ = await _setup(db_session)
+    nonce = uuid4().hex
+    cohort_id = await _active_cohort(db_session, nonce)
     capture = FakeCapture()
     barrier = asyncio.Barrier(2)
     invocation = CohortRunInvocation(
-        cohort_id=activation.cohort_id,
+        cohort_id=cohort_id,
         run_id=f"concurrent-run-{nonce}",
         round_decision_id=f"concurrent-round-{nonce}",
         mode=RunMode.SHADOW,
@@ -68,6 +74,7 @@ async def test_two_postgresql_sessions_create_one_snapshot_and_intent_set(
                 session,
                 capture=capture,
                 quote_provider=FakeQuotes(session),
+                enablement=lambda _mode: True,
             ).run(invocation)
             await session.commit()
             return result
@@ -115,10 +122,11 @@ async def test_two_postgresql_sessions_create_one_snapshot_and_intent_set(
 async def test_same_claim_identity_with_different_request_is_stable_conflict(
     db_session,
 ) -> None:
-    nonce, activation, _ = await _setup(db_session)
+    nonce = uuid4().hex
+    cohort_id = await _active_cohort(db_session, nonce)
     capture = FakeCapture()
     base = {
-        "cohort_id": activation.cohort_id,
+        "cohort_id": cohort_id,
         "run_id": f"conflict-run-{nonce}",
         "round_decision_id": f"conflict-round-{nonce}",
     }
@@ -126,6 +134,7 @@ async def test_same_claim_identity_with_different_request_is_stable_conflict(
         db_session,
         capture=capture,
         quote_provider=FakeQuotes(db_session),
+        enablement=lambda _mode: True,
     )
     await shadow.run(CohortRunInvocation(**base, mode=RunMode.SHADOW))
     await db_session.commit()
@@ -137,6 +146,7 @@ async def test_same_claim_identity_with_different_request_is_stable_conflict(
             capture=capture,
             quote_provider=FakeQuotes(db_session),
             verifier=verifier,
+            enablement=lambda _mode: True,
         ).run(CohortRunInvocation(**base, mode=RunMode.PAPER_ACTIVE))
     assert exc_info.value.reason_code == "invocation_conflict"
     assert len(capture.calls) == 1
@@ -193,6 +203,7 @@ async def test_two_sessions_submit_each_paper_intent_exactly_once(db_session) ->
                 verifier=verifier,
                 application_factory=app_factory,
                 native_resolver=native,
+                enablement=lambda _mode: True,
             ).run(invocation)
             await session.commit()
             return result

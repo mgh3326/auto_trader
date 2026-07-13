@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -9,10 +10,11 @@ from typing import Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.paper_cohort import (
     CanonicalMarketSnapshot,
     PaperCohortDecision,
@@ -22,6 +24,7 @@ from app.models.paper_cohort import (
     PaperValidationCohort,
     PaperValidationCohortAssignment,
 )
+from app.models.paper_validation import PaperValidationStateTransition
 from app.services.brokers.capabilities import Broker
 from app.services.brokers.paper.composition import build_paper_execution_application
 from app.services.brokers.paper.contracts import (
@@ -110,6 +113,7 @@ class PaperCohortRunner:
         after_submit_hook: (
             Callable[[PaperOperationResult], Awaitable[None]] | None
         ) = None,
+        enablement: Callable[[RunMode], bool] | None = None,
     ) -> None:
         self._session = session
         self._capture = capture
@@ -119,6 +123,13 @@ class PaperCohortRunner:
         self._native_resolver = native_resolver or NativeOrderResolver(session)
         self._clock = clock or (lambda: datetime.now(UTC))
         self._after_submit_hook = after_submit_hook
+        self._enablement = enablement or self._settings_enablement
+
+    @staticmethod
+    def _settings_enablement(mode: RunMode) -> bool:
+        return settings.PAPER_COHORT_ENABLED and (
+            mode is RunMode.SHADOW or settings.PAPER_EXECUTION_ENABLED
+        )
 
     async def _claim(
         self, invocation: CohortRunInvocation
@@ -158,6 +169,24 @@ class PaperCohortRunner:
         if existing.completed_at is not None and existing.result_payload is not None:
             return None, CohortRunResult.model_validate(existing.result_payload)
         if existing.lease_expires_at > now:
+            # An INSERT .. ON CONFLICT contender waits for the owner transaction.
+            # Once the owner has durably prepared a paper run, briefly poll for its
+            # final result so concurrent scheduler deliveries return the same result.
+            existing_id = existing.id
+            await self._session.rollback()
+            for _ in range(100):
+                await asyncio.sleep(0.05)
+                observed = await self._session.scalar(
+                    select(PaperCohortRunClaim)
+                    .where(PaperCohortRunClaim.id == existing_id)
+                    .execution_options(populate_existing=True)
+                )
+                if (
+                    observed is not None
+                    and observed.completed_at is not None
+                    and observed.result_payload is not None
+                ):
+                    return None, CohortRunResult.model_validate(observed.result_payload)
             raise PaperCohortError("invocation_in_progress")
 
         takeover_id = await self._session.scalar(
@@ -201,6 +230,48 @@ class PaperCohortRunner:
             raise PaperCohortError("cohort_not_found")
         return cohort, assignments
 
+    async def _validate_authoritative_state(
+        self,
+        invocation: CohortRunInvocation,
+        cohort: PaperValidationCohort,
+        assignments: list[PaperValidationCohortAssignment],
+    ) -> None:
+        expected_state = (
+            "paper_active" if invocation.mode is RunMode.PAPER_ACTIVE else "shadow_soak"
+        )
+        for validation_id in sorted(item.validation_id for item in assignments):
+            await self._session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                {"key": validation_id},
+            )
+        for assignment in assignments:
+            latest = await self._session.scalar(
+                select(PaperValidationStateTransition)
+                .where(
+                    PaperValidationStateTransition.validation_id
+                    == assignment.validation_id
+                )
+                .order_by(PaperValidationStateTransition.sequence.desc())
+                .limit(1)
+            )
+            exact = latest is not None and all(
+                (
+                    latest.new_state == expected_state,
+                    latest.validation_version == assignment.validation_version,
+                    latest.experiment_id == assignment.experiment_id,
+                    latest.strategy_version_id == assignment.strategy_version_id,
+                    latest.cohort_id == cohort.cohort_id,
+                    latest.experiment_hash == assignment.experiment_hash,
+                    latest.cohort_hash == cohort.cohort_hash,
+                    latest.strategy_hash == assignment.strategy_hash,
+                    latest.config_hash == assignment.config_hash,
+                    latest.policy_hash == assignment.policy_hash,
+                    latest.input_hash == assignment.input_hash,
+                )
+            )
+            if not exact:
+                raise PaperCohortError("authoritative_state_mismatch")
+
     @staticmethod
     def _signal_input(
         cohort: PaperValidationCohort,
@@ -220,17 +291,82 @@ class PaperCohortRunner:
             capital_notional_usd=cohort.capital_notional_usd,
         )
 
-    async def run(self, invocation: CohortRunInvocation) -> CohortRunResult:
-        if invocation.mode is RunMode.PAPER_ACTIVE and self._verifier is None:
-            raise PaperCohortError("provenance_verifier_unavailable")
-        claim, replay = await self._claim(invocation)
-        if replay is not None:
-            return replay
-        if claim is None:
-            raise PaperCohortError("invocation_claim_unavailable")
-        cohort, assignments = await self._cohort(invocation.cohort_id)
-        if cohort.stop_at is not None and self._clock() >= cohort.stop_at:
-            raise PaperCohortError("cohort_stopped")
+    async def _load_prepared(
+        self, invocation: CohortRunInvocation
+    ) -> (
+        tuple[
+            CanonicalSnapshotPayload,
+            list[PaperCohortDecision],
+            list[
+                tuple[PaperCohortVenueIntent, CanonicalTargetSignal, dict[str, object]]
+            ],
+        ]
+        | None
+    ):
+        row = await self._session.scalar(
+            select(CanonicalMarketSnapshot).where(
+                CanonicalMarketSnapshot.cohort_id == invocation.cohort_id,
+                CanonicalMarketSnapshot.run_id == invocation.run_id,
+                CanonicalMarketSnapshot.round_decision_id
+                == invocation.round_decision_id,
+            )
+        )
+        if row is None:
+            return None
+        snapshot = CanonicalSnapshotPayload.model_validate(row.payload)
+        decisions = list(
+            (
+                await self._session.scalars(
+                    select(PaperCohortDecision)
+                    .where(
+                        PaperCohortDecision.cohort_id == invocation.cohort_id,
+                        PaperCohortDecision.run_id == invocation.run_id,
+                        PaperCohortDecision.round_decision_id
+                        == invocation.round_decision_id,
+                    )
+                    .order_by(PaperCohortDecision.decision_id)
+                )
+            ).all()
+        )
+        by_id = {item.decision_id: item for item in decisions}
+        intents = list(
+            (
+                await self._session.scalars(
+                    select(PaperCohortVenueIntent)
+                    .where(
+                        PaperCohortVenueIntent.cohort_id == invocation.cohort_id,
+                        PaperCohortVenueIntent.run_id == invocation.run_id,
+                    )
+                    .order_by(
+                        PaperCohortVenueIntent.decision_id,
+                        PaperCohortVenueIntent.venue,
+                    )
+                )
+            ).all()
+        )
+        active: list[
+            tuple[PaperCohortVenueIntent, CanonicalTargetSignal, dict[str, object]]
+        ] = []
+        for intent in intents:
+            decision = by_id.get(intent.decision_id)
+            if decision is None:
+                raise PaperCohortError("prepared_identity_mismatch")
+            signal = CanonicalTargetSignal.model_validate(decision.signal_payload)
+            active.append((intent, signal, intent.would_order_evidence))
+        if not decisions or not intents:
+            raise PaperCohortError("prepared_identity_mismatch")
+        return snapshot, decisions, active
+
+    async def _prepare(
+        self,
+        invocation: CohortRunInvocation,
+        cohort: PaperValidationCohort,
+        assignments: list[PaperValidationCohortAssignment],
+    ) -> tuple[
+        CanonicalSnapshotPayload,
+        list[PaperCohortDecision],
+        list[tuple[PaperCohortVenueIntent, CanonicalTargetSignal, dict[str, object]]],
+    ]:
         snapshot_id = _identity(
             "snapshot",
             {
@@ -271,12 +407,12 @@ class PaperCohortRunner:
         )
         await self._session.flush()
 
+        decisions: list[PaperCohortDecision] = []
         signals: list[tuple[str, CanonicalTargetSignal]] = []
         for assignment in assignments:
             for symbol in cohort.symbols:
                 signal = compute_target_signal(
-                    snapshot,
-                    self._signal_input(cohort, assignment, symbol),
+                    snapshot, self._signal_input(cohort, assignment, symbol)
                 )
                 decision_id = _identity(
                     "decision",
@@ -289,26 +425,25 @@ class PaperCohortRunner:
                         "snapshot_hash": snapshot.content_hash,
                     },
                 )
-                self._session.add(
-                    PaperCohortDecision(
-                        decision_id=decision_id,
-                        cohort_id=invocation.cohort_id,
-                        run_id=invocation.run_id,
-                        round_decision_id=invocation.round_decision_id,
-                        assignment_id=assignment.assignment_id,
-                        symbol=symbol,
-                        snapshot_id=snapshot.snapshot_id,
-                        snapshot_hash=snapshot.content_hash,
-                        mode=invocation.mode.value,
-                        signal_payload=signal.model_dump(mode="json"),
-                        signal_hash=signal.signal_hash,
-                    )
+                decision = PaperCohortDecision(
+                    decision_id=decision_id,
+                    cohort_id=invocation.cohort_id,
+                    run_id=invocation.run_id,
+                    round_decision_id=invocation.round_decision_id,
+                    assignment_id=assignment.assignment_id,
+                    symbol=symbol,
+                    snapshot_id=snapshot.snapshot_id,
+                    snapshot_hash=snapshot.content_hash,
+                    mode=invocation.mode.value,
+                    signal_payload=signal.model_dump(mode="json"),
+                    signal_hash=signal.signal_hash,
                 )
+                self._session.add(decision)
+                decisions.append(decision)
                 signals.append((decision_id, signal))
         await self._session.flush()
 
-        intent_count = 0
-        active_intents: list[
+        active: list[
             tuple[PaperCohortVenueIntent, CanonicalTargetSignal, dict[str, object]]
         ] = []
         for decision_id, signal in signals:
@@ -331,8 +466,7 @@ class PaperCohortRunner:
                 }
                 intent = PaperCohortVenueIntent(
                     intent_id=_identity(
-                        "intent",
-                        {"decision_id": decision_id, "venue": venue},
+                        "intent", {"decision_id": decision_id, "venue": venue}
                     ),
                     cohort_id=invocation.cohort_id,
                     run_id=invocation.run_id,
@@ -346,60 +480,126 @@ class PaperCohortRunner:
                     would_order_evidence=evidence,
                 )
                 self._session.add(intent)
-                active_intents.append((intent, signal, evidence))
-                intent_count += 1
+                active.append((intent, signal, evidence))
         await self._session.flush()
+        return snapshot, decisions, active
+
+    @staticmethod
+    def build_request(
+        intent: PaperCohortVenueIntent,
+        signal: CanonicalTargetSignal,
+        evidence: dict[str, object],
+        snapshot: CanonicalSnapshotPayload,
+    ) -> PaperOrderRequest:
+        order = evidence.get("order")
+        if not isinstance(order, dict):
+            raise PaperCohortError("unsupported_capability")
+        venue = Broker(intent.venue)
+        return PaperOrderRequest(
+            intent_id=intent.intent_id,
+            experiment_id=signal.experiment_id,
+            run_id=intent.run_id,
+            cohort_id=intent.cohort_id,
+            strategy_version_id=signal.strategy_version_id,
+            strategy_hash=signal.strategy_hash,
+            config_hash=signal.config_hash,
+            policy_hash=signal.policy_hash,
+            venue=venue,
+            account_mode="demo" if venue is Broker.BINANCE else "paper",
+            product="spot" if venue is Broker.BINANCE else "crypto",
+            symbol=str(order["symbol"]),
+            side=str(order["side"]),  # type: ignore[arg-type]
+            order_type=str(order["order_type"]),  # type: ignore[arg-type]
+            time_in_force=(
+                None
+                if order.get("time_in_force") is None
+                else str(order["time_in_force"])
+            ),
+            qty=None if order.get("qty") is None else Decimal(str(order["qty"])),
+            notional=(
+                None
+                if order.get("notional") is None
+                else Decimal(str(order["notional"]))
+            ),
+            price=(
+                None if order.get("price") is None else Decimal(str(order["price"]))
+            ),
+            market_snapshot_id=snapshot.snapshot_id,
+            market_snapshot_hash=snapshot.content_hash,
+            market_snapshot_as_of=snapshot.capture_completed_at,
+            market_snapshot_source=snapshot.source,
+            source_buy_reference=None,
+        )
+
+    async def run(self, invocation: CohortRunInvocation) -> CohortRunResult:
+        if not self._enablement(invocation.mode):
+            raise PaperCohortError("paper_cohort_disabled")
+        if invocation.mode is RunMode.PAPER_ACTIVE and self._verifier is None:
+            raise PaperCohortError("provenance_verifier_unavailable")
+        claim, replay = await self._claim(invocation)
+        if replay is not None:
+            return replay
+        if claim is None:
+            raise PaperCohortError("invocation_claim_unavailable")
+        cohort, assignments = await self._cohort(invocation.cohort_id)
+        if cohort.stop_at is not None and self._clock() >= cohort.stop_at:
+            raise PaperCohortError("cohort_stopped")
+        await self._validate_authoritative_state(invocation, cohort, assignments)
+        prepared = await self._load_prepared(invocation)
+        if prepared is None:
+            prepared = await self._prepare(invocation, cohort, assignments)
+        snapshot, decisions, active_intents = prepared
+
+        completed = CohortRunResult(
+            cohort_id=invocation.cohort_id,
+            run_id=invocation.run_id,
+            round_decision_id=invocation.round_decision_id,
+            snapshot_id=snapshot.snapshot_id,
+            snapshot_hash=snapshot.content_hash,
+            decision_count=len(decisions),
+            intent_count=len(active_intents),
+        )
+        if invocation.mode is RunMode.SHADOW:
+            claim.result_payload = completed.model_dump(mode="json")
+            claim.completed_at = self._clock()
+            await self._session.commit()
+            return completed
+
+        # This is the exactly-once boundary: snapshot, decision, quote evidence,
+        # intent, and claim are durable before the first broker mutation. Recovery
+        # only replays these immutable requests and never captures again.
+        await self._session.commit()
         if invocation.mode is RunMode.PAPER_ACTIVE:
             assert self._verifier is not None
+            cohort, assignments = await self._cohort(invocation.cohort_id)
+            await self._validate_authoritative_state(invocation, cohort, assignments)
+            requests = [
+                self.build_request(intent, signal, evidence, snapshot)
+                for intent, signal, evidence in active_intents
+            ]
+            # All cohort members and persisted provenance are authorized before
+            # the first adapter call. Advisory locks remain held through the
+            # final commit, so an abort/hash transition cannot interleave.
+            for request in requests:
+                await self._verifier.verify(request)
             application = (
                 build_paper_execution_application(verifier=self._verifier)
                 if self._application_factory is None
                 else self._application_factory(self._verifier)
             )
-            for intent, signal, evidence in active_intents:
-                order = evidence.get("order")
-                if not isinstance(order, dict):
-                    raise PaperCohortError("unsupported_capability")
-                venue = Broker(intent.venue)
-                request = PaperOrderRequest(
-                    intent_id=intent.intent_id,
-                    experiment_id=signal.experiment_id,
-                    run_id=intent.run_id,
-                    cohort_id=intent.cohort_id,
-                    strategy_version_id=signal.strategy_version_id,
-                    strategy_hash=signal.strategy_hash,
-                    config_hash=signal.config_hash,
-                    policy_hash=signal.policy_hash,
-                    venue=venue,
-                    account_mode="demo" if venue is Broker.BINANCE else "paper",
-                    product="spot" if venue is Broker.BINANCE else "crypto",
-                    symbol=str(order["symbol"]),
-                    side=str(order["side"]),  # type: ignore[arg-type]
-                    order_type=str(order["order_type"]),  # type: ignore[arg-type]
-                    time_in_force=(
-                        None
-                        if order.get("time_in_force") is None
-                        else str(order["time_in_force"])
-                    ),
-                    qty=(
-                        None if order.get("qty") is None else Decimal(str(order["qty"]))
-                    ),
-                    notional=(
-                        None
-                        if order.get("notional") is None
-                        else Decimal(str(order["notional"]))
-                    ),
-                    price=(
-                        None
-                        if order.get("price") is None
-                        else Decimal(str(order["price"]))
-                    ),
-                    market_snapshot_id=snapshot.snapshot_id,
-                    market_snapshot_hash=snapshot.content_hash,
-                    market_snapshot_as_of=snapshot.capture_completed_at,
-                    market_snapshot_source=snapshot.source,
-                    source_buy_reference=None,
+            for (intent, _signal, _evidence), request in zip(
+                active_intents, requests, strict=True
+            ):
+                existing_link = await self._session.scalar(
+                    select(PaperRunOrderLink).where(
+                        PaperRunOrderLink.cohort_id == intent.cohort_id,
+                        PaperRunOrderLink.run_id == intent.run_id,
+                        PaperRunOrderLink.decision_id == intent.decision_id,
+                        PaperRunOrderLink.venue == intent.venue,
+                    )
                 )
+                if existing_link is not None:
+                    continue
                 result = await application.submit(request)
                 if (
                     result.status is not PaperOperationStatus.SUCCEEDED
@@ -429,18 +629,12 @@ class PaperCohortRunner:
                     )
                 )
             await self._session.flush()
-        completed = CohortRunResult(
-            cohort_id=invocation.cohort_id,
-            run_id=invocation.run_id,
-            round_decision_id=invocation.round_decision_id,
-            snapshot_id=snapshot.snapshot_id,
-            snapshot_hash=snapshot.content_hash,
-            decision_count=len(signals),
-            intent_count=intent_count,
-        )
-        claim.result_payload = completed.model_dump(mode="json")
-        claim.completed_at = self._clock()
-        await self._session.flush()
+        durable_claim = await self._session.get(PaperCohortRunClaim, claim.id)
+        if durable_claim is None:
+            raise PaperCohortError("invocation_claim_unavailable")
+        durable_claim.result_payload = completed.model_dump(mode="json")
+        durable_claim.completed_at = self._clock()
+        await self._session.commit()
         return completed
 
 

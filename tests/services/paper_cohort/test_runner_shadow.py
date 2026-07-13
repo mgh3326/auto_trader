@@ -128,6 +128,7 @@ async def test_shadow_persists_signal_before_quotes_and_never_mutates_brokers(
         quote_provider=quotes,
         application_factory=lambda: application_calls.append("constructed"),
         native_resolver=lambda: native_calls.append("resolved"),
+        enablement=lambda _mode: True,
     )
 
     result = await runner.run(
@@ -208,6 +209,7 @@ async def test_capture_failure_leaves_no_snapshot_signal_quote_or_mutation(
         quote_provider=quotes,
         application_factory=lambda: application_calls.append("constructed"),
         native_resolver=lambda: native_calls.append("resolved"),
+        enablement=lambda _mode: True,
     )
 
     with pytest.raises(PaperCohortError) as exc_info:

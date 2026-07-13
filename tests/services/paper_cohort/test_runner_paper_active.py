@@ -8,8 +8,15 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.paper_cohort import PaperRunOrderLink
+from app.models.paper_cohort import (
+    CanonicalMarketSnapshot,
+    PaperCohortDecision,
+    PaperCohortVenueIntent,
+    PaperRunOrderLink,
+    PaperValidationCohortAssignment,
+)
 from app.models.paper_validation import PaperValidationStateTransition
+from app.models.research_backtest import ResearchBacktestRun
 from app.services.brokers.capabilities import Broker
 from app.services.brokers.paper.application import PaperExecutionApplication
 from app.services.brokers.paper.contracts import (
@@ -21,6 +28,7 @@ from app.services.brokers.paper.contracts import (
 from app.services.paper_cohort.cohort_service import PaperCohortService
 from app.services.paper_cohort.contracts import PaperCohortError, RunMode
 from app.services.paper_cohort.native_links import NativeOrderIdentity
+from app.services.paper_cohort.order_control import PaperCohortOrderControl
 from app.services.paper_cohort.provenance import PaperCohortProvenanceVerifier
 from app.services.paper_cohort.runner import CohortRunInvocation, PaperCohortRunner
 from app.services.paper_validation.contracts import ActorRole
@@ -60,6 +68,17 @@ class FakeAdapter:
             native_client_order_id=f"client-{suffix}",
         )
 
+    async def cancel(self, intent):
+        self.calls.append(intent)
+        return PaperOperationResult(
+            operation=PaperOperation.CANCEL,
+            status=PaperOperationStatus.SUCCEEDED,
+            reason_code="ok",
+            venue=self.broker,
+            native_order_id="cancelled-order",
+            native_client_order_id="cancelled-client",
+        )
+
 
 @dataclass
 class FakeRegistry:
@@ -92,6 +111,18 @@ class FakeNativeResolver:
                 broker_order_id=broker_order_id,
             )
         return self.identities[key]
+
+
+@dataclass
+class FailSecondPreflightVerifier:
+    delegate: PaperCohortProvenanceVerifier
+    calls: int = 0
+
+    async def verify(self, request):
+        self.calls += 1
+        if self.calls == 2:
+            raise PaperCohortError("provenance_mismatch")
+        return await self.delegate.verify(request)
 
 
 async def _setup(
@@ -151,6 +182,7 @@ async def test_paper_active_submits_via_rob845_and_stores_only_native_links(
         verifier=verifier,
         application_factory=_app_factory(adapters),
         native_resolver=native,
+        enablement=lambda _mode: True,
     )
 
     result = await runner.run(
@@ -195,6 +227,56 @@ async def test_paper_active_submits_via_rob845_and_stores_only_native_links(
         ).submit(original_request.model_copy(update={field_name: bad_value}))
         assert blocked.reason_code == "provenance_verification_failed"
     assert len(adapters[Broker.BINANCE].calls) == adapter_baseline
+
+    intent = await db_session.scalar(
+        select(PaperCohortVenueIntent).where(
+            PaperCohortVenueIntent.intent_id == original_request.intent_id
+        )
+    )
+    assert intent is not None
+    decision = await db_session.scalar(
+        select(PaperCohortDecision).where(
+            PaperCohortDecision.decision_id == intent.decision_id
+        )
+    )
+    snapshot = await db_session.scalar(
+        select(CanonicalMarketSnapshot).where(
+            CanonicalMarketSnapshot.snapshot_id == intent.snapshot_id
+        )
+    )
+    assert decision is not None and snapshot is not None
+    assignment = await db_session.scalar(
+        select(PaperValidationCohortAssignment).where(
+            PaperValidationCohortAssignment.assignment_id == decision.assignment_id
+        )
+    )
+    assert assignment is not None
+    backtest = await db_session.get(
+        ResearchBacktestRun, assignment.source_backtest_run_id
+    )
+    assert backtest is not None
+    original_snapshot_payload = snapshot.payload
+    persisted_mismatches = (
+        (intent, "request_hash", intent.request_hash, "0" * 64),
+        (decision, "signal_hash", decision.signal_hash, "0" * 64),
+        (
+            snapshot,
+            "payload",
+            original_snapshot_payload,
+            {**original_snapshot_payload, "content_hash": "0" * 64},
+        ),
+        (assignment, "strategy_hash", assignment.strategy_hash, "0" * 64),
+        (backtest, "trial_status", backtest.trial_status, "rejected"),
+    )
+    for row, field_name, original, tampered in persisted_mismatches:
+        setattr(row, field_name, tampered)
+        with db_session.no_autoflush:
+            blocked = await PaperExecutionApplication(
+                registry=FakeRegistry(adapters), verifier=verifier
+            ).submit(original_request)
+        assert blocked.reason_code == "provenance_verification_failed"
+        assert len(adapters[Broker.BINANCE].calls) == adapter_baseline
+        setattr(row, field_name, original)
 
 
 @pytest.mark.asyncio
@@ -245,13 +327,25 @@ async def test_non_exact_paper_active_state_blocks_adapter_native_and_links(
     baseline = await db_session.scalar(
         select(func.count()).select_from(PaperRunOrderLink)
     )
+    snapshot_baseline = await db_session.scalar(
+        select(func.count()).select_from(CanonicalMarketSnapshot)
+    )
+    decision_baseline = await db_session.scalar(
+        select(func.count()).select_from(PaperCohortDecision)
+    )
+    intent_baseline = await db_session.scalar(
+        select(func.count()).select_from(PaperCohortVenueIntent)
+    )
+    capture = FakeCapture()
+    quotes = FakeQuotes(db_session)
     runner = PaperCohortRunner(
         db_session,
-        capture=FakeCapture(),
-        quote_provider=FakeQuotes(db_session),
+        capture=capture,
+        quote_provider=quotes,
         verifier=verifier,
         application_factory=_app_factory(adapters),
         native_resolver=native,
+        enablement=lambda _mode: True,
     )
 
     with pytest.raises(PaperCohortError) as exc_info:
@@ -263,11 +357,135 @@ async def test_non_exact_paper_active_state_blocks_adapter_native_and_links(
                 mode=RunMode.PAPER_ACTIVE,
             )
         )
-    assert exc_info.value.reason_code == "provenance_verification_failed"
+    assert exc_info.value.reason_code == "authoritative_state_mismatch"
     assert adapters[Broker.BINANCE].calls == []
     assert adapters[Broker.ALPACA].calls == []
     assert native.calls == []
+    assert capture.calls == []
+    assert quotes.calls == []
+    assert (
+        await db_session.scalar(
+            select(func.count()).select_from(CanonicalMarketSnapshot)
+        )
+        == snapshot_baseline
+    )
+    assert (
+        await db_session.scalar(select(func.count()).select_from(PaperCohortDecision))
+        == decision_baseline
+    )
+    assert (
+        await db_session.scalar(
+            select(func.count()).select_from(PaperCohortVenueIntent)
+        )
+        == intent_baseline
+    )
     assert (
         await db_session.scalar(select(func.count()).select_from(PaperRunOrderLink))
         == baseline
     )
+
+
+@pytest.mark.asyncio
+async def test_all_intents_are_preflighted_before_first_adapter_mutation(
+    db_session: AsyncSession,
+) -> None:
+    nonce, activation, validation = await _setup(db_session)
+    delegate = PaperCohortProvenanceVerifier(
+        db_session,
+        validation_service=validation,
+        caller_id="paper-cohort-runner",
+        clock=lambda: CAPTURED_AT,
+    )
+    verifier = FailSecondPreflightVerifier(delegate)
+    adapters = {
+        Broker.BINANCE: FakeAdapter(Broker.BINANCE),
+        Broker.ALPACA: FakeAdapter(Broker.ALPACA),
+    }
+    native = FakeNativeResolver()
+
+    with pytest.raises(PaperCohortError, match="provenance_mismatch"):
+        await PaperCohortRunner(
+            db_session,
+            capture=FakeCapture(),
+            quote_provider=FakeQuotes(db_session),
+            verifier=verifier,
+            application_factory=_app_factory(adapters),
+            native_resolver=native,
+            enablement=lambda _mode: True,
+        ).run(
+            CohortRunInvocation(
+                cohort_id=activation.cohort_id,
+                run_id=f"preflight-run-{nonce}",
+                round_decision_id=f"preflight-round-{nonce}",
+                mode=RunMode.PAPER_ACTIVE,
+            )
+        )
+
+    assert verifier.calls == 2
+    assert adapters[Broker.BINANCE].calls == []
+    assert adapters[Broker.ALPACA].calls == []
+    assert native.calls == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_and_close_are_limited_to_linked_cohort_capabilities(
+    db_session: AsyncSession,
+) -> None:
+    nonce, activation, validation = await _setup(db_session)
+    verifier = PaperCohortProvenanceVerifier(
+        db_session,
+        validation_service=validation,
+        caller_id="paper-cohort-runner",
+        clock=lambda: CAPTURED_AT,
+    )
+    adapters = {
+        Broker.BINANCE: FakeAdapter(Broker.BINANCE),
+        Broker.ALPACA: FakeAdapter(Broker.ALPACA),
+    }
+    await PaperCohortRunner(
+        db_session,
+        capture=FakeCapture(),
+        quote_provider=FakeQuotes(db_session),
+        verifier=verifier,
+        application_factory=_app_factory(adapters),
+        native_resolver=FakeNativeResolver(),
+        enablement=lambda _mode: True,
+    ).run(
+        CohortRunInvocation(
+            cohort_id=activation.cohort_id,
+            run_id=f"control-run-{nonce}",
+            round_decision_id=f"control-round-{nonce}",
+            mode=RunMode.PAPER_ACTIVE,
+        )
+    )
+    links = list(
+        (
+            await db_session.scalars(
+                select(PaperRunOrderLink).where(
+                    PaperRunOrderLink.run_id == f"control-run-{nonce}"
+                )
+            )
+        ).all()
+    )
+    control = PaperCohortOrderControl(
+        db_session,
+        verifier=verifier,
+        application_factory=_app_factory(adapters),
+    )
+    alpaca_link = next(link for link in links if link.venue == "alpaca")
+    binance_link = next(link for link in links if link.venue == "binance")
+    alpaca_baseline = len(adapters[Broker.ALPACA].calls)
+    binance_baseline = len(adapters[Broker.BINANCE].calls)
+
+    canceled = await control.cancel(activation.cohort_id, alpaca_link.id)
+    unsupported_cancel = await control.cancel(activation.cohort_id, binance_link.id)
+    unsupported_close = await control.close(activation.cohort_id, alpaca_link.id)
+
+    assert canceled.operation is PaperOperation.CANCEL
+    assert canceled.status is PaperOperationStatus.SUCCEEDED
+    assert len(adapters[Broker.ALPACA].calls) == alpaca_baseline + 1
+    assert unsupported_cancel.reason_code == "unsupported_capability"
+    assert len(adapters[Broker.BINANCE].calls) == binance_baseline
+    assert unsupported_close.reason_code == "unsupported_capability"
+    with pytest.raises(PaperCohortError, match="cohort_order_not_owned"):
+        await control.cancel("another-cohort", alpaca_link.id)
