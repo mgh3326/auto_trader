@@ -33,7 +33,7 @@ async def _clean_rob845_rows(db_session):
         (AlpacaPaperOrderLedger.client_order_id == "source-buy-1")
         | AlpacaPaperOrderLedger.lifecycle_correlation_id.like("rob845-alpaca-sell%")
         | AlpacaPaperOrderLedger.lifecycle_correlation_id.in_(
-            {"d" * 64, "e" * 64, "f" * 64}
+            {"a" * 64, "d" * 64, "e" * 64, "f" * 64, "g" * 64}
         )
     )
     await db_session.execute(stmt)
@@ -46,6 +46,9 @@ async def _clean_rob845_rows(db_session):
 class _Broker:
     def __init__(self) -> None:
         self.submit_calls: list[Any] = []
+        self.cancel_calls: list[str] = []
+        self.get_order_calls: list[str] = []
+        self.cancel_read_status = "canceled"
 
     async def submit_order(self, request: Any) -> Order:
         self.submit_calls.append(request)
@@ -70,6 +73,24 @@ class _Broker:
 
     async def get_order_by_client_order_id(self, client_order_id: str) -> None:
         return None
+
+    async def cancel_order(self, order_id: str) -> None:
+        self.cancel_calls.append(order_id)
+
+    async def get_order(self, order_id: str) -> Order:
+        self.get_order_calls.append(order_id)
+        request = self.submit_calls[-1]
+        return Order(
+            id=order_id,
+            client_order_id=request.client_order_id,
+            symbol=request.symbol,
+            filled_qty=Decimal("0"),
+            side=request.side,
+            type=request.type,
+            time_in_force=request.time_in_force,
+            status=self.cancel_read_status,
+            limit_price=request.limit_price,
+        )
 
 
 def _sell_canonical(qty: str = "0.001") -> dict[str, Any]:
@@ -135,6 +156,7 @@ async def _seed_source_buy(db_session, *, client_order_id: str) -> None:
             lifecycle_state="position_reconciled",
             execution_symbol="BTC/USD",
             execution_venue="alpaca_paper",
+            execution_asset_class="crypto",
             instrument_type=InstrumentType.crypto,
             side="buy",
             order_type="limit",
@@ -334,3 +356,123 @@ async def test_verified_application_terminal_replay_precedes_stale_snapshot_chec
     assert replay.status == "replayed"
     assert replay.replayed is True
     assert len(broker.submit_calls) == 1
+
+
+async def test_verified_application_cancel_syncs_lifecycle_and_replays_without_broker(
+    db_session,
+):
+    from app.core.db import AsyncSessionLocal
+    from app.services.alpaca_paper_order_application import (
+        AlpacaPaperOrderApplication,
+        AlpacaPaperOrderSpec,
+        AlpacaVerifiedDecision,
+    )
+
+    broker = _Broker()
+    application = AlpacaPaperOrderApplication(
+        session_factory=AsyncSessionLocal,
+        broker_factory=lambda: broker,
+        now_fn=lambda: _NOW,
+    )
+    decision = AlpacaVerifiedDecision(
+        order=AlpacaPaperOrderSpec(
+            symbol="BTC/USD",
+            side="buy",
+            order_type="limit",
+            qty=Decimal("0.0005"),
+            notional=None,
+            time_in_force="gtc",
+            limit_price=Decimal("50000"),
+        ),
+        decision_id="rob845-decision-cancel",
+        signal_symbol="BTCUSDT",
+        signal_venue="binance_public_spot",
+        snapshot_id="rob845-snapshot-cancel",
+        snapshot_hash="sha256:snapshot-cancel",
+        snapshot_as_of=_NOW,
+        snapshot_source="binance_public_spot",
+        reference_price=Decimal("50000"),
+        source_buy_client_order_id=None,
+        decision_identity_hash="a" * 64,
+    )
+
+    submitted = await application.submit(decision)
+    canceled = await application.cancel(decision)
+
+    assert submitted.status == "submitted"
+    assert canceled.status == "canceled"
+    assert canceled.broker_called is True
+    assert broker.cancel_calls == ["alpaca-paper-sell-1"]
+    assert broker.get_order_calls == ["alpaca-paper-sell-1"]
+
+    db_session.expire_all()
+    row = await AlpacaPaperLedgerService(db_session).get_execution_by_client_order_id(
+        submitted.native_client_order_id or ""
+    )
+    assert row is not None
+    assert row.lifecycle_state == "anomaly"
+    assert row.order_status == "canceled"
+    assert row.cancel_status == "canceled"
+
+    replay = await application.cancel(decision)
+
+    assert replay.status == "canceled"
+    assert replay.broker_called is False
+    assert replay.replayed is True
+    assert broker.cancel_calls == ["alpaca-paper-sell-1"]
+    assert broker.get_order_calls == ["alpaca-paper-sell-1"]
+
+
+async def test_verified_application_pending_cancel_has_non_ok_reason_and_keeps_hold(
+    db_session,
+):
+    from app.core.db import AsyncSessionLocal
+    from app.services.alpaca_paper_order_application import (
+        AlpacaPaperOrderApplication,
+        AlpacaPaperOrderSpec,
+        AlpacaVerifiedDecision,
+    )
+
+    broker = _Broker()
+    broker.cancel_read_status = "accepted"
+    application = AlpacaPaperOrderApplication(
+        session_factory=AsyncSessionLocal,
+        broker_factory=lambda: broker,
+        now_fn=lambda: _NOW,
+    )
+    decision = AlpacaVerifiedDecision(
+        order=AlpacaPaperOrderSpec(
+            symbol="BTC/USD",
+            side="buy",
+            order_type="limit",
+            qty=Decimal("0.0005"),
+            notional=None,
+            time_in_force="gtc",
+            limit_price=Decimal("50000"),
+        ),
+        decision_id="rob845-decision-cancel-pending",
+        signal_symbol="BTCUSDT",
+        signal_venue="binance_public_spot",
+        snapshot_id="rob845-snapshot-cancel-pending",
+        snapshot_hash="sha256:snapshot-cancel-pending",
+        snapshot_as_of=_NOW,
+        snapshot_source="binance_public_spot",
+        reference_price=Decimal("50000"),
+        source_buy_client_order_id=None,
+        decision_identity_hash="g" * 64,
+    )
+
+    submitted = await application.submit(decision)
+    outcome = await application.cancel(decision)
+
+    assert outcome.status == "cancel_requested"
+    assert outcome.reason_code == "cancel_pending"
+    assert outcome.broker_called is True
+    db_session.expire_all()
+    row = await AlpacaPaperLedgerService(db_session).get_execution_by_client_order_id(
+        submitted.native_client_order_id or ""
+    )
+    assert row is not None
+    assert row.lifecycle_state == "submitted"
+    assert row.order_status == "accepted"
+    assert row.cancel_status is None

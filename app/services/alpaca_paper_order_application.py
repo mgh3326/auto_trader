@@ -21,7 +21,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
 from app.models.trading import InstrumentType
-from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+from app.services.alpaca_paper_ledger_service import (
+    KNOWN_OPEN_BROKER_STATUSES,
+    AlpacaPaperLedgerService,
+    normalize_known_broker_order_status,
+)
 from app.services.alpaca_paper_market_evidence import (
     MarketEvidenceError,
     hard_notional_cap,
@@ -250,6 +254,7 @@ class AlpacaPaperOrderApplication:
                 lifecycle_correlation_id=evidence.correlation_id,
                 execution_symbol=symbol,
                 execution_venue="alpaca_paper",
+                execution_asset_class=asset_class,
                 instrument_type=(
                     InstrumentType.crypto
                     if asset_class == "crypto"
@@ -419,6 +424,22 @@ class AlpacaPaperOrderApplication:
                     "native_order_not_found",
                     "cancel requires a submitted native Alpaca paper order",
                 )
+            persisted_status = normalize_known_broker_order_status(
+                getattr(row, "order_status", None)
+            )
+            if persisted_status == "canceled":
+                if str(getattr(row, "cancel_status", "") or "").lower() != "canceled":
+                    await ledger.record_cancel(
+                        client_order_id, cancel_status="canceled"
+                    )
+                return AlpacaPaperApplicationOutcome(
+                    status="canceled",
+                    native_client_order_id=client_order_id,
+                    native_order_id=str(broker_order_id),
+                    broker_called=False,
+                    replayed=True,
+                    evidence={"order_status": "canceled"},
+                )
             broker = self._broker_factory()
             await broker.cancel_order(str(broker_order_id))
             try:
@@ -432,15 +453,36 @@ class AlpacaPaperOrderApplication:
                     reason_code="cancel_status_unavailable",
                 )
             payload = order.model_dump(mode="json")
-            status = str(payload.get("status") or "").strip().lower()
+            status = normalize_known_broker_order_status(payload.get("status"))
+            if status is None:
+                return AlpacaPaperApplicationOutcome(
+                    status="cancel_requested",
+                    reason_code="cancel_status_unknown",
+                    native_client_order_id=client_order_id,
+                    native_order_id=str(broker_order_id),
+                    broker_called=True,
+                )
+            await ledger.record_status(
+                client_order_id,
+                payload,
+                lifecycle_state_override=(
+                    "submitted"
+                    if status in KNOWN_OPEN_BROKER_STATUSES or status == "filled"
+                    else None
+                ),
+            )
             if status == "canceled":
-                await ledger.record_cancel(client_order_id, payload)
+                await ledger.record_cancel(
+                    client_order_id,
+                    cancel_status="canceled",
+                    raw_response=payload,
+                )
                 result_status = "canceled"
             else:
-                await ledger.record_status(client_order_id, payload)
                 result_status = "cancel_requested"
             return AlpacaPaperApplicationOutcome(
                 status=result_status,
+                reason_code=None if status == "canceled" else "cancel_pending",
                 native_client_order_id=client_order_id,
                 native_order_id=str(broker_order_id),
                 broker_called=True,
@@ -477,6 +519,7 @@ class AlpacaPaperOrderApplication:
             lifecycle_correlation_id=packet.lifecycle_correlation_id,
             execution_symbol=packet.execution_symbol,
             execution_venue=packet.execution_venue,
+            execution_asset_class=packet.execution_asset_class,
             instrument_type=InstrumentType.crypto,
             side=packet.side,
             order_type=decision.order.order_type,

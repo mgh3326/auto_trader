@@ -398,6 +398,9 @@ async def test_sell_source_exact_client_order_id_binds_native_buy_and_requested_
         record_kind="execution",
         lifecycle_state="position_reconciled",
         account_mode="alpaca_paper",
+        execution_venue="alpaca_paper",
+        execution_asset_class="crypto",
+        instrument_type="crypto",
         execution_symbol="BTC/USD",
         filled_qty=Decimal("0.002"),
     )
@@ -431,6 +434,21 @@ async def test_sell_source_exact_client_order_id_binds_native_buy_and_requested_
         ({"record_kind": "preview"}, Decimal("0.001"), "missing_source_order"),
         ({"side": "sell"}, Decimal("0.001"), "missing_source_order"),
         ({"account_mode": "alpaca_live"}, Decimal("0.001"), "wrong_account_mode"),
+        (
+            {"execution_venue": "alpaca_live"},
+            Decimal("0.001"),
+            "wrong_execution_venue",
+        ),
+        (
+            {"execution_asset_class": "equity_us"},
+            Decimal("0.001"),
+            "wrong_asset_class",
+        ),
+        (
+            {"instrument_type": "equity_us"},
+            Decimal("0.001"),
+            "wrong_instrument_type",
+        ),
         ({"execution_symbol": "ETH/USD"}, Decimal("0.001"), "wrong_symbol"),
         ({"lifecycle_state": "submitted"}, Decimal("0.001"), "source_not_reconciled"),
         ({"filled_qty": None}, Decimal("0.001"), "source_filled_qty_unknown"),
@@ -451,6 +469,9 @@ async def test_sell_source_exact_binding_fails_closed(
         **{
             "client_order_id": "native-buy-1",
             "account_mode": "alpaca_paper",
+            "execution_venue": "alpaca_paper",
+            "execution_asset_class": "crypto",
+            "instrument_type": "crypto",
             **source_overrides,
         }
     )

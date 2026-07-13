@@ -76,6 +76,12 @@ _RECONCILED_BUY_STATES: frozenset[str] = frozenset(
     }
 )
 
+# Exact native BUY authority is reusable only while the position is still
+# represented by that BUY. Round-trip terminal states have already closed that
+# authority and must not back a new sell. Legacy/manual correlation lookup keeps
+# its historical state contract above.
+_EXACT_SOURCE_BUY_STATES: frozenset[str] = frozenset({"position_reconciled", "filled"})
+
 
 # ---------------------------------------------------------------------------
 # Error
@@ -353,7 +359,41 @@ async def verify_sell_packet_source(
                     f"packet {packet.account_mode!r}"
                 ),
             )
+        source_venue = str(_get_attr(source, "execution_venue") or "")
+        if source_venue != packet.execution_venue:
+            raise PaperApprovalPacketError(
+                code="wrong_execution_venue",
+                message=(
+                    f"buy source execution_venue {source_venue!r} does not match "
+                    f"packet {packet.execution_venue!r}"
+                ),
+            )
+        source_asset_class = str(_get_attr(source, "execution_asset_class") or "")
+        if source_asset_class != packet.execution_asset_class:
+            raise PaperApprovalPacketError(
+                code="wrong_asset_class",
+                message=(
+                    f"buy source execution_asset_class {source_asset_class!r} does "
+                    f"not match packet {packet.execution_asset_class!r}"
+                ),
+            )
+        raw_instrument_type = _get_attr(source, "instrument_type")
+        source_instrument_type = str(
+            getattr(raw_instrument_type, "value", raw_instrument_type) or ""
+        )
+        expected_instrument_type = (
+            "crypto" if packet.execution_asset_class == "crypto" else "equity_us"
+        )
+        if source_instrument_type != expected_instrument_type:
+            raise PaperApprovalPacketError(
+                code="wrong_instrument_type",
+                message=(
+                    f"buy source instrument_type {source_instrument_type!r} does not "
+                    f"match expected {expected_instrument_type!r}"
+                ),
+            )
         buy_exec_rows = [source]
+        allowed_source_states = _EXACT_SOURCE_BUY_STATES
     else:
         rows = await ledger.list_by_correlation_id(packet.lifecycle_correlation_id)
 
@@ -364,6 +404,7 @@ async def verify_sell_packet_source(
             if str(_get_attr(row, "side") or "").lower() == "buy"
             and str(_get_attr(row, "record_kind") or "") == "execution"
         ]
+        allowed_source_states = _RECONCILED_BUY_STATES
 
     if not buy_exec_rows:
         raise PaperApprovalPacketError(
@@ -385,12 +426,12 @@ async def verify_sell_packet_source(
 
     source = buy_exec_rows[0]
     source_state = str(_get_attr(source, "lifecycle_state") or "")
-    if source_state not in _RECONCILED_BUY_STATES:
+    if source_state not in allowed_source_states:
         raise PaperApprovalPacketError(
             code="source_not_reconciled",
             message=(
                 f"buy source lifecycle_state is {source_state!r}; "
-                f"must be in {sorted(_RECONCILED_BUY_STATES)}"
+                f"must be in {sorted(allowed_source_states)}"
             ),
         )
 

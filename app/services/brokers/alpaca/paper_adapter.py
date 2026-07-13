@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from app.services.alpaca_paper_order_application import (
@@ -46,20 +47,24 @@ class AlpacaCryptoPaperAdapter:
         self._application = application or AlpacaPaperOrderApplication()
 
     async def preview(self, intent: VerifiedPaperOrderIntent) -> PaperOperationResult:
-        outcome = await self._application.preview(self._decision(intent))
-        return self._result(PaperOperation.PREVIEW, outcome)
+        return await self._invoke(
+            PaperOperation.PREVIEW, intent, self._application.preview
+        )
 
     async def submit(self, intent: VerifiedPaperOrderIntent) -> PaperOperationResult:
-        outcome = await self._application.submit(self._decision(intent))
-        return self._result(PaperOperation.SUBMIT, outcome)
+        return await self._invoke(
+            PaperOperation.SUBMIT, intent, self._application.submit
+        )
 
     async def cancel(self, intent: VerifiedPaperOrderIntent) -> PaperOperationResult:
-        outcome = await self._application.cancel(self._decision(intent))
-        return self._result(PaperOperation.CANCEL, outcome)
+        return await self._invoke(
+            PaperOperation.CANCEL, intent, self._application.cancel
+        )
 
     async def get_order(self, intent: VerifiedPaperOrderIntent) -> PaperOperationResult:
-        outcome = await self._application.get_order(self._decision(intent))
-        return self._result(PaperOperation.GET_ORDER, outcome)
+        return await self._invoke(
+            PaperOperation.GET_ORDER, intent, self._application.get_order
+        )
 
     async def reconcile(self, intent: VerifiedPaperOrderIntent) -> PaperOperationResult:
         return self._unsupported(PaperOperation.RECONCILE)
@@ -68,6 +73,26 @@ class AlpacaCryptoPaperAdapter:
         self, intent: VerifiedPaperOrderIntent
     ) -> PaperOperationResult:
         return self._unsupported(PaperOperation.LINK_NATIVE_ORDER)
+
+    async def _invoke(
+        self,
+        operation: PaperOperation,
+        intent: VerifiedPaperOrderIntent,
+        handler: Callable[
+            [AlpacaVerifiedDecision], Awaitable[AlpacaPaperApplicationOutcome]
+        ],
+    ) -> PaperOperationResult:
+        try:
+            outcome = await handler(self._decision(intent))
+        except Exception as exc:  # noqa: BLE001 — canonical port failure boundary
+            return PaperOperationResult(
+                operation=operation,
+                status=PaperOperationStatus.FAILED,
+                reason_code=PaperReasonCode.ADAPTER_UNAVAILABLE,
+                venue=self.broker,
+                evidence={"error_type": type(exc).__name__},
+            )
+        return self._result(operation, outcome)
 
     @staticmethod
     def _decision(intent: VerifiedPaperOrderIntent) -> AlpacaVerifiedDecision:

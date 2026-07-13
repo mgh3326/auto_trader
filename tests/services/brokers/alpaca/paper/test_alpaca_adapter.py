@@ -74,6 +74,31 @@ class _Application:
         return self.outcome
 
 
+class _SensitiveApplicationFailure(RuntimeError):
+    pass
+
+
+class _RaisingApplication:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object]] = []
+
+    async def _raise(self, operation: str, decision: object):
+        self.calls.append((operation, decision))
+        raise _SensitiveApplicationFailure("api_secret=must-not-leak")
+
+    async def preview(self, decision):
+        return await self._raise("preview", decision)
+
+    async def submit(self, decision):
+        return await self._raise("submit", decision)
+
+    async def cancel(self, decision):
+        return await self._raise("cancel", decision)
+
+    async def get_order(self, decision):
+        return await self._raise("get_order", decision)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("method", "operation"),
@@ -111,6 +136,55 @@ async def test_adapter_maps_supported_methods_to_guarded_application(
     decision = application.calls[0][1]
     assert decision.signal_symbol == "BTCUSDT"
     assert decision.signal_venue == "binance_public_spot"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "operation"),
+    [
+        ("preview", PaperOperation.PREVIEW),
+        ("submit", PaperOperation.SUBMIT),
+        ("cancel", PaperOperation.CANCEL),
+        ("get_order", PaperOperation.GET_ORDER),
+    ],
+)
+async def test_adapter_maps_unexpected_application_failure_to_sanitized_result(
+    method: str, operation: PaperOperation
+):
+    from app.services.brokers.alpaca.paper_adapter import AlpacaCryptoPaperAdapter
+
+    application = _RaisingApplication()
+    adapter = AlpacaCryptoPaperAdapter(application=application)
+
+    result = await getattr(adapter, method)(_intent())
+
+    assert result.operation is operation
+    assert result.status is PaperOperationStatus.FAILED
+    assert result.reason_code is PaperReasonCode.ADAPTER_UNAVAILABLE
+    assert result.evidence == {"error_type": "_SensitiveApplicationFailure"}
+    assert application.calls[0][0] == method
+
+
+@pytest.mark.asyncio
+async def test_adapter_pending_cancel_is_blocked_with_non_ok_reason() -> None:
+    from app.services.brokers.alpaca.paper_adapter import AlpacaCryptoPaperAdapter
+
+    application = _Application(
+        AlpacaPaperApplicationOutcome(
+            status="cancel_requested",
+            reason_code="cancel_pending",
+            native_client_order_id="native-client",
+            native_order_id="native-order",
+            broker_called=True,
+        )
+    )
+
+    result = await AlpacaCryptoPaperAdapter(application=application).cancel(_intent())
+
+    assert result.status is PaperOperationStatus.BLOCKED
+    assert result.reason_code == "cancel_pending"
+    assert result.reason_code is not PaperReasonCode.OK
+    assert result.evidence["broker_called"] is True
 
 
 @pytest.mark.asyncio

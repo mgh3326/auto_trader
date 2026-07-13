@@ -377,6 +377,7 @@ class AlpacaPaperSubmitCoordinator:
             lifecycle_correlation_id=packet.lifecycle_correlation_id,
             execution_symbol=packet.execution_symbol,
             execution_venue=packet.execution_venue,
+            execution_asset_class=packet.execution_asset_class,
             instrument_type=_instrument_type_for(packet.execution_asset_class),
             side=packet.side,
             order_type=str(submit_canonical.get("type") or "limit"),
@@ -505,6 +506,7 @@ class AlpacaPaperSubmitCoordinator:
                 lifecycle_correlation_id=packet.lifecycle_correlation_id,
                 execution_symbol=packet.execution_symbol,
                 execution_venue=packet.execution_venue,
+                execution_asset_class=packet.execution_asset_class,
                 instrument_type=_instrument_type_for(packet.execution_asset_class),
                 account_mode=packet.account_mode,
                 requested_qty=requested,
@@ -514,7 +516,27 @@ class AlpacaPaperSubmitCoordinator:
                 time_in_force=submit_canonical.get("time_in_force"),
                 requested_price=_to_decimal(submit_canonical.get("limit_price")),
                 preview_payload=dict(submit_canonical),
+                source_client_order_id=packet.source_client_order_id,
             )
+            # A concurrent same-token winner may have completed while this caller
+            # waited on the sell lock. Its durable execution outcome outranks the
+            # now-changed source/account availability observed by this loser.
+            if not claim.won and claim.row is not None:
+                if not is_inflight_execution(claim.row):
+                    return self._resolved_outcome(claim.row)
+                return await self._resolve_inflight(coid)
+            if claim.source_reason_code is not None:
+                source_message = (
+                    f"sell qty {requested} exceeds exact source availability "
+                    f"{claim.source_available}"
+                    if claim.source_reason_code == "qty_exceeds_source_available"
+                    else "exact buy source authority became unavailable during claim"
+                )
+                return self._sell_reject(
+                    packet,
+                    claim.source_reason_code,
+                    source_message,
+                )
             if claim.insufficient:
                 return self._sell_reject(
                     packet,
@@ -524,9 +546,6 @@ class AlpacaPaperSubmitCoordinator:
                     "minus reserved open sells)",
                 )
             if not claim.won:
-                row = claim.row
-                if row is not None and not is_inflight_execution(row):
-                    return self._resolved_outcome(row)
                 return await self._resolve_inflight(coid)
 
             return await self._winner_submit(packet, submit_canonical)
