@@ -10,6 +10,7 @@ import pytest
 from app.services.order_proposals.approval_message import (
     build_action_diff,
     build_approval_message,
+    build_buying_power_shortfall_text,
     build_callback_data,
     build_loss_cut_confirmation_message,
     parse_callback_data,
@@ -85,6 +86,62 @@ def test_loss_cut_approval_message_shows_reason_and_retrospective():
     assert r"stop\_loss" in text
     assert "#42" in text
     assert "ROB-800" not in text
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("detail", "expected"),
+    [
+        (
+            {
+                "reason": "insufficient_buying_power",
+                "currency": "KRW",
+                "available": "400000",
+                "required": "1070300",
+                "shortfall": "670300",
+            },
+            ("매수가능 400,000원 / 필요 1,070,300원 → 부족 670,300원 — 입금 후 재승인"),
+        ),
+        (
+            {
+                "reason": "insufficient_buying_power",
+                "currency": "USD",
+                "available": "100",
+                "required": "123.45",
+                "shortfall": "23.45",
+            },
+            ("매수가능 $100.00 / 필요 $123.45 → 부족 $23.45 — 입금 후 재승인"),
+        ),
+    ],
+)
+def test_buying_power_shortfall_text_formats_currency(detail, expected):
+    assert build_buying_power_shortfall_text(detail) == expected
+
+
+@pytest.mark.unit
+def test_buying_power_reconfirm_message_shows_shortfall_without_fake_diff():
+    detail = {
+        "reason": "insufficient_buying_power",
+        "currency": "KRW",
+        "available": "400000",
+        "required": "1070300",
+        "shortfall": "670300",
+    }
+
+    text, keyboard = build_approval_message(
+        group=_group(side="buy"),
+        rungs=[_rung()],
+        diff=detail,
+    )
+
+    assert "매수가능 금액 부족" in text
+    assert "매수가능 400,000원 / 필요 1,070,300원" in text
+    assert "입금 후 재승인" in text
+    assert "변경 전" not in text
+    assert [button["text"] for button in keyboard["inline_keyboard"][0]] == [
+        "✅ 승인",
+        "❌ 거부",
+    ]
 
 
 @pytest.mark.unit

@@ -54,6 +54,7 @@ from app.mcp_server.caller_identity import caller_agent_id_var
 from app.services.order_proposals.approval_message import (
     _escape_markdown,
     build_approval_message,
+    build_buying_power_shortfall_text,
     build_loss_cut_confirmation_message,
     parse_callback_data,
 )
@@ -218,6 +219,10 @@ def _build_extra_reconfirm_block(reconfirm_outcomes: list[RungOutcome]) -> str:
     lines = ["*추가 재확인 필요 단계*"]
     for outcome in reconfirm_outcomes:
         detail = outcome.detail or {}
+        shortfall_text = build_buying_power_shortfall_text(detail)
+        if shortfall_text is not None:
+            lines.append(f"- #{outcome.rung_index + 1}: {shortfall_text}")
+            continue
         before = detail.get("before")
         after = detail.get("after")
         lines.append(f"- #{outcome.rung_index + 1}: 변경 전 {before} → 변경 후 {after}")
@@ -384,11 +389,18 @@ async def _handle_approve(
         await session.commit()
 
         if message_id is not None:
+            shortfall_notice = build_buying_power_shortfall_text(
+                reconfirm_outcomes[0].detail or {}
+            )
             await _safe_edit_message(
                 notifier,
                 chat_id,
                 message_id,
-                "⚠️ 재확인 필요 — 아래 새 메시지를 확인해 주세요.",
+                (
+                    f"⚠️ 재확인 필요 — {shortfall_notice}"
+                    if shortfall_notice is not None
+                    else "⚠️ 재확인 필요 — 아래 새 메시지를 확인해 주세요."
+                ),
             )
         new_message_id = await _safe_send_approval_message(
             notifier, text, keyboard, chat_id=str(chat_id)
