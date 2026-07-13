@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import validate_toss_api_config
 from app.models.order_proposals import OrderProposal, OrderProposalRung
 
 
@@ -127,6 +128,8 @@ async def default_buying_power_reader(
 ) -> Decimal | None:
     """Read Toss buying power; unsupported brokers deliberately return unknown."""
     if account_mode != "toss_live":
+        return None
+    if validate_toss_api_config():
         return None
 
     key = BuyingPowerKey(account_mode, broker_account_id, currency)

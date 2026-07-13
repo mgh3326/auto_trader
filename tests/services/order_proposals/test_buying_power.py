@@ -3,11 +3,13 @@ from decimal import Decimal
 
 import pytest
 
+from app.core.config import settings
 from app.services.order_proposals.buying_power import (
     BuyingPowerCache,
     BuyingPowerKey,
     build_create_advisory,
     currency_for_market,
+    default_buying_power_reader,
     pending_buy_requirement,
     required_cash,
 )
@@ -86,6 +88,28 @@ async def test_cache_does_not_store_loader_failure():
 
     assert await cache.get_or_load(key, loader) == Decimal("50000")
     assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_default_toss_reader_skips_when_provider_is_disabled(monkeypatch):
+    monkeypatch.setattr(settings, "toss_api_enabled", False)
+
+    def forbidden_client():
+        raise AssertionError("disabled Toss provider must not construct a client")
+
+    monkeypatch.setattr(
+        "app.services.brokers.toss.client.TossReadClient.from_settings",
+        forbidden_client,
+    )
+
+    assert (
+        await default_buying_power_reader(
+            account_mode="toss_live",
+            broker_account_id=None,
+            currency="KRW",
+        )
+        is None
+    )
 
 
 async def _seed_proposal(
