@@ -1,3 +1,4 @@
+import re
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -966,12 +967,50 @@ def test_toss_decimal_args_are_exact_and_canonical():
 def test_toss_proposal_client_ids_are_stable_and_rung_scoped():
     from app.services.order_proposals import revalidation as mod
 
+    # Toss OpenAPI OrderCreateRequest.clientOrderId (openapi.json).
+    toss_client_order_id_max_length = 36
     proposal_id = uuid.UUID("12345678-1234-5678-1234-567812345678")
     same = mod._toss_proposal_client_order_id(proposal_id, 0)
     assert same == mod._toss_proposal_client_order_id(proposal_id, 0)
     assert same != mod._toss_proposal_client_order_id(proposal_id, 1)
     assert same != mod._toss_proposal_client_order_id(uuid.uuid4(), 0)
     assert same.startswith("tosprop-")
+    assert len(same) <= toss_client_order_id_max_length
+    assert re.fullmatch(r"[a-zA-Z0-9\-_]+", same)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_client_order_id",
+    ["x" * 37, "invalid@client-order-id"],
+)
+async def test_toss_submit_rejects_invalid_client_order_id_before_broker_call(
+    monkeypatch, invalid_client_order_id
+):
+    import app.mcp_server.tooling.orders_toss_variants as toss
+    from app.services.order_proposals import revalidation as mod
+
+    async def forbidden_broker_call(**kwargs):
+        pytest.fail(f"broker POST must not be called: {kwargs}")
+
+    monkeypatch.setattr(toss, "toss_place_order", forbidden_broker_call)
+
+    result = await mod._default_place_order_fn(
+        dry_run=False,
+        account_mode="toss_live",
+        symbol="000660",
+        side="buy",
+        market="equity_kr",
+        order_type="limit",
+        quantity=Decimal("1"),
+        price=Decimal("222600"),
+        proposal_client_order_id=invalid_client_order_id,
+        approval_hash="preview-token",
+    )
+
+    assert result["success"] is False
+    assert result["mutation_sent"] is False
+    assert result["error_code"] == "invalid_toss_client_order_id"
 
 
 def test_upbit_proposal_client_ids_are_stable_and_rung_scoped():
