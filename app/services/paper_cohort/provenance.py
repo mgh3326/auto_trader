@@ -23,7 +23,9 @@ from app.services.brokers.paper.contracts import (
 )
 from app.services.paper_cohort.contracts import PaperCohortError
 from app.services.paper_validation.contracts import (
+    FrozenInputStamp,
     PaperOrderAuthorization,
+    PolicyStamp,
     ValidationIdentity,
     ValidationState,
 )
@@ -163,4 +165,48 @@ class PaperCohortProvenanceVerifier:
         )
 
 
-__all__ = ["PaperCohortProvenanceVerifier"]
+class CohortFrozenInputHashProvider:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_stamp(self, identity: ValidationIdentity) -> FrozenInputStamp:
+        assignment = await self._session.scalar(
+            select(PaperValidationCohortAssignment).where(
+                PaperValidationCohortAssignment.validation_id == identity.validation_id,
+                PaperValidationCohortAssignment.cohort_id == identity.cohort_id,
+            )
+        )
+        if assignment is None or assignment.input_hash != identity.input_hash:
+            raise PaperCohortError("validation_identity_mismatch")
+        return FrozenInputStamp(
+            bundle_id=f"cohort:{identity.cohort_id}:{assignment.assignment_id}",
+            content_hash=assignment.input_hash,
+            verified=True,
+        )
+
+
+class CohortPolicyHashProvider:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_stamp(self, identity: ValidationIdentity) -> PolicyStamp:
+        assignment = await self._session.scalar(
+            select(PaperValidationCohortAssignment).where(
+                PaperValidationCohortAssignment.validation_id == identity.validation_id,
+                PaperValidationCohortAssignment.cohort_id == identity.cohort_id,
+            )
+        )
+        if assignment is None or assignment.policy_hash != identity.policy_hash:
+            raise PaperCohortError("validation_identity_mismatch")
+        return PolicyStamp(
+            version=assignment.strategy_version_id,
+            content_hash=assignment.policy_hash,
+            verified=True,
+        )
+
+
+__all__ = [
+    "CohortFrozenInputHashProvider",
+    "CohortPolicyHashProvider",
+    "PaperCohortProvenanceVerifier",
+]

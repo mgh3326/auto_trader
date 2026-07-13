@@ -318,6 +318,10 @@ class Settings(BaseSettings):
     # façade. The dedicated MCP profile must remain physically absent unless
     # the operator opts in; startup also requires MCP bearer authentication.
     PAPER_EXECUTION_ENABLED: bool = False
+    # ROB-849 — immutable BTC/ETH cohort scheduler. Disabled means the TaskIQ
+    # label is absent and the task/job return before opening a DB session.
+    PAPER_COHORT_ENABLED: bool = False
+    PAPER_COHORT_CRON: str = "* * * * *"
     # ROB-848 — authenticated caller id -> validation role. Empty/unmapped is
     # intentionally fail-closed; caller-owned payload roles are never accepted.
     PAPER_VALIDATION_ACTOR_ROLES: dict[str, str] = Field(default_factory=dict)
