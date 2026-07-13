@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import logging
 import re
 import uuid
 from collections.abc import Callable
@@ -40,9 +41,21 @@ from app.services.order_proposals.broker_gateway import (
     fetch_submit_evidence,
     fetch_target_order,
 )
+from app.services.order_proposals.buying_power import (
+    BuyingPowerClaim,
+    BuyingPowerClaimer,
+    BuyingPowerReleaser,
+    currency_for_market,
+    decimal_text,
+    default_buying_power_claimer,
+    default_buying_power_releaser,
+    required_cash,
+)
 from app.services.order_proposals.errors import OrderProposalError
 from app.services.order_proposals.service import OrderProposalsService
 from app.services.order_proposals.target_order import TargetOrderSnapshot
+
+logger = logging.getLogger(__name__)
 
 RungOutcomeResult = Literal[
     "submitted_acked",
@@ -516,6 +529,8 @@ async def revalidate_and_submit(
     fetch_target_fn: TargetFetchFn = fetch_target_order,
     cancel_target_fn: TargetCancelFn = cancel_target_order,
     fetch_submit_evidence_fn: SubmitEvidenceFetchFn = fetch_submit_evidence,
+    buying_power_claimer: BuyingPowerClaimer = default_buying_power_claimer,
+    buying_power_releaser: BuyingPowerReleaser = default_buying_power_releaser,
 ) -> list[RungOutcome]:
     """Revalidate + (maybe) submit every ``pending_approval`` rung.
 
@@ -559,6 +574,8 @@ async def revalidate_and_submit(
                 place_order_fn=place_order_fn,
                 correlation_mint=correlation_mint,
                 fetch_submit_evidence_fn=fetch_submit_evidence_fn,
+                buying_power_claimer=buying_power_claimer,
+                buying_power_releaser=buying_power_releaser,
             )
         outcomes.append(outcome)
     return outcomes
@@ -573,6 +590,8 @@ async def _revalidate_place_rung(
     place_order_fn: PlaceOrderFn,
     correlation_mint: CorrelationMint,
     fetch_submit_evidence_fn: SubmitEvidenceFetchFn,
+    buying_power_claimer: BuyingPowerClaimer,
+    buying_power_releaser: BuyingPowerReleaser,
 ) -> RungOutcome:
     proposal_id = group.proposal_id
     rung_index = rung.rung_index
@@ -675,6 +694,60 @@ async def _revalidate_place_rung(
             rung_index, "needs_reconfirm", {"before": before, "after": after}
         )
 
+    buying_power_reservation: tuple[str, Decimal, str | None] | None = None
+    if rung.side == "buy" and rung.limit_price is not None:
+        currency = currency_for_market(group.market)
+        required = required_cash(
+            quantity=Decimal(rung.quantity),
+            limit_price=Decimal(rung.limit_price),
+            preview=preview,
+        )
+        try:
+            # The default claimer reads and provisionally subtracts under one
+            # per-account/currency lock. This closes the gap where two rapid
+            # approvals could both observe the same cached balance before
+            # either broker POST was sent.
+            claim = await _maybe_await(
+                buying_power_claimer(
+                    account_mode=group.account_mode,
+                    broker_account_id=group.broker_account_id,
+                    currency=currency,
+                    amount=required,
+                )
+            )
+        except Exception:  # noqa: BLE001 - UX gate deliberately fails open
+            # This pre-submit comparison improves operator feedback; it is not
+            # the authoritative safety control. If the advisory read is down,
+            # preserve the existing submit path and let the broker make the
+            # final buying-power decision.
+            logger.warning(
+                "order proposal buying-power lookup failed; continuing fail-open",
+                exc_info=True,
+            )
+            claim = None
+        claim_token: str | None = None
+        if isinstance(claim, BuyingPowerClaim):
+            available = claim.available
+            claim_token = claim.token
+        else:
+            available = claim
+        if available is not None and Decimal(available) < required:
+            available_decimal = Decimal(available)
+            await service.mark_needs_reconfirm(proposal_id, rung_index, now=now)
+            return RungOutcome(
+                rung_index,
+                "needs_reconfirm",
+                {
+                    "reason": "insufficient_buying_power",
+                    "currency": currency,
+                    "available": decimal_text(available_decimal),
+                    "required": decimal_text(required),
+                    "shortfall": decimal_text(required - available_decimal),
+                },
+            )
+        if available is not None:
+            buying_power_reservation = (currency, required, claim_token)
+
     await service.transition_rung(proposal_id, rung_index, new_state="approved")
     await service.transition_rung(proposal_id, rung_index, new_state="submitting")
 
@@ -710,7 +783,7 @@ async def _revalidate_place_rung(
         )
     except Exception as exc:  # noqa: BLE001 - broker call; ambiguous, not a void
         if group.account_mode == "upbit":
-            return await _classify_submit(
+            outcome = await _classify_submit(
                 service=service,
                 proposal_id=proposal_id,
                 rung_index=rung_index,
@@ -723,17 +796,19 @@ async def _revalidate_place_rung(
                 identifier=proposal_client_order_id,
                 fetch_submit_evidence_fn=fetch_submit_evidence_fn,
             )
-        await service.record_unverified(
-            proposal_id,
-            rung_index,
-            reason=f"submit_exception:{exc}",
-            now=now,
-            correlation_id=corr,
-            idempotency_key=preview.get("idempotency_key"),
-        )
-        return RungOutcome(rung_index, "unverified", {"error": str(exc)})
+        else:
+            await service.record_unverified(
+                proposal_id,
+                rung_index,
+                reason=f"submit_exception:{exc}",
+                now=now,
+                correlation_id=corr,
+                idempotency_key=preview.get("idempotency_key"),
+            )
+            outcome = RungOutcome(rung_index, "unverified", {"error": str(exc)})
+        return outcome
 
-    return await _classify_submit(
+    outcome = await _classify_submit(
         service=service,
         proposal_id=proposal_id,
         rung_index=rung_index,
@@ -746,6 +821,39 @@ async def _revalidate_place_rung(
         identifier=proposal_client_order_id,
         fetch_submit_evidence_fn=fetch_submit_evidence_fn,
     )
+    if outcome.result == "error":
+        await _release_after_rejection(
+            buying_power_releaser=buying_power_releaser,
+            group=group,
+            reservation=buying_power_reservation,
+        )
+    return outcome
+
+
+async def _release_after_rejection(
+    *,
+    buying_power_releaser: BuyingPowerReleaser,
+    group: OrderProposal,
+    reservation: tuple[str, Decimal, str | None] | None,
+) -> None:
+    if reservation is None:
+        return
+    currency, amount, claim_token = reservation
+    try:
+        await _maybe_await(
+            buying_power_releaser(
+                account_mode=group.account_mode,
+                broker_account_id=group.broker_account_id,
+                currency=currency,
+                claim_token=claim_token,
+                amount=amount,
+            )
+        )
+    except Exception:  # noqa: BLE001 - cache adjustment never changes broker outcome
+        logger.warning(
+            "order proposal buying-power claim release failed; ignoring",
+            exc_info=True,
+        )
 
 
 def _target_mismatch_reason(

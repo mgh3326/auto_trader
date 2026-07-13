@@ -1480,6 +1480,351 @@ async def test_toss_kr_routes_preview_and_accepted_submit(db_session, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_toss_insufficient_buying_power_prevents_submit(db_session):
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("1070300"), None)],
+    )
+    await db_session.commit()
+    submit_calls = 0
+
+    async def place_order(**kwargs):
+        nonlocal submit_calls
+        if kwargs["dry_run"]:
+            client_order_id = kwargs["proposal_client_order_id"]
+            return {
+                "success": True,
+                "approval_hash": "preview-token",
+                "price": "1070300",
+                "quantity": "1",
+                "estimated_value": "1070300",
+                "fee": "0",
+                "payload_preview": {
+                    "clientOrderId": client_order_id,
+                    "price": "1070300",
+                    "quantity": "1",
+                },
+            }
+        submit_calls += 1
+        pytest.fail("broker POST must not run with known insufficient buying power")
+
+    async def buying_power_claimer(**kwargs):
+        assert kwargs == {
+            "account_mode": "toss_live",
+            "broker_account_id": None,
+            "currency": "KRW",
+            "amount": Decimal("1070300"),
+        }
+        return Decimal("400000")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        buying_power_claimer=buying_power_claimer,
+    )
+
+    assert outcomes[0].result == "needs_reconfirm"
+    assert outcomes[0].detail == {
+        "reason": "insufficient_buying_power",
+        "currency": "KRW",
+        "available": "400000",
+        "required": "1070300",
+        "shortfall": "670300",
+    }
+    assert submit_calls == 0
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "needs_reconfirm"
+
+
+async def _create_toss_gate_proposal(db_session, *, side="buy", rungs=None):
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+        side=side,
+        order_type="limit",
+        proposer="p",
+        rungs=rungs or [RungInput(0, side, Decimal("1"), Decimal("100000"), None)],
+    )
+    await db_session.commit()
+    return service, group
+
+
+def _toss_gate_preview(kwargs, *, quantity="1", price="100000"):
+    return {
+        "success": True,
+        "approval_hash": "preview-token",
+        "price": price,
+        "quantity": quantity,
+        "estimated_value": str(Decimal(quantity) * Decimal(price)),
+        "fee": "0",
+        "payload_preview": {
+            "clientOrderId": kwargs["proposal_client_order_id"],
+            "price": price,
+            "quantity": quantity,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_toss_sufficient_buying_power_preserves_submit_path(db_session):
+    service, group = await _create_toss_gate_proposal(db_session)
+    submit_calls = 0
+
+    async def place_order(**kwargs):
+        nonlocal submit_calls
+        if kwargs["dry_run"]:
+            return _toss_gate_preview(kwargs)
+        submit_calls += 1
+        return {
+            "success": True,
+            "status": "resting",
+            "broker_order_id": "toss-enough-1",
+        }
+
+    async def reader(**kwargs):
+        return Decimal("100001")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        buying_power_claimer=reader,
+    )
+
+    assert [outcome.result for outcome in outcomes] == ["submitted_resting"]
+    assert submit_calls == 1
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "resting"
+
+
+@pytest.mark.asyncio
+async def test_toss_sell_rung_skips_buying_power_gate(db_session):
+    service, group = await _create_toss_gate_proposal(db_session, side="sell")
+    submit_calls = 0
+
+    async def place_order(**kwargs):
+        nonlocal submit_calls
+        if kwargs["dry_run"]:
+            return _toss_gate_preview(kwargs)
+        submit_calls += 1
+        return {
+            "success": True,
+            "status": "resting",
+            "broker_order_id": "toss-sell-1",
+        }
+
+    async def forbidden_reader(**kwargs):
+        pytest.fail(f"sell rung must not read buying power: {kwargs}")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        buying_power_claimer=forbidden_reader,
+    )
+
+    assert [outcome.result for outcome in outcomes] == ["submitted_resting"]
+    assert submit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_toss_buying_power_failure_fails_open_to_submit(db_session):
+    service, group = await _create_toss_gate_proposal(db_session)
+    submit_calls = 0
+
+    async def place_order(**kwargs):
+        nonlocal submit_calls
+        if kwargs["dry_run"]:
+            return _toss_gate_preview(kwargs)
+        submit_calls += 1
+        return {
+            "success": True,
+            "status": "resting",
+            "broker_order_id": "toss-fail-open-1",
+        }
+
+    async def failed_reader(**kwargs):
+        raise RuntimeError("buying-power endpoint unavailable")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        buying_power_claimer=failed_reader,
+    )
+
+    assert [outcome.result for outcome in outcomes] == ["submitted_resting"]
+    assert submit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_toss_deposit_then_same_proposal_reapproval_succeeds(db_session):
+    service, group = await _create_toss_gate_proposal(db_session)
+    buying_power = iter((Decimal("50000"), Decimal("150000")))
+    submit_calls = 0
+
+    async def place_order(**kwargs):
+        nonlocal submit_calls
+        if kwargs["dry_run"]:
+            return _toss_gate_preview(kwargs)
+        submit_calls += 1
+        return {
+            "success": True,
+            "status": "resting",
+            "broker_order_id": "toss-after-deposit-1",
+        }
+
+    async def reader(**kwargs):
+        return next(buying_power)
+
+    first = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        buying_power_claimer=reader,
+    )
+    await service.transition_rung(group.proposal_id, 0, new_state="pending_approval")
+    second = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        buying_power_claimer=reader,
+    )
+
+    assert [outcome.result for outcome in first] == ["needs_reconfirm"]
+    assert [outcome.result for outcome in second] == ["submitted_resting"]
+    assert submit_calls == 1
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "resting"
+
+
+@pytest.mark.asyncio
+async def test_toss_successful_rung_reserves_cached_power_for_next_rung(db_session):
+    service, group = await _create_toss_gate_proposal(
+        db_session,
+        rungs=[
+            RungInput(0, "buy", Decimal("6"), Decimal("10000"), None),
+            RungInput(1, "buy", Decimal("6"), Decimal("10000"), None),
+        ],
+    )
+    available = Decimal("100000")
+    submit_calls = 0
+    reservations: list[Decimal] = []
+
+    async def place_order(**kwargs):
+        nonlocal submit_calls
+        if kwargs["dry_run"]:
+            return _toss_gate_preview(kwargs, quantity="6", price="10000")
+        submit_calls += 1
+        return {
+            "success": True,
+            "status": "resting",
+            "broker_order_id": f"toss-reserved-{kwargs['rung']}",
+        }
+
+    async def claimer(**kwargs):
+        nonlocal available
+        reservations.append(kwargs["amount"])
+        before = available
+        if before >= kwargs["amount"]:
+            available -= kwargs["amount"]
+        return before
+
+    async def forbidden_releaser(**kwargs):
+        pytest.fail(f"accepted claims must not be released: {kwargs}")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        buying_power_claimer=claimer,
+        buying_power_releaser=forbidden_releaser,
+    )
+
+    assert [outcome.result for outcome in outcomes] == [
+        "submitted_resting",
+        "needs_reconfirm",
+    ]
+    assert submit_calls == 1
+    assert reservations == [Decimal("60000"), Decimal("60000")]
+    assert outcomes[1].detail["available"] == "40000"
+    assert outcomes[1].detail["shortfall"] == "20000"
+
+
+@pytest.mark.asyncio
+async def test_toss_explicit_rejection_releases_provisional_power(db_session):
+    service, group = await _create_toss_gate_proposal(db_session)
+    released: list[Decimal] = []
+
+    async def place_order(**kwargs):
+        if kwargs["dry_run"]:
+            return _toss_gate_preview(kwargs)
+        return {"success": False, "error": "broker_rejected"}
+
+    async def claimer(**kwargs):
+        assert kwargs["amount"] == Decimal("100000")
+        return Decimal("150000")
+
+    async def releaser(**kwargs):
+        released.append(kwargs["amount"])
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        buying_power_claimer=claimer,
+        buying_power_releaser=releaser,
+    )
+
+    assert outcomes[0].result == "error"
+    assert released == [Decimal("100000")]
+
+
+@pytest.mark.asyncio
+async def test_toss_ambiguous_submit_keeps_provisional_power(db_session):
+    service, group = await _create_toss_gate_proposal(db_session)
+
+    async def place_order(**kwargs):
+        if kwargs["dry_run"]:
+            return _toss_gate_preview(kwargs)
+        raise TimeoutError("submit response lost")
+
+    async def claimer(**kwargs):
+        return Decimal("150000")
+
+    async def forbidden_releaser(**kwargs):
+        pytest.fail(f"ambiguous submission must keep its claim: {kwargs}")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        buying_power_claimer=claimer,
+        buying_power_releaser=forbidden_releaser,
+    )
+
+    assert outcomes[0].result == "unverified"
+
+
+@pytest.mark.asyncio
 async def test_toss_retry_across_dates_reuses_proposal_client_id(
     db_session, monkeypatch
 ):

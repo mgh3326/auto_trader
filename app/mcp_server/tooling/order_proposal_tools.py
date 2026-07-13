@@ -22,6 +22,11 @@ from app.services.order_proposals.broker_gateway import (
     fetch_operator_void_evidence,
     fetch_target_order,
 )
+from app.services.order_proposals.buying_power import (
+    build_create_advisory,
+    currency_for_market,
+    default_buying_power_reader,
+)
 from app.services.order_proposals.dispatch import send_proposal_for_approval
 from app.services.order_proposals.errors import (
     OrderProposalError,
@@ -257,6 +262,31 @@ async def order_proposal_create(
                 else None,
                 "rungs": [_rung_dict(r) for r in saved_rungs],
             }
+
+        if (
+            normalized_action == "place"
+            and account_mode == "toss_live"
+            and side == "buy"
+        ):
+            try:
+                async with AsyncSessionLocal() as advisory_session:
+                    advisory = await build_create_advisory(
+                        advisory_session,
+                        account_mode=account_mode,
+                        broker_account_id=broker_account_id,
+                        currency=currency_for_market(market),
+                        buying_power_reader=default_buying_power_reader,
+                    )
+                result["buying_power_advisory"] = [advisory]
+                warning = advisory.get("warning")
+                if warning:
+                    result["warnings"] = [warning]
+            except Exception:  # noqa: BLE001 - advisory never blocks create
+                logger.exception(
+                    "order_proposal_create: buying-power advisory failed for "
+                    "proposal_id=%s",
+                    proposal_id,
+                )
 
         # Best-effort Telegram dispatch (ROB-816 PR 2). The proposal's own
         # session above is already closed/committed by this point --

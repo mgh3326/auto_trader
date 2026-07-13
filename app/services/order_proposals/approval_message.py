@@ -6,7 +6,7 @@ import re
 import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from typing import Any
 
 from app.core.timezone import KST
@@ -91,6 +91,30 @@ def build_action_diff(*, group: Any, rungs: Sequence[Any]) -> dict | None:
     }
 
 
+def build_buying_power_shortfall_text(detail: Mapping[str, Any]) -> str | None:
+    if detail.get("reason") != "insufficient_buying_power":
+        return None
+    currency = _supported_currency(detail.get("currency"))
+    if currency is None:
+        return None
+    values: list[Decimal] = []
+    for key in ("available", "required", "shortfall"):
+        try:
+            value = Decimal(str(detail[key]))
+        except (InvalidOperation, KeyError, TypeError, ValueError):
+            return None
+        if not value.is_finite():
+            return None
+        values.append(value)
+    available, required, shortfall = values
+    return (
+        f"매수가능 {_format_shortfall_money(available, currency=currency)} / "
+        f"필요 {_format_shortfall_money(required, currency=currency)} → "
+        f"부족 {_format_shortfall_money(shortfall, currency=currency)} "
+        "— 입금 후 재승인"
+    )
+
+
 def build_approval_message(
     *,
     group: Any,
@@ -125,8 +149,15 @@ def build_approval_message(
     quantity_unit = "주" if market in {"equity_kr", "equity_us"} else ""
     sorted_rungs = sorted(rungs, key=lambda rung: getattr(rung, "rung_index", 0))
     explicit_reconfirm = diff is not None
+    shortfall_text = (
+        build_buying_power_shortfall_text(diff) if isinstance(diff, Mapping) else None
+    )
     effective_diff = (
-        diff if explicit_reconfirm else build_action_diff(group=group, rungs=rungs)
+        None
+        if shortfall_text is not None
+        else diff
+        if explicit_reconfirm
+        else build_action_diff(group=group, rungs=rungs)
     )
 
     title = "*주문 제안 재확인*" if explicit_reconfirm else "*주문 제안 승인*"
@@ -191,6 +222,9 @@ def build_approval_message(
         cash_lines = _build_cash_lines(cash_stress, currency=currency)
         if cash_lines:
             lines.extend(["", "*현금 스트레스*", *cash_lines])
+
+    if shortfall_text is not None:
+        lines.extend(["", "*매수가능 금액 부족*", f"- {shortfall_text}"])
 
     if effective_diff is not None:
         before = (
@@ -415,6 +449,14 @@ def _format_money(
     if normalized_currency:
         return f"{amount} {_escape_markdown(normalized_currency)}"
     return amount
+
+
+def _format_shortfall_money(value: Decimal, *, currency: str) -> str:
+    if currency == "KRW":
+        rounded = value.quantize(Decimal("1"), rounding=ROUND_CEILING)
+        return f"{rounded:,.0f}원"
+    rounded = value.quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+    return f"${rounded:,.2f}"
 
 
 def _format_decimal(value: object, *, grouping: bool = False) -> str:

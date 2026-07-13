@@ -804,6 +804,97 @@ async def test_needs_reconfirm_sends_new_diff_message(monkeypatch, db_session):
 
 
 @pytest.mark.asyncio
+async def test_buying_power_shortfall_edits_failure_and_sends_retry_button(
+    monkeypatch, db_session
+):
+    _allow_chat(monkeypatch)
+    group = await _seed_proposal(db_session, nonce="nonce-buying-power")
+    data = f"op:{str(group.proposal_id)[:8]}:nonce-buying-power"
+    notifier = _FakeNotifier()
+    detail = {
+        "reason": "insufficient_buying_power",
+        "currency": "KRW",
+        "available": "400000",
+        "required": "1070300",
+        "shortfall": "670300",
+    }
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        await service.transition_rung(proposal_id, 0, new_state="revalidating")
+        await service.mark_needs_reconfirm(proposal_id, 0, now=now)
+        return [RungOutcome(0, "needs_reconfirm", detail)]
+
+    result = await handle_callback_update(
+        _make_update(data=data),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+
+    expected = "매수가능 400,000원 / 필요 1,070,300원 → 부족 670,300원 — 입금 후 재승인"
+    assert result["reason"] == "needs_reconfirm"
+    assert expected in notifier.edited[0][2]
+    new_text, new_keyboard, _chat_id = notifier.sent_messages[0]
+    assert expected in new_text
+    approve = new_keyboard["inline_keyboard"][0][0]
+    assert approve["text"] == "✅ 승인"
+    action, proposal_short, nonce = parse_callback_data(approve["callback_data"])
+    assert action == "op"
+    assert proposal_short == str(group.proposal_id)[:8]
+    assert nonce != "nonce-buying-power"
+    _, rungs = await OrderProposalsService(db_session).get_proposal(group.proposal_id)
+    assert rungs[0].state == "needs_reconfirm"
+
+
+@pytest.mark.asyncio
+async def test_buying_power_multi_rung_reconfirm_shows_every_shortfall(
+    monkeypatch, db_session
+):
+    _allow_chat(monkeypatch)
+    group = await _seed_proposal(db_session, nonce="nonce-buying-power-multi", rungs=2)
+    data = f"op:{str(group.proposal_id)[:8]}:nonce-buying-power-multi"
+    notifier = _FakeNotifier()
+    details = [
+        {
+            "reason": "insufficient_buying_power",
+            "currency": "KRW",
+            "available": "400000",
+            "required": "600000",
+            "shortfall": "200000",
+        },
+        {
+            "reason": "insufficient_buying_power",
+            "currency": "KRW",
+            "available": "400000",
+            "required": "700000",
+            "shortfall": "300000",
+        },
+    ]
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        outcomes = []
+        for index, detail in enumerate(details):
+            await service.transition_rung(proposal_id, index, new_state="revalidating")
+            await service.mark_needs_reconfirm(proposal_id, index, now=now)
+            outcomes.append(RungOutcome(index, "needs_reconfirm", detail))
+        return outcomes
+
+    result = await handle_callback_update(
+        _make_update(data=data),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+
+    assert result["reason"] == "needs_reconfirm"
+    new_text = notifier.sent_messages[0][0]
+    assert "필요 600,000원 → 부족 200,000원" in new_text
+    assert "필요 700,000원 → 부족 300,000원" in new_text
+
+
+@pytest.mark.asyncio
 async def test_deny_transitions_all_rungs_to_rejected(monkeypatch, db_session):
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-deny1", rungs=2)
