@@ -51,5 +51,10 @@ async def test_briefing_includes_policy_version(monkeypatch):
 
     resp = await ob.get_operating_briefing_impl(market="kr")
     assert "policy_version" in resp
-    assert resp["policy_version"]["version"] == "2026-07-12.1"
+    # Compare against the loaded policy document (single source of truth) —
+    # a hardcoded version literal broke on every policy bump.
+    from app.services.trading_policy_service import load_trading_policy
+
+    document = load_trading_policy()
+    assert resp["policy_version"]["version"] == document.version
     assert resp["policy_version"]["content_hash"]

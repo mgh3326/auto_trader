@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import contextlib
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
 from app.services.order_proposals import OrderProposalsService
-from app.services.order_proposals.dispatch import send_proposal_for_approval
+from app.services.order_proposals.dispatch import (
+    dispatch_proposal,
+    send_proposal_for_approval,
+)
+from app.services.order_proposals.revalidation import RungOutcome
 from app.services.order_proposals.service import RungInput
 
 CHAT_ID = "chat-99"
@@ -44,6 +49,7 @@ async def _seed_proposal(
     target_broker_order_id=None,
     target_order_snapshot=None,
     rungs=None,
+    broker_account_id=None,
 ):
     service = OrderProposalsService(db_session)
     group = await service.create_proposal(
@@ -58,6 +64,7 @@ async def _seed_proposal(
         action=action,
         target_broker_order_id=target_broker_order_id,
         target_order_snapshot=target_order_snapshot,
+        broker_account_id=broker_account_id,
     )
     await db_session.commit()
     return group
@@ -220,3 +227,306 @@ async def test_send_proposal_for_approval_send_failure_returns_none_but_nonce_co
     refreshed, _ = await service.get_proposal(group.proposal_id)
     assert refreshed.approval_nonce is not None
     assert refreshed.source_asof is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_auto_gate_off_preserves_human_approval_flow(
+    monkeypatch, db_session
+):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", False)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+    )
+    group = await _seed_proposal(db_session)
+    notifier = _FakeNotifier()
+
+    async def must_not_revalidate(**kwargs):
+        raise AssertionError("auto revalidation must stay disabled")
+
+    await dispatch_proposal(
+        group.proposal_id,
+        notifier=notifier,
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=must_not_revalidate,
+    )
+
+    assert "주문 제안 승인" in notifier.sent_messages[0][0]
+    _group, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert rungs[0].state == "pending_approval"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("side", ["buy", "sell"])
+async def test_dispatch_auto_eligible_buy_or_sell_rests_without_approval(
+    monkeypatch, db_session, side
+):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+    )
+    service = OrderProposalsService(db_session)
+    limit_price = Decimal("97000") if side == "buy" else Decimal("103000")
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        side=side,
+        order_type="limit",
+        proposer="p",
+        thesis="resting entry",
+        broker_account_id=f"dispatch-auto-{side}-{uuid.uuid4()}",
+        rungs=[RungInput(0, side, Decimal("1"), limit_price, None)],
+    )
+    await db_session.commit()
+
+    async def fake_revalidate(*, service, proposal_id, now, eligibility_gate):
+        fresh_group, rungs = await service.get_proposal(proposal_id)
+        decision = await eligibility_gate(
+            group=fresh_group,
+            rung=rungs[0],
+            preview={
+                "success": True,
+                "current_price": "100000",
+                "price": str(limit_price),
+                "quantity": "1",
+            },
+            now=now,
+        )
+        assert decision.eligible is True
+        await service.transition_rung(proposal_id, 0, new_state="revalidating")
+        await service.transition_rung(proposal_id, 0, new_state="approved")
+        await service.transition_rung(proposal_id, 0, new_state="submitting")
+        await service.record_resting(
+            proposal_id,
+            0,
+            broker_order_id="broker-1",
+            correlation_id="corr-1",
+            idempotency_key="idem-1",
+            approval_hash_digest="digest-1",
+            now=now,
+        )
+        return [RungOutcome(0, "submitted_resting", {})]
+
+    notifier = _FakeNotifier(message_id=8123)
+    await dispatch_proposal(
+        group.proposal_id,
+        notifier=notifier,
+        now=datetime(2026, 7, 14, 1, 0, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=fake_revalidate,
+    )
+
+    refreshed, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "resting"
+    assert refreshed.approved_by_telegram_user_id is None
+    assert refreshed.source_asof["auto_approved"]["policy_version"] == "2026-07-14.1"
+    text, keyboard, _chat_id = notifier.sent_messages[0]
+    assert "자동 접수됨" in text
+    assert "auto:policy@2026-07-14.1" in text
+    assert keyboard["inline_keyboard"][0][0]["text"] == "취소"
+    assert keyboard["inline_keyboard"][0][0]["callback_data"].startswith("vc:")
+
+    async def duplicate_must_not_revalidate(**kwargs):
+        raise AssertionError("an already-submitted proposal must not dispatch twice")
+
+    duplicate = await dispatch_proposal(
+        group.proposal_id,
+        notifier=notifier,
+        now=datetime(2026, 7, 14, 1, 0, 1, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=duplicate_must_not_revalidate,
+    )
+    assert duplicate is None
+    assert len(notifier.sent_messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_auto_ineligible_degrades_to_human_approval(
+    monkeypatch, db_session
+):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+    )
+    group = await _seed_proposal(
+        db_session, broker_account_id="dispatch-auto-ineligible"
+    )
+
+    async def fake_revalidate(*, service, proposal_id, now, eligibility_gate):
+        fresh_group, rungs = await service.get_proposal(proposal_id)
+        decision = await eligibility_gate(
+            group=fresh_group,
+            rung=rungs[0],
+            preview={
+                "success": True,
+                "current_price": "101",
+                "price": "100",
+                "quantity": "10",
+            },
+            now=now,
+        )
+        assert decision.reason == "distance_below_minimum"
+        return [
+            RungOutcome(
+                0,
+                "approval_required",
+                {"reason": decision.reason},
+            )
+        ]
+
+    notifier = _FakeNotifier()
+    await dispatch_proposal(
+        group.proposal_id,
+        notifier=notifier,
+        now=datetime(2026, 7, 14, 1, 0, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=fake_revalidate,
+    )
+
+    refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert rungs[0].state == "pending_approval"
+    assert "auto_approved" not in (refreshed.source_asof or {})
+    assert "주문 제안 승인" in notifier.sent_messages[0][0]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_auto_861_reconfirm_degrades_without_losing_state(
+    monkeypatch, db_session
+):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+    )
+    group = await _seed_proposal(db_session, broker_account_id="dispatch-auto-861")
+
+    async def fake_revalidate(*, service, proposal_id, now, eligibility_gate):
+        await service.transition_rung(proposal_id, 0, new_state="revalidating")
+        await service.mark_needs_reconfirm(proposal_id, 0, now=now)
+        return [
+            RungOutcome(
+                0,
+                "needs_reconfirm",
+                {"reason": "insufficient_buying_power"},
+            )
+        ]
+
+    notifier = _FakeNotifier()
+    await dispatch_proposal(
+        group.proposal_id,
+        notifier=notifier,
+        now=datetime(2026, 7, 14, 1, 0, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=fake_revalidate,
+    )
+
+    _refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert rungs[0].state == "needs_reconfirm"
+    assert notifier.sent_messages
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("notify_failure", ["none", "raises"])
+async def test_auto_notify_failure_compensates_by_cancelling_live_order(
+    monkeypatch, db_session, notify_failure
+):
+    from app.core.config import settings
+    from app.services.order_proposals.target_order import TargetOrderSnapshot
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+    )
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        broker_account_id=f"notify-failure-{uuid.uuid4()}",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("97000"), None)],
+    )
+    await db_session.commit()
+
+    async def fake_revalidate(*, service, proposal_id, now, eligibility_gate):
+        fresh_group, rungs = await service.get_proposal(proposal_id)
+        decision = await eligibility_gate(
+            group=fresh_group,
+            rung=rungs[0],
+            preview={"success": True, "current_price": "100000"},
+            now=now,
+        )
+        assert decision.eligible is True
+        await service.transition_rung(proposal_id, 0, new_state="revalidating")
+        await service.transition_rung(proposal_id, 0, new_state="approved")
+        await service.transition_rung(proposal_id, 0, new_state="submitting")
+        await service.record_resting(
+            proposal_id,
+            0,
+            broker_order_id="broker-notify-failure",
+            correlation_id="corr",
+            idempotency_key="idem",
+            approval_hash_digest="digest",
+            now=now,
+        )
+        return [RungOutcome(0, "submitted_resting", {})]
+
+    cancel_calls = []
+
+    async def cancel_fn(**kwargs):
+        cancel_calls.append(kwargs)
+        return {"success": True}
+
+    async def fetch_fn(**kwargs):
+        return TargetOrderSnapshot(
+            broker_order_id="broker-notify-failure",
+            symbol="005930",
+            side="buy",
+            order_type="limit",
+            limit_price="97000",
+            remaining_quantity="1",
+            status="cancelled",
+            observed_at=kwargs["now"].isoformat(),
+        )
+
+    notifier = (
+        _FakeNotifier(message_id=None)
+        if notify_failure == "none"
+        else _RaisingNotifier()
+    )
+    result = await dispatch_proposal(
+        group.proposal_id,
+        notifier=notifier,
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=fake_revalidate,
+        cancel_target_fn=cancel_fn,
+        fetch_target_fn=fetch_fn,
+    )
+
+    assert result is None
+    assert cancel_calls[0]["order_id"] == "broker-notify-failure"
+    refreshed, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "cancelled"
+    assert (
+        refreshed.source_asof["auto_approved"]["notification_failure"]["outcomes"][0][
+            "result"
+        ]
+        == "cancelled"
+    )

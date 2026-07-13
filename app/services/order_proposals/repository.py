@@ -8,9 +8,11 @@ Never commits — the caller owns the transaction.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Text, cast, select
+from sqlalchemy import TIMESTAMP, Text, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -71,6 +73,49 @@ class OrderProposalRepository:
         if lifecycle_state:
             stmt = stmt.where(OrderProposal.lifecycle_state == lifecycle_state)
         return list((await self._session.execute(stmt)).scalars().all())
+
+    async def auto_approved_notional_between(
+        self,
+        *,
+        account_mode: str,
+        market: str,
+        broker_account_id: str | None,
+        start: datetime,
+        end: datetime,
+    ) -> Decimal:
+        """Sum rungs belonging to auto-approved groups in a time window."""
+        notional = OrderProposalRung.quantity * OrderProposalRung.limit_price
+        approved_at = cast(
+            OrderProposal.source_asof["auto_approved"]["approved_at"].astext,
+            TIMESTAMP(timezone=True),
+        )
+        stmt = (
+            select(func.coalesce(func.sum(notional), 0))
+            .select_from(OrderProposal)
+            .join(
+                OrderProposalRung,
+                OrderProposalRung.proposal_pk == OrderProposal.id,
+            )
+            .where(
+                OrderProposal.account_mode == account_mode,
+                OrderProposal.market == market,
+                approved_at >= start,
+                approved_at < end,
+                OrderProposal.source_asof.op("?")("auto_approved"),
+            )
+        )
+        if broker_account_id is None:
+            stmt = stmt.where(OrderProposal.broker_account_id.is_(None))
+        else:
+            stmt = stmt.where(OrderProposal.broker_account_id == broker_account_id)
+        value = (await self._session.execute(stmt)).scalar_one()
+        return Decimal(value)
+
+    async def acquire_auto_approve_lock(self, lock_key: str) -> None:
+        """Serialize an auto-approval critical section until transaction commit."""
+        await self._session.execute(
+            select(func.pg_advisory_xact_lock(func.hashtextextended(lock_key, 0)))
+        )
 
     async def find_rung_by_evidence(
         self,

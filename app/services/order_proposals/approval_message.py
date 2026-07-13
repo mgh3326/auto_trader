@@ -11,9 +11,9 @@ from typing import Any
 
 from app.core.timezone import KST
 
-_ALLOWED_ACTIONS = frozenset({"op", "dn", "lc"})
+_ALLOWED_ACTIONS = frozenset({"op", "dn", "lc", "vc"})
 _CALLBACK_PATTERN = re.compile(
-    r"^(?P<action>op|dn|lc):(?P<proposal_short>[0-9a-f]{8}):"
+    r"^(?P<action>op|dn|lc|vc):(?P<proposal_short>[0-9a-f]{8}):"
     r"(?P<nonce>[A-Za-z0-9_-]+)$"
 )
 _MAX_CALLBACK_BYTES = 64
@@ -34,7 +34,7 @@ def build_callback_data(
 ) -> str:
     """Build compact Telegram callback data for an approval action."""
     if action not in _ALLOWED_ACTIONS:
-        raise ValueError("action must be one of: op, dn, lc")
+        raise ValueError("action must be one of: op, dn, lc, vc")
     if not isinstance(proposal_id, uuid.UUID):
         raise ValueError("proposal_id must be a UUID")
     if not isinstance(nonce, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", nonce):

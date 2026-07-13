@@ -58,6 +58,16 @@ from app.services.order_proposals.approval_message import (
     build_loss_cut_confirmation_message,
     parse_callback_data,
 )
+from app.services.order_proposals.auto_veto import (
+    TargetCancelFn,
+    TargetFetchFn,
+    acquire_auto_veto_locks,
+    cancel_auto_submitted_rungs,
+)
+from app.services.order_proposals.broker_gateway import (
+    cancel_target_order,
+    fetch_target_order,
+)
 from app.services.order_proposals.errors import OrderProposalError
 from app.services.order_proposals.revalidation import (
     RungOutcome,
@@ -256,6 +266,79 @@ async def _handle_deny(
         "reason": "denied",
         "proposal_id": str(proposal_id),
         "rejected_rungs": rejected_rungs,
+    }
+
+
+async def _handle_auto_veto(
+    *,
+    session: AsyncSession,
+    service: OrderProposalsService,
+    proposal_id: uuid.UUID,
+    nonce: str,
+    now: datetime,
+    notifier: Any,
+    chat_id: Any,
+    message_id: int | None,
+    telegram_user_id: str,
+    cancel_fn: TargetCancelFn,
+    fetch_fn: TargetFetchFn,
+) -> dict[str, Any]:
+    """Cancel every still-open auto-submitted rung and converge evidence."""
+    group, rungs = await service.get_proposal(proposal_id)
+    # Match replace/cancel lock ordering: broker target advisory locks before
+    # the proposal-row nonce lock, with stable ordering for multi-rung groups.
+    await acquire_auto_veto_locks(service=service, group=group, rungs=rungs)
+    try:
+        await service.consume_auto_veto_nonce(proposal_id, nonce, now=now)
+    except OrderProposalError as exc:
+        await session.commit()
+        return {"handled": False, "reason": str(exc), "proposal_id": str(proposal_id)}
+
+    group, rungs = await service.get_proposal(proposal_id)
+    outcomes = await cancel_auto_submitted_rungs(
+        service=service,
+        group=group,
+        rungs=rungs,
+        now=now,
+        cancel_fn=cancel_fn,
+        fetch_fn=fetch_fn,
+    )
+    saw_filled = any(outcome["result"] == "filled" for outcome in outcomes)
+    saw_failure = any(
+        outcome["result"] in {"cancel_failed", "not_cancellable"}
+        for outcome in outcomes
+    )
+
+    await service.record_auto_veto(
+        proposal_id,
+        telegram_user_id=telegram_user_id,
+        outcomes=outcomes,
+        now=now,
+    )
+    await session.commit()
+
+    if saw_filled:
+        reason = "auto_veto_filled"
+        text = "✅ 체결됨 — 취소 시점에 이미 체결된 주문입니다."
+    elif saw_failure:
+        reason = "auto_veto_failed"
+        text = "⚠️ 취소 실패 — 브로커 주문 상태를 확인해 주세요."
+    else:
+        reason = "auto_veto_cancelled"
+        text = "🛑 취소됨"
+    if message_id is not None:
+        await _safe_edit_message(
+            notifier,
+            chat_id,
+            message_id,
+            text,
+            reply_markup={"inline_keyboard": []},
+        )
+    return {
+        "handled": True,
+        "reason": reason,
+        "proposal_id": str(proposal_id),
+        "outcomes": outcomes,
     }
 
 
@@ -494,6 +577,8 @@ async def handle_callback_update(
     notifier: Any = None,
     revalidate_fn: RevalidateFn = revalidate_and_submit,
     loss_cut_preview_fn: RevalidateFn | None = None,
+    veto_cancel_fn: TargetCancelFn = cancel_target_order,
+    veto_fetch_fn: TargetFetchFn = fetch_target_order,
 ) -> dict[str, Any]:
     """Handle one Telegram webhook update. Never raises (fail-closed)."""
     callback_query_id: str | None = None
@@ -534,7 +619,23 @@ async def handle_callback_update(
                 await session.commit()
                 return {"handled": False, "reason": "proposal_not_found"}
 
-            if action == "dn":
+            if action == "vc":
+                result = await _handle_auto_veto(
+                    session=session,
+                    service=service,
+                    proposal_id=proposal_id,
+                    nonce=nonce,
+                    now=now,
+                    notifier=active_notifier,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    telegram_user_id=(
+                        str(telegram_user_id) if telegram_user_id is not None else ""
+                    ),
+                    cancel_fn=veto_cancel_fn,
+                    fetch_fn=veto_fetch_fn,
+                )
+            elif action == "dn":
                 result = await _handle_deny(
                     session=session,
                     service=service,
