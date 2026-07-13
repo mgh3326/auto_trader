@@ -85,6 +85,7 @@ _GUARD_ERROR_MARKERS = (
 )
 _TOSS_CLIENT_ORDER_ID_MAX_LENGTH = 36
 _TOSS_CLIENT_ORDER_ID_PATTERN = re.compile(r"[a-zA-Z0-9\-_]+")
+_SUBMIT_DIAGNOSTIC_MAX_LENGTH = 240
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -158,6 +159,23 @@ def _proposal_client_order_id(proposal_id: uuid.UUID, rung_index: int) -> str:
     return f"oprop-{digest}"
 
 
+def _truncate_submit_diagnostic(value: object) -> str:
+    compact = " ".join(str(value).split())
+    if len(compact) > _SUBMIT_DIAGNOSTIC_MAX_LENGTH:
+        return compact[: _SUBMIT_DIAGNOSTIC_MAX_LENGTH - 1] + "…"
+    return compact
+
+
+def _toss_submit_error_summary(submit: dict[str, Any]) -> str | None:
+    code = str(submit.get("code") or "").strip()
+    if not code:
+        return None
+    message = str(submit.get("message") or "").strip()
+    return _truncate_submit_diagnostic(
+        f"Toss {code}: {message}" if message else f"Toss {code}"
+    )
+
+
 def _adapt_toss_preview_response(preview: dict[str, Any]) -> dict[str, Any]:
     """Expose Toss's normalized wire payload through the proposal contract."""
     payload = preview.get("payload_preview")
@@ -200,28 +218,39 @@ def _adapt_toss_submit_response(
     submit: dict[str, Any], *, order_type: str
 ) -> dict[str, Any]:
     """Translate Toss accepted-only sends to the proposal submit contract."""
+    adapted = dict(submit)
+    diagnostic = _toss_submit_error_summary(submit)
+    if diagnostic is not None:
+        adapted["error"] = diagnostic
+
     if submit.get("success") is False and submit.get("mutation_sent") is True:
-        if submit.get("broker_status") != "rejected":
-            adapted = dict(submit)
+        status_code = submit.get("status_code")
+        typed_client_rejection = (
+            isinstance(status_code, int)
+            and 400 <= status_code < 500
+            and status_code != 429
+            and bool(str(submit.get("code") or "").strip())
+        )
+        if typed_client_rejection:
+            adapted["broker_status"] = "rejected"
+        elif submit.get("broker_status") != "rejected":
             adapted["success"] = None
             return adapted
-    if submit.get("success") is False or submit.get("broker_status") == "rejected":
-        adapted = dict(submit)
+    if adapted.get("success") is False or adapted.get("broker_status") == "rejected":
         adapted["success"] = False
         adapted["error"] = (
-            submit.get("error")
-            or submit.get("response_message")
-            or submit.get("message")
+            adapted.get("error")
+            or adapted.get("response_message")
+            or adapted.get("message")
             or "toss_order_rejected"
         )
         return adapted
     if (
-        submit.get("success") is not True
-        or submit.get("order_id") is None
-        or submit.get("approval_hash_digest") is None
+        adapted.get("success") is not True
+        or adapted.get("order_id") is None
+        or adapted.get("approval_hash_digest") is None
     ):
-        return submit
-    adapted = dict(submit)
+        return adapted
     adapted["status"] = "acked" if order_type == "market" else "resting"
     adapted["broker_order_id"] = submit.get("order_id")
     adapted["idempotency_key"] = submit.get("client_order_id")
@@ -1123,10 +1152,13 @@ async def _classify_submit(
     # success is True but unrecognized status/missing broker_order_id, or
     # success is missing entirely (neither True nor False) — ambiguous.
     # Never auto-void on ambiguity (Principle #4).
+    ambiguous_diagnostic = _truncate_submit_diagnostic(
+        submit.get("error") or f"status={submit.get('status')!r}"
+    )
     await service.record_unverified(
         proposal_id,
         rung_index,
-        reason=f"ambiguous_submit_response:status={submit.get('status')!r}",
+        reason=f"ambiguous_submit_response:{ambiguous_diagnostic}",
         now=now,
         correlation_id=corr,
         idempotency_key=(
