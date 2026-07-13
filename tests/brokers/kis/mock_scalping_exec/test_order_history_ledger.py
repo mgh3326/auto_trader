@@ -472,11 +472,11 @@ async def _empty_holdings_coro():
     return {"holdings": [], "cash": {}}
 
 
-async def _never_confirm(_key: str) -> bool:
+async def _never_confirm(_correlation_id: str, _side: str) -> bool:
     return False
 
 
-async def _always_confirm(_key: str) -> bool:
+async def _always_confirm(_correlation_id: str, _side: str) -> bool:
     return True
 
 

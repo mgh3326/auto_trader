@@ -42,7 +42,14 @@ class OrderSendOutcomeTracker:
             self.disposition = OrderSendDisposition.NOT_CREATED
 
     def mark_accepted(self) -> None:
-        self.disposition = OrderSendDisposition.ACCEPTED
+        # Provider payloads carried by a 5xx response are not trusted evidence
+        # of a stable accepted outcome. Once a 5xx was observed, remain UNKNOWN.
+        if self.last_http_status is None or self.last_http_status < 500:
+            self.disposition = OrderSendDisposition.ACCEPTED
 
     def mark_unknown(self) -> None:
         self.disposition = OrderSendDisposition.UNKNOWN
+
+    @property
+    def has_untrusted_server_error_response(self) -> bool:
+        return self.last_http_status is not None and self.last_http_status >= 500

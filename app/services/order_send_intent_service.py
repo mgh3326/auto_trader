@@ -2,14 +2,15 @@
 """ROB-653 P6-B — KIS pre-send reservation service.
 
 Writes the sole double-send guard for KIS live orders (no broker idempotency
-key). All writes go through this service — no raw SQL. Never read by reconcile.
+key). All writes and explicit reservation reconciliation go through this
+service — no raw SQL.
 """
 
 from __future__ import annotations
 
 import logging
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,7 +19,7 @@ from app.models.review import OrderSendIntent
 logger = logging.getLogger(__name__)
 
 # ROB-843 P1: write-ahead reservation scope for automated KIS mock scalping
-# entries. A reservation is inserted BEFORE the broker POST (proving the DB is
+# order legs. A reservation is inserted BEFORE the broker POST (proving the DB is
 # writable) and released only when the order is confirmed fully tracked or
 # proven not sent. An UNRESOLVED reservation is a durable "in-flight / uncertain"
 # marker that survives restart and fail-closes new orders until reconciliation.
@@ -40,7 +41,34 @@ class OrderSendIntentService:
         idempotency_key: str,
         symbol: str | None = None,
         side: str | None = None,
+        conflicting_key_sides: tuple[tuple[str, str], ...] = (),
     ) -> int:
+        if conflicting_key_sides:
+            predicates = [
+                and_(
+                    OrderSendIntent.idempotency_key == key,
+                    or_(
+                        OrderSendIntent.side.is_(None),
+                        func.lower(func.trim(OrderSendIntent.side))
+                        == conflicting_side.strip().lower(),
+                    ),
+                )
+                for key, conflicting_side in conflicting_key_sides
+            ]
+            existing = await self._db.scalar(
+                select(OrderSendIntent.id)
+                .where(
+                    OrderSendIntent.account_scope == account_scope,
+                    or_(*predicates),
+                )
+                .with_for_update()
+                .limit(1)
+            )
+            if existing is not None:
+                raise DuplicateOrderIntent(
+                    f"conflicting order intent already reserved: {account_scope}"
+                )
+
         row = OrderSendIntent(
             account_scope=account_scope,
             idempotency_key=idempotency_key,
@@ -96,3 +124,14 @@ class OrderSendIntentService:
             )
         )
         return [k for (k,) in rows.all()]
+
+    async def list_keys_and_sides(
+        self, *, account_scope: str
+    ) -> list[tuple[str, str | None]]:
+        """Stored keys with side evidence for explicit leg reconciliation."""
+        rows = await self._db.execute(
+            select(OrderSendIntent.idempotency_key, OrderSendIntent.side).where(
+                OrderSendIntent.account_scope == account_scope
+            )
+        )
+        return list(rows.all())

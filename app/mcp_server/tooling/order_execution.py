@@ -57,7 +57,10 @@ from app.mcp_server.tooling.shared import (
 )
 from app.services.brokers.kis import KISClient
 from app.services.brokers.kis.pre_send import PreSendFreshnessError
-from app.services.brokers.kis.send_outcome import OrderSendOutcomeTracker
+from app.services.brokers.kis.send_outcome import (
+    OrderSendDisposition,
+    OrderSendOutcomeTracker,
+)
 from app.services.crypto_trade_cooldown_service import CryptoTradeCooldownService
 from app.services.order_send_intent_service import (
     DuplicateOrderIntent,
@@ -896,11 +899,25 @@ async def _execute_and_record(
             "dry_run": False,
         }
     except httpx.RequestError as send_exc:
-        if send_outcome is not None:
-            send_outcome.mark_unknown()
+        # Preserve the transport boundary's explicit state: token/client setup
+        # can raise before dispatch (NOT_CREATED), while an actual send marks
+        # UNKNOWN immediately before crossing the HTTP boundary.
         retry_allowed = await _release_reserved_mock_mirror_intent_after_send_failure(
             send_exc
         )
+        if (
+            send_outcome is not None
+            and send_outcome.disposition is OrderSendDisposition.NOT_CREATED
+        ):
+            logger.error(
+                "execute_order failed before dispatch: market_type=%s, "
+                "symbol=%s, side=%s, error=%s",
+                market_type,
+                normalized_symbol,
+                side,
+                describe_exception(send_exc),
+            )
+            raise OrderSendNotCreated(send_exc) from send_exc
         # ROB-645: the order POST itself timed out / failed with no broker response.
         # Outcome is UNKNOWN for live orders (may have been accepted) — never re-send live; reconcile.
         # ROB-750: mock mirror has no live broker risk, so its scoped intent is released for retry.
@@ -933,6 +950,17 @@ async def _execute_and_record(
             exec_exc,
         )
         raise
+
+    if send_outcome is not None and send_outcome.has_untrusted_server_error_response:
+        # KIS sometimes carries a success-shaped provider body with HTTP 5xx.
+        # It is not accepted evidence: do not write an accepted ledger row or
+        # let the round trip advance before explicit reconciliation.
+        raise OrderSendOutcomeUnknown(
+            RuntimeError(
+                "KIS order response outcome unknown after HTTP "
+                f"{send_outcome.last_http_status}"
+            )
+        )
 
     await _record_order_history(
         symbol=normalized_symbol,
@@ -1192,6 +1220,14 @@ class OrderSendOutcomeUnknown(Exception):
         self.retry_hint = retry_hint
 
 
+class OrderSendNotCreated(Exception):
+    """A transport setup failed before the order crossed the HTTP boundary."""
+
+    def __init__(self, original: BaseException) -> None:
+        super().__init__(describe_exception(original))
+        self.original = original
+
+
 # ROB-645: reconcile tool to consult when an order's send outcome is unknown.
 # Only live paths have a reconcile tool (KR → kis_live_reconcile_orders,
 # US/crypto → live_reconcile_orders). Mock has none, so we never name a phantom.
@@ -1225,6 +1261,14 @@ def _augment_error_for_unknown_outcome(
     outcome-unknown failure (a definitive rejection, or a pre-send read timeout)
     is left unchanged: no order was created.
     """
+    if isinstance(exc, OrderSendNotCreated):
+        enriched = dict(base_error)
+        enriched["retry_allowed"] = True
+        enriched["error"] = (
+            "주문 전송 전 실패: "
+            f"{describe_exception(exc.original)}. 주문이 생성되지 않아 재시도할 수 있습니다."
+        )
+        return enriched
     if not isinstance(exc, OrderSendOutcomeUnknown):
         return base_error
 

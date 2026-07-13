@@ -1,4 +1,4 @@
-"""ROB-843 P1 — write-ahead reservation lifecycle for KIS mock scalping entries.
+"""ROB-843 P1 — write-ahead reservation lifecycle for KIS mock scalping legs.
 
 A durable reservation is recorded BEFORE the broker POST. If the durable write
 fails the POST never happens; the reservation is released only when the order is
@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 import app.services.brokers.kis.circuit_breaker as cb
 from app.core.config import settings
@@ -25,14 +25,29 @@ from app.mcp_server.tooling.order_execution import OrderSendOutcomeUnknown
 from app.models.review import KISMockOrderLedger, OrderSendIntent
 from app.services.brokers.kis.base import BaseKISClient
 from app.services.brokers.kis.domestic_orders import DomesticOrderClient
+from app.services.brokers.kis.mock_scalping.contract import (
+    LedgerSnapshot,
+    MarketConditions,
+)
+from app.services.brokers.kis.mock_scalping.order_intent import OrderIntent
 from app.services.brokers.kis.mock_scalping_exec import adapters
+from app.services.brokers.kis.mock_scalping_exec.executor import (
+    ExecutorConfig,
+    Fill,
+    MockScalpingExecutor,
+    RiskInputs,
+)
 from app.services.brokers.kis.mock_scalping_exec.reservation import (
     has_unresolved_entries,
+    reconcile_entries,
     reserve_entry,
 )
 from app.services.brokers.kis.mock_scalping_exec.tracking_state import LedgerWriteError
 from app.services.brokers.kis.mock_scalping_ws.state import MarketState
-from app.services.order_send_intent_service import KIS_MOCK_SCALPING_SCOPE
+from app.services.order_send_intent_service import (
+    KIS_MOCK_SCALPING_SCOPE,
+    OrderSendIntentService,
+)
 
 _NXT = "app.services.brokers.kis.domestic_orders.is_nxt_eligible"
 _TEST_CID_PREFIX = "resv-test-"
@@ -50,7 +65,7 @@ class _Settings:
 
 
 class _Parent(BaseKISClient):
-    def __init__(self, execute) -> None:  # type: ignore[override]
+    def __init__(self, execute, *, token_error: Exception | None = None) -> None:  # type: ignore[override]
         self._unmapped_rate_limit_keys_logged: set = set()
         type(self)._shared_client_lock = None
         self._hdr_base = {"content-type": "application/json"}
@@ -62,6 +77,7 @@ class _Parent(BaseKISClient):
         self._get_limiter = AsyncMock(return_value=limiter)  # type: ignore[method-assign]
         self._ensure_client = AsyncMock(return_value=MagicMock())  # type: ignore[method-assign]
         self._execute_http_request = execute  # type: ignore[method-assign]
+        self._token_error = token_error
 
     @property  # type: ignore[override]
     def _settings(self):  # type: ignore[override]
@@ -71,6 +87,8 @@ class _Parent(BaseKISClient):
         return f"https://mockhost{path}"
 
     async def _ensure_token(self) -> None:
+        if self._token_error is not None:
+            raise self._token_error
         return None
 
 
@@ -101,8 +119,9 @@ def _patch_production_domestic_path(
     execute,
     side: str,
     balance_error: dict | None = None,
+    token_error: Exception | None = None,
 ) -> None:
-    domestic = DomesticOrderClient(_Parent(execute))
+    domestic = DomesticOrderClient(_Parent(execute, token_error=token_error))
     facade = _DomesticFacade(domestic)
     monkeypatch.setattr(order_execution, "_create_kis_client", lambda **_kw: facade)
     monkeypatch.setattr(_NXT, AsyncMock(return_value=False))
@@ -159,15 +178,26 @@ def _patch_production_domestic_path(
     monkeypatch.setattr(settings, "kis_mock_scalping_enabled", True, raising=False)
 
 
-async def _has_key(correlation_id: str) -> bool:
+async def _has_key(correlation_id: str, side: str | None = None) -> bool:
     async with _order_session_factory()() as db:
-        found = await db.scalar(
-            select(OrderSendIntent.id).where(
-                OrderSendIntent.account_scope == KIS_MOCK_SCALPING_SCOPE,
-                OrderSendIntent.idempotency_key == correlation_id,
-            )
+        stmt = select(OrderSendIntent.id).where(
+            OrderSendIntent.account_scope == KIS_MOCK_SCALPING_SCOPE,
+            OrderSendIntent.idempotency_key.contains(correlation_id),
         )
+        if side is not None:
+            stmt = stmt.where(func.lower(OrderSendIntent.side) == side.lower())
+        found = await db.scalar(stmt)
     return found is not None
+
+
+async def _ledger_rows(correlation_id: str) -> int:
+    async with _order_session_factory()() as db:
+        count = await db.scalar(
+            select(func.count())
+            .select_from(KISMockOrderLedger)
+            .where(KISMockOrderLedger.correlation_id == correlation_id)
+        )
+    return int(count or 0)
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -249,6 +279,30 @@ async def test_duplicate_reservation_blocks_post(monkeypatch) -> None:
     cid = "cid-dup"
     await reserve_entry(correlation_id=cid, symbol="005930", side="buy")
     result = await _submit(_broker(), cid)
+    assert result["reservation_blocked"] is True
+    assert "duplicate_send" in result["reason_codes"]
+    assert place.await_count == 0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_legacy_raw_same_leg_reservation_blocks_new_leg_key_post(
+    monkeypatch,
+) -> None:
+    """A pre-leg-key unresolved BUY remains a same-leg double-send guard."""
+    cid = f"{_TEST_CID_PREFIX}legacy-buy"
+    async with _order_session_factory()() as db:
+        await OrderSendIntentService(db).reserve(
+            account_scope=KIS_MOCK_SCALPING_SCOPE,
+            idempotency_key=cid,
+            symbol="005930",
+            side="buy",
+        )
+    place = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr(adapters, "_place_order_impl", place)
+
+    result = await _submit(_broker(), cid)
+
     assert result["reservation_blocked"] is True
     assert "duplicate_send" in result["reason_codes"]
     assert place.await_count == 0
@@ -500,7 +554,8 @@ async def test_sell_timeout_keeps_reservation(monkeypatch) -> None:
 
     assert result["success"] is False
     assert result.get("outcome_unknown") is True, result
-    assert await _has_key(cid) is True
+    assert execute.await_count == 1
+    assert await _has_key(cid, "sell") is True
 
 
 class _ProcessCrash(BaseException):
@@ -519,3 +574,165 @@ async def test_sell_crash_keeps_reservation(monkeypatch) -> None:
         await _submit_sell(_broker(), cid)
 
     assert await _has_key(cid) is True
+
+
+class _PassRiskGate:
+    async def load(self, *, symbol: str, side: str) -> RiskInputs:
+        return RiskInputs(
+            ledger=LedgerSnapshot(
+                has_open_position_for_symbol=False,
+                open_position_count=0,
+                orders_today=0,
+                realized_loss_today_krw=Decimal("0"),
+                seconds_since_last_close_for_symbol=None,
+            ),
+            market=MarketConditions(spread_bps=Decimal("1"), data_age_seconds=0.1),
+        )
+
+
+class _RoundTripLedger:
+    def __init__(self) -> None:
+        self.record_entry = AsyncMock()
+        self.record_exit_reconciled = AsyncMock()
+        self.record_anomaly = AsyncMock()
+
+
+def _round_trip_intent() -> OrderIntent:
+    return OrderIntent(
+        symbol="005930",
+        side="BUY",
+        order_type="limit",
+        target_notional_krw=Decimal("70000"),
+        entry_reference_price=Decimal("70000"),
+        tp_price=Decimal("70210"),
+        sl_price=Decimal("69860"),
+        confidence=Decimal("0.5"),
+        reason_codes=("enter_long_breakout",),
+        source_candle_close_time_ms=1,
+        evaluated_at_ms=2,
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_round_trip_sell_uses_independent_leg_reservation_when_buy_unresolved(
+    monkeypatch,
+) -> None:
+    """A BUY tracking loss must not consume the same-correlation SELL key.
+
+    This runs the real round-trip executor through the real broker adapter. The
+    BUY reservation intentionally remains unresolved while the SELL still
+    reaches the mutation boundary, then only its fully tracked leg is released.
+    """
+    cid = f"{_TEST_CID_PREFIX}round-trip-legs"
+    submitted_sides: list[str] = []
+
+    async def _place(**kwargs):
+        submitted_sides.append(kwargs["side"])
+        kwargs["send_outcome"].mark_accepted()
+        return {
+            "success": True,
+            "ledger_tracking_unavailable": kwargs["side"] == "buy",
+        }
+
+    monkeypatch.setattr(adapters, "_place_order_impl", AsyncMock(side_effect=_place))
+    broker = _broker()
+    broker.confirm_fill = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            Fill(price=Decimal("70000"), quantity=Decimal("1")),
+            Fill(price=Decimal("70000"), quantity=Decimal("1")),
+        ]
+    )
+
+    async def _no_sleep(_seconds: float) -> None:
+        return None
+
+    executor = MockScalpingExecutor(
+        broker=broker,
+        ledger=_RoundTripLedger(),
+        config=ExecutorConfig(max_hold_seconds=0, max_fill_polls=1),
+        sleep=_no_sleep,
+        clock=lambda: 0.0,
+        risk=_PassRiskGate(),
+    )
+    monkeypatch.setattr(executor, "_new_correlation_id", lambda: cid)
+
+    result = await executor.execute_monitored(_round_trip_intent(), confirm=True)
+
+    assert result.status == "reconciled"
+    assert submitted_sides == ["buy", "sell"]
+    assert await _has_key(cid, "buy") is True
+    assert await _has_key(cid, "sell") is False
+    assert await has_unresolved_entries() is True
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_explicit_reconcile_identifies_and_releases_only_confirmed_leg() -> None:
+    cid = f"{_TEST_CID_PREFIX}reconcile-legs"
+    await reserve_entry(correlation_id=cid, symbol="005930", side="BUY")
+    await reserve_entry(correlation_id=cid, symbol="005930", side=" sell ")
+    observed: list[tuple[str, str]] = []
+
+    async def _confirm(correlation_id: str, side: str) -> bool:
+        observed.append((correlation_id, side))
+        return side == "sell"
+
+    released = await reconcile_entries(confirm=_confirm)
+
+    assert released == 1
+    assert sorted(observed) == [(cid, "buy"), (cid, "sell")]
+    assert await _has_key(cid, "buy") is True
+    assert await _has_key(cid, "sell") is False
+    assert await has_unresolved_entries() is True
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_pre_dispatch_token_request_error_releases_reservation(
+    monkeypatch,
+) -> None:
+    cid = f"{_TEST_CID_PREFIX}token-before-dispatch"
+    execute = AsyncMock()
+    _patch_production_domestic_path(
+        monkeypatch,
+        execute=execute,
+        side="sell",
+        token_error=httpx.ConnectError("token endpoint unavailable"),
+    )
+
+    result = await _submit_sell(_broker(), cid)
+
+    assert result["success"] is False
+    assert result.get("outcome_unknown") is not True
+    assert result.get("retry_allowed") is True
+    assert execute.await_count == 0
+    assert await _has_key(cid, "sell") is False
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_500_success_shaped_payload_cannot_release_reservation(
+    monkeypatch,
+) -> None:
+    cid = f"{_TEST_CID_PREFIX}sell-500-success-payload"
+    execute = AsyncMock(
+        return_value=_http_response(
+            {
+                "rt_cd": "0",
+                "msg_cd": "0",
+                "msg1": "accepted-looking",
+                "output": {"ODNO": "UNTRUSTED-500", "ORD_TMD": "091500"},
+            },
+            status_code=500,
+        )
+    )
+    _patch_production_domestic_path(monkeypatch, execute=execute, side="sell")
+
+    result = await _submit_sell(_broker(), cid)
+
+    assert result["success"] is False, result
+    assert result.get("outcome_unknown") is True
+    assert execute.await_count == 1
+    assert await _has_key(cid, "sell") is True
+    assert await _ledger_rows(cid) == 0

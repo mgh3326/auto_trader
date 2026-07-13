@@ -144,12 +144,15 @@ class KisMockBroker:
 
         return _hook
 
-    async def _safe_release_reservation(self, correlation_id: str) -> None:
+    async def _safe_release_reservation(self, correlation_id: str, side: str) -> None:
         try:
-            await release_entry(correlation_id=correlation_id)
+            await release_entry(correlation_id=correlation_id, side=side)
         except Exception as exc:  # noqa: BLE001 — a stale reservation is fail-safe
             logger.warning(
-                "scalping reservation release failed cid=%s: %s", correlation_id, exc
+                "scalping reservation release failed cid=%s side=%s: %s",
+                correlation_id,
+                side,
+                exc,
             )
 
     async def _submit_with_reservation(
@@ -197,17 +200,17 @@ class KisMockBroker:
             # Only an explicitly proven pre-send/definitive no-order exception
             # releases. Any post-dispatch exception leaves UNKNOWN and keeps it.
             if outcome.disposition is OrderSendDisposition.NOT_CREATED:
-                await self._safe_release_reservation(correlation_id)
+                await self._safe_release_reservation(correlation_id, side)
             raise
 
         if outcome.disposition is OrderSendDisposition.NOT_CREATED:
-            await self._safe_release_reservation(correlation_id)
+            await self._safe_release_reservation(correlation_id, side)
         elif outcome.disposition is OrderSendDisposition.ACCEPTED:
             tracked = bool(result.get("success")) and not result.get(
                 "ledger_tracking_unavailable"
             )
             if tracked:
-                await self._safe_release_reservation(correlation_id)
+                await self._safe_release_reservation(correlation_id, side)
         # UNKNOWN or accepted-but-untracked: KEEP until explicit reconciliation.
         return result
 
