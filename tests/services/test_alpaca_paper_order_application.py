@@ -32,7 +32,9 @@ async def _clean_rob845_rows(db_session):
     stmt = delete(AlpacaPaperOrderLedger).where(
         (AlpacaPaperOrderLedger.client_order_id == "source-buy-1")
         | AlpacaPaperOrderLedger.lifecycle_correlation_id.like("rob845-alpaca-sell%")
-        | AlpacaPaperOrderLedger.lifecycle_correlation_id.in_({"d" * 64, "e" * 64})
+        | AlpacaPaperOrderLedger.lifecycle_correlation_id.in_(
+            {"d" * 64, "e" * 64, "f" * 64}
+        )
     )
     await db_session.execute(stmt)
     await db_session.commit()
@@ -277,3 +279,58 @@ async def test_verified_application_rejects_sell_over_source_before_broker(db_se
     assert outcome.status == "rejected"
     assert outcome.reason_code == "qty_exceeds_source"
     assert broker.submit_calls == []
+
+
+async def test_verified_application_terminal_replay_precedes_stale_snapshot_check(
+    db_session,
+):
+    from app.core.db import AsyncSessionLocal
+    from app.services.alpaca_paper_order_application import (
+        AlpacaPaperOrderApplication,
+        AlpacaPaperOrderSpec,
+        AlpacaVerifiedDecision,
+    )
+
+    class _Clock:
+        now = _NOW
+
+        def __call__(self):
+            return self.now
+
+    clock = _Clock()
+    broker = _Broker()
+    application = AlpacaPaperOrderApplication(
+        session_factory=AsyncSessionLocal,
+        broker_factory=lambda: broker,
+        now_fn=clock,
+    )
+    decision = AlpacaVerifiedDecision(
+        order=AlpacaPaperOrderSpec(
+            symbol="BTC/USD",
+            side="buy",
+            order_type="limit",
+            qty=Decimal("0.0005"),
+            notional=None,
+            time_in_force="gtc",
+            limit_price=Decimal("50000"),
+        ),
+        decision_id="rob845-decision-replay",
+        signal_symbol="BTCUSDT",
+        signal_venue="binance_public_spot",
+        snapshot_id="rob845-snapshot-replay",
+        snapshot_hash="sha256:snapshot-replay",
+        snapshot_as_of=_NOW,
+        snapshot_source="binance_public_spot",
+        reference_price=Decimal("50000"),
+        source_buy_client_order_id=None,
+        decision_identity_hash="f" * 64,
+    )
+
+    first = await application.submit(decision)
+    clock.now = _NOW + timedelta(hours=1)
+    replay = await application.submit(decision)
+
+    assert first.status == "submitted"
+    assert replay.status == "replayed"
+    assert replay.replayed is True
+    assert len(broker.submit_calls) == 1

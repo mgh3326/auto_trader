@@ -351,7 +351,7 @@ class AlpacaPaperOrderApplication:
         self, decision: AlpacaVerifiedDecision
     ) -> AlpacaPaperApplicationOutcome:
         async with self._session_factory() as db:
-            prepared = await self._prepare(db, decision)
+            prepared = await self._prepare(db, decision, enforce_dynamic_checks=True)
             if isinstance(prepared, AlpacaPaperApplicationOutcome):
                 return prepared
             packet, canonical = prepared
@@ -371,7 +371,10 @@ class AlpacaPaperOrderApplication:
         self, decision: AlpacaVerifiedDecision
     ) -> AlpacaPaperApplicationOutcome:
         async with self._session_factory() as db:
-            prepared = await self._prepare(db, decision)
+            # The coordinator owns replay-before-freshness/source ordering. Do
+            # not reject a previously terminal native result merely because its
+            # original snapshot or source evidence is no longer fresh/readable.
+            prepared = await self._prepare(db, decision, enforce_dynamic_checks=False)
             if isinstance(prepared, AlpacaPaperApplicationOutcome):
                 return prepared
             packet, canonical = prepared
@@ -445,15 +448,20 @@ class AlpacaPaperOrderApplication:
             )
 
     async def _prepare(
-        self, db: AsyncSession, decision: AlpacaVerifiedDecision
+        self,
+        db: AsyncSession,
+        decision: AlpacaVerifiedDecision,
+        *,
+        enforce_dynamic_checks: bool,
     ) -> tuple[PaperApprovalPacket, dict[str, Any]] | AlpacaPaperApplicationOutcome:
         canonical = decision.order.canonical()
         packet = self._packet(decision, canonical)
         try:
-            now = self._now_fn()
-            verify_packet_market_data(packet, now=now, max_age=self._quote_max_age)
             verify_order_within_packet(packet, canonical)
-            if packet.side == "sell":
+            if enforce_dynamic_checks:
+                now = self._now_fn()
+                verify_packet_market_data(packet, now=now, max_age=self._quote_max_age)
+            if enforce_dynamic_checks and packet.side == "sell":
                 await verify_sell_packet_source(
                     packet,
                     ledger=AlpacaPaperLedgerService(db),
