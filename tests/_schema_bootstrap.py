@@ -26,7 +26,8 @@ from sqlalchemy import text
 # append-only immutability triggers are non-ORM DDL and are mirrored below.
 # v7 (ROB-846 review): trigger now blocks legacy->trial UPDATE conversion, plus
 # trial all-or-none + promotion identity-complete CHECK constraints (NOT VALID).
-SCHEMA_BOOTSTRAP_VERSION = 7
+# v8 (ROB-859): trade_forecasts accepts the unscored closed_no_claim status.
+SCHEMA_BOOTSTRAP_VERSION = 8
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -58,6 +59,14 @@ SNAPSHOT_KIND_VALUES = (
     "kr_market_ranking",
     "investor_flow",
 )
+
+TRADE_FORECAST_STATUS_CHECK_NAME = "ck_trade_forecasts_status"
+TRADE_FORECAST_STATUS_MODEL_CHECK_NAME = "ck_trade_forecasts_ck_trade_forecasts_status"
+TRADE_FORECAST_STATUS_CHECK_NAMES = (
+    TRADE_FORECAST_STATUS_MODEL_CHECK_NAME,
+    TRADE_FORECAST_STATUS_CHECK_NAME,
+)
+TRADE_FORECAST_STATUS_VALUES = ("open", "closed", "closed_no_claim")
 
 
 def _quote_ident(identifier: str) -> str:
@@ -145,6 +154,40 @@ async def _ensure_investment_snapshot_kind_constraint(conn) -> None:
             "ALTER TABLE review.investment_snapshots "
             f"ADD CONSTRAINT {SNAPSHOT_KIND_CHECK_NAME} "
             f"{_check_constraint_sql('snapshot_kind', SNAPSHOT_KIND_VALUES)}"
+        )
+    )
+
+
+async def _ensure_trade_forecast_status_constraint(conn) -> None:
+    names_sql = ",".join(f"'{name}'" for name in TRADE_FORECAST_STATUS_CHECK_NAMES)
+    constraints = await conn.execute(
+        text(
+            "SELECT conname, pg_get_constraintdef(oid) AS definition "
+            "FROM pg_constraint "
+            "WHERE conrelid = 'review.trade_forecasts'::regclass "
+            f"AND conname IN ({names_sql}) "
+            "AND contype = 'c'"
+        )
+    )
+    rows = list(constraints)
+    if not _constraint_definitions_need_refresh(
+        [row[1] for row in rows],
+        TRADE_FORECAST_STATUS_VALUES,
+    ):
+        return
+
+    for name in TRADE_FORECAST_STATUS_CHECK_NAMES:
+        await conn.execute(
+            text(
+                "ALTER TABLE review.trade_forecasts "
+                f"DROP CONSTRAINT IF EXISTS {_quote_ident(name)}"
+            )
+        )
+    await conn.execute(
+        text(
+            "ALTER TABLE review.trade_forecasts "
+            f"ADD CONSTRAINT {TRADE_FORECAST_STATUS_CHECK_NAME} "
+            f"{_check_constraint_sql('status', TRADE_FORECAST_STATUS_VALUES)}"
         )
     )
 
@@ -833,6 +876,7 @@ async def apply_test_schema(conn) -> None:
 
     await _ensure_market_valuation_source_constraint(conn)
     await _ensure_investment_snapshot_kind_constraint(conn)
+    await _ensure_trade_forecast_status_constraint(conn)
     await _ensure_analysis_artifacts_created_by_constraint(conn)
     await _ensure_operator_session_context_created_by_constraint(conn)
 
