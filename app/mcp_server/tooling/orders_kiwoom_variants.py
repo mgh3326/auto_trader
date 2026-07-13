@@ -19,6 +19,12 @@ import re
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from app.core.config import validate_kiwoom_mock_config
+from app.mcp_server.tooling.orders_kiwoom_shared import (
+    derive_broker_success as _derive_broker_success,
+)
+from app.mcp_server.tooling.orders_kiwoom_shared import (
+    finalize_broker_response as _finalize_broker_response,
+)
 from app.services.brokers.kiwoom import constants
 from app.services.brokers.kiwoom.client import KiwoomMockClient
 from app.services.brokers.kiwoom.domestic_account import KiwoomDomesticAccountClient
@@ -35,6 +41,8 @@ from app.services.brokers.kiwoom.validation import normalize_krx_symbol
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
+
+__all__ = ("_derive_broker_success",)
 
 ACCOUNT_MODE_KIWOOM_MOCK = "kiwoom_mock"
 
@@ -157,44 +165,6 @@ _MUTATION_PASSTHROUGH_KEYS = (
     "ord_no",
     "order_no",
 )
-
-
-def _derive_broker_success(broker_response: dict[str, Any]) -> bool:
-    """Success ONLY when return_code is explicitly the success code.
-
-    Fail-closed: a missing key, ``None``, ``""``, or any non-numeric / non-zero
-    value is treated as failure. The raw ``broker_response`` is preserved by the
-    caller so the evidence remains, but we never infer success from absence.
-    """
-
-    return_code = broker_response.get("return_code")
-    if type(return_code) is int:  # bool is an int subclass and must fail closed.
-        return return_code == constants.SUCCESS_RETURN_CODE
-    return isinstance(return_code, str) and return_code == str(
-        constants.SUCCESS_RETURN_CODE
-    )
-
-
-def _finalize_broker_response(
-    base: dict[str, Any], broker_response: dict[str, Any]
-) -> dict[str, Any]:
-    """Shape a stable MCP envelope around a raw broker payload.
-
-    ``success`` is derived from the broker return_code (never hardcoded), the
-    raw payload is attached as ``broker_response``, and a few well-known fields
-    are surfaced at the top level for convenience.
-    """
-
-    redacted_broker_response = redact_broker_response(broker_response)
-    response = {
-        "success": _derive_broker_success(broker_response),
-        **base,
-        "broker_response": redacted_broker_response,
-    }
-    for key in _MUTATION_PASSTHROUGH_KEYS:
-        if key in redacted_broker_response:
-            response[key] = redacted_broker_response[key]
-    return response
 
 
 def _stable_read_failure(

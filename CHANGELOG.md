@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added (ROB-867 — Kiwoom mock US lifecycle; migration 0)
+- **Kiwoom US mock orders now have an isolated, fail-closed MCP surface.** Dedicated credentials and account mode expose preview/place/modify/cancel plus order, position, and USD-deposit reads without falling back to the KR namespace; symbols resolve their exchange from the active US universe before any broker mutation.
+- **Only evidence-backed order types are public.** MCP accepts limit (`00`) and market (`03`) orders and rejects every other `trde_tp` before lookup or network access, while the low-level client preserves the documented advanced request fields for later promotion after mock-environment proof.
+- **Operator verification is cleanup-first and truthful.** The smoke workflow preflights all supported US read TRs, keeps the full lifecycle limit-only with cancel/reconciliation safeguards, gates advanced probes behind explicit confirmations, and reports `ust21160` USD deposit evidence without claiming unsupported `ust31490` orderable quantity.
+
 ### Added (ROB-847 — honest offline research promotion gate; migration 0)
 - **Research signals now execute causally.** A signal observed at bar `t` can fill only at the next valid executable open, with frozen fees, spread, and slippage; missing, malformed, and final-bar signals remain unfilled, and overlapping CV/sealed-OOS windows fail closed.
 - **Promotion now requires sealed, point-in-time evidence.** One-time OOS finalization validates the PIT manifest and information cutoff, keeps sealed results out of parameter ranking, computes trial-aware DSR/PBO/FDR and baseline/cost/MDD evidence, and links the deterministic artifact through the ROB-846 experiment registry using exact experiment/config/data hashes.
