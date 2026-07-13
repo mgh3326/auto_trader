@@ -159,7 +159,9 @@ with pytest.raises(DBAPIError, match="append-only"):
 
 **Files:**
 - Create: `tests/services/paper_validation/test_safety_guards.py`
-- Create: `tests/services/paper_validation/test_postgres_migration_lifecycle.py`
+- Operational verification only: disposable PostgreSQL lifecycle evidence recorded
+  in the ROB-848 Linear completion comment (database create/drop privileges are
+  intentionally not added to the regular pytest/CI contract).
 - Modify focused files only when a failing guard identifies a real gap.
 
 **Interfaces:**
@@ -168,9 +170,9 @@ with pytest.raises(DBAPIError, match="append-only"):
 
 - [ ] **Step 1: Write AST RED tests.** Parse every `app/services/paper_validation/*.py` and `paper_validation_registration.py`, walk `Import`, `ImportFrom`, and `Call`, and fail on forbidden live/proposal/broker mutation names.
 - [ ] **Step 2: Run RED against any deliberately unclassified new surface, then implement the minimum guard-safe correction.** Run `uv run pytest --no-cov -q tests/services/paper_validation/test_safety_guards.py`.
-- [ ] **Step 3: Create a disposable PostgreSQL database without reading `.env`.** Use the known local test server, generate a unique database name, and pass an explicit temporary `DATABASE_URL` only to Alembic commands.
-- [ ] **Step 4: Verify upgrade/downgrade/upgrade.** Run `uv run alembic upgrade 20260713_rob866_manual_alerts`, `uv run alembic upgrade head`, `uv run alembic downgrade -1`, and `uv run alembic upgrade head`; inspect `alembic current` and table/trigger presence after each boundary, then drop the disposable database.
-- [ ] **Step 5: Run actual two-session DB suite.** `uv run pytest --no-cov -q tests/services/paper_validation/test_migration.py tests/services/paper_validation/test_service_concurrency.py tests/services/paper_validation/test_postgres_migration_lifecycle.py`.
+- [ ] **Step 3: Create a disposable PostgreSQL database without reading `.env`.** Clone the known local `test_db`, set `ENV_FILE` to a nonexistent path, and pass an explicit local temporary `DATABASE_URL` plus dummy required settings only to Alembic commands.
+- [ ] **Step 4: Verify upgrade/downgrade/upgrade operationally.** Stamp the cloned schema at the ROB-848 revision, downgrade once to establish the real prior schema, then run upgrade head → downgrade -1 → upgrade head; inspect `alembic_version`, table count, and trigger-event count after each boundary, record the evidence in Linear, then drop the disposable database.
+- [ ] **Step 5: Run actual two-session DB suite.** `uv run pytest --no-cov -q tests/services/paper_validation/test_migration.py tests/services/paper_validation/test_service_concurrency.py`.
 - [ ] **Step 6: Run ROB-846/MCP regressions and xdist repetition.** Run the canonical hash/registry suites and the full paper validation/profile set three times with `-n 2`.
 - [ ] **Step 7: Commit.** `git add tests/services/paper_validation && git commit -m "test(ROB-848): verify migration and safety boundaries"`.
 
