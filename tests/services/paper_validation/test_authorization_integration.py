@@ -227,7 +227,12 @@ async def test_narrative_idempotency_replays_and_conflicts(
             ),
         )
     count = await db_session.scalar(
-        select(func.count()).select_from(StrategyHypothesisDraft)
+        select(func.count())
+        .select_from(StrategyHypothesisDraft)
+        .where(
+            StrategyHypothesisDraft.validation_id
+            == validation_identity.validation_id
+        )
     )
     assert count == 1
 
