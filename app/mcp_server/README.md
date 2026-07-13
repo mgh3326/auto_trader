@@ -621,6 +621,11 @@ order mutation.
   - Target-action tuples are supported only for
     `kis_live/equity_kr`, `kis_live/equity_us`, and `upbit/crypto`.
   - When `valid_until` is omitted, it defaults to the next `00:00 KST`.
+  - When `supersedes_proposal_id` is present, the old group's
+    `pending_approval`/`needs_reconfirm` rungs become `superseded`, its
+    approval nonce is consumed, and its recorded Telegram message is edited
+    best-effort to remove the old buttons. Submitted/resting/terminal rungs
+    are left unchanged because broker cancellation/replacement owns them.
   - It accepts nullable `exit_intent`, `exit_reason`, `retrospective_id`, and
     `approval_issue_id` fields. For `exit_intent="loss_cut"`, `exit_reason`
     and `retrospective_id` are required. `approval_issue_id` is optional

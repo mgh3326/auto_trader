@@ -153,7 +153,12 @@ See the full design in
   refresh) is a new validation revision on the same row; an actual
   price/qty change creates a new proposal row linked via
   `supersedes_proposal_id` / `superseded_by_proposal_id`, and the original is
-  marked `superseded`.
+  marked `superseded`. Its `pending_approval`/`needs_reconfirm` rungs are
+  terminalized as `superseded`, `approval_nonce_used_at` is stamped, and any
+  recorded Telegram approval message is edited best-effort to remove its
+  buttons. Rungs already submitted, resting, or terminal are not mutated by
+  lineage supersede; their broker lifecycle is handled by explicit
+  replace/cancel actions.
 
 ---
 
@@ -260,7 +265,9 @@ Persists a new proposal group + its rungs. `rungs` is a list of
 
 If `supersedes_proposal_id` is given, the referenced proposal is marked
 `superseded` and lineage (`root_proposal_id`, `supersedes_proposal_id`) is
-linked on the new row.
+linked on the new row. Any still-approvable rungs and approval nonce on the
+old proposal are invalidated atomically. Approval/loss-cut nonce consumption
+and direct revalidation independently reject superseded or terminal groups.
 
 When `valid_until` is omitted, the service assigns the next `00:00 KST`. The
 loss-cut fields `exit_intent`, `exit_reason`, `retrospective_id`, and
@@ -933,6 +940,14 @@ by a fresh message minting a new nonce — either a `NEEDS_RECONFIRM` resend
 `send_proposal_for_approval` dispatch (`dispatch.py`) for the same proposal.
 The old message's buttons are stale by design; approve/deny only the most
 recent message for a given proposal.
+
+### `proposal_superseded_by:<proposal_id>`
+
+The clicked proposal was replaced by the named proposal. The old group's
+approvable rungs and nonce were invalidated when the replacement was created,
+and neither approval nor direct revalidation can submit it. Use the newest
+proposal's Telegram message; if the old message edit failed, its visible
+buttons are stale but server-side guards remain authoritative.
 
 ### `nonce_replay`
 
