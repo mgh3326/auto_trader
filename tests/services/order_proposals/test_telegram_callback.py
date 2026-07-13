@@ -225,6 +225,19 @@ async def test_auto_veto_cancels_broker_and_rung_once(monkeypatch, db_session):
     group = await _seed_auto_resting(db_session)
     notifier = _FakeNotifier()
     cancel_calls = []
+    mutation_locks = []
+
+    original_lock = OrderProposalsService.acquire_broker_order_mutation_lock
+
+    async def recording_lock(self, group, broker_order_id):
+        mutation_locks.append(broker_order_id)
+        return await original_lock(self, group, broker_order_id)
+
+    monkeypatch.setattr(
+        OrderProposalsService,
+        "acquire_broker_order_mutation_lock",
+        recording_lock,
+    )
 
     async def cancel_fn(**kwargs):
         cancel_calls.append(kwargs)
@@ -243,6 +256,14 @@ async def test_auto_veto_cancels_broker_and_rung_once(monkeypatch, db_session):
         )
 
     update = _make_update(data=f"vc:{str(group.proposal_id)[:8]}:veto-nonce")
+    wrong_action = await handle_callback_update(
+        _make_update(data=f"op:{str(group.proposal_id)[:8]}:veto-nonce"),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+    )
+    assert wrong_action["reason"] == "auto_veto_nonce_requires_vc"
+
     result = await handle_callback_update(
         update,
         now=datetime.now(UTC),
@@ -253,6 +274,7 @@ async def test_auto_veto_cancels_broker_and_rung_once(monkeypatch, db_session):
     )
 
     assert result["reason"] == "auto_veto_cancelled"
+    assert mutation_locks == ["broker-auto-1"]
     assert cancel_calls[0]["order_id"] == "broker-auto-1"
     refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
         group.proposal_id

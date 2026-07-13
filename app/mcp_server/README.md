@@ -703,6 +703,8 @@ and write policy/version/eligibility evidence under
 `source_asof.auto_approved`. Their Telegram summary carries a single-use
 `취소` veto button; the callback uses the existing broker cancel adapter and a
 fresh status lookup to converge the rung to `cancelled` or report `체결됨`.
+Failure to deliver that post-submit summary triggers the same immediate
+cancel-and-confirm compensation and is audited in `source_asof`.
 `ORDER_PROPOSALS_SUBMIT_AGENT_ID` has no default identity (`""`) and is used
 only while the Telegram callback revalidates and submits the approved proposal.
 Operators must set it explicitly and add the exact same trimmed identity to

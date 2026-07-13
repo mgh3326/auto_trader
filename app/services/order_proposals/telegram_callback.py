@@ -44,7 +44,6 @@ import secrets
 import uuid
 from collections.abc import Callable
 from datetime import datetime
-from decimal import Decimal
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,6 +57,12 @@ from app.services.order_proposals.approval_message import (
     build_buying_power_shortfall_text,
     build_loss_cut_confirmation_message,
     parse_callback_data,
+)
+from app.services.order_proposals.auto_veto import (
+    TargetCancelFn,
+    TargetFetchFn,
+    acquire_auto_veto_locks,
+    cancel_auto_submitted_rungs,
 )
 from app.services.order_proposals.broker_gateway import (
     cancel_target_order,
@@ -74,8 +79,6 @@ logger = logging.getLogger(__name__)
 
 ServiceFactory = Callable[[], Any]
 RevalidateFn = Callable[..., Any]
-TargetCancelFn = Callable[..., Any]
-TargetFetchFn = Callable[..., Any]
 
 # Rung states from which a direct transition to "rejected" is legal (see
 # app/services/order_proposals/state_machine.py). A Telegram deny only ever
@@ -281,6 +284,10 @@ async def _handle_auto_veto(
     fetch_fn: TargetFetchFn,
 ) -> dict[str, Any]:
     """Cancel every still-open auto-submitted rung and converge evidence."""
+    group, rungs = await service.get_proposal(proposal_id)
+    # Match replace/cancel lock ordering: broker target advisory locks before
+    # the proposal-row nonce lock, with stable ordering for multi-rung groups.
+    await acquire_auto_veto_locks(service=service, group=group, rungs=rungs)
     try:
         await service.consume_auto_veto_nonce(proposal_id, nonce, now=now)
     except OrderProposalError as exc:
@@ -288,88 +295,19 @@ async def _handle_auto_veto(
         return {"handled": False, "reason": str(exc), "proposal_id": str(proposal_id)}
 
     group, rungs = await service.get_proposal(proposal_id)
-    outcomes: list[dict[str, Any]] = []
-    saw_filled = False
-    saw_failure = False
-    cancellable = {"acked", "resting", "partially_filled", "unverified"}
-    for rung in rungs:
-        if rung.state == "filled":
-            saw_filled = True
-            outcomes.append({"rung_index": rung.rung_index, "result": "filled"})
-            continue
-        if rung.state == "cancelled":
-            outcomes.append({"rung_index": rung.rung_index, "result": "cancelled"})
-            continue
-        if rung.state not in cancellable or not rung.broker_order_id:
-            saw_failure = True
-            outcomes.append(
-                {"rung_index": rung.rung_index, "result": "not_cancellable"}
-            )
-            continue
-
-        cancel_error: str | None = None
-        try:
-            cancel_result = await cancel_fn(
-                order_id=rung.broker_order_id,
-                symbol=group.symbol,
-                market=group.market,
-                account_mode=group.account_mode,
-            )
-            if (
-                not isinstance(cancel_result, dict)
-                or cancel_result.get("success") is not True
-            ):
-                cancel_error = str(
-                    cancel_result.get("error") or "cancel_rejected"
-                    if isinstance(cancel_result, dict)
-                    else "cancel_rejected"
-                )
-        except Exception as exc:  # noqa: BLE001 - confirm state after ambiguity
-            cancel_error = str(exc)
-
-        try:
-            snapshot = await fetch_fn(
-                order_id=rung.broker_order_id,
-                symbol=group.symbol,
-                market=group.market,
-                account_mode=group.account_mode,
-                now=now,
-            )
-            status = snapshot.status
-        except Exception as exc:  # noqa: BLE001 - audit explicit uncertainty
-            status = None
-            cancel_error = cancel_error or str(exc)
-
-        if status == "cancelled":
-            await service.record_cancelled(
-                proposal_id,
-                rung.rung_index,
-                broker_order_id=rung.broker_order_id,
-                now=now,
-            )
-            outcomes.append({"rung_index": rung.rung_index, "result": "cancelled"})
-        elif status == "filled":
-            await service.transition_rung(
-                proposal_id,
-                rung.rung_index,
-                new_state="filled",
-                broker_order_id=rung.broker_order_id,
-                filled_qty=Decimal(rung.quantity),
-                validated_at=now,
-                updated_at=now,
-            )
-            saw_filled = True
-            outcomes.append({"rung_index": rung.rung_index, "result": "filled"})
-        else:
-            saw_failure = True
-            outcomes.append(
-                {
-                    "rung_index": rung.rung_index,
-                    "result": "cancel_failed",
-                    "broker_status": status,
-                    "error": cancel_error,
-                }
-            )
+    outcomes = await cancel_auto_submitted_rungs(
+        service=service,
+        group=group,
+        rungs=rungs,
+        now=now,
+        cancel_fn=cancel_fn,
+        fetch_fn=fetch_fn,
+    )
+    saw_filled = any(outcome["result"] == "filled" for outcome in outcomes)
+    saw_failure = any(
+        outcome["result"] in {"cancel_failed", "not_cancellable"}
+        for outcome in outcomes
+    )
 
     await service.record_auto_veto(
         proposal_id,

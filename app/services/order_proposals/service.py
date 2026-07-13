@@ -184,20 +184,31 @@ class OrderProposalsService:
         if not group.target_broker_order_id:
             raise OrderProposalError("target action requires target_broker_order_id")
 
+        await self.acquire_broker_order_mutation_lock(
+            group, group.target_broker_order_id
+        )
+        return True
+
+    async def acquire_broker_order_mutation_lock(
+        self, group: OrderProposal, broker_order_id: str
+    ) -> None:
+        """Serialize any mutation targeting one concrete broker order."""
+        if not broker_order_id.strip():
+            raise OrderProposalError("broker_order_id is required for mutation lock")
+
         lock_key = "|".join(
             (
                 "order_proposal_target",
                 group.account_mode,
                 group.market,
                 group.broker_account_id or "",
-                group.target_broker_order_id,
+                broker_order_id,
             )
         )
         await self._session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
             {"lock_key": lock_key},
         )
-        return True
 
     async def create_proposal(
         self,
@@ -774,6 +785,8 @@ class OrderProposalsService:
         block_reason = proposal_approval_block_reason(group)
         if block_reason is not None:
             raise OrderProposalError(block_reason)
+        if isinstance((group.source_asof or {}).get("auto_approved"), dict):
+            raise OrderProposalError("auto_veto_nonce_requires_vc")
         if group.approval_nonce != nonce:
             raise OrderProposalError("nonce_mismatch")
         if group.approval_nonce_used_at is not None:
@@ -1012,6 +1025,29 @@ class OrderProposalsService:
         source_asof["auto_approved"] = auto
         return await self._repo.update_group(group, source_asof=source_asof)
 
+    async def record_auto_notification_failure(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        error: str,
+        outcomes: list[dict[str, Any]],
+        now: datetime,
+    ) -> OrderProposal:
+        """Audit compensating cancellation after veto delivery failed."""
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        source_asof = dict(group.source_asof or {})
+        auto = dict(source_asof.get("auto_approved") or {})
+        auto["notification_failure"] = {
+            "error": error,
+            "handled_at": now.isoformat(),
+            "outcomes": outcomes,
+        }
+        source_asof["auto_approved"] = auto
+        return await self._repo.update_group(group, source_asof=source_asof)
+
     async def auto_approved_daily_notional(
         self, group: OrderProposal, *, now: datetime
     ) -> Decimal:
@@ -1021,14 +1057,22 @@ class OrderProposalsService:
         start = local.replace(hour=0, minute=0, second=0, microsecond=0)
         end = start + timedelta(days=1)
         account_key = group.broker_account_id or "default"
-        await self._repo.acquire_auto_approve_account_lock(
-            f"order_proposals:auto_approve:{group.account_mode}:{account_key}:{start.date()}"
+        await self._repo.acquire_auto_approve_lock(
+            f"order_proposals:auto_approve:{group.account_mode}:{group.market}:"
+            f"{account_key}:{start.date()}"
         )
         return await self._repo.auto_approved_notional_between(
             account_mode=group.account_mode,
+            market=group.market,
             broker_account_id=group.broker_account_id,
             start=start,
             end=end,
+        )
+
+    async def acquire_auto_dispatch_lock(self, proposal_id: uuid.UUID) -> None:
+        """Serialize dispatch attempts for one proposal across processes."""
+        await self._repo.acquire_auto_approve_lock(
+            f"order_proposals:auto_dispatch:{proposal_id}"
         )
 
     async def acquire_commit_lease(

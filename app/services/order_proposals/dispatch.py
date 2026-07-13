@@ -33,6 +33,16 @@ from app.services.order_proposals.auto_approve import (
     evaluate_auto_approve_eligibility,
     limits_for_market,
 )
+from app.services.order_proposals.auto_veto import (
+    TargetCancelFn,
+    TargetFetchFn,
+    acquire_auto_veto_locks,
+    cancel_auto_submitted_rungs,
+)
+from app.services.order_proposals.broker_gateway import (
+    cancel_target_order,
+    fetch_target_order,
+)
 from app.services.order_proposals.revalidation import (
     RungOutcome,
     revalidate_and_submit,
@@ -107,6 +117,8 @@ async def dispatch_proposal(
     now: datetime,
     service_factory: ServiceFactory = AsyncSessionLocal,
     revalidate_fn: RevalidateFn = revalidate_and_submit,
+    cancel_target_fn: TargetCancelFn = cancel_target_order,
+    fetch_target_fn: TargetFetchFn = fetch_target_order,
 ) -> int | None:
     """Auto-submit an eligible resting proposal, otherwise send for approval."""
     if not settings.ORDER_PROPOSALS_AUTO_APPROVE:
@@ -121,8 +133,12 @@ async def dispatch_proposal(
     message: tuple[str, dict[str, Any]] | None = None
     async with service_factory() as session:
         service = OrderProposalsService(session)
+        await service.acquire_auto_dispatch_lock(proposal_id)
         group, initial_rungs = await service.get_proposal(proposal_id)
         pending_count = sum(rung.state == "pending_approval" for rung in initial_rungs)
+        if pending_count == 0:
+            await session.commit()
+            return None
         limits = limits_for_market(group.market)
         decisions: list[dict[str, Any]] = []
         if limits is not None:
@@ -190,18 +206,50 @@ async def dispatch_proposal(
         )
 
     allowlist = settings.order_proposals_telegram_chat_allowlist
-    if not allowlist:
-        return None
-    chat_id = allowlist[0]
     text, keyboard = message
-    message_id = await notifier.send_approval_message(text, keyboard, chat_id=chat_id)
-    if message_id is not None:
+    notify_error = "telegram_allowlist_empty"
+    message_id = None
+    chat_id = allowlist[0] if allowlist else None
+    if chat_id is not None:
+        notify_error = "telegram_message_not_sent"
+        try:
+            message_id = await notifier.send_approval_message(
+                text, keyboard, chat_id=chat_id
+            )
+        except Exception as exc:  # noqa: BLE001 - compensate live order below
+            logger.exception("auto-approved proposal veto notification failed")
+            notify_error = str(exc)
+            message_id = None
+    if message_id is None:
         async with service_factory() as session:
             service = OrderProposalsService(session)
-            await service.record_approval_dispatch(
-                proposal_id, message_id=message_id, chat_id=chat_id, now=now
+            await service.acquire_auto_dispatch_lock(proposal_id)
+            group, rungs = await service.get_proposal(proposal_id)
+            await acquire_auto_veto_locks(service=service, group=group, rungs=rungs)
+            outcomes = await cancel_auto_submitted_rungs(
+                service=service,
+                group=group,
+                rungs=rungs,
+                now=now,
+                cancel_fn=cancel_target_fn,
+                fetch_fn=fetch_target_fn,
+            )
+            await service.record_auto_notification_failure(
+                proposal_id,
+                error=notify_error,
+                outcomes=outcomes,
+                now=now,
             )
             await session.commit()
+        return None
+    if chat_id is None:
+        raise AssertionError("a sent Telegram message requires a destination chat")
+    async with service_factory() as session:
+        service = OrderProposalsService(session)
+        await service.record_approval_dispatch(
+            proposal_id, message_id=message_id, chat_id=chat_id, now=now
+        )
+        await session.commit()
     return message_id
 
 
