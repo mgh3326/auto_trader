@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 from decimal import Decimal
 
+import httpx
 import pytest
 
 from app.services.brokers.binance.demo.errors import BinanceDemoOrderNotFound
@@ -182,3 +183,18 @@ async def test_get_order_normalizes_explicit_binance_not_found(
 
     with pytest.raises(BinanceDemoOrderNotFound):
         await client.get_order(symbol="XRPUSDT", client_order_id="missing-cid")
+
+
+@pytest.mark.asyncio
+async def test_get_order_does_not_normalize_malformed_400_as_not_found(
+    client: BinanceFuturesDemoExecutionClient, httpx_mock
+) -> None:
+    httpx_mock.add_response(
+        method="GET",
+        url=re.compile(r"^https://demo-fapi\.binance\.com/fapi/v1/order\?.*$"),
+        status_code=400,
+        content=b"not-json",
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.get_order(symbol="XRPUSDT", client_order_id="malformed-400")

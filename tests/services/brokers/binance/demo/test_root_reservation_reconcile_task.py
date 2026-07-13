@@ -7,6 +7,17 @@ import datetime as dt
 import pytest
 
 
+def test_utcnow_returns_current_aware_utc_time() -> None:
+    import app.tasks.binance_demo_root_reservation_reconcile_tasks as taskmod
+
+    before = dt.datetime.now(dt.UTC)
+    actual = taskmod._utcnow()
+    after = dt.datetime.now(dt.UTC)
+
+    assert actual.tzinfo is dt.UTC
+    assert before <= actual <= after
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("base_enabled", "reconcile_enabled"), [(True, False), (False, True)]
@@ -172,6 +183,49 @@ async def test_from_env_runner_attempts_both_client_closes(monkeypatch) -> None:
         )
 
     assert futures.closed is True
+
+
+@pytest.mark.asyncio
+async def test_from_env_runner_preserves_kernel_error_and_notes_cleanup_failure(
+    monkeypatch,
+) -> None:
+    import app.jobs.binance_demo_root_reservation_reconciliation as jobmod
+
+    class _Spot:
+        async def aclose(self):
+            raise RuntimeError("spot close failed")
+
+    class _Futures:
+        closed = False
+
+        async def aclose(self):
+            self.closed = True
+
+    futures = _Futures()
+    monkeypatch.setattr(jobmod.BinanceSpotDemoExecutionClient, "from_env", _Spot)
+    monkeypatch.setattr(
+        jobmod.BinanceFuturesDemoExecutionClient, "from_env", lambda: futures
+    )
+
+    async def _failed_kernel(*_args, **_kwargs):
+        raise ValueError("kernel failed")
+
+    monkeypatch.setattr(
+        jobmod, "reconcile_binance_demo_root_reservations", _failed_kernel
+    )
+
+    with pytest.raises(ValueError, match="kernel failed") as exc_info:
+        await jobmod.run_binance_demo_root_reservation_reconciliation_from_env(
+            now=dt.datetime(2026, 7, 13, 12, 0, tzinfo=dt.UTC),
+            stale_before=dt.datetime(2026, 7, 13, 11, 0, tzinfo=dt.UTC),
+            dry_run=True,
+        )
+
+    assert futures.closed is True
+    assert any(
+        "client cleanup also failed" in note and "spot close failed" in note
+        for note in (exc_info.value.__notes__ or [])
+    )
 
 
 @pytest.mark.asyncio

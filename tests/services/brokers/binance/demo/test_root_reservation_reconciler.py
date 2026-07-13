@@ -97,6 +97,48 @@ async def _row(cid: str) -> BinanceDemoOrderLedger:
         return row
 
 
+@pytest.mark.parametrize(
+    ("invalid_field", "invalid"),
+    [
+        (None, []),
+        ("executedQty", object()),
+        ("orderId", True),
+        ("orderId", Decimal("1")),
+        ("orderId", "0"),
+    ],
+    ids=[
+        "non-mapping",
+        "unparseable-executed-qty",
+        "boolean-order-id",
+        "non-string-order-id",
+        "zero-order-id",
+    ],
+)
+def test_truth_normalization_rejects_ambiguous_scalar_types(
+    invalid_field: str | None,
+    invalid: object,
+) -> None:
+    """Broker truth never coerces malformed values into trusted identity."""
+    from app.jobs.binance_demo_root_reservation_reconciliation import (
+        _normalize_broker_truth_payload,
+    )
+
+    payload: object = {
+        "clientOrderId": "rob844-reconcile-normalize",
+        "symbol": "R844NORMALIZEUSDT",
+        "status": "CANCELED",
+        "executedQty": "0",
+        "orderId": "84401",
+    }
+    if invalid_field is None:
+        payload = invalid
+    else:
+        assert isinstance(payload, dict)
+        payload[invalid_field] = invalid
+
+    assert _normalize_broker_truth_payload(payload) is None
+
+
 @pytest.mark.asyncio
 async def test_explicit_not_found_releases_abandoned_spot_reservation() -> None:
     from app.jobs.binance_demo_root_reservation_reconciliation import (
@@ -772,6 +814,82 @@ async def test_account_identity_uncertainty_keeps_without_broker_lookup(
     assert result["released"] == 0
     assert result["outcomes"][0]["reason"] == expected_reason
     assert client.calls == 0
+    assert (await _row(cid)).lifecycle_state == "planned"
+
+
+@pytest.mark.asyncio
+async def test_credential_identity_lookup_failure_keeps_without_broker_lookup() -> None:
+    from app.jobs.binance_demo_root_reservation_reconciliation import (
+        reconcile_binance_demo_root_reservations,
+    )
+
+    cid, _ = await _seed(product="spot", suffix="credentialgetterfailure")
+
+    class _Spot:
+        calls = 0
+
+        @property
+        def credential_fingerprint(self):
+            raise RuntimeError("credential store unavailable")
+
+        async def get_order_status(self, **_kwargs):
+            self.calls += 1
+            raise AssertionError("unknown credential identity must block broker GET")
+
+    client = _Spot()
+    result = await reconcile_binance_demo_root_reservations(
+        AsyncSessionLocal,
+        clients={"spot": client},
+        now=_NOW,
+        stale_before=_STALE_BEFORE,
+        dry_run=False,
+    )
+
+    assert result["released"] == 0
+    assert result["outcomes"][0]["reason"] == (
+        "client_credential_fingerprint_unavailable"
+    )
+    assert client.calls == 0
+    assert (await _row(cid)).lifecycle_state == "planned"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mismatch_field", "suffix"),
+    [("clientOrderId", "idcid"), ("symbol", "idsym")],
+)
+async def test_broker_identity_mismatch_keeps_reservation(
+    mismatch_field: str,
+    suffix: str,
+) -> None:
+    from app.jobs.binance_demo_root_reservation_reconciliation import (
+        reconcile_binance_demo_root_reservations,
+    )
+
+    cid, symbol = await _seed(product="spot", suffix=suffix)
+    payload = {
+        "clientOrderId": cid,
+        "symbol": symbol,
+        "status": "CANCELED",
+        "executedQty": "0",
+        "orderId": "84403",
+    }
+    payload[mismatch_field] = f"{payload[mismatch_field]}-other"
+
+    class _Spot(_CredentialBoundClient):
+        async def get_order_status(self, **_kwargs):
+            return payload
+
+    result = await reconcile_binance_demo_root_reservations(
+        AsyncSessionLocal,
+        clients={"spot": _Spot()},
+        now=_NOW,
+        stale_before=_STALE_BEFORE,
+        dry_run=False,
+    )
+
+    assert result["released"] == 0
+    assert result["outcomes"][0]["reason"] == "broker_identity_mismatch"
     assert (await _row(cid)).lifecycle_state == "planned"
 
 

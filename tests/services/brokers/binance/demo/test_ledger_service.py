@@ -116,6 +116,46 @@ async def test_invalid_product_rejected(
 
 
 @pytest.mark.asyncio
+async def test_independent_boundaries_reject_invalid_product_before_db_work(
+    demo_ledger_service: BinanceDemoLedgerService,
+) -> None:
+    now = dt.datetime(2026, 5, 22, 12, 0, 0, tzinfo=dt.UTC)
+
+    with pytest.raises(BinanceDemoInvalidProduct):
+        await demo_ledger_service.resolve_or_create_instrument(
+            venue="binance",
+            product="margin",
+            venue_symbol="BTCUSDT",
+            base_asset="BTC",
+            quote_asset="USDT",
+        )
+    with pytest.raises(BinanceDemoInvalidProduct):
+        await demo_ledger_service.reserve_root_planned(
+            instrument_id=-1,
+            product="margin",
+            venue_host="demo-api.binance.com",
+            client_order_id="demo-test-invalid-reservation-product",
+            side="BUY",
+            order_type="MARKET",
+            qty=Decimal("1"),
+            price=None,
+            global_open_root_cap=1,
+            now=now,
+        )
+
+
+@pytest.mark.asyncio
+async def test_transition_of_missing_row_is_rejected(
+    demo_ledger_service: BinanceDemoLedgerService,
+) -> None:
+    with pytest.raises(BinanceDemoInvalidStateTransition, match="no ledger row"):
+        await demo_ledger_service.record_previewed(
+            client_order_id="demo-test-row-does-not-exist",
+            now=dt.datetime(2026, 5, 22, 12, 0, 0, tzinfo=dt.UTC),
+        )
+
+
+@pytest.mark.asyncio
 async def test_state_transition_planned_to_previewed(
     demo_ledger_service: BinanceDemoLedgerService,
     crypto_instrument_btc_id: int,

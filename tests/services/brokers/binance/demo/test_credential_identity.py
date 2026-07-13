@@ -25,6 +25,12 @@ def test_credential_fingerprint_is_deterministic_opaque_and_key_specific() -> No
     assert raw_key not in fingerprint
 
 
+@pytest.mark.parametrize("invalid_key", ["", None, b"bytes-are-not-a-key"])
+def test_credential_fingerprint_rejects_invalid_keys(invalid_key: object) -> None:
+    with pytest.raises(ValueError, match="non-empty string"):
+        demo_credential_fingerprint(invalid_key)  # type: ignore[arg-type]
+
+
 @pytest.mark.asyncio
 async def test_spot_and_futures_clients_expose_only_opaque_fingerprint() -> None:
     raw_key = "RAW_SHARED_DEMO_API_KEY_MUST_NEVER_PERSIST"
