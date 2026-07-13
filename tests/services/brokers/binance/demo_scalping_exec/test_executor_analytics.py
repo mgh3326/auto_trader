@@ -95,7 +95,8 @@ class _Sub:
     def __init__(self, status, coid, avg, qty=Decimal("0.1")):
         self.status = status
         self.client_order_id = coid
-        self.broker_order_id = "b1"
+        # ROB-844: unique broker id per leg (distinct orders never share one).
+        self.broker_order_id = f"bk-{coid}"
         self.avg_price = avg
         self.executed_qty = qty
 

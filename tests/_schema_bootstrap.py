@@ -26,7 +26,9 @@ from sqlalchemy import text
 # append-only immutability triggers are non-ORM DDL and are mirrored below.
 # v7 (ROB-846 review): trigger now blocks legacy->trial UPDATE conversion, plus
 # trial all-or-none + promotion identity-complete CHECK constraints (NOT VALID).
-SCHEMA_BOOTSTRAP_VERSION = 7
+# v8 (ROB-844): binance_demo_order_ledger partial-unique indexes
+# (uq_binance_demo_ledger_open_root / _broker_ack) mirrored in _DDL_STATEMENTS.
+SCHEMA_BOOTSTRAP_VERSION = 8
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -594,6 +596,17 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "CREATE TRIGGER trg_backtest_runs_trial_immutable "
     "BEFORE UPDATE OR DELETE ON research.backtest_runs "
     "FOR EACH ROW EXECUTE FUNCTION research.reject_backtest_trial_mutation()",
+    # ---- ROB-844: binance_demo_order_ledger root-exposure + broker-ack partial
+    # uniqueness (mirrors migration 20260713_rob844_*). create_all skips these on
+    # a persistent DB where the table already exists, so mirror them here.
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_binance_demo_ledger_open_root "
+    "ON binance_demo_order_ledger (product, instrument_id) "
+    "WHERE parent_client_order_id IS NULL "
+    "AND lifecycle_state IN "
+    "('planned','previewed','validated','submitted','filled','anomaly')",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_binance_demo_ledger_broker_ack "
+    "ON binance_demo_order_ledger (product, venue_host, broker_order_id) "
+    "WHERE broker_order_id IS NOT NULL",
 )
 
 

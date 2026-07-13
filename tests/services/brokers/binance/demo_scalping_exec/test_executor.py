@@ -82,10 +82,14 @@ class _FakeReference:
 
 
 class _Order:
-    def __init__(self, status, coid, broker_id="b1", executed_qty=Decimal("7.3")):
+    def __init__(self, status, coid, broker_id=None, executed_qty=Decimal("7.3")):
         self.status = status
         self.client_order_id = coid
-        self.broker_order_id = broker_id
+        # ROB-844: distinct orders get distinct broker ids (Binance never
+        # replays an orderId). Derive from the unique per-leg coid so the
+        # open + close legs of one round trip do not collide on the new
+        # (product, venue_host, broker_order_id) ack-uniqueness index.
+        self.broker_order_id = broker_id if broker_id is not None else f"bk-{coid}"
         self.executed_qty = executed_qty
 
 
