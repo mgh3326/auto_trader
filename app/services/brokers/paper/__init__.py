@@ -7,6 +7,7 @@ from app.services.brokers.capabilities import (
 )
 from app.services.brokers.paper.adapter_registry import PaperAdapterRegistry
 from app.services.brokers.paper.application import PaperExecutionApplication
+from app.services.brokers.paper.composition import build_paper_execution_application
 from app.services.brokers.paper.contracts import (
     ExperimentProvenanceVerifier,
     PaperBrokerPort,
@@ -36,6 +37,7 @@ __all__ = [
     "PaperRiskSnapshot",
     "VerifiedExperimentProvenance",
     "VerifiedPaperOrderIntent",
+    "build_paper_execution_application",
     "derive_paper_idempotency_key",
     "get_paper_capabilities",
 ]

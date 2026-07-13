@@ -8,15 +8,11 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from pydantic import ConfigDict, TypeAdapter
 
-from app.services.brokers.paper.contracts import (
-    ExperimentProvenanceVerifier,
-    PaperOrderRequest,
-)
+from app.services.brokers.paper.composition import build_paper_execution_application
+from app.services.brokers.paper.contracts import PaperOrderRequest
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
-
-    from app.services.brokers.paper.application import PaperExecutionApplication
 
 
 PAPER_EXECUTION_TOOL_NAMES: set[str] = {
@@ -65,27 +61,6 @@ def _default_application_provider() -> _PaperExecutionApplication:
     ``provenance_verifier_unavailable`` before adapter resolution.
     """
     return build_paper_execution_application(verifier=None)
-
-
-def build_paper_execution_application(
-    *,
-    verifier: ExperimentProvenanceVerifier | None,
-) -> PaperExecutionApplication:
-    """Compose both production adapters behind the provenance-first façade.
-
-    Constructing the adapters performs no broker or database I/O. ROB-849 can
-    inject its canonical verifier here without redefining registry or venue
-    capability ownership.
-    """
-    from app.services.brokers.alpaca.paper_adapter import AlpacaCryptoPaperAdapter
-    from app.services.brokers.binance.paper_adapter import BinanceSpotDemoPaperAdapter
-    from app.services.brokers.paper.adapter_registry import PaperAdapterRegistry
-    from app.services.brokers.paper.application import PaperExecutionApplication
-
-    registry = PaperAdapterRegistry()
-    registry.register(BinanceSpotDemoPaperAdapter())
-    registry.register(AlpacaCryptoPaperAdapter())
-    return PaperExecutionApplication(registry=registry, verifier=verifier)
 
 
 def _model_to_json(value: object) -> dict[str, Any]:
@@ -237,6 +212,5 @@ __all__ = [
     "ApplicationProvider",
     "PAPER_EXECUTION_TOOL_NAMES",
     "PaperOrderToolInput",
-    "build_paper_execution_application",
     "register_paper_execution_tools",
 ]

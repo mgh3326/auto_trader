@@ -14,13 +14,13 @@ from app.mcp_server.profiles import McpProfile
 from app.mcp_server.tooling.paper_execution_registration import (
     PAPER_EXECUTION_TOOL_NAMES,
     PaperOrderToolInput,
-    build_paper_execution_application,
     register_paper_execution_tools,
 )
 from app.mcp_server.tooling.registry import register_all_tools
 from app.services.brokers.alpaca.paper_adapter import AlpacaCryptoPaperAdapter
 from app.services.brokers.binance.paper_adapter import BinanceSpotDemoPaperAdapter
 from app.services.brokers.capabilities import Broker
+from app.services.brokers.paper.composition import build_paper_execution_application
 from app.services.brokers.paper.contracts import (
     PaperOperation,
     PaperOperationResult,
