@@ -93,8 +93,28 @@ def _load_main_module(
             mcp_caller_agent_id_fallback=None,
             order_approval_hash_mode="required",
             toss_approval_hash_mode="required",
+            kiwoom_mock_enabled=False,
+            kiwoom_mock_app_key=None,
+            kiwoom_mock_app_secret=None,
+            kiwoom_mock_account_no=None,
+            kiwoom_mock_base_url="https://mockapi.kiwoom.com",
             PAPER_EXECUTION_ENABLED=paper_execution_enabled,
         )
+
+    def validate_kiwoom_mock_config(settings: object) -> list[str]:
+        missing: list[str] = []
+        if not bool(getattr(settings, "kiwoom_mock_enabled", False)):
+            missing.append("KIWOOM_MOCK_ENABLED")
+        for attribute, env_name in (
+            ("kiwoom_mock_app_key", "KIWOOM_MOCK_APP_KEY"),
+            ("kiwoom_mock_app_secret", "KIWOOM_MOCK_APP_SECRET"),
+            ("kiwoom_mock_account_no", "KIWOOM_MOCK_ACCOUNT_NO"),
+        ):
+            if not str(getattr(settings, attribute, None) or "").strip():
+                missing.append(env_name)
+        return missing
+
+    fake_config.__dict__["validate_kiwoom_mock_config"] = validate_kiwoom_mock_config
 
     fake_auth = ModuleType("app.mcp_server.auth")
     fake_auth.__dict__["build_auth_provider"] = MagicMock(return_value="auth-provider")
@@ -425,6 +445,83 @@ class TestMcpServerMain:
             tradingcodex_execution=True,
         )
         assert module._mcp_profile is execution_profile
+
+    @pytest.mark.parametrize(
+        "profile_kwargs",
+        [
+            {"account_read": True},
+            {"tradingcodex_execution": True},
+        ],
+    )
+    def test_restricted_profiles_fail_startup_when_kiwoom_mock_enabled_incomplete(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        profile_kwargs: dict[str, bool],
+    ) -> None:
+        fake_settings = types.SimpleNamespace(
+            mcp_caller_agent_id_fallback="",
+            order_approval_hash_mode="required",
+            toss_approval_hash_mode="required",
+            LOG_LEVEL="INFO",
+            kiwoom_mock_enabled=True,
+            kiwoom_mock_app_key=None,
+            kiwoom_mock_app_secret=None,
+            kiwoom_mock_account_no=None,
+            kiwoom_mock_base_url="https://mockapi.kiwoom.com",
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "app.core.config",
+            types.SimpleNamespace(settings=fake_settings),
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                "KIWOOM_MOCK_APP_KEY.*KIWOOM_MOCK_APP_SECRET.*KIWOOM_MOCK_ACCOUNT_NO"
+            ),
+        ):
+            _load_main_module(
+                monkeypatch,
+                auth_token="restricted-profile-token",
+                **profile_kwargs,
+            )
+
+    @pytest.mark.parametrize(
+        "profile_kwargs",
+        [
+            {"account_read": True},
+            {"tradingcodex_execution": True},
+        ],
+    )
+    def test_restricted_profiles_fail_startup_on_kiwoom_live_host(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        profile_kwargs: dict[str, bool],
+    ) -> None:
+        fake_settings = types.SimpleNamespace(
+            mcp_caller_agent_id_fallback="",
+            order_approval_hash_mode="required",
+            toss_approval_hash_mode="required",
+            LOG_LEVEL="INFO",
+            kiwoom_mock_enabled=True,
+            kiwoom_mock_app_key="configured",
+            kiwoom_mock_app_secret="configured",
+            kiwoom_mock_account_no="configured",
+            kiwoom_mock_base_url="https://api.kiwoom.com",
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "app.core.config",
+            types.SimpleNamespace(settings=fake_settings),
+        )
+
+        with pytest.raises(RuntimeError, match="mockapi.kiwoom.com"):
+            _load_main_module(
+                monkeypatch,
+                auth_token="restricted-profile-token",
+                **profile_kwargs,
+            )
 
     def test_paper_execution_profile_requires_auth_before_fastmcp(
         self,

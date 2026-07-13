@@ -110,3 +110,42 @@ async def test_account_methods_never_log_account_no(caplog):
     await acct.get_balance()
     rendered = "\n".join(rec.getMessage() for rec in caplog.records)
     assert "12345678-01" not in rendered
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "symbol",
+    [
+        "A005930",
+        "AAPL",
+        "",
+        "   ",
+        "5930",
+        "../005930",
+        "005930?x",
+        "0123G0",
+        "００５９３０",
+        "٠٠٥٩٣٠",
+        "00\n5930",
+    ],
+)
+async def test_get_orderable_amount_rejects_noncanonical_symbol_before_post_api(
+    symbol,
+):
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+
+    with pytest.raises(ValueError, match="symbol"):
+        await acct.get_orderable_amount(symbol=symbol)
+
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+async def test_get_orderable_amount_forwards_trimmed_canonical_symbol():
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+
+    await acct.get_orderable_amount(symbol=" 005930 ")
+
+    assert fake.calls[-1]["body"]["stk_cd"] == "005930"

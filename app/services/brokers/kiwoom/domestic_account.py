@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from app.services.brokers.kiwoom import constants
+from app.services.brokers.kiwoom.validation import normalize_krx_symbol
 
 ACCOUNT_PATH = "/api/dostk/acnt"
 
@@ -48,7 +49,7 @@ class KiwoomDomesticAccountClient:
             # proven by the order endpoints. Mock is KRX-only.
             body={
                 "dmst_stex_tp": constants.ACCOUNT_DMST_STEX_TP_DEFAULT,
-                "stk_cd": str(symbol).strip(),
+                "stk_cd": normalize_krx_symbol(symbol),
             },
             cont_yn=cont_yn,
             next_key=next_key,
