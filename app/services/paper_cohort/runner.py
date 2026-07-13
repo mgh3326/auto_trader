@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from datetime import UTC, datetime
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Protocol
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.paper_cohort import (
     CanonicalMarketSnapshot,
     PaperCohortDecision,
+    PaperCohortRunClaim,
     PaperCohortVenueIntent,
     PaperRunOrderLink,
     PaperValidationCohort,
@@ -104,6 +107,9 @@ class PaperCohortRunner:
         ) = None,
         native_resolver: NativeResolver | None = None,
         clock: Callable[[], datetime] | None = None,
+        after_submit_hook: (
+            Callable[[PaperOperationResult], Awaitable[None]] | None
+        ) = None,
     ) -> None:
         self._session = session
         self._capture = capture
@@ -112,6 +118,65 @@ class PaperCohortRunner:
         self._application_factory = application_factory
         self._native_resolver = native_resolver or NativeOrderResolver(session)
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._after_submit_hook = after_submit_hook
+
+    async def _claim(
+        self, invocation: CohortRunInvocation
+    ) -> tuple[PaperCohortRunClaim | None, CohortRunResult | None]:
+        request_hash = canonical_sha256(invocation.model_dump(mode="python"))
+        now = self._clock()
+        owner_token = uuid4().hex
+        inserted_id = await self._session.scalar(
+            pg_insert(PaperCohortRunClaim)
+            .values(
+                cohort_id=invocation.cohort_id,
+                run_id=invocation.run_id,
+                round_decision_id=invocation.round_decision_id,
+                request_hash=request_hash,
+                owner_token=owner_token,
+                lease_expires_at=now + timedelta(minutes=5),
+            )
+            .on_conflict_do_nothing(
+                index_elements=["cohort_id", "run_id", "round_decision_id"]
+            )
+            .returning(PaperCohortRunClaim.id)
+        )
+        if inserted_id is not None:
+            return await self._session.get(PaperCohortRunClaim, inserted_id), None
+
+        existing = await self._session.scalar(
+            select(PaperCohortRunClaim).where(
+                PaperCohortRunClaim.cohort_id == invocation.cohort_id,
+                PaperCohortRunClaim.run_id == invocation.run_id,
+                PaperCohortRunClaim.round_decision_id == invocation.round_decision_id,
+            )
+        )
+        if existing is None:
+            raise PaperCohortError("invocation_claim_unavailable")
+        if existing.request_hash != request_hash:
+            raise PaperCohortError("invocation_conflict")
+        if existing.completed_at is not None and existing.result_payload is not None:
+            return None, CohortRunResult.model_validate(existing.result_payload)
+        if existing.lease_expires_at > now:
+            raise PaperCohortError("invocation_in_progress")
+
+        takeover_id = await self._session.scalar(
+            update(PaperCohortRunClaim)
+            .where(
+                PaperCohortRunClaim.id == existing.id,
+                PaperCohortRunClaim.request_hash == request_hash,
+                PaperCohortRunClaim.completed_at.is_(None),
+                PaperCohortRunClaim.lease_expires_at <= now,
+            )
+            .values(
+                owner_token=owner_token,
+                lease_expires_at=now + timedelta(minutes=5),
+            )
+            .returning(PaperCohortRunClaim.id)
+        )
+        if takeover_id is None:
+            raise PaperCohortError("invocation_in_progress")
+        return await self._session.get(PaperCohortRunClaim, takeover_id), None
 
     async def _cohort(
         self, cohort_id: str
@@ -158,6 +223,11 @@ class PaperCohortRunner:
     async def run(self, invocation: CohortRunInvocation) -> CohortRunResult:
         if invocation.mode is RunMode.PAPER_ACTIVE and self._verifier is None:
             raise PaperCohortError("provenance_verifier_unavailable")
+        claim, replay = await self._claim(invocation)
+        if replay is not None:
+            return replay
+        if claim is None:
+            raise PaperCohortError("invocation_claim_unavailable")
         cohort, assignments = await self._cohort(invocation.cohort_id)
         if cohort.stop_at is not None and self._clock() >= cohort.stop_at:
             raise PaperCohortError("cohort_stopped")
@@ -337,6 +407,8 @@ class PaperCohortRunner:
                     or result.native_order_id is None
                 ):
                     raise PaperCohortError(str(result.reason_code))
+                if self._after_submit_hook is not None:
+                    await self._after_submit_hook(result)
                 native = await self._native_resolver.resolve(
                     intent.venue,
                     result.native_client_order_id,
@@ -357,7 +429,7 @@ class PaperCohortRunner:
                     )
                 )
             await self._session.flush()
-        return CohortRunResult(
+        completed = CohortRunResult(
             cohort_id=invocation.cohort_id,
             run_id=invocation.run_id,
             round_decision_id=invocation.round_decision_id,
@@ -366,6 +438,10 @@ class PaperCohortRunner:
             decision_count=len(signals),
             intent_count=intent_count,
         )
+        claim.result_payload = completed.model_dump(mode="json")
+        claim.completed_at = self._clock()
+        await self._session.flush()
+        return completed
 
 
 __all__ = ["CohortRunInvocation", "CohortRunResult", "PaperCohortRunner"]
