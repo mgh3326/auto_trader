@@ -26,7 +26,8 @@ def register_trade_retrospective_tools(mcp: Any) -> None:
         description=(
             "Store a structured trade retrospective (outcome, absolute realized_pnl, "
             "fill/plan price, pnl_pct, rationale/result/lesson/next_strategy) for a "
-            "trade. account_mode in {kis_mock, kiwoom_mock, kis_live, toss_live, "
+            "trade. outcome in {filled, partially_filled, unfilled, rejected, "
+            "cancelled}. account_mode in {kis_mock, kiwoom_mock, kis_live, toss_live, "
             "alpaca_paper, upbit_live}. Idempotent per correlation_id (omit it to "
             "append). "
             "kiwoom_mock cannot supply realized_pnl/fill_price (no fill evidence, "

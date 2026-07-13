@@ -25,7 +25,7 @@ creating any index — an operator must reconcile the conflicting Demo rows and
 re-run. The downgrade drops only the two additive indexes.
 
 Revision ID: 20260713_rob844_root_reservation
-Revises: 20260712_rob846_experiments
+Revises: 20260713_rob858_toss_loss_cut
 Create Date: 2026-07-13
 """
 
@@ -38,7 +38,7 @@ from sqlalchemy import text
 from alembic import op
 
 revision: str = "20260713_rob844_root_reservation"
-down_revision: str | Sequence[str] | None = "20260712_rob846_experiments"
+down_revision: str | Sequence[str] | None = "20260713_rob858_toss_loss_cut"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

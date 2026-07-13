@@ -50,3 +50,15 @@ def test_description_states_next_actions_required_with_trigger_type():
     assert "next_actions" in desc
     assert "trigger_type" in desc
     assert "required" in desc
+
+
+def test_description_enumerates_outcome_values():
+    desc = _register()
+    for value in (
+        "filled",
+        "partially_filled",
+        "unfilled",
+        "rejected",
+        "cancelled",
+    ):
+        assert value in desc, f"outcome value {value!r} missing from description"

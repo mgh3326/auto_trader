@@ -49,6 +49,10 @@ def register_forecast_tools(mcp: Any) -> None:
             "without it, resolves every open forecast whose review_date has "
             "passed (up to limit). price_target forecasts resolve against loaded "
             "daily OHLCV (ROB-639 DB-first, equity_kr/equity_us/crypto). "
+            "Placeholder forecasts whose target kind is "
+            "'no_resolvable_forecast' auto-close without an outcome or Brier "
+            "score (dry-run reports 'would_close_no_claim'; persisted status is "
+            "'closed_no_claim'). "
             "Non-price kinds (or price forecasts you must override) require an "
             "explicit forecast_id plus manual_outcome (bool) and manual_evidence. "
             "Idempotent: a closed forecast is never re-scored. "
@@ -60,7 +64,7 @@ def register_forecast_tools(mcp: Any) -> None:
     _ = mcp.tool(
         name="get_forecasts",
         description=(
-            "List forecasts with filters (status open/closed, symbol, "
+            "List forecasts with filters (status open/closed/closed_no_claim, symbol, "
             "created_by, correlation_id). Read-only."
         ),
     )(get_forecasts)

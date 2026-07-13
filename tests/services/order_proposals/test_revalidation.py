@@ -980,6 +980,61 @@ def test_toss_proposal_client_ids_are_stable_and_rung_scoped():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("dry_run", [True, False], ids=["preview", "submit"])
+async def test_toss_adapter_forwards_loss_cut_binding(monkeypatch, dry_run):
+    import app.mcp_server.tooling.orders_toss_variants as toss
+    from app.services.order_proposals import revalidation as mod
+
+    calls: list[dict] = []
+
+    async def fake_preview(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "approval_hash": "preview-token",
+            "payload_preview": {
+                "clientOrderId": "tosprop-loss-cut",
+                "price": "50000",
+                "quantity": "1",
+            },
+        }
+
+    async def fake_submit(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "order_id": "toss-loss-cut-1",
+            "client_order_id": "tosprop-loss-cut",
+            "approval_hash_digest": "loss-cut-digest",
+        }
+
+    monkeypatch.setattr(toss, "toss_preview_order", fake_preview)
+    monkeypatch.setattr(toss, "toss_place_order", fake_submit)
+
+    await mod._default_place_order_fn(
+        dry_run=dry_run,
+        account_mode="toss_live",
+        symbol="005930",
+        side="sell",
+        market="equity_kr",
+        order_type="limit",
+        quantity=Decimal("1"),
+        price=Decimal("50000"),
+        proposal_client_order_id="tosprop-loss-cut",
+        approval_hash="preview-token",
+        exit_intent="loss_cut",
+        exit_reason="stop_loss",
+        retrospective_id=42,
+        approval_issue_id="ROB-858",
+    )
+
+    assert calls[0]["exit_intent"] == "loss_cut"
+    assert calls[0]["exit_reason"] == "stop_loss"
+    assert calls[0]["retrospective_id"] == 42
+    assert calls[0]["approval_issue_id"] == "ROB-858"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "invalid_client_order_id",
     ["x" * 37, "invalid@client-order-id"],

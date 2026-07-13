@@ -170,6 +170,44 @@ async def test_save_and_resolve_envelope(_clean):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_due_batch_dry_run_distinguishes_no_claim_auto_close(_clean):
+    saved = await forecast_save(
+        created_by="claude",
+        symbol="005930",
+        instrument_type="equity_kr",
+        forecast_target={"kind": "no_resolvable_forecast"},
+        probability=0.0,
+        review_date="2020-01-01",
+    )
+    fid = saved["data"]["forecast_id"]
+
+    preview = await forecast_resolve(dry_run=True, backfill_missing=False)
+
+    assert preview["success"] is True
+    assert preview["dry_run"] is True
+    assert preview["by_status"] == {"would_close_no_claim": 1}
+    assert preview["results"] == [
+        {
+            "forecast_id": fid,
+            "symbol": "005930",
+            "status": "would_close_no_claim",
+            "changed": False,
+            "auto_close": True,
+            "computed": None,
+            "reason": "placeholder has no resolvable claim",
+        }
+    ]
+
+    committed = await forecast_resolve(dry_run=False, backfill_missing=False)
+    assert committed["by_status"] == {"closed_no_claim": 1}
+    assert committed["results"][0]["auto_close"] is True
+
+    due_after_close = await forecast_resolve(dry_run=True, backfill_missing=False)
+    assert due_after_close["due_count"] == 0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_save_validation_error_envelope(_clean):
     res = await forecast_save(
         created_by="claude",

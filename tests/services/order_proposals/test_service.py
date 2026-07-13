@@ -435,7 +435,7 @@ async def test_upbit_crypto_loss_cut_is_valid(db_session, monkeypatch):
     ("market", "symbol"),
     [("equity_kr", "005930"), ("equity_us", "AAPL")],
 )
-async def test_toss_live_loss_cut_remains_unsupported(
+async def test_toss_live_loss_cut_supports_kr_and_us(
     db_session, monkeypatch, market, symbol
 ):
     async def fake_lookup(session, retrospective_id):
@@ -444,13 +444,98 @@ async def test_toss_live_loss_cut_remains_unsupported(
     monkeypatch.setattr(
         "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
     )
-    with pytest.raises(
-        OrderProposalError,
-        match="loss_cut requires a supported live account and market",
-    ):
+    group = await OrderProposalsService(db_session).create_proposal(
+        symbol=symbol,
+        market=market,
+        account_mode="toss_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "sell", Decimal("1"), Decimal("100"), None)],
+        exit_intent="loss_cut",
+        exit_reason="stop_loss",
+        retrospective_id=42,
+        approval_issue_id="ROB-800",
+        now=datetime.now(UTC),
+    )
+
+    assert (group.account_mode, group.market, group.exit_intent) == (
+        "toss_live",
+        market,
+        "loss_cut",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("market", "side", "order_type", "message"),
+    [
+        ("crypto", "sell", "limit", "unsupported account_mode/market/action"),
+        ("equity_kr", "buy", "limit", "loss_cut requires side='sell'"),
+        ("equity_us", "sell", "market", "loss_cut requires order_type='limit'"),
+    ],
+)
+async def test_toss_live_loss_cut_rejects_invalid_contract(
+    db_session, monkeypatch, market, side, order_type, message
+):
+    symbol = "KRW-BTC" if market == "crypto" else "005930"
+
+    async def fake_lookup(session, retrospective_id):
+        return _retro(symbol=symbol)
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    with pytest.raises(OrderProposalError, match=message):
         await OrderProposalsService(db_session).create_proposal(
             symbol=symbol,
             market=market,
+            account_mode="toss_live",
+            side=side,
+            order_type=order_type,
+            proposer="p",
+            rungs=[
+                RungInput(
+                    0,
+                    side,
+                    Decimal("1"),
+                    Decimal("100") if order_type == "limit" else None,
+                    None,
+                )
+            ],
+            exit_intent="loss_cut",
+            exit_reason="stop_loss",
+            retrospective_id=42,
+            approval_issue_id="ROB-800",
+            now=datetime.now(UTC),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("retro", "message"),
+    [
+        (_retro(symbol="AAPL"), "symbol mismatch"),
+        (
+            _retro(created_at=datetime.now(UTC) - timedelta(hours=73)),
+            "stale \\(> 72h old\\)",
+        ),
+    ],
+    ids=["symbol_mismatch", "stale"],
+)
+async def test_toss_live_loss_cut_rejects_invalid_retrospective(
+    db_session, monkeypatch, retro, message
+):
+    async def fake_lookup(session, retrospective_id):
+        return retro
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    with pytest.raises(OrderProposalError, match=message):
+        await OrderProposalsService(db_session).create_proposal(
+            symbol="005930",
+            market="equity_kr",
             account_mode="toss_live",
             side="sell",
             order_type="limit",
@@ -459,7 +544,7 @@ async def test_toss_live_loss_cut_remains_unsupported(
             exit_intent="loss_cut",
             exit_reason="stop_loss",
             retrospective_id=42,
-            approval_issue_id="ROB-800",
+            approval_issue_id="ROB-858",
             now=datetime.now(UTC),
         )
 
@@ -1318,9 +1403,7 @@ async def test_create_proposal_allows_upbit_crypto(db_session):
 @pytest.mark.asyncio
 async def test_create_proposal_rejects_kis_mock_equity_kr(db_session):
     service = OrderProposalsService(db_session)
-    with pytest.raises(
-        OrderProposalError, match="unsupported account_mode/market/action"
-    ):
+    with pytest.raises(OrderProposalError) as exc_info:
         await service.create_proposal(
             symbol="A",
             market="equity_kr",
@@ -1330,6 +1413,12 @@ async def test_create_proposal_rejects_kis_mock_equity_kr(db_session):
             proposer="p",
             rungs=[RungInput(0, "buy", Decimal("1"), Decimal("100"), None)],
         )
+    assert str(exc_info.value) == (
+        "unsupported account_mode/market/action: kis_mock/equity_kr/place "
+        "(allowed: kis_live×equity_kr|equity_us, "
+        "toss_live×equity_kr|equity_us, upbit×crypto; "
+        "market aliases kr→equity_kr, us→equity_us)"
+    )
 
 
 @pytest.mark.asyncio

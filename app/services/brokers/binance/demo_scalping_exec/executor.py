@@ -859,8 +859,8 @@ class DemoScalpingExecutor:
             meta["leverage"] = 1
         # ROB-844: the open leg is the ROOT lifecycle. Atomically reserve its
         # exposure slot (advisory-locked recount + planned-root insert in one
-        # transaction) BEFORE broker order submit. A loser of the cross-process race
-        # returns here with ZERO broker submit — only the reservation winner
+        # transaction) BEFORE broker order submit. A loser of the cross-process
+        # race returns here with ZERO broker submit — only the reservation winner
         # proceeds. Close/reduce-only child legs keep using record_planned and
         # never consume a slot.
         reservation = await self.ledger.reserve_root_planned(

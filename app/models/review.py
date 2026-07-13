@@ -609,7 +609,10 @@ class TossLiveOrderLedger(Base):
     stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     min_hold_days: Mapped[int | None] = mapped_column(SmallInteger)
     notes: Mapped[str | None] = mapped_column(Text)
+    exit_intent: Mapped[str | None] = mapped_column(Text)
     exit_reason: Mapped[str | None] = mapped_column(Text)
+    retrospective_id: Mapped[int | None] = mapped_column(BigInteger)
+    approval_issue_id: Mapped[str | None] = mapped_column(Text)
     indicators_snapshot: Mapped[dict | None] = mapped_column(JSONB)
     report_item_uuid: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
     approval_hash: Mapped[str | None] = mapped_column(Text)
@@ -1174,7 +1177,7 @@ class TradeForecast(Base):
     __table_args__ = (
         UniqueConstraint("forecast_id", name="uq_trade_forecasts_forecast_id"),
         CheckConstraint(
-            "status IN ('open','closed')",
+            "status IN ('open','closed','closed_no_claim')",
             name="ck_trade_forecasts_status",
         ),
         CheckConstraint(

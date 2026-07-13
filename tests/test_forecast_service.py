@@ -371,6 +371,72 @@ async def test_resolve_price_target_unresolved_no_data(
     assert row.status == "open"
 
 
+@pytest.mark.asyncio
+async def test_no_claim_placeholder_auto_closes_without_score_and_leaves_due_queue(
+    db_session: AsyncSession,
+):
+    _, row = await svc.save_forecast(
+        db_session,
+        created_by="claude",
+        symbol="005930",
+        instrument_type="equity_kr",
+        forecast_target={"kind": "no_resolvable_forecast"},
+        probability=0.0,
+        review_date="2020-01-01",
+    )
+    await db_session.commit()
+
+    result = await svc.resolve_forecast(
+        db_session,
+        forecast_id=str(row.forecast_id),
+        persist=True,
+    )
+    await db_session.commit()
+
+    assert result["status"] == "closed_no_claim"
+    assert result["changed"] is True
+    assert result["computed"] is None
+    await db_session.refresh(row)
+    assert row.status == "closed_no_claim"
+    assert row.outcome is None
+    assert row.observed_value is None
+    assert row.brier_score is None
+    assert row.resolved_at is not None
+    assert await svc.list_due_forecasts(db_session) == []
+    assert (await svc.build_forecast_calibration_aggregate(db_session))["groups"] == []
+
+
+@pytest.mark.asyncio
+async def test_non_placeholder_due_forecast_still_requires_manual_resolution(
+    db_session: AsyncSession,
+):
+    _, row = await svc.save_forecast(
+        db_session,
+        created_by="claude",
+        symbol="005930",
+        instrument_type="equity_kr",
+        forecast_target={"kind": "thesis_holds"},
+        probability=0.7,
+        review_date="2020-01-01",
+    )
+    await db_session.commit()
+
+    result = await svc.resolve_forecast(
+        db_session,
+        forecast_id=str(row.forecast_id),
+        persist=True,
+    )
+
+    assert result["status"] == "requires_manual"
+    assert result["changed"] is False
+    await db_session.refresh(row)
+    assert row.status == "open"
+    assert row.brier_score is None
+    assert [due.forecast_id for due in await svc.list_due_forecasts(db_session)] == [
+        row.forecast_id
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # calibration aggregate
 # --------------------------------------------------------------------------- #

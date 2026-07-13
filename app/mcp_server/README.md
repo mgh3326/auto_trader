@@ -589,6 +589,11 @@ proposal describes a possible order; creating or voiding one is not a broker
 order mutation.
 
 - `order_proposal_create(...)`
+  - `market` uses canonical `equity_kr`, `equity_us`, or `crypto`; the tool
+    accepts `kr` and `us` aliases and normalizes them before validation,
+    payload hashing, and persistence.
+  - Supported place combinations are `kis_live` or `toss_live` with
+    `equity_kr`/`equity_us`, and `upbit` with `crypto`.
   - `action="place"` is the default and `target_broker_order_id=None` is the
     default.
   - `place`: `target_broker_order_id` must be absent; one or more proposal
@@ -612,6 +617,17 @@ order mutation.
     matching symbol, an eligible loss-cut trigger type (`stop_loss` or
     `thesis_change`), and freshness within 72 hours.
     This create-time check does not replace approval-time checks.
+  - `approval_issue_id` is a Paperclip issue key (`^[A-Z]+-\d+$`) and must be a
+    dedicated per-order approval; unrelated completed issues must not be
+    reused. Before creating the proposal, verify the execution environment
+    returns exact status `done` without printing the token:
+
+    ```bash
+    APPROVAL_ISSUE_ID=ROB-<number>
+    curl -fsS -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+      "$PAPERCLIP_API_URL/api/issues/$APPROVAL_ISSUE_ID" \
+      | jq -e '.status == "done"'
+    ```
 - `order_proposal_void(proposal_id, reason)`
   - Requires a non-blank operator reason.
   - Refuses to mutate a proposal if any rung can have outstanding broker state.
@@ -627,17 +643,21 @@ Operators must set it explicitly and add the exact same trimmed identity to
 identity, so `loss_cut` validation fails closed. Do not use a hardcoded UUID as
 a fallback for this setting.
 
-Loss-cut proposal binding supports `kis_live` equities
-(`equity_kr`/`equity_us`) and `upbit`/`crypto`. General proposal submission also
-supports `toss_live` equities. KIS/Upbit proposals use the shared
+Loss-cut proposal binding supports `kis_live` and `toss_live` equities
+(`equity_kr`/`equity_us`) plus `upbit`/`crypto`. KIS/Upbit proposals use the shared
 `_place_order_impl` fallback; Toss proposals never use that path and instead
 route through `toss_preview_order` and `toss_place_order`. Toss preview owns the
 wire price/quantity used for revalidation, including KR tick normalization, and
 provides its read-only warning, price/cost, NXT-context, and advisory sector
-concentration checks. It does not run the Toss sell-loss/mutation guards.
+concentration checks. For `loss_cut`, preview and submit both reuse the shared
+ROB-800 validator (Paperclip `done`, caller allowlist, matching fresh
+retrospective), exempt only the validated request from the average-cost floor,
+and enforce the configured current-price slip band.
 `toss_place_order` runs the confirmation/activation, high-value, warnings,
 opposite-pending-order, sell-loss, and configured NXT guards immediately before
-POST; sell-loss and required mutation gates fail closed, while sector
+POST. A Toss loss-cut live send requires the exact supplied preview approval
+token even when `TOSS_APPROVAL_HASH_MODE=off`; sell-loss and required mutation
+gates fail closed, while sector
 concentration remains advisory. Proposal `Decimal` values cross the Toss
 boundary as exact `str | int` values, never floats. Proposal revalidation binds
 a private client ID derived only from `proposal_id + rung` around both preview
@@ -646,10 +666,12 @@ the rung correlation into the Toss ledger. Neither value is operator-controlled
 through the MCP tool schema. The rung ledger stores the actual
 `approval_hash_digest` returned by `toss_place_order`, not the raw token.
 
-An accepted send is still not a fill. `toss_reconcile_orders` can book confirmed
-fill evidence in the Toss broker ledger, but this branch does not feed that
-evidence back into `order_proposal_rungs`; proposal rungs remain `acked` or
-`resting`. Proposal-rung convergence is the separate PR 3c / #1498 follow-up.
+An accepted send is still not a fill. `toss_reconcile_orders(dry_run=False)`
+books confirmed cumulative evidence and projects partial/fill/broker-confirmed
+cancel onto `order_proposal_rungs`. Cancellation preserves an already projected
+partial quantity. A non-dry reconcile also sweeps terminal Toss ledger rows
+still joined to non-terminal proposal rungs, so a transient projection failure
+does not become permanent drift. Dry runs never write either ledger.
 Any post-send timeout or ledger ambiguity remains `unverified`. Telegram result
 messages surface a bounded rejection or guard reason: at most 240 characters,
 followed by an ellipsis when truncated.
@@ -759,14 +781,16 @@ Operator activation and the one-share live smoke are documented in
 - **Account Mode Routing**: All Toss tools require `account_mode="toss_live"` (or `account_type="toss_live"`) and reject any mismatched account parameters.
 - **Mutation Safety (Dry-Run, Confirm, and Activation Gate)**: All mutation tools (`toss_place_order`, `toss_modify_order`, `toss_cancel_order`) default to `dry_run=True`. They perform actual HTTP requests (POSTs) to Toss Securities only when `dry_run=False`, `confirm=True`, and `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true` are explicitly set. Keep `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=false` until the accepted-order ledger and operator live-smoke hold are cleared.
 - **Accepted-only ledger and reconcile**: Real `toss_place_order` writes only an accepted/rejected row to `review.toss_live_order_ledger`. It does not create fills, journals, or realized PnL at send time. `toss_reconcile_orders(dry_run=True)` previews broker evidence from `GET /orders/{orderId}`; `dry_run=False` books only confirmed execution deltas. GET order-detail `403 non-json-response` failures are retried once after token reissue; unresolved failures are persisted as `requires_manual_review=true`. Mutation POSTs are not implicitly retried on that error.
+- **Loss-cut authorization**: `toss_preview_order` and `toss_place_order` accept `exit_intent="loss_cut"` only for a live limit sell with `exit_reason="stop_loss"|"thesis_change"`, a matching retrospective created within 72 hours, an allowed caller, and an `approval_issue_id` matching `^[A-Z]+-\d+$` whose `$PAPERCLIP_API_URL/api/issues/<id>` response has `status="done"`. The issue must be a dedicated per-order approval containing account, symbol, side, quantity, limit, retrospective ID, and expiry; the current verifier does not compare that metadata, so reusing an unrelated completed issue is prohibited. Submit repeats every check, and the retrospective may expire between create and approval. Toss ledger rows retain `exit_intent`, `retrospective_id`, and `approval_issue_id` for audit.
+- **Loss-cut polling SLA**: Toss has no fill push in this path and both automatic polling paths are default-off. Before enabling Toss loss-cut, either enable and operationally verify `TOSS_FILL_POLL_ENABLED` with an approved `TOSS_FILL_POLL_CRON`, or require a targeted `toss_reconcile_orders(order_id=<broker-order-id>, dry_run=False)` immediately after execution. Non-dry reconcile projects broker evidence to proposal rungs and idempotently repairs terminal-ledger projection misses.
 - **Proposal identity handoff**: Order-proposal flows privately bind a stable client ID derived from `proposal_id + rung` around both `toss_preview_order` and `toss_place_order`, then require preview to return that exact ID. The proposal correlation and rung are carried through the same internal binding into the Toss ledger. These values are not exposed as operator-controlled MCP parameters. Accepted responses expose `approval_hash_digest`, the canonical ledger digest; the raw approval token is used only as the `approval_hash` submit input.
 - **US FX PnL split**: Toss order detail does not provide fill-time FX. For US rows only, `toss_reconcile_orders(dry_run=False)` captures USD/KRW through `exchange_rate_service` at reconcile time. Buy rows persist `buy_fx_rate`; sell rows persist `sell_fx_rate`, FIFO-attributed `fx_pnl_krw`, `security_pnl_usd`, `security_pnl_krw`, and `total_pnl_krw`. Automatic values are labelled `fx_rate_source="reconcile_spot"` and `fx_pnl_accuracy="approximate"`. Legacy lots with no buy FX keep FX PnL fields null until an operator backfills exact values through `modify_journal_entry`.
 - **Fill Notifications (ROB-576)**: `toss_reconcile_orders(dry_run=False)` sends a Discord/Telegram fill notification only when `TOSS_FILL_NOTIFY_ENABLED=true`, the reconcile pass books a new fill delta, and the shared `TradeNotifier` has a KR/US webhook or Telegram fallback configured. Notifications reuse the existing fill card format and route by `market='kr'|'us'`; Toss fill enrichment is intentionally disabled (`enrichment=None`) until Toss account PnL/position enrichment exists. The optional paused TaskIQ task `toss_live.reconcile_periodic` calls `toss_reconcile_orders_impl(dry_run=False)` only when both `TOSS_LIVE_AUTO_RECONCILE_ENABLED=true` and `TOSS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED=true`. It has no in-repo schedule; operator automation must register/unpause the cadence externally.
-- **Toss fill poller (ROB-757)**: `toss_live.poll_fills_periodic` is default-off behind `TOSS_FILL_POLL_ENABLED`. It scans Toss `GET /orders` read-only, records app-direct orders missing from `review.toss_live_order_ledger`, and reuses `toss_reconcile_orders` to book confirmed deltas. New Toss fill deltas are also upserted into `review.execution_ledger` with `broker='toss'`, `account_mode='live'`, and `source='reconciler'`; ROB-755 triage should read them with `source='reconciler', broker='toss'`.
+- **Toss fill poller (ROB-757)**: `toss_live.poll_fills_periodic` is default-off behind `TOSS_FILL_POLL_ENABLED`. It scans Toss `GET /orders` read-only, records app-direct orders missing from `review.toss_live_order_ledger`, and reuses `toss_reconcile_orders` to book confirmed deltas. New Toss fill deltas are also upserted into `review.execution_ledger` with `broker='toss'`, `account_mode='live'`, and `source='reconciler'`; ROB-755 triage should read them with `source='reconciler', broker='toss'`. For Toss loss-cut proposals, this poller/cadence or the targeted reconcile above is mandatory support infrastructure.
 - **High-Value Orders**: KR orders with a computable notional value >= 100,000,000 KRW fail locally unless `confirm_high_value_order=True` is supplied.
 - **KR Stock Warnings**: KR order previews include active Toss warning rows. Confirmed non-dry-run KR orders call the same warnings guard before mutation and block active `LIQUIDATION_TRADING`; Toss warning lookup failures are fail-open and reported as `warnings_check_message`.
 - **Preview Market And Cost Context**: `toss_preview_order` is read-only but enriches the payload preview with Toss quote and cost context. It returns `current_price`, `current_price_currency`, `fill_distance` for off-market limit prices, `order_warnings` for marketability/fill-risk strings, `estimated_value`, `fee`, `fee_currency`, `fx_cost_full_conversion`, `fx_cost_full_conversion_currency`, and `estimated_costs`. The existing `warnings` field remains reserved for Toss stock-warning rows; string order warnings are not mixed into it. US `fx_cost_full_conversion` assumes the full order notional is converted KRW->USD and is labelled `fx_assumption="full_notional_krw_conversion"`; use `suggest_order_account` for cash-aware routing cost comparison.
-- **Sell Loss-Sell Guard**: For sell orders and sell reprices, holdings cost basis is validated. Sells block locally if the execution price (limit) or current market proxy price (market) is below `average_purchase_price * 1.01`. If the holding/cost basis cannot be resolved, the sell fails closed.
+- **Sell Loss-Sell Guard**: For ordinary sell orders and all sell reprices, holdings cost basis is validated. They block locally if the execution price (limit) or current market proxy price (market) is below `average_purchase_price * 1.01`. Only a fully validated `loss_cut` limit sell bypasses that floor, and it remains bounded by `current_price * (1 - loss_cut_max_slip)`. If holdings, cost basis, or the loss-cut current price cannot be resolved, the sell fails closed.
 - **Opposite Pending Orders**: Before placing a non-dry-run order, the tool queries all paginated `OPEN` order pages for the symbol and blocks the order if an opposite-side pending order already exists. Pagination anomalies fail closed.
 - **Modify Semantics**:
   - KR modify requires both `new_price` and `new_quantity`.
@@ -2054,6 +2078,15 @@ Forbidden by physical non-registration:
 - report-writing and report-decision tools
 
 Authentication is mandatory for this profile. `MCP_PROFILE=tradingcodex_execution` fails at startup unless `MCP_AUTH_TOKEN` is non-empty, and the runtime also requires the TradingCodex approval-hash modes configured in `app/mcp_server/main.py`.
+
+### Forecast resolution semantics
+
+`forecast_resolve` auto-closes a due placeholder whose
+`forecast_target.kind` is `no_resolvable_forecast`. A dry run reports
+`would_close_no_claim`; a persisted run assigns `closed_no_claim`. These rows
+keep `outcome` and `brier_score` null and are excluded from calibration
+aggregates. Other non-price forecast kinds continue to require an explicit
+manual outcome and evidence.
 
 ### Typed KIS order tools
 

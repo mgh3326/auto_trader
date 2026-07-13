@@ -69,6 +69,12 @@ _ACTION_CAPABILITIES = {
     "cancel": SUPPORTED_TARGET_ACTIONS,
 }
 
+_ALLOWED_ACTION_CONTRACT_MESSAGE = (
+    "allowed: kis_live×equity_kr|equity_us, "
+    "toss_live×equity_kr|equity_us, upbit×crypto; "
+    "market aliases kr→equity_kr, us→equity_us"
+)
+
 _LOSS_CUT_EXIT_REASONS = frozenset({"stop_loss", "thesis_change"})
 _LOSS_CUT_TRIGGER_TYPES = frozenset({"stop_loss", "thesis_change"})
 _LOSS_CUT_MAX_AGE = timedelta(hours=72)
@@ -102,7 +108,8 @@ def _validate_action_contract(
     if (account_mode, market) not in _ACTION_CAPABILITIES[normalized]:
         raise OrderProposalError(
             "unsupported account_mode/market/action: "
-            f"{account_mode}/{market}/{normalized}"
+            f"{account_mode}/{market}/{normalized} "
+            f"({_ALLOWED_ACTION_CONTRACT_MESSAGE})"
         )
     if normalized == "place":
         if target_broker_order_id is not None or target_order_snapshot is not None:
@@ -356,6 +363,8 @@ class OrderProposalsService:
         if (account_mode, market) not in {
             ("kis_live", "equity_kr"),
             ("kis_live", "equity_us"),
+            ("toss_live", "equity_kr"),
+            ("toss_live", "equity_us"),
             ("upbit", "crypto"),
         }:
             errors.append("loss_cut requires a supported live account and market")
@@ -741,6 +750,7 @@ class OrderProposalsService:
         filled_qty: Decimal | None = None,
         terminal_state: Literal["filled", "partially_filled", "cancelled"] = "filled",
         now: datetime,
+        account_mode: str | None = None,
     ) -> OrderProposalRung | None:
         """Converge a rung from broker fill/cancel evidence (ROB-816 PR-3c).
 
@@ -761,6 +771,7 @@ class OrderProposalsService:
             correlation_id=correlation_id,
             broker_order_id=broker_order_id,
             states=_EVIDENCE_ACCEPTING_RUNG_STATES,
+            account_mode=account_mode,
         )
         if match is None:
             return None

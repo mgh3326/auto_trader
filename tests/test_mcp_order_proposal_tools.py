@@ -1,3 +1,4 @@
+import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -138,6 +139,63 @@ async def test_place_create_never_fetches_a_target(monkeypatch):
     assert result["success"] is True
     assert result["action"] == "place"
     assert result["target_broker_order_id"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("market_alias", "canonical_market"),
+    [("kr", "equity_kr"), ("us", "equity_us")],
+)
+async def test_create_normalizes_market_alias_before_storage_and_payload_hash(
+    market_alias, canonical_market
+):
+    alias = await opt.order_proposal_create(**_create_kwargs(market=market_alias))
+    canonical = await opt.order_proposal_create(
+        **_create_kwargs(market=canonical_market)
+    )
+
+    assert alias["success"] is True
+    assert canonical["success"] is True
+    got = await opt.order_proposal_get(alias["proposal_id"])
+    async with opt.AsyncSessionLocal() as session:
+        service = opt.OrderProposalsService(session)
+        alias_group, _ = await service.get_proposal(uuid.UUID(alias["proposal_id"]))
+        canonical_group, _ = await service.get_proposal(
+            uuid.UUID(canonical["proposal_id"])
+        )
+
+    assert got["proposal"]["market"] == canonical_market
+    assert alias_group.market == canonical_market
+    assert canonical_group.market == canonical_market
+    assert alias_group.payload_hash == canonical_group.payload_hash
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_unknown_market_with_allowed_contract_guidance():
+    result = await opt.order_proposal_create(
+        **_create_kwargs(market="jp", account_mode="toss_live")
+    )
+
+    assert result["success"] is False
+    assert "allowed: kis_live×equity_kr|equity_us" in result["error"]
+    assert "toss_live×equity_kr|equity_us" in result["error"]
+    assert "upbit×crypto" in result["error"]
+    assert "market aliases kr→equity_kr, us→equity_us" in result["error"]
+
+
+def test_create_docstring_documents_markets_aliases_and_account_modes():
+    doc = opt.order_proposal_create.__doc__ or ""
+    for value in (
+        "equity_kr",
+        "equity_us",
+        "crypto",
+        "kr",
+        "us",
+        "kis_live",
+        "toss_live",
+        "upbit",
+    ):
+        assert value in doc
 
 
 @pytest.mark.asyncio
