@@ -19,6 +19,12 @@ import re
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from app.core.config import validate_kiwoom_mock_config
+from app.mcp_server.tooling.orders_kiwoom_shared import (
+    derive_broker_success as _derive_broker_success,
+)
+from app.mcp_server.tooling.orders_kiwoom_shared import (
+    finalize_broker_response as _finalize_broker_response,
+)
 from app.services.brokers.kiwoom import constants
 from app.services.brokers.kiwoom.client import KiwoomMockClient
 from app.services.brokers.kiwoom.domestic_account import KiwoomDomesticAccountClient
@@ -26,6 +32,8 @@ from app.services.brokers.kiwoom.domestic_orders import KiwoomDomesticOrderClien
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
+
+__all__ = ("_derive_broker_success",)
 
 ACCOUNT_MODE_KIWOOM_MOCK = "kiwoom_mock"
 
@@ -127,55 +135,6 @@ def _positive_amount_error(
 
 # ---------------------------------------------------------------------------
 # Shared broker-response shaping (ROB-319).
-
-_MUTATION_PASSTHROUGH_KEYS = (
-    "return_code",
-    "return_msg",
-    "continuation",
-    "ord_no",
-    "order_no",
-)
-
-
-def _derive_broker_success(broker_response: dict[str, Any]) -> bool:
-    """Success ONLY when return_code is explicitly the success code.
-
-    Fail-closed: a missing key, ``None``, ``""``, or any non-numeric / non-zero
-    value is treated as failure. The raw ``broker_response`` is preserved by the
-    caller so the evidence remains, but we never infer success from absence.
-    """
-
-    if "return_code" not in broker_response:
-        return False
-    return_code = broker_response["return_code"]
-    if return_code is None:
-        return False
-    try:
-        return int(return_code) == constants.SUCCESS_RETURN_CODE
-    except (TypeError, ValueError):
-        return False
-
-
-def _finalize_broker_response(
-    base: dict[str, Any], broker_response: dict[str, Any]
-) -> dict[str, Any]:
-    """Shape a stable MCP envelope around a raw broker payload.
-
-    ``success`` is derived from the broker return_code (never hardcoded), the
-    raw payload is attached as ``broker_response``, and a few well-known fields
-    are surfaced at the top level for convenience.
-    """
-
-    response = {
-        "success": _derive_broker_success(broker_response),
-        **base,
-        "broker_response": broker_response,
-    }
-    for key in _MUTATION_PASSTHROUGH_KEYS:
-        if key in broker_response:
-            response[key] = broker_response[key]
-    return response
-
 
 # Candidate Kiwoom cash fields, most specific first. Unknown shapes stay
 # unparsed (cash=None) rather than being faked (ROB-319 operator default).
