@@ -94,6 +94,14 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # imports + the BINANCE_DEMO_SCALPING_* env-flag names.
         "app/jobs/binance_demo_scalping_runner.py",
         "app/tasks/binance_demo_scalping_tasks.py",
+        # ROB-844 — scheduleless abandoned-root reconciliation orchestration.
+        # The job only composes the existing in-package signed read clients with
+        # the ledger reconciler; HMAC/HTTP remains inside the adapter package.
+        # The task is a no-schedule, default-off wrapper and __init__ only
+        # registers that task module.
+        "app/jobs/binance_demo_root_reservation_reconciliation.py",
+        "app/tasks/binance_demo_root_reservation_reconcile_tasks.py",
+        "app/tasks/__init__.py",
         # Phase 2 — Demo scalping daily review + buy&hold benchmark automation.
         # Orchestration only: the job rolls scalp_trade_analytics into the review
         # draft and computes the benchmark via the in-package adapters; the flow

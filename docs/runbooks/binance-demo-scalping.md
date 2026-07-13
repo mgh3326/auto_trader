@@ -177,6 +177,84 @@ don't (correctly) trip the global cap. Procedure:
 5. Capture the redacted evidence line + a broker/ledger reconciliation
    check (open orders 0; futures position flat).
 
+### Abandoned root-reservation reconciliation (ROB-844)
+
+`reserve_root_planned` commits its exposure claim in an independent DB
+transaction before broker order submission. A process crash can therefore leave a durable
+`planned` root. It is never released by elapsed time alone. The scheduleless
+TaskIQ entrypoint `binance.demo_root_reservation.reconcile` combines an age
+eligibility guard with exact broker truth by `client_order_id`. Before any
+broker GET, the persisted row must match the product's exact Demo host and its
+`extra_metadata.credential_fingerprint` must exactly match the running
+adapter's opaque API-key fingerprint. Raw API keys/secrets are never stored.
+Legacy rows with no fingerprint, rotated/mismatched credentials, or unavailable
+client identity stay blocking and dispatch zero broker reads.
+
+- explicit Binance `-2013` order-not-found is releasable only while reservation
+  age is **strictly below 89 days**. At exactly 89 days or older, lookup
+  retention makes absence ambiguous and the row stays blocking;
+- a real terminal payload can independently release at any age only when the
+  broker body actually contains valid `clientOrderId`, `symbol`, `status`,
+  non-negative finite `executedQty`, and a positive numeric `orderId`; identity
+  must match and executed quantity must be zero. Spot accepts documented
+  `CANCELED`/`REJECTED`/`EXPIRED`/`EXPIRED_IN_MATCH`; Futures accepts
+  `CANCELED`/`REJECTED`/`EXPIRED`;
+- open/partial/filled, missing/blank/invalid required fields, undocumented or
+  cross-product statuses, authentication/transport/5xx/other 4xx → keep
+  blocking;
+- discovery is lock-free; each candidate then gets its own independent
+  transaction and one-row `FOR UPDATE SKIP LOCKED`. Slow broker I/O for row 1
+  never locks row 2, while executor-first/reconciler-first races remain safe.
+
+The task has no schedule and uses three default-off gates. The minimum age is
+one hour by default and has a hard one-hour floor; configuring a larger value is
+allowed. With confirm off, it performs broker reads and reports
+`would_release`, with **zero ledger mutation/write** (the read-only transaction
+may still complete normally).
+
+| Env var | Effect |
+|---|---|
+| `BINANCE_DEMO_SCALPING_ENABLED` | shared master capability; required |
+| `BINANCE_DEMO_RESERVATION_RECONCILE_ENABLED` | enables the manual reconcile read pass |
+| `BINANCE_DEMO_RESERVATION_RECONCILE_CONFIRM` | permits local cancelled→reconciled mutation; unset means dry-run |
+| `BINANCE_DEMO_RESERVATION_RECONCILE_MIN_AGE_SECONDS` | candidate age, default/minimum `3600` |
+
+Spot and Futures clients are constructed independently. Configure only the
+product lanes this worker is authorized to read (`BINANCE_SPOT_DEMO_*` and/or
+`BINANCE_FUTURES_DEMO_*`). A missing, disabled, or invalid sibling lane does not
+broaden required credentials: its candidates report `client_unavailable`, stay
+blocking, and receive zero broker GETs.
+
+These settings are read by the **running TaskIQ worker**, not by the enqueue
+client. Prefixing `VAR=value` to `taskiq kick` changes only the kick process and
+does not propagate gates or credentials to an existing worker.
+
+1. Dry-run window: set the worker deployment environment with the two read
+   gates, only the authorized product Demo gate(s)/credentials, minimum age, and
+   `BINANCE_DEMO_RESERVATION_RECONCILE_CONFIRM=false`; restart/reload the TaskIQ
+   worker and verify it is healthy.
+2. Enqueue with no environment prefix:
+
+   ```bash
+   uv run taskiq kick app.core.taskiq_broker:broker \
+     binance.demo_root_reservation.reconcile
+   ```
+
+3. Inspect the task result/log: require `status=ok`, expected `scanned` and
+   `would_release` outcomes, and `released=0`. Query the ledger and confirm all
+   candidate lifecycle states/timestamps/metadata are unchanged. Cross-check
+   broker open orders (and Futures positions) under the same credentials.
+4. Apply window: change only the running worker deployment setting to
+   `BINANCE_DEMO_RESERVATION_RECONCILE_CONFIRM=true`, restart/reload the worker,
+   confirm the effective setting, then issue the same plain kick exactly once.
+5. Verify each reported `released` row is now `reconciled` with matching
+   redacted reconciliation evidence; verify kept rows remain `planned`, broker
+   open orders are expected, and Futures positions are understood.
+6. **Immediately close the apply window:** set confirm back to `false`, restart/
+   reload the worker, and verify a subsequent controlled invocation reports
+   `mutation_confirmed=false`. On any error or unexpected outcome, perform this
+   rollback first and do not retry until ledger/broker truth is reconciled.
+
 ## Bounded-monitor TP/SL (`execute_monitored`)
 
 The TP/SL exit is a **bounded app-managed monitor** (MARKET-only). After

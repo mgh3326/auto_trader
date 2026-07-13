@@ -49,8 +49,14 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Final
 
+from app.services.brokers.binance.demo.credential_identity import (
+    demo_credential_fingerprint,
+)
 from app.services.brokers.binance.demo.credentials import resolve_demo_credentials
-from app.services.brokers.binance.demo.errors import BinanceDemoCredentialError
+from app.services.brokers.binance.demo.errors import (
+    BinanceDemoCredentialError,
+    BinanceDemoOrderNotFound,
+)
 from app.services.brokers.binance.futures_demo.dto import (
     FuturesDemoCancelResult,
     FuturesDemoLeverageResult,
@@ -154,6 +160,11 @@ class BinanceFuturesDemoExecutionClient:
         self._api_secret = api_secret
         self._api_key = api_key
         self._base_url = base_url
+
+    @property
+    def credential_fingerprint(self) -> str:
+        """Opaque identity used to bind reconciliation to this credential."""
+        return demo_credential_fingerprint(self._api_key)
 
     @classmethod
     def from_env(cls) -> BinanceFuturesDemoExecutionClient:
@@ -555,6 +566,16 @@ class BinanceFuturesDemoExecutionClient:
         }
         signed = _sign_request_params(params=params, api_secret=self._api_secret)
         resp = await self._client.get(_ORDER_PATH, params=signed)
+        if resp.status_code == 400:
+            try:
+                broker_code = resp.json().get("code")
+            except (AttributeError, TypeError, ValueError):
+                broker_code = None
+            if broker_code == -2013:
+                raise BinanceDemoOrderNotFound(
+                    "Futures Demo order not found for "
+                    f"client_order_id={client_order_id!r}"
+                )
         resp.raise_for_status()
         body = resp.json()
         return FuturesDemoOrderStatusResult(

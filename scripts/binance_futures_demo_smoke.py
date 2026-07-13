@@ -89,6 +89,7 @@ _DEFAULT_BASE_URL = "https://demo-fapi.binance.com"
 _EXCHANGE_INFO_PATH = "/fapi/v1/exchangeInfo"
 _PRICE_PATH = "/fapi/v1/ticker/price"
 _CID_PREFIX = "rob-298-fut-"
+_GLOBAL_OPEN_ROOT_CAP = 1
 
 # ROB-305 §4 — bounded reconciliation of a submit response of status=NEW.
 # A MARKET submit can report NEW even when the account later reflects the
@@ -480,7 +481,13 @@ async def _run_confirm(args: argparse.Namespace) -> int:
 
         async with AsyncSessionLocal() as session:
             ledger = BinanceDemoLedgerService(session)
-            instrument_id = await _get_or_create_instrument(session, symbol)
+            instrument_id = await ledger.resolve_or_create_instrument(
+                venue="binance",
+                product="usdm_futures",
+                venue_symbol=symbol,
+                base_asset=symbol.removesuffix("USDT"),
+                quote_asset="USDT",
+            )
             open_cid = _new_cid()
             close_cid = _new_cid()
 
@@ -558,6 +565,24 @@ async def _poll_order_filled(
     return False
 
 
+async def _release_unsubmitted_root(
+    *, ledger: Any, session: Any, client_order_id: str, reason: str
+) -> None:
+    """Release a claimed root when control flow proves no submit was attempted."""
+    evidence = {"pre_submit_release_reason": reason}
+    await ledger.record_cancelled(
+        client_order_id=client_order_id,
+        now=_now_utc(),
+        extra_metadata_merge=evidence,
+    )
+    await ledger.record_reconciled(
+        client_order_id=client_order_id,
+        now=_now_utc(),
+        extra_metadata_merge=evidence,
+    )
+    await session.commit()
+
+
 async def _execute_confirm_lifecycle(
     *,
     execution: BinanceFuturesDemoExecutionClient,
@@ -579,13 +604,62 @@ async def _execute_confirm_lifecycle(
     quantity_precision: int | None,
 ) -> int:
     """Run the full planned→reconciled lifecycle. Returns exit code."""
+    now = _now_utc()
+    metadata = {
+        "source": "rob-298-pr2-smoke",
+        "role": "open",
+        "leverage": leverage,
+    }
+    credential_fingerprint = getattr(execution, "credential_fingerprint", None)
+    if isinstance(credential_fingerprint, str) and credential_fingerprint:
+        metadata["credential_fingerprint"] = credential_fingerprint
+
+    # Claim before position/leverage checks so two confirmed smoke processes
+    # cannot both mutate/query their way toward an order. A loser performs zero
+    # broker calls and zero broker submits.
+    reservation = await ledger.reserve_root_planned(
+        instrument_id=instrument_id,
+        product="usdm_futures",
+        venue_host=venue_host,
+        client_order_id=open_cid,
+        side=side,
+        order_type=order_type,
+        qty=qty,
+        price=price,
+        notional_usdt=notional,
+        extra_metadata=metadata,
+        global_open_root_cap=_GLOBAL_OPEN_ROOT_CAP,
+        now=now,
+    )
+    if reservation.status != "reserved":
+        reason = reservation.reason or "exposure_slot_taken"
+        _trace(f"reservation_blocked cid={open_cid} reason={reason}")
+        logger.error("root reservation blocked before broker order: %s", reason)
+        return 1
+    _trace(
+        f"planned cid={open_cid} product=usdm_futures symbol={symbol} "
+        f"side={side} qty={qty} venue={venue_host}"
+    )
+
     # 1. Position-mode check (One-way required for PR 2).
     try:
         mode_result = await execution.get_position_mode()
     except Exception as exc:  # noqa: BLE001
+        await _release_unsubmitted_root(
+            ledger=ledger,
+            session=session,
+            client_order_id=open_cid,
+            reason="position_mode_query_failed",
+        )
         logger.error("position_mode query failed: %s", exc)
         return 2
     if mode_result.is_hedge_mode:
+        await _release_unsubmitted_root(
+            ledger=ledger,
+            session=session,
+            client_order_id=open_cid,
+            reason="hedge_mode_blocked",
+        )
         _trace("position_mode is_hedge=true")
         logger.error(
             "Hedge mode is not supported by PR 2 (One-way required). "
@@ -598,39 +672,26 @@ async def _execute_confirm_lifecycle(
     try:
         lev_result = await execution.set_leverage(symbol=symbol, leverage=leverage)
     except BinanceFuturesDemoLeverageMismatch as exc:
+        await _release_unsubmitted_root(
+            ledger=ledger,
+            session=session,
+            client_order_id=open_cid,
+            reason="leverage_mismatch",
+        )
         logger.error("leverage mismatch: %s", exc)
         return 2
     except Exception as exc:  # noqa: BLE001
+        await _release_unsubmitted_root(
+            ledger=ledger,
+            session=session,
+            client_order_id=open_cid,
+            reason="set_leverage_failed",
+        )
         logger.error("set_leverage failed: %s", exc)
         return 2
     _trace(f"leverage_set symbol={lev_result.symbol} leverage={lev_result.leverage}")
 
     opposite_side = "SELL" if side == "BUY" else "BUY"
-    now = _now_utc()
-
-    # 3. PLANNED — open row.
-    await ledger.record_planned(
-        instrument_id=instrument_id,
-        product="usdm_futures",
-        venue_host=venue_host,
-        client_order_id=open_cid,
-        side=side,
-        order_type=order_type,
-        qty=qty,
-        price=price,
-        notional_usdt=notional,
-        extra_metadata={
-            "source": "rob-298-pr2-smoke",
-            "role": "open",
-            "leverage": leverage,
-        },
-        now=now,
-    )
-    await session.commit()
-    _trace(
-        f"planned cid={open_cid} product=usdm_futures symbol={symbol} "
-        f"side={side} qty={qty} venue={venue_host}"
-    )
 
     # 4. PREVIEWED — local preview (no HTTP).
     preview = execution.preview_submit(

@@ -682,6 +682,15 @@ class Settings(BaseSettings):
     KIS_MOCK_RECONCILE_ON_EXECUTION_ENABLED: bool = False
     KIS_MOCK_RECONCILE_PERIODIC_ENABLED: bool = False
 
+    # ROB-844 — scheduleless Binance Demo abandoned-reservation reconcile.
+    # Master scalping + reconcile gates must both be enabled. Broker reads stay
+    # dry-run until the independent confirm gate is enabled; candidates younger
+    # than one hour are never queried.
+    BINANCE_DEMO_SCALPING_ENABLED: bool = False
+    BINANCE_DEMO_RESERVATION_RECONCILE_ENABLED: bool = False
+    BINANCE_DEMO_RESERVATION_RECONCILE_CONFIRM: bool = False
+    BINANCE_DEMO_RESERVATION_RECONCILE_MIN_AGE_SECONDS: int = 3600
+
     # ROB-475 / ROB-574 — paused periodic auto-reconcile for KIS live KR orders.
     # Default off; operator flips + adds recurrence outside this repo.
     # ROB-487 adds a second default-off gate: flipping only the legacy flag

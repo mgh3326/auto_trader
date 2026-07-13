@@ -11,8 +11,12 @@ reservation:
   (``planned``/``previewed``/``validated``/``submitted``/``filled``/``anomaly``)
   so ``closed``/``cancelled``/``reconciled`` free the slot for re-entry.
 * ``uq_binance_demo_ledger_broker_ack`` — a non-null broker acknowledgement
-  ``(product, venue_host, broker_order_id)`` may attach to exactly one row, so
-  a replayed ack cannot populate a second row.
+  ``(product, venue_host, instrument_id, broker_order_id)`` may attach to
+  exactly one row, so a same-instrument replay cannot populate a second row
+  while Binance may reuse a numeric id for another symbol. The follow-up
+  ``20260713_rob844_ack_scope`` revision refreshes the physical index for
+  databases that had already stamped an earlier three-column copy of this
+  revision; keeping this definition corrected protects fresh upgrades.
 
 **History-preserving fail-safe (AC#7):** this migration NEVER deletes or mutates
 existing ROB-298 Demo rows. If pre-existing rows already violate either
@@ -82,16 +86,19 @@ def _assert_no_open_root_conflicts(conn) -> None:
 def _assert_no_broker_ack_conflicts(conn) -> None:
     rows = conn.execute(
         text(
-            "SELECT product, venue_host, broker_order_id, count(*) AS n "  # noqa: S608
+            "SELECT product, venue_host, instrument_id, broker_order_id, "
+            "count(*) AS n "  # noqa: S608
             f"FROM {_TABLE} "
             "WHERE broker_order_id IS NOT NULL "
-            "GROUP BY product, venue_host, broker_order_id HAVING count(*) > 1 "
-            "ORDER BY product, venue_host, broker_order_id"
+            "GROUP BY product, venue_host, instrument_id, broker_order_id "
+            "HAVING count(*) > 1 "
+            "ORDER BY product, venue_host, instrument_id, broker_order_id"
         )
     ).fetchall()
     if rows:
         detail = ", ".join(
             f"(product={r.product}, venue_host={r.venue_host}, "
+            f"instrument_id={r.instrument_id}, "
             f"broker_order_id={r.broker_order_id}, count={r.n})"
             for r in rows
         )
@@ -100,8 +107,8 @@ def _assert_no_broker_ack_conflicts(conn) -> None:
             f"violate {_BROKER_ACK_INDEX}. History is preserved (nothing deleted). "
             "Operator remediation required — a broker_order_id is attached to more "
             "than one ledger row; reconcile the mistaken/replayed row so each "
-            "(product, venue_host, broker_order_id) maps to exactly one row, then "
-            f"re-run the migration. Conflicts: {detail}"
+            "(product, venue_host, instrument_id, broker_order_id) maps to "
+            f"exactly one row, then re-run the migration. Conflicts: {detail}"
         )
 
 
@@ -123,7 +130,7 @@ def upgrade() -> None:
     op.create_index(
         _BROKER_ACK_INDEX,
         _TABLE,
-        ["product", "venue_host", "broker_order_id"],
+        ["product", "venue_host", "instrument_id", "broker_order_id"],
         unique=True,
         postgresql_where=text("broker_order_id IS NOT NULL"),
     )

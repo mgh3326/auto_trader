@@ -40,15 +40,24 @@ class BinanceDemoDuplicateClientOrderId(BinanceDemoLedgerError):
 class BinanceDemoDuplicateAcknowledgement(BinanceDemoLedgerError):
     """Raised when a broker ack is replayed onto a second ledger row (ROB-844).
 
-    A non-null ``(product, venue_host, broker_order_id)`` may attach to exactly
-    one row (partial-unique index ``uq_binance_demo_ledger_broker_ack``). This
-    typed error is the normalized, stable ``duplicate_acknowledgement`` result —
-    the service converts the underlying ``IntegrityError`` here so it never
-    leaks to the executor / MCP boundary. Carries ``result`` for structured
-    callers.
+    A non-null ``(product, venue_host, instrument_id, broker_order_id)`` may
+    attach to exactly one row (partial-unique index
+    ``uq_binance_demo_ledger_broker_ack``). This typed error is the normalized,
+    stable ``duplicate_acknowledgement`` result — the service converts the
+    underlying ``IntegrityError`` here so it never leaks to the executor / MCP
+    boundary. Carries ``result`` for structured callers.
     """
 
     result = "duplicate_acknowledgement"
+
+
+class BinanceDemoOrderNotFound(Exception):
+    """Broker explicitly reported that a Demo client order does not exist.
+
+    This is deliberately distinct from timeouts, authentication failures, and
+    malformed responses: only this typed negative broker truth may release an
+    abandoned pre-send root reservation.
+    """
 
 
 class BinanceDemoCredentialError(Exception):

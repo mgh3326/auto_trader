@@ -30,7 +30,12 @@ import datetime as dt
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+)
 
 from app.models.binance_demo_order_ledger import BinanceDemoOrderLedger
 from app.services.brokers.binance.demo.errors import (
@@ -61,8 +66,46 @@ _ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
 class BinanceDemoLedgerService:
     """Service-only write surface for ``binance_demo_order_ledger``."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        reservation_session_factory: async_sessionmaker[AsyncSession] | None = None,
+    ) -> None:
         self._repo = BinanceDemoLedgerRepository(session)
+        self._owner_session = session
+        self._reservation_session_factory = reservation_session_factory
+
+    def _get_reservation_session_factory(
+        self,
+    ) -> async_sessionmaker[AsyncSession]:
+        """Resolve the independent transaction factory only when it is needed."""
+        if self._reservation_session_factory is not None:
+            return self._reservation_session_factory
+        bind = self._owner_session.bind
+        if isinstance(bind, AsyncConnection):
+            # A session bound to a connection would otherwise reuse the caller's
+            # transaction. Use its owning engine to obtain a new connection.
+            bind = bind.engine
+        if not isinstance(bind, AsyncEngine):
+            raise TypeError(
+                "root reservation requires an AsyncEngine-bound session or an "
+                "explicit reservation_session_factory"
+            )
+        self._reservation_session_factory = async_sessionmaker(
+            bind, expire_on_commit=False
+        )
+        return self._reservation_session_factory
+
+    def independent_session_factory(self) -> async_sessionmaker[AsyncSession]:
+        """Factory for short DB work that must not pin the owner connection.
+
+        The executor uses this for its read-only risk snapshot before identity
+        creation and reservation. Closing that read session before the next
+        step prevents N concurrent owner sessions from each holding one pooled
+        connection while waiting for a second connection (ROB-844 review).
+        """
+        return self._get_reservation_session_factory()
 
     async def get_by_client_order_id(
         self, client_order_id: str
@@ -80,6 +123,33 @@ class BinanceDemoLedgerService:
         return await self._repo.resolve_instrument_id(
             venue=venue, product=product, venue_symbol=venue_symbol
         )
+
+    async def resolve_or_create_instrument(
+        self,
+        *,
+        venue: str,
+        product: str,
+        venue_symbol: str,
+        base_asset: str,
+        quote_asset: str,
+    ) -> int:
+        """Durably resolve/create identity without owning the caller transaction."""
+        if product not in _ALLOWED_PRODUCTS:
+            raise BinanceDemoInvalidProduct(
+                f"product={product!r} not in {sorted(_ALLOWED_PRODUCTS)}"
+            )
+        factory = self._get_reservation_session_factory()
+        async with factory() as identity_session:
+            async with identity_session.begin():
+                return await BinanceDemoLedgerRepository(
+                    identity_session
+                ).resolve_or_create_instrument(
+                    venue=venue,
+                    product=product,
+                    venue_symbol=venue_symbol,
+                    base_asset=base_asset,
+                    quote_asset=quote_asset,
+                )
 
     async def count_open_lifecycles(self) -> int:
         return await self._repo.count_open_lifecycles()
@@ -189,23 +259,27 @@ class BinanceDemoLedgerService:
             raise BinanceDemoInvalidProduct(
                 f"product={product!r} not in {sorted(_ALLOWED_PRODUCTS)}"
             )
-        return await self._repo.reserve_root_planned(
-            instrument_id=instrument_id,
-            product=product,
-            venue_host=venue_host,
-            client_order_id=client_order_id,
-            side=side,
-            order_type=order_type,
-            qty=qty,
-            price=price,
-            tp_price=tp_price,
-            sl_price=sl_price,
-            notional_usdt=notional_usdt,
-            notional_override_reason=notional_override_reason,
-            extra_metadata=extra_metadata,
-            global_open_root_cap=global_open_root_cap,
-            now=now,
-        )
+        factory = self._get_reservation_session_factory()
+        async with factory() as reservation_session:
+            async with reservation_session.begin():
+                reservation_repo = BinanceDemoLedgerRepository(reservation_session)
+                return await reservation_repo.reserve_root_planned(
+                    instrument_id=instrument_id,
+                    product=product,
+                    venue_host=venue_host,
+                    client_order_id=client_order_id,
+                    side=side,
+                    order_type=order_type,
+                    qty=qty,
+                    price=price,
+                    tp_price=tp_price,
+                    sl_price=sl_price,
+                    notional_usdt=notional_usdt,
+                    notional_override_reason=notional_override_reason,
+                    extra_metadata=extra_metadata,
+                    global_open_root_cap=global_open_root_cap,
+                    now=now,
+                )
 
     async def _transition(
         self,
@@ -217,7 +291,10 @@ class BinanceDemoLedgerService:
         anomaly_reason: str | None = None,
         extra_metadata_merge: dict[str, Any] | None = None,
     ) -> BinanceDemoOrderLedger:
-        row = await self._repo.get_by_client_order_id(client_order_id)
+        # Lock before validating the transition. This prevents a stale ORM read
+        # from overwriting a concurrent reconciler's terminal release after it
+        # drops its row lock.
+        row = await self._repo.get_by_client_order_id(client_order_id, for_update=True)
         if row is None:
             raise BinanceDemoInvalidStateTransition(
                 f"no ledger row for client_order_id={client_order_id!r}"

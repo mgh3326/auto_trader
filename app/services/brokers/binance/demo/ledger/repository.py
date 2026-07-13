@@ -15,6 +15,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -143,79 +144,75 @@ class BinanceDemoLedgerRepository:
         1. the global open-*root* cap (``parent_client_order_id IS NULL`` only),
         2. an existing open *root* for this ``(product, instrument)``,
 
-        then inserts the planned root row. The winner commits (durable claim,
-        lock released); a loser returns a normalized ``exposure_slot_taken``
-        without ever inserting. A constraint conflict (defense-in-depth partial
-        unique index) is caught in a savepoint and normalized identically — no
-        ``IntegrityError`` escapes.
+        then inserts the planned root row. Transaction ownership belongs to the
+        service's dedicated reservation session: this repository neither commits
+        nor rolls back its caller. A loser returns a normalized
+        ``exposure_slot_taken`` without ever inserting. A constraint conflict
+        (defense-in-depth partial unique index) is caught in a savepoint and
+        normalized identically — no ``IntegrityError`` escapes.
 
         The row is always a **root** (``parent_client_order_id`` is never set
         here); close/reduce-only child legs use ``insert_planned`` and never
         consume a slot.
         """
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"),
+            {"key": _ROOT_RESERVATION_LOCK_KEY},
+        )
+
+        global_open = await self.count_open_root_lifecycles()
+        if global_open >= global_open_root_cap:
+            return RootReservationResult(
+                status=RESERVATION_EXPOSURE_SLOT_TAKEN,
+                reason="global_open_root_cap",
+            )
+
+        if await self.has_open_root_lifecycle_for_instrument(
+            product=product, instrument_id=instrument_id
+        ):
+            return RootReservationResult(
+                status=RESERVATION_EXPOSURE_SLOT_TAKEN,
+                reason="instrument_open_root",
+            )
+
+        row = BinanceDemoOrderLedger(
+            instrument_id=instrument_id,
+            product=product,
+            venue_host=venue_host,
+            client_order_id=client_order_id,
+            parent_client_order_id=None,
+            side=side,
+            order_type=order_type,
+            qty=qty,
+            price=price,
+            tp_price=tp_price,
+            sl_price=sl_price,
+            lifecycle_state="planned",
+            planned_at=now,
+            notional_usdt=notional_usdt,
+            notional_override_reason=notional_override_reason,
+            extra_metadata=extra_metadata,
+        )
         try:
-            await self._session.execute(
-                text("SELECT pg_advisory_xact_lock(:key)"),
-                {"key": _ROOT_RESERVATION_LOCK_KEY},
-            )
-
-            global_open = await self.count_open_root_lifecycles()
-            if global_open >= global_open_root_cap:
-                await self._session.rollback()
-                return RootReservationResult(
-                    status=RESERVATION_EXPOSURE_SLOT_TAKEN,
-                    reason="global_open_root_cap",
-                )
-
-            if await self.has_open_root_lifecycle_for_instrument(
-                product=product, instrument_id=instrument_id
-            ):
-                await self._session.rollback()
-                return RootReservationResult(
-                    status=RESERVATION_EXPOSURE_SLOT_TAKEN,
-                    reason="instrument_open_root",
-                )
-
-            row = BinanceDemoOrderLedger(
-                instrument_id=instrument_id,
-                product=product,
-                venue_host=venue_host,
-                client_order_id=client_order_id,
-                parent_client_order_id=None,
-                side=side,
-                order_type=order_type,
-                qty=qty,
-                price=price,
-                tp_price=tp_price,
-                sl_price=sl_price,
-                lifecycle_state="planned",
-                planned_at=now,
-                notional_usdt=notional_usdt,
-                notional_override_reason=notional_override_reason,
-                extra_metadata=extra_metadata,
-            )
-            self._session.add(row)
-            try:
+            # The partial-unique fallback must not poison the dedicated outer
+            # transaction. The advisory lock is transaction-scoped and remains
+            # held until the service exits that transaction.
+            async with self._session.begin_nested():
+                self._session.add(row)
                 await self._session.flush()
-            except IntegrityError:
-                # Partial-unique open-root (or client-order-id) collision — the
-                # transaction-scoped advisory lock already serializes reservers,
-                # so this is the defense-in-depth net for a lock bypass. Roll back
-                # (releasing the failed insert AND the advisory lock) and
-                # normalize to the stable slot-taken result — no IntegrityError
-                # escapes. Whole-transaction rollback is correct here because the
-                # reservation owns its transaction end to end.
-                await self._session.rollback()
+        except IntegrityError as exc:
+            # Only the named defense-in-depth open-root race is a normal slot
+            # loss. FK/check/numeric/client-id failures are product or schema
+            # faults and must remain visible to operators, never masquerade as
+            # ``exposure_slot_taken``.
+            if "uq_binance_demo_ledger_open_root" in str(exc.orig):
                 return RootReservationResult(
                     status=RESERVATION_EXPOSURE_SLOT_TAKEN,
                     reason="unique_conflict",
                 )
-
-            await self._session.commit()
-            return RootReservationResult(status=RESERVATION_RESERVED, row=row)
-        except BaseException:
-            await self._session.rollback()
             raise
+
+        return RootReservationResult(status=RESERVATION_RESERVED, row=row)
 
     async def count_open_root_lifecycles(self) -> int:
         """Count blocking *root* lifecycles table-wide (``parent`` IS NULL only).
@@ -254,12 +251,21 @@ class BinanceDemoLedgerRepository:
         return (count or 0) > 0
 
     async def get_by_client_order_id(
-        self, client_order_id: str
+        self, client_order_id: str, *, for_update: bool = False
     ) -> BinanceDemoOrderLedger | None:
         """Return the row matching ``client_order_id`` or ``None``."""
         stmt = select(BinanceDemoOrderLedger).where(
             BinanceDemoOrderLedger.client_order_id == client_order_id
         )
+        if for_update:
+            # ``FOR UPDATE`` acquires the database lock but SQLAlchemy otherwise
+            # reuses an already-loaded identity-map instance without refreshing
+            # its attributes. A long-lived executor session could therefore
+            # validate a stale ``planned`` state after a reconciler committed
+            # ``reconciled`` and overwrite the terminal truth. Populate the
+            # locked row from the database unconditionally before transition
+            # validation (ROB-844).
+            stmt = stmt.with_for_update().execution_options(populate_existing=True)
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 
@@ -278,6 +284,38 @@ class BinanceDemoLedgerRepository:
                 CryptoInstrument.venue_symbol == venue_symbol,
             )
         )
+
+    async def resolve_or_create_instrument(
+        self,
+        *,
+        venue: str,
+        product: str,
+        venue_symbol: str,
+        base_asset: str,
+        quote_asset: str,
+    ) -> int:
+        """Resolve an instrument identity, inserting it idempotently if absent."""
+        inserted_id = await self._session.scalar(
+            pg_insert(CryptoInstrument)
+            .values(
+                venue=venue,
+                product=product,
+                venue_symbol=venue_symbol,
+                base_asset=base_asset,
+                quote_asset=quote_asset,
+                status="active",
+            )
+            .on_conflict_do_nothing(index_elements=["venue", "product", "venue_symbol"])
+            .returning(CryptoInstrument.id)
+        )
+        if inserted_id is not None:
+            return inserted_id
+        existing_id = await self.resolve_instrument_id(
+            venue=venue, product=product, venue_symbol=venue_symbol
+        )
+        if existing_id is None:  # pragma: no cover - DB contract corruption
+            raise RuntimeError("instrument upsert completed without a resolvable row")
+        return existing_id
 
     async def count_open_lifecycles(self) -> int:
         """Count table-wide blocking *root* lifecycles (read-side telemetry).
@@ -375,29 +413,32 @@ class BinanceDemoLedgerRepository:
 
         if broker_order_id is not None:
             # Attaching a broker ack can collide with the
-            # ``(product, venue_host, broker_order_id)`` partial-unique index
+            # ``(product, venue_host, instrument_id, broker_order_id)``
+            # partial-unique index
             # when the same ack is replayed onto a second row. Flush and, on a
-            # conflict, roll back and re-raise as a typed
+            # conflict, roll back its SAVEPOINT and re-raise as a typed
             # duplicate-acknowledgement — no IntegrityError leaks to the executor
-            # / MCP boundary (ROB-844). (A whole-transaction rollback is used
-            # rather than a SAVEPOINT: ``begin_nested``'s savepoint-rollback on a
-            # failed flush loses the async greenlet in this stack; this is the
-            # same flush+catch+rollback pattern the KIS pre-send reservation uses.
-            # A replayed ack is a rare defense-in-depth path and the caller aborts
-            # the leg, so discarding the uncommitted transition is acceptable.)
+            # / MCP boundary (ROB-844). The caller's transaction can contain a
+            # prior lifecycle and unrelated work, so a whole-session rollback is
+            # forbidden here.
             # Capture identifying fields BEFORE the flush: a rollback below
             # expires ``row``, so reading its attributes afterwards would trigger
             # a lazy-load IO outside the async greenlet.
-            product_label, venue_label = row.product, row.venue_host
-            _apply()
+            product_label, venue_label, instrument_label = (
+                row.product,
+                row.venue_host,
+                row.instrument_id,
+            )
             try:
-                await self._session.flush()
+                async with self._session.begin_nested():
+                    _apply()
+                    await self._session.flush()
             except IntegrityError as exc:
-                await self._session.rollback()
                 if "uq_binance_demo_ledger_broker_ack" in str(exc.orig):
                     raise BinanceDemoDuplicateAcknowledgement(
                         f"broker_order_id={broker_order_id!r} already acknowledged "
-                        f"for product={product_label!r} venue_host={venue_label!r}"
+                        f"for product={product_label!r} venue_host={venue_label!r} "
+                        f"instrument_id={instrument_label!r}"
                     ) from exc
                 raise
         else:

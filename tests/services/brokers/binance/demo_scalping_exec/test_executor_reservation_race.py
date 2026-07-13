@@ -23,8 +23,10 @@ from decimal import Decimal
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.db import AsyncSessionLocal
+from app.core.db import engine as shared_engine
 from app.models.binance_demo_order_ledger import BinanceDemoOrderLedger
 from app.models.crypto_instruments import CryptoInstrument
 from app.services.brokers.binance.demo.ledger import BinanceDemoLedgerService
@@ -44,6 +46,7 @@ from app.services.brokers.binance.demo_scalping_exec.reference import SymbolRefe
 _NOW = dt.datetime(2026, 5, 24, 12, 0, 0, tzinfo=dt.UTC)
 _HOST = "demo-api.binance.com"
 _CID_PREFIX = "rob844exec-"
+_CREDENTIAL_FINGERPRINT = "sha256:" + "31" * 32
 _REF = SymbolReference(
     price=Decimal("1.36"),
     step_size=Decimal("0.1"),
@@ -123,6 +126,8 @@ class _GatedSpotClient:
         self._free = Decimal("0")
         self._free_after_buy = free_after_buy
         self._close_gate = close_gate
+
+    credential_fingerprint = _CREDENTIAL_FINGERPRINT
 
     async def submit_order(
         self,
@@ -302,3 +307,107 @@ async def test_concurrent_executors_at_most_one_broker_submit() -> None:
     )
     # Winner: exactly one open (BUY) submit — the only broker open across both.
     assert winner_client.submits[0] == "BUY"
+    async with AsyncSessionLocal() as db:
+        root = await db.scalar(
+            select(BinanceDemoOrderLedger).where(
+                BinanceDemoOrderLedger.client_order_id
+                == winner_result.open_client_order_id
+            )
+        )
+    assert root is not None
+    assert root.extra_metadata["credential_fingerprint"] == _CREDENTIAL_FINGERPRINT
+    assert "RAW" not in repr(root.extra_metadata)
+
+
+@pytest.mark.asyncio
+async def test_pool_size_one_preflight_identity_reservation_and_transition_do_not_starve(
+    monkeypatch,
+) -> None:
+    """Short independent sessions run sequentially; owner holds no first lease."""
+    pool_engine = create_async_engine(
+        shared_engine.url,
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=0.5,
+        pool_pre_ping=True,
+    )
+    factory = async_sessionmaker(pool_engine, expire_on_commit=False)
+    symbol = "R844POOLONEUSDT"
+    try:
+        client = _GatedSpotClient()
+        async with factory() as owner:
+            assert not owner.in_transaction()
+            executor = DemoScalpingExecutor(
+                product="spot",
+                client=client,
+                session=owner,
+                reference=_FakeReference(_REF),
+                now=_NOW,
+                limits=_limits(symbol),
+            )
+            result = await asyncio.wait_for(
+                executor.execute(_intent(symbol), confirm=True, market=_FRESH_MARKET),
+                timeout=5,
+            )
+        assert result.status == "reconciled"
+        assert client.submits == ["BUY", "SELL"]
+
+        # Also exercise the reservation-loser path with the same one-connection
+        # pool while forcing the advisory snapshot stale/clean. The authoritative
+        # reservation still blocks and dispatches zero broker submit.
+        blocked_symbol = "R844POOLBLOCKUSDT"
+        async with factory() as seed_session:
+            seed = BinanceDemoLedgerService(seed_session)
+            instrument_id = await seed.resolve_or_create_instrument(
+                venue="binance",
+                product="spot",
+                venue_symbol=blocked_symbol,
+                base_asset="R844POOLBLOCK",
+                quote_asset="USDT",
+            )
+            seeded = await seed.reserve_root_planned(
+                instrument_id=instrument_id,
+                product="spot",
+                venue_host=_HOST,
+                client_order_id=f"{_CID_PREFIX}pool-blocker",
+                side="BUY",
+                order_type="MARKET",
+                qty=Decimal("1"),
+                price=None,
+                global_open_root_cap=1_000_000,
+                now=_NOW,
+            )
+            assert seeded.status == "reserved"
+
+        async def _clean_snapshot(*_args, **_kwargs):
+            return LedgerSnapshot(
+                has_open_lifecycle_for_symbol=False,
+                global_open_lifecycle_count=0,
+                orders_today=0,
+                realized_loss_today_usdt=Decimal("0"),
+                seconds_since_last_close_for_symbol=None,
+            )
+
+        monkeypatch.setattr(executor_mod, "load_ledger_snapshot", _clean_snapshot)
+        loser_client = _GatedSpotClient()
+        async with factory() as loser_owner:
+            assert not loser_owner.in_transaction()
+            loser = DemoScalpingExecutor(
+                product="spot",
+                client=loser_client,
+                session=loser_owner,
+                reference=_FakeReference(_REF),
+                now=_NOW,
+                limits=_limits(blocked_symbol),
+            )
+            blocked = await asyncio.wait_for(
+                loser.execute(
+                    _intent(blocked_symbol), confirm=True, market=_FRESH_MARKET
+                ),
+                timeout=5,
+            )
+        assert blocked.status == "blocked"
+        assert ReasonCode.EXPOSURE_SLOT_TAKEN in blocked.reason_codes
+        assert loser_client.submits == []
+    finally:
+        await pool_engine.dispose()

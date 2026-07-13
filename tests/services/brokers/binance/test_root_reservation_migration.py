@@ -103,21 +103,18 @@ async def test_fail_safe_detects_broker_ack_conflict_and_preserves_history() -> 
 
             def _seed_and_check(sync_conn):
                 sync_conn.execute(text("DROP INDEX uq_binance_demo_ledger_broker_ack"))
-                # Two DIFFERENT instruments (so the open-root index is not
-                # involved) sharing one broker ack — the exact replay this guard
-                # catches.
-                for symbol, cid in (
-                    ("R844MIGB1USDT", "rob844mig-b1"),
-                    ("R844MIGB2USDT", "rob844mig-b2"),
-                ):
-                    iid = _insert_instrument(sync_conn, symbol)
+                # Same instrument + broker acknowledgement is the replay this
+                # corrected fresh-upgrade guard catches. Terminal state keeps
+                # the independent open-root index out of this detector test.
+                iid = _insert_instrument(sync_conn, "R844MIGBUSDT")
+                for cid in ("rob844mig-b1", "rob844mig-b2"):
                     sync_conn.execute(
                         text(
                             "INSERT INTO binance_demo_order_ledger "
                             "(instrument_id, product, venue_host, client_order_id, "
                             "broker_order_id, side, order_type, qty, lifecycle_state) "
                             "VALUES (:iid,'spot','demo-api.binance.com',:cid,"
-                            "'DUP-ACK','BUY','MARKET',1,'submitted')"
+                            "'DUP-ACK','BUY','MARKET',1,'reconciled')"
                         ),
                         {"iid": iid, "cid": cid},
                     )
@@ -130,6 +127,36 @@ async def test_fail_safe_detects_broker_ack_conflict_and_preserves_history() -> 
                     )
                 ).scalar_one()
                 assert remaining == 2
+
+            await conn.run_sync(_seed_and_check)
+        finally:
+            await trans.rollback()
+
+
+@pytest.mark.asyncio
+async def test_fresh_upgrade_detector_allows_cross_instrument_numeric_reuse() -> None:
+    async with engine.connect() as conn:
+        trans = await conn.begin()
+        try:
+
+            def _seed_and_check(sync_conn):
+                sync_conn.execute(text("DROP INDEX uq_binance_demo_ledger_broker_ack"))
+                for symbol, cid in (
+                    ("R844MIGB1USDT", "rob844mig-b-different-1"),
+                    ("R844MIGB2USDT", "rob844mig-b-different-2"),
+                ):
+                    iid = _insert_instrument(sync_conn, symbol)
+                    sync_conn.execute(
+                        text(
+                            "INSERT INTO binance_demo_order_ledger "
+                            "(instrument_id, product, venue_host, client_order_id, "
+                            "broker_order_id, side, order_type, qty, lifecycle_state) "
+                            "VALUES (:iid,'spot','demo-api.binance.com',:cid,"
+                            "'REUSED-NUMERIC-ID','BUY','MARKET',1,'reconciled')"
+                        ),
+                        {"iid": iid, "cid": cid},
+                    )
+                _mig._assert_no_broker_ack_conflicts(sync_conn)
 
             await conn.run_sync(_seed_and_check)
         finally:

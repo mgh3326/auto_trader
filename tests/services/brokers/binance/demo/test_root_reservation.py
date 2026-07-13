@@ -212,8 +212,98 @@ async def test_global_cap_zero_blocks() -> None:
 
 
 @pytest.mark.asyncio
-async def test_duplicate_broker_ack_normalized_no_integrityerror() -> None:
-    """A replayed broker ack on a second row → typed duplicate, not IntegrityError."""
+async def test_reservation_winner_does_not_commit_caller_transaction() -> None:
+    """The durable claim commits only its dedicated reservation transaction."""
+    async with AsyncSessionLocal() as db:
+        iid = await _instrument(db, "R844TXWINUSDT")
+        instrument = await db.get(CryptoInstrument, iid)
+        assert instrument is not None
+        instrument.status = "active"
+        await db.commit()
+        instrument.status = "halted"
+
+        result = await _reserve(db, instrument_id=iid, cid=f"{_CID_PREFIX}tx-winner")
+        assert result.status == "reserved"
+
+        async with AsyncSessionLocal() as verify:
+            committed_status = await verify.scalar(
+                select(CryptoInstrument.status).where(CryptoInstrument.id == iid)
+            )
+        assert committed_status == "active"
+        await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_reservation_loser_does_not_rollback_caller_transaction() -> None:
+    """A slot loser must leave unrelated caller work available to commit."""
+    async with AsyncSessionLocal() as db:
+        iid = await _instrument(db, "R844TXLOSEUSDT")
+        await _reserve(db, instrument_id=iid, cid=f"{_CID_PREFIX}tx-first")
+        instrument = await db.get(CryptoInstrument, iid)
+        assert instrument is not None
+        instrument.status = "active"
+        await db.commit()
+        instrument.status = "halted"
+
+        result = await _reserve(db, instrument_id=iid, cid=f"{_CID_PREFIX}tx-loser")
+        assert result.status == "exposure_slot_taken"
+        await db.commit()
+
+        async with AsyncSessionLocal() as verify:
+            committed_status = await verify.scalar(
+                select(CryptoInstrument.status).where(CryptoInstrument.id == iid)
+            )
+        assert committed_status == "halted"
+
+
+@pytest.mark.asyncio
+async def test_instrument_identity_is_created_in_dedicated_transaction() -> None:
+    """A new instrument is durable without committing unrelated caller work."""
+    async with AsyncSessionLocal() as db:
+        unrelated_id = await _instrument(db, "R844IDENTITYBASEUSDT")
+        unrelated = await db.get(CryptoInstrument, unrelated_id)
+        assert unrelated is not None
+        unrelated.status = "active"
+        await db.commit()
+        unrelated.status = "halted"
+
+        svc = BinanceDemoLedgerService(db)
+        instrument_id = await svc.resolve_or_create_instrument(
+            venue="binance",
+            product="spot",
+            venue_symbol="R844IDENTITYNEWUSDT",
+            base_asset="R844IDENTITYNEW",
+            quote_asset="USDT",
+        )
+        replayed_id = await svc.resolve_or_create_instrument(
+            venue="binance",
+            product="spot",
+            venue_symbol="R844IDENTITYNEWUSDT",
+            base_asset="R844IDENTITYNEW",
+            quote_asset="USDT",
+        )
+
+        async with AsyncSessionLocal() as verify:
+            persisted_id = await verify.scalar(
+                select(CryptoInstrument.id).where(
+                    CryptoInstrument.venue == "binance",
+                    CryptoInstrument.product == "spot",
+                    CryptoInstrument.venue_symbol == "R844IDENTITYNEWUSDT",
+                )
+            )
+            committed_status = await verify.scalar(
+                select(CryptoInstrument.status).where(
+                    CryptoInstrument.id == unrelated_id
+                )
+            )
+        assert instrument_id == replayed_id == persisted_id
+        assert committed_status == "active"
+        await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_same_numeric_broker_ack_is_allowed_for_different_instruments() -> None:
+    """Binance order ids are scoped by instrument as well as host/product."""
     async with AsyncSessionLocal() as db:
         svc = BinanceDemoLedgerService(db)
         iid_a = await _instrument(db, "R844GUSDT")
@@ -228,24 +318,138 @@ async def test_duplicate_broker_ack_normalized_no_integrityerror() -> None:
             client_order_id=cid_a, broker_order_id="SHARED-ACK", now=_NOW
         )
         await db.commit()
-        # Row B (different instrument) tries to attach the SAME broker ack.
+        # Row B is a different instrument; Binance may reuse the numeric id in
+        # this independent symbol order sequence.
         await _reserve(db, instrument_id=iid_b, cid=cid_b)
         await svc.record_previewed(client_order_id=cid_b, now=_NOW)
         await svc.record_validated(client_order_id=cid_b, now=_NOW)
-        with pytest.raises(BinanceDemoDuplicateAcknowledgement) as exc_info:
-            await svc.record_submitted(
-                client_order_id=cid_b, broker_order_id="SHARED-ACK", now=_NOW
-            )
-        assert exc_info.value.result == "duplicate_acknowledgement"
-        await db.rollback()
-        # The first row still owns the ack; no second row captured it.
+        await svc.record_submitted(
+            client_order_id=cid_b, broker_order_id="SHARED-ACK", now=_NOW
+        )
+        await db.commit()
         async with AsyncSessionLocal() as verify:
             owners = await verify.scalar(
                 select(func.count())
                 .select_from(BinanceDemoOrderLedger)
                 .where(BinanceDemoOrderLedger.broker_order_id == "SHARED-ACK")
             )
-    assert owners == 1
+    assert owners == 2
+
+
+@pytest.mark.asyncio
+async def test_duplicate_broker_ack_on_same_instrument_is_typed() -> None:
+    """Same-instrument ack replay is typed, never a leaked IntegrityError."""
+    async with AsyncSessionLocal() as db:
+        svc = BinanceDemoLedgerService(db)
+        iid = await _instrument(db, "R844ACKSAMEUSDT")
+        cid_a = f"{_CID_PREFIX}ack-same-a"
+        cid_b = f"{_CID_PREFIX}ack-same-b"
+
+        await _reserve(db, instrument_id=iid, cid=cid_a)
+        await svc.record_previewed(client_order_id=cid_a, now=_NOW)
+        await svc.record_validated(client_order_id=cid_a, now=_NOW)
+        await svc.record_submitted(
+            client_order_id=cid_a, broker_order_id="SAME-INSTRUMENT-ACK", now=_NOW
+        )
+        await db.commit()
+
+        # A child row avoids the independent one-open-root invariant while
+        # exercising the same-instrument broker acknowledgement scope.
+        await svc.record_planned(
+            instrument_id=iid,
+            product="spot",
+            venue_host=_HOST,
+            client_order_id=cid_b,
+            parent_client_order_id=cid_a,
+            side="SELL",
+            order_type="MARKET",
+            qty=Decimal("1"),
+            price=None,
+            now=_NOW,
+        )
+        await svc.record_previewed(client_order_id=cid_b, now=_NOW)
+        await svc.record_validated(client_order_id=cid_b, now=_NOW)
+        with pytest.raises(BinanceDemoDuplicateAcknowledgement) as exc_info:
+            await svc.record_submitted(
+                client_order_id=cid_b,
+                broker_order_id="SAME-INSTRUMENT-ACK",
+                now=_NOW,
+            )
+        assert exc_info.value.result == "duplicate_acknowledgement"
+        await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_ack_savepoint_preserves_outer_transaction() -> None:
+    """A duplicate broker ack rolls back only the ack attachment savepoint."""
+    async with AsyncSessionLocal() as db:
+        svc = BinanceDemoLedgerService(db)
+        iid = await _instrument(db, "R844ACKSAVEUSDT")
+        unrelated_iid = await _instrument(db, "R844ACKSAVEOTHERUSDT")
+        cid_a = f"{_CID_PREFIX}acksave-a"
+        cid_b = f"{_CID_PREFIX}acksave-b"
+
+        await _reserve(db, instrument_id=iid, cid=cid_a)
+        await svc.record_previewed(client_order_id=cid_a, now=_NOW)
+        await svc.record_validated(client_order_id=cid_a, now=_NOW)
+        await svc.record_submitted(
+            client_order_id=cid_a, broker_order_id="ACK-SAVEPOINT", now=_NOW
+        )
+        await db.commit()
+
+        await svc.record_planned(
+            instrument_id=iid,
+            product="spot",
+            venue_host=_HOST,
+            client_order_id=cid_b,
+            parent_client_order_id=cid_a,
+            side="SELL",
+            order_type="MARKET",
+            qty=Decimal("1"),
+            price=None,
+            now=_NOW,
+        )
+        await svc.record_previewed(client_order_id=cid_b, now=_NOW)
+        await svc.record_validated(client_order_id=cid_b, now=_NOW)
+        unrelated = await db.get(CryptoInstrument, unrelated_iid)
+        assert unrelated is not None
+        unrelated.status = "active"
+        await db.commit()
+        unrelated = await db.get(CryptoInstrument, unrelated_iid)
+        assert unrelated is not None
+        unrelated.status = "halted"
+
+        with pytest.raises(BinanceDemoDuplicateAcknowledgement):
+            await svc.record_submitted(
+                client_order_id=cid_b,
+                broker_order_id="ACK-SAVEPOINT",
+                now=_NOW,
+            )
+
+        # The outer transaction remains usable and keeps both prior lifecycle
+        # work and unrelated state; only the duplicate ack attachment is gone.
+        await svc.record_anomaly(
+            client_order_id=cid_b,
+            reason="duplicate_acknowledgement",
+            now=_NOW,
+        )
+        await db.commit()
+
+        async with AsyncSessionLocal() as verify:
+            row_b = await verify.scalar(
+                select(BinanceDemoOrderLedger).where(
+                    BinanceDemoOrderLedger.client_order_id == cid_b
+                )
+            )
+            instrument_status = await verify.scalar(
+                select(CryptoInstrument.status).where(
+                    CryptoInstrument.id == unrelated_iid
+                )
+            )
+        assert row_b is not None
+        assert row_b.lifecycle_state == "anomaly"
+        assert row_b.broker_order_id is None
+        assert instrument_status == "halted"
 
 
 @pytest.mark.asyncio
@@ -273,6 +477,26 @@ async def test_abandoned_planned_reservation_not_auto_released() -> None:
         )
     assert result.status == "exposure_slot_taken"
     assert result.reason == "instrument_open_root"
+
+
+@pytest.mark.asyncio
+async def test_unrelated_reservation_integrity_error_is_not_normalized() -> None:
+    """A missing instrument FK is an operator fault, not a slot race result."""
+    async with AsyncSessionLocal() as db:
+        service = BinanceDemoLedgerService(db)
+        with pytest.raises(IntegrityError):
+            await service.reserve_root_planned(
+                instrument_id=-844_999_999,
+                product="spot",
+                venue_host=_HOST,
+                client_order_id=f"{_CID_PREFIX}invalid-fk",
+                side="BUY",
+                order_type="MARKET",
+                qty=Decimal("1"),
+                price=None,
+                global_open_root_cap=_HIGH_CAP,
+                now=_NOW,
+            )
 
 
 # --------------------------------------------------------------------------- #

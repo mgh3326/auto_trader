@@ -30,9 +30,6 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
-
-from app.models.crypto_instruments import CryptoInstrument
 from app.services.brokers.binance.demo.ledger import BinanceDemoLedgerService
 from app.services.brokers.binance.demo_scalping.contract import (
     DEMO_SCALPING_FEE_RATE_BPS,
@@ -92,7 +89,7 @@ class _ExposureSlotTaken:
 
     Returned by ``_open_leg`` instead of ``(cid, submit)`` when another process
     already holds the exposure slot. The caller converts it to a ``blocked``
-    result with ``EXPOSURE_SLOT_TAKEN`` and performs no broker I/O.
+    result with ``EXPOSURE_SLOT_TAKEN`` and performs no broker order submit.
     """
 
     reason: str | None = None
@@ -618,9 +615,21 @@ class DemoScalpingExecutor:
                 reason_codes=(ReasonCode.MARKET_CONDITIONS_UNAVAILABLE,),
             )
         self._entry_spread_bps = market.spread_bps
-        snapshot = await load_ledger_snapshot(
-            self.ledger, product=intent.product, symbol=intent.symbol, now=self.now
-        )
+        # Use one short independent read session and close it before identity
+        # creation/reservation acquire their own transactions. The owner session
+        # must remain connection-free here: otherwise pool_size concurrent runs
+        # can each hold connection #1 while all wait indefinitely for #2.
+        factory = self.ledger.independent_session_factory()
+        async with factory() as snapshot_session:
+            snapshot_ledger = BinanceDemoLedgerService(
+                snapshot_session, reservation_session_factory=factory
+            )
+            snapshot = await load_ledger_snapshot(
+                snapshot_ledger,
+                product=intent.product,
+                symbol=intent.symbol,
+                now=self.now,
+            )
         risk = evaluate_risk(
             product=intent.product,
             symbol=intent.symbol,
@@ -770,26 +779,17 @@ class DemoScalpingExecutor:
         return result.qty, result.notional_usdt
 
     async def _resolve_or_create_instrument(self, symbol: str) -> int:
-        existing = await self.session.scalar(
-            select(CryptoInstrument).where(
-                CryptoInstrument.venue == _VENUE,
-                CryptoInstrument.product == self.product,
-                CryptoInstrument.venue_symbol == symbol,
-            )
-        )
-        if existing is not None:
-            return existing.id
-        inst = CryptoInstrument(
+        # Identity must be visible to the independent reservation transaction,
+        # but committing the executor's shared session would also commit prior
+        # lifecycle work. The ledger service owns a dedicated idempotent tx for
+        # this identity boundary.
+        return await self.ledger.resolve_or_create_instrument(
             venue=_VENUE,
             product=self.product,
             venue_symbol=symbol,
             base_asset=_base_asset(symbol),
             quote_asset="USDT",
-            status="active",
         )
-        self.session.add(inst)
-        await self.session.flush()
-        return inst.id
 
     # ------------------------------------------------------------------
     # Fill resolution (no ledger writes; caller records)
@@ -825,7 +825,7 @@ class DemoScalpingExecutor:
     def _exposure_slot_taken_result(
         self, intent, slot_taken: _ExposureSlotTaken
     ) -> ExecutionResult:
-        """Blocked result for a lost root reservation (ROB-844) — no broker I/O."""
+        """Lost root reservation result — no broker order submit."""
         return ExecutionResult(
             intent=intent,
             status="blocked",
@@ -850,11 +850,16 @@ class DemoScalpingExecutor:
             "role": role,
             "reason_codes": list(intent.reason_codes),
         }
+        credential_fingerprint = getattr(self.client, "credential_fingerprint", None)
+        if isinstance(credential_fingerprint, str) and credential_fingerprint:
+            # Exact credential binding for later broker-truth reconciliation.
+            # The raw API key/secret never enters ledger metadata.
+            meta["credential_fingerprint"] = credential_fingerprint
         if intent.product == "usdm_futures":
             meta["leverage"] = 1
         # ROB-844: the open leg is the ROOT lifecycle. Atomically reserve its
         # exposure slot (advisory-locked recount + planned-root insert in one
-        # transaction) BEFORE any broker I/O. A loser of the cross-process race
+        # transaction) BEFORE broker order submit. A loser of the cross-process race
         # returns here with ZERO broker submit — only the reservation winner
         # proceeds. Close/reduce-only child legs keep using record_planned and
         # never consume a slot.
