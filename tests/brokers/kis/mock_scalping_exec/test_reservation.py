@@ -8,6 +8,7 @@ restart-safe fail-close signal.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
@@ -40,6 +41,7 @@ from app.services.brokers.kis.mock_scalping_exec.executor import (
 from app.services.brokers.kis.mock_scalping_exec.reservation import (
     has_unresolved_entries,
     reconcile_entries,
+    release_entry,
     reserve_entry,
 )
 from app.services.brokers.kis.mock_scalping_exec.tracking_state import LedgerWriteError
@@ -198,6 +200,20 @@ async def _ledger_rows(correlation_id: str) -> int:
             .where(KISMockOrderLedger.correlation_id == correlation_id)
         )
     return int(count or 0)
+
+
+async def _reservation_row(correlation_id: str, side: str) -> tuple[int, str] | None:
+    async with _order_session_factory()() as db:
+        row = (
+            await db.execute(
+                select(OrderSendIntent.id, OrderSendIntent.idempotency_key).where(
+                    OrderSendIntent.account_scope == KIS_MOCK_SCALPING_SCOPE,
+                    OrderSendIntent.idempotency_key.contains(correlation_id),
+                    func.lower(OrderSendIntent.side) == side.lower(),
+                )
+            )
+        ).one_or_none()
+    return (row.id, row.idempotency_key) if row is not None else None
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -684,6 +700,47 @@ async def test_explicit_reconcile_identifies_and_releases_only_confirmed_leg() -
     assert sorted(observed) == [(cid, "buy"), (cid, "sell")]
     assert await _has_key(cid, "buy") is True
     assert await _has_key(cid, "sell") is False
+    assert await has_unresolved_entries() is True
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_reconcile_aba_does_not_delete_replacement_row_or_count_release() -> None:
+    """A stale confirmation may release only the exact row it observed.
+
+    The reconciler lists row A, then pauses in the external broker confirmation.
+    A separate task/session deletes A and reserves the same leg as row B before
+    confirmation resumes. The stale reconciler must preserve B and report zero
+    releases.
+    """
+    cid = f"{_TEST_CID_PREFIX}reconcile-aba"
+    await reserve_entry(correlation_id=cid, symbol="005930", side="buy")
+    original = await _reservation_row(cid, "buy")
+    assert original is not None
+
+    confirm_started = asyncio.Event()
+    replacement_ready = asyncio.Event()
+
+    async def _confirm(correlation_id: str, side: str) -> bool:
+        assert (correlation_id, side) == (cid, "buy")
+        confirm_started.set()
+        await replacement_ready.wait()
+        return True
+
+    reconcile_task = asyncio.create_task(reconcile_entries(confirm=_confirm))
+    await confirm_started.wait()
+
+    await release_entry(correlation_id=cid, side="buy")
+    await reserve_entry(correlation_id=cid, symbol="005930", side="buy")
+    replacement = await _reservation_row(cid, "buy")
+    assert replacement is not None
+    assert replacement[0] != original[0]
+    replacement_ready.set()
+
+    released = await reconcile_task
+
+    assert released == 0
+    assert await _reservation_row(cid, "buy") == replacement
     assert await has_unresolved_entries() is True
 
 

@@ -8,6 +8,12 @@ survives process restart and fail-closes new orders until an explicit
 reconciliation releases it (unlike the old post-POST ledger marker, which shared
 the native write's failure mode). No writes to the order ledger — no control
 rows to leak into retrospective / journal / holdings consumers.
+
+ROB-853 remains the boundary for cross-process serialization: during a rolling
+deploy, an old raw-key writer and a new per-leg-key writer can race when the raw
+row is absent, and orders with different correlation IDs are not globally
+serialized here. Closing those gaps requires a canonical migration/deploy
+barrier or broader DB locking and is intentionally deferred to ROB-853.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ from typing import Literal
 
 from app.services.order_send_intent_service import (
     KIS_MOCK_SCALPING_SCOPE,
+    OrderSendIntentReservation,
     OrderSendIntentService,
 )
 
@@ -100,6 +107,18 @@ async def _release_stored_key(stored_key: str) -> int:
         )
 
 
+async def _release_observed_reservation(
+    reservation: OrderSendIntentReservation,
+) -> int:
+    async with _session_factory()() as db:
+        return await OrderSendIntentService(db).release_if_matches(
+            account_scope=KIS_MOCK_SCALPING_SCOPE,
+            row_id=reservation.row_id,
+            idempotency_key=reservation.idempotency_key,
+            side=reservation.side,
+        )
+
+
 async def release_entry(*, correlation_id: str, side: str) -> int:
     return await _release_stored_key(_leg_key(correlation_id=correlation_id, side=side))
 
@@ -120,19 +139,21 @@ async def reconcile_entries(
     fail-closed. Returns the number released.
     """
     async with _session_factory()() as db:
-        reservations = await OrderSendIntentService(db).list_keys_and_sides(
+        reservations = await OrderSendIntentService(db).list_reservations(
             account_scope=KIS_MOCK_SCALPING_SCOPE
         )
     released = 0
-    for stored_key, stored_side in reservations:
+    for reservation in reservations:
         try:
             correlation_id, side = _decode_leg_key(
-                stored_key=stored_key, stored_side=stored_side
+                stored_key=reservation.idempotency_key,
+                stored_side=reservation.side,
             )
         except ValueError as exc:
             logger.warning("malformed scalping reservation kept unresolved: %s", exc)
             continue
         if await confirm(correlation_id, side):
-            await _release_stored_key(stored_key)
-            released += 1
+            deleted = await _release_observed_reservation(reservation)
+            if deleted:
+                released += 1
     return released

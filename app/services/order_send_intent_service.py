@@ -9,6 +9,7 @@ service — no raw SQL.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -28,6 +29,13 @@ KIS_MOCK_SCALPING_SCOPE = "kis_mock_scalping"
 
 class DuplicateOrderIntent(Exception):
     """Raised when (account_scope, idempotency_key) is already reserved."""
+
+
+@dataclass(frozen=True)
+class OrderSendIntentReservation:
+    row_id: int
+    idempotency_key: str
+    side: str | None
 
 
 class OrderSendIntentService:
@@ -102,6 +110,31 @@ class OrderSendIntentService:
         await self._db.commit()
         return int(result.rowcount or 0)
 
+    async def release_if_matches(
+        self,
+        *,
+        account_scope: str,
+        row_id: int,
+        idempotency_key: str,
+        side: str | None,
+    ) -> int:
+        """Delete only the exact reservation row observed before external I/O."""
+        side_predicate = (
+            OrderSendIntent.side.is_(None)
+            if side is None
+            else OrderSendIntent.side == side
+        )
+        result = await self._db.execute(
+            delete(OrderSendIntent).where(
+                OrderSendIntent.id == row_id,
+                OrderSendIntent.account_scope == account_scope,
+                OrderSendIntent.idempotency_key == idempotency_key,
+                side_predicate,
+            )
+        )
+        await self._db.commit()
+        return int(result.rowcount or 0)
+
     async def has_reservations(self, *, account_scope: str) -> bool:
         """True if ANY unresolved reservation exists in ``account_scope``.
 
@@ -125,13 +158,22 @@ class OrderSendIntentService:
         )
         return [k for (k,) in rows.all()]
 
-    async def list_keys_and_sides(
+    async def list_reservations(
         self, *, account_scope: str
-    ) -> list[tuple[str, str | None]]:
-        """Stored keys with side evidence for explicit leg reconciliation."""
+    ) -> list[OrderSendIntentReservation]:
+        """Immutable row references used across external reconciliation I/O."""
         rows = await self._db.execute(
-            select(OrderSendIntent.idempotency_key, OrderSendIntent.side).where(
-                OrderSendIntent.account_scope == account_scope
-            )
+            select(
+                OrderSendIntent.id,
+                OrderSendIntent.idempotency_key,
+                OrderSendIntent.side,
+            ).where(OrderSendIntent.account_scope == account_scope)
         )
-        return list(rows.all())
+        return [
+            OrderSendIntentReservation(
+                row_id=row_id,
+                idempotency_key=idempotency_key,
+                side=side,
+            )
+            for row_id, idempotency_key, side in rows.all()
+        ]
