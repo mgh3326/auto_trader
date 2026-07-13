@@ -33,6 +33,7 @@ from app.services.brokers.kis.mock_scalping.contract import ScalpingRiskLimits
 from app.services.brokers.kis.mock_scalping_exec.adapters import (
     KisMockBroker,
     KisMockLedgerWriter,
+    KisMockRiskGate,
 )
 from app.services.brokers.kis.mock_scalping_exec.executor import MockScalpingExecutor
 from app.services.brokers.kis.mock_scalping_exec.ws_bridge import WsExecutionBridge
@@ -73,12 +74,19 @@ async def run_daemon(args: argparse.Namespace) -> int:
 
     queue = QuoteEventQueue()
     supervisor = KisScalpingSupervisor(symbols=symbols)
-    broker = KisMockBroker(get_state=supervisor.market_state)
+    limits = ScalpingRiskLimits()
+    # ROB-843 P1-1: the broker owns the final pre-send freshness re-check, so it
+    # needs the same limits (age/spread caps) the risk gate uses.
+    broker = KisMockBroker(get_state=supervisor.market_state, limits=limits)
     ledger = KisMockLedgerWriter()
-    executor = MockScalpingExecutor(broker=broker, ledger=ledger)
-    bridge = WsExecutionBridge(
-        executor=executor, limits=ScalpingRiskLimits(), confirm=confirm
+    # ROB-843: the executor owns the final pre-send risk re-check. Wire a real
+    # gate (fresh live-market + durable-ledger snapshot) so a confirmed entry
+    # can never bypass it.
+    risk_gate = KisMockRiskGate(get_state=supervisor.market_state)
+    executor = MockScalpingExecutor(
+        broker=broker, ledger=ledger, risk=risk_gate, limits=limits
     )
+    bridge = WsExecutionBridge(executor=executor, limits=limits, confirm=confirm)
     ws = KISQuoteWebSocket(
         symbols=symbols,
         on_tick=queue.on_tick,

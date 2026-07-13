@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from decimal import Decimal
 from typing import Any, Literal
@@ -55,6 +56,11 @@ from app.mcp_server.tooling.shared import (
     to_float as _to_float,
 )
 from app.services.brokers.kis import KISClient
+from app.services.brokers.kis.pre_send import PreSendFreshnessError
+from app.services.brokers.kis.send_outcome import (
+    OrderSendDisposition,
+    OrderSendOutcomeTracker,
+)
 from app.services.crypto_trade_cooldown_service import CryptoTradeCooldownService
 from app.services.order_send_intent_service import (
     DuplicateOrderIntent,
@@ -138,6 +144,8 @@ async def _execute_order(
     market_type: str,
     is_mock: bool = False,
     identifier: str | None = None,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+    send_outcome: OrderSendOutcomeTracker | None = None,
 ) -> dict[str, Any]:
     if market_type == "crypto":
         if is_mock:
@@ -147,9 +155,18 @@ async def _execute_order(
         )
     if market_type == "equity_kr":
         return await _execute_kr_order(
-            symbol, side, order_type, quantity, price, is_mock=is_mock
+            symbol,
+            side,
+            order_type,
+            quantity,
+            price,
+            is_mock=is_mock,
+            pre_send_hook=pre_send_hook,
+            send_outcome=send_outcome,
         )
-    return await _execute_us_order(symbol, side, quantity, price, is_mock=is_mock)
+    return await _execute_us_order(
+        symbol, side, quantity, price, is_mock=is_mock, pre_send_hook=pre_send_hook
+    )
 
 
 async def _execute_crypto_order(
@@ -196,6 +213,8 @@ async def _execute_kr_order(
     quantity: float | None,
     price: float | None,
     is_mock: bool = False,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+    send_outcome: OrderSendOutcomeTracker | None = None,
 ) -> dict[str, Any]:
     kis = _create_kis_client(is_mock=is_mock)
     stock_code = symbol
@@ -225,6 +244,11 @@ async def _execute_kr_order(
                 tick_size,
             )
 
+    # ROB-843 P1: only thread the hook when present (mock scalping). The live /
+    # normal path passes no callback at all → byte-for-byte identical behavior.
+    hook_kw = {"pre_send_hook": pre_send_hook} if pre_send_hook is not None else {}
+    if send_outcome is not None:
+        hook_kw["send_outcome"] = send_outcome
     if side == "buy":
         result = await _call_kis(
             kis.order_korea_stock,
@@ -233,6 +257,7 @@ async def _execute_kr_order(
             quantity=order_quantity,
             price=order_price,
             is_mock=is_mock,
+            **hook_kw,
         )
     else:
         result = await _call_kis(
@@ -242,6 +267,7 @@ async def _execute_kr_order(
             quantity=order_quantity,
             price=order_price,
             is_mock=is_mock,
+            **hook_kw,
         )
 
     if original_price is not None and order_price != original_price:
@@ -257,10 +283,13 @@ async def _execute_us_order(
     quantity: float | None,
     price: float | None,
     is_mock: bool = False,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     kis = _create_kis_client(is_mock=is_mock)
     exchange_code = await get_us_exchange_by_symbol(symbol)
 
+    # ROB-843 P1: pass the hook only when present (live/normal path unchanged).
+    hook_kw = {"pre_send_hook": pre_send_hook} if pre_send_hook is not None else {}
     if side == "buy":
         return await _call_kis(
             kis.buy_overseas_stock,
@@ -269,6 +298,7 @@ async def _execute_us_order(
             quantity=int(quantity) if quantity else 0,
             price=price if price else 0.0,
             is_mock=is_mock,
+            **hook_kw,
         )
     return await _call_kis(
         kis.sell_overseas_stock,
@@ -277,6 +307,7 @@ async def _execute_us_order(
         quantity=int(quantity) if quantity else 0,
         price=price if price else 0.0,
         is_mock=is_mock,
+        **hook_kw,
     )
 
 
@@ -723,6 +754,8 @@ async def _execute_and_record(
     idempotency_key: str | None = None,
     mirror_cohort: str | None = None,
     mirror_source_bucket: str | None = None,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+    send_outcome: OrderSendOutcomeTracker | None = None,
 ) -> dict[str, Any]:
     """Execute a live order, record history, fills, and journals."""
     # ROB-102: capture pre-order KIS mock holdings as the reconciler baseline.
@@ -828,6 +861,11 @@ async def _execute_and_record(
         return False
 
     try:
+        # ROB-843 P1: the pre_send_hook (KIS-mock-scalping only) is threaded all
+        # the way into the transport and fired immediately before EACH real HTTP
+        # mutation (including token-refresh/retry re-sends), so a book that went
+        # stale during token/limiter/client/NXT preflight blocks the POST with
+        # zero broker calls. Live callers pass no hook → identical behavior.
         execution_result = await _execute_order(
             symbol=normalized_symbol,
             side=side,
@@ -837,11 +875,49 @@ async def _execute_and_record(
             market_type=market_type,
             is_mock=is_mock,
             identifier=idempotency_key if market_type == "crypto" else None,
+            pre_send_hook=pre_send_hook,
+            send_outcome=send_outcome,
         )
+        if send_outcome is not None:
+            # A transport response crossed the send boundary. Until the mock
+            # result normalizer proves accepted/rejected, the outcome is unknown.
+            send_outcome.mark_unknown()
+    except PreSendFreshnessError as fresh_exc:
+        await _release_reserved_mock_mirror_intent_after_send_failure(fresh_exc)
+        logger.info(
+            "pre-send freshness block symbol=%s side=%s reasons=%s",
+            normalized_symbol,
+            side,
+            list(fresh_exc.reason_codes),
+        )
+        return {
+            "success": False,
+            "pre_send_blocked": True,
+            "reason_codes": list(fresh_exc.reason_codes),
+            "detail": f"{type(fresh_exc).__name__}: {fresh_exc}"[:200],
+            "account_mode": "kis_mock" if is_mock else market_type,
+            "dry_run": False,
+        }
     except httpx.RequestError as send_exc:
+        # Preserve the transport boundary's explicit state: token/client setup
+        # can raise before dispatch (NOT_CREATED), while an actual send marks
+        # UNKNOWN immediately before crossing the HTTP boundary.
         retry_allowed = await _release_reserved_mock_mirror_intent_after_send_failure(
             send_exc
         )
+        if (
+            send_outcome is not None
+            and send_outcome.disposition is OrderSendDisposition.NOT_CREATED
+        ):
+            logger.error(
+                "execute_order failed before dispatch: market_type=%s, "
+                "symbol=%s, side=%s, error=%s",
+                market_type,
+                normalized_symbol,
+                side,
+                describe_exception(send_exc),
+            )
+            raise OrderSendNotCreated(send_exc) from send_exc
         # ROB-645: the order POST itself timed out / failed with no broker response.
         # Outcome is UNKNOWN for live orders (may have been accepted) — never re-send live; reconcile.
         # ROB-750: mock mirror has no live broker risk, so its scoped intent is released for retry.
@@ -875,6 +951,17 @@ async def _execute_and_record(
         )
         raise
 
+    if send_outcome is not None and send_outcome.has_untrusted_server_error_response:
+        # KIS sometimes carries a success-shaped provider body with HTTP 5xx.
+        # It is not accepted evidence: do not write an accepted ledger row or
+        # let the round trip advance before explicit reconciliation.
+        raise OrderSendOutcomeUnknown(
+            RuntimeError(
+                "KIS order response outcome unknown after HTTP "
+                f"{send_outcome.last_http_status}"
+            )
+        )
+
     await _record_order_history(
         symbol=normalized_symbol,
         side=side,
@@ -898,7 +985,7 @@ async def _execute_and_record(
     if is_mock:
         from app.mcp_server.tooling.kis_mock_ledger import _record_kis_mock_order
 
-        return await _record_kis_mock_order(
+        result = await _record_kis_mock_order(
             normalized_symbol=normalized_symbol,
             market_type=market_type,
             side=side,
@@ -917,6 +1004,14 @@ async def _execute_and_record(
             mirror_cohort=mirror_cohort,
             mirror_source_bucket=mirror_source_bucket,
         )
+        if send_outcome is not None:
+            if result.get("success"):
+                send_outcome.mark_accepted()
+            elif result.get("reason") == "broker_rejected":
+                send_outcome.mark_provider_rejected()
+            else:
+                send_outcome.mark_unknown()
+        return result
 
     # ROB-395: live KR orders record accepted-only to the live ledger; fills,
     # journals, and realized_pnl are applied later by kis_live_reconcile_orders
@@ -1125,6 +1220,14 @@ class OrderSendOutcomeUnknown(Exception):
         self.retry_hint = retry_hint
 
 
+class OrderSendNotCreated(Exception):
+    """A transport setup failed before the order crossed the HTTP boundary."""
+
+    def __init__(self, original: BaseException) -> None:
+        super().__init__(describe_exception(original))
+        self.original = original
+
+
 # ROB-645: reconcile tool to consult when an order's send outcome is unknown.
 # Only live paths have a reconcile tool (KR → kis_live_reconcile_orders,
 # US/crypto → live_reconcile_orders). Mock has none, so we never name a phantom.
@@ -1158,6 +1261,14 @@ def _augment_error_for_unknown_outcome(
     outcome-unknown failure (a definitive rejection, or a pre-send read timeout)
     is left unchanged: no order was created.
     """
+    if isinstance(exc, OrderSendNotCreated):
+        enriched = dict(base_error)
+        enriched["retry_allowed"] = True
+        enriched["error"] = (
+            "주문 전송 전 실패: "
+            f"{describe_exception(exc.original)}. 주문이 생성되지 않아 재시도할 수 있습니다."
+        )
+        return enriched
     if not isinstance(exc, OrderSendOutcomeUnknown):
         return base_error
 
@@ -1217,6 +1328,8 @@ async def _place_order_impl(
     mirror_cohort: str | None = None,
     mirror_source_bucket: str | None = None,
     client_order_id: str | None = None,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+    send_outcome: OrderSendOutcomeTracker | None = None,
 ) -> dict[str, Any]:
     symbol, side_lower, order_type_lower = _validate_inputs(
         symbol,
@@ -1556,6 +1669,8 @@ async def _place_order_impl(
             idempotency_key=idempotency_key,
             mirror_cohort=mirror_cohort,
             mirror_source_bucket=mirror_source_bucket,
+            pre_send_hook=pre_send_hook,
+            send_outcome=send_outcome,
         )
     except Exception as exc:
         logger.exception(

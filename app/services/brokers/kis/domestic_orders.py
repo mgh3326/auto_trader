@@ -10,6 +10,8 @@ from app.services.kr_symbol_universe_service import is_nxt_eligible
 
 from . import constants
 from .base import _log_kis_api_failure
+from .pre_send import PreSendHook
+from .send_outcome import OrderSendOutcomeTracker
 
 if TYPE_CHECKING:
     from .protocols import KISClientProtocol
@@ -236,6 +238,8 @@ class DomesticOrderClient:
         price: int = 0,  # 0이면 시장가
         is_mock: bool = False,
         *,
+        pre_send_hook: PreSendHook | None = None,
+        send_outcome: OrderSendOutcomeTracker | None = None,
         _token_retry_depth: int = 0,
     ) -> dict:
         """
@@ -328,9 +332,15 @@ class DomesticOrderClient:
             # and 429 re-POSTs (throttle is pre-send wait only).
             retry_request_errors=False,
             max_retries_override=0,
+            # ROB-843 P1: mock-only freshness re-check fired at the actual HTTP
+            # send boundary (None for live → identical behavior).
+            pre_send_hook=pre_send_hook,
+            send_outcome=send_outcome,
         )
 
         if js.get("rt_cd") != "0":
+            if send_outcome is not None:
+                send_outcome.mark_provider_rejected()
             msg_cd = js.get("msg_cd", "")
             msg1 = js.get("msg1", "")
             _log_kis_api_failure(
@@ -364,12 +374,16 @@ class DomesticOrderClient:
                 )
                 await self._parent._token_manager.clear_token()
                 await self._parent._ensure_token()
+                # ROB-843 P1: re-thread the hook so the token-refresh re-send
+                # re-checks freshness immediately before its own HTTP mutation.
                 return await self.order_korea_stock(
                     stock_code,
                     order_type,
                     quantity,
                     price,
                     is_mock,
+                    pre_send_hook=pre_send_hook,
+                    send_outcome=send_outcome,
                     _token_retry_depth=_token_retry_depth + 1,
                 )
 
@@ -382,6 +396,12 @@ class DomesticOrderClient:
             "odno": output.get("ODNO") or output.get("ORD_NO"),  # 주문번호
             "ord_tmd": output.get("ORD_TMD"),  # 주문시각
             "msg": js.get("msg1"),  # 응답메시지
+            # ROB-843: preserve the provider-verified accepted contract. This
+            # point is reached only when rt_cd == "0" (non-zero raised above);
+            # carrying it forward lets the kis_mock result boundary prove
+            # provider acceptance instead of inferring success from an ID alone.
+            "rt_cd": js.get("rt_cd"),
+            "msg_cd": js.get("msg_cd"),
         }
 
         logging.info(

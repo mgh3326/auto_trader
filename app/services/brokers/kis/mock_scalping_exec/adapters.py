@@ -22,15 +22,32 @@ from __future__ import annotations
 
 import datetime
 import logging
-from collections.abc import Callable
+import math
+import time
+from collections.abc import Awaitable, Callable, Mapping
 from decimal import Decimal
 from typing import Any
 
 from app.core.symbol import to_db_symbol
 from app.mcp_server.tooling.kis_mock_ledger import _save_kis_mock_order_ledger
-from app.mcp_server.tooling.order_execution import _create_kis_client, _place_order_impl
+from app.mcp_server.tooling.order_execution import (
+    OrderSendOutcomeUnknown,
+    _create_kis_client,
+    _place_order_impl,
+)
 from app.services.brokers.kis import KISClient
-from app.services.brokers.kis.mock_scalping_exec.executor import Fill, Quote
+from app.services.brokers.kis.mock_scalping.contract import (
+    LedgerSnapshot,
+    MarketConditions,
+    ReasonCode,
+    ScalpingRiskLimits,
+    Side,
+)
+from app.services.brokers.kis.mock_scalping_exec.executor import (
+    Fill,
+    Quote,
+    RiskInputs,
+)
 from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
     EvidenceCategory,
     FillEvidence,
@@ -41,11 +58,38 @@ from app.services.brokers.kis.mock_scalping_exec.holdings_delta_confirm import (
     BaselineSnapshot,
     confirm_fill_from_holdings_delta,
 )
+from app.services.brokers.kis.mock_scalping_exec.ledger_state import (
+    MockOrderHistory,
+    load_kis_mock_order_history,
+)
+from app.services.brokers.kis.mock_scalping_exec.reservation import (
+    release_entry,
+    reserve_entry,
+)
 from app.services.brokers.kis.mock_scalping_ws.state import MarketState
+from app.services.brokers.kis.pre_send import PreSendFreshnessError
+from app.services.brokers.kis.send_outcome import (
+    OrderSendDisposition,
+    OrderSendOutcomeTracker,
+)
+from app.services.order_send_intent_service import DuplicateOrderIntent
 
 logger = logging.getLogger("rob321.kis_mock_scalping_exec")
 
 StateProvider = Callable[[str], MarketState | None]
+OrderHistoryLoader = Callable[..., Awaitable[MockOrderHistory]]
+HoldingsProvider = Callable[[], Awaitable[Mapping[str, Any]]]
+ReservedSubmit = Callable[[OrderSendOutcomeTracker | None], Awaitable[dict[str, Any]]]
+
+
+async def _default_mock_holdings_snapshot() -> Mapping[str, Any]:
+    """Fresh KIS mock domestic balance snapshot ({holdings, cash}). Mock host only.
+
+    ``holdings`` is pre-filtered to ``hldg_qty > 0`` by the account reader, so
+    every entry is an actual position.
+    """
+    client = _create_kis_client(is_mock=True)
+    return await client.fetch_domestic_balance_snapshot(is_mock=True)
 
 
 def _to_decimal(value: Any) -> Decimal | None:
@@ -67,10 +111,108 @@ def _is_mock_unsupported(message: str) -> bool:
 class KisMockBroker:
     """BrokerPort over the KIS mock order path. Mock-only; confirm-gated HTTP."""
 
-    def __init__(self, *, get_state: StateProvider, strategy_id: str = "kis-mock-v1"):
+    def __init__(
+        self,
+        *,
+        get_state: StateProvider,
+        strategy_id: str = "kis-mock-v1",
+        limits: ScalpingRiskLimits | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ):
         self._get_state = get_state
         self._strategy_id = strategy_id
+        self._limits = limits or ScalpingRiskLimits()
+        self._clock = clock
         self._mock_client: KISClient | None = None
+
+    def _make_pre_send_hook(self, symbol: str):
+        """A pre-send freshness re-check bound to ``symbol`` (ROB-843 P1-1).
+
+        Invoked by ``_place_order_impl`` immediately before the real KIS POST —
+        after the risk gate's holdings/history awaits AND the broker's own
+        baseline/preflight awaits — so a book that went stale/crossed in between
+        blocks the send with ZERO POSTs.
+        """
+
+        async def _hook() -> None:
+            assert_market_fresh_for_send(
+                self._get_state(symbol),
+                now=self._clock(),
+                max_data_age_seconds=self._limits.max_data_age_seconds,
+                max_spread_bps=self._limits.max_spread_bps,
+            )
+
+        return _hook
+
+    async def _safe_release_reservation(self, correlation_id: str, side: str) -> None:
+        try:
+            await release_entry(correlation_id=correlation_id, side=side)
+        except Exception as exc:  # noqa: BLE001 — a stale reservation is fail-safe
+            logger.warning(
+                "scalping reservation release failed cid=%s side=%s: %s",
+                correlation_id,
+                side,
+                exc,
+            )
+
+    async def _submit_with_reservation(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        correlation_id: str,
+        confirm: bool,
+        submit: ReservedSubmit,
+    ) -> dict[str, Any]:
+        """Apply one explicit reservation lifecycle to BUY and SELL mutations."""
+        if not confirm:
+            return await submit(None)
+
+        try:
+            await reserve_entry(correlation_id=correlation_id, symbol=symbol, side=side)
+        except DuplicateOrderIntent:
+            return {
+                "success": False,
+                "reservation_blocked": True,
+                "reason_codes": ["duplicate_send"],
+                "detail": f"scalping order already reserved: {correlation_id}",
+                "dry_run": False,
+            }
+        except Exception as exc:  # noqa: BLE001 — durable write lost → POST 0
+            logger.warning(
+                "scalping reservation failed sym=%s side=%s: %s", symbol, side, exc
+            )
+            return {
+                "success": False,
+                "reservation_blocked": True,
+                "reason_codes": ["reservation_unavailable"],
+                "detail": f"{type(exc).__name__}: {exc}"[:200],
+                "dry_run": False,
+            }
+
+        outcome = OrderSendOutcomeTracker()
+        try:
+            result = await submit(outcome)
+        except OrderSendOutcomeUnknown:
+            # A timeout/network failure after dispatch may have created an order.
+            raise
+        except Exception:
+            # Only an explicitly proven pre-send/definitive no-order exception
+            # releases. Any post-dispatch exception leaves UNKNOWN and keeps it.
+            if outcome.disposition is OrderSendDisposition.NOT_CREATED:
+                await self._safe_release_reservation(correlation_id, side)
+            raise
+
+        if outcome.disposition is OrderSendDisposition.NOT_CREATED:
+            await self._safe_release_reservation(correlation_id, side)
+        elif outcome.disposition is OrderSendDisposition.ACCEPTED:
+            tracked = bool(result.get("success")) and not result.get(
+                "ledger_tracking_unavailable"
+            )
+            if tracked:
+                await self._safe_release_reservation(correlation_id, side)
+        # UNKNOWN or accepted-but-untracked: KEEP until explicit reconciliation.
+        return result
 
     async def submit_buy(
         self,
@@ -90,18 +232,38 @@ class KisMockBroker:
             if confirm
             else None
         )
-        result = await _place_order_impl(
+
+        async def _submit(
+            send_outcome: OrderSendOutcomeTracker | None,
+        ) -> dict[str, Any]:
+            return await _place_order_impl(
+                symbol=symbol,
+                side="buy",
+                market="kr",
+                order_type="limit",
+                quantity=float(quantity),
+                price=float(price),
+                dry_run=not confirm,
+                is_mock=True,
+                reason=f"scalp_entry:{correlation_id}",
+                strategy=self._strategy_id,
+                # Share the executor correlation_id so native + synthetic evidence
+                # link for the daily-count de-dup (ROB-843 P1-2).
+                correlation_id=correlation_id,
+                # Final freshness re-check right before the POST (entry only; an
+                # exit must always be allowed to close a live position).
+                pre_send_hook=self._make_pre_send_hook(symbol),
+                send_outcome=send_outcome,
+            )
+
+        result = await self._submit_with_reservation(
             symbol=symbol,
             side="buy",
-            market="kr",
-            order_type="limit",
-            quantity=float(quantity),
-            price=float(price),
-            dry_run=not confirm,
-            is_mock=True,
-            reason=f"scalp_entry:{correlation_id}",
-            strategy=self._strategy_id,
+            correlation_id=correlation_id,
+            confirm=confirm,
+            submit=_submit,
         )
+
         if isinstance(result, dict) and baseline is not None:
             result["_baseline"] = baseline
         return result
@@ -124,21 +286,37 @@ class KisMockBroker:
             if confirm
             else None
         )
-        result = await _place_order_impl(
+
+        async def _submit(
+            send_outcome: OrderSendOutcomeTracker | None,
+        ) -> dict[str, Any]:
+            return await _place_order_impl(
+                symbol=symbol,
+                side="sell",
+                market="kr",
+                order_type="limit",
+                quantity=float(quantity),
+                price=float(price),
+                dry_run=not confirm,
+                is_mock=True,
+                reason=f"scalp_exit:{correlation_id}",
+                exit_reason=exit_reason,
+                strategy=strategy_id,
+                scalping_exit=True,
+                scalping_strategy_id=strategy_id,
+                scalping_exit_reason=exit_reason,
+                # Link native + synthetic exit evidence (ROB-843 P1-2). No
+                # freshness hook on exits: a live position remains closable.
+                correlation_id=correlation_id,
+                send_outcome=send_outcome,
+            )
+
+        result = await self._submit_with_reservation(
             symbol=symbol,
             side="sell",
-            market="kr",
-            order_type="limit",
-            quantity=float(quantity),
-            price=float(price),
-            dry_run=not confirm,
-            is_mock=True,
-            reason=f"scalp_exit:{correlation_id}",
-            exit_reason=exit_reason,
-            strategy=strategy_id,
-            scalping_exit=True,
-            scalping_strategy_id=strategy_id,
-            scalping_exit_reason=exit_reason,
+            correlation_id=correlation_id,
+            confirm=confirm,
+            submit=_submit,
         )
         if isinstance(result, dict) and baseline is not None:
             result["_baseline"] = baseline
@@ -288,6 +466,138 @@ class KisMockBroker:
         )
 
 
+def _is_finite_positive(x: float | None) -> bool:
+    return x is not None and math.isfinite(x) and x > 0
+
+
+def assert_market_fresh_for_send(
+    state: MarketState | None,
+    *,
+    now: float,
+    max_data_age_seconds: float,
+    max_spread_bps: Decimal,
+) -> None:
+    """Re-validate the CURRENT live book immediately before the broker POST.
+
+    Raises :class:`PreSendFreshnessError` on a missing/stale/invalid quote so a
+    BUY that passed the earlier risk gate is not sent against a book that went
+    stale/crossed during the intervening holdings/history/baseline awaits.
+    """
+    if state is None:
+        raise PreSendFreshnessError(("no_market_state",))
+    book_age = state.book_age_seconds(now=now)
+    bid, ask = state.bid, state.ask
+    reasons: list[str] = []
+    if book_age is None or not math.isfinite(book_age) or book_age < 0:
+        reasons.append("invalid_book_timestamp")
+    elif book_age > max_data_age_seconds:
+        reasons.append(ReasonCode.STALE_DATA)
+    if not _is_finite_positive(bid) or not _is_finite_positive(ask):
+        reasons.append("invalid_quote")
+    elif ask < bid:
+        reasons.append("crossed_book")
+    else:
+        spread = state.spread_bps()
+        if spread is None or not math.isfinite(spread) or spread < 0:
+            reasons.append("invalid_spread")
+        elif Decimal(str(spread)) > max_spread_bps:
+            reasons.append(ReasonCode.SPREAD_TOO_WIDE)
+    if reasons:
+        raise PreSendFreshnessError(tuple(reasons))
+
+
+class KisMockRiskGate:
+    """RiskGatePort: fresh position + market + order-history snapshot (ROB-843).
+
+    ``load`` raises on any missing/stale/malformed market field, holdings read
+    fault, or order-history read fault so the executor fail-closes to zero
+    broker mutation. Sources:
+
+    * **Position** (has-open / open-count): a fresh KIS mock *holdings* snapshot
+      — the authoritative record of what is actually held. Order lifecycle rows
+      are NOT treated as positions (a filled buy later sold is flat).
+    * **Market** (spread / data age): the live per-symbol ``MarketState``.
+    * **Order history** (daily count / realized loss / cooldown): the mock
+      order ledger.
+    """
+
+    def __init__(
+        self,
+        *,
+        get_state: StateProvider,
+        holdings_provider: HoldingsProvider = _default_mock_holdings_snapshot,
+        clock: Callable[[], float] = time.monotonic,
+        order_history_loader: OrderHistoryLoader = load_kis_mock_order_history,
+    ) -> None:
+        self._get_state = get_state
+        self._holdings = holdings_provider
+        self._clock = clock
+        self._load_history = order_history_loader
+
+    def _market(self, symbol: str) -> MarketConditions:
+        """Validate the live book and build ``MarketConditions``, else raise.
+
+        Fail-closes on a missing state, missing/negative/NaN/Inf book age,
+        non-positive or non-finite bid/ask, or a crossed book (ask < bid) — the
+        last would otherwise pass ``evaluate_risk`` as a negative spread.
+        """
+        state = self._get_state(symbol)
+        if state is None:
+            raise RuntimeError(f"no live market state for {symbol}")
+        now = self._clock()
+        book_age = state.book_age_seconds(now=now)
+        bid, ask = state.bid, state.ask
+        if book_age is None or not math.isfinite(book_age) or book_age < 0:
+            raise RuntimeError(f"missing/invalid book timestamp for {symbol}")
+        if not _is_finite_positive(bid) or not _is_finite_positive(ask):
+            raise RuntimeError(
+                f"non-positive/non-finite quote for {symbol} (bid={bid} ask={ask})"
+            )
+        if ask < bid:  # crossed book — never trade a negative spread
+            raise RuntimeError(f"crossed book for {symbol} (bid={bid} ask={ask})")
+        spread = state.spread_bps()
+        if spread is None or not math.isfinite(spread) or spread < 0:
+            raise RuntimeError(f"invalid spread for {symbol} (spread={spread})")
+        return MarketConditions(
+            spread_bps=Decimal(str(spread)),
+            data_age_seconds=float(book_age),
+        )
+
+    async def _position(self, symbol: str) -> tuple[bool, int]:
+        """(has_open_for_symbol, open_position_count) from fresh holdings."""
+        snap = await self._holdings()
+        holdings = snap.get("holdings") or []
+        target = to_db_symbol(symbol)
+        open_count = 0
+        has_open = False
+        for holding in holdings:
+            qty = _to_decimal(holding.get("hldg_qty")) or Decimal("0")
+            if qty <= 0:
+                continue
+            open_count += 1
+            if to_db_symbol(str(holding.get("pdno") or "")) == target:
+                has_open = True
+        return has_open, open_count
+
+    async def load(self, *, symbol: str, side: Side) -> RiskInputs:
+        # ROB-843 P1: the durable fail-close (unresolved write-ahead reservation)
+        # is enforced inside the order-history load below, so it survives restart
+        # and a fresh gate instance.
+        market = self._market(symbol)
+        has_open, open_count = await self._position(symbol)
+        history = await self._load_history(symbol=to_db_symbol(symbol))
+        ledger = LedgerSnapshot(
+            has_open_position_for_symbol=has_open,
+            open_position_count=open_count,
+            orders_today=history.orders_today,
+            realized_loss_today_krw=history.realized_loss_today_krw,
+            seconds_since_last_close_for_symbol=(
+                history.seconds_since_last_close_for_symbol
+            ),
+        )
+        return RiskInputs(ledger=ledger, market=market)
+
+
 class KisMockLedgerWriter:
     """LedgerPort writing round-trip rows to review.kis_mock_order_ledger."""
 
@@ -364,12 +674,17 @@ class KisMockLedgerWriter:
         )
 
     async def record_anomaly(
-        self, *, correlation_id: str, symbol: str, detail: str
+        self, *, correlation_id: str, symbol: str, side: Side, detail: str
     ) -> None:
+        # ROB-843 P2: persist the anomaly's real leg/side so it de-dups with the
+        # native row for the same order in the daily count (entry_unfilled=buy,
+        # exit_unconfirmed=sell) rather than counting as a phantom second order.
+        db_side = "buy" if side == "BUY" else "sell"
+        scalping_role = "entry" if side == "BUY" else "exit"
         await _save_kis_mock_order_ledger(
             symbol=symbol,
             instrument_type="equity_kr",
-            side="sell",
+            side=db_side,
             order_type="limit",
             quantity=0.0,
             price=0.0,
@@ -388,5 +703,5 @@ class KisMockLedgerWriter:
             notes=detail,
             lifecycle_state="anomaly",
             correlation_id=correlation_id,
-            scalping_role="exit",
+            scalping_role=scalping_role,
         )

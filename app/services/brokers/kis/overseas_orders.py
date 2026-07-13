@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from app.core.symbol import to_kis_symbol
 
 from . import constants
+from .pre_send import PreSendHook
 
 if TYPE_CHECKING:
     from .protocols import KISClientProtocol
@@ -88,6 +89,7 @@ class OverseasOrderClient:
         price: float = 0.0,  # 0이면 시장가
         is_mock: bool = False,
         *,
+        pre_send_hook: PreSendHook | None = None,
         _token_retry_depth: int = 0,
     ) -> dict:
         """
@@ -200,6 +202,8 @@ class OverseasOrderClient:
             # ROB-645: never re-POST an order (see domestic order_korea_stock).
             retry_request_errors=False,
             max_retries_override=0,
+            # ROB-843 P1: mock-only freshness re-check at the HTTP send boundary.
+            pre_send_hook=pre_send_hook,
         )
 
         if js.get("rt_cd") != "0":
@@ -236,6 +240,7 @@ class OverseasOrderClient:
                     quantity,
                     price,
                     is_mock,
+                    pre_send_hook=pre_send_hook,
                     _token_retry_depth=_token_retry_depth + 1,
                 )
 
@@ -249,6 +254,10 @@ class OverseasOrderClient:
             "odno": output.get("ODNO"),  # 주문번호
             "ord_tmd": output.get("ORD_TMD"),  # 주문시각
             "msg": js.get("msg1"),  # 응답메시지
+            # ROB-843: preserve the provider-verified accepted contract (reached
+            # only when rt_cd == "0") for the kis_mock result boundary.
+            "rt_cd": js.get("rt_cd"),
+            "msg_cd": js.get("msg_cd"),
         }
 
         logging.info(
@@ -264,22 +273,18 @@ class OverseasOrderClient:
         quantity: int,
         price: float = 0.0,
         is_mock: bool = False,
+        *,
+        pre_send_hook: PreSendHook | None = None,
     ) -> dict:
-        """
-        해외주식 매수 주문 편의 메서드
-
-        Args:
-            symbol: 종목 심볼
-            exchange_code: 거래소 코드
-            quantity: 매수 수량
-            price: 매수 가격 (0이면 시장가)
-            is_mock: 모의투자 여부
-
-        Returns:
-            주문 결과
-        """
+        """해외주식 매수 주문 편의 메서드."""
         return await self.order_overseas_stock(
-            symbol, exchange_code, "buy", quantity, price, is_mock
+            symbol,
+            exchange_code,
+            "buy",
+            quantity,
+            price,
+            is_mock,
+            pre_send_hook=pre_send_hook,
         )
 
     async def sell_overseas_stock(
@@ -289,22 +294,18 @@ class OverseasOrderClient:
         quantity: int,
         price: float = 0.0,
         is_mock: bool = False,
+        *,
+        pre_send_hook: PreSendHook | None = None,
     ) -> dict:
-        """
-        해외주식 매도 주문 편의 메서드
-
-        Args:
-            symbol: 종목 심볼
-            exchange_code: 거래소 코드
-            quantity: 매도 수량
-            price: 매도 가격 (0이면 시장가)
-            is_mock: 모의투자 여부
-
-        Returns:
-            주문 결과
-        """
+        """해외주식 매도 주문 편의 메서드."""
         return await self.order_overseas_stock(
-            symbol, exchange_code, "sell", quantity, price, is_mock
+            symbol,
+            exchange_code,
+            "sell",
+            quantity,
+            price,
+            is_mock,
+            pre_send_hook=pre_send_hook,
         )
 
     async def inquire_overseas_orders(

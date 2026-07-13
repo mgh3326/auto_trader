@@ -22,6 +22,8 @@ from app.services.brokers.kis.circuit_breaker import (
     get_kis_circuit_breaker,
     is_kis_connect_failure,
 )
+from app.services.brokers.kis.pre_send import PreSendFreshnessError, PreSendHook
+from app.services.brokers.kis.send_outcome import OrderSendOutcomeTracker
 from app.services.redis_token_manager import redis_token_manager
 
 
@@ -417,6 +419,8 @@ class BaseKISClient:
         tr_id: str | None = None,
         retry_request_errors: bool = True,
         max_retries_override: int | None = None,
+        pre_send_hook: PreSendHook | None = None,
+        send_outcome: OrderSendOutcomeTracker | None = None,
     ) -> dict[str, Any]:
         """Make HTTP request with rate limiting and 429 retry logic.
 
@@ -453,6 +457,8 @@ class BaseKISClient:
             tr_id=tr_id,
             retry_request_errors=retry_request_errors,
             max_retries_override=max_retries_override,
+            pre_send_hook=pre_send_hook,
+            send_outcome=send_outcome,
         )
         return data
 
@@ -469,6 +475,8 @@ class BaseKISClient:
         tr_id: str | None = None,
         retry_request_errors: bool = True,
         max_retries_override: int | None = None,
+        pre_send_hook: PreSendHook | None = None,
+        send_outcome: OrderSendOutcomeTracker | None = None,
     ) -> tuple[dict[str, Any], dict[str, str]]:
         """ROB-699 — breaker-guarded wrapper over the KIS dispatch.
 
@@ -490,7 +498,13 @@ class BaseKISClient:
                 tr_id=tr_id,
                 retry_request_errors=retry_request_errors,
                 max_retries_override=max_retries_override,
+                pre_send_hook=pre_send_hook,
+                send_outcome=send_outcome,
             )
+        except PreSendFreshnessError:
+            # ROB-843 P1: a mock pre-send freshness block means NO HTTP happened —
+            # it is not a KIS reachability signal, so it must not move the breaker.
+            raise
         except BaseException as exc:  # noqa: BLE001 — classify then re-raise unchanged
             if is_kis_connect_failure(exc):
                 breaker.record_failure()
@@ -513,6 +527,8 @@ class BaseKISClient:
         tr_id: str | None = None,
         retry_request_errors: bool = True,
         max_retries_override: int | None = None,
+        pre_send_hook: PreSendHook | None = None,
+        send_outcome: OrderSendOutcomeTracker | None = None,
     ) -> tuple[dict[str, Any], dict[str, str]]:
         """Like :meth:`_request_with_rate_limit` but also returns response headers.
 
@@ -552,6 +568,15 @@ class BaseKISClient:
 
             try:
                 client = await self._ensure_client(timeout=timeout)
+                # ROB-843 P1: the actual HTTP send boundary. Re-check freshness
+                # here — after token/limiter/client prep and rate-limit wait, and
+                # on EVERY retry/re-send — so a mock scalping BUY never POSTs on a
+                # book that went stale/crossed during those awaits. PreSendFreshness
+                # Error propagates cleanly (zero POST); live passes no hook.
+                if pre_send_hook is not None:
+                    await pre_send_hook()
+                if send_outcome is not None:
+                    send_outcome.mark_dispatched()
                 response = await self._execute_http_request(
                     client,
                     method,
@@ -562,6 +587,8 @@ class BaseKISClient:
                     timeout=timeout,
                 )
                 status_code = _safe_status_code(response)
+                if send_outcome is not None:
+                    send_outcome.mark_http_response(status_code)
 
                 if status_code == 429:
                     retry_after = _safe_parse_retry_after(

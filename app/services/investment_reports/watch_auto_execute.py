@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core.config import settings
@@ -32,6 +34,31 @@ def _to_decimal(v: Any) -> Decimal | None:
         return Decimal(str(v))
     except (InvalidOperation, TypeError, ValueError):
         return None
+
+
+@dataclass(frozen=True)
+class _PlaceOutcome:
+    executed: bool
+    reason: str | None = None
+    detail: str | None = None
+
+
+def _normalize_place_result(result: Any) -> _PlaceOutcome:
+    """Interpret the order function's normalized result truthfully (ROB-843).
+
+    A non-dict result or an explicit ``success=False`` is a failure — never a
+    silent executed=True. The stable reason/detail is preserved from the
+    normalized native contract so the watch intent records why it failed.
+    """
+    if not isinstance(result, dict):
+        return _PlaceOutcome(False, "malformed_result", str(result)[:200])
+    if result.get("success"):
+        return _PlaceOutcome(True)
+    reason = result.get("reason") or result.get("status") or "order_failed"
+    detail = (
+        result.get("detail") or result.get("response_message") or result.get("message")
+    )
+    return _PlaceOutcome(False, str(reason), str(detail) if detail else None)
 
 
 async def _default_place_order_fn(**kwargs):
@@ -133,16 +160,79 @@ async def maybe_auto_execute(
     if not allowed:
         return {"executed": False, "blocking_reasons": reasons}
 
-    # 4) place the kis_mock order (executor hard-pinned is_mock=True).
-    await place_order_fn(
-        symbol=alert.symbol,
-        side=side,
-        order_type="limit",
-        quantity=float(quantity),
-        price=float(limit_price),
-        dry_run=False,
-        reason="watch auto_execute_mock",
-        is_mock=True,
-        correlation_id=correlation_id,
-    )
+    # 4) place the kis_mock order (executor hard-pinned is_mock=True). A raised
+    # exception is a failure too — never leave the intent 'previewed' (ROB-843).
+    try:
+        place_result: Any = await place_order_fn(
+            symbol=alert.symbol,
+            side=side,
+            order_type="limit",
+            quantity=float(quantity),
+            price=float(limit_price),
+            dry_run=False,
+            reason="watch auto_execute_mock",
+            is_mock=True,
+            correlation_id=correlation_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — surface as a truthful failed outcome
+        place_result = {
+            "success": False,
+            "reason": "order_exception",
+            "detail": f"{type(exc).__name__}: {exc}"[:200],
+        }
+
+    # 5) validate + persist the broker outcome truthfully (ROB-843). The result
+    # is never discarded: a failure flips the intent row to 'failed' with the
+    # stable reason/detail preserved, and returns executed=False.
+    outcome = _normalize_place_result(place_result)
+    if not outcome.executed:
+        logger.warning(
+            "auto_execute_mock order failed alert=%s reason=%s",
+            alert.alert_uuid,
+            outcome.reason,
+        )
+        await _mark_intent_failed(
+            db,
+            correlation_id=correlation_id,
+            reason=outcome.reason,
+            detail=outcome.detail,
+            preview_line=preview_line,
+        )
+        return {
+            "executed": False,
+            "reason": outcome.reason,
+            "detail": outcome.detail,
+            "correlation_id": correlation_id,
+        }
+
     return {"executed": True, "correlation_id": correlation_id}
+
+
+async def _mark_intent_failed(
+    db,
+    *,
+    correlation_id: str,
+    reason: str | None,
+    detail: str | None,
+    preview_line: dict[str, Any],
+) -> None:
+    """Flip the previewed intent row to 'failed', preserving reason/detail.
+
+    Reuses existing columns only (no schema migration): ``blocked_by`` /
+    ``blocking_reasons`` carry the reason and ``preview_line.failure_detail``
+    carries the redacted broker detail.
+    """
+    reason = reason or "order_failed"
+    failed_preview = {**preview_line, "failure_detail": detail}
+    await db.execute(
+        update(WatchOrderIntentLedger)
+        .where(WatchOrderIntentLedger.correlation_id == correlation_id)
+        .values(
+            lifecycle_state="failed",
+            execution_allowed=False,
+            blocked_by=reason,
+            blocking_reasons=[reason],
+            preview_line=failed_preview,
+        )
+    )
+    await db.commit()
