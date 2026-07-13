@@ -19,6 +19,9 @@ from app.mcp_server.tooling import register_all_tools
 from app.mcp_server.tooling.paper_execution_registration import (
     PAPER_EXECUTION_TOOL_NAMES,
 )
+from app.mcp_server.tooling.paper_validation_registration import (
+    PAPER_VALIDATION_TOOL_NAMES,
+)
 from app.mcp_server.tooling.registry import McpProfile
 
 
@@ -58,4 +61,6 @@ async def test_paper_execution_real_fastmcp_has_exact_allowlist(
     register_all_tools(mcp, profile=McpProfile.PAPER_EXECUTION)
 
     tools = await mcp.list_tools()
-    assert {tool.name for tool in tools} == PAPER_EXECUTION_TOOL_NAMES
+    assert {tool.name for tool in tools} == (
+        PAPER_EXECUTION_TOOL_NAMES | PAPER_VALIDATION_TOOL_NAMES
+    )

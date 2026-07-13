@@ -34,7 +34,7 @@ from sqlalchemy import text
 # replaces only a mismatched definition before CREATE IF NOT EXISTS.
 # v11 (ROB-866): review.toss_manual_activity_alerts (new ORM table) — create_all
 # builds it; bump forces a persistent local DB to re-bootstrap once.
-SCHEMA_BOOTSTRAP_VERSION = 11
+SCHEMA_BOOTSTRAP_VERSION = 14
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -678,6 +678,202 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "CREATE TRIGGER trg_backtest_runs_trial_immutable "
     "BEFORE UPDATE OR DELETE ON research.backtest_runs "
     "FOR EACH ROW EXECUTE FUNCTION research.reject_backtest_trial_mutation()",
+    # ---- ROB-848: immutable paper-validation audit + experiment hash binding
+    # Tables/checks/FKs are owned by the ORM metadata above; these PostgreSQL
+    # trigger functions are non-ORM DDL and mirror the Alembic revision.
+    "CREATE OR REPLACE FUNCTION "
+    "research.reject_paper_validation_audit_mutation() "
+    "RETURNS trigger AS $$ BEGIN "
+    "RAISE EXCEPTION "
+    "'research.% is append-only/immutable; % rejected', TG_TABLE_NAME, TG_OP "
+    "USING ERRCODE = 'restrict_violation'; "
+    "END; $$ LANGUAGE plpgsql",
+    "ALTER TABLE research.paper_validation_state_transitions "
+    "ADD COLUMN IF NOT EXISTS input_bundle_id VARCHAR(128) "
+    "NOT NULL DEFAULT 'bootstrap-legacy'",
+    "ALTER TABLE research.paper_validation_state_transitions "
+    "ALTER COLUMN input_bundle_id DROP DEFAULT",
+    "ALTER TABLE research.paper_validation_state_transitions "
+    "ADD COLUMN IF NOT EXISTS policy_version VARCHAR(128) "
+    "NOT NULL DEFAULT 'bootstrap-legacy'",
+    "ALTER TABLE research.paper_validation_state_transitions "
+    "ALTER COLUMN policy_version DROP DEFAULT",
+    "ALTER TABLE research.paper_validation_state_transitions "
+    "DROP CONSTRAINT IF EXISTS ck_paper_validation_transition_actor_role",
+    "ALTER TABLE research.paper_validation_state_transitions "
+    "ADD CONSTRAINT ck_paper_validation_transition_actor_role "
+    "CHECK (actor_role IN ('operator','system'))",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "DROP CONSTRAINT IF EXISTS ck_strategy_hypothesis_draft_universe_array",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "ADD CONSTRAINT ck_strategy_hypothesis_draft_universe_array "
+    "CHECK (jsonb_typeof(universe) = 'array')",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "DROP CONSTRAINT IF EXISTS ck_strategy_hypothesis_draft_entry_criteria_array",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "ADD CONSTRAINT ck_strategy_hypothesis_draft_entry_criteria_array "
+    "CHECK (jsonb_typeof(entry_criteria) = 'array')",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "DROP CONSTRAINT IF EXISTS ck_strategy_hypothesis_draft_exit_criteria_array",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "ADD CONSTRAINT ck_strategy_hypothesis_draft_exit_criteria_array "
+    "CHECK (jsonb_typeof(exit_criteria) = 'array')",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "DROP CONSTRAINT IF EXISTS "
+    "ck_strategy_hypothesis_draft_invalidation_criteria_array",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "ADD CONSTRAINT ck_strategy_hypothesis_draft_invalidation_criteria_array "
+    "CHECK (jsonb_typeof(invalidation_criteria) = 'array')",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "DROP CONSTRAINT IF EXISTS ck_strategy_hypothesis_draft_data_requirements_array",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "ADD CONSTRAINT ck_strategy_hypothesis_draft_data_requirements_array "
+    "CHECK (jsonb_typeof(data_requirements) = 'array')",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "DROP CONSTRAINT IF EXISTS ck_strategy_hypothesis_draft_cited_evidence_array",
+    "ALTER TABLE research.strategy_hypothesis_drafts "
+    "ADD CONSTRAINT ck_strategy_hypothesis_draft_cited_evidence_array "
+    "CHECK (jsonb_typeof(cited_evidence) = 'array')",
+    "ALTER TABLE research.paper_validation_postmortem_reviews "
+    "DROP CONSTRAINT IF EXISTS ck_paper_validation_review_cited_evidence_array",
+    "ALTER TABLE research.paper_validation_postmortem_reviews "
+    "ADD CONSTRAINT ck_paper_validation_review_cited_evidence_array "
+    "CHECK (jsonb_typeof(cited_evidence) = 'array')",
+    "CREATE OR REPLACE FUNCTION "
+    "research.validate_paper_validation_experiment_identity() "
+    "RETURNS trigger AS $$ DECLARE "
+    "registered research.strategy_experiments%ROWTYPE; "
+    "BEGIN SELECT * INTO registered FROM research.strategy_experiments "
+    "WHERE experiment_id = NEW.experiment_id; "
+    "IF NOT FOUND THEN RAISE EXCEPTION "
+    "'paper validation experiment % is not registered', NEW.experiment_id "
+    "USING ERRCODE = 'foreign_key_violation'; END IF; "
+    "IF NEW.experiment_hash <> NEW.experiment_id "
+    "OR NEW.strategy_version_id <> registered.strategy_version "
+    "OR NEW.strategy_hash <> registered.strategy_hash "
+    "OR NEW.config_hash <> registered.frozen_config_hash "
+    "OR NEW.policy_hash <> registered.policy_hash THEN "
+    "RAISE EXCEPTION 'paper validation experiment identity mismatch for %', "
+    "NEW.experiment_id USING ERRCODE = 'integrity_constraint_violation'; "
+    "END IF; RETURN NEW; END; $$ LANGUAGE plpgsql",
+    "CREATE OR REPLACE FUNCTION "
+    "research.validate_paper_validation_transition_history() "
+    "RETURNS trigger AS $$ DECLARE "
+    "previous research.paper_validation_state_transitions%ROWTYPE; "
+    "BEGIN PERFORM pg_advisory_xact_lock(hashtextextended(NEW.validation_id, 0)); "
+    "SELECT * INTO previous FROM research.paper_validation_state_transitions "
+    "WHERE validation_id = NEW.validation_id ORDER BY sequence DESC LIMIT 1; "
+    "IF NOT FOUND THEN "
+    "IF NEW.sequence <> 1 OR NEW.prior_state IS NOT NULL "
+    "OR NEW.new_state <> 'draft' THEN RAISE EXCEPTION "
+    "'paper validation history continuity mismatch for %', NEW.validation_id "
+    "USING ERRCODE = 'integrity_constraint_violation'; END IF; "
+    "ELSIF NEW.sequence = previous.sequence THEN RETURN NEW; "
+    "ELSIF NEW.sequence <> previous.sequence + 1 "
+    "OR NEW.prior_state IS DISTINCT FROM previous.new_state "
+    "OR NEW.validation_version <> previous.validation_version "
+    "OR NEW.experiment_id <> previous.experiment_id "
+    "OR NEW.strategy_version_id <> previous.strategy_version_id "
+    "OR NEW.cohort_id <> previous.cohort_id "
+    "OR NEW.experiment_hash <> previous.experiment_hash "
+    "OR NEW.cohort_hash <> previous.cohort_hash "
+    "OR NEW.strategy_hash <> previous.strategy_hash "
+    "OR NEW.config_hash <> previous.config_hash "
+    "OR NEW.policy_hash <> previous.policy_hash "
+    "OR NEW.input_hash <> previous.input_hash THEN RAISE EXCEPTION "
+    "'paper validation history continuity mismatch for %', NEW.validation_id "
+    "USING ERRCODE = 'integrity_constraint_violation'; END IF; "
+    "RETURN NEW; END; $$ LANGUAGE plpgsql",
+    "CREATE OR REPLACE FUNCTION "
+    "research.validate_paper_validation_audit_link() "
+    "RETURNS trigger AS $$ DECLARE "
+    "current research.paper_validation_state_transitions%ROWTYPE; "
+    "BEGIN PERFORM pg_advisory_xact_lock(hashtextextended(NEW.validation_id, 0)); "
+    "SELECT * INTO current FROM research.paper_validation_state_transitions "
+    "WHERE validation_id = NEW.validation_id ORDER BY sequence DESC LIMIT 1; "
+    "IF NOT FOUND OR NEW.validation_version <> current.validation_version "
+    "OR NEW.experiment_id <> current.experiment_id "
+    "OR NEW.strategy_version_id <> current.strategy_version_id "
+    "OR NEW.cohort_id <> current.cohort_id "
+    "OR NEW.experiment_hash <> current.experiment_hash "
+    "OR NEW.cohort_hash <> current.cohort_hash "
+    "OR NEW.strategy_hash <> current.strategy_hash "
+    "OR NEW.config_hash <> current.config_hash "
+    "OR NEW.policy_hash <> current.policy_hash "
+    "OR NEW.input_hash <> current.input_hash THEN RAISE EXCEPTION "
+    "'paper validation audit stream identity mismatch for %', NEW.validation_id "
+    "USING ERRCODE = 'integrity_constraint_violation'; END IF; "
+    "RETURN NEW; END; $$ LANGUAGE plpgsql",
+    "DROP TRIGGER IF EXISTS trg_paper_validation_transitions_experiment_identity "
+    "ON research.paper_validation_state_transitions",
+    "CREATE TRIGGER trg_paper_validation_transitions_experiment_identity "
+    "BEFORE INSERT ON research.paper_validation_state_transitions "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "research.validate_paper_validation_experiment_identity()",
+    "DROP TRIGGER IF EXISTS trg_paper_validation_transitions_history "
+    "ON research.paper_validation_state_transitions",
+    "CREATE TRIGGER trg_paper_validation_transitions_history "
+    "BEFORE INSERT ON research.paper_validation_state_transitions "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "research.validate_paper_validation_transition_history()",
+    "DROP TRIGGER IF EXISTS trg_paper_validation_transitions_immutable "
+    "ON research.paper_validation_state_transitions",
+    "CREATE TRIGGER trg_paper_validation_transitions_immutable "
+    "BEFORE UPDATE OR DELETE ON research.paper_validation_state_transitions "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "research.reject_paper_validation_audit_mutation()",
+    "DROP TRIGGER IF EXISTS trg_paper_validation_transitions_truncate_immutable "
+    "ON research.paper_validation_state_transitions",
+    "CREATE TRIGGER trg_paper_validation_transitions_truncate_immutable "
+    "BEFORE TRUNCATE ON research.paper_validation_state_transitions "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "research.reject_paper_validation_audit_mutation()",
+    "DROP TRIGGER IF EXISTS trg_paper_validation_hypotheses_audit_link "
+    "ON research.strategy_hypothesis_drafts",
+    "CREATE TRIGGER trg_paper_validation_hypotheses_audit_link "
+    "BEFORE INSERT ON research.strategy_hypothesis_drafts "
+    "FOR EACH ROW EXECUTE FUNCTION research.validate_paper_validation_audit_link()",
+    "DROP TRIGGER IF EXISTS trg_paper_validation_hypotheses_experiment_identity "
+    "ON research.strategy_hypothesis_drafts",
+    "CREATE TRIGGER trg_paper_validation_hypotheses_experiment_identity "
+    "BEFORE INSERT ON research.strategy_hypothesis_drafts "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "research.validate_paper_validation_experiment_identity()",
+    "DROP TRIGGER IF EXISTS trg_paper_validation_hypotheses_immutable "
+    "ON research.strategy_hypothesis_drafts",
+    "CREATE TRIGGER trg_paper_validation_hypotheses_immutable "
+    "BEFORE UPDATE OR DELETE ON research.strategy_hypothesis_drafts "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "research.reject_paper_validation_audit_mutation()",
+    "DROP TRIGGER IF EXISTS trg_paper_validation_hypotheses_truncate_immutable "
+    "ON research.strategy_hypothesis_drafts",
+    "CREATE TRIGGER trg_paper_validation_hypotheses_truncate_immutable "
+    "BEFORE TRUNCATE ON research.strategy_hypothesis_drafts "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "research.reject_paper_validation_audit_mutation()",
+    "DROP TRIGGER IF EXISTS trg_paper_validation_reviews_audit_link "
+    "ON research.paper_validation_postmortem_reviews",
+    "CREATE TRIGGER trg_paper_validation_reviews_audit_link "
+    "BEFORE INSERT ON research.paper_validation_postmortem_reviews "
+    "FOR EACH ROW EXECUTE FUNCTION research.validate_paper_validation_audit_link()",
+    "DROP TRIGGER IF EXISTS trg_paper_validation_reviews_experiment_identity "
+    "ON research.paper_validation_postmortem_reviews",
+    "CREATE TRIGGER trg_paper_validation_reviews_experiment_identity "
+    "BEFORE INSERT ON research.paper_validation_postmortem_reviews "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "research.validate_paper_validation_experiment_identity()",
+    "DROP TRIGGER IF EXISTS trg_paper_validation_reviews_immutable "
+    "ON research.paper_validation_postmortem_reviews",
+    "CREATE TRIGGER trg_paper_validation_reviews_immutable "
+    "BEFORE UPDATE OR DELETE ON research.paper_validation_postmortem_reviews "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "research.reject_paper_validation_audit_mutation()",
+    "DROP TRIGGER IF EXISTS trg_paper_validation_reviews_truncate_immutable "
+    "ON research.paper_validation_postmortem_reviews",
+    "CREATE TRIGGER trg_paper_validation_reviews_truncate_immutable "
+    "BEFORE TRUNCATE ON research.paper_validation_postmortem_reviews "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "research.reject_paper_validation_audit_mutation()",
     # ---- ROB-844: binance_demo_order_ledger root-exposure + broker-ack partial
     # uniqueness (mirrors migration 20260713_rob844_*). create_all skips these on
     # a persistent DB where the table already exists, so mirror them here.
