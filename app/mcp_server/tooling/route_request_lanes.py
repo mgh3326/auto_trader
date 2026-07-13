@@ -20,6 +20,10 @@ from app.mcp_server.tooling.orders_kis_variants import (
     KIS_MOCK_ORDER_TOOL_NAMES,
     LIVE_RECONCILE_TOOL_NAMES,
 )
+from app.mcp_server.tooling.orders_kiwoom_us_variants import (
+    KIWOOM_MOCK_US_MUTATION_TOOL_NAMES,
+    KIWOOM_MOCK_US_READ_TOOL_NAMES,
+)
 from app.mcp_server.tooling.orders_kiwoom_variants import KIWOOM_MOCK_TOOL_NAMES
 from app.mcp_server.tooling.orders_registration import ORDER_TOOL_NAMES
 from app.mcp_server.tooling.orders_toss_variants import TOSS_LIVE_ORDER_TOOL_NAMES
@@ -177,6 +181,7 @@ MUTATION_TOOLS: frozenset[str] = frozenset(
     | LIVE_RECONCILE_TOOL_NAMES
     | TOSS_LIVE_ORDER_TOOL_NAMES
     | KIWOOM_MOCK_TOOL_NAMES
+    | KIWOOM_MOCK_US_MUTATION_TOOL_NAMES
     | MIRROR_COUNTERFACTUAL_TOOL_NAMES
     | frozenset(
         {
@@ -256,6 +261,7 @@ _MARKET_EXEC_PURPOSE: dict[str, str] = {
 # drift guard the issue requires.
 READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
     {
+        *KIWOOM_MOCK_US_READ_TOOL_NAMES,
         "route_request",
         "analysis_artifact_get",
         "analysis_artifact_list",

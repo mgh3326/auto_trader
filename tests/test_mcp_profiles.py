@@ -36,6 +36,9 @@ from app.mcp_server.tooling.orders_kis_variants import (
     KIS_MOCK_ORDER_TOOL_NAMES,
     LIVE_RECONCILE_TOOL_NAMES,
 )
+from app.mcp_server.tooling.orders_kiwoom_us_variants import (
+    KIWOOM_MOCK_US_TOOL_NAMES,
+)
 from app.mcp_server.tooling.orders_kiwoom_variants import KIWOOM_MOCK_TOOL_NAMES
 from app.mcp_server.tooling.orders_registration import ORDER_TOOL_NAMES
 from app.mcp_server.tooling.orders_toss_variants import (
@@ -212,6 +215,23 @@ class TestKiwoomProfile:
         mcp = _build_mcp(McpProfile.KIWOOM)
         assert KIWOOM_MOCK_TOOL_NAMES <= mcp.tools.keys()
 
+    def test_registers_kiwoom_mock_us_tools(self) -> None:
+        # ROB-867: KIWOOM profile registers both KR and US namespaces.
+        mcp = _build_mcp(McpProfile.KIWOOM)
+        assert KIWOOM_MOCK_US_TOOL_NAMES <= mcp.tools.keys()
+
+
+class TestKiwoomUsDefaultProfileGate:
+    def test_registers_us_namespace_when_enabled(self, monkeypatch) -> None:
+        monkeypatch.setattr(settings, "kiwoom_mock_us_enabled", True)
+        mcp = _build_mcp(McpProfile.DEFAULT)
+        assert KIWOOM_MOCK_US_TOOL_NAMES <= mcp.tools.keys()
+
+    def test_omits_us_namespace_when_disabled(self, monkeypatch) -> None:
+        monkeypatch.setattr(settings, "kiwoom_mock_us_enabled", False)
+        mcp = _build_mcp(McpProfile.DEFAULT)
+        assert KIWOOM_MOCK_US_TOOL_NAMES.isdisjoint(mcp.tools.keys())
+
 
 class TestKiwoomDefaultProfileGate:
     """ROB-601: kiwoom_mock_* tools surface in the operator DEFAULT profile when
@@ -255,7 +275,7 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     McpProfile.CRYPTO: _LEGACY_ORDER_TOOL_NAMES | LIVE_RECONCILE_TOOL_NAMES,
     McpProfile.US_PAPER: set(_ALPACA_MUTATING) | ALPACA_PAPER_AUTOMATED_TOOL_NAMES,
     McpProfile.DB_PAPER: set(),
-    McpProfile.KIWOOM: set(KIWOOM_MOCK_TOOL_NAMES),
+    McpProfile.KIWOOM: KIWOOM_MOCK_TOOL_NAMES | KIWOOM_MOCK_US_TOOL_NAMES,
     # ROB-697 M1 — shadow-replay registers zero order/mutation tools by design
     # (frozen-context read + policy + route_request only, early-return).
     McpProfile.SHADOW_REPLAY: set(),
@@ -294,6 +314,7 @@ _ALL_ORDER_TOOL_NAMES = (
     | KIS_MOCK_ORDER_TOOL_NAMES
     | LIVE_RECONCILE_TOOL_NAMES
     | KIWOOM_MOCK_TOOL_NAMES
+    | KIWOOM_MOCK_US_TOOL_NAMES
     | _ALPACA_MUTATING
     | ALPACA_PAPER_AUTOMATED_TOOL_NAMES
     | TOSS_LIVE_ORDER_TOOL_NAMES

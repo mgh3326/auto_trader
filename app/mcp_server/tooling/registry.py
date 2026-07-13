@@ -308,6 +308,16 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         # still fail-closes on missing credentials at call time.
         if settings.kiwoom_mock_enabled:
             orders_kiwoom_variants.register(mcp)
+        # ROB-867: US-equity kiwoom mock namespace — same flag-gated pattern
+        # as the KR namespace but reading exclusively from
+        # ``kiwoom_mock_us_*`` settings. Each tool still fail-closes on
+        # missing US credentials at call time.
+        if settings.kiwoom_mock_us_enabled:
+            from app.mcp_server.tooling.orders_kiwoom_us_variants import (
+                register as register_kiwoom_us,
+            )
+
+            register_kiwoom_us(mcp)
         if settings.binance_demo_scalping_enabled:
             from app.mcp_server.tooling.binance_demo_scalping_handler import (
                 register_binance_demo_scalping_tools,
@@ -335,6 +345,11 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_paper_journal_tools(mcp)
     elif profile is McpProfile.KIWOOM:
         orders_kiwoom_variants.register(mcp)
+        from app.mcp_server.tooling.orders_kiwoom_us_variants import (
+            register as register_kiwoom_us,
+        )
+
+        register_kiwoom_us(mcp)
     elif profile is McpProfile.CRYPTO:
         # Crypto live trading enters through the generic account_mode order
         # tools (the only MCP entry point for Upbit orders, with ROB-407
