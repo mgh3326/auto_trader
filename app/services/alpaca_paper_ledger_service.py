@@ -164,7 +164,7 @@ def normalize_known_broker_order_status(value: Any) -> str | None:
 
 
 def _derive_lifecycle_state(
-    order_status: str | None,
+    order_status: Any,
     filled_qty: Decimal | float | None = None,
 ) -> str:
     """Map broker order_status to ROB-90 canonical lifecycle state.
@@ -177,7 +177,7 @@ def _derive_lifecycle_state(
     - canceled → anomaly (ROB-90: no benign cancel state)
     - rejected/expired/suspended/unknown → anomaly
     """
-    if order_status is None:
+    if not isinstance(order_status, str):
         return LIFECYCLE_ANOMALY
     status = order_status.lower()
     if status == "filled":
@@ -1094,7 +1094,8 @@ class AlpacaPaperLedgerService:
         broker_order_id = (
             order.get("id") or order.get("order_id") or order.get("broker_order_id")
         )
-        order_status = order.get("status")
+        raw_order_status = order.get("status")
+        order_status = raw_order_status if isinstance(raw_order_status, str) else None
         filled_qty_raw = order.get("filled_qty") or order.get("filled_quantity")
         filled_avg_price_raw = order.get("filled_avg_price") or order.get(
             "avg_fill_price"
@@ -1115,7 +1116,7 @@ class AlpacaPaperLedgerService:
                 filled_avg_price = None
 
         lifecycle_state = lifecycle_state_override or _derive_lifecycle_state(
-            order_status, filled_qty
+            raw_order_status, filled_qty
         )
         raw_responses = None
         if raw_response is not None:
@@ -1191,8 +1192,11 @@ class AlpacaPaperLedgerService:
         raw_response: dict[str, Any] | None = None,
         *,
         commit: bool = True,
+        lifecycle_state_override: str | None = None,
     ) -> AlpacaPaperOrderLedger:
         """Update lifecycle state from a status-check response."""
+        if lifecycle_state_override not in {None, LIFECYCLE_SUBMITTED}:
+            raise ValueError("status lifecycle override may only retain submitted")
         target_row = await self._require_row(client_order_id)
 
         order_status = order.get("status")
@@ -1215,7 +1219,9 @@ class AlpacaPaperLedgerService:
             except Exception:
                 filled_avg_price = None
 
-        lifecycle_state = _derive_lifecycle_state(order_status, filled_qty)
+        lifecycle_state = lifecycle_state_override or _derive_lifecycle_state(
+            order_status, filled_qty
+        )
 
         update_vals: dict[str, Any] = {
             "lifecycle_state": lifecycle_state,

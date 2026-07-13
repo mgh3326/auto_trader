@@ -334,10 +334,13 @@ outcome store. No new table/column/migration was added.
   that same lock, broker order statuses and the current position are read, and
   `available = min(qty_available, live qty − Σ(open sell requested_qty))` is used
   before inserting the claim. The claim stores its `qty` / `qty_available` baseline
-  in the existing `position_snapshot` JSONB. A newly `filled` sell remains reserved
-  until current position evidence proves the fill is reflected; unknown status,
-  missing baseline, or stale cross-endpoint evidence fails closed with
-  `position_reconciliation_pending` and no broker POST.
+  in the existing `position_snapshot` JSONB. Immediate and crash-recovered sell
+  responses remain `submitted` for open/partial, `filled`, and unknown/unparseable
+  statuses. A `filled` sell is released only after current position evidence proves
+  the fill is reflected; missing baseline or stale cross-endpoint evidence fails
+  closed with `position_reconciliation_pending`, while an unknown status retains its
+  reservation. Cancel read-back persists known open/partial/filled broker truth but
+  retains the same `submitted` hold. None of these ambiguous paths sends a new POST.
 - **Preview binding.** `record_preview(...)` persists the server-owned approval
   packet + provenance (quote snapshot id, content/packet hashes) as the
   `record_kind='preview'` row; `get_preview_by_client_order_id(...)` re-reads it so

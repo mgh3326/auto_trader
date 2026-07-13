@@ -384,18 +384,23 @@ async def alpaca_paper_cancel_order(
     cancel_confirmed = read_back_status == "ok" and normalized_status == "canceled"
     reservation_released = False
     lifecycle_synced = False
-    status_can_release = (
-        normalized_status is not None
-        and normalized_status not in KNOWN_OPEN_BROKER_STATUSES
-        and normalized_status != "filled"
-    )
-    if client_order_id and read_back_status == "ok" and status_can_release:
+    status_should_sync = normalized_status is not None
+    if client_order_id and read_back_status == "ok" and status_should_sync:
         try:
             async with _session_factory()() as db:
                 ledger = AlpacaPaperLedgerService(db)
                 normalized_payload = dict(order_payload)
                 normalized_payload["status"] = normalized_status
-                await ledger.record_status(client_order_id, normalized_payload)
+                await ledger.record_status(
+                    client_order_id,
+                    normalized_payload,
+                    lifecycle_state_override=(
+                        "submitted"
+                        if normalized_status in KNOWN_OPEN_BROKER_STATUSES
+                        or normalized_status == "filled"
+                        else None
+                    ),
+                )
                 if cancel_confirmed:
                     await ledger.record_cancel(
                         client_order_id, cancel_status="canceled"

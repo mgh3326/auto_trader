@@ -450,6 +450,17 @@ async def _open_reserved_qty() -> Decimal:
         return sum((Decimal(str(r.requested_qty)) for r in rows), Decimal("0"))
 
 
+async def _ledger_row(coid: str) -> AlpacaPaperOrderLedger:
+    async with AsyncSessionLocal() as db:
+        return (
+            await db.execute(
+                select(AlpacaPaperOrderLedger).where(
+                    AlpacaPaperOrderLedger.client_order_id == coid
+                )
+            )
+        ).scalar_one()
+
+
 def _cancel_readback(coid: str, status: str):
     from app.services.brokers.alpaca.schemas import Order
 
@@ -505,9 +516,57 @@ async def test_cancel_racing_fill_converges_to_filled_not_canceled(fake_service)
     assert result["cancelled"] is False
     assert result["order_status"] == "filled"
     assert result["reservation_released"] is False
-    assert result["lifecycle_synced"] is False
+    assert result["lifecycle_synced"] is True
     # Fill truth is returned, but the hold remains until position evidence proves
     # the fill is reflected (the cancel read-back has no causal position snapshot).
+    assert await _open_reserved_qty() == Decimal("0.6")
+
+    row = await _ledger_row(coid)
+    assert row.order_status == "filled"
+    assert row.filled_qty == Decimal("0")
+    assert row.lifecycle_state == "submitted"
+
+
+@pytest.mark.parametrize(
+    ("broker_status", "filled_qty"),
+    [
+        ("accepted", "0"),
+        ("partially_filled", "0.2"),
+        ("filled", "0.6"),
+    ],
+)
+async def test_cancel_known_hold_status_persists_truth_without_release(
+    fake_service, broker_status, filled_qty
+):
+    """Known open/partial/filled truth is synced while lifecycle stays held."""
+    coid = f"rob74-crypto-cancel-truth-{broker_status}"
+    await _seed_open_sell(coid, qty="0.6")
+
+    async def _get_order(_id):
+        from app.services.brokers.alpaca.schemas import Order
+
+        return Order(
+            id="b-cxl",
+            client_order_id=coid,
+            symbol="BTC/USD",
+            filled_qty=Decimal(filled_qty),
+            side="sell",
+            type="limit",
+            time_in_force="gtc",
+            status=broker_status,
+        )
+
+    fake_service.get_order = _get_order  # type: ignore[assignment]
+
+    result = await alpaca_paper_cancel_order(order_id="b-cxl", confirm=True)
+    row = await _ledger_row(coid)
+
+    assert result["cancelled"] is False
+    assert result["reservation_released"] is False
+    assert result["lifecycle_synced"] is True
+    assert row.order_status == broker_status
+    assert row.filled_qty == Decimal(filled_qty)
+    assert row.lifecycle_state == "submitted"
     assert await _open_reserved_qty() == Decimal("0.6")
 
 

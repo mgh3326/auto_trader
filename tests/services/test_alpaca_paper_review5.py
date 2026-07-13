@@ -25,7 +25,7 @@ from app.services.alpaca_paper_submit_service import (
     derive_client_order_id,
 )
 from app.services.brokers.alpaca.exceptions import AlpacaPaperRequestError
-from app.services.brokers.alpaca.schemas import Order
+from app.services.brokers.alpaca.schemas import Order, Position
 
 pytestmark = [pytest.mark.asyncio]
 
@@ -635,6 +635,309 @@ async def test_immediate_filled_submit_keeps_hold_until_position_reflects(db_ses
     assert second.status == "rejected"
     assert second.reason_code == "position_reconciliation_pending"
     assert len(broker.submit_calls) == 1
+
+
+@pytest.mark.parametrize("broker_status", ["pending_review", " "])
+async def test_immediate_unknown_sell_status_holds_and_replays_truthfully(
+    db_session, broker_status
+):
+    """Unknown Pydantic broker status is success truth, not release evidence."""
+
+    class UnknownStatusBroker(ReconcileBroker):
+        async def submit_order(self, request):
+            self.submit_calls.append(request)
+            return _order(request.client_order_id, broker_status)
+
+    broker = UnknownStatusBroker(
+        position=Position(
+            asset_id="btc",
+            symbol="BTCUSD",
+            qty=Decimal("1"),
+            qty_available=Decimal("1"),
+            avg_entry_price=Decimal("50000"),
+            side="long",
+        )
+    )
+    canonical = _canonical("sell", qty="0.6", notional=None)
+    packet = _packet(
+        canonical,
+        f"{_CORR}-immediate-unknown-{broker_status!r}",
+        origin="manual",
+        max_notional=None,
+        max_qty=Decimal("1"),
+    )
+    ledger = AlpacaPaperLedgerService(db_session)
+    coord = AlpacaPaperSubmitCoordinator(ledger, lambda: broker, now_fn=lambda: _NOW)
+
+    first = await coord.submit(packet, submit_canonical=canonical)
+    db_session.expire_all()
+    row = await ledger.get_execution_by_client_order_id(packet.client_order_id)
+    replay = await coord.submit(packet, submit_canonical=canonical)
+
+    assert first.status == "submitted"
+    assert first.success is True
+    assert row is not None
+    assert row.lifecycle_state == "submitted"
+    assert row.order_status == broker_status
+    assert replay.status == "replayed"
+    assert replay.success is True
+    assert len(broker.submit_calls) == 1
+
+
+async def test_immediate_non_string_sell_status_holds_and_replays(db_session):
+    """A raw unparseable status cannot turn a successful sell into anomaly."""
+
+    class NonStringStatusBroker(ReconcileBroker):
+        async def submit_order(self, request):
+            self.submit_calls.append(request)
+            return {
+                "id": f"b-{request.client_order_id}",
+                "client_order_id": request.client_order_id,
+                "symbol": "BTC/USD",
+                "filled_qty": "0",
+                "side": "sell",
+                "type": "limit",
+                "time_in_force": "gtc",
+                "status": 123,
+            }
+
+    broker = NonStringStatusBroker(
+        position=Position(
+            asset_id="btc",
+            symbol="BTCUSD",
+            qty=Decimal("1"),
+            qty_available=Decimal("1"),
+            avg_entry_price=Decimal("50000"),
+            side="long",
+        )
+    )
+    canonical = _canonical("sell", qty="0.6", notional=None)
+    packet = _packet(
+        canonical,
+        f"{_CORR}-immediate-non-string",
+        origin="manual",
+        max_notional=None,
+        max_qty=Decimal("1"),
+    )
+    ledger = AlpacaPaperLedgerService(db_session)
+    coord = AlpacaPaperSubmitCoordinator(ledger, lambda: broker, now_fn=lambda: _NOW)
+
+    first = await coord.submit(packet, submit_canonical=canonical)
+    db_session.expire_all()
+    row = await ledger.get_execution_by_client_order_id(packet.client_order_id)
+    replay = await coord.submit(packet, submit_canonical=canonical)
+
+    assert first.status == "submitted"
+    assert row is not None
+    assert row.lifecycle_state == "submitted"
+    assert row.order_status is None
+    assert replay.status == "replayed"
+    assert len(broker.submit_calls) == 1
+
+
+async def test_immediate_rejected_sell_matches_terminal_replay(db_session):
+    """A known releasable terminal response is failure on first call and replay."""
+
+    class RejectedStatusBroker(ReconcileBroker):
+        async def submit_order(self, request):
+            self.submit_calls.append(request)
+            return _order(request.client_order_id, "rejected")
+
+    broker = RejectedStatusBroker(
+        position=Position(
+            asset_id="btc",
+            symbol="BTCUSD",
+            qty=Decimal("1"),
+            qty_available=Decimal("1"),
+            avg_entry_price=Decimal("50000"),
+            side="long",
+        )
+    )
+    canonical = _canonical("sell", qty="0.6", notional=None)
+    packet = _packet(
+        canonical,
+        f"{_CORR}-immediate-rejected",
+        origin="manual",
+        max_notional=None,
+        max_qty=Decimal("1"),
+    )
+    coord = AlpacaPaperSubmitCoordinator(
+        AlpacaPaperLedgerService(db_session), lambda: broker, now_fn=lambda: _NOW
+    )
+
+    first = await coord.submit(packet, submit_canonical=canonical)
+    replay = await coord.submit(packet, submit_canonical=canonical)
+
+    assert first.status == "failed"
+    assert first.success is False
+    assert first.broker_called is True
+    assert replay.status == "failed"
+    assert replay.success is False
+    assert len(broker.submit_calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("recovered_status", "filled_qty", "second_reason"),
+    [
+        ("filled", "0.6", "position_reconciliation_pending"),
+        ("pending_review", "0", "qty_exceeds_available"),
+    ],
+)
+async def test_recovered_sell_status_keeps_hold_before_causal_position_evidence(
+    db_session, recovered_status, filled_qty, second_reason
+):
+    """Crash recovery must inspect claim side and retain ambiguous sell holds."""
+
+    first_canonical = _canonical("sell", qty="0.6", notional=None)
+    first_packet = _packet(
+        first_canonical,
+        f"{_CORR}-recover-{recovered_status}-first",
+        origin="manual",
+        max_notional=None,
+        max_qty=Decimal("1"),
+    )
+
+    class RecoveringSellBroker(ReconcileBroker):
+        async def submit_order(self, request):
+            self.submit_calls.append(request)
+            raise AlpacaPaperRequestError("uncertain", status_code=500)
+
+        async def get_order_by_client_order_id(self, client_order_id):
+            if client_order_id != first_packet.client_order_id:
+                return None
+            return _order(client_order_id, recovered_status, qty=filled_qty)
+
+    broker = RecoveringSellBroker(
+        position=Position(
+            asset_id="btc",
+            symbol="BTCUSD",
+            qty=Decimal("1"),
+            qty_available=Decimal("1"),
+            avg_entry_price=Decimal("50000"),
+            side="long",
+        )
+    )
+    ledger = AlpacaPaperLedgerService(db_session)
+    coord = AlpacaPaperSubmitCoordinator(ledger, lambda: broker, now_fn=lambda: _NOW)
+
+    recovered = await coord.submit(first_packet, submit_canonical=first_canonical)
+
+    second_canonical = _canonical("sell", qty="0.7", notional=None)
+    second_packet = _packet(
+        second_canonical,
+        f"{_CORR}-recover-{recovered_status}-second",
+        origin="manual",
+        max_notional=None,
+        max_qty=Decimal("1"),
+    )
+    second = await coord.submit(second_packet, submit_canonical=second_canonical)
+    db_session.expire_all()
+    recovered_row = await ledger.get_execution_by_client_order_id(
+        first_packet.client_order_id
+    )
+
+    assert recovered.status == "recovered"
+    assert recovered.success is True
+    assert recovered_row is not None
+    assert recovered_row.side == "sell"
+    assert recovered_row.lifecycle_state == "submitted"
+    assert second.status == "rejected"
+    assert second.reason_code == second_reason
+    assert len(broker.submit_calls) == 1
+
+
+async def test_zero_position_object_commits_causally_reflected_fill(db_session):
+    """qty=0 is causal evidence only after qty_available and baseline checks."""
+    open_coid = f"{_CORR}-zero-causal-open"
+    await _seed_sell_row(
+        db_session,
+        coid=open_coid,
+        symbol="BTC/USD",
+        qty="0.6",
+        lifecycle="submitted",
+        position_snapshot={
+            "snapshot_kind": "sell_claim_baseline",
+            "qty": "0.6",
+            "qty_available": "0.6",
+            "fetched_at": _NOW.isoformat(),
+        },
+    )
+    broker = ReconcileBroker(
+        position=Position(
+            asset_id="btc",
+            symbol="BTCUSD",
+            qty=Decimal("0"),
+            qty_available=Decimal("0"),
+            avg_entry_price=Decimal("50000"),
+            side="long",
+        ),
+        orders={open_coid: _order(open_coid, "filled", qty="0.6")},
+    )
+    canonical = _canonical("sell", qty="0.1", notional=None)
+    packet = _packet(
+        canonical,
+        f"{_CORR}-zero-causal-new",
+        origin="manual",
+        max_notional=None,
+        max_qty=Decimal("1"),
+    )
+    ledger = AlpacaPaperLedgerService(db_session)
+    coord = AlpacaPaperSubmitCoordinator(ledger, lambda: broker, now_fn=lambda: _NOW)
+
+    outcome = await coord.submit(packet, submit_canonical=canonical)
+    db_session.expire_all()
+    rows = await ledger.list_open_sells(
+        account_mode="alpaca_paper", execution_symbol="BTC/USD"
+    )
+
+    assert outcome.status == "rejected"
+    assert outcome.reason_code == "position_flat"
+    assert rows == []
+    assert broker.submit_calls == []
+
+
+async def test_zero_position_object_without_baseline_stays_pending(db_session):
+    """A legacy filled sell cannot be released merely because qty is zero."""
+    open_coid = f"{_CORR}-zero-legacy-open"
+    await _seed_sell_row(
+        db_session,
+        coid=open_coid,
+        symbol="BTC/USD",
+        qty="0.6",
+        lifecycle="submitted",
+    )
+    broker = ReconcileBroker(
+        position=Position(
+            asset_id="btc",
+            symbol="BTCUSD",
+            qty=Decimal("0"),
+            qty_available=Decimal("0"),
+            avg_entry_price=Decimal("50000"),
+            side="long",
+        ),
+        orders={open_coid: _order(open_coid, "filled", qty="0.6")},
+    )
+    canonical = _canonical("sell", qty="0.1", notional=None)
+    packet = _packet(
+        canonical,
+        f"{_CORR}-zero-legacy-new",
+        origin="manual",
+        max_notional=None,
+        max_qty=Decimal("1"),
+    )
+    ledger = AlpacaPaperLedgerService(db_session)
+    coord = AlpacaPaperSubmitCoordinator(ledger, lambda: broker, now_fn=lambda: _NOW)
+
+    outcome = await coord.submit(packet, submit_canonical=canonical)
+    db_session.expire_all()
+    rows = await ledger.list_open_sells(
+        account_mode="alpaca_paper", execution_symbol="BTC/USD"
+    )
+
+    assert outcome.status == "rejected"
+    assert outcome.reason_code == "position_reconciliation_pending"
+    assert {row.client_order_id for row in rows} == {open_coid}
+    assert broker.submit_calls == []
 
 
 async def test_new_sell_blocks_filled_legacy_row_without_baseline(db_session):

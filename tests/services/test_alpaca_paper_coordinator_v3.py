@@ -23,7 +23,7 @@ from app.services.alpaca_paper_submit_service import (
     derive_automated_key,
 )
 from app.services.brokers.alpaca.exceptions import AlpacaPaperRequestError
-from app.services.brokers.alpaca.schemas import Order
+from app.services.brokers.alpaca.schemas import Order, Position
 
 pytestmark = [pytest.mark.asyncio]
 
@@ -199,13 +199,22 @@ async def test_sell_blocked_when_current_position_zero_despite_past_fill(db_sess
         db_session, corr, filled_qty="5"
     )  # past fill = provenance
     canonical, packet = _sell_packet(corr, qty="1")
-    broker = V3Broker(position=SimpleNamespace(symbol="BTCUSD", qty=Decimal("0")))
+    broker = V3Broker(
+        position=Position(
+            asset_id="btc",
+            symbol="BTCUSD",
+            qty=Decimal("0"),
+            qty_available=None,
+            avg_entry_price=Decimal("50000"),
+            side="long",
+        )
+    )
     coord = _coord(db_session, broker)
 
     outcome = await coord.submit(packet, submit_canonical=canonical)
 
     assert outcome.status == "rejected"
-    assert outcome.reason_code == "position_flat"
+    assert outcome.reason_code == "position_available_unavailable"
     assert broker.submit_calls == []  # never POSTed
 
 

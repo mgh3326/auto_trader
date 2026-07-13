@@ -456,10 +456,13 @@ replay**. There is no direct-POST fallback, and this holds for `us-paper` only.
   lifecycle reconciliation, local reservations, and the atomic claim are bound
   under one account+symbol advisory lock. Every sell claim stores its `qty` /
   `qty_available` baseline in the existing `position_snapshot` JSONB; a later
-  `filled` status releases the hold only after the position response proves the
-  fill is reflected. Unknown statuses and ambiguous/stale position evidence remain
-  reserved and return `position_reconciliation_pending`, so two *different* sell
-  intents cannot consume the same shares. Automated sell is **explicitly disabled**
+  immediate or crash-recovered open/partial, `filled`, and unknown/unparseable
+  statuses retain `submitted`; a `filled` status releases the hold only after the
+  position response proves the fill is reflected. Unknown statuses retain their
+  reservation, and ambiguous/stale fill evidence returns
+  `position_reconciliation_pending`, so two *different* sell intents cannot consume
+  the same shares. Cancel read-back syncs known broker truth while retaining the
+  hold for open/partial/filled. Automated sell is **explicitly disabled**
   (reason `automated_sell_disabled`) until ROB-845 wires an opaque buy/position
   source; manual sell is supported.
 - **Public success contract.** `success` is true only for

@@ -64,6 +64,23 @@ DEFAULT_INFLIGHT_POLL_INTERVAL_S = 0.05
 SUCCESS_STATUSES: frozenset[str] = frozenset({"submitted", "replayed", "recovered"})
 
 
+def _sell_submit_lifecycle_override(status: Any) -> str | None:
+    """Retain a sell hold until broker truth is safe to release.
+
+    Open/partial, filled-without-position-proof, and unknown/unparseable statuses
+    all remain submitted. Only a recognized non-fill terminal status may derive a
+    terminal lifecycle directly from submit/recovery evidence.
+    """
+    normalized = normalize_known_broker_order_status(status)
+    if (
+        normalized is None
+        or normalized in KNOWN_OPEN_BROKER_STATUSES
+        or normalized == "filled"
+    ):
+        return LIFECYCLE_SUBMITTED
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Shared canonical payload + server-derived key/hash helpers
 # ---------------------------------------------------------------------------
@@ -416,11 +433,6 @@ class AlpacaPaperSubmitCoordinator:
                 return self._sell_reject(
                     packet, "position_malformed", "position qty missing/non-finite"
                 )
-            if pos_qty <= 0:
-                return self._sell_reject(
-                    packet, "position_flat", "current position qty is non-positive"
-                )
-
             raw_available = getattr(position, "qty_available", None)
             if raw_available is None:
                 return self._sell_reject(
@@ -450,6 +462,11 @@ class AlpacaPaperSubmitCoordinator:
                     packet,
                     "position_reconciliation_pending",
                     "filled sell is not yet reflected in broker position evidence",
+                )
+            if pos_qty <= 0:
+                await self._ledger.session.commit()
+                return self._sell_reject(
+                    packet, "position_flat", "current position qty is non-positive"
                 )
 
             claim = await self._ledger.reserve_sell_and_claim(
@@ -564,19 +581,28 @@ class AlpacaPaperSubmitCoordinator:
             return await self._resolve_uncertain(coid)
 
         order_dict = _order_to_dict(order)
-        normalized_status = normalize_known_broker_order_status(
-            order_dict.get("status")
+        sell_lifecycle_override = (
+            _sell_submit_lifecycle_override(order_dict.get("status"))
+            if packet.side == "sell"
+            else None
         )
         await self._ledger.record_submit(
             coid,
             order_dict,
             raw_response=order_dict,
-            lifecycle_state_override=(
-                LIFECYCLE_SUBMITTED
-                if packet.side == "sell" and normalized_status == "filled"
-                else None
-            ),
+            lifecycle_state_override=sell_lifecycle_override,
         )
+        if packet.side == "sell" and sell_lifecycle_override is None:
+            return SubmitOutcome(
+                status="failed",
+                client_order_id=coid,
+                broker_called=True,
+                reason_code="broker_terminal_status",
+                order=order_dict,
+                message=(
+                    f"broker returned terminal status {order_dict.get('status')!r}"
+                ),
+            )
         return SubmitOutcome(
             status="submitted",
             client_order_id=coid,
@@ -728,9 +754,31 @@ class AlpacaPaperSubmitCoordinator:
         if order is None:
             return None
         order_dict = _order_to_dict(order)
-        await self._ledger.record_submit(
-            client_order_id, order_dict, raw_response=order_dict
+        claim_row = await self._ledger.get_execution_by_client_order_id(client_order_id)
+        is_sell = claim_row is not None and claim_row.side == "sell"
+        sell_lifecycle_override = (
+            _sell_submit_lifecycle_override(order_dict.get("status"))
+            if is_sell
+            else None
         )
+        await self._ledger.record_submit(
+            client_order_id,
+            order_dict,
+            raw_response=order_dict,
+            lifecycle_state_override=sell_lifecycle_override,
+        )
+        if is_sell and sell_lifecycle_override is None:
+            return SubmitOutcome(
+                status="failed",
+                client_order_id=client_order_id,
+                broker_called=False,
+                reason_code="broker_terminal_status_recovered",
+                order=order_dict,
+                message=(
+                    "broker lookup returned terminal status "
+                    f"{order_dict.get('status')!r}"
+                ),
+            )
         return SubmitOutcome(
             status="recovered",
             client_order_id=client_order_id,
