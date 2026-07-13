@@ -280,6 +280,7 @@ async def _converge_toss_proposal_rung(
                     filled_qty=filled_qty,
                     terminal_state="partially_filled",
                     now=datetime.now(UTC),
+                    account_mode="toss_live",
                 )
                 if partial is None:
                     await db.commit()
@@ -296,6 +297,7 @@ async def _converge_toss_proposal_rung(
                 filled_qty=None if terminal_state == "cancelled" else filled_qty,
                 terminal_state=terminal_state,
                 now=datetime.now(UTC),
+                account_mode="toss_live",
             )
             await db.commit()
     except Exception as exc:  # noqa: BLE001 - ledger booking remains authoritative
@@ -402,6 +404,13 @@ async def _reconcile_one_toss_row(
     if evidence.verdict == "none":
         base["action"] = f"marked_{evidence.local_status}"
         if not dry_run:
+            converged = await _converge_toss_proposal_rung(
+                row,
+                ledger_status=evidence.local_status,
+                filled_qty=row.filled_qty,
+            )
+            if converged is not None:
+                base["proposal_rung"] = converged
             async with _order_session_factory()() as db:
                 await TossLiveOrderLedgerService(db).update_reconcile_outcome(
                     ledger_id=row.id,
@@ -412,13 +421,6 @@ async def _reconcile_one_toss_row(
                     settlement_date=evidence.settlement_date,
                     raw_response=evidence.raw_order,
                 )
-            converged = await _converge_toss_proposal_rung(
-                row,
-                ledger_status=evidence.local_status,
-                filled_qty=row.filled_qty,
-            )
-            if converged is not None:
-                base["proposal_rung"] = converged
         return base
 
     broker_cum = evidence.filled_qty
@@ -428,6 +430,18 @@ async def _reconcile_one_toss_row(
     base["filled_qty"] = float(broker_cum)
     base["avg_price"] = float(avg_price)
     base["delta_qty"] = float(delta)
+
+    if not dry_run:
+        projection_status = (
+            "cancelled" if evidence.local_status == "cancelled" else evidence.verdict
+        )
+        converged = await _converge_toss_proposal_rung(
+            row,
+            ledger_status=projection_status,
+            filled_qty=broker_cum,
+        )
+        if converged is not None:
+            base["proposal_rung"] = converged
 
     if delta <= 0:
         base["action"] = "noop_already_booked"
@@ -444,13 +458,6 @@ async def _reconcile_one_toss_row(
                     settlement_date=evidence.settlement_date,
                     raw_response=evidence.raw_order,
                 )
-            converged = await _converge_toss_proposal_rung(
-                row,
-                ledger_status=evidence.local_status,
-                filled_qty=broker_cum,
-            )
-            if converged is not None:
-                base["proposal_rung"] = converged
         return base
 
     if dry_run:
@@ -595,14 +602,6 @@ async def _reconcile_one_toss_row(
                 )
                 base["fx_rate_source"] = fx_capture.fx_rate_source
                 base["fx_pnl_accuracy"] = fx_capture.fx_pnl_accuracy
-
-    converged = await _converge_toss_proposal_rung(
-        row,
-        ledger_status=evidence.local_status,
-        filled_qty=broker_cum,
-    )
-    if converged is not None:
-        base["proposal_rung"] = converged
 
     base["execution_ledger"] = {
         "status": execution_status,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -294,6 +295,100 @@ async def test_proposal_projection_dry_run_is_read_only(db_session):
     assert rung.filled_qty is None
 
 
+async def test_toss_projection_never_matches_another_broker_by_order_id(db_session):
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.services.order_proposals import OrderProposalsService
+    from app.services.order_proposals.service import RungInput
+
+    shared_broker_order_id = f"cross-broker-{uuid4().hex}"
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="AAPL",
+        market="equity_us",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="collision-test",
+        rungs=[RungInput(0, "buy", Decimal("2"), Decimal("190"), None)],
+    )
+    for state in ("revalidating", "approved", "submitting"):
+        await service.transition_rung(group.proposal_id, 0, new_state=state)
+    await service.record_resting(
+        group.proposal_id,
+        0,
+        broker_order_id=shared_broker_order_id,
+        correlation_id=f"kis-correlation-{uuid4().hex}",
+        idempotency_key=f"kis-idem-{uuid4().hex}",
+        approval_hash_digest="kis-digest",
+        now=datetime.now(UTC),
+    )
+    row = await TossLiveOrderLedgerService(db_session).record_send(
+        operation_kind="place",
+        market="us",
+        symbol="AAPL",
+        side="buy",
+        order_type="limit",
+        time_in_force="DAY",
+        quantity=Decimal("2"),
+        price=Decimal("190"),
+        order_amount=None,
+        currency="USD",
+        client_order_id=f"toss-collision-{uuid4().hex}",
+        broker_order_id=shared_broker_order_id,
+        original_order_id=None,
+        status="accepted",
+        broker_status=None,
+        response_code="0",
+        response_message=None,
+        raw_response={},
+        correlation_id=f"toss-correlation-{uuid4().hex}",
+    )
+
+    outcome = await _reconcile_with_evidence(
+        mod,
+        row,
+        _toss_evidence(verdict="filled", local_status="filled", filled_qty="2"),
+    )
+    rung = await _proposal_rung(db_session, group.proposal_id)
+
+    assert "proposal_rung" not in outcome
+    assert rung.state == "resting"
+    assert rung.filled_qty is None
+
+
+async def test_proposal_projects_confirmed_fill_before_booking_failure(db_session):
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
+    proposal_id, row = await _proposal_accepted_row(
+        db_session, suffix="booking-failure"
+    )
+    source = AsyncMock()
+    source.evidence_for.return_value = _toss_evidence(
+        verdict="filled", local_status="filled", filled_qty="2"
+    )
+
+    with (
+        patch.object(
+            mod, "capture_reconcile_spot_fx", new=AsyncMock(return_value=None)
+        ),
+        patch.object(
+            mod,
+            "_save_order_fill",
+            new=AsyncMock(side_effect=RuntimeError("booking unavailable")),
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="booking unavailable"):
+            await mod._reconcile_one_toss_row(
+                row,
+                dry_run=False,
+                evidence_source=source,
+            )
+
+    rung = await _proposal_rung(db_session, proposal_id)
+    assert rung.state == "filled"
+    assert rung.filled_qty == Decimal("2")
+
+
 async def test_terminal_ledger_projection_failure_is_retried_by_sweep(db_session):
     from app.mcp_server.tooling import toss_live_ledger as mod
     from app.services.order_proposals import OrderProposalsService
@@ -354,11 +449,14 @@ async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
     monkeypatch,
     terminal_status,
 ):
+    from app.core.config import settings
+    from app.mcp_server.caller_identity import get_caller_agent_id
+    from app.mcp_server.tooling import order_validation as validation
     from app.mcp_server.tooling import orders_toss_variants as toss_orders
     from app.mcp_server.tooling import toss_live_ledger as mod
     from app.services.order_proposals import OrderProposalsService
-    from app.services.order_proposals.revalidation import revalidate_and_submit
     from app.services.order_proposals.service import RungInput
+    from app.services.order_proposals.telegram_callback import handle_callback_update
     from app.services.trade_journal.trade_retrospective_service import (
         build_retrospective_pending,
     )
@@ -366,6 +464,7 @@ async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
     unique = uuid4().hex
     broker_order_id = f"toss-loss-cut-{terminal_status}-{unique}"
     now = datetime.now(UTC)
+    submit_agent_id = f"proposal-submit-{unique}"
 
     async def fake_retrospective(session, retrospective_id):
         return type(
@@ -397,86 +496,143 @@ async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
         approval_issue_id="ROB-858",
         now=now,
     )
-    await service.record_approval(
-        group.proposal_id,
-        telegram_user_id="telegram-operator",
-        now=now,
-    )
+    nonce = f"nonce-{unique}"
+    await service.set_approval_nonce(group.proposal_id, nonce)
     await db_session.commit()
 
-    calls: list[tuple[str, dict]] = []
+    class _Client:
+        def __init__(self):
+            self.placed_payloads: list[dict] = []
 
-    async def fake_preview(**kwargs):
-        calls.append(("preview", kwargs))
-        context = toss_orders._order_proposal_context.get()
-        return {
-            "success": True,
-            "approval_hash": "loss-cut-approval-token",
-            "payload_preview": {
-                "clientOrderId": context.client_order_id,
-                "price": "99",
-                "quantity": "2",
-            },
-        }
+        async def aclose(self):
+            return None
 
-    async def fake_submit(**kwargs):
-        calls.append(("submit", kwargs))
-        context = toss_orders._order_proposal_context.get()
-        ledger = await mod.record_toss_place_order(
-            market="us",
-            symbol="AAPL",
-            side="sell",
-            order_type="limit",
-            time_in_force="DAY",
-            quantity=Decimal("2"),
-            price=Decimal("99"),
-            order_amount=None,
-            currency="USD",
-            client_order_id=context.client_order_id,
-            broker_order_id=broker_order_id,
-            raw_response={"orderId": broker_order_id},
-            reason=kwargs.get("reason"),
-            exit_intent=kwargs.get("exit_intent"),
-            exit_reason=kwargs.get("exit_reason"),
-            retrospective_id=kwargs.get("retrospective_id"),
-            approval_issue_id=kwargs.get("approval_issue_id"),
-            thesis=None,
-            strategy=None,
-            target_price=None,
-            stop_loss=None,
-            min_hold_days=None,
-            notes=None,
-            indicators_snapshot=None,
-            report_item_uuid=None,
-            approval_hash="approval-digest",
-            correlation_id_override=context.correlation_id,
-            rung=context.rung,
-        )
-        return {
-            "success": True,
-            "order_id": broker_order_id,
-            "client_order_id": context.client_order_id,
-            "approval_hash_digest": "approval-digest",
-            **ledger,
-        }
+        async def warnings(self, symbol):
+            return []
 
-    monkeypatch.setattr(toss_orders, "toss_preview_order", fake_preview)
-    monkeypatch.setattr(toss_orders, "toss_place_order", fake_submit)
+        async def holdings(self, *, symbol=None):
+            holding = type(
+                "Holding",
+                (),
+                {"symbol": symbol or "AAPL", "average_purchase_price": Decimal("200")},
+            )()
+            return type("Holdings", (), {"items": [holding], "raw_overview": {}})()
+
+        async def prices(self, symbols):
+            price = type(
+                "Price",
+                (),
+                {"symbol": symbols[0], "last_price": Decimal("100"), "currency": "USD"},
+            )()
+            return [price]
+
+        async def list_orders(self, *, status, symbol=None, **kwargs):
+            return type(
+                "Orders", (), {"orders": [], "next_cursor": None, "has_next": False}
+            )()
+
+        async def place_order(self, payload):
+            self.placed_payloads.append(payload)
+            return type(
+                "Placed",
+                (),
+                {
+                    "order_id": broker_order_id,
+                    "client_order_id": payload["clientOrderId"],
+                },
+            )()
+
+    class _Notifier:
+        def __init__(self):
+            self.answered = []
+            self.edited = []
+
+        async def answer_callback(self, callback_query_id, text=None):
+            self.answered.append((callback_query_id, text))
+            return True
+
+        async def edit_message(self, chat_id, message_id, text, reply_markup=None):
+            self.edited.append((chat_id, message_id, text, reply_markup))
+            return True
+
+    @contextlib.asynccontextmanager
+    async def service_factory():
+        yield db_session
+
+    client = _Client()
+    observed_submit_identities: list[str | None] = []
+
+    async def paperclip_done(issue_id):
+        observed_submit_identities.append(get_caller_agent_id())
+        return "done"
+
+    retro = type(
+        "Retro",
+        (),
+        {"id": 42, "symbol": "AAPL", "trigger_type": "stop_loss", "created_at": now},
+    )()
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "42")
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_SUBMIT_AGENT_ID", submit_agent_id)
+    monkeypatch.setattr(settings, "LOSS_CUT_ALLOWED_AGENT_IDS", [submit_agent_id])
+    monkeypatch.setattr(toss_orders, "validate_toss_api_config", lambda: [])
+    monkeypatch.setattr(toss_orders.TossReadClient, "from_settings", lambda: client)
+    monkeypatch.setattr(toss_orders.settings, "toss_api_enabled", True)
+    monkeypatch.setattr(toss_orders.settings, "toss_live_order_mutations_enabled", True)
+    monkeypatch.setattr(toss_orders.settings, "toss_approval_hash_mode", "off")
+    monkeypatch.setattr(
+        toss_orders,
+        "_preview_cost_context",
+        AsyncMock(
+            return_value={
+                "estimated_value": "198",
+                "estimated_value_currency": "USD",
+                "fee": "0",
+                "fee_currency": "USD",
+                "fx_cost_full_conversion": "0",
+                "fx_cost_full_conversion_currency": "KRW",
+                "estimated_costs": {},
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        toss_orders, "_nxt_preflight_context", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        toss_orders,
+        "_invalidate_sellable_after_sell_mutation",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(validation, "_is_cached_approved", lambda issue_id: False)
+    monkeypatch.setattr(validation, "_cache_approved", lambda issue_id: None)
+    monkeypatch.setattr(validation, "_fetch_approval_issue_status", paperclip_done)
+    monkeypatch.setattr(
+        validation,
+        "_get_retrospective_by_id_for_loss_cut",
+        AsyncMock(return_value=retro),
+    )
+    monkeypatch.setattr(validation, "_loss_cut_max_slip_value", lambda: 0.02)
     monkeypatch.setattr(
         mod, "publish_place_time_forecast", AsyncMock(return_value=None)
     )
 
-    outcomes = await revalidate_and_submit(
-        service=service,
-        proposal_id=group.proposal_id,
+    callback = await handle_callback_update(
+        {
+            "callback_query": {
+                "id": f"callback-{unique}",
+                "from": {"id": 777},
+                "message": {"chat": {"id": 42}, "message_id": 555},
+                "data": f"op:{str(group.proposal_id)[:8]}:{nonce}",
+            }
+        },
         now=now,
-        correlation_mint=lambda **_: f"corr-loss-cut-{unique}",
+        service_factory=service_factory,
+        notifier=_Notifier(),
     )
 
-    assert outcomes[0].result == "submitted_resting"
-    assert [phase for phase, _ in calls] == ["preview", "submit"]
-    assert all(call["exit_intent"] == "loss_cut" for _, call in calls)
-    assert all(call["approval_issue_id"] == "ROB-858" for _, call in calls)
+    assert callback["reason"] == "approved"
+    assert callback["results"] == ["submitted_resting"]
+    assert observed_submit_identities == [submit_agent_id, submit_agent_id]
+    assert len(client.placed_payloads) == 1
     row = (
         await db_session.execute(
             select(TossLiveOrderLedger).where(

@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.order_proposals import OrderProposalRung
+from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.models.review import TossFillPollState, TossLiveOrderLedger
 
 _PROPOSAL_EVIDENCE_ACCEPTING_STATES = (
@@ -283,10 +283,26 @@ class TossLiveOrderLedgerService:
         stmt = (
             select(TossLiveOrderLedger)
             .join(OrderProposalRung, evidence_match)
+            .join(
+                OrderProposal,
+                OrderProposalRung.proposal_pk == OrderProposal.id,
+            )
             .where(
                 TossLiveOrderLedger.operation_kind == "place",
                 TossLiveOrderLedger.status.in_(("filled", "cancelled")),
                 OrderProposalRung.state.in_(_PROPOSAL_EVIDENCE_ACCEPTING_STATES),
+                OrderProposal.account_mode == "toss_live",
+                OrderProposal.symbol == TossLiveOrderLedger.symbol,
+                or_(
+                    and_(
+                        TossLiveOrderLedger.market == "kr",
+                        OrderProposal.market == "equity_kr",
+                    ),
+                    and_(
+                        TossLiveOrderLedger.market == "us",
+                        OrderProposal.market == "equity_us",
+                    ),
+                ),
             )
         )
         if symbol:
