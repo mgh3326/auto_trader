@@ -251,7 +251,7 @@ async def test_finalize_creates_one_exact_registry_link(registry_tables) -> None
         frozen_config=config.to_dict(),
         policy={"gate": "honest_offline_gate.v1"},
         benchmark={"names": list(config.baseline_names)},
-        cost={"fee_bps": config.fee_bps},
+        cost={"fee_bps": config.taker_bps},
         mdd={"target_pct": config.mdd_target_pct},
     )
     experiment = await register_experiment(session, identity)

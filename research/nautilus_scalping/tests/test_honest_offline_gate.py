@@ -3,8 +3,11 @@ from __future__ import annotations
 import dataclasses
 from datetime import UTC, datetime, timedelta
 
+import frozen_config as fc
 import honest_offline_gate as hog
 import pytest
+
+from app.services.research_canonical_hash import canonical_sha256
 
 
 def _candidate(key: str, score: float) -> hog.SelectionCandidate:
@@ -235,9 +238,9 @@ def test_every_honest_gate_definition_changes_config_hash() -> None:
         {"dsr_probability_threshold": 0.99},
         {"pbo_max": 0.4},
         {"fdr_alpha": 0.01},
-        {"economic_minimum_edge_bps": 2.0},
+        {"economic_triviality_floor_bps": 2.0},
         {"baseline_names": ("cash",)},
-        {"fee_bps": 8.0},
+        {"taker_bps": 8.0},
         {"half_spread_bps": 2.0},
         {"slippage_bps": 3.0},
         {"mdd_target_pct": 5.0},
@@ -247,3 +250,10 @@ def test_every_honest_gate_definition_changes_config_hash() -> None:
         assert (
             dataclasses.replace(config, **change).config_hash() != config.config_hash()
         )
+
+
+def test_honest_gate_reuses_campaign_config_and_rob846_canonical_hash() -> None:
+    config = hog.HonestGateConfig()
+
+    assert hog.HonestGateConfig is fc.CampaignConfig
+    assert config.config_hash() == canonical_sha256(config.to_dict())

@@ -13,9 +13,9 @@ taker 4.0 bps); the fill model is the queue-loss/adverse-selection scenario in
 
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import asdict, dataclass, fields
+
+from app.services.research_canonical_hash import canonical_sha256
 
 
 @dataclass(frozen=True)
@@ -66,10 +66,8 @@ class CampaignConfig:
         return cls(**kw)
 
     def config_hash(self) -> str:
-        """SHA-256 over the sorted-key JSON of the config (reproducible)."""
-        return hashlib.sha256(
-            json.dumps(self.to_dict(), sort_keys=True).encode()
-        ).hexdigest()
+        """ROB-846 typed-canonical SHA-256 of the complete frozen config."""
+        return canonical_sha256(self.to_dict())
 
 
 # The frozen default committed in PR1. PR2 reads THIS; it must not be edited to

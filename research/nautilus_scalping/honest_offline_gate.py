@@ -21,6 +21,11 @@ from typing import Any
 
 from app.services.research_canonical_hash import canonical_sha256
 
+try:
+    from .frozen_config import CampaignConfig
+except ImportError:  # Top-level imports used by the isolated research test suite.
+    from frozen_config import CampaignConfig
+
 REQUIRED_BASELINES = ("cash", "btc_eth_equal_weight", "same_turnover_random")
 _EULER_GAMMA = 0.5772156649015329
 
@@ -65,28 +70,7 @@ class SealedOOS:
     metrics: Mapping[str, float]
 
 
-@dataclass(frozen=True)
-class HonestGateConfig:
-    dsr_probability_threshold: float = 0.95
-    dsr_min_observations: int = 30
-    pbo_slices: int = 4
-    pbo_max: float = 0.5
-    fdr_alpha: float = 0.05
-    economic_minimum_edge_bps: float = 0.5
-    baseline_names: tuple[str, ...] = REQUIRED_BASELINES
-    random_baseline_seed: int = 847
-    random_baseline_repetitions: int = 100
-    fee_bps: float = 5.0
-    half_spread_bps: float = 0.0
-    slippage_bps: float = 2.0
-    cost_stress_multipliers: tuple[float, ...] = (1.0, 1.5, 2.0)
-    mdd_target_pct: float = 20.0
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-    def config_hash(self) -> str:
-        return canonical_sha256(self.to_dict())
+HonestGateConfig = CampaignConfig
 
 
 @dataclass(frozen=True)
@@ -360,7 +344,7 @@ def build_gate_artifact(
         reasons.append("fdr_not_significant")
     if (
         not math.isfinite(economic_edge_bps)
-        or economic_edge_bps < config.economic_minimum_edge_bps
+        or economic_edge_bps < config.economic_triviality_floor_bps
     ):
         reasons.append("economic_edge_below_minimum")
 
