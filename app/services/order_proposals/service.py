@@ -92,6 +92,23 @@ _EVIDENCE_ACCEPTING_RUNG_STATES = frozenset(
 )
 _LOSS_CUT_CONFIRMATION_KEY = "loss_cut_confirmation"
 _LOSS_CUT_CONFIRMABLE_RUNG_STATES = frozenset({"pending_approval", "needs_reconfirm"})
+_SUPERSEDE_INVALIDATABLE_RUNG_STATES = frozenset(
+    {"pending_approval", "needs_reconfirm"}
+)
+_APPROVAL_TERMINAL_GROUP_STATES = frozenset(
+    {"terminal", "rejected", "expired", "voided", "superseded"}
+)
+
+
+def proposal_approval_block_reason(group: OrderProposal) -> str | None:
+    """Return the stable operator-facing reason a group cannot be approved."""
+    if group.superseded_by_proposal_id is not None:
+        return f"proposal_superseded_by:{group.superseded_by_proposal_id}"
+    if group.lifecycle_state == "superseded":
+        return "proposal_superseded_by:unknown"
+    if group.lifecycle_state in _APPROVAL_TERMINAL_GROUP_STATES:
+        return f"proposal_terminal:{group.lifecycle_state}"
+    return None
 
 
 def _validate_action_contract(
@@ -326,10 +343,21 @@ class OrderProposalsService:
                 state="pending_approval",
             )
         if superseded_group is not None:
+            superseded_rungs = await self._repo.list_rungs(superseded_group.id)
+            for superseded_rung in superseded_rungs:
+                if superseded_rung.state not in _SUPERSEDE_INVALIDATABLE_RUNG_STATES:
+                    continue
+                sm.assert_rung_transition(superseded_rung.state, "superseded")
+                await self._repo.update_rung(
+                    superseded_rung,
+                    state="superseded",
+                    updated_at=now,
+                )
             await self._repo.update_group(
                 superseded_group,
                 lifecycle_state="superseded",
                 superseded_by_proposal_id=proposal_id,
+                approval_nonce_used_at=now,
             )
         return group
 
@@ -409,6 +437,18 @@ class OrderProposalsService:
             raise OrderProposalNotFound(str(proposal_id))
         rungs = await self._repo.list_rungs(group.id)
         return group, rungs
+
+    async def resolve_proposal_id_prefix(
+        self, proposal_prefix: str
+    ) -> uuid.UUID | None:
+        if len(proposal_prefix) != 8 or any(
+            char not in "0123456789abcdefABCDEF" for char in proposal_prefix
+        ):
+            return None
+        matches = await self._repo.list_groups_by_proposal_prefix(proposal_prefix)
+        if len(matches) != 1:
+            return None
+        return matches[0].proposal_id
 
     async def list_recent(
         self,
@@ -717,6 +757,9 @@ class OrderProposalsService:
         group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
         if group is None:
             raise OrderProposalNotFound(str(proposal_id))
+        block_reason = proposal_approval_block_reason(group)
+        if block_reason is not None:
+            raise OrderProposalError(block_reason)
         await self._repo.update_group(
             group, approval_nonce=nonce, approval_nonce_used_at=None
         )
@@ -728,6 +771,9 @@ class OrderProposalsService:
         group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
         if group is None:
             raise OrderProposalNotFound(str(proposal_id))
+        block_reason = proposal_approval_block_reason(group)
+        if block_reason is not None:
+            raise OrderProposalError(block_reason)
         if group.approval_nonce != nonce:
             raise OrderProposalError("nonce_mismatch")
         if group.approval_nonce_used_at is not None:
@@ -801,6 +847,9 @@ class OrderProposalsService:
         group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
         if group is None:
             raise OrderProposalNotFound(str(proposal_id))
+        block_reason = proposal_approval_block_reason(group)
+        if block_reason is not None:
+            raise OrderProposalError(block_reason)
         if group.approval_nonce != nonce:
             raise OrderProposalError("nonce_mismatch")
         if group.approval_nonce_used_at is not None:

@@ -30,6 +30,9 @@ from app.mcp_server.tooling.orders_kis_variants import (
     KIS_MOCK_ORDER_TOOL_NAMES,
     LIVE_RECONCILE_TOOL_NAMES,
 )
+from app.mcp_server.tooling.orders_kiwoom_us_variants import (
+    KIWOOM_MOCK_US_TOOL_NAMES,
+)
 from app.mcp_server.tooling.orders_kiwoom_variants import KIWOOM_MOCK_TOOL_NAMES
 from app.mcp_server.tooling.orders_registration import ORDER_TOOL_NAMES
 from app.mcp_server.tooling.orders_toss_variants import (
@@ -91,6 +94,7 @@ ANALYSIS_READONLY_FORBIDDEN_TOOL_NAMES: set[str] = (
     | KIS_MOCK_ORDER_TOOL_NAMES
     | LIVE_RECONCILE_TOOL_NAMES
     | KIWOOM_MOCK_TOOL_NAMES
+    | KIWOOM_MOCK_US_TOOL_NAMES
     | PAPER_LIMIT_ORDER_TOOL_NAMES
     | (TOSS_LIVE_ORDER_TOOL_NAMES - {"toss_get_positions"})
     | {

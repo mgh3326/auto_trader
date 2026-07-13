@@ -294,6 +294,107 @@ async def test_approve_happy_path_submits_and_edits(monkeypatch, db_session):
 
 
 @pytest.mark.asyncio
+async def test_superseded_old_button_is_explicitly_blocked_and_replacement_approves(
+    monkeypatch, db_session
+):
+    _allow_chat(monkeypatch)
+    old = await _seed_proposal(db_session, nonce="old-button-nonce")
+    service = OrderProposalsService(db_session)
+    replacement = await service.create_proposal(
+        symbol="A",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("10"), Decimal("99"), None)],
+        supersedes_proposal_id=old.proposal_id,
+        now=datetime(2026, 7, 14, 1, 20, tzinfo=UTC),
+    )
+    await service.set_approval_nonce(replacement.proposal_id, "new-button-nonce")
+    await db_session.commit()
+    revalidated = []
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        revalidated.append(proposal_id)
+        return [RungOutcome(0, "submitted_resting", {})]
+
+    notifier = _FakeNotifier()
+    old_result = await handle_callback_update(
+        _make_update(data=f"op:{str(old.proposal_id)[:8]}:old-button-nonce"),
+        now=datetime(2026, 7, 14, 1, 21, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+    new_result = await handle_callback_update(
+        _make_update(
+            data=f"op:{str(replacement.proposal_id)[:8]}:new-button-nonce",
+            callback_id="cbq-new",
+        ),
+        now=datetime(2026, 7, 14, 1, 22, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+
+    assert old_result["reason"] == f"proposal_superseded_by:{replacement.proposal_id}"
+    assert new_result["reason"] == "approved"
+    assert revalidated == [replacement.proposal_id]
+
+
+@pytest.mark.asyncio
+async def test_loss_cut_second_click_is_blocked_when_superseded(
+    monkeypatch, db_session
+):
+    _allow_chat(monkeypatch)
+    old = await _seed_loss_cut_proposal(db_session, monkeypatch)
+    notifier = _FakeNotifier()
+    submit_calls = []
+
+    async def fake_revalidate(**kwargs):
+        submit_calls.append(kwargs)
+        return [RungOutcome(0, "submitted_resting", {})]
+
+    first = await handle_callback_update(
+        _make_update(data=f"op:{str(old.proposal_id)[:8]}:loss-cut-first"),
+        now=datetime(2026, 7, 14, 1, 25, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+    assert first["reason"] == "loss_cut_confirmation_required"
+    callback_data = notifier.edited[-1][3]["inline_keyboard"][0][0]["callback_data"]
+
+    service = OrderProposalsService(db_session)
+    replacement = await service.create_proposal(
+        symbol="AAPL",
+        market="equity_us",
+        account_mode="toss_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "sell", Decimal("1"), Decimal("98"), None)],
+        supersedes_proposal_id=old.proposal_id,
+        now=datetime(2026, 7, 14, 1, 26, tzinfo=UTC),
+    )
+    await db_session.commit()
+
+    second = await handle_callback_update(
+        _make_update(data=callback_data, callback_id="cbq-loss-cut-second"),
+        now=datetime(2026, 7, 14, 1, 27, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+
+    assert second["reason"] == f"proposal_superseded_by:{replacement.proposal_id}"
+    assert submit_calls == []
+
+
+@pytest.mark.asyncio
 async def test_loss_cut_requires_second_click_before_submit(monkeypatch, db_session):
     _allow_chat(monkeypatch)
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_SUBMIT_AGENT_ID", "proposal-agent")
@@ -1397,28 +1498,29 @@ class _FakeGroup:
         self.proposal_id = proposal_id
 
 
-class _FakeListRecentService:
+class _FakeResolveService:
     def __init__(self, ids: list[uuid.UUID]) -> None:
         self._ids = ids
-        self.calls: list[dict] = []
+        self.calls: list[str] = []
 
-    async def list_recent(self, *, lifecycle_state, limit):
-        self.calls.append({"lifecycle_state": lifecycle_state, "limit": limit})
-        return [(_FakeGroup(pid), []) for pid in self._ids]
+    async def resolve_proposal_id_prefix(self, proposal_short):
+        self.calls.append(proposal_short)
+        matches = [pid for pid in self._ids if str(pid).startswith(proposal_short)]
+        return matches[0] if len(matches) == 1 else None
 
 
 @pytest.mark.asyncio
 async def test_resolve_proposal_id_zero_matches_returns_none():
-    svc = _FakeListRecentService([])
+    svc = _FakeResolveService([])
     assert await _resolve_proposal_id(svc, "deadbeef") is None
-    assert svc.calls[0]["lifecycle_state"] == "proposed"
+    assert svc.calls == ["deadbeef"]
 
 
 @pytest.mark.asyncio
 async def test_resolve_proposal_id_multiple_matches_returns_none():
     pid1 = uuid.UUID("deadbeef-0000-0000-0000-000000000001")
     pid2 = uuid.UUID("deadbeef-0000-0000-0000-000000000002")
-    svc = _FakeListRecentService([pid1, pid2])
+    svc = _FakeResolveService([pid1, pid2])
     assert await _resolve_proposal_id(svc, "deadbeef") is None
 
 
@@ -1426,5 +1528,5 @@ async def test_resolve_proposal_id_multiple_matches_returns_none():
 async def test_resolve_proposal_id_unique_match_returns_id():
     pid1 = uuid.UUID("deadbeef-0000-0000-0000-000000000001")
     pid2 = uuid.UUID("cafebabe-0000-0000-0000-000000000002")
-    svc = _FakeListRecentService([pid1, pid2])
+    svc = _FakeResolveService([pid1, pid2])
     assert await _resolve_proposal_id(svc, "deadbeef") == pid1

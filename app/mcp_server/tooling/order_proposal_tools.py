@@ -33,6 +33,7 @@ from app.services.order_proposals.errors import (
     OrderProposalNotFound,
 )
 from app.services.order_proposals.service import RungInput
+from app.services.order_proposals.telegram_callback import _safe_edit_message
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -152,6 +153,29 @@ async def _edit_voided_approval_message(
         )
 
 
+async def _edit_superseded_approval_message(
+    *, chat_id: Any, message_id: Any, replacement_proposal_id: uuid.UUID
+) -> None:
+    if chat_id is None or message_id is None:
+        return
+    try:
+        notifier = _get_trade_notifier()
+    except Exception:  # noqa: BLE001 - DB supersede is already committed
+        logger.exception(
+            "order_proposal_create: superseded telegram message setup failed "
+            "for message_id=%s",
+            message_id,
+        )
+        return
+    await _safe_edit_message(
+        notifier,
+        str(chat_id),
+        int(message_id),
+        f"🔁 → {str(replacement_proposal_id)[:8]}로 대체됨",
+        reply_markup={"inline_keyboard": []},
+    )
+
+
 async def order_proposal_create(
     symbol: str,
     market: str,
@@ -219,6 +243,7 @@ async def order_proposal_create(
                 account_mode=account_mode,
                 now=now_kst(),
             )
+        superseded_message: tuple[Any, Any] | None = None
         async with AsyncSessionLocal() as session:
             svc = OrderProposalsService(session)
             group = await svc.create_proposal(
@@ -249,6 +274,13 @@ async def order_proposal_create(
                 ),
             )
             _, saved_rungs = await svc.get_proposal(group.proposal_id)
+            if sup is not None:
+                superseded_group, _ = await svc.get_proposal(sup)
+                superseded_source_asof = superseded_group.source_asof or {}
+                superseded_message = (
+                    superseded_source_asof.get("approval_chat_id"),
+                    superseded_source_asof.get("approval_message_id"),
+                )
             await session.commit()
             proposal_id = group.proposal_id
             result = {
@@ -262,6 +294,13 @@ async def order_proposal_create(
                 else None,
                 "rungs": [_rung_dict(r) for r in saved_rungs],
             }
+
+        if superseded_message is not None:
+            await _edit_superseded_approval_message(
+                chat_id=superseded_message[0],
+                message_id=superseded_message[1],
+                replacement_proposal_id=proposal_id,
+            )
 
         if (
             normalized_action == "place"

@@ -68,3 +68,44 @@ ACCOUNT_ORDER_STK_BOND_TP_DEFAULT = "0"  # kt00009 주식채권구분(전체)
 # reads behind the two reported tools (kt00018 잔고, kt00010 주문가능금액); order-history
 # reads (kt00009/kt00007) are left untouched — not proven to need it (smoke-validated).
 ACCOUNT_DMST_STEX_TP_DEFAULT = MOCK_EXCHANGE_KRX  # "KRX" — 국내거래소구분
+
+# ---------------------------------------------------------------------------
+# ROB-867 — US (overseas) equity constants.
+# Same mock host (mockapi.kiwoom.com), separate credentials and account number.
+# ---------------------------------------------------------------------------
+
+# US Order API (/api/us/ordr)
+US_ORDER_PATH = "/api/us/ordr"
+US_ORDER_BUY_API_ID = "ust20000"
+US_ORDER_SELL_API_ID = "ust20001"
+US_ORDER_MODIFY_API_ID = "ust20002"
+US_ORDER_CANCEL_API_ID = "ust20003"
+
+# US Account query API IDs
+US_ACCOUNT_OPEN_ORDERS_API_ID = "ust21050"
+US_ACCOUNT_POSITIONS_API_ID = "ust21070"
+US_ACCOUNT_TODAY_ORDERS_API_ID = "ust21510"
+US_ACCOUNT_DEPOSIT_DETAIL_API_ID = "ust21160"
+US_ACCOUNT_FOREIGN_DEPOSIT_API_ID = "ust21110"  # optional diagnostic, not MCP-exposed
+
+# US Account query path
+US_ACCOUNT_PATH = "/api/us/acnt"
+
+# US order type allowlist (trde_tp). Only codes proven necessary for current
+# consumers. Expanding requires a separate reviewed change with broker evidence.
+US_TRDE_TP_LIMIT = "00"  # limit order — positive price required
+US_TRDE_TP_MARKET = "03"  # market order — price omitted / empty string
+US_SUPPORTED_TRDE_TP: frozenset[str] = frozenset({US_TRDE_TP_LIMIT, US_TRDE_TP_MARKET})
+
+# US exchange mapping: us_symbol_universe exchange -> Kiwoom stex_tp code.
+# Universe stores "NASD" (not "NASDAQ"); both are accepted as input aliases.
+US_EXCHANGE_MAP: dict[str, str] = {
+    "NASD": "ND",
+    "NASDAQ": "ND",
+    "NYSE": "NY",
+    "AMEX": "NA",
+}
+US_SUPPORTED_EXCHANGES: frozenset[str] = frozenset(US_EXCHANGE_MAP.keys())
+US_KIWOOM_EXCHANGE_CODES: frozenset[str] = frozenset(US_EXCHANGE_MAP.values())
+US_STEX_TYPES = US_KIWOOM_EXCHANGE_CODES
+US_EXCHANGE_TO_STEX = US_EXCHANGE_MAP

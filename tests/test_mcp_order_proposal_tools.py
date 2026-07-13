@@ -376,6 +376,72 @@ async def test_create_dispatches_telegram_when_enabled_and_allowlisted(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_supersede_edits_old_approval_message_and_removes_buttons(monkeypatch):
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "chat-1"
+    )
+    fake_notifier = _FakeNotifier(message_id=9999)
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.notifier.get_trade_notifier",
+        lambda: fake_notifier,
+    )
+    monkeypatch.setattr(opt, "_get_trade_notifier", lambda: fake_notifier)
+    original = await opt.order_proposal_create(**_create_kwargs())
+
+    replacement = await opt.order_proposal_create(
+        **_create_kwargs(
+            supersedes_proposal_id=original["proposal_id"],
+            rungs=[
+                {
+                    "rung_index": 0,
+                    "side": "buy",
+                    "quantity": "10",
+                    "limit_price": "69000",
+                    "notional": None,
+                }
+            ],
+        )
+    )
+
+    assert replacement["success"] is True
+    assert fake_notifier.edited == [
+        (
+            "chat-1",
+            9999,
+            f"🔁 → {replacement['proposal_id'][:8]}로 대체됨",
+            {"inline_keyboard": []},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_supersede_message_edit_setup_failure_is_best_effort(monkeypatch):
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "chat-1"
+    )
+    fake_notifier = _FakeNotifier(message_id=9998)
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.notifier.get_trade_notifier",
+        lambda: fake_notifier,
+    )
+    original = await opt.order_proposal_create(**_create_kwargs())
+
+    def notifier_setup_failure():
+        raise RuntimeError("notifier setup failed")
+
+    monkeypatch.setattr(opt, "_get_trade_notifier", notifier_setup_failure)
+    replacement = await opt.order_proposal_create(
+        **_create_kwargs(supersedes_proposal_id=original["proposal_id"])
+    )
+
+    assert replacement["success"] is True
+    got = await opt.order_proposal_get(original["proposal_id"])
+    assert got["proposal"]["lifecycle_state"] == "superseded"
+
+
+@pytest.mark.asyncio
 async def test_create_does_not_dispatch_when_telegram_disabled(monkeypatch):
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", False)
     monkeypatch.setattr(

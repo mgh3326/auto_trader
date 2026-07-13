@@ -93,6 +93,31 @@ async def test_unchanged_submits_resting(db_session):
 
 
 @pytest.mark.asyncio
+async def test_superseded_group_returns_error_before_broker_preview(db_session):
+    svc, group = await _create_proposal(db_session)
+    replacement_id = uuid.uuid4()
+    group.lifecycle_state = "superseded"
+    group.superseded_by_proposal_id = replacement_id
+    await db_session.commit()
+    broker_calls = []
+
+    async def broker_must_not_run(**kwargs):
+        broker_calls.append(kwargs)
+        raise AssertionError("superseded proposal must not reach broker preview")
+
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime(2026, 7, 14, 1, 15, tzinfo=UTC),
+        place_order_fn=broker_must_not_run,
+    )
+
+    assert broker_calls == []
+    assert [outcome.result for outcome in outcomes] == ["error"]
+    assert outcomes[0].detail == {"error": f"proposal_superseded_by:{replacement_id}"}
+
+
+@pytest.mark.asyncio
 async def test_unchanged_submits_acked(db_session):
     svc = OrderProposalsService(db_session)
     g = await svc.create_proposal(

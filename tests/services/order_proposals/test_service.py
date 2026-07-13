@@ -11,6 +11,7 @@ from app.core.db import AsyncSessionLocal
 from app.core.timezone import KST
 from app.models.review import TossLiveOrderLedger
 from app.services.order_proposals import OrderProposalsService
+from app.services.order_proposals import service as service_module
 from app.services.order_proposals.errors import (
     OrderProposalError,
     OrderProposalInvalidStateTransition,
@@ -621,8 +622,45 @@ async def test_rung_transition_enforces_state_machine(db_session):
 
 
 @pytest.mark.asyncio
+async def test_resolve_proposal_prefix_checks_all_lifecycle_states(
+    db_session, monkeypatch
+):
+    colliding_prefix = uuid.uuid4().hex[:8]
+    unique_prefix = uuid.uuid4().hex[:8]
+    proposal_ids = iter(
+        [
+            uuid.UUID(f"{colliding_prefix}-0000-0000-0000-000000000001"),
+            uuid.UUID(f"{colliding_prefix}-0000-0000-0000-000000000002"),
+            uuid.UUID(f"{unique_prefix}-0000-0000-0000-000000000003"),
+        ]
+    )
+    monkeypatch.setattr(service_module.uuid, "uuid4", lambda: next(proposal_ids))
+    svc = OrderProposalsService(db_session)
+    created = []
+    for symbol in ("A", "B", "C"):
+        created.append(
+            await svc.create_proposal(
+                symbol=symbol,
+                market="equity_kr",
+                account_mode="kis_live",
+                side="buy",
+                order_type="limit",
+                proposer="p",
+                rungs=[RungInput(0, "buy", Decimal("1"), Decimal("100"), None)],
+            )
+        )
+    created[0].lifecycle_state = "superseded"
+    created[1].lifecycle_state = "voided"
+    await db_session.commit()
+
+    assert await svc.resolve_proposal_id_prefix(colliding_prefix) is None
+    assert await svc.resolve_proposal_id_prefix(unique_prefix) == created[2].proposal_id
+
+
+@pytest.mark.asyncio
 async def test_replacement_lineage_supersedes_original(db_session):
     svc = OrderProposalsService(db_session)
+    superseded_at = datetime(2026, 7, 14, 1, 2, 3, tzinfo=UTC)
     original = await svc.create_proposal(
         symbol="000660",
         market="equity_kr",
@@ -632,6 +670,7 @@ async def test_replacement_lineage_supersedes_original(db_session):
         proposer="p",
         rungs=[RungInput(0, "buy", Decimal("10"), Decimal("2226000"), None)],
     )
+    await svc.set_approval_nonce(original.proposal_id, "old-approval-nonce")
     await db_session.commit()
     replacement = await svc.create_proposal(
         symbol="000660",
@@ -642,13 +681,119 @@ async def test_replacement_lineage_supersedes_original(db_session):
         proposer="p",
         rungs=[RungInput(0, "buy", Decimal("10"), Decimal("2340000"), None)],
         supersedes_proposal_id=original.proposal_id,
+        now=superseded_at,
     )
     await db_session.commit()
-    orig_after, _ = await svc.get_proposal(original.proposal_id)
+    orig_after, original_rungs = await svc.get_proposal(original.proposal_id)
     assert orig_after.lifecycle_state == "superseded"
     assert orig_after.superseded_by_proposal_id == replacement.proposal_id
+    assert orig_after.approval_nonce_used_at == superseded_at
+    assert [rung.state for rung in original_rungs] == ["superseded"]
     assert replacement.root_proposal_id == original.root_proposal_id
     assert replacement.payload_hash != original.payload_hash
+
+
+@pytest.mark.asyncio
+async def test_supersede_leaves_submitted_rung_unchanged(db_session):
+    svc = OrderProposalsService(db_session)
+    original = await svc.create_proposal(
+        symbol="AAPL",
+        market="equity_us",
+        account_mode="kis_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        rungs=[
+            RungInput(0, "sell", Decimal("1"), Decimal("250"), None),
+            RungInput(1, "sell", Decimal("1"), Decimal("260"), None),
+        ],
+    )
+    for state in ("revalidating", "approved", "submitting", "resting"):
+        await svc.transition_rung(original.proposal_id, 0, new_state=state)
+    await svc.transition_rung(original.proposal_id, 1, new_state="revalidating")
+    await svc.mark_needs_reconfirm(
+        original.proposal_id, 1, now=datetime(2026, 7, 14, 1, 0, tzinfo=UTC)
+    )
+
+    replacement = await svc.create_proposal(
+        symbol="AAPL",
+        market="equity_us",
+        account_mode="kis_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "sell", Decimal("2"), Decimal("270"), None)],
+        supersedes_proposal_id=original.proposal_id,
+        now=datetime(2026, 7, 14, 1, 5, tzinfo=UTC),
+    )
+
+    superseded, rungs = await svc.get_proposal(original.proposal_id)
+    assert superseded.superseded_by_proposal_id == replacement.proposal_id
+    assert [rung.state for rung in rungs] == ["resting", "superseded"]
+
+
+@pytest.mark.asyncio
+async def test_superseded_group_blocks_both_approval_nonce_consumers(db_session):
+    svc, original = await _create_single_rung(db_session)
+    await svc.set_approval_nonce(original.proposal_id, "old-nonce")
+    replacement = await svc.create_proposal(
+        symbol="A",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("101"), None)],
+        supersedes_proposal_id=original.proposal_id,
+        now=datetime(2026, 7, 14, 1, 10, tzinfo=UTC),
+    )
+    expected = f"proposal_superseded_by:{replacement.proposal_id}"
+
+    with pytest.raises(OrderProposalError, match=f"^{expected}$"):
+        await svc.consume_approval_nonce(
+            original.proposal_id,
+            "old-nonce",
+            now=datetime(2026, 7, 14, 1, 11, tzinfo=UTC),
+        )
+    with pytest.raises(OrderProposalError, match=f"^{expected}$"):
+        await svc.consume_loss_cut_confirmation(
+            original.proposal_id,
+            "old-nonce",
+            telegram_user_id="777",
+            now=datetime(2026, 7, 14, 1, 11, tzinfo=UTC),
+        )
+    with pytest.raises(OrderProposalError, match=f"^{expected}$"):
+        await svc.set_approval_nonce(original.proposal_id, "late-dispatch-nonce")
+
+    refreshed, _ = await svc.get_proposal(original.proposal_id)
+    assert refreshed.approval_nonce == "old-nonce"
+    assert refreshed.approval_nonce_used_at == datetime(2026, 7, 14, 1, 10, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_terminal_group_blocks_both_approval_nonce_consumers(db_session):
+    svc, group = await _create_single_rung(db_session)
+    terminalized_at = datetime(2026, 7, 14, 1, 12, tzinfo=UTC)
+    await svc.set_approval_nonce(group.proposal_id, "terminal-nonce")
+    await svc.void_proposal(
+        group.proposal_id,
+        reason="operator void",
+        now=terminalized_at,
+    )
+
+    with pytest.raises(OrderProposalError, match="^proposal_terminal:voided$"):
+        await svc.consume_approval_nonce(
+            group.proposal_id,
+            "terminal-nonce",
+            now=terminalized_at + timedelta(seconds=1),
+        )
+    with pytest.raises(OrderProposalError, match="^proposal_terminal:voided$"):
+        await svc.consume_loss_cut_confirmation(
+            group.proposal_id,
+            "terminal-nonce",
+            telegram_user_id="777",
+            now=terminalized_at + timedelta(seconds=1),
+        )
 
 
 @pytest.mark.asyncio

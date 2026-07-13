@@ -79,8 +79,6 @@ _DENY_REJECTABLE_STATES = frozenset(
     {"pending_approval", "needs_reconfirm", "submitting", "unverified"}
 )
 
-_CANDIDATE_POOL_LIMIT = 200
-
 _RESULT_LABELS: dict[str, str] = {
     "submitted_acked": "체결 대기(접수)",
     "submitted_resting": "주문 유지(대기)",
@@ -164,25 +162,13 @@ async def _safe_send_approval_message(
 async def _resolve_proposal_id(service: Any, proposal_short: str) -> uuid.UUID | None:
     """Resolve a full ``proposal_id`` from its 8-char callback-data prefix.
 
-    ``pending_approval``/``needs_reconfirm`` are rung-level states, not valid
-    group-level ``lifecycle_state`` values (see state_machine.GROUP_STATES) --
-    the group rollup currently buckets all of those (plus "unverified") into
-    "proposed" (see ``OrderProposalsService._recompute_group_state``). So the
-    candidate pool is fetched by group lifecycle_state="proposed" and then
-    filtered in Python by prefix. Zero or multiple matches are both treated
-    as an unresolved reference -- fail closed rather than guess.
+    The candidate pool includes terminal/superseded groups so stale Telegram
+    buttons resolve to the real proposal and reach the lifecycle guard, which
+    can return an explicit ``proposal_superseded_by:<id>`` reason. Zero or
+    multiple prefix matches are both treated as unresolved -- fail closed
+    rather than guess.
     """
-    candidates = await service.list_recent(
-        lifecycle_state="proposed", limit=_CANDIDATE_POOL_LIMIT
-    )
-    matches = [
-        group.proposal_id
-        for group, _rungs in candidates
-        if str(group.proposal_id).startswith(proposal_short)
-    ]
-    if len(matches) != 1:
-        return None
-    return matches[0]
+    return await service.resolve_proposal_id_prefix(proposal_short)
 
 
 def _build_result_summary(outcomes: list[RungOutcome]) -> str:

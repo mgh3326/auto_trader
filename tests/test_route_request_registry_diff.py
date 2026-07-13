@@ -17,6 +17,10 @@ from typing import Any, cast
 import yaml
 
 from app.mcp_server.profiles import McpProfile
+from app.mcp_server.tooling.orders_kiwoom_us_variants import (
+    KIWOOM_MOCK_US_MUTATION_TOOL_NAMES,
+    KIWOOM_MOCK_US_READ_TOOL_NAMES,
+)
 from app.mcp_server.tooling.registry import register_all_tools
 from app.mcp_server.tooling.route_request_lanes import (
     ALL_KNOWN_TOOLS,
@@ -69,6 +73,8 @@ def _playbook_lane_tools() -> dict[str, set[str]]:
 
 def test_buckets_are_disjoint():
     assert READ_ONLY_ADVISORY_TOOLS.isdisjoint(MUTATION_TOOLS)
+    assert KIWOOM_MOCK_US_READ_TOOL_NAMES <= READ_ONLY_ADVISORY_TOOLS
+    assert KIWOOM_MOCK_US_MUTATION_TOOL_NAMES <= MUTATION_TOOLS
 
 
 def test_every_default_tool_is_classified():
@@ -88,6 +94,7 @@ def test_read_only_bucket_has_no_phantom_tools():
     _FLAG_GATED_OR_OPTIONAL: set[str] = {
         "analysis_bundle_create",
         "analysis_bundle_get",
+        *KIWOOM_MOCK_US_READ_TOOL_NAMES,
     }
     phantom = READ_ONLY_ADVISORY_TOOLS - default - _FLAG_GATED_OR_OPTIONAL
     assert not phantom, (

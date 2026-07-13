@@ -224,7 +224,11 @@ def redact_broker_response(payload: dict[str, Any]) -> dict[str, Any]:
     return redact(payload)
 
 
-def validate_mock_response_provenance(payload: dict[str, Any]) -> None:
+def validate_mock_response_provenance(
+    payload: dict[str, Any],
+    *,
+    allowed_account_modes: frozenset[str] = frozenset({"kiwoom_mock"}),
+) -> None:
     def reject(message: str) -> None:
         raise KiwoomMockEvidenceError(
             message,
@@ -241,7 +245,7 @@ def validate_mock_response_provenance(payload: dict[str, Any]) -> None:
                     reject(
                         "Kiwoom mock response contains non-mock environment provenance"
                     )
-                if key == "accountmode" and text != "kiwoom_mock":
+                if key == "accountmode" and text not in allowed_account_modes:
                     reject(
                         "Kiwoom mock response contains conflicting account provenance"
                     )
@@ -281,11 +285,13 @@ def validate_mock_response_provenance(payload: dict[str, Any]) -> None:
     walk(payload)
 
 
-def build_mock_provenance(api_id: str) -> dict[str, str]:
+def build_mock_provenance(
+    api_id: str, *, account_mode: str = "kiwoom_mock"
+) -> dict[str, str]:
     return {
         "broker": "kiwoom",
         "environment": "mock",
-        "account_mode": "kiwoom_mock",
+        "account_mode": account_mode,
         "host": urlparse(constants.MOCK_BASE_URL).hostname or "mockapi.kiwoom.com",
         "api_id": api_id,
     }
