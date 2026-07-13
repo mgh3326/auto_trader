@@ -2156,3 +2156,96 @@ server-observed snapshot feeds the existing risk gates.
   requires `dry_run=false` **and** `confirm=true`.
 - Demo-host allowlist, notional/daily-loss/cooldown caps, and the broker-native
   ledger/reconcile contract are unchanged.
+
+### Kiwoom mock US-equity order tools (ROB-867)
+
+Seven typed MCP tools for the dedicated `kiwoom_mock_us` account mode. These are
+**US-only** (NASDAQ/NYSE/AMEX) and completely independent from the KR
+`kiwoom_mock` namespace — separate app key, app secret, and account number. The
+US namespace never reads or falls back to `KIWOOM_MOCK_APP_KEY` /
+`KIWOOM_MOCK_APP_SECRET` / `KIWOOM_MOCK_ACCOUNT_NO`.
+
+Tool names (all under `account_mode="kiwoom_mock_us"`):
+
+- `kiwoom_mock_us_preview_order` — DB-resolved request body + requested-notional preview (no broker POST)
+- `kiwoom_mock_us_place_order` — submit buy/sell limit or market order (`dry_run` default)
+- `kiwoom_mock_us_cancel_order` — cancel by order id
+- `kiwoom_mock_us_modify_order` — modify original order number + new price
+- `kiwoom_mock_us_get_order_history(scope="open"|"today")` — open (default) or today's orders/fills
+- `kiwoom_mock_us_get_positions` — US positions (`ust21070`)
+- `kiwoom_mock_us_get_orderable_cash` — USD deposit detail (`ust21160`)
+
+Every mutation defaults to `dry_run=true`. Broker I/O requires both
+`dry_run=false` and `confirm=true`. Mock host is fixed to
+`https://mockapi.kiwoom.com` (transport-layer fail-closed); the live host cannot
+be selected.
+
+#### Exchange mapping
+
+MCP resolves active symbols through `us_symbol_universe` before any network call
+and maps the universe exchange to the Kiwoom `stex_tp` code:
+
+| Universe exchange | Kiwoom `stex_tp` |
+|---|---|
+| `NASDAQ` or `NASD` | `ND` |
+| `NYSE` | `NY` |
+| `AMEX` | `NA` |
+
+Missing, inactive, or unsupported exchanges fail closed. The DB-standard dot
+symbol is passed to Kiwoom unchanged initially. Class-share symbols such as
+`BRK.B` are marked **unverified** in the runbook until smoke evidence exists.
+
+#### trde_tp allowlist (order types)
+
+MCP exposes only the initial consumer-required order types. Broker support is
+recorded separately by the smoke runbook; documentation alone is not proof.
+All other codes are rejected **before symbol lookup, client construction, or
+network I/O** with a stable envelope:
+
+| MCP order type | `trde_tp` | Price rule |
+|---|---:|---|
+| `limit` | `00` | Positive price required; USD decimal string |
+| `market` | `03` | Price omitted; sent as empty string |
+
+Unsupported-code rejection:
+```json
+{
+  "success": false,
+  "error_code": "unsupported_trde_tp",
+  "rejected_trde_tp": "<code>",
+  "supported_trde_tp": ["00", "03"]
+}
+```
+
+Known mock capability refusal (`return_code=20` + `RC9000`) is classified as
+`error_code="capability_unsupported"` and never converted to success.
+
+#### Deposit cash semantics
+
+`kiwoom_mock_us_get_orderable_cash` does **not** call the documented
+`ust31490` orderable-quantity TR, which returned `RC9000` (mock-unsupported) on
+the 2026-07-13 read-only smoke. Instead it parses `ust21160.d0_usd_fx_entr` as a
+decimal USD deposit and returns:
+
+- `cash`: normalized decimal value, or `null` when parsing is not proven
+- `currency="USD"`
+- `cash_source="ust21160.d0_usd_fx_entr"` or an explicit `*_unparsed` source
+- `cash_semantics="deposit_not_broker_orderable"`
+- `orderable_quantity_supported=false`
+
+Preview calculates only the requested notional. It does not synthesize margin,
+orderable quantity, or a success claim based on the deposit value.
+
+#### KR `kiwoom_mock` vs US `kiwoom_mock_us`
+
+| | KR (`kiwoom_mock`) | US (`kiwoom_mock_us`) |
+|---|---|---|
+| Market | KRX only | NASDAQ/NYSE/AMEX |
+| Credentials | `KIWOOM_MOCK_*` | `KIWOOM_MOCK_US_*` (no fallback) |
+| Account mode | `kiwoom_mock` | `kiwoom_mock_us` |
+| Tick | KRX price-banded table | $0.01 flat (no table) |
+| Order history TR | `kt00009`/`kt00007` | `ust21050`/`ust21510` |
+| Orderable cash | `kt00010`/`kt00018` | `ust21160` deposit (ust31490 unsupported) |
+
+Operator smoke runbook: [`docs/runbooks/kiwoom-mock-us-smoke.md`](../../docs/runbooks/kiwoom-mock-us-smoke.md)
+Smoke CLI: `scripts/kiwoom_mock_us_smoke.py` (preflight / preview / full / probe modes)
