@@ -62,6 +62,11 @@ Profile → tool surface mapping
   watch mutation/activation, report-write, KIS mock, Kiwoom, Alpaca, or paper
   simulator tools are registered.
 
+"paper_execution" (McpProfile.PAPER_EXECUTION):
+  ROB-845 canonical experiment paper-execution façade ONLY. The profile is
+  default-off, bearer-authenticated at process startup, and returns before the
+  normal "Always" block. It exposes no venue-native, generic, or live tool.
+
 See app/mcp_server/profiles.py and docs in app/mcp_server/README.md.
 """
 
@@ -143,6 +148,9 @@ from app.mcp_server.tooling.paper_account_registration import (
 from app.mcp_server.tooling.paper_analytics_registration import (
     register_paper_analytics_tools,
 )
+from app.mcp_server.tooling.paper_execution_registration import (
+    register_paper_execution_tools,
+)
 from app.mcp_server.tooling.paper_journal_registration import (
     register_paper_journal_tools,
 )
@@ -221,6 +229,15 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         # returns before the normal default block so broad research, settings,
         # watch, modify, reconcile, and persistence tools are physically absent.
         register_tradingcodex_execution_tools(mcp)
+        return
+
+    if profile is McpProfile.PAPER_EXECUTION:
+        # ROB-845 — exact façade allowlist. Direct callers of the registry do
+        # not receive any tools while the feature is disabled; production
+        # startup fails even earlier in main.py. This branch must remain above
+        # the broad "Always" registrations below.
+        if settings.PAPER_EXECUTION_ENABLED:
+            register_paper_execution_tools(mcp)
         return
 
     # Always: side-effect-free research + read-only tools

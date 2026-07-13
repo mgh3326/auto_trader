@@ -239,6 +239,7 @@ class BinanceDemoLedgerService:
         notional_usdt: Decimal | None = None,
         notional_override_reason: str | None = None,
         extra_metadata: dict[str, Any] | None = None,
+        idempotency_metadata: dict[str, Any] | None = None,
         global_open_root_cap: int,
         now: dt.datetime,
     ) -> RootReservationResult:
@@ -248,9 +249,10 @@ class BinanceDemoLedgerService:
         re-checks the global open-root cap and the per-instrument open root
         *inside one advisory-locked transaction* and inserts the planned root,
         so concurrent TaskIQ / MCP / websocket submits cannot both pass. Returns
-        a stable :class:`RootReservationResult` (``reserved`` /
-        ``exposure_slot_taken``) — the caller submits to the broker only when
-        the status is ``reserved``.
+        a stable :class:`RootReservationResult`. Deterministic callers may also
+        receive ``replayed`` / ``idempotency_in_progress`` /
+        ``idempotency_collision`` before cap checks; the caller submits to the
+        broker only when the status is ``reserved``.
 
         Validates ``product`` first; an unknown product raises
         ``BinanceDemoInvalidProduct`` before any lock/DB work.
@@ -277,6 +279,7 @@ class BinanceDemoLedgerService:
                     notional_usdt=notional_usdt,
                     notional_override_reason=notional_override_reason,
                     extra_metadata=extra_metadata,
+                    idempotency_metadata=idempotency_metadata,
                     global_open_root_cap=global_open_root_cap,
                     now=now,
                 )

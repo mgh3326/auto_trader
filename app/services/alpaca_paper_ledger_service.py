@@ -275,12 +275,18 @@ class SellReservationClaim:
     available:    conservative min of broker qty_available and position qty minus
                   already-reserved open sell qty (Decimal).
     row:          the execution row for the client_order_id (for replay lookups).
+    source_reason_code: Stable source-authority rejection, when the exact BUY
+                  cannot back this claim. ``None`` means source authority passed
+                  (or this is a legacy/manual claim without an exact source).
+    source_available: Remaining quantity attributable to the exact source BUY.
     """
 
     won: bool
     insufficient: bool
     available: Decimal | None
     row: AlpacaPaperOrderLedger | None
+    source_reason_code: str | None = None
+    source_available: Decimal | None = None
 
 
 def is_inflight_execution(row: Any) -> bool:
@@ -464,6 +470,7 @@ class AlpacaPaperLedgerService:
         lifecycle_correlation_id: str | None = None,
         execution_symbol: str,
         execution_venue: str,
+        execution_asset_class: str | None = None,
         instrument_type: InstrumentType,
         side: str,
         order_type: str = "limit",
@@ -504,6 +511,7 @@ class AlpacaPaperLedgerService:
             "lifecycle_state": LIFECYCLE_SUBMITTED,
             "execution_symbol": execution_symbol,
             "execution_venue": execution_venue,
+            "execution_asset_class": execution_asset_class,
             "instrument_type": instrument_type,
             "side": side,
             "order_type": order_type,
@@ -545,6 +553,7 @@ class AlpacaPaperLedgerService:
         lifecycle_correlation_id: str | None = None,
         execution_symbol: str,
         execution_venue: str,
+        execution_asset_class: str | None = None,
         instrument_type: InstrumentType,
         account_mode: str = "alpaca_paper",
         requested_qty: Decimal,
@@ -555,6 +564,7 @@ class AlpacaPaperLedgerService:
         requested_price: Decimal | float | None = None,
         currency: str = "USD",
         preview_payload: dict[str, Any] | None = None,
+        source_client_order_id: str | None = None,
         provenance: ApprovalProvenance | None = None,
     ) -> SellReservationClaim:
         """Atomically reserve sellable qty and claim the submit under one lock.
@@ -574,9 +584,57 @@ class AlpacaPaperLedgerService:
 
         prov = provenance or ApprovalProvenance()
         correlation_id = lifecycle_correlation_id or client_order_id
+        exact_source_id = (source_client_order_id or "").strip() or None
         await self.acquire_sell_reservation_lock(
             account_mode=account_mode, execution_symbol=execution_symbol
         )
+
+        source_available: Decimal | None = None
+        if exact_source_id is not None:
+            source = await self._find_execution_row(exact_source_id, for_update=True)
+            source_filled = self._validated_source_filled_qty(
+                source,
+                account_mode=account_mode,
+                execution_symbol=execution_symbol,
+                execution_venue=execution_venue,
+                execution_asset_class=execution_asset_class,
+                instrument_type=instrument_type,
+            )
+            if source_filled is None:
+                return await self._reject_source_claim(
+                    client_order_id,
+                    reason_code="source_authority_unavailable",
+                    source_available=None,
+                )
+
+            source_sells_stmt = select(AlpacaPaperOrderLedger).where(
+                AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
+                AlpacaPaperOrderLedger.side == "sell",
+                AlpacaPaperOrderLedger.account_mode == account_mode,
+                AlpacaPaperOrderLedger.execution_symbol == execution_symbol,
+                AlpacaPaperOrderLedger.client_order_id != client_order_id,
+                AlpacaPaperOrderLedger.preview_payload[
+                    "source_buy_client_order_id"
+                ].astext
+                == exact_source_id,
+            )
+            source_sells = list(
+                (await self._db.execute(source_sells_stmt)).scalars().all()
+            )
+            source_consumed = sum(
+                (
+                    self._source_consumption_qty(row, source_filled=source_filled)
+                    for row in source_sells
+                ),
+                start=Decimal("0"),
+            )
+            source_available = max(source_filled - source_consumed, Decimal("0"))
+            if requested_qty > source_available:
+                return await self._reject_source_claim(
+                    client_order_id,
+                    reason_code="qty_exceeds_source_available",
+                    source_available=source_available,
+                )
 
         # Only OPEN sells still consume sellable qty: a `filled` sell has already
         # reduced the live position, and a canceled (`cancel_status` set) or
@@ -609,6 +667,14 @@ class AlpacaPaperLedgerService:
                 won=False, insufficient=True, available=available, row=existing
             )
 
+        persisted_preview = dict(preview_payload or {})
+        if exact_source_id is not None:
+            persisted_preview["source_buy_client_order_id"] = exact_source_id
+        else:
+            # Only the trusted argument may create source-allocation evidence;
+            # never let an arbitrary preview field consume another BUY authority.
+            persisted_preview.pop("source_buy_client_order_id", None)
+
         values: dict[str, Any] = {
             "client_order_id": client_order_id,
             "lifecycle_correlation_id": correlation_id,
@@ -618,6 +684,7 @@ class AlpacaPaperLedgerService:
             "lifecycle_state": LIFECYCLE_SUBMITTED,
             "execution_symbol": execution_symbol,
             "execution_venue": execution_venue,
+            "execution_asset_class": execution_asset_class,
             "instrument_type": instrument_type,
             "side": "sell",
             "order_type": order_type,
@@ -625,8 +692,8 @@ class AlpacaPaperLedgerService:
             "requested_qty": requested_qty,
             "requested_price": requested_price,
             "currency": currency,
-            "preview_payload": _redact_sensitive_keys(preview_payload)
-            if preview_payload
+            "preview_payload": _redact_sensitive_keys(persisted_preview)
+            if persisted_preview
             else None,
             "position_snapshot": {
                 "snapshot_kind": "sell_claim_baseline",
@@ -657,7 +724,104 @@ class AlpacaPaperLedgerService:
             insufficient=False,
             available=available,
             row=row,
+            source_available=source_available,
         )
+
+    async def _reject_source_claim(
+        self,
+        client_order_id: str,
+        *,
+        reason_code: str,
+        source_available: Decimal | None,
+    ) -> SellReservationClaim:
+        """Release the xact lock and return a fail-closed source claim result."""
+        await self._db.rollback()
+        self._db.expire_all()
+        existing = await self._find_execution_row(client_order_id)
+        return SellReservationClaim(
+            won=False,
+            insufficient=False,
+            available=None,
+            row=existing,
+            source_reason_code=reason_code,
+            source_available=source_available,
+        )
+
+    @staticmethod
+    def _validated_source_filled_qty(
+        source: AlpacaPaperOrderLedger | None,
+        *,
+        account_mode: str,
+        execution_symbol: str,
+        execution_venue: str,
+        execution_asset_class: str | None,
+        instrument_type: InstrumentType,
+    ) -> Decimal | None:
+        """Return exact BUY capacity only while its authority remains reusable."""
+        if source is None:
+            return None
+        if (
+            source.record_kind != RECORD_KIND_EXECUTION
+            or source.side != "buy"
+            or source.account_mode != account_mode
+            or source.execution_symbol != execution_symbol
+            or source.execution_venue != execution_venue
+            or source.execution_asset_class != execution_asset_class
+            or source.instrument_type != instrument_type
+            or source.lifecycle_state
+            not in {LIFECYCLE_FILLED, LIFECYCLE_POSITION_RECONCILED}
+        ):
+            return None
+        try:
+            filled = Decimal(str(source.filled_qty))
+        except Exception:
+            return None
+        if not filled.is_finite() or filled <= 0:
+            return None
+        return filled
+
+    @staticmethod
+    def _source_consumption_qty(
+        row: AlpacaPaperOrderLedger, *, source_filled: Decimal
+    ) -> Decimal:
+        """Conservatively attribute one sell execution to its exact source BUY."""
+        try:
+            requested = Decimal(str(row.requested_qty))
+        except Exception:
+            return source_filled
+        if not requested.is_finite() or requested <= 0:
+            return source_filled
+
+        filled: Decimal | None = None
+        if row.filled_qty is not None:
+            try:
+                candidate = Decimal(str(row.filled_qty))
+            except Exception:
+                candidate = Decimal("NaN")
+            if candidate.is_finite() and candidate >= 0:
+                filled = candidate
+
+        order_status = normalize_known_broker_order_status(row.order_status)
+        cancel_status = normalize_known_broker_order_status(row.cancel_status)
+        released_terminal = (
+            order_status
+            in {
+                "canceled",
+                "rejected",
+                "expired",
+                "suspended",
+            }
+            or cancel_status == "canceled"
+        )
+        if released_terminal:
+            # A known terminal status releases only quantity proven unfilled.
+            # Missing/malformed fill evidence remains conservatively reserved.
+            return filled if filled is not None else requested
+        if order_status == "filled" or row.lifecycle_state == LIFECYCLE_FILLED:
+            return filled if filled is not None and filled > 0 else requested
+        # Open, partial-open, unknown, and in-flight outcomes reserve the full
+        # request because the final broker fill is not yet bounded.
+        return requested
 
     async def acquire_sell_reservation_lock(
         self, *, account_mode: str, execution_symbol: str
@@ -694,7 +858,7 @@ class AlpacaPaperLedgerService:
         return list(result.scalars().all())
 
     async def _find_execution_row(
-        self, client_order_id: str
+        self, client_order_id: str, *, for_update: bool = False
     ) -> AlpacaPaperOrderLedger | None:
         """Return the execution row for client_order_id regardless of lifecycle state."""
         stmt = (
@@ -709,6 +873,8 @@ class AlpacaPaperLedgerService:
             )
             .limit(1)
         )
+        if for_update:
+            stmt = stmt.with_for_update()
         result = await self._db.execute(stmt)
         return result.scalar_one_or_none()
 
@@ -915,6 +1081,7 @@ class AlpacaPaperLedgerService:
         lifecycle_correlation_id: str | None = None,
         execution_symbol: str,
         execution_venue: str,
+        execution_asset_class: str | None = None,
         instrument_type: InstrumentType,
         side: str,
         order_type: str = "limit",
@@ -955,6 +1122,7 @@ class AlpacaPaperLedgerService:
             "lifecycle_state": lifecycle_state,
             "execution_symbol": execution_symbol,
             "execution_venue": execution_venue,
+            "execution_asset_class": execution_asset_class,
             "instrument_type": instrument_type,
             "side": side,
             "order_type": order_type,

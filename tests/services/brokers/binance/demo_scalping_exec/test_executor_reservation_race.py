@@ -39,6 +39,7 @@ from app.services.brokers.binance.demo_scalping.contract import (
 from app.services.brokers.binance.demo_scalping.order_intent import OrderIntent
 from app.services.brokers.binance.demo_scalping_exec import executor as executor_mod
 from app.services.brokers.binance.demo_scalping_exec.executor import (
+    DemoExecutionIdentity,
     DemoScalpingExecutor,
 )
 from app.services.brokers.binance.demo_scalping_exec.reference import SymbolReference
@@ -146,7 +147,9 @@ class _GatedSpotClient:
         return _Order("FILLED", client_order_id)
 
     async def get_asset_balance(self, *, asset):
-        if self._close_gate is not None:
+        # The executor now snapshots the pre-BUY balance. Gate only the
+        # post-submit close read that this concurrency fake intends to hold.
+        if self._close_gate is not None and self.submits:
             await self._close_gate.wait()
         return _Balance(self._free)
 
@@ -159,6 +162,8 @@ async def _clean(symbol: str) -> None:
         await db.execute(
             delete(BinanceDemoOrderLedger).where(
                 BinanceDemoOrderLedger.client_order_id.like(f"{_CID_PREFIX}%")
+                | BinanceDemoOrderLedger.client_order_id.like("rob845r-%")
+                | BinanceDemoOrderLedger.client_order_id.like("rob845c-%")
             )
         )
         await db.commit()
@@ -320,6 +325,76 @@ async def test_concurrent_executors_at_most_one_broker_submit() -> None:
 
 
 @pytest.mark.asyncio
+async def test_concurrent_same_verified_identity_submits_one_round_trip() -> None:
+    symbol = "R845EXRACEUSDT"
+    await _instrument(symbol)
+    close_gate = asyncio.Event()
+    barrier = asyncio.Barrier(2)
+    identity = DemoExecutionIdentity.from_verified_metadata(
+        decision_id="decision-race",
+        idempotency_key="paper-binance-race-key",
+        immutable_metadata={
+            "experiment_id": "experiment-race",
+            "run_id": "run-race",
+            "cohort_id": "cohort-race",
+            "intent_hash": "1" * 64,
+        },
+    )
+
+    async def run(client):
+        async with AsyncSessionLocal() as session:
+            executor = DemoScalpingExecutor(
+                product="spot",
+                client=client,
+                session=session,
+                reference=_FakeReference(_REF),
+                now=_NOW,
+                limits=_limits(symbol),
+                execution_identity=identity,
+            )
+            await barrier.wait()
+            return await executor.execute(
+                _intent(symbol), confirm=True, market=_FRESH_MARKET
+            )
+
+    client_a = _GatedSpotClient(close_gate=close_gate)
+    client_b = _GatedSpotClient(close_gate=close_gate)
+    task_a = asyncio.create_task(run(client_a))
+    task_b = asyncio.create_task(run(client_b))
+    await asyncio.wait({task_a, task_b}, return_when=asyncio.FIRST_COMPLETED)
+    close_gate.set()
+    result_a, result_b = await asyncio.gather(task_a, task_b)
+
+    pairs = [(result_a, client_a), (result_b, client_b)]
+    winners = [
+        (result, client) for result, client in pairs if result.status == "reconciled"
+    ]
+    losers = [
+        (result, client) for result, client in pairs if result.status == "blocked"
+    ]
+    assert len(winners) == 1
+    assert len(losers) == 1
+    loser_result, loser_client = losers[0]
+    assert loser_result.reason_codes == ("idempotency_in_progress",)
+    assert loser_client.submits == []
+    assert winners[0][1].submits == ["BUY", "SELL"]
+    assert sum(client.submits.count("BUY") for _, client in pairs) == 1
+
+    async with AsyncSessionLocal() as verify:
+        roots = list(
+            (
+                await verify.scalars(
+                    select(BinanceDemoOrderLedger).where(
+                        BinanceDemoOrderLedger.client_order_id
+                        == identity.root_client_order_id
+                    )
+                )
+            ).all()
+        )
+    assert len(roots) == 1
+
+
+@pytest.mark.asyncio
 async def test_pool_size_one_preflight_identity_reservation_and_transition_do_not_starve(
     monkeypatch,
 ) -> None:
@@ -409,5 +484,52 @@ async def test_pool_size_one_preflight_identity_reservation_and_transition_do_no
         assert blocked.status == "blocked"
         assert ReasonCode.EXPOSURE_SLOT_TAKEN in blocked.reason_codes
         assert loser_client.submits == []
+    finally:
+        await pool_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_pool_size_one_canonical_identity_lookup_releases_connection_before_work() -> (
+    None
+):
+    """Canonical replay provenance must not pin the sole owner connection."""
+    pool_engine = create_async_engine(
+        shared_engine.url,
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=0.5,
+        pool_pre_ping=True,
+    )
+    factory = async_sessionmaker(pool_engine, expire_on_commit=False)
+    symbol = "R845POOLIDENTITYUSDT"
+    identity = DemoExecutionIdentity.from_verified_metadata(
+        decision_id="decision-pool-identity",
+        idempotency_key="paper-binance-pool-identity",
+        immutable_metadata={
+            "experiment_id": "experiment-pool-identity",
+            "run_id": "run-pool-identity",
+            "cohort_id": "cohort-pool-identity",
+            "intent_hash": "8" * 64,
+        },
+    )
+    try:
+        client = _GatedSpotClient()
+        async with factory() as owner:
+            executor = DemoScalpingExecutor(
+                product="spot",
+                client=client,
+                session=owner,
+                reference=_FakeReference(_REF),
+                now=_NOW,
+                limits=_limits(symbol),
+                execution_identity=identity,
+            )
+            result = await asyncio.wait_for(
+                executor.execute(_intent(symbol), confirm=True, market=_FRESH_MARKET),
+                timeout=5,
+            )
+
+        assert result.status == "reconciled"
+        assert client.submits == ["BUY", "SELL"]
     finally:
         await pool_engine.dispose()

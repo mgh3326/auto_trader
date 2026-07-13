@@ -2132,6 +2132,7 @@ class TestGetFxRateToolRegistration:
             not in (
                 McpProfile.SHADOW_REPLAY,
                 McpProfile.ACCOUNT_READ,
+                McpProfile.PAPER_EXECUTION,
             )
         ],
     )
