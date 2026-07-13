@@ -12,6 +12,7 @@ import pandas as pd
 INITIAL_CAPITAL = 10_000_000
 TRADING_FEE = 0.0005  # 0.05%
 SLIPPAGE_BPS = 2.0  # 2 basis points
+HALF_SPREAD_BPS = 0.0
 LOOKBACK_BARS = 200
 BAR_INTERVAL = "1d"
 
@@ -214,6 +215,18 @@ class Signal:
     reason: str = ""  # Reason for the signal
 
 
+@dataclass(frozen=True)
+class ExecutionCost:
+    """Frozen transaction-cost inputs applied only at causal fill time."""
+
+    fee_rate: float = TRADING_FEE
+    half_spread_bps: float = HALF_SPREAD_BPS
+    slippage_bps: float = SLIPPAGE_BPS
+
+
+DEFAULT_EXECUTION_COST = ExecutionCost()
+
+
 @dataclass
 class PortfolioState:
     """Current portfolio state."""
@@ -369,18 +382,21 @@ def load_data(
 
 
 def _calc_execution_price(
-    bar: BarData, action: str, slippage_bps: float = SLIPPAGE_BPS
+    bar: BarData,
+    action: str,
+    execution_cost: ExecutionCost = DEFAULT_EXECUTION_COST,
 ) -> float:
-    """Calculate execution price with slippage.
+    """Calculate a next-open execution price with spread and slippage.
 
     For buys: price moves up (higher price)
     For sells: price moves down (lower price)
     """
-    slippage = bar.close * (slippage_bps / 10000)
+    impact_bps = execution_cost.half_spread_bps + execution_cost.slippage_bps
+    impact = bar.open * (impact_bps / 10000)
     if action == "buy":
-        return bar.close + slippage
+        return bar.open + impact
     else:  # sell
-        return bar.close - slippage
+        return bar.open - impact
 
 
 def _calc_fee(amount: float, fee_rate: float = TRADING_FEE) -> float:
@@ -393,6 +409,7 @@ def _calc_buy_quantity(
     weight: float,
     portfolio_value: float,
     price: float,
+    fee_rate: float = TRADING_FEE,
 ) -> float:
     """Calculate quantity to buy for target weight, accounting for fees.
 
@@ -408,7 +425,7 @@ def _calc_buy_quantity(
     target_value = portfolio_value * weight
     target_qty = target_value / price
     # Calculate max affordable accounting for fees: cost + fee = cost * (1 + fee_rate)
-    max_affordable_qty = cash / (price * (1 + TRADING_FEE))
+    max_affordable_qty = cash / (price * (1 + fee_rate))
     quantity = min(target_qty, max_affordable_qty)
     return max(0.0, quantity)
 
@@ -461,21 +478,32 @@ def _execute_signal(
     state: PortfolioState,
     bar_data: dict[str, BarData],
     portfolio_value: float,
+    *,
+    signal_date: str | None = None,
+    execution_cost: ExecutionCost = DEFAULT_EXECUTION_COST,
 ) -> PortfolioState:
-    """Execute a trading signal and return new state."""
+    """Execute a prior-bar signal at this bar's valid open."""
     if signal.symbol not in bar_data:
         return state
 
     bar = bar_data[signal.symbol]
+    if not np.isfinite(bar.open) or bar.open <= 0:
+        return state
     new_state = state.copy()
 
     if signal.action == "buy":
-        price = _calc_execution_price(bar, "buy")
-        quantity = _calc_buy_quantity(state.cash, signal.weight, portfolio_value, price)
+        price = _calc_execution_price(bar, "buy", execution_cost)
+        quantity = _calc_buy_quantity(
+            state.cash,
+            signal.weight,
+            portfolio_value,
+            price,
+            execution_cost.fee_rate,
+        )
 
         if quantity > 0:
             cost = quantity * price
-            fee = _calc_fee(cost)
+            fee = _calc_fee(cost, execution_cost.fee_rate)
             total_cost = cost + fee
 
             if total_cost <= state.cash:
@@ -495,6 +523,7 @@ def _execute_signal(
                 new_state.trade_log.append(
                     {
                         "date": bar.date,
+                        "signal_date": signal_date or bar.date,
                         "symbol": signal.symbol,
                         "action": "buy",
                         "quantity": quantity,
@@ -507,12 +536,12 @@ def _execute_signal(
     elif signal.action == "sell":
         current_qty = state.positions.get(signal.symbol, 0)
         if current_qty > 0:
-            price = _calc_execution_price(bar, "sell")
+            price = _calc_execution_price(bar, "sell", execution_cost)
             quantity = _calc_sell_quantity(current_qty, signal.weight)
 
             if quantity > 0:
                 proceeds = quantity * price
-                fee = _calc_fee(proceeds)
+                fee = _calc_fee(proceeds, execution_cost.fee_rate)
                 net_proceeds = proceeds - fee
                 avg_price = state.avg_prices.get(signal.symbol, 0)
                 realized_pnl = _calc_realized_pnl(quantity, avg_price, price, fee)
@@ -531,6 +560,7 @@ def _execute_signal(
                 new_state.trade_log.append(
                     {
                         "date": bar.date,
+                        "signal_date": signal_date or bar.date,
                         "symbol": signal.symbol,
                         "action": "sell",
                         "quantity": quantity,
@@ -610,6 +640,7 @@ def run_backtest(
     equity_curve = [initial_capital]
     equity_dates = [dates[0]]
     days_in_market = 0
+    pending_signals: list[tuple[Signal, str]] = []
 
     # Iterate through dates
     for date in dates:
@@ -649,7 +680,24 @@ def run_backtest(
                     history=history,
                 )
 
-        # Calculate current portfolio value
+        # Fill only signals emitted after the preceding bar, using current opens.
+        execution_portfolio_value = state.cash
+        for symbol, qty in state.positions.items():
+            if symbol in bar_data:
+                open_price = bar_data[symbol].open
+                if np.isfinite(open_price) and open_price > 0:
+                    execution_portfolio_value += qty * open_price
+
+        for signal, signal_date in pending_signals:
+            state = _execute_signal(
+                signal,
+                state,
+                bar_data,
+                execution_portfolio_value,
+                signal_date=signal_date,
+            )
+
+        # Mark the portfolio only after fills, using data observable at bar close.
         portfolio_value = state.cash
         for symbol, qty in state.positions.items():
             if symbol in bar_data:
@@ -661,10 +709,7 @@ def run_backtest(
 
         # Get signals from strategy (new two-argument interface)
         signals = strategy.on_bar(bar_data, state)
-
-        # Execute signals
-        for signal in signals:
-            state = _execute_signal(signal, state, bar_data, portfolio_value)
+        pending_signals = [(signal, date) for signal in signals]
 
         # Recalculate equity after execution
         equity = state.cash
@@ -748,7 +793,7 @@ def _calc_sharpe(
     annualize_factor: float | None = None,
 ) -> float:
     """Calculate annualized Sharpe ratio."""
-    if not returns:
+    if len(returns) < 2:
         return 0.0
 
     arr = np.array(returns)

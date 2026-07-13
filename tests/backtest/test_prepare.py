@@ -476,13 +476,13 @@ class TestFeeAwarePnL:
 
         btc_df = pd.DataFrame(
             {
-                "date": ["2025-07-01", "2025-07-02"],
-                "open": [100.0, 100.06],
-                "high": [100.0, 100.06],
-                "low": [100.0, 100.06],
-                "close": [100.0, 100.06],
-                "volume": [1000.0, 1000.0],
-                "value": [100000.0, 100060.0],
+                "date": ["2025-07-01", "2025-07-02", "2025-07-03"],
+                "open": [100.0, 100.0, 100.06],
+                "high": [100.0, 100.06, 100.06],
+                "low": [100.0, 100.0, 100.06],
+                "close": [100.0, 100.06, 100.06],
+                "volume": [1000.0, 1000.0, 1000.0],
+                "value": [100000.0, 100060.0, 100060.0],
             }
         )
         btc_df.to_parquet(data_dir / "KRW-BTC.parquet", index=False)
@@ -492,7 +492,7 @@ class TestFeeAwarePnL:
         monkeypatch.setattr(
             prepare,
             "SPLITS",
-            {"val": {"start": "2025-07-01", "end": "2025-07-02"}},
+            {"val": {"start": "2025-07-01", "end": "2025-07-03"}},
         )
 
         class RoundTripStrategy:
@@ -521,13 +521,13 @@ class TestFeeAwarePnL:
 
         btc_df = pd.DataFrame(
             {
-                "date": ["2025-07-01", "2025-07-02"],
-                "open": [100.0, 100.06],
-                "high": [100.0, 100.06],
-                "low": [100.0, 100.06],
-                "close": [100.0, 100.06],
-                "volume": [1000.0, 1000.0],
-                "value": [100000.0, 100060.0],
+                "date": ["2025-07-01", "2025-07-02", "2025-07-03"],
+                "open": [100.0, 100.0, 100.06],
+                "high": [100.0, 100.06, 100.06],
+                "low": [100.0, 100.0, 100.06],
+                "close": [100.0, 100.06, 100.06],
+                "volume": [1000.0, 1000.0, 1000.0],
+                "value": [100000.0, 100060.0, 100060.0],
             }
         )
         btc_df.to_parquet(data_dir / "KRW-BTC.parquet", index=False)
@@ -537,7 +537,7 @@ class TestFeeAwarePnL:
         monkeypatch.setattr(
             prepare,
             "SPLITS",
-            {"val": {"start": "2025-07-01", "end": "2025-07-02"}},
+            {"val": {"start": "2025-07-01", "end": "2025-07-03"}},
         )
 
         class RoundTripStrategy:
@@ -856,6 +856,132 @@ class TestScoreFormulaHardening:
 
 class TestRunBacktest:
     """Tests for run_backtest function."""
+
+    @staticmethod
+    def _bars(
+        *,
+        dates: list[str],
+        opens: list[float],
+        closes: list[float],
+    ) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "date": dates,
+                "open": opens,
+                "high": [max(o, c) for o, c in zip(opens, closes, strict=True)],
+                "low": [min(o, c) for o, c in zip(opens, closes, strict=True)],
+                "close": closes,
+                "volume": [1000.0] * len(dates),
+                "value": [100000.0] * len(dates),
+            }
+        )
+
+    def test_same_close_only_alpha_is_removed_by_next_open_execution(self):
+        data = {
+            "BTC": self._bars(
+                dates=["2025-01-01", "2025-01-02", "2025-01-03"],
+                opens=[100.0, 200.0, 100.0],
+                closes=[100.0, 200.0, 100.0],
+            )
+        }
+
+        class SameCloseOnlyStrategy:
+            def on_bar(self, bar_data, portfolio):
+                if portfolio.date == "2025-01-01":
+                    return [prepare.Signal("BTC", "buy", 1.0)]
+                if portfolio.date == "2025-01-02":
+                    return [prepare.Signal("BTC", "sell", 1.0)]
+                return []
+
+        result = prepare.run_backtest(
+            data, SameCloseOnlyStrategy(), initial_capital=1000.0
+        )
+
+        assert result.total_return_pct < 0
+        assert [trade["date"] for trade in result.trade_log] == [
+            "2025-01-02",
+            "2025-01-03",
+        ]
+        assert result.trade_log[0]["signal_date"] == "2025-01-01"
+        assert result.trade_log[1]["signal_date"] == "2025-01-02"
+
+    def test_causal_next_open_alpha_is_retained(self):
+        data = {
+            "BTC": self._bars(
+                dates=["2025-01-01", "2025-01-02", "2025-01-03"],
+                opens=[90.0, 100.0, 130.0],
+                closes=[95.0, 120.0, 130.0],
+            )
+        }
+
+        class CausalStrategy:
+            def on_bar(self, bar_data, portfolio):
+                if portfolio.date == "2025-01-01":
+                    return [prepare.Signal("BTC", "buy", 1.0)]
+                if portfolio.date == "2025-01-02":
+                    return [prepare.Signal("BTC", "sell", 1.0)]
+                return []
+
+        result = prepare.run_backtest(data, CausalStrategy(), initial_capital=1000.0)
+
+        assert result.total_return_pct > 0
+        assert result.trade_log[0]["price"] == pytest.approx(100.02)
+        assert result.trade_log[1]["price"] == pytest.approx(129.974)
+
+    @pytest.mark.parametrize("malformed_open", [float("nan"), 0.0, -1.0])
+    def test_malformed_next_open_leaves_signal_unfilled(self, malformed_open):
+        data = {
+            "BTC": self._bars(
+                dates=["2025-01-01", "2025-01-02", "2025-01-03"],
+                opens=[100.0, malformed_open, 120.0],
+                closes=[100.0, 110.0, 120.0],
+            )
+        }
+
+        class BuyOnce:
+            def on_bar(self, bar_data, portfolio):
+                if portfolio.date == "2025-01-01":
+                    return [prepare.Signal("BTC", "buy", 1.0)]
+                return []
+
+        result = prepare.run_backtest(data, BuyOnce(), initial_capital=1000.0)
+
+        assert result.num_trades == 0
+
+    def test_missing_immediate_symbol_bar_leaves_signal_unfilled(self):
+        data = {
+            "BTC": self._bars(
+                dates=["2025-01-01", "2025-01-03"],
+                opens=[100.0, 120.0],
+                closes=[100.0, 120.0],
+            ),
+            "ETH": self._bars(
+                dates=["2025-01-02"],
+                opens=[50.0],
+                closes=[50.0],
+            ),
+        }
+
+        class BuyOnce:
+            def on_bar(self, bar_data, portfolio):
+                if portfolio.date == "2025-01-01":
+                    return [prepare.Signal("BTC", "buy", 1.0)]
+                return []
+
+        result = prepare.run_backtest(data, BuyOnce(), initial_capital=1000.0)
+
+        assert result.num_trades == 0
+
+    def test_last_bar_signal_is_never_filled(self):
+        data = {"BTC": self._bars(dates=["2025-01-01"], opens=[100.0], closes=[100.0])}
+
+        class BuyLastBar:
+            def on_bar(self, bar_data, portfolio):
+                return [prepare.Signal("BTC", "buy", 1.0)]
+
+        result = prepare.run_backtest(data, BuyLastBar(), initial_capital=1000.0)
+
+        assert result.num_trades == 0
 
     def test_run_backtest_executes_strategy(self):
         """Test that run_backtest properly executes strategy signals."""
