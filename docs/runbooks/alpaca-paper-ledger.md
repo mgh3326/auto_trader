@@ -330,10 +330,14 @@ outcome store. No new table/column/migration was added.
   before applying any time-dependent (freshness/position) check, so an expired
   packet never turns a completed order into `stale_packet`.
 - **Sell reservation (no oversell).** `reserve_sell_and_claim(...)` holds a
-  transaction-scoped advisory lock on `(account_mode, execution_symbol)`, computes
-  `available = live position − Σ(open sell requested_qty)` and inserts the claim in
-  the same transaction, so two different sell intents cannot both consume the same
-  shares.
+  transaction-scoped advisory lock on `(account_mode, execution_symbol)`. Under
+  that same lock, broker order statuses and the current position are read, and
+  `available = min(qty_available, live qty − Σ(open sell requested_qty))` is used
+  before inserting the claim. The claim stores its `qty` / `qty_available` baseline
+  in the existing `position_snapshot` JSONB. A newly `filled` sell remains reserved
+  until current position evidence proves the fill is reflected; unknown status,
+  missing baseline, or stale cross-endpoint evidence fails closed with
+  `position_reconciliation_pending` and no broker POST.
 - **Preview binding.** `record_preview(...)` persists the server-owned approval
   packet + provenance (quote snapshot id, content/packet hashes) as the
   `record_kind='preview'` row; `get_preview_by_client_order_id(...)` re-reads it so

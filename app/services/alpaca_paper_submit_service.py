@@ -30,8 +30,11 @@ from typing import TYPE_CHECKING, Any
 
 from app.models.trading import InstrumentType
 from app.services.alpaca_paper_ledger_service import (
+    KNOWN_OPEN_BROKER_STATUSES,
+    LIFECYCLE_SUBMITTED,
     AlpacaPaperLedgerService,
     is_inflight_execution,
+    normalize_known_broker_order_status,
 )
 from app.services.brokers.alpaca.exceptions import AlpacaPaperRequestError
 from app.services.brokers.alpaca.schemas import OrderRequest
@@ -366,71 +369,122 @@ class AlpacaPaperSubmitCoordinator:
                 packet, "position_unavailable", "broker cannot read positions"
             )
 
-        # H2: sync existing OPEN submitted sells to broker truth BEFORE computing
-        # availability, so a row that has since filled/canceled at the broker stops
-        # (or keeps) consuming sellable position correctly. Fail-close: a broker
-        # error / unknown / unparseable status leaves the reservation in place.
-        await self._reconcile_open_sells(packet, broker)
-
-        broker_symbol = _broker_position_symbol(packet.execution_symbol)
         try:
-            position = await getter(broker_symbol)
-        except AlpacaPaperRequestError as exc:
-            return self._sell_reject(
-                packet,
-                "position_unavailable",
-                f"position read failed (HTTP {getattr(exc, 'status_code', None)})",
-            )
-        if position is None:
-            return self._sell_reject(
-                packet, "position_flat", "no current position to sell"
-            )
-        if not _symbols_match(
-            getattr(position, "symbol", None), packet.execution_symbol
-        ):
-            return self._sell_reject(
-                packet,
-                "position_symbol_mismatch",
-                f"position symbol {getattr(position, 'symbol', None)!r} != {packet.execution_symbol!r}",
-            )
-        pos_qty = _to_decimal(getattr(position, "qty", None))
-        if pos_qty is None or not pos_qty.is_finite():
-            return self._sell_reject(
-                packet, "position_malformed", "position qty missing/non-finite"
-            )
-        if pos_qty <= 0:
-            return self._sell_reject(
-                packet, "position_flat", "current position qty is non-positive"
+            # Serialize broker evidence, lifecycle transitions, availability and
+            # the new claim under one account+symbol transaction lock.
+            await self._ledger.acquire_sell_reservation_lock(
+                account_mode=packet.account_mode,
+                execution_symbol=packet.execution_symbol,
             )
 
-        claim = await self._ledger.reserve_sell_and_claim(
-            client_order_id=coid,
-            lifecycle_correlation_id=packet.lifecycle_correlation_id,
-            execution_symbol=packet.execution_symbol,
-            execution_venue=packet.execution_venue,
-            instrument_type=_instrument_type_for(packet.execution_asset_class),
-            account_mode=packet.account_mode,
-            requested_qty=requested,
-            position_qty=pos_qty,
-            order_type=str(submit_canonical.get("type") or "limit"),
-            time_in_force=submit_canonical.get("time_in_force"),
-            requested_price=_to_decimal(submit_canonical.get("limit_price")),
-            preview_payload=dict(submit_canonical),
-        )
-        if claim.insufficient:
-            return self._sell_reject(
-                packet,
-                "qty_exceeds_available",
-                f"sell qty {requested} exceeds available {claim.available} "
-                f"(position {pos_qty} minus reserved open sells)",
-            )
-        if not claim.won:
-            row = claim.row
-            if row is not None and not is_inflight_execution(row):
-                return self._resolved_outcome(row)
-            return await self._resolve_inflight(coid)
+            status_evidence = await self._load_open_sell_statuses(packet, broker)
+            broker_symbol = _broker_position_symbol(packet.execution_symbol)
+            try:
+                position = await getter(broker_symbol)
+            except AlpacaPaperRequestError as exc:
+                return self._sell_reject(
+                    packet,
+                    "position_unavailable",
+                    f"position read failed (HTTP {getattr(exc, 'status_code', None)})",
+                )
+            if position is None:
+                causal = await self._stage_causally_safe_statuses(
+                    status_evidence,
+                    position_qty=Decimal("0"),
+                    position_available=Decimal("0"),
+                )
+                if not causal:
+                    return self._sell_reject(
+                        packet,
+                        "position_reconciliation_pending",
+                        "flat position cannot reconcile a filled sell without baseline evidence",
+                    )
+                await self._ledger.session.commit()
+                return self._sell_reject(
+                    packet, "position_flat", "no current position to sell"
+                )
+            if not _symbols_match(
+                getattr(position, "symbol", None), packet.execution_symbol
+            ):
+                return self._sell_reject(
+                    packet,
+                    "position_symbol_mismatch",
+                    f"position symbol {getattr(position, 'symbol', None)!r} != {packet.execution_symbol!r}",
+                )
+            pos_qty = _to_decimal(getattr(position, "qty", None))
+            if pos_qty is None or not pos_qty.is_finite():
+                return self._sell_reject(
+                    packet, "position_malformed", "position qty missing/non-finite"
+                )
+            if pos_qty <= 0:
+                return self._sell_reject(
+                    packet, "position_flat", "current position qty is non-positive"
+                )
 
-        return await self._winner_submit(packet, submit_canonical)
+            raw_available = getattr(position, "qty_available", None)
+            if raw_available is None:
+                return self._sell_reject(
+                    packet,
+                    "position_available_unavailable",
+                    "position qty_available is required for a sell",
+                )
+            pos_available = _to_decimal(raw_available)
+            if (
+                pos_available is None
+                or not pos_available.is_finite()
+                or pos_available < 0
+            ):
+                return self._sell_reject(
+                    packet,
+                    "position_available_malformed",
+                    "position qty_available is non-finite or negative",
+                )
+
+            causal = await self._stage_causally_safe_statuses(
+                status_evidence,
+                position_qty=pos_qty,
+                position_available=pos_available,
+            )
+            if not causal:
+                return self._sell_reject(
+                    packet,
+                    "position_reconciliation_pending",
+                    "filled sell is not yet reflected in broker position evidence",
+                )
+
+            claim = await self._ledger.reserve_sell_and_claim(
+                client_order_id=coid,
+                lifecycle_correlation_id=packet.lifecycle_correlation_id,
+                execution_symbol=packet.execution_symbol,
+                execution_venue=packet.execution_venue,
+                instrument_type=_instrument_type_for(packet.execution_asset_class),
+                account_mode=packet.account_mode,
+                requested_qty=requested,
+                position_qty=pos_qty,
+                position_available=pos_available,
+                order_type=str(submit_canonical.get("type") or "limit"),
+                time_in_force=submit_canonical.get("time_in_force"),
+                requested_price=_to_decimal(submit_canonical.get("limit_price")),
+                preview_payload=dict(submit_canonical),
+            )
+            if claim.insufficient:
+                return self._sell_reject(
+                    packet,
+                    "qty_exceeds_available",
+                    f"sell qty {requested} exceeds available {claim.available} "
+                    f"(position {pos_qty}, broker available {pos_available}, "
+                    "minus reserved open sells)",
+                )
+            if not claim.won:
+                row = claim.row
+                if row is not None and not is_inflight_execution(row):
+                    return self._resolved_outcome(row)
+                return await self._resolve_inflight(coid)
+
+            return await self._winner_submit(packet, submit_canonical)
+        finally:
+            if self._ledger.session.in_transaction():
+                await self._ledger.session.rollback()
 
     async def _winner_submit(
         self, packet: PaperApprovalPacket, submit_canonical: dict[str, Any]
@@ -510,7 +564,19 @@ class AlpacaPaperSubmitCoordinator:
             return await self._resolve_uncertain(coid)
 
         order_dict = _order_to_dict(order)
-        await self._ledger.record_submit(coid, order_dict, raw_response=order_dict)
+        normalized_status = normalize_known_broker_order_status(
+            order_dict.get("status")
+        )
+        await self._ledger.record_submit(
+            coid,
+            order_dict,
+            raw_response=order_dict,
+            lifecycle_state_override=(
+                LIFECYCLE_SUBMITTED
+                if packet.side == "sell" and normalized_status == "filled"
+                else None
+            ),
+        )
         return SubmitOutcome(
             status="submitted",
             client_order_id=coid,
@@ -518,22 +584,20 @@ class AlpacaPaperSubmitCoordinator:
             order=order_dict,
         )
 
-    async def _reconcile_open_sells(
+    async def _load_open_sell_statuses(
         self, packet: PaperApprovalPacket, broker: Any
-    ) -> None:
-        """Refresh OPEN submitted sells for this account+symbol from broker truth.
+    ) -> list[tuple[Any, dict[str, Any], str]]:
+        """Load only recognized broker statuses for currently reserved sells.
 
-        For each open sell, look it up by client_order_id and record the broker
-        status into the ledger. A terminal broker status (filled/canceled/rejected/
-        expired) transitions the row out of ``submitted`` (releasing its hold);
-        an open status keeps it reserved. Any broker error / missing / unparseable
-        status is skipped, leaving the reservation intact (fail-close). This runs
-        before the reservation lock and is idempotent, so concurrent sells converge
-        to the same truth without breaking the account+symbol serialization.
+        For each open sell, look it up by client_order_id and retain only explicitly
+        recognized statuses. Broker error / missing / unknown / unparseable status
+        is skipped, leaving the reservation intact. The caller later applies known
+        terminal transitions only after validating position evidence under the
+        account+symbol lock.
         """
         getter = getattr(broker, "get_order_by_client_order_id", None)
         if getter is None:
-            return
+            return []
         self._ledger.session.expire_all()
         try:
             open_rows = await self._ledger.list_open_sells(
@@ -541,7 +605,8 @@ class AlpacaPaperSubmitCoordinator:
                 execution_symbol=packet.execution_symbol,
             )
         except Exception:  # noqa: BLE001 - keep reservations on read failure
-            return
+            return []
+        evidence: list[tuple[Any, dict[str, Any], str]] = []
         for row in open_rows:
             coid = getattr(row, "client_order_id", None)
             if not coid:
@@ -552,13 +617,44 @@ class AlpacaPaperSubmitCoordinator:
                 continue  # broker error -> keep reserved (fail-close)
             if order is None:
                 continue  # unknown at broker -> keep reserved (fail-close)
-            order_dict = _order_to_dict(order)
-            if order_dict.get("status") is None:
-                continue  # unparseable status -> keep reserved
             try:
-                await self._ledger.record_status(coid, order_dict)
-            except Exception:  # noqa: BLE001 - keep reserved on write failure
+                order_dict = _order_to_dict(order)
+            except (TypeError, ValueError):
                 continue
+            normalized_status = normalize_known_broker_order_status(
+                order_dict.get("status")
+            )
+            if normalized_status is None:
+                continue  # unknown/unparseable status -> keep reserved
+            order_dict["status"] = normalized_status
+            evidence.append((row, order_dict, normalized_status))
+        return evidence
+
+    async def _stage_causally_safe_statuses(
+        self,
+        evidence: list[tuple[Any, dict[str, Any], str]],
+        *,
+        position_qty: Decimal,
+        position_available: Decimal,
+    ) -> bool:
+        """Stage terminal transitions without releasing an unreflected fill."""
+        for row, order_dict, status in evidence:
+            if status in KNOWN_OPEN_BROKER_STATUSES:
+                continue
+            if status == "filled" and not _filled_is_reflected(
+                row,
+                order_dict,
+                position_qty=position_qty,
+                position_available=position_available,
+            ):
+                return False
+            try:
+                await self._ledger.record_status(
+                    row.client_order_id, order_dict, commit=False
+                )
+            except Exception:  # noqa: BLE001 - rollback keeps every hold fail-closed
+                return False
+        return True
 
     def _sell_reject(
         self, packet: PaperApprovalPacket, code: str, message: str
@@ -690,6 +786,40 @@ def _to_decimal(value: Any) -> Decimal | None:
         return Decimal(str(value))
     except Exception:
         return None
+
+
+def _filled_is_reflected(
+    row: Any,
+    order: dict[str, Any],
+    *,
+    position_qty: Decimal,
+    position_available: Decimal,
+) -> bool:
+    """Prove a newly-filled sell is reflected relative to its claim baseline."""
+    filled_qty = _to_decimal(order.get("filled_qty") or order.get("filled_quantity"))
+    snapshot = getattr(row, "position_snapshot", None)
+    if (
+        filled_qty is None
+        or not filled_qty.is_finite()
+        or filled_qty <= 0
+        or not isinstance(snapshot, dict)
+        or snapshot.get("snapshot_kind") != "sell_claim_baseline"
+    ):
+        return False
+    baseline_qty = _to_decimal(snapshot.get("qty"))
+    baseline_available = _to_decimal(snapshot.get("qty_available"))
+    if (
+        baseline_qty is None
+        or baseline_available is None
+        or not baseline_qty.is_finite()
+        or not baseline_available.is_finite()
+    ):
+        return False
+    reflected_qty = baseline_qty - filled_qty
+    reflected_available = baseline_available - filled_qty
+    if reflected_qty < 0 or reflected_available < 0:
+        return False
+    return position_qty <= reflected_qty and position_available <= reflected_available
 
 
 def _normalize_symbol(symbol: str | None) -> str:

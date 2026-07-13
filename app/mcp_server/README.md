@@ -451,12 +451,17 @@ replay**. There is no direct-POST fallback, and this holds for `us-paper` only.
 - **Exactly once.** Duplicate intents (sequential or concurrent) produce exactly
   one broker HTTP submit; every other caller replays the winner's result.
 - **Live sell eligibility + no oversell.** A sell is verified against the
-  **current** Alpaca paper position re-read right before the POST (past fills are
-  provenance only). Availability and the atomic claim are computed under an
-  account+symbol advisory lock, subtracting already-reserved open sells, so two
-  *different* sell intents cannot both consume the same shares. Automated sell is
-  **explicitly disabled** (reason `automated_sell_disabled`) until ROB-845 wires an
-  opaque buy/position source; manual sell is supported.
+  **current** Alpaca paper position re-read right before the POST, with
+  `qty_available` required as a broker-owned upper bound. Position evidence,
+  lifecycle reconciliation, local reservations, and the atomic claim are bound
+  under one account+symbol advisory lock. Every sell claim stores its `qty` /
+  `qty_available` baseline in the existing `position_snapshot` JSONB; a later
+  `filled` status releases the hold only after the position response proves the
+  fill is reflected. Unknown statuses and ambiguous/stale position evidence remain
+  reserved and return `position_reconciliation_pending`, so two *different* sell
+  intents cannot consume the same shares. Automated sell is **explicitly disabled**
+  (reason `automated_sell_disabled`) until ROB-845 wires an opaque buy/position
+  source; manual sell is supported.
 - **Public success contract.** `success` is true only for
   `submitted` / `replayed` / `recovered`; `failed`, `rejected` and
   `idempotency_in_progress` are `success=false`.

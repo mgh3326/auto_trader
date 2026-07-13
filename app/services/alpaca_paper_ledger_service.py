@@ -146,6 +146,21 @@ _OPEN_STATUSES = frozenset(
     }
 )
 _ANOMALY_STATUSES = frozenset({"rejected", "expired", "suspended"})
+KNOWN_OPEN_BROKER_STATUSES = frozenset({*_OPEN_STATUSES, "partially_filled"})
+KNOWN_TERMINAL_BROKER_STATUSES = frozenset({*_ANOMALY_STATUSES, "filled", "canceled"})
+_KNOWN_BROKER_STATUSES = KNOWN_OPEN_BROKER_STATUSES | KNOWN_TERMINAL_BROKER_STATUSES
+
+
+def normalize_known_broker_order_status(value: Any) -> str | None:
+    """Return a normalized Alpaca status only when its semantics are known.
+
+    Unknown, blank, and non-string provider values are not terminal evidence and
+    must never release an open sell reservation.
+    """
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    return normalized if normalized in _KNOWN_BROKER_STATUSES else None
 
 
 def _derive_lifecycle_state(
@@ -257,7 +272,8 @@ class SellReservationClaim:
     won:          True if this caller inserted the execution claim row.
     insufficient: True if the requested qty exceeds the reservation-adjusted
                   available position (no claim attempted); ``available`` is set.
-    available:    position qty minus already-reserved open sell qty (Decimal).
+    available:    conservative min of broker qty_available and position qty minus
+                  already-reserved open sell qty (Decimal).
     row:          the execution row for the client_order_id (for replay lookups).
     """
 
@@ -533,6 +549,7 @@ class AlpacaPaperLedgerService:
         account_mode: str = "alpaca_paper",
         requested_qty: Decimal,
         position_qty: Decimal,
+        position_available: Decimal,
         order_type: str = "limit",
         time_in_force: str | None = None,
         requested_price: Decimal | float | None = None,
@@ -546,20 +563,19 @@ class AlpacaPaperLedgerService:
         across sessions/processes via a transaction-scoped PostgreSQL advisory lock,
         so two *different* sell intents cannot each read the full position and both
         POST. Within the lock: available = position_qty − Σ(open sell requested_qty
-        already reserved for this symbol/account) and, only if the request fits,
-        inserts the execution claim row (ON CONFLICT DO NOTHING). The inserted claim
-        itself counts as a reservation for the next caller. No new schema.
+        already reserved for this symbol/account), bounded again by the broker's
+        qty_available, and only if the request fits inserts the execution claim row
+        (ON CONFLICT DO NOTHING). The claim stores its position baseline in the
+        existing position_snapshot JSONB and counts as a reservation for the next
+        caller. No new schema.
         """
         if not client_order_id or not client_order_id.strip():
             raise ValueError("client_order_id must not be empty")
 
         prov = provenance or ApprovalProvenance()
         correlation_id = lifecycle_correlation_id or client_order_id
-        lock_key = f"alpaca_paper_sell:{account_mode}:{execution_symbol}"
-
-        # Transaction-scoped advisory lock (released on commit/rollback).
-        await self._db.execute(
-            text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": lock_key}
+        await self.acquire_sell_reservation_lock(
+            account_mode=account_mode, execution_symbol=execution_symbol
         )
 
         # Only OPEN sells still consume sellable qty: a `filled` sell has already
@@ -579,7 +595,10 @@ class AlpacaPaperLedgerService:
         )
         reserved_raw = (await self._db.execute(reserved_stmt)).scalar_one()
         reserved = Decimal(str(reserved_raw or 0))
-        available = Decimal(str(position_qty)) - reserved
+        available = min(
+            Decimal(str(position_qty)) - reserved,
+            Decimal(str(position_available)),
+        )
 
         if requested_qty > available:
             # No write yet — end the txn to release the advisory lock immediately.
@@ -609,6 +628,12 @@ class AlpacaPaperLedgerService:
             "preview_payload": _redact_sensitive_keys(preview_payload)
             if preview_payload
             else None,
+            "position_snapshot": {
+                "snapshot_kind": "sell_claim_baseline",
+                "qty": str(position_qty),
+                "qty_available": str(position_available),
+                "fetched_at": datetime.now(UTC).isoformat(),
+            },
             "broker_order_id": None,
             "submitted_at": None,
             "confirm_flag": True,
@@ -632,6 +657,15 @@ class AlpacaPaperLedgerService:
             insufficient=False,
             available=available,
             row=row,
+        )
+
+    async def acquire_sell_reservation_lock(
+        self, *, account_mode: str, execution_symbol: str
+    ) -> None:
+        """Hold the account+symbol sell lock until the current transaction ends."""
+        lock_key = f"alpaca_paper_sell:{account_mode}:{execution_symbol}"
+        await self._db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": lock_key}
         )
 
     async def list_open_sells(
@@ -1051,6 +1085,8 @@ class AlpacaPaperLedgerService:
         client_order_id: str,
         order: dict[str, Any],
         raw_response: dict[str, Any] | None = None,
+        *,
+        lifecycle_state_override: str | None = None,
     ) -> AlpacaPaperOrderLedger:
         """Record a confirmed submit as a distinct execution row."""
         source_row = await self._require_row(client_order_id)
@@ -1078,7 +1114,9 @@ class AlpacaPaperLedgerService:
             except Exception:
                 filled_avg_price = None
 
-        lifecycle_state = _derive_lifecycle_state(order_status, filled_qty)
+        lifecycle_state = lifecycle_state_override or _derive_lifecycle_state(
+            order_status, filled_qty
+        )
         raw_responses = None
         if raw_response is not None:
             raw_responses = {"submit": _redact_sensitive_keys(raw_response)}
@@ -1151,6 +1189,8 @@ class AlpacaPaperLedgerService:
         client_order_id: str,
         order: dict[str, Any],
         raw_response: dict[str, Any] | None = None,
+        *,
+        commit: bool = True,
     ) -> AlpacaPaperOrderLedger:
         """Update lifecycle state from a status-check response."""
         target_row = await self._require_row(client_order_id)
@@ -1197,8 +1237,11 @@ class AlpacaPaperLedgerService:
         if raw_response is not None:
             await self._accumulate_raw_response(client_order_id, "status", raw_response)
 
-        await self._db.commit()
-        return await self._require_row(client_order_id)
+        if commit:
+            await self._db.commit()
+            return await self._require_row(client_order_id)
+        await self._db.flush()
+        return target_row
 
     async def record_cancel(
         self,
@@ -1490,6 +1533,8 @@ __all__ = [
     "LIFECYCLE_STALE_PREVIEW_CLEANUP_REQUIRED",
     "LIFECYCLE_SUBMITTED",
     "LIFECYCLE_VALIDATED",
+    "KNOWN_OPEN_BROKER_STATUSES",
+    "KNOWN_TERMINAL_BROKER_STATUSES",
     "LedgerNotFoundError",
     "RECORD_KIND_ANOMALY",
     "RECORD_KIND_EXECUTION",
@@ -1504,4 +1549,5 @@ __all__ = [
     "_redact_sensitive_text",
     "from_approval_bridge",
     "is_inflight_execution",
+    "normalize_known_broker_order_status",
 ]

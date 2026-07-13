@@ -178,7 +178,11 @@ async def test_freshness_rechecked_at_send_blocks_stale_sell(db_session):
         max_notional=None,
         max_qty=Decimal("1"),
     )
-    broker = Broker(position=SimpleNamespace(symbol="BTCUSD", qty=Decimal("1")))
+    broker = Broker(
+        position=SimpleNamespace(
+            symbol="BTCUSD", qty=Decimal("1"), qty_available=Decimal("1")
+        )
+    )
     clock = _Clock([_NOW + timedelta(seconds=299), _NOW + timedelta(seconds=301)])
     coord = AlpacaPaperSubmitCoordinator(
         AlpacaPaperLedgerService(db_session),
@@ -211,7 +215,14 @@ async def test_fresh_at_send_still_posts(db_session):
 # G4 — reservation lifecycle: only OPEN sells consume; filled already in position
 # ---------------------------------------------------------------------------
 async def _seed_sell_row(
-    db_session, *, coid, symbol, qty, lifecycle, cancel_status=None
+    db_session,
+    *,
+    coid,
+    symbol,
+    qty,
+    lifecycle,
+    cancel_status=None,
+    position_snapshot=None,
 ):
     """Directly insert an execution sell row in a chosen lifecycle."""
     row = AlpacaPaperOrderLedger(
@@ -229,6 +240,7 @@ async def _seed_sell_row(
         currency="USD",
         requested_qty=Decimal(str(qty)),
         cancel_status=cancel_status,
+        position_snapshot=position_snapshot,
         submitted_at=datetime.now(UTC),
         broker_order_id=f"b-{coid}",
         confirm_flag=True,
@@ -257,6 +269,7 @@ async def test_filled_sell_not_double_counted(db_session):
         instrument_type=InstrumentType.crypto,
         requested_qty=Decimal("0.4"),
         position_qty=Decimal("0.4"),
+        position_available=Decimal("0.4"),
     )
     assert claim.insufficient is False
     assert claim.won is True
@@ -280,6 +293,7 @@ async def test_open_submitted_sell_is_reserved(db_session):
         instrument_type=InstrumentType.crypto,
         requested_qty=Decimal("0.6"),
         position_qty=Decimal("1"),
+        position_available=Decimal("0.5"),
     )
     assert claim.insufficient is True  # 0.6 > (1 - 0.5 open)
     assert claim.available == Decimal("0.5")
@@ -303,6 +317,7 @@ async def test_canceled_sell_releases_reservation(db_session):
         instrument_type=InstrumentType.crypto,
         requested_qty=Decimal("0.6"),
         position_qty=Decimal("1"),
+        position_available=Decimal("0.5"),
     )
     assert blocked.insufficient is True
 
@@ -318,6 +333,7 @@ async def test_canceled_sell_releases_reservation(db_session):
         instrument_type=InstrumentType.crypto,
         requested_qty=Decimal("0.6"),
         position_qty=Decimal("1"),
+        position_available=Decimal("1"),
     )
     assert allowed.insufficient is False
     assert allowed.available == Decimal("1")  # full position free again
@@ -375,10 +391,22 @@ async def test_new_sell_reconciles_async_filled_open_sell(db_session):
     # A new 0.4 sell must be allowed once the stale submitted row is reconciled.
     open_coid = f"{_CORR}-async-open"
     await _seed_sell_row(
-        db_session, coid=open_coid, symbol="BTC/USD", qty="0.6", lifecycle="submitted"
+        db_session,
+        coid=open_coid,
+        symbol="BTC/USD",
+        qty="0.6",
+        lifecycle="submitted",
+        position_snapshot={
+            "snapshot_kind": "sell_claim_baseline",
+            "qty": "1",
+            "qty_available": "1",
+            "fetched_at": _NOW.isoformat(),
+        },
     )
     broker = ReconcileBroker(
-        position=SimpleNamespace(symbol="BTCUSD", qty=Decimal("0.4")),
+        position=SimpleNamespace(
+            symbol="BTCUSD", qty=Decimal("0.4"), qty_available=Decimal("0.4")
+        ),
         orders={open_coid: _order(open_coid, "filled", qty="0.6")},
     )
     canonical = _canonical("sell", qty="0.4", notional=None)
@@ -405,7 +433,9 @@ async def test_new_sell_keeps_reservation_when_open_still_open(db_session):
         db_session, coid=open_coid, symbol="BTC/USD", qty="0.6", lifecycle="submitted"
     )
     broker = ReconcileBroker(
-        position=SimpleNamespace(symbol="BTCUSD", qty=Decimal("1")),
+        position=SimpleNamespace(
+            symbol="BTCUSD", qty=Decimal("1"), qty_available=Decimal("0.4")
+        ),
         orders={open_coid: _order(open_coid, "accepted")},
     )
     canonical = _canonical("sell", qty="0.6", notional=None)
@@ -433,10 +463,22 @@ async def test_concurrent_reconcile_and_new_sells_no_oversell(db_session):
 
     open_coid = f"{_CORR}-conc-open"
     await _seed_sell_row(
-        db_session, coid=open_coid, symbol="BTC/USD", qty="0.6", lifecycle="submitted"
+        db_session,
+        coid=open_coid,
+        symbol="BTC/USD",
+        qty="0.6",
+        lifecycle="submitted",
+        position_snapshot={
+            "snapshot_kind": "sell_claim_baseline",
+            "qty": "1",
+            "qty_available": "1",
+            "fetched_at": _NOW.isoformat(),
+        },
     )
     shared = ReconcileBroker(
-        position=SimpleNamespace(symbol="BTCUSD", qty=Decimal("0.4")),
+        position=SimpleNamespace(
+            symbol="BTCUSD", qty=Decimal("0.4"), qty_available=Decimal("0.4")
+        ),
         orders={open_coid: _order(open_coid, "filled", qty="0.6")},
     )
     barrier = asyncio.Barrier(2)
@@ -476,7 +518,9 @@ async def test_new_sell_fail_closes_when_broker_lookup_fails(db_session):
         db_session, coid=open_coid, symbol="BTC/USD", qty="0.6", lifecycle="submitted"
     )
     broker = ReconcileBroker(
-        position=SimpleNamespace(symbol="BTCUSD", qty=Decimal("1")),
+        position=SimpleNamespace(
+            symbol="BTCUSD", qty=Decimal("1"), qty_available=Decimal("0.4")
+        ),
         raise_lookup={open_coid},
     )
     canonical = _canonical("sell", qty="0.6", notional=None)
@@ -494,3 +538,228 @@ async def test_new_sell_fail_closes_when_broker_lookup_fails(db_session):
     assert outcome.status == "rejected"
     assert outcome.reason_code == "qty_exceeds_available"
     assert broker.submit_calls == []
+
+
+async def test_new_sell_blocks_when_filled_precedes_position_snapshot(db_session):
+    """A filled order cannot release its hold while position evidence is stale."""
+    open_coid = f"{_CORR}-filled-stale-position"
+    await _seed_sell_row(
+        db_session,
+        coid=open_coid,
+        symbol="BTC/USD",
+        qty="0.6",
+        lifecycle="submitted",
+        position_snapshot={
+            "snapshot_kind": "sell_claim_baseline",
+            "qty": "1",
+            "qty_available": "1",
+            "fetched_at": _NOW.isoformat(),
+        },
+    )
+    broker = ReconcileBroker(
+        position=SimpleNamespace(
+            symbol="BTCUSD", qty=Decimal("1"), qty_available=Decimal("1")
+        ),
+        orders={open_coid: _order(open_coid, "filled", qty="0.6")},
+    )
+    canonical = _canonical("sell", qty="0.7", notional=None)
+    packet = _packet(
+        canonical,
+        f"{_CORR}-filled-stale-new",
+        origin="manual",
+        max_notional=None,
+        max_qty=Decimal("1"),
+    )
+    coord = AlpacaPaperSubmitCoordinator(
+        AlpacaPaperLedgerService(db_session), lambda: broker, now_fn=lambda: _NOW
+    )
+
+    outcome = await coord.submit(packet, submit_canonical=canonical)
+
+    assert outcome.status == "rejected"
+    assert outcome.reason_code == "position_reconciliation_pending"
+    assert broker.submit_calls == []
+    db_session.expire_all()
+    rows = await AlpacaPaperLedgerService(db_session).list_open_sells(
+        account_mode="alpaca_paper", execution_symbol="BTC/USD"
+    )
+    assert {row.client_order_id for row in rows} == {open_coid}
+
+
+async def test_immediate_filled_submit_keeps_hold_until_position_reflects(db_session):
+    """A POST response of filled is not itself causal position evidence."""
+
+    class ImmediateFillBroker(ReconcileBroker):
+        def __init__(self):
+            super().__init__(
+                position=SimpleNamespace(
+                    symbol="BTCUSD", qty=Decimal("1"), qty_available=Decimal("1")
+                )
+            )
+            self.filled_orders = {}
+
+        async def submit_order(self, request):
+            self.submit_calls.append(request)
+            order = _order(request.client_order_id, "filled", qty=str(request.qty))
+            self.filled_orders[request.client_order_id] = order
+            return order
+
+        async def get_order_by_client_order_id(self, client_order_id):
+            return self.filled_orders.get(client_order_id)
+
+    broker = ImmediateFillBroker()
+    first_canonical = _canonical("sell", qty="0.6", notional=None)
+    first_packet = _packet(
+        first_canonical,
+        f"{_CORR}-immediate-first",
+        origin="manual",
+        max_notional=None,
+        max_qty=Decimal("1"),
+    )
+    second_canonical = _canonical("sell", qty="0.7", notional=None)
+    second_packet = _packet(
+        second_canonical,
+        f"{_CORR}-immediate-second",
+        origin="manual",
+        max_notional=None,
+        max_qty=Decimal("1"),
+    )
+    coord = AlpacaPaperSubmitCoordinator(
+        AlpacaPaperLedgerService(db_session), lambda: broker, now_fn=lambda: _NOW
+    )
+
+    first = await coord.submit(first_packet, submit_canonical=first_canonical)
+    second = await coord.submit(second_packet, submit_canonical=second_canonical)
+
+    assert first.status == "submitted"
+    assert second.status == "rejected"
+    assert second.reason_code == "position_reconciliation_pending"
+    assert len(broker.submit_calls) == 1
+
+
+async def test_new_sell_blocks_filled_legacy_row_without_baseline(db_session):
+    """A legacy submitted sell without claim baseline is causally ambiguous."""
+    open_coid = f"{_CORR}-filled-no-baseline"
+    await _seed_sell_row(
+        db_session,
+        coid=open_coid,
+        symbol="BTC/USD",
+        qty="0.6",
+        lifecycle="submitted",
+    )
+    broker = ReconcileBroker(
+        position=SimpleNamespace(
+            symbol="BTCUSD", qty=Decimal("0.4"), qty_available=Decimal("0.4")
+        ),
+        orders={open_coid: _order(open_coid, "filled", qty="0.6")},
+    )
+    canonical = _canonical("sell", qty="0.4", notional=None)
+    packet = _packet(
+        canonical,
+        f"{_CORR}-filled-no-baseline-new",
+        origin="manual",
+        max_notional=None,
+        max_qty=Decimal("1"),
+    )
+    coord = AlpacaPaperSubmitCoordinator(
+        AlpacaPaperLedgerService(db_session), lambda: broker, now_fn=lambda: _NOW
+    )
+
+    outcome = await coord.submit(packet, submit_canonical=canonical)
+
+    assert outcome.status == "rejected"
+    assert outcome.reason_code == "position_reconciliation_pending"
+    assert broker.submit_calls == []
+
+
+async def test_full_fill_flat_position_commits_causal_reconciliation(db_session):
+    """A flat position is causal zero evidence and should finalize the old fill."""
+    open_coid = f"{_CORR}-filled-flat"
+    await _seed_sell_row(
+        db_session,
+        coid=open_coid,
+        symbol="BTC/USD",
+        qty="0.6",
+        lifecycle="submitted",
+        position_snapshot={
+            "snapshot_kind": "sell_claim_baseline",
+            "qty": "0.6",
+            "qty_available": "0.6",
+            "fetched_at": _NOW.isoformat(),
+        },
+    )
+    broker = ReconcileBroker(
+        position=None,
+        orders={open_coid: _order(open_coid, "filled", qty="0.6")},
+    )
+    canonical = _canonical("sell", qty="0.1", notional=None)
+    packet = _packet(
+        canonical,
+        f"{_CORR}-filled-flat-new",
+        origin="manual",
+        max_notional=None,
+        max_qty=Decimal("1"),
+    )
+    coord = AlpacaPaperSubmitCoordinator(
+        AlpacaPaperLedgerService(db_session), lambda: broker, now_fn=lambda: _NOW
+    )
+
+    outcome = await coord.submit(packet, submit_canonical=canonical)
+
+    assert outcome.status == "rejected"
+    assert outcome.reason_code == "position_flat"
+    db_session.expire_all()
+    rows = await AlpacaPaperLedgerService(db_session).list_open_sells(
+        account_mode="alpaca_paper", execution_symbol="BTC/USD"
+    )
+    assert rows == []
+
+
+@pytest.mark.parametrize("unknown_status", ["pending_review", " ", 123])
+async def test_new_sell_keeps_reservation_for_unknown_broker_status(
+    db_session, unknown_status
+):
+    """Unknown/blank/non-string statuses are not terminal reservation evidence."""
+    open_coid = f"{_CORR}-unknown-{unknown_status!r}"
+    await _seed_sell_row(
+        db_session, coid=open_coid, symbol="BTC/USD", qty="0.6", lifecycle="submitted"
+    )
+    broker = ReconcileBroker(
+        position=SimpleNamespace(
+            symbol="BTCUSD", qty=Decimal("1"), qty_available=Decimal("1")
+        ),
+        orders={
+            open_coid: {
+                "id": f"b-{open_coid}",
+                "client_order_id": open_coid,
+                "symbol": "BTC/USD",
+                "filled_qty": "0",
+                "side": "sell",
+                "type": "limit",
+                "time_in_force": "gtc",
+                "status": unknown_status,
+            }
+        },
+    )
+    canonical = _canonical("sell", qty="0.6", notional=None)
+    packet = _packet(
+        canonical,
+        f"{_CORR}-unknown-new-{unknown_status!r}",
+        origin="manual",
+        max_notional=None,
+        max_qty=Decimal("1"),
+    )
+    coord = AlpacaPaperSubmitCoordinator(
+        AlpacaPaperLedgerService(db_session), lambda: broker, now_fn=lambda: _NOW
+    )
+
+    outcome = await coord.submit(packet, submit_canonical=canonical)
+
+    assert outcome.status == "rejected"
+    assert outcome.reason_code == "qty_exceeds_available"
+    assert broker.submit_calls == []
+    db_session.expire_all()
+    rows = await AlpacaPaperLedgerService(db_session).list_open_sells(
+        account_mode="alpaca_paper", execution_symbol="BTC/USD"
+    )
+    assert {row.client_order_id for row in rows} == {open_coid}

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -239,6 +240,101 @@ async def test_manual_notional_within_cap_still_posts(fake_service):
     assert len([c for c in fake_service.calls if c[0] == "submit_order"]) == 1
 
 
+@pytest.mark.parametrize(
+    "qty_available, reason_code",
+    [
+        (None, "position_available_unavailable"),
+        (Decimal("NaN"), "position_available_malformed"),
+        (Decimal("Infinity"), "position_available_malformed"),
+        (Decimal("-1"), "position_available_malformed"),
+    ],
+)
+async def test_manual_sell_invalid_qty_available_fails_closed(
+    fake_service, qty_available, reason_code
+):
+    async def _get_position(_symbol):
+        return SimpleNamespace(
+            symbol="AAPL", qty=Decimal("1"), qty_available=qty_available
+        )
+
+    fake_service.get_position = _get_position  # type: ignore[assignment]
+    sid = await _seed_snapshot(price="100")
+
+    payload = await alpaca_paper_submit_order(
+        symbol="AAPL",
+        side="sell",
+        type="limit",
+        qty=Decimal("0.4"),
+        limit_price=Decimal("100"),
+        quote_snapshot_id=sid,
+        confirm=True,
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["reason_code"] == reason_code
+    assert [c for c in fake_service.calls if c[0] == "submit_order"] == []
+
+
+async def test_manual_sell_uses_broker_qty_available_as_hard_upper_bound(fake_service):
+    async def _get_position(_symbol):
+        return SimpleNamespace(
+            symbol="AAPL", qty=Decimal("1"), qty_available=Decimal("0.4")
+        )
+
+    fake_service.get_position = _get_position  # type: ignore[assignment]
+    sid = await _seed_snapshot(price="100")
+
+    payload = await alpaca_paper_submit_order(
+        symbol="AAPL",
+        side="sell",
+        type="limit",
+        qty=Decimal("0.7"),
+        limit_price=Decimal("100"),
+        quote_snapshot_id=sid,
+        confirm=True,
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["reason_code"] == "qty_exceeds_available"
+    assert [c for c in fake_service.calls if c[0] == "submit_order"] == []
+
+
+async def test_manual_sell_claim_persists_position_baseline(fake_service):
+    async def _get_position(_symbol):
+        return SimpleNamespace(
+            symbol="AAPL", qty=Decimal("1"), qty_available=Decimal("1")
+        )
+
+    fake_service.get_position = _get_position  # type: ignore[assignment]
+    sid = await _seed_snapshot(price="100")
+
+    payload = await alpaca_paper_submit_order(
+        symbol="AAPL",
+        side="sell",
+        type="limit",
+        qty=Decimal("0.4"),
+        limit_price=Decimal("100"),
+        quote_snapshot_id=sid,
+        confirm=True,
+    )
+
+    assert payload["submitted"] is True
+    async with AsyncSessionLocal() as db:
+        row = (
+            await db.execute(
+                select(AlpacaPaperOrderLedger).where(
+                    AlpacaPaperOrderLedger.client_order_id
+                    == payload["client_order_id"],
+                    AlpacaPaperOrderLedger.record_kind == "execution",
+                )
+            )
+        ).scalar_one()
+    assert row.position_snapshot["snapshot_kind"] == "sell_claim_baseline"
+    assert row.position_snapshot["qty"] == "1"
+    assert row.position_snapshot["qty_available"] == "1"
+    assert row.position_snapshot["fetched_at"]
+
+
 # ---------------------------------------------------------------------------
 # G4c — the cancel tool releases a sell reservation via the ledger
 # ---------------------------------------------------------------------------
@@ -306,6 +402,7 @@ async def test_cancel_tool_releases_sell_reservation(fake_service):
             instrument_type=InstrumentType.crypto,
             requested_qty=Decimal("1"),
             position_qty=Decimal("1"),
+            position_available=Decimal("1"),
         )
         assert claim.insufficient is False  # reservation released -> full position free
         _ = AlpacaPaperLedgerService  # keep import used
@@ -408,5 +505,35 @@ async def test_cancel_racing_fill_converges_to_filled_not_canceled(fake_service)
     assert result["cancelled"] is False
     assert result["order_status"] == "filled"
     assert result["reservation_released"] is False
-    # ...but the open reservation is cleared because the row is now `filled`.
-    assert await _open_reserved_qty() == Decimal("0")
+    assert result["lifecycle_synced"] is False
+    # Fill truth is returned, but the hold remains until position evidence proves
+    # the fill is reflected (the cancel read-back has no causal position snapshot).
+    assert await _open_reserved_qty() == Decimal("0.6")
+
+
+@pytest.mark.parametrize("unknown_status", ["pending_review", " ", 123])
+async def test_cancel_unknown_status_keeps_db_reservation(fake_service, unknown_status):
+    """An unrecognised broker status must not silently release a sell hold."""
+    coid = "rob74-crypto-unknowncxl"
+    await _seed_open_sell(coid, qty="0.6")
+
+    async def _get_order(_id):
+        return {
+            "id": "b-cxl",
+            "client_order_id": coid,
+            "symbol": "BTC/USD",
+            "filled_qty": "0",
+            "side": "sell",
+            "type": "limit",
+            "time_in_force": "gtc",
+            "status": unknown_status,
+        }
+
+    fake_service.get_order = _get_order  # type: ignore[assignment]
+
+    result = await alpaca_paper_cancel_order(order_id="b-cxl", confirm=True)
+
+    assert result["cancelled"] is False
+    assert result["reservation_released"] is False
+    assert result["lifecycle_synced"] is False
+    assert await _open_reserved_qty() == Decimal("0.6")

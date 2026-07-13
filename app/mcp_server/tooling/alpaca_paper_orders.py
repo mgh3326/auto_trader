@@ -26,7 +26,11 @@ from app.mcp_server.tooling.alpaca_paper_preview import (
     ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD,
     PreviewOrderInput,
 )
-from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+from app.services.alpaca_paper_ledger_service import (
+    KNOWN_OPEN_BROKER_STATUSES,
+    AlpacaPaperLedgerService,
+    normalize_known_broker_order_status,
+)
 from app.services.alpaca_paper_market_evidence import (
     MarketEvidence,
     MarketEvidenceError,
@@ -373,17 +377,25 @@ async def alpaca_paper_cancel_order(
 
     # `canceled` is the ONLY status that confirms the cancel released the order.
     # pending_cancel / new / accepted / any open state, and an unavailable/unknown
-    # read-back, keep the sell reservation. Terminal non-canceled states
-    # (filled/rejected/expired) are still recorded so the ledger reflects broker
-    # truth (a fill that raced the cancel converges to `filled`, not `canceled`).
-    cancel_confirmed = read_back_status == "ok" and broker_status == "canceled"
+    # read-back, keep the sell reservation. A fill that raced the cancel is reported
+    # truthfully but also keeps its hold until a later position read proves that the
+    # fill is reflected. Other known terminal states can safely release the hold.
+    normalized_status = normalize_known_broker_order_status(broker_status)
+    cancel_confirmed = read_back_status == "ok" and normalized_status == "canceled"
     reservation_released = False
     lifecycle_synced = False
-    if client_order_id and read_back_status == "ok" and broker_status is not None:
+    status_can_release = (
+        normalized_status is not None
+        and normalized_status not in KNOWN_OPEN_BROKER_STATUSES
+        and normalized_status != "filled"
+    )
+    if client_order_id and read_back_status == "ok" and status_can_release:
         try:
             async with _session_factory()() as db:
                 ledger = AlpacaPaperLedgerService(db)
-                await ledger.record_status(client_order_id, order_payload)
+                normalized_payload = dict(order_payload)
+                normalized_payload["status"] = normalized_status
+                await ledger.record_status(client_order_id, normalized_payload)
                 if cancel_confirmed:
                     await ledger.record_cancel(
                         client_order_id, cancel_status="canceled"

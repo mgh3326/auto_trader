@@ -213,7 +213,11 @@ async def test_sell_blocked_when_qty_exceeds_current_position(db_session):
     corr = f"{_CORR}-sellover"
     await _seed_reconciled_buy(db_session, corr, filled_qty="5")
     canonical, packet = _sell_packet(corr, qty="3")
-    broker = V3Broker(position=SimpleNamespace(symbol="BTCUSD", qty=Decimal("1")))
+    broker = V3Broker(
+        position=SimpleNamespace(
+            symbol="BTCUSD", qty=Decimal("1"), qty_available=Decimal("1")
+        )
+    )
     coord = _coord(db_session, broker)
 
     outcome = await coord.submit(packet, submit_canonical=canonical)
@@ -255,7 +259,11 @@ async def test_sell_succeeds_within_current_position(db_session):
     corr = f"{_CORR}-sellok"
     await _seed_reconciled_buy(db_session, corr, filled_qty="5")
     canonical, packet = _sell_packet(corr, qty="1")
-    broker = V3Broker(position=SimpleNamespace(symbol="BTCUSD", qty=Decimal("2")))
+    broker = V3Broker(
+        position=SimpleNamespace(
+            symbol="BTCUSD", qty=Decimal("2"), qty_available=Decimal("2")
+        )
+    )
     coord = _coord(db_session, broker)
 
     outcome = await coord.submit(packet, submit_canonical=canonical)

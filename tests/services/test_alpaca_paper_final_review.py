@@ -219,7 +219,10 @@ async def test_distinct_sells_do_not_oversell_position(db_session):
         qty_source="manual_operator",
     )
     shared = FinalBroker(
-        position=SimpleNamespace(symbol="BTCUSD", qty=Decimal("1")), delay_s=0.02
+        position=SimpleNamespace(
+            symbol="BTCUSD", qty=Decimal("1"), qty_available=Decimal("1")
+        ),
+        delay_s=0.02,
     )
     barrier = asyncio.Barrier(2)
 
@@ -270,7 +273,11 @@ async def test_sequential_distinct_sells_reserve_across_calls(db_session):
         max_qty=Decimal("1"),
         qty_source="manual_operator",
     )
-    broker = FinalBroker(position=SimpleNamespace(symbol="BTCUSD", qty=Decimal("1")))
+    broker = FinalBroker(
+        position=SimpleNamespace(
+            symbol="BTCUSD", qty=Decimal("1"), qty_available=Decimal("1")
+        )
+    )
     ledger = AlpacaPaperLedgerService(db_session)
     coord = AlpacaPaperSubmitCoordinator(ledger, lambda: broker, now_fn=lambda: _NOW)
 

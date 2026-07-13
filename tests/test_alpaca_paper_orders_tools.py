@@ -113,7 +113,9 @@ class FakeOrdersService(FakeAlpacaPaperService):
     async def get_position(self, symbol: str) -> Any:  # type: ignore[override]
         # A covering current position so manual sells pass the live-position gate.
         self.calls.append(("get_position", {"symbol": symbol}))
-        return SimpleNamespace(symbol=symbol, qty=Decimal("100"))
+        return SimpleNamespace(
+            symbol=symbol, qty=Decimal("100"), qty_available=Decimal("100")
+        )
 
     async def get_order_by_client_order_id(self, client_order_id: str) -> Order | None:  # type: ignore[override]
         return None
