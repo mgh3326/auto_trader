@@ -8,6 +8,7 @@ row; it performs NO broker mutation.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -17,7 +18,10 @@ from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 from app.services.order_proposals import OrderProposalsService
-from app.services.order_proposals.broker_gateway import fetch_target_order
+from app.services.order_proposals.broker_gateway import (
+    fetch_operator_void_evidence,
+    fetch_target_order,
+)
 from app.services.order_proposals.dispatch import send_proposal_for_approval
 from app.services.order_proposals.errors import (
     OrderProposalError,
@@ -95,6 +99,52 @@ def _rung_dict(r: Any) -> dict[str, Any]:
         "broker_order_id": r.broker_order_id,
         "correlation_id": r.correlation_id,
     }
+
+
+def _get_trade_notifier() -> Any:
+    from app.monitoring.trade_notifier.notifier import get_trade_notifier
+
+    return get_trade_notifier()
+
+
+def _escape_telegram_markdown(value: str) -> str:
+    escaped = value.replace("\\", "\\\\")
+    return re.sub(r"([_*`\[])", r"\\\1", escaped)
+
+
+async def _fetch_void_evidence(*, group: Any, rungs: list[Any], now: datetime) -> Any:
+    return await fetch_operator_void_evidence(
+        account_mode=group.account_mode,
+        market=group.market,
+        symbol=group.symbol,
+        rungs=rungs,
+        now=now,
+    )
+
+
+async def _edit_voided_approval_message(
+    *, chat_id: Any, message_id: Any, void_reason: str
+) -> None:
+    if chat_id is None or message_id is None:
+        return
+    try:
+        edited = await _get_trade_notifier().edit_message(
+            str(chat_id),
+            int(message_id),
+            f"🗑️ 제안 무효화됨\n사유: {_escape_telegram_markdown(void_reason)}",
+            reply_markup={"inline_keyboard": []},
+        )
+        if edited is False:
+            logger.error(
+                "order_proposal_void: telegram message edit returned false "
+                "for message_id=%s",
+                message_id,
+            )
+    except Exception:  # noqa: BLE001 - DB void is already committed
+        logger.exception(
+            "order_proposal_void: telegram message edit failed for message_id=%s",
+            message_id,
+        )
 
 
 async def order_proposal_create(
@@ -289,16 +339,31 @@ async def order_proposal_void(proposal_id: str, reason: str) -> dict[str, Any]:
             raise ValueError("void reason is required")
         async with AsyncSessionLocal() as session:
             service = OrderProposalsService(session)
-            await service.void_proposal(pid, reason=normalized_reason, now=now_kst())
+            now = now_kst()
+            await service.void_proposal(
+                pid,
+                reason=normalized_reason,
+                now=now,
+                broker_evidence=_fetch_void_evidence,
+            )
             group, rungs = await service.get_proposal(pid)
+            source_asof = group.source_asof or {}
+            approval_chat_id = source_asof.get("approval_chat_id")
+            approval_message_id = source_asof.get("approval_message_id")
             await session.commit()
-            return {
+            result = {
                 "success": True,
                 "proposal_id": proposal_id,
                 "lifecycle_state": group.lifecycle_state,
                 "void_reason": group.void_reason,
                 "rungs": [_rung_dict(rung) for rung in rungs],
             }
+        await _edit_voided_approval_message(
+            chat_id=approval_chat_id,
+            message_id=approval_message_id,
+            void_reason=result["void_reason"],
+        )
+        return result
     except (ValueError, OrderProposalError) as exc:
         return {"success": False, "error": str(exc)}
 
@@ -334,8 +399,10 @@ def register_order_proposal_tools(mcp: FastMCP) -> None:
     _ = mcp.tool(
         name="order_proposal_void",
         description=(
-            "Void an unsubmitted order proposal with a required operator reason. "
-            "NOT a broker mutation."
+            "Void an order proposal with a required operator reason. Unverified "
+            "rungs require a five-minute settlement grace plus a fresh, conclusive "
+            "broker-absence lookup and become voided_local_stale; found or "
+            "inconclusive broker evidence fails closed. NOT a broker mutation."
         ),
     )(order_proposal_void)
 

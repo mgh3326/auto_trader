@@ -1,4 +1,5 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -326,3 +327,325 @@ async def test_fetch_submit_evidence_returns_unknown_for_unsupported_tuple():
     assert evidence.outcome == "unknown"
     assert evidence.reason == "submit evidence lookup unsupported for kis_live/crypto"
     lookup.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_operator_void_toss_scan_proves_absence_across_open_and_closed():
+    from app.services.order_proposals import broker_gateway
+
+    calls = []
+
+    class FakeTossClient:
+        async def list_orders(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(orders=[], has_next=False, next_cursor=None)
+
+    rung = SimpleNamespace(
+        rung_index=0,
+        idempotency_key="tosprop-legacy-1",
+        broker_order_id=None,
+        created_at=NOW - timedelta(days=2),
+    )
+    evidence = await broker_gateway.fetch_operator_void_evidence(
+        account_mode="toss_live",
+        market="equity_kr",
+        symbol="005930",
+        rungs=[rung],
+        now=NOW,
+        toss_client=FakeTossClient(),
+    )
+
+    assert evidence[0].outcome == "absent"
+    assert "OPEN" in evidence[0].lookup_scope
+    assert "CLOSED" in evidence[0].lookup_scope
+    assert [call["status"] for call in calls] == ["OPEN", "CLOSED"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("broker_state", ["OPEN", "FILLED"])
+async def test_operator_void_toss_scan_exposes_found_broker_state(broker_state):
+    from app.services.order_proposals import broker_gateway
+
+    found = SimpleNamespace(
+        order_id="broker-1",
+        client_order_id="tosprop-legacy-1",
+        status=broker_state,
+    )
+
+    class FakeTossClient:
+        async def list_orders(self, **kwargs):
+            orders = (
+                [found]
+                if kwargs["status"] == ("OPEN" if broker_state == "OPEN" else "CLOSED")
+                else []
+            )
+            return SimpleNamespace(orders=orders, has_next=False, next_cursor=None)
+
+    rung = SimpleNamespace(
+        rung_index=0,
+        idempotency_key="tosprop-legacy-1",
+        broker_order_id=None,
+        created_at=NOW,
+    )
+    evidence = await broker_gateway.fetch_operator_void_evidence(
+        account_mode="toss_live",
+        market="equity_kr",
+        symbol="005930",
+        rungs=[rung],
+        now=NOW,
+        toss_client=FakeTossClient(),
+    )
+
+    assert evidence[0].outcome == "found"
+    assert evidence[0].broker_order_id == "broker-1"
+    assert evidence[0].broker_state == broker_state
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_operator_void_toss_scan_fails_closed_on_timeout():
+    from app.services.order_proposals import broker_gateway
+
+    class FakeTossClient:
+        async def list_orders(self, **_kwargs):
+            raise httpx.ReadTimeout("")
+
+    rung = SimpleNamespace(
+        rung_index=0,
+        idempotency_key="tosprop-legacy-1",
+        broker_order_id=None,
+        created_at=NOW,
+    )
+    evidence = await broker_gateway.fetch_operator_void_evidence(
+        account_mode="toss_live",
+        market="equity_kr",
+        symbol="005930",
+        rungs=[rung],
+        now=NOW,
+        toss_client=FakeTossClient(),
+    )
+
+    assert evidence[0].outcome == "unknown"
+    assert evidence[0].reason == "ReadTimeout"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_operator_void_toss_scan_requires_client_id_field_for_absence():
+    from app.services.order_proposals import broker_gateway
+
+    order_without_client_id = SimpleNamespace(
+        order_id="unrelated-order",
+        client_order_id=None,
+        status="OPEN",
+    )
+
+    class FakeTossClient:
+        async def list_orders(self, **kwargs):
+            orders = [order_without_client_id] if kwargs["status"] == "OPEN" else []
+            return SimpleNamespace(orders=orders, has_next=False, next_cursor=None)
+
+    rung = SimpleNamespace(
+        rung_index=0,
+        idempotency_key="tosprop-legacy-1",
+        broker_order_id=None,
+        created_at=NOW,
+    )
+    evidence = await broker_gateway.fetch_operator_void_evidence(
+        account_mode="toss_live",
+        market="equity_kr",
+        symbol="005930",
+        rungs=[rung],
+        now=NOW,
+        toss_client=FakeTossClient(),
+    )
+
+    assert evidence[0].outcome == "unknown"
+    assert evidence[0].reason == "broker order list omitted clientOrderId"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cursor", [None, "cursor-1"])
+async def test_operator_void_toss_scan_fails_closed_on_invalid_pagination(cursor):
+    from app.services.order_proposals import broker_gateway
+
+    class FakeTossClient:
+        async def list_orders(self, **kwargs):
+            if kwargs["status"] == "OPEN":
+                return SimpleNamespace(orders=[], has_next=False, next_cursor=None)
+            return SimpleNamespace(orders=[], has_next=True, next_cursor=cursor)
+
+    rung = SimpleNamespace(
+        rung_index=0,
+        idempotency_key="tosprop-legacy-1",
+        broker_order_id=None,
+        created_at=NOW,
+    )
+    evidence = await broker_gateway.fetch_operator_void_evidence(
+        account_mode="toss_live",
+        market="equity_kr",
+        symbol="005930",
+        rungs=[rung],
+        now=NOW,
+        toss_client=FakeTossClient(),
+    )
+
+    assert evidence[0].outcome == "unknown"
+    assert "cursor" in (evidence[0].reason or "")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_operator_void_kis_history_distinguishes_absent_and_filled():
+    from app.services.order_proposals import broker_gateway
+
+    rung = SimpleNamespace(
+        rung_index=0,
+        idempotency_key=None,
+        broker_order_id="kis-order-1",
+        created_at=NOW - timedelta(days=1),
+    )
+
+    async def absent_history(**_kwargs):
+        return {"orders": [], "errors": []}
+
+    absent = await broker_gateway.fetch_operator_void_evidence(
+        account_mode="kis_live",
+        market="equity_kr",
+        symbol="005930",
+        rungs=[rung],
+        now=NOW,
+        history_fn=absent_history,
+    )
+
+    async def filled_history(**_kwargs):
+        return {
+            "orders": [{"order_id": "kis-order-1", "status": "filled"}],
+            "errors": [],
+        }
+
+    found = await broker_gateway.fetch_operator_void_evidence(
+        account_mode="kis_live",
+        market="equity_kr",
+        symbol="005930",
+        rungs=[rung],
+        now=NOW,
+        history_fn=filled_history,
+    )
+
+    assert absent[0].outcome == "absent"
+    assert found[0].outcome == "found"
+    assert found[0].broker_state == "filled"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_operator_void_kis_us_empty_history_is_not_absence_proof():
+    from app.services.order_proposals import broker_gateway
+
+    rung = SimpleNamespace(
+        rung_index=0,
+        idempotency_key=None,
+        broker_order_id="kis-us-order-1",
+        created_at=NOW - timedelta(days=1),
+    )
+
+    async def empty_history(**_kwargs):
+        return {"orders": [], "errors": [], "truncated": False}
+
+    evidence = await broker_gateway.fetch_operator_void_evidence(
+        account_mode="kis_live",
+        market="equity_us",
+        symbol="AAPL",
+        rungs=[rung],
+        now=NOW,
+        history_fn=empty_history,
+    )
+
+    assert evidence[0].outcome == "unknown"
+    assert "cannot be proven complete" in (evidence[0].reason or "")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("history_result", "reason_fragment"),
+    [
+        ({"orders": [], "errors": [], "truncated": True}, "truncated"),
+        (
+            {
+                "orders": [],
+                "errors": [{"market": "equity_us", "error": "page 2 failed"}],
+                "truncated": False,
+            },
+            "page 2 failed",
+        ),
+    ],
+)
+async def test_operator_void_kis_history_fails_closed_when_incomplete(
+    history_result, reason_fragment
+):
+    from app.services.order_proposals import broker_gateway
+
+    captured = {}
+
+    async def incomplete_history(**kwargs):
+        captured.update(kwargs)
+        return history_result
+
+    rung = SimpleNamespace(
+        rung_index=0,
+        idempotency_key=None,
+        broker_order_id="kis-order-1",
+        created_at=NOW - timedelta(days=1),
+    )
+    evidence = await broker_gateway.fetch_operator_void_evidence(
+        account_mode="kis_live",
+        market="equity_us",
+        symbol="AAPL",
+        rungs=[rung],
+        now=NOW,
+        history_fn=incomplete_history,
+    )
+
+    assert captured["limit"] == -1
+    assert evidence[0].outcome == "unknown"
+    assert reason_fragment in (evidence[0].reason or "")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_operator_void_upbit_identifier_distinguishes_absent_and_open():
+    from app.services.order_proposals import broker_gateway
+
+    rung = SimpleNamespace(
+        rung_index=0,
+        idempotency_key="oprop-legacy-1",
+        broker_order_id=None,
+        created_at=NOW,
+    )
+    absent = await broker_gateway.fetch_operator_void_evidence(
+        account_mode="upbit",
+        market="crypto",
+        symbol="KRW-BTC",
+        rungs=[rung],
+        now=NOW,
+        upbit_identifier_lookup_fn=AsyncMock(side_effect=_http_status_error(404)),
+    )
+    found = await broker_gateway.fetch_operator_void_evidence(
+        account_mode="upbit",
+        market="crypto",
+        symbol="KRW-BTC",
+        rungs=[rung],
+        now=NOW,
+        upbit_identifier_lookup_fn=AsyncMock(
+            return_value={"uuid": "upbit-order-1", "state": "wait"}
+        ),
+    )
+
+    assert absent[0].outcome == "absent"
+    assert found[0].outcome == "found"
+    assert found[0].broker_state == "wait"

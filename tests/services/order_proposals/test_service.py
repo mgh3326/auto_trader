@@ -5,9 +5,11 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import func, select
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import KST
+from app.models.review import TossLiveOrderLedger
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.errors import (
     OrderProposalError,
@@ -220,12 +222,18 @@ async def test_replace_persists_target_snapshot_and_allows_independent_proposals
     assert first.payload_hash != second.payload_hash
 
 
-async def _create_single_rung(db_session, *, symbol: str = "A"):
+async def _create_single_rung(
+    db_session,
+    *,
+    symbol: str = "A",
+    account_mode: str = "kis_live",
+    market: str = "equity_kr",
+):
     service = OrderProposalsService(db_session)
     group = await service.create_proposal(
         symbol=symbol,
-        market="equity_kr",
-        account_mode="kis_live",
+        market=market,
+        account_mode=account_mode,
         side="buy",
         order_type="limit",
         proposer="p",
@@ -704,6 +712,260 @@ async def test_void_refuses_unverified_rung_without_partial_mutation(db_session)
     with pytest.raises(OrderProposalError, match="cannot void"):
         await service.void_proposal(
             group.proposal_id, reason="operator cleanup", now=datetime.now(UTC)
+        )
+
+
+@pytest.mark.asyncio
+async def test_void_unverified_with_absent_broker_evidence_records_audit(db_session):
+    from app.services.order_proposals.broker_gateway import OperatorVoidEvidence
+
+    service, group = await _create_single_rung(db_session, account_mode="toss_live")
+    now = datetime(2026, 7, 13, 9, 0, tzinfo=UTC)
+    await _drive_to_submitting(service, group.proposal_id)
+    await service.record_unverified(
+        group.proposal_id,
+        0,
+        reason="legacy_timeout",
+        idempotency_key="tosprop-legacy-1",
+        now=now - timedelta(minutes=6),
+    )
+    ledger_count = (
+        await db_session.execute(
+            select(func.count())
+            .select_from(TossLiveOrderLedger)
+            .where(TossLiveOrderLedger.client_order_id == "tosprop-legacy-1")
+        )
+    ).scalar_one()
+    assert ledger_count == 0
+
+    async def broker_evidence(**kwargs):
+        assert [rung.rung_index for rung in kwargs["rungs"]] == [0]
+        return {
+            0: OperatorVoidEvidence(
+                "absent", "toss GET /orders OPEN + CLOSED 2026-07-11..2026-07-13"
+            )
+        }
+
+    rows = await service.void_proposal(
+        group.proposal_id,
+        reason="operator cleanup",
+        now=now,
+        broker_evidence=broker_evidence,
+    )
+    refreshed, rungs = await service.get_proposal(group.proposal_id)
+
+    assert [row.state for row in rows] == ["voided_local_stale"]
+    assert rungs[0].state == "voided_local_stale"
+    assert "operator cleanup" in refreshed.void_reason
+    assert "outcome=absent" in refreshed.void_reason
+    assert "toss_live_order_ledger rows=0" in refreshed.void_reason
+    assert "GET /orders OPEN + CLOSED" in refreshed.void_reason
+    assert rungs[0].void_reason == refreshed.void_reason
+
+
+@pytest.mark.asyncio
+async def test_void_unverified_refuses_when_accepted_toss_ledger_row_exists(db_session):
+    from app.services.order_proposals.broker_gateway import OperatorVoidEvidence
+
+    service, group = await _create_single_rung(db_session, account_mode="toss_live")
+    now = datetime(2026, 7, 13, 9, 0, tzinfo=UTC)
+    await _drive_to_submitting(service, group.proposal_id)
+    await service.record_unverified(
+        group.proposal_id,
+        0,
+        reason="legacy_timeout",
+        idempotency_key="tosprop-ledger-1",
+        now=now - timedelta(minutes=6),
+    )
+    db_session.add(
+        TossLiveOrderLedger(
+            trade_date=now,
+            operation_kind="place",
+            market="kr",
+            symbol="A",
+            side="buy",
+            order_type="limit",
+            quantity=Decimal("1"),
+            price=Decimal("100"),
+            client_order_id="tosprop-ledger-1",
+            broker_order_id="broker-ledger-1",
+            status="accepted",
+        )
+    )
+    await db_session.flush()
+
+    async def broker_evidence(**_kwargs):
+        return {
+            0: OperatorVoidEvidence(
+                "absent", "toss GET /orders OPEN + CLOSED 2026-07-13..2026-07-13"
+            )
+        }
+
+    with pytest.raises(OrderProposalError, match="toss_live_order_ledger"):
+        await service.void_proposal(
+            group.proposal_id,
+            reason="operator cleanup",
+            now=now,
+            broker_evidence=broker_evidence,
+        )
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "unverified"
+
+
+@pytest.mark.asyncio
+async def test_void_unverified_ignores_rejected_toss_ledger_without_order_id(
+    db_session,
+):
+    from app.services.order_proposals.broker_gateway import OperatorVoidEvidence
+
+    service, group = await _create_single_rung(db_session, account_mode="toss_live")
+    now = datetime(2026, 7, 13, 9, 0, tzinfo=UTC)
+    await _drive_to_submitting(service, group.proposal_id)
+    await service.record_unverified(
+        group.proposal_id,
+        0,
+        reason="legacy_timeout",
+        idempotency_key="tosprop-rejected-ledger-1",
+        now=now - timedelta(minutes=6),
+    )
+    db_session.add(
+        TossLiveOrderLedger(
+            trade_date=now,
+            operation_kind="place",
+            market="kr",
+            symbol="A",
+            side="buy",
+            order_type="limit",
+            quantity=Decimal("1"),
+            price=Decimal("100"),
+            client_order_id="tosprop-rejected-ledger-1",
+            broker_order_id=None,
+            status="rejected",
+        )
+    )
+    await db_session.flush()
+
+    async def broker_evidence(**_kwargs):
+        return {
+            0: OperatorVoidEvidence(
+                "absent", "toss GET /orders OPEN + CLOSED 2026-07-13..2026-07-13"
+            )
+        }
+
+    rows = await service.void_proposal(
+        group.proposal_id,
+        reason="operator cleanup",
+        now=now,
+        broker_evidence=broker_evidence,
+    )
+
+    assert [row.state for row in rows] == ["voided_local_stale"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("broker_state", ["OPEN", "FILLED"])
+async def test_void_unverified_refuses_existing_broker_order(db_session, broker_state):
+    from app.services.order_proposals.broker_gateway import OperatorVoidEvidence
+
+    service, group = await _create_single_rung(db_session)
+    now = datetime(2026, 7, 13, 9, 0, tzinfo=UTC)
+    await _drive_to_submitting(service, group.proposal_id)
+    await service.record_unverified(
+        group.proposal_id,
+        0,
+        reason="legacy_timeout",
+        now=now - timedelta(minutes=6),
+    )
+
+    async def broker_evidence(**_kwargs):
+        return {
+            0: OperatorVoidEvidence(
+                "found",
+                "toss GET /orders OPEN + CLOSED",
+                broker_order_id="broker-1",
+                broker_state=broker_state,
+            )
+        }
+
+    with pytest.raises(OrderProposalError, match=broker_state):
+        await service.void_proposal(
+            group.proposal_id,
+            reason="operator cleanup",
+            now=now,
+            broker_evidence=broker_evidence,
+        )
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "unverified"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [TimeoutError(), RuntimeError("broker down")])
+async def test_void_unverified_refuses_broker_lookup_failure(db_session, error):
+    service, group = await _create_single_rung(db_session)
+    now = datetime(2026, 7, 13, 9, 0, tzinfo=UTC)
+    await _drive_to_submitting(service, group.proposal_id)
+    await service.record_unverified(
+        group.proposal_id,
+        0,
+        reason="legacy_timeout",
+        now=now - timedelta(minutes=6),
+    )
+
+    async def broker_evidence(**_kwargs):
+        raise error
+
+    with pytest.raises(OrderProposalError, match="broker evidence lookup failed"):
+        await service.void_proposal(
+            group.proposal_id,
+            reason="operator cleanup",
+            now=now,
+            broker_evidence=broker_evidence,
+        )
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "unverified"
+
+
+@pytest.mark.asyncio
+async def test_void_unverified_refuses_during_broker_settlement_grace(db_session):
+    service, group = await _create_single_rung(db_session, account_mode="toss_live")
+    now = datetime(2026, 7, 13, 9, 0, tzinfo=UTC)
+    await _drive_to_submitting(service, group.proposal_id)
+    await service.record_unverified(
+        group.proposal_id,
+        0,
+        reason="recent_timeout",
+        idempotency_key="tosprop-recent-1",
+        now=now - timedelta(minutes=1),
+    )
+
+    async def broker_evidence(**_kwargs):
+        pytest.fail("broker lookup must wait until the settlement grace elapses")
+
+    with pytest.raises(OrderProposalError, match="settlement grace"):
+        await service.void_proposal(
+            group.proposal_id,
+            reason="operator cleanup",
+            now=now,
+            broker_evidence=broker_evidence,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_state", ["rejected", "filled"])
+async def test_void_terminal_rung_still_refused(db_session, terminal_state):
+    service, group = await _create_single_rung(db_session)
+    now = datetime(2026, 7, 13, 9, 0, tzinfo=UTC)
+    if terminal_state == "rejected":
+        await service.record_rejected(
+            group.proposal_id, 0, reason="broker rejected", now=now
+        )
+    else:
+        await _record_ack(service, group.proposal_id, now=now)
+        await service.transition_rung(group.proposal_id, 0, new_state="filled")
+
+    with pytest.raises(OrderProposalError, match="cannot void proposal"):
+        await service.void_proposal(
+            group.proposal_id, reason="operator cleanup", now=now
         )
 
 

@@ -625,9 +625,20 @@ order mutation.
     diff, and approval-hash checks and may submit.
 - `order_proposal_void(proposal_id, reason)`
   - Requires a non-blank operator reason.
-  - Refuses to mutate a proposal if any rung can have outstanding broker state.
-    Rungs at or after submit cause the whole request to fail closed, with no
-    partial local void.
+  - Pre-submit rungs retain the existing local `voided` path. An `unverified`
+    rung is eligible only after a five-minute broker settlement grace and a
+    fresh account-scoped lookup prove the order absent; it then becomes
+    `voided_local_stale`, with the lookup scope and result appended to
+    `void_reason`.
+  - A found broker order, incomplete lookup, timeout, provider error, or local
+    accepted-only Toss ledger row rejects the whole request without partial
+    mutation. Timeout-to-`unverified` is never auto-voided.
+  - Toss order-list `clientOrderId` is optional: when a rung has no broker order
+    ID, any non-empty response that omits it is inconclusive. KIS US empty
+    history is also inconclusive because the shared history adapter cannot prove
+    every exchange inquiry completed. Both cases fail closed.
+  - After a successful void, the recorded Telegram approval message is edited
+    without an inline keyboard so stale approval buttons no longer remain live.
 
 Telegram approval runs fresh broker-specific checks at the submit-capable
 click. KIS/Upbit rerun their applicable ROB-800 checks through
