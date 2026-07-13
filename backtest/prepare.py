@@ -1,7 +1,7 @@
 """Backtest data preparation and engine."""
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date as calendar_date
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -129,10 +129,10 @@ class EvaluationWindowError(ValueError):
 
 def _closed_window(
     *, name: str, start: str, end: str
-) -> tuple[str, date, date]:
+) -> tuple[str, calendar_date, calendar_date]:
     try:
-        start_date = date.fromisoformat(start)
-        end_date = date.fromisoformat(end)
+        start_date = calendar_date.fromisoformat(start)
+        end_date = calendar_date.fromisoformat(end)
     except (TypeError, ValueError) as exc:
         raise EvaluationWindowError("invalid_evaluation_window", name) from exc
     if start_date > end_date:
@@ -149,7 +149,7 @@ def validate_evaluation_windows(
     each fold's train-to-validation boundary, then pairwise checks the scored
     validation windows and sealed OOS closed interval.
     """
-    scored: list[tuple[str, date, date]] = []
+    scored: list[tuple[str, calendar_date, calendar_date]] = []
     for index, fold in enumerate(folds, start=1):
         train_name = f"cv_fold_{index}_train"
         validation_name = f"cv_fold_{index}_validation"
