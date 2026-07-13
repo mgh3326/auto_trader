@@ -177,7 +177,7 @@ separate reviewed change.
 ## Cleanup / verification after smoke
 
 - Re-run with `--mode preflight` is not enough — inspect the final
-  `final_reconcile_history` / `final_reconcile_positions` output.
+  `final_open_orders` / `final_positions` output.
 - If any order remains open, record its order number and cancel it (re-run cancel
   via the MCP tool or the broker UI). Do **not** report the smoke as clean while
   an order is open.

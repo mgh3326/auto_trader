@@ -218,6 +218,67 @@ async def test_full_is_limit_only_before_tool_calls(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_preview_failure_returns_nonzero(monkeypatch) -> None:
+    async def rejected_preview(args: Namespace) -> dict[str, Any]:
+        del args
+        return {"success": False, "error": "preview rejected"}
+
+    monkeypatch.setattr(smoke, "run_preview", rejected_preview)
+    args = smoke.build_parser().parse_args(
+        [
+            "--mode",
+            "preview",
+            "--symbol",
+            "NVDA",
+            "--quantity",
+            "1",
+            "--price",
+            "1.00",
+        ]
+    )
+
+    assert await smoke._amain(args) == 2
+
+
+@pytest.mark.asyncio
+async def test_full_stops_after_dry_run_without_confirm(monkeypatch) -> None:
+    calls: list[str] = []
+
+    async def preview(**kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        calls.append("preview")
+        return {"success": True}
+
+    async def place(**kwargs: Any) -> dict[str, Any]:
+        calls.append("place-live" if not kwargs["dry_run"] else "place-dry")
+        return {"success": True}
+
+    monkeypatch.setattr(
+        smoke,
+        "_tools",
+        lambda: {
+            "kiwoom_mock_us_preview_order": preview,
+            "kiwoom_mock_us_place_order": place,
+        },
+    )
+    args = smoke.build_parser().parse_args(
+        [
+            "--mode",
+            "full",
+            "--symbol",
+            "NVDA",
+            "--quantity",
+            "1",
+            "--price",
+            "1.00",
+        ]
+    )
+
+    assert await smoke.run_full(args) == 0
+    assert calls == ["preview", "place-dry"]
+
+
+@pytest.mark.asyncio
 async def test_full_always_cancels_accepted_order(monkeypatch) -> None:
     calls: list[str] = []
 
@@ -270,9 +331,20 @@ async def test_full_always_cancels_accepted_order(monkeypatch) -> None:
 
 
 def test_emit_does_not_add_sensitive_values(capsys) -> None:
-    smoke._emit({"step": "preflight", "missing_env_keys": ["KIWOOM_MOCK_US_APP_KEY"]})
+    smoke._emit(
+        {
+            "step": "preflight",
+            "missing_env_keys": ["KIWOOM_MOCK_US_APP_KEY"],
+            "broker_response": {
+                "acnt_no": "ACCOUNT-FIXTURE",
+                "accountNumber": "ACCOUNT-CAMEL-FIXTURE",
+                "nested": ({"token": "TOKEN-FIXTURE"},),
+            },
+        }
+    )
     rendered = capsys.readouterr().out
     assert "KIWOOM_MOCK_US_APP_KEY" in rendered
-    assert "SECRET-FIXTURE" not in rendered
     assert "TOKEN-FIXTURE" not in rendered
     assert "ACCOUNT-FIXTURE" not in rendered
+    assert "ACCOUNT-CAMEL-FIXTURE" not in rendered
+    assert rendered.count("[REDACTED]") == 3

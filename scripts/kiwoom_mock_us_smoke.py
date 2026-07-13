@@ -11,6 +11,7 @@ from typing import Any
 from app.core.config import validate_kiwoom_mock_us_config
 from app.mcp_server.tooling import orders_kiwoom_us_variants as us_variants
 from app.services.brokers.kiwoom import constants
+from app.services.brokers.kiwoom.normalization import redact_broker_response
 from app.services.brokers.kiwoom.us_account import KiwoomUsAccountClient
 from app.services.brokers.kiwoom.us_client import KiwoomMockUsClient
 from app.services.brokers.kiwoom.us_orders import KiwoomUsOrderClient
@@ -20,7 +21,6 @@ _ORDER_ID_RE = re.compile(r"^\d{9}$")
 _PROBE_CODES = frozenset({"26", "27", "30", "33", "34", "35"})
 _BUY_PROBE_CODES = frozenset({"26", "27", "30"})
 _SELL_PROBE_CODES = frozenset({"33", "34", "35"})
-_SENSITIVE_KEY_PARTS = ("app_key", "secret", "access_token", "account_no")
 
 
 class SmokeRejected(RuntimeError):
@@ -49,15 +49,10 @@ def _tools() -> dict[str, Any]:
 
 def _sanitize_output(value: Any) -> Any:
     if isinstance(value, dict):
-        return {
-            key: (
-                "[REDACTED]"
-                if any(part in str(key).lower() for part in _SENSITIVE_KEY_PARTS)
-                else _sanitize_output(item)
-            )
-            for key, item in value.items()
-        }
+        return redact_broker_response(value)
     if isinstance(value, list):
+        return [_sanitize_output(item) for item in value]
+    if isinstance(value, tuple):
         return [_sanitize_output(item) for item in value]
     return value
 
@@ -95,7 +90,9 @@ def parse_probe_codes(raw: str | None) -> tuple[str, ...]:
 
 def _payload_contains_order_id(value: Any, order_id: str) -> bool:
     if isinstance(value, dict):
-        return any(_payload_contains_order_id(item, order_id) for item in value.values())
+        return any(
+            _payload_contains_order_id(item, order_id) for item in value.values()
+        )
     if isinstance(value, list):
         return any(_payload_contains_order_id(item, order_id) for item in value)
     return str(value).strip() == order_id
@@ -272,7 +269,9 @@ async def run_full(args: argparse.Namespace) -> int:
     return exit_code
 
 
-def _probe_price_args(code: str, args: argparse.Namespace) -> tuple[float | None, float | None]:
+def _probe_price_args(
+    code: str, args: argparse.Namespace
+) -> tuple[float | None, float | None]:
     if code in {"33", "35"}:
         price = None
     else:
@@ -439,8 +438,9 @@ async def _amain(args: argparse.Namespace) -> int:
     if args.trde_tp == "00" and args.price is None:
         raise SmokeRejected("limit order requires --price")
     if args.mode == "preview":
-        _emit({"step": "preview", **await run_preview(args)})
-        return 0
+        preview = await run_preview(args)
+        _emit({"step": "preview", **preview})
+        return 0 if preview.get("success") is True else 2
     return await run_full(args)
 
 

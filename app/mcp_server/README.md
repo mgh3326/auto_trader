@@ -2368,7 +2368,7 @@ orderable quantity, or a success claim based on the deposit value.
 | Market | KRX only | NASDAQ/NYSE/AMEX |
 | Credentials | `KIWOOM_MOCK_*` | `KIWOOM_MOCK_US_*` (no fallback) |
 | Account mode | `kiwoom_mock` | `kiwoom_mock_us` |
-| Tick | KRX price-banded table | $0.01 flat (no table) |
+| Tick | KRX price-banded table | decimal USD (no tick table) |
 | Order history TR | `kt00009`/`kt00007` | `ust21050`/`ust21510` |
 | Orderable cash | `kt00010`/`kt00018` | `ust21160` deposit (ust31490 unsupported) |
 
