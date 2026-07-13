@@ -14,9 +14,12 @@ from app.mcp_server.profiles import McpProfile
 from app.mcp_server.tooling.paper_execution_registration import (
     PAPER_EXECUTION_TOOL_NAMES,
     PaperOrderToolInput,
+    build_paper_execution_application,
     register_paper_execution_tools,
 )
 from app.mcp_server.tooling.registry import register_all_tools
+from app.services.brokers.alpaca.paper_adapter import AlpacaCryptoPaperAdapter
+from app.services.brokers.binance.paper_adapter import BinanceSpotDemoPaperAdapter
 from app.services.brokers.capabilities import Broker
 from app.services.brokers.paper.contracts import (
     PaperOperation,
@@ -209,6 +212,24 @@ async def test_default_composition_fails_closed_without_provenance_verifier() ->
 
     assert result["status"] == "blocked"
     assert result["reason_code"] == "provenance_verifier_unavailable"
+
+
+@pytest.mark.unit
+def test_production_composition_registers_both_guarded_adapters() -> None:
+    application = build_paper_execution_application(verifier=None)
+
+    assert application._registry.adapters.keys() == {  # noqa: SLF001
+        Broker.BINANCE,
+        Broker.ALPACA,
+    }
+    assert isinstance(  # noqa: SLF001
+        application._registry.resolve(Broker.BINANCE),  # noqa: SLF001
+        BinanceSpotDemoPaperAdapter,
+    )
+    assert isinstance(  # noqa: SLF001
+        application._registry.resolve(Broker.ALPACA),  # noqa: SLF001
+        AlpacaCryptoPaperAdapter,
+    )
 
 
 @pytest.mark.unit
