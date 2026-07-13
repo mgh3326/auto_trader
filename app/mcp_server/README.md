@@ -71,6 +71,12 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Default thresholds: KR 25 bps, US 40 bps. US is stricter because FX basis and overseas tax lots split by account.
   - Always returns `cost_comparison` for both candidate accounts and `position_consolidation` with either `foregone_savings_krw` or `distribution_warning`.
 - `get_orderbook(symbol, market="kr")`
+- KR quote responses expose `price_as_of`, `price_freshness`
+  (`fresh|stale|unavailable`), `price_usable`, and a stable
+  `price_unavailable_reason` when unusable. Missing timestamps and epoch-zero
+  values are unavailable; prior-date timestamps are stale. NXT tradability
+  similarly returns `nxt_tradable=null` plus the observed value and reason when
+  its as-of is missing or stale.
 - US equity quote price resolution uses KIS overseas current price first when `settings.us_quote_kis_primary` is enabled, then falls back to Yahoo `fast_info`.
   - US quote response keeps `source: "kis_overseas"` or `source: "yahoo"` and includes `previous_close/open/high/low/volume` when the provider supplies them.
   - US quote response includes `session` (`premarket`, `regular`, `afterhours`, `closed`), `data_state` (`fresh` during the extended-hours envelope, `stale` when closed), `price_source` (`kis_overseas_last` or `yahoo_fast_info_close`), `delayed: true`, and optional `quote_asof` when KIS supplies parseable quote date/time fields.
@@ -79,6 +85,12 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `get_holdings(account=None, market=None, include_current_price=True, minimum_value=None, account_mode=None)`
   - Crypto positions may include optional `strategy_signal` field when Phase 2 exit logic triggers (4.5% stop-loss or RSI > 46 mean-reversion on profitable positions)
 - `get_position(symbol, market=None, account_mode=None)`
+- `get_financials(symbol, statement="income", freq="annual", market=None)`
+  - Provider payloads with no numeric financial values return
+    `status="unavailable"`, `scoreable=false`, the stable reason
+    `financial_metrics_unavailable`, and source/statement/frequency/period-count
+    evidence. The tool preserves the empty provider payload and does not invent
+    metrics.
 - `get_ohlcv(symbol, count=100, period="day", end_date=None, market=None, include_indicators=False)`
   - period: `day`, `week`, `month`, `1m`, `5m`, `15m`, `30m`, `4h`, `1h`
   - `include_indicators=True` adds `indicators_included` at the payload top level and appends `rsi_14`, `ema_20`, `bb_upper`, `bb_mid`, `bb_lower`, `vwap` to each row
@@ -1520,6 +1532,9 @@ Parameters:
 - `account`: optional account filter (`upbit`, `kis`, `kis_domestic`, `kis_overseas`)
 
 Broker-specific contract:
+- With `account_mode="kis_mock"`, this tool is a KIS-only data plane. It never
+  reads Upbit or Toss live cash, rejects non-KIS account selectors, and marks
+  KIS rows/errors with `account_mode="kis_mock"`.
 - **Upbit (`account="upbit"`)**
   - `balance`: total KRW (`balance + locked`)
   - `orderable`: orderable KRW (`balance`)
@@ -1552,6 +1567,8 @@ Behavior:
 - Converts USD orderable amounts to KRW equivalents using current exchange rate
 - Includes manual cash (Toss/non-API cash) when `include_manual=True`
 - Marks manual cash as stale when older than 3 days
+- With `account_mode="kis_mock"`, manual cash is not read or aggregated; the
+  result is derived only from the KIS mock cash response.
 
 Response shape:
 - `accounts`: per-account cash entries with `krw_equivalent` added for USD accounts
@@ -1569,6 +1586,9 @@ Parameters:
 - `minimum_value`: optional numeric threshold. When `None` (default), per-currency thresholds apply: KRW=5000, USD=10. Explicit number uses uniform threshold. Positions below threshold are excluded only when `include_current_price=True`
 
 Filtering rules:
+- With `account_mode="kis_mock"`, holdings collection is KIS-only. Upbit,
+  Toss API, and manual collectors are not called, and non-KIS account or crypto
+  selectors fail closed instead of returning a mixed-provenance response.
 - If `include_current_price=False`, `minimum_value` filtering is skipped
 - When `minimum_value=None`, per-currency thresholds are automatically applied based on `instrument_type`: `equity_kr` and `crypto` use 5000, `equity_us` uses 10
 - When `minimum_value` is a number, that uniform threshold is applied to all positions

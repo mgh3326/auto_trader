@@ -34,11 +34,13 @@ from app.mcp_server.tooling.market_data_indicators import (
     _split_support_resistance_levels,
 )
 from app.mcp_server.tooling.market_data_quotes import (
+    _annotate_kr_price_freshness,
     _apply_nxt_quote_overlay,
     _fetch_kr_live_quote,
     _fetch_quote_crypto,
     _fetch_quote_equity_kr,
     _fetch_quote_equity_us,
+    _kr_price_as_of_from_frame,
 )
 from app.mcp_server.tooling.market_session import kr_market_data_state
 from app.mcp_server.tooling.shared import (
@@ -51,7 +53,6 @@ from app.mcp_server.tooling.shared import resolve_market_type as _resolve_market
 from app.monitoring import build_yfinance_tracing_session, close_yfinance_session
 from app.services.kr_symbol_universe_service import get_kr_nxt_tradability
 from app.services.symbol_analysis.floor import floored_action, insufficient_inputs
-from app.services.symbol_analysis.freshness import compute_is_stale
 
 logger = logging.getLogger(__name__)
 
@@ -122,27 +123,23 @@ async def _resolve_kr_quote(
         if await _apply_nxt_quote_overlay(
             symbol, quote, data_state=kr_market_data_state()
         ):
-            quote["is_stale_price"] = False
-            quote["price_as_of"] = now_kst().isoformat()
+            _annotate_kr_price_freshness(quote, now_kst(), trading_date=trading_date)
         return quote
 
     live = await _fetch_kr_live_quote(symbol)
     if live is not None:
-        as_of_raw = live.get("price_as_of")
-        as_of_dt = datetime.fromisoformat(as_of_raw) if as_of_raw else None
-        live["is_stale_price"] = compute_is_stale(
-            "price", as_of_dt, trading_date=trading_date
+        _annotate_kr_price_freshness(
+            live, live.get("price_as_of"), trading_date=trading_date
         )
         return await _annotate(live)
 
     fallback = _build_kr_quote_from_ohlcv(symbol, ohlcv_df)
     if fallback is None:
         return None
-    last_idx = ohlcv_df.index[-1]
-    as_of_dt = pd.Timestamp(last_idx).to_pydatetime()
-    fallback["price_as_of"] = as_of_dt.isoformat()
-    fallback["is_stale_price"] = compute_is_stale(
-        "price", as_of_dt, trading_date=trading_date
+    _annotate_kr_price_freshness(
+        fallback,
+        _kr_price_as_of_from_frame(ohlcv_df),
+        trading_date=trading_date,
     )
     return await _annotate(fallback)
 

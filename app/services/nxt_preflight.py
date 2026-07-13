@@ -40,14 +40,21 @@ class NxtTradability:
         return (current - asof) > NXT_FLAG_STALE_AFTER
 
     def public_fields(self, *, now: dt.datetime | None = None) -> dict[str, Any]:
-        return {
-            "nxt_tradable": self.nxt_tradable,
+        stale = self.is_stale(now=now)
+        fields: dict[str, Any] = {
+            "nxt_tradable": None if stale else self.nxt_tradable,
             "nxt_tradable_source": self.source,
             "nxt_tradable_asof": self.asof.isoformat()
             if self.asof is not None
             else None,
-            "nxt_tradable_stale": self.is_stale(now=now),
+            "nxt_tradable_stale": stale,
         }
+        if stale:
+            fields["nxt_tradable_observed"] = self.nxt_tradable
+            fields["nxt_tradable_reason"] = (
+                "missing_asof" if self.asof is None else "stale_asof"
+            )
+        return fields
 
 
 @dataclass(frozen=True)
