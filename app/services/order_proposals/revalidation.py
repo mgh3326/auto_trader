@@ -52,7 +52,10 @@ from app.services.order_proposals.buying_power import (
     required_cash,
 )
 from app.services.order_proposals.errors import OrderProposalError
-from app.services.order_proposals.service import OrderProposalsService
+from app.services.order_proposals.service import (
+    OrderProposalsService,
+    proposal_approval_block_reason,
+)
 from app.services.order_proposals.target_order import TargetOrderSnapshot
 
 logger = logging.getLogger(__name__)
@@ -539,6 +542,12 @@ async def revalidate_and_submit(
     revalidation cycle from this call.
     """
     group, rungs = await service.get_proposal(proposal_id)
+    block_reason = proposal_approval_block_reason(group)
+    if block_reason is not None:
+        return [
+            RungOutcome(rung.rung_index, "error", {"error": block_reason})
+            for rung in rungs
+        ]
     outcomes: list[RungOutcome] = []
     for rung in rungs:
         if rung.state != "pending_approval":

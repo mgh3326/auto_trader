@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import Text, cast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -42,6 +42,17 @@ class OrderProposalRepository:
         if for_update:
             stmt = stmt.with_for_update()
         return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def list_groups_by_proposal_prefix(
+        self, proposal_prefix: str
+    ) -> list[OrderProposal]:
+        stmt = (
+            select(OrderProposal)
+            .where(cast(OrderProposal.proposal_id, Text).like(f"{proposal_prefix}%"))
+            .order_by(OrderProposal.id.desc())
+            .limit(2)
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
 
     async def list_rungs(self, proposal_pk: int) -> list[OrderProposalRung]:
         stmt = (
