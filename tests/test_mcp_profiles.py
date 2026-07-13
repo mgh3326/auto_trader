@@ -45,6 +45,9 @@ from app.mcp_server.tooling.paper_account_registration import PAPER_ACCOUNT_TOOL
 from app.mcp_server.tooling.paper_analytics_registration import (
     PAPER_ANALYTICS_TOOL_NAMES,
 )
+from app.mcp_server.tooling.paper_execution_registration import (
+    PAPER_EXECUTION_TOOL_NAMES,
+)
 from app.mcp_server.tooling.paper_journal_registration import PAPER_JOURNAL_TOOL_NAMES
 from app.mcp_server.tooling.paper_limit_order_handler import (
     PAPER_LIMIT_ORDER_TOOL_NAMES,
@@ -287,6 +290,9 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
         "toss_get_positions",
         "toss_get_orderable_cash",
     },
+    # Default-off profile: the direct registry exposes zero tools until the
+    # dedicated feature flag is explicitly enabled.
+    McpProfile.PAPER_EXECUTION: set(),
 }
 _ALL_ORDER_TOOL_NAMES = (
     _LEGACY_ORDER_TOOL_NAMES
@@ -298,6 +304,7 @@ _ALL_ORDER_TOOL_NAMES = (
     | ALPACA_PAPER_AUTOMATED_TOOL_NAMES
     | TOSS_LIVE_ORDER_TOOL_NAMES
     | PAPER_LIMIT_ORDER_TOOL_NAMES
+    | PAPER_EXECUTION_TOOL_NAMES
 )
 
 
@@ -334,6 +341,7 @@ _PROFILES_WITH_RESEARCH_SURFACE = [
         McpProfile.ANALYSIS_READONLY,
         McpProfile.ACCOUNT_READ,
         McpProfile.TRADINGCODEX_EXECUTION,
+        McpProfile.PAPER_EXECUTION,
     )
 ]
 
@@ -732,6 +740,9 @@ class TestResolveMcpProfile:
             resolve_mcp_profile("tradingcodex_execution")
             is McpProfile.TRADINGCODEX_EXECUTION
         )
+
+    def test_paper_execution(self) -> None:
+        assert resolve_mcp_profile("paper_execution") is McpProfile.PAPER_EXECUTION
 
     def test_invalid_string_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="Unknown MCP_PROFILE"):

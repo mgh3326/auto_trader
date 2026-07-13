@@ -54,6 +54,7 @@ def _validate_profile_auth_token(profile: McpProfile, token: str | None) -> None
     token_required_profiles = {
         McpProfile.ACCOUNT_READ,
         McpProfile.TRADINGCODEX_EXECUTION,
+        McpProfile.PAPER_EXECUTION,
     }
     if profile in token_required_profiles and not (token or "").strip():
         raise RuntimeError(
@@ -62,6 +63,12 @@ def _validate_profile_auth_token(profile: McpProfile, token: str | None) -> None
 
 
 def _validate_profile_runtime_settings(profile: McpProfile) -> None:
+    if profile is McpProfile.PAPER_EXECUTION:
+        if not settings.PAPER_EXECUTION_ENABLED:
+            raise RuntimeError(
+                "MCP_PROFILE=paper_execution requires PAPER_EXECUTION_ENABLED=true"
+            )
+        return
     if profile is not McpProfile.TRADINGCODEX_EXECUTION:
         return
     if settings.order_approval_hash_mode != "required":
