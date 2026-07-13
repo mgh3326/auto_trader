@@ -72,4 +72,3 @@ Stopped time, disabled `PAPER_COHORT_ENABLED`, or ROB-848 rejected/aborted state
 ## Verification
 
 Tests cover schema and activation constraints, immutable triggers, canonical hash and JSONB round-trip, every snapshot failure class, zero downstream calls on capture failure, byte-equivalent signals, venue call order, shadow zero mutation, paper-active state/hash mismatch, capability rejection, TaskIQ default-off behavior, retries, two-session barrier concurrency, crash recovery, thin-link columns, forbidden-import/call AST guards, migration round-trip/single head, and adjacent ROB-845/846/847/848 suites. Final gates include production adapter suites, broad non-live regression, Ruff check/format, ty, and `git diff --check origin/main..HEAD`.
-

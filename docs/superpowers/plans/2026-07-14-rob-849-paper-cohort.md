@@ -303,4 +303,3 @@ Wait for every required check. Fix failures test-first, push follow-ups, and lea
 - [ ] **Step 7: Record Linear completion evidence**
 
 Comment base/ROB-848 SHA, red→green evidence, per-suite pass counts, migration/head state, final commit SHA, PR URL, and remaining risks.
-
