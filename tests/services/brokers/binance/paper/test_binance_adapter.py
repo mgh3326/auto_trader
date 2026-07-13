@@ -1,4 +1,4 @@
-"""ROB-845 Binance Spot Demo canonical paper adapter contracts."""
+"""ROB-845 Binance Spot Demo canonical adapter contract tests."""
 
 from __future__ import annotations
 

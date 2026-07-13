@@ -92,7 +92,7 @@
 - Modify: `app/services/brokers/binance/demo/ledger/repository.py`
 - Modify: `app/services/brokers/binance/demo/ledger/service.py`
 - Create: `app/services/brokers/binance/paper_adapter.py`
-- Test: `tests/services/brokers/binance/paper/test_adapter.py`
+- Test: `tests/services/brokers/binance/paper/test_binance_adapter.py`
 - Test: `tests/services/brokers/binance/demo/test_ledger_reservation_idempotency.py`
 - Modify focused executor/ledger tests as compatibility requires.
 
@@ -118,7 +118,7 @@
 - Create: `app/services/brokers/alpaca/paper_adapter.py`
 - Modify: `app/mcp_server/tooling/alpaca_paper_automated_orders.py`
 - Modify: `app/mcp_server/tooling/alpaca_paper_orders.py` only where needed to consume extracted application behavior without changing its public contract.
-- Test: `tests/services/brokers/alpaca/paper/test_adapter.py`
+- Test: `tests/services/brokers/alpaca/paper/test_alpaca_adapter.py`
 - Test: `tests/services/test_alpaca_paper_order_application.py`
 - Modify: focused packet/coordinator/tooling regression tests.
 
@@ -161,4 +161,3 @@
 - [ ] Wait for required GitHub checks, inspect failed logs if any, fix through new commits, and repeat verification.
 - [ ] Merge only after review and required checks are green; do not deploy.
 - [ ] Verify the PR merge SHA is contained in latest `origin/main`, update ROB-845 with PR/SHA/evidence/remaining limitations, mark Done, and report ROB-848/849/852/853 unblocked.
-

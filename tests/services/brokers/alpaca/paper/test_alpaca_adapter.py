@@ -1,3 +1,5 @@
+"""ROB-845 Alpaca Crypto Paper canonical adapter contracts."""
+
 from __future__ import annotations
 
 import inspect

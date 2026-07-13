@@ -127,6 +127,9 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         "app/services/alpaca_paper_order_application.py",
         "app/services/brokers/alpaca/paper_adapter.py",
         "app/services/brokers/capabilities.py",
+        # Lazy composition root only registers the in-package Demo adapter; it
+        # contains no Binance HTTP, signing, credential, or endpoint behavior.
+        "app/services/brokers/paper/composition.py",
         "app/services/crypto_execution_mapping.py",
         "app/services/paper_approval_packet.py",
         # ROB-323 / ROB-325 — the operator Naver remote-debug audit's Chrome
