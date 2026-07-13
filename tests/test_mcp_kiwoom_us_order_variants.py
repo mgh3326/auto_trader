@@ -379,3 +379,133 @@ async def test_unparseable_deposit_is_null_and_nonzero_is_failure(
     assert result["success"] is False
     assert result["cash"] is None
     assert result["cash_source"] == "ust21160.d0_usd_fx_entr_unparsed"
+
+
+@pytest.mark.asyncio
+async def test_confirmed_order_carries_us_mock_provenance(monkeypatch) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeOrders:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def place_buy_order(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return {"return_code": 0, "ord_no": "000000282"}
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(module, "KiwoomUsOrderClient", FakeOrders)
+
+    result = await _tools()["kiwoom_mock_us_place_order"](
+        symbol="NVDA",
+        side="buy",
+        quantity=1,
+        price=213.04,
+        trde_tp="00",
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert result["provenance"] == {
+        "broker": "kiwoom",
+        "environment": "mock",
+        "account_mode": "kiwoom_mock_us",
+        "host": "mockapi.kiwoom.com",
+        "api_id": "ust20000",
+    }
+
+
+@pytest.mark.asyncio
+async def test_spoofed_live_provenance_in_broker_payload_fails_closed(
+    monkeypatch,
+) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeOrders:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def place_buy_order(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return {
+                "return_code": 0,
+                "ord_no": "000000282",
+                "environment": "live",
+            }
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(module, "KiwoomUsOrderClient", FakeOrders)
+
+    result = await _tools()["kiwoom_mock_us_place_order"](
+        symbol="NVDA",
+        side="buy",
+        quantity=1,
+        price=213.04,
+        trde_tp="00",
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "kiwoom_mock_provenance_conflict"
+    assert "provenance" not in result
+
+
+@pytest.mark.asyncio
+async def test_nan_price_and_nan_new_price_fail_before_any_client(
+    monkeypatch,
+) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    calls = {"client": 0}
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            calls["client"] += 1
+            return cls()
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FakeClient)
+    tools = _tools()
+
+    preview = await tools["kiwoom_mock_us_preview_order"](
+        symbol="NVDA", side="buy", quantity=1, trde_tp="00", price=float("nan")
+    )
+    assert preview["success"] is False
+
+    modify = await tools["kiwoom_mock_us_modify_order"](
+        order_id="000000282",
+        symbol="NVDA",
+        new_price=float("nan"),
+        dry_run=True,
+    )
+    assert modify["success"] is False
+    assert calls["client"] == 0

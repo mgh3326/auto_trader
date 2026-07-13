@@ -112,13 +112,15 @@ uv run python -m scripts.kiwoom_mock_us_smoke --mode preview \
 uv run python -m scripts.kiwoom_mock_us_smoke --mode full \
     --symbol AAPL --price 150.00 --quantity 1 --trde-tp 00 --confirm
 
-# 4a. Optional: probe documented advanced buy types (double-gated)
-uv run python -m scripts.kiwoom_mock_us_smoke --mode preflight \
+# 4a. Optional: probe documented advanced buy types (double-gated).
+#     Probes place REAL mock orders, so they live under a dedicated mode —
+#     `--mode preflight` stays strictly read-only and rejects probe flags.
+uv run python -m scripts.kiwoom_mock_us_smoke --mode probe \
     --symbol AAPL --quantity 1 --price 1.00 \
     --probe-order-types 26,27,30 --probe-side buy --confirm-probes
 
 # 4b. Sell-only probes require an existing mock position and an extra assertion.
-uv run python -m scripts.kiwoom_mock_us_smoke --mode preflight \
+uv run python -m scripts.kiwoom_mock_us_smoke --mode probe \
     --symbol AAPL --quantity 1 --price 150.00 --stop-price 149.00 \
     --probe-order-types 33,34,35 --probe-side sell \
     --confirm-existing-position --confirm-probes
@@ -148,9 +150,11 @@ the cancel-before-submit safety goal.
 
 ## Probe mode (optional, double-gated)
 
-Advanced order-type discovery is an optional preflight substep and is disabled
-unless a comma-separated `--probe-order-types` list and `--confirm-probes` are
-both supplied. The
+Advanced order-type discovery runs under the dedicated `--mode probe` (it
+performs real broker mutations, so it is not reachable from the read-only
+`preflight` mode) and stays disabled unless a comma-separated
+`--probe-order-types` list and `--confirm-probes` are both supplied. Probe mode
+runs the read-only preflight first and aborts if it fails. The
 probe:
 
 - Calls the low-level `KiwoomUsOrderClient` directly (NOT the MCP surface) so
@@ -168,7 +172,7 @@ separate reviewed change.
 
 1. `kiwoom_mock_us_preview_order` (DB exchange resolution + exact request body).
 2. `kiwoom_mock_us_place_order(dry_run=True)`.
-3. `kiwoom_mock_us_place_order(dry_run=False, confirm=True)` → capture exact nine-digit order no.
+3. `kiwoom_mock_us_place_order(dry_run=False, confirm=True)` → capture the order no (guide documents nine digits; acceptance is bounded-digits until the live shape is confirmed — the smoke emits an `order_id_evidence` step with the observed length).
 4. `kiwoom_mock_us_get_order_history(scope="open")` confirms the pending/accepted order.
 5. `kiwoom_mock_us_cancel_order(dry_run=False, confirm=True)` — in a finally-block.
 6. Final `kiwoom_mock_us_get_order_history(scope="open")` +

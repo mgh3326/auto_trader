@@ -17,7 +17,10 @@ from app.services.brokers.kiwoom.us_client import KiwoomMockUsClient
 from app.services.brokers.kiwoom.us_orders import KiwoomUsOrderClient
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
-_ORDER_ID_RE = re.compile(r"^\d{9}$")
+# Bounded-digits acceptance: the guide documents nine digits, but the live
+# mock shape is unverified and cancel must never be skipped over a width
+# mismatch. The actual observed length is emitted as evidence per accept.
+_ORDER_ID_RE = re.compile(r"^\d{1,18}$")
 _PROBE_CODES = frozenset({"26", "27", "30", "33", "34", "35"})
 _BUY_PROBE_CODES = frozenset({"26", "27", "30"})
 _SELL_PROBE_CODES = frozenset({"33", "34", "35"})
@@ -88,6 +91,13 @@ def parse_probe_codes(raw: str | None) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _normalize_digits(value: str) -> str | None:
+    text = value.strip()
+    if not text.isdigit():
+        return None
+    return text.lstrip("0") or "0"
+
+
 def _payload_contains_order_id(value: Any, order_id: str) -> bool:
     if isinstance(value, dict):
         return any(
@@ -95,7 +105,11 @@ def _payload_contains_order_id(value: Any, order_id: str) -> bool:
         )
     if isinstance(value, list):
         return any(_payload_contains_order_id(item, order_id) for item in value)
-    return str(value).strip() == order_id
+    # Zero-padding representation may differ between the accept response and
+    # the history TR (12-char left-padded), so compare digit-normalized.
+    normalized = _normalize_digits(str(value))
+    target = _normalize_digits(order_id)
+    return normalized is not None and target is not None and normalized == target
 
 
 async def run_preflight() -> dict[str, Any]:
@@ -192,10 +206,17 @@ async def run_full(args: argparse.Namespace) -> int:
         _emit(
             {
                 "step": "cleanup_required",
-                "reason": "accepted order id was not an exact nine-digit value",
+                "reason": "accepted order id was not an all-digits value",
             }
         )
         return 2
+    _emit(
+        {
+            "step": "order_id_evidence",
+            "order_id_length": len(order_id),
+            "matches_documented_nine_digits": len(order_id) == 9,
+        }
+    )
 
     exit_code = 0
     try:
@@ -405,7 +426,7 @@ async def run_probe(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Kiwoom US mock smoke (ROB-867)")
     parser.add_argument(
-        "--mode", required=True, choices=["preflight", "preview", "full"]
+        "--mode", required=True, choices=["preflight", "preview", "full", "probe"]
     )
     parser.add_argument("--symbol")
     parser.add_argument("--side", choices=["buy", "sell"], default="buy")
@@ -424,15 +445,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 async def _amain(args: argparse.Namespace) -> int:
     if args.mode == "preflight":
+        if args.probe_order_types:
+            raise SmokeRejected(
+                "preflight is read-only; broker order-type probes moved to --mode probe"
+            )
+        preflight = await run_preflight()
+        _emit(preflight)
+        return 0 if preflight.get("ok") else 2
+    if args.mode == "probe":
+        if not args.symbol or not args.quantity:
+            raise SmokeRejected("probe mode requires --symbol and --quantity")
+        if not args.probe_order_types:
+            raise SmokeRejected("probe mode requires --probe-order-types")
         preflight = await run_preflight()
         _emit(preflight)
         if not preflight.get("ok"):
             return 2
-        if args.probe_order_types:
-            if not args.symbol or not args.quantity:
-                raise SmokeRejected("probe mode requires --symbol and --quantity")
-            return await run_probe(args)
-        return 0
+        return await run_probe(args)
     if not args.symbol or not args.quantity or args.quantity <= 0:
         raise SmokeRejected("symbol and positive quantity are required")
     if args.trde_tp == "00" and args.price is None:

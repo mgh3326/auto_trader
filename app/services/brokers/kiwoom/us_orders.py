@@ -13,7 +13,12 @@ SELL_TRADE_TYPES = BUY_TRADE_TYPES | frozenset({"33", "34", "35"})
 PRICE_REQUIRED_TRADE_TYPES = frozenset({"00", "26", "27", "30", "34"})
 STOP_REQUIRED_TRADE_TYPES = frozenset({"34", "35"})
 _SYMBOL_RE = re.compile(r"^[A-Z0-9.]{1,12}$")
-_ORDER_ID_RE = re.compile(r"^\d{9}$")
+# The guide documents ord_no as a nine-digit string, but that shape is
+# unverified against the live mock until the first confirmed mutation smoke.
+# Cancel/modify must never strand an accepted order over a width mismatch, so
+# input acceptance is bounded-digits rather than exactly nine.
+_ORDER_ID_RE = re.compile(r"^\d{1,18}$")
+DOCUMENTED_ORDER_ID_LENGTH = 9
 
 
 class KiwoomUsOrderRejected(ValueError):
@@ -37,7 +42,9 @@ class _SupportsPostApi(Protocol):
 def validate_us_order_id(value: str) -> str:
     candidate = str(value or "").strip()
     if not _ORDER_ID_RE.fullmatch(candidate):
-        raise KiwoomUsOrderRejected("Kiwoom US order id must be exactly nine digits")
+        raise KiwoomUsOrderRejected(
+            "Kiwoom US order id must be 1-18 digits (documented shape is nine)"
+        )
     return candidate
 
 

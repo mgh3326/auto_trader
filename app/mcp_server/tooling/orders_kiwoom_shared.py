@@ -42,9 +42,11 @@ def finalize_broker_response(
     base: dict[str, Any], broker_response: dict[str, Any]
 ) -> dict[str, Any]:
     redacted_broker_response = redact_broker_response(broker_response)
+    # ``success`` must always come from broker evidence: spread ``base`` first
+    # so a caller-supplied ``success`` can never override the derivation.
     response = {
-        "success": derive_broker_success(broker_response),
         **base,
+        "success": derive_broker_success(broker_response),
         "broker_response": redacted_broker_response,
     }
     for key in _PASSTHROUGH_KEYS:

@@ -185,10 +185,19 @@ async def test_probe_cleanup_failure_returns_nonzero(monkeypatch) -> None:
     assert await smoke.run_probe(args) == 2
 
 
-def test_extract_order_id_accepts_only_nine_digits() -> None:
+def test_extract_order_id_accepts_bounded_digits_only() -> None:
     assert smoke.extract_order_id({"ord_no": "000000282"}) == "000000282"
-    assert smoke.extract_order_id({"ord_no": "282"}) is None
+    assert smoke.extract_order_id({"ord_no": "282"}) == "282"
     assert smoke.extract_order_id({"ord_no": "../000000282"}) is None
+    assert smoke.extract_order_id({"ord_no": "1" * 19}) is None
+    assert smoke.extract_order_id({"ord_no": ""}) is None
+
+
+def test_reconcile_compare_is_zero_padding_insensitive() -> None:
+    payload = {"result_list": [{"ord_no": "000000000282"}]}
+    assert smoke._payload_contains_order_id(payload, "000000282")
+    assert not smoke._payload_contains_order_id(payload, "000000283")
+    assert not smoke._payload_contains_order_id({"ord_no": "28a2"}, "282")
 
 
 @pytest.mark.asyncio
@@ -348,3 +357,70 @@ def test_emit_does_not_add_sensitive_values(capsys) -> None:
     assert "ACCOUNT-FIXTURE" not in rendered
     assert "ACCOUNT-CAMEL-FIXTURE" not in rendered
     assert rendered.count("[REDACTED]") == 3
+
+
+@pytest.mark.asyncio
+async def test_preflight_mode_rejects_probe_flags(monkeypatch) -> None:
+    calls = {"preflight": 0}
+
+    async def fake_preflight() -> dict[str, Any]:
+        calls["preflight"] += 1
+        return {"ok": True}
+
+    monkeypatch.setattr(smoke, "run_preflight", fake_preflight)
+    args = smoke.build_parser().parse_args(
+        ["--mode", "preflight", "--probe-order-types", "26"]
+    )
+    with pytest.raises(smoke.SmokeRejected, match="--mode probe"):
+        await smoke._amain(args)
+    assert calls["preflight"] == 0
+
+
+@pytest.mark.asyncio
+async def test_probe_mode_requires_symbol_quantity_and_codes(monkeypatch) -> None:
+    async def fake_preflight() -> dict[str, Any]:
+        return {"ok": True}
+
+    monkeypatch.setattr(smoke, "run_preflight", fake_preflight)
+
+    args = smoke.build_parser().parse_args(["--mode", "probe"])
+    with pytest.raises(smoke.SmokeRejected, match="symbol"):
+        await smoke._amain(args)
+
+    args = smoke.build_parser().parse_args(
+        ["--mode", "probe", "--symbol", "NVDA", "--quantity", "1"]
+    )
+    with pytest.raises(smoke.SmokeRejected, match="probe-order-types"):
+        await smoke._amain(args)
+
+
+@pytest.mark.asyncio
+async def test_probe_mode_runs_preflight_before_probes(monkeypatch) -> None:
+    order: list[str] = []
+
+    async def fake_preflight() -> dict[str, Any]:
+        order.append("preflight")
+        return {"ok": False}
+
+    async def fake_probe(args) -> int:
+        del args
+        order.append("probe")
+        return 0
+
+    monkeypatch.setattr(smoke, "run_preflight", fake_preflight)
+    monkeypatch.setattr(smoke, "run_probe", fake_probe)
+    args = smoke.build_parser().parse_args(
+        [
+            "--mode",
+            "probe",
+            "--symbol",
+            "NVDA",
+            "--quantity",
+            "1",
+            "--probe-order-types",
+            "26",
+            "--confirm-probes",
+        ]
+    )
+    assert await smoke._amain(args) == 2
+    assert order == ["preflight"]

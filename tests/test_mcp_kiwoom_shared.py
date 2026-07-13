@@ -22,3 +22,13 @@ def test_rc9000_is_classified_without_losing_raw_evidence() -> None:
     assert result["error_code"] == "capability_unsupported"
     assert result["broker_response"] == raw
     assert result["return_msg"] == raw["return_msg"]
+
+
+def test_caller_supplied_success_cannot_override_broker_derivation() -> None:
+    from app.mcp_server.tooling.orders_kiwoom_shared import finalize_broker_response
+
+    response = finalize_broker_response(
+        {"success": True, "source": "kiwoom"},
+        {"return_code": 20, "return_msg": "rejected"},
+    )
+    assert response["success"] is False

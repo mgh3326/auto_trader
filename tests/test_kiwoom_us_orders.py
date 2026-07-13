@@ -178,7 +178,15 @@ def test_rejects_non_kiwoom_us_exchange(exchange: str) -> None:
         )
 
 
-@pytest.mark.parametrize("order_id", ["", "282", "00000028A", "../000000282"])
-def test_rejects_non_nine_digit_order_id(order_id: str) -> None:
-    with pytest.raises(KiwoomUsOrderRejected, match="nine digits"):
+@pytest.mark.parametrize("order_id", ["", "00000028A", "../000000282", "1" * 19])
+def test_rejects_non_digit_or_unbounded_order_id(order_id: str) -> None:
+    with pytest.raises(KiwoomUsOrderRejected, match="digits"):
         validate_us_order_id(order_id)
+
+
+@pytest.mark.parametrize("order_id", ["000000282", "282", "1" * 18])
+def test_accepts_bounded_all_digit_order_id(order_id: str) -> None:
+    """ROB-867 review P2: documented nine digits is unverified against the
+    live mock, so cancel/modify must accept any bounded all-digit id rather
+    than strand an accepted order over a width mismatch."""
+    assert validate_us_order_id(order_id) == order_id
