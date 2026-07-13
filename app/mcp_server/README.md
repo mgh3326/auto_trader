@@ -2119,15 +2119,24 @@ exactly `order_id`, `symbol`, `status`, `ordered_price`, `filled_quantity`,
 `average_price`, and `remaining_quantity`. The source is the official kt00009
 `acnt_ord_cntr_prst_array` array. Status is normalized to `open`,
 `partially_filled`, `filled`, or `cancelled` from the broker cancellation marker
-and ordered/filled quantities.
+and ordered/filled quantities. `ord_no` must be an all-digit broker string;
+length is not fixed because the official seven-digit contract and existing
+ten-digit broker fixtures both occur in this repository.
 
-Both responses retain the broker payload as `broker_response`, with nested
-authorization, token, app credential, and account identifier values replaced by
-`[REDACTED]`. They also add fixed `provenance` for broker `kiwoom`, environment
-`mock`, account mode `kiwoom_mock`, host `mockapi.kiwoom.com`, and the expected
-API ID. Missing/malformed required fields or raw evidence claiming a live,
-production, non-mock account mode, or non-mock host changes the response to
-`success=false`; no normalized rows are emitted.
+All three account reads add fixed `provenance` for broker `kiwoom`, environment
+`mock`, account mode `kiwoom_mock`, host `mockapi.kiwoom.com`, and their expected
+API ID. Cash uses kt00010 when `symbol` is provided and kt00018 otherwise, and
+validates raw provenance before deriving broker success or returning cash.
+
+The responses retain the broker payload as `broker_response`. Recursive
+redaction covers authorization/token/cookie/credential/password/approval,
+API/app key and secret, and account-identifier key aliases across case and
+separator variations. Top-level passthrough fields are copied only from this
+redacted payload. Missing/malformed fields or explicit non-mock provenance
+changes the response to `success=false`; cash becomes `null`, and positions or
+orders become `[]`. Config, transport, broker, provenance, and normalization
+failures use stable `kiwoom_mock_*` error codes while retaining canonical mock
+provenance.
 
 Write provenance requirements:
 - pass `created_by="tradingcodex"` to `forecast_save`

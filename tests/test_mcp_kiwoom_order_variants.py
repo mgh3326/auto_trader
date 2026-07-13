@@ -861,6 +861,8 @@ async def test_orderable_cash_with_symbol_calls_orderable_amount(monkeypatch):
     assert response["cash"] == 1500000
     assert response["cash_source"] == "orderable_amount"
     assert response["symbol"] == "005930"
+    assert response["provenance"]["api_id"] == "kt00010"
+    assert response["provenance"]["host"] == "mockapi.kiwoom.com"
     # balance must NOT have been called
     assert all(c.get("method") != "balance" for c in calls)
 
@@ -887,6 +889,8 @@ async def test_orderable_cash_without_symbol_calls_balance(monkeypatch):
     assert response["broker_response"]["entr"] == "987654"
     assert response["cash"] == 987654
     assert response["cash_source"] == "balance"
+    assert response["provenance"]["api_id"] == "kt00018"
+    assert response["provenance"]["host"] == "mockapi.kiwoom.com"
     assert any(c.get("method") == "balance" for c in calls)
     assert all(c.get("method") != "orderable_amount" for c in calls)
 
@@ -945,8 +949,11 @@ async def test_orderable_cash_broker_error_is_fail_closed(monkeypatch):
     response = await mcp.tools["kiwoom_mock_get_orderable_cash"](symbol="005930")
 
     assert response["success"] is False
-    assert "RuntimeError" in response["error"]
+    assert response["error"] == "kiwoom_mock_transport_error"
+    assert "RuntimeError" in response["error_detail"]
     assert response["account_mode"] == "kiwoom_mock"
+    assert response["cash"] is None
+    assert response["provenance"]["api_id"] == "kt00010"
 
 
 @pytest.mark.asyncio
@@ -1080,7 +1087,8 @@ async def test_get_positions_broker_error_is_fail_closed(monkeypatch):
     response = await mcp.tools["kiwoom_mock_get_positions"]()
 
     assert response["success"] is False
-    assert "RuntimeError" in response["error"]
+    assert response["error"] == "kiwoom_mock_transport_error"
+    assert "RuntimeError" in response["error_detail"]
 
 
 @pytest.mark.asyncio
@@ -1140,3 +1148,323 @@ async def test_get_positions_fails_closed_on_malformed_row(monkeypatch):
     assert response["success"] is False
     assert response["positions"] == []
     assert response["error"] == "kiwoom_mock_evidence_invalid"
+
+
+def _assert_stable_read_failure(
+    response: dict[str, Any],
+    *,
+    result_key: str,
+    api_id: str,
+    error: str,
+) -> None:
+    assert response["success"] is False
+    assert response[result_key] == []
+    assert response["error"] == error
+    assert response["source"] == "kiwoom"
+    assert response["account_mode"] == "kiwoom_mock"
+    assert response["provenance"] == {
+        "broker": "kiwoom",
+        "environment": "mock",
+        "account_mode": "kiwoom_mock",
+        "host": "mockapi.kiwoom.com",
+        "api_id": api_id,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("symbol", "payload_key", "api_id"),
+    [
+        ("005930", "orderable_amount", "kt00010"),
+        (None, "balance", "kt00018"),
+    ],
+)
+async def test_orderable_cash_both_branches_fail_closed_on_live_provenance(
+    monkeypatch, symbol, payload_key, api_id
+):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    payloads = {
+        "orderable_amount": {"return_code": 0, "ord_psbl_cash": "1500000"},
+        "balance": {"return_code": 0, "entr": "987654"},
+        "order_status": {"return_code": 0},
+    }
+    payloads[payload_key]["provenance"] = {"environment": "live"}
+    _patch_fake_kiwoom_account_client(monkeypatch, mod, payloads=payloads)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](symbol=symbol)
+
+    assert response["success"] is False
+    assert response["cash"] is None
+    assert response["error"] == "kiwoom_mock_provenance_conflict"
+    assert response["provenance"]["api_id"] == api_id
+    assert response["provenance"]["host"] == "mockapi.kiwoom.com"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "conflicting_provenance",
+    [
+        {"source": "kiwoom_prod"},
+        {"source": "kiwoom_production"},
+        {"source": "kiwoom_real"},
+        {"source": "kiwoom_live"},
+        {"broker": "kiwoom-prod"},
+        {"broker": "kiwoom-production"},
+        {"broker": "kiwoom-real"},
+        {"broker": "kiwoom-live"},
+        {"environment": "prod"},
+        {"environment": "production"},
+        {"environment": "real"},
+        {"is_mock": "false"},
+        {"is_mock": 0},
+        {"is_mock": "maybe"},
+        {"environment": {}},
+    ],
+)
+async def test_registered_order_history_rejects_non_mock_or_malformed_provenance(
+    monkeypatch, conflicting_provenance
+):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    _patch_fake_kiwoom_account_client(
+        monkeypatch,
+        mod,
+        payloads={
+            "orderable_amount": {"return_code": 0},
+            "balance": {"return_code": 0},
+            "order_status": {
+                "return_code": 0,
+                "provenance": conflicting_provenance,
+                "acnt_ord_cntr_prst_array": [],
+            },
+        },
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_order_history"]()
+
+    _assert_stable_read_failure(
+        response,
+        result_key="orders",
+        api_id="kt00009",
+        error="kiwoom_mock_provenance_conflict",
+    )
+
+
+@pytest.mark.asyncio
+async def test_registered_order_history_recursively_redacts_aliases_and_passthrough(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    sensitive = {
+        "api_key": "api-underscore-value",
+        "API-Key": "api-value",
+        "Authorization_Header": "auth-value",
+        "refresh-token": "refresh-value",
+        "App Key": "app-key-value",
+        "APP-SECRET": "app-secret-value",
+        "Account Identifier": "account-value",
+        "Cookie": "cookie-value",
+        "Credential": "credential-value",
+        "Password": "password-value",
+        "Passwd": "passwd-value",
+        "approval": "approval-value",
+    }
+    safe_false_positives = {
+        "tokenizer_version": "preserve-tokenizer",
+        "secretary_name": "preserve-secretary",
+        "accounting_note": "preserve-accounting",
+        "credentialed_role": "preserve-role",
+        "disapproval_reason": "preserve-reason",
+    }
+    payload = {
+        "return_code": 0,
+        "continuation": {
+            "cont_yn": "Y",
+            "next_key": "page-2",
+            "authorization_header": "nested-secret",
+        },
+        "metadata": {**sensitive, **safe_false_positives},
+        "acnt_ord_cntr_prst_array": [],
+    }
+    _patch_fake_kiwoom_account_client(
+        monkeypatch,
+        mod,
+        payloads={
+            "orderable_amount": {"return_code": 0},
+            "balance": {"return_code": 0},
+            "order_status": payload,
+        },
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_order_history"]()
+
+    redacted_metadata = response["broker_response"]["metadata"]
+    assert set(redacted_metadata.values()) == {
+        "[REDACTED]",
+        *safe_false_positives.values(),
+    }
+    for key in sensitive:
+        assert redacted_metadata[key] == "[REDACTED]"
+    for key, value in safe_false_positives.items():
+        assert redacted_metadata[key] == value
+    assert response["continuation"]["authorization_header"] == "[REDACTED]"
+    assert response["broker_response"]["continuation"]["authorization_header"] == (
+        "[REDACTED]"
+    )
+    assert payload["metadata"] == {**sensitive, **safe_false_positives}
+    assert payload["continuation"]["authorization_header"] == "nested-secret"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "result_key", "api_id"),
+    [
+        ("kiwoom_mock_get_positions", "positions", "kt00018"),
+        ("kiwoom_mock_get_order_history", "orders", "kt00009"),
+    ],
+)
+async def test_registered_reads_config_failure_has_stable_envelope(
+    monkeypatch, tool_name, result_key, api_id
+):
+    from app.core import config as cfg
+
+    monkeypatch.setattr(cfg.settings, "kiwoom_mock_enabled", False)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools[tool_name]()
+
+    _assert_stable_read_failure(
+        response,
+        result_key=result_key,
+        api_id=api_id,
+        error="kiwoom_mock_config_invalid",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "result_key", "api_id"),
+    [
+        ("kiwoom_mock_get_positions", "positions", "kt00018"),
+        ("kiwoom_mock_get_order_history", "orders", "kt00009"),
+    ],
+)
+async def test_registered_reads_transport_exception_has_stable_envelope(
+    monkeypatch, tool_name, result_key, api_id
+):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    class FakeKiwoomMockClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FailingAccountClient:
+        def __init__(self, client):  # noqa: ARG002
+            pass
+
+        async def get_balance(self, **kwargs):  # noqa: ARG002
+            raise RuntimeError("transport secret must not escape")
+
+        async def get_order_status(self, **kwargs):  # noqa: ARG002
+            raise RuntimeError("transport secret must not escape")
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    monkeypatch.setattr(mod, "KiwoomMockClient", FakeKiwoomMockClient)
+    monkeypatch.setattr(mod, "KiwoomDomesticAccountClient", FailingAccountClient)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools[tool_name]()
+
+    _assert_stable_read_failure(
+        response,
+        result_key=result_key,
+        api_id=api_id,
+        error="kiwoom_mock_transport_error",
+    )
+    assert "transport secret" not in str(response)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "result_key", "api_id", "payload_key"),
+    [
+        ("kiwoom_mock_get_positions", "positions", "kt00018", "balance"),
+        ("kiwoom_mock_get_order_history", "orders", "kt00009", "order_status"),
+    ],
+)
+async def test_registered_reads_broker_failure_has_stable_envelope(
+    monkeypatch, tool_name, result_key, api_id, payload_key
+):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    payloads = {
+        "orderable_amount": {"return_code": 0},
+        "balance": {"return_code": 0},
+        "order_status": {"return_code": 0},
+    }
+    payloads[payload_key] = {"return_code": 1, "return_msg": "broker failure"}
+    _patch_fake_kiwoom_account_client(monkeypatch, mod, payloads=payloads)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools[tool_name]()
+
+    _assert_stable_read_failure(
+        response,
+        result_key=result_key,
+        api_id=api_id,
+        error="kiwoom_mock_broker_error",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_order_id", ["x", "   ", "12 34", "../123", "123?x=1"])
+async def test_registered_order_history_rejects_malformed_official_order_id(
+    monkeypatch, bad_order_id
+):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    _patch_fake_kiwoom_account_client(
+        monkeypatch,
+        mod,
+        payloads={
+            "orderable_amount": {"return_code": 0},
+            "balance": {"return_code": 0},
+            "order_status": {
+                "return_code": 0,
+                "acnt_ord_cntr_prst_array": [
+                    {
+                        "ord_no": bad_order_id,
+                        "stk_cd": "A005930",
+                        "ord_qty": "1",
+                        "ord_uv": "70000",
+                        "cntr_qty": "0",
+                        "cntr_uv": "0",
+                        "mdfy_cncl_tp": "",
+                    }
+                ],
+            },
+        },
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_order_history"]()
+
+    _assert_stable_read_failure(
+        response,
+        result_key="orders",
+        api_id="kt00009",
+        error="kiwoom_mock_evidence_invalid",
+    )
