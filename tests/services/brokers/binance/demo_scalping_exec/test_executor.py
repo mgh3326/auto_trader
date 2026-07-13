@@ -16,6 +16,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
+from app.models.binance_demo_order_ledger import BinanceDemoOrderLedger
 from app.models.crypto_instruments import CryptoInstrument
 from app.services.brokers.binance.demo_scalping.contract import (
     MarketConditions,
@@ -23,6 +24,7 @@ from app.services.brokers.binance.demo_scalping.contract import (
 )
 from app.services.brokers.binance.demo_scalping.order_intent import OrderIntent
 from app.services.brokers.binance.demo_scalping_exec.executor import (
+    DemoExecutionIdentity,
     DemoScalpingExecutor,
 )
 from app.services.brokers.binance.demo_scalping_exec.reference import SymbolReference
@@ -346,3 +348,152 @@ async def test_futures_new_status_polls_to_filled(db_session) -> None:
     )
     assert result.status == "reconciled"
     assert result.final_flat is True
+
+
+def _execution_identity(*, intent_hash: str = "a" * 64) -> DemoExecutionIdentity:
+    return DemoExecutionIdentity.from_verified_metadata(
+        decision_id="decision-rob845-binance",
+        idempotency_key="paper-binance-" + "1" * 32,
+        immutable_metadata={
+            "experiment_id": "experiment-1",
+            "run_id": "run-1",
+            "cohort_id": "cohort-1",
+            "strategy_version_id": "strategy-v1",
+            "intent_hash": intent_hash,
+            "strategy_hash": "b" * 64,
+            "config_hash": "c" * 64,
+            "policy_hash": "d" * 64,
+            "market_snapshot_id": "snapshot-1",
+            "market_snapshot_hash": "e" * 64,
+            "market_snapshot_as_of": "2026-07-13T01:00:00+00:00",
+            "market_snapshot_source": "binance_public_spot",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_verified_identity_uses_deterministic_native_ids_and_metadata(
+    db_session,
+) -> None:
+    symbol = "ROB845EXECUSDT"
+    identity = _execution_identity()
+    same = _execution_identity()
+    assert identity == same
+    assert identity.root_client_order_id.startswith("rob845r-")
+    assert identity.close_client_order_id.startswith("rob845c-")
+    assert len(identity.root_client_order_id) <= 36
+    assert len(identity.close_client_order_id) <= 36
+
+    client = _FakeSpotClient(free_after_buy=Decimal("7.3"))
+    executor = DemoScalpingExecutor(
+        product="spot",
+        client=client,
+        session=db_session,
+        reference=_FakeReference(_SPOT_REF),
+        now=_NOW,
+        limits=_limits_for(symbol),
+        execution_identity=identity,
+    )
+    result = await executor.execute(
+        _intent("spot", symbol), confirm=True, market=_FRESH_MARKET
+    )
+
+    assert result.status == "reconciled"
+    assert result.open_client_order_id == identity.root_client_order_id
+    assert result.close_client_order_id == identity.close_client_order_id
+    rows = list(
+        (
+            await db_session.scalars(
+                select(BinanceDemoOrderLedger).where(
+                    BinanceDemoOrderLedger.client_order_id.in_(
+                        [identity.root_client_order_id, identity.close_client_order_id]
+                    )
+                )
+            )
+        ).all()
+    )
+    assert len(rows) == 2
+    for row in rows:
+        metadata = row.extra_metadata["paper_execution_identity"]
+        assert metadata["decision_id"] == "decision-rob845-binance"
+        assert metadata["root_client_order_id"] == identity.root_client_order_id
+        assert metadata["close_client_order_id"] == identity.close_client_order_id
+        assert metadata["native_intent"]["symbol"] == symbol
+
+
+@pytest.mark.asyncio
+async def test_terminal_verified_identity_replays_before_market_preflight(
+    db_session,
+) -> None:
+    symbol = "ROB845REPLAYUSDT"
+    identity = _execution_identity()
+    first_client = _FakeSpotClient(free_after_buy=Decimal("7.3"))
+    first = DemoScalpingExecutor(
+        product="spot",
+        client=first_client,
+        session=db_session,
+        reference=_FakeReference(_SPOT_REF),
+        now=_NOW,
+        limits=_limits_for(symbol),
+        execution_identity=identity,
+    )
+    initial = await first.execute(
+        _intent("spot", symbol), confirm=True, market=_FRESH_MARKET
+    )
+    assert initial.status == "reconciled"
+    await db_session.commit()
+
+    replay_client = _FakeSpotClient()
+    replay_executor = DemoScalpingExecutor(
+        product="spot",
+        client=replay_client,
+        session=db_session,
+        reference=_FakeReference(_SPOT_REF),
+        now=_NOW + dt.timedelta(hours=1),
+        limits=_limits_for(symbol),
+        execution_identity=identity,
+    )
+    replay = await replay_executor.execute(
+        _intent("spot", symbol), confirm=True, market=None
+    )
+
+    assert replay.status == "reconciled"
+    assert replay.replayed is True
+    assert replay.open_client_order_id == identity.root_client_order_id
+    assert replay.close_client_order_id == identity.close_client_order_id
+    assert replay_client.submits == []
+
+
+@pytest.mark.asyncio
+async def test_verified_identity_collision_blocks_before_market_preflight(
+    db_session,
+) -> None:
+    symbol = "ROB845COLLIDEUSDT"
+    first_identity = _execution_identity()
+    first = DemoScalpingExecutor(
+        product="spot",
+        client=_FakeSpotClient(free_after_buy=Decimal("7.3")),
+        session=db_session,
+        reference=_FakeReference(_SPOT_REF),
+        now=_NOW,
+        limits=_limits_for(symbol),
+        execution_identity=first_identity,
+    )
+    await first.execute(_intent("spot", symbol), confirm=True, market=_FRESH_MARKET)
+    await db_session.commit()
+
+    collision_client = _FakeSpotClient()
+    collision = DemoScalpingExecutor(
+        product="spot",
+        client=collision_client,
+        session=db_session,
+        reference=_FakeReference(_SPOT_REF),
+        now=_NOW,
+        limits=_limits_for(symbol),
+        execution_identity=_execution_identity(intent_hash="f" * 64),
+    )
+    result = await collision.execute(_intent("spot", symbol), confirm=True, market=None)
+
+    assert result.status == "blocked"
+    assert result.reason_codes == ("idempotency_collision",)
+    assert collision_client.submits == []

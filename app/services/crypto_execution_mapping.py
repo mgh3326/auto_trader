@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-SignalVenue = Literal["upbit"]
+SignalVenue = Literal["upbit", "binance_public_spot"]
 ExecutionVenue = Literal["alpaca_paper"]
 CryptoStage = Literal["crypto_weekend", "crypto_always_open"]
 ExecutionMode = Literal["paper"]
@@ -72,6 +72,11 @@ _ALLOWED_SIGNAL_TO_EXECUTION = {
     "KRW-SOL": "SOL/USD",
 }
 
+_BINANCE_PUBLIC_SPOT_TO_EXECUTION = {
+    "BTCUSDT": "BTC/USD",
+    "ETHUSDT": "ETH/USD",
+}
+
 
 def map_alpaca_paper_to_upbit(execution_symbol: str) -> str:
     """Reverse map an Alpaca Paper USD pair back to its Upbit KRW signal symbol.
@@ -101,6 +106,39 @@ def map_upbit_to_alpaca_paper(signal_symbol: str) -> CryptoSignalExecutionMappin
     return CryptoSignalExecutionMapping(
         signal_symbol=normalized,
         execution_symbol=execution_symbol,
+    )
+
+
+def map_binance_public_spot_to_alpaca_paper(
+    signal_symbol: str,
+) -> CryptoSignalExecutionMapping:
+    """Map the canonical Binance public Spot V1 signal universe to Alpaca Paper."""
+    normalized = (signal_symbol or "").strip().upper()
+    try:
+        execution_symbol = _BINANCE_PUBLIC_SPOT_TO_EXECUTION[normalized]
+    except KeyError as exc:
+        allowed = ", ".join(sorted(_BINANCE_PUBLIC_SPOT_TO_EXECUTION))
+        raise CryptoExecutionMappingError(
+            f"unsupported Binance public Spot signal symbol {signal_symbol!r}; "
+            f"allowed: {allowed}"
+        ) from exc
+    return CryptoSignalExecutionMapping(
+        signal_symbol=normalized,
+        signal_venue="binance_public_spot",
+        execution_symbol=execution_symbol,
+    )
+
+
+def map_alpaca_paper_to_binance_public_spot(execution_symbol: str) -> str:
+    """Reverse map an Alpaca Paper V1 pair to its Binance public Spot signal."""
+    normalized = (execution_symbol or "").strip().upper()
+    for signal, execution in _BINANCE_PUBLIC_SPOT_TO_EXECUTION.items():
+        if execution == normalized:
+            return signal
+    allowed = ", ".join(sorted(_BINANCE_PUBLIC_SPOT_TO_EXECUTION.values()))
+    raise CryptoExecutionMappingError(
+        f"unsupported Alpaca Paper execution symbol {execution_symbol!r}; "
+        f"allowed: {allowed}"
     )
 
 
@@ -187,6 +225,8 @@ __all__ = [
     "build_alpaca_paper_crypto_preview_payload",
     "build_crypto_paper_approval_metadata",
     "build_operator_candidate_crypto_metadata",
+    "map_alpaca_paper_to_binance_public_spot",
     "map_alpaca_paper_to_upbit",
+    "map_binance_public_spot_to_alpaca_paper",
     "map_upbit_to_alpaca_paper",
 ]

@@ -30,12 +30,23 @@ from sqlalchemy import delete, or_
 
 from app.core.db import AsyncSessionLocal
 from app.models.binance_demo_order_ledger import BinanceDemoOrderLedger
+from app.models.scalp_trade_analytics import ScalpTradeAnalytics
 
-_RESIDUE_CID_PREFIXES = ("rob307-%", "rob844exec-%")
+_RESIDUE_CID_PREFIXES = ("rob307-%", "rob844exec-%", "rob845r-%", "rob845c-%")
 
 
 async def _purge_executor_residue() -> None:
     async with AsyncSessionLocal() as db:
+        await db.execute(
+            delete(ScalpTradeAnalytics).where(
+                or_(
+                    *[
+                        ScalpTradeAnalytics.open_client_order_id.like(prefix)
+                        for prefix in _RESIDUE_CID_PREFIXES
+                    ]
+                )
+            )
+        )
         await db.execute(
             delete(BinanceDemoOrderLedger).where(
                 or_(

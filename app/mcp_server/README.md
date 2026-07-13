@@ -1943,6 +1943,51 @@ The `MCP_PROFILE` env var selects which tool subset is registered at startup.
 | Analysis readonly | `analysis_readonly` | Codex/headless read/analysis allowlist only: `get_operating_briefing`, `route_request`, `get_trading_policy`, selected quote/fundamental/analysis tools, `suggest_order_account`, `get_holdings`, `toss_get_positions`, and explicitly labeled analysis persistence. No order/cancel/modify/reconcile/preview/settings/watch/admin/manual-holdings mutation tools are registered. |
 | Account read | `account_read` | TradingCodex account adapter allowlist only: existing KIS/Toss account reads plus `kiwoom_mock_get_positions`, `kiwoom_mock_get_orderable_cash`, and `kiwoom_mock_get_order_history`. Kiwoom and all other mutations remain physically absent. |
 | TradingCodex execution | `tradingcodex_execution` | Reviewed TradingCodex BrokerAdapter allowlist: existing account/advisory/learning/execution tools plus the seven mock-pinned typed `kiwoom_mock_*` tools. Requires a dedicated auth token and required approval-hash modes; no Kiwoom live or generic unscoped Kiwoom order surface is registered. |
+| Canonical paper execution | `paper_execution` | ROB-845 experiment façade only: capabilities plus typed preview/submit/cancel/get-order/reconcile. Default-off, auth-required, Binance Spot Demo and Alpaca Crypto Paper only; no generic, native, or live tools. |
+
+### Profile: `paper_execution` (ROB-845)
+
+This isolated profile is the canonical experiment-to-paper-broker boundary. It
+must be enabled explicitly with all of:
+
+- `MCP_PROFILE=paper_execution`
+- `PAPER_EXECUTION_ENABLED=true`
+- a non-empty `MCP_AUTH_TOKEN`
+
+The process fails before FastMCP registration when either the feature flag or
+authentication is missing. A direct registry call with the feature flag off
+registers zero tools.
+
+Exact tool allowlist:
+
+- `paper_execution_get_capabilities`
+- `paper_execution_preview_order`
+- `paper_execution_submit_order`
+- `paper_execution_cancel_order`
+- `paper_execution_get_order`
+- `paper_execution_reconcile`
+
+The request DTO contains the claimed experiment/run/cohort/strategy identity,
+canonical snapshot evidence, and order intent. It does not accept caller-owned
+`origin`, `idempotency_key`, broker `client_order_id`, or native order ID. Those
+identities are derived and verified server-side.
+
+V1 capability scope is deliberately narrow:
+
+- Binance Spot Demo: `BTCUSDT`/`ETHUSDT`, BUY MARKET, notional sizing; the
+  guarded native executor performs one open/close round trip. External cancel
+  and reconcile are unsupported.
+- Alpaca Crypto Paper: `BTC/USD`/`ETH/USD`, BUY/SELL LIMIT, quantity sizing,
+  GTC/IOC, through the approval-packet/coordinator boundary.
+
+No KIS, Kiwoom, Toss, Upbit, live broker, legacy order, or venue-native mutation
+tool is registered. Broker-native ledgers remain the lifecycle/fill/P&L source;
+the façade adds no common order ledger or migration.
+
+ROB-849 will provide the concrete immutable cohort/snapshot provenance verifier.
+Until that composition is installed, capability reads work but every experiment
+operation fails closed with `provenance_verifier_unavailable` before adapter,
+native-ledger, client, or broker activity.
 
 ### Profile: `hermes-paper-kis`
 

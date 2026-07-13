@@ -46,6 +46,7 @@ from app.services.paper_approval_packet import (
     verify_packet_freshness,
     verify_packet_market_data,
     verify_preview_submit_hash,
+    verify_sell_packet_source,
     verify_server_derived_key,
 )
 
@@ -308,18 +309,48 @@ class AlpacaPaperSubmitCoordinator:
                 return await self._resolve_inflight(coid)
             return self._resolved_outcome(existing)
 
-        # --- (2b) Automated sell is disabled at the SUBMIT boundary (ROB-845) ----
-        # The persisted packet's own origin/side is re-checked here so a legacy
-        # automated-sell token cannot POST. Any prior terminal result was already
-        # replayed above; a brand-new automated sell fails closed with no claim.
+        # --- (2b) Exact source authority for a new automated SELL (ROB-845) -----
+        # Legacy source-less packets remain disabled. A source-bound packet must
+        # reload the exact native BUY execution before freshness, position,
+        # reservation, claim, or broker work. Terminal results above still replay.
         if packet.origin == "automated" and packet.side == "sell":
-            return SubmitOutcome(
-                status="rejected",
-                client_order_id=coid,
-                broker_called=False,
-                reason_code="automated_sell_disabled",
-                message="automated sell is disabled at the submit boundary until ROB-845",
-            )
+            source_id = (packet.source_client_order_id or "").strip()
+            decision_hash = (packet.decision_identity_hash or "").strip()
+            if not source_id or not decision_hash:
+                return SubmitOutcome(
+                    status="rejected",
+                    client_order_id=coid,
+                    broker_called=False,
+                    reason_code="automated_sell_disabled",
+                    message="automated sell requires verified native buy authority",
+                )
+            requested_qty = _to_decimal(submit_canonical.get("qty"))
+            if (
+                requested_qty is None
+                or not requested_qty.is_finite()
+                or requested_qty <= 0
+            ):
+                return SubmitOutcome(
+                    status="rejected",
+                    client_order_id=coid,
+                    broker_called=False,
+                    reason_code="source_qty_required",
+                    message="automated sell requires a finite positive qty",
+                )
+            try:
+                await verify_sell_packet_source(
+                    packet,
+                    ledger=self._ledger,
+                    requested_qty=requested_qty,
+                )
+            except PaperApprovalPacketError as exc:
+                return SubmitOutcome(
+                    status="rejected",
+                    client_order_id=coid,
+                    broker_called=False,
+                    reason_code=exc.code,
+                    message=str(exc),
+                )
 
         # --- (3) Time-dependent evidence — NEW (not-yet-claimed) submits only ----
         # No origin bypass: every new submit must carry server-observed market
@@ -346,6 +377,7 @@ class AlpacaPaperSubmitCoordinator:
             lifecycle_correlation_id=packet.lifecycle_correlation_id,
             execution_symbol=packet.execution_symbol,
             execution_venue=packet.execution_venue,
+            execution_asset_class=packet.execution_asset_class,
             instrument_type=_instrument_type_for(packet.execution_asset_class),
             side=packet.side,
             order_type=str(submit_canonical.get("type") or "limit"),
@@ -474,6 +506,7 @@ class AlpacaPaperSubmitCoordinator:
                 lifecycle_correlation_id=packet.lifecycle_correlation_id,
                 execution_symbol=packet.execution_symbol,
                 execution_venue=packet.execution_venue,
+                execution_asset_class=packet.execution_asset_class,
                 instrument_type=_instrument_type_for(packet.execution_asset_class),
                 account_mode=packet.account_mode,
                 requested_qty=requested,
@@ -483,7 +516,27 @@ class AlpacaPaperSubmitCoordinator:
                 time_in_force=submit_canonical.get("time_in_force"),
                 requested_price=_to_decimal(submit_canonical.get("limit_price")),
                 preview_payload=dict(submit_canonical),
+                source_client_order_id=packet.source_client_order_id,
             )
+            # A concurrent same-token winner may have completed while this caller
+            # waited on the sell lock. Its durable execution outcome outranks the
+            # now-changed source/account availability observed by this loser.
+            if not claim.won and claim.row is not None:
+                if not is_inflight_execution(claim.row):
+                    return self._resolved_outcome(claim.row)
+                return await self._resolve_inflight(coid)
+            if claim.source_reason_code is not None:
+                source_message = (
+                    f"sell qty {requested} exceeds exact source availability "
+                    f"{claim.source_available}"
+                    if claim.source_reason_code == "qty_exceeds_source_available"
+                    else "exact buy source authority became unavailable during claim"
+                )
+                return self._sell_reject(
+                    packet,
+                    claim.source_reason_code,
+                    source_message,
+                )
             if claim.insufficient:
                 return self._sell_reject(
                     packet,
@@ -493,9 +546,6 @@ class AlpacaPaperSubmitCoordinator:
                     "minus reserved open sells)",
                 )
             if not claim.won:
-                row = claim.row
-                if row is not None and not is_inflight_execution(row):
-                    return self._resolved_outcome(row)
                 return await self._resolve_inflight(coid)
 
             return await self._winner_submit(packet, submit_canonical)

@@ -259,6 +259,15 @@ async def test_toss_loss_cut_submit_records_audit_binding(monkeypatch):
 async def test_toss_loss_cut_submit_does_not_query_paperclip(monkeypatch):
     client = _configure_toss(monkeypatch)
     _configure_loss_cut_preconditions(monkeypatch)
+    record_send = AsyncMock(
+        return_value={
+            "ledger_id": 858,
+            "broker_status": "accepted",
+            "fill_recorded": False,
+            "journal_created": False,
+        }
+    )
+    monkeypatch.setattr(otv, "record_toss_place_order", record_send)
     preview = await _preview_loss_cut()
     with otv._bind_order_proposal_context(
         client_order_id="tosprop-loss-cut", correlation_id="corr", rung=0
@@ -282,6 +291,8 @@ async def test_toss_loss_cut_submit_does_not_query_paperclip(monkeypatch):
 
     assert result["success"] is True
     assert len(client.placed_payloads) == 1
+    record_send.assert_awaited_once()
+    assert record_send.await_args.kwargs["approval_issue_id"] is None
 
 
 @pytest.mark.asyncio

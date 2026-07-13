@@ -10,7 +10,10 @@ import pytest
 
 
 class _FakeFastMCP:
+    init_count = 0
+
     def __init__(self, **kwargs: object) -> None:
+        type(self).init_count += 1
         self.init_kwargs = kwargs
         self.run = MagicMock()
         self.add_middleware = MagicMock()
@@ -58,9 +61,12 @@ def _load_main_module(
     auth_token: str = "",
     account_read: bool = False,
     tradingcodex_execution: bool = False,
+    paper_execution: bool = False,
+    paper_execution_enabled: bool = False,
 ) -> tuple[ModuleType, _FakeFastMCP, MagicMock, object, object]:
     main_path = Path(__file__).resolve().parents[1] / "app" / "mcp_server" / "main.py"
 
+    _FakeFastMCP.init_count = 0
     fake_fastmcp = ModuleType("fastmcp")
     fake_fastmcp.__dict__["FastMCP"] = _FakeFastMCP
 
@@ -92,6 +98,7 @@ def _load_main_module(
             kiwoom_mock_app_secret=None,
             kiwoom_mock_account_no=None,
             kiwoom_mock_base_url="https://mockapi.kiwoom.com",
+            PAPER_EXECUTION_ENABLED=paper_execution_enabled,
         )
 
     def validate_kiwoom_mock_config(settings: object) -> list[str]:
@@ -134,7 +141,10 @@ def _load_main_module(
 
     account_read_profile = _FakeProfileMember("account_read")
     tradingcodex_execution_profile = _FakeProfileMember("tradingcodex_execution")
-    if tradingcodex_execution:
+    paper_execution_profile = _FakeProfileMember("paper_execution")
+    if paper_execution:
+        resolved_profile = paper_execution_profile
+    elif tradingcodex_execution:
         resolved_profile = tradingcodex_execution_profile
     elif account_read:
         resolved_profile = account_read_profile
@@ -144,6 +154,7 @@ def _load_main_module(
     fake_profiles.__dict__["McpProfile"] = SimpleNamespace(
         ACCOUNT_READ=account_read_profile,
         TRADINGCODEX_EXECUTION=tradingcodex_execution_profile,
+        PAPER_EXECUTION=paper_execution_profile,
     )
     fake_profiles.__dict__["resolve_mcp_profile"] = MagicMock(
         return_value=resolved_profile
@@ -511,3 +522,52 @@ class TestMcpServerMain:
                 auth_token="restricted-profile-token",
                 **profile_kwargs,
             )
+
+    def test_paper_execution_profile_requires_auth_before_fastmcp(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+
+        with pytest.raises(
+            RuntimeError,
+            match="MCP_PROFILE=paper_execution requires non-empty MCP_AUTH_TOKEN",
+        ):
+            _load_main_module(
+                monkeypatch,
+                paper_execution=True,
+                paper_execution_enabled=True,
+            )
+
+        assert _FakeFastMCP.init_count == 0
+
+    def test_paper_execution_profile_requires_enabled_flag_before_fastmcp(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        with pytest.raises(
+            RuntimeError,
+            match="MCP_PROFILE=paper_execution requires PAPER_EXECUTION_ENABLED=true",
+        ):
+            _load_main_module(
+                monkeypatch,
+                auth_token="paper-execution-token",
+                paper_execution=True,
+                paper_execution_enabled=False,
+            )
+
+        assert _FakeFastMCP.init_count == 0
+
+    def test_paper_execution_profile_boots_when_enabled_and_authenticated(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        module, _, _, _, _ = _load_main_module(
+            monkeypatch,
+            auth_token="paper-execution-token",
+            paper_execution=True,
+            paper_execution_enabled=True,
+        )
+
+        assert module._mcp_profile.value == "paper_execution"
+        assert _FakeFastMCP.init_count == 1
