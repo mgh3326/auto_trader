@@ -1318,9 +1318,7 @@ async def test_create_proposal_allows_upbit_crypto(db_session):
 @pytest.mark.asyncio
 async def test_create_proposal_rejects_kis_mock_equity_kr(db_session):
     service = OrderProposalsService(db_session)
-    with pytest.raises(
-        OrderProposalError, match="unsupported account_mode/market/action"
-    ):
+    with pytest.raises(OrderProposalError) as exc_info:
         await service.create_proposal(
             symbol="A",
             market="equity_kr",
@@ -1330,6 +1328,12 @@ async def test_create_proposal_rejects_kis_mock_equity_kr(db_session):
             proposer="p",
             rungs=[RungInput(0, "buy", Decimal("1"), Decimal("100"), None)],
         )
+    assert str(exc_info.value) == (
+        "unsupported account_mode/market/action: kis_mock/equity_kr/place "
+        "(allowed: kis_live×equity_kr|equity_us, "
+        "toss_live×equity_kr|equity_us, upbit×crypto; "
+        "market aliases kr→equity_kr, us→equity_us)"
+    )
 
 
 @pytest.mark.asyncio

@@ -37,6 +37,12 @@ ORDER_PROPOSAL_TOOL_NAMES: set[str] = {
     "order_proposal_void",
 }
 
+_MARKET_ALIASES = {"kr": "equity_kr", "us": "equity_us"}
+
+
+def _normalize_order_proposal_market(market: str) -> str:
+    return _MARKET_ALIASES.get(market, market)
+
 
 def _dec(v: str | None) -> Decimal | None:
     if v is None:
@@ -116,6 +122,10 @@ async def order_proposal_create(
     """Create a place, replace, or cancel proposal without broker mutation.
 
     Args:
+        market: Canonical market in {equity_kr, equity_us, crypto}; aliases
+                kr→equity_kr and us→equity_us are accepted. Supported place
+                combinations are kis_live/toss_live with equity_kr or equity_us,
+                and upbit with crypto.
         rungs: list of {"rung_index": int, "side": str, "quantity": str,
                "limit_price": str|None, "notional": str|None}.
         supersedes_proposal_id: if this proposal replaces an existing one (price/qty
@@ -125,6 +135,7 @@ async def order_proposal_create(
         target_broker_order_id: required broker order ID for replace/cancel.
     """
     try:
+        market = _normalize_order_proposal_market(market)
         rung_inputs = [
             RungInput(
                 int(r["rung_index"]),
