@@ -47,6 +47,9 @@ draft -> offline_eligible -> shadow_soak -> paper_active
       -> promotion_eligible -> promoted | rejected | aborted
 ```
 
+The indentation above continues from `paper_active`: there are four prerequisite edges
+ending at `promotion_eligible`, then three mutually exclusive terminal edges.
+
 Registration appends sequence 1 with `prior_state = NULL` and `new_state = draft`.
 Every later event must advance exactly one edge. Skips and reversals return
 `invalid_transition`; any request after `promoted`, `rejected`, or `aborted` returns

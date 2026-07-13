@@ -44,7 +44,7 @@ with pytest.raises(ValidationError):
 assert ValidationIdentity(**identity).experiment_hash == identity["experiment_hash"]
 ```
 
-- [ ] **Step 2: Write the complete graph matrix test.** Parametrize every state pair and assert only the six forward edges plus three terminal edges are accepted; terminal requests return `terminal_state`, all other pairs return `invalid_transition`.
+- [ ] **Step 2: Write the complete graph matrix test.** Parametrize every state pair and assert only the four prerequisite edges plus three terminal edges are accepted; terminal requests return `terminal_state`, all other pairs return `invalid_transition`.
 - [ ] **Step 3: Run RED.** Run `uv run pytest --no-cov -q tests/services/paper_validation/test_contracts.py tests/services/paper_validation/test_state_machine.py`; expect import failures for the new package.
 - [ ] **Step 4: Implement frozen Pydantic/dataclass contracts and pure state functions.** Use `StrEnum`, `ConfigDict(frozen=True, extra="forbid")`, and no DB/broker imports.
 - [ ] **Step 5: Run GREEN.** Re-run the focused command and `uv run pytest --no-cov -q tests/services/research/test_research_canonical_hash.py`.
