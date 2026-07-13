@@ -360,6 +360,9 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "set_user_setting",
         "stage_analysis_get",
         "suggest_order_account",
+        # ROB-866: detection sweep (no broker order mutation; alert-only side effect
+        # like session_context_append, which is likewise advisory-classified).
+        "toss_detect_manual_activity",
         "trade_retrospective_pending",
         "update_manual_holdings",
         "update_trade_journal",

@@ -1263,3 +1263,36 @@ class TradeForecast(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+# ---------------------------------------------------------------------------
+# review.toss_manual_activity_alerts — ROB-866 idempotency marker
+# ---------------------------------------------------------------------------
+class TossManualActivityAlert(Base):
+    """ROB-866 — records Toss manual (unbooked) orders that have been alerted.
+
+    Toss has no execution websocket, so operator app-side trades are invisible to
+    the system until reported. The manual-activity sweep diffs GET /orders against
+    ``review.toss_live_order_ledger`` + proposal rungs to surface unbooked orders,
+    then alerts Telegram + session_context. This table is the alert-idempotency
+    marker only — it is NOT a fill/bookkeeping ledger (that is stage 2). Presence
+    of a ``broker_order_id`` here means "already alerted; do not re-alert".
+    """
+
+    __tablename__ = "toss_manual_activity_alerts"
+    __table_args__ = (
+        Index("ix_toss_manual_activity_alerts_alerted_at", "alerted_at"),
+        {"schema": "review"},
+    )
+
+    broker_order_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    symbol: Mapped[str | None] = mapped_column(Text)
+    side: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str | None] = mapped_column(Text)
+    market: Mapped[str | None] = mapped_column(Text)
+    is_open: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
+    alerted_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )

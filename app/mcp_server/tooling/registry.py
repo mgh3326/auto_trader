@@ -156,6 +156,9 @@ from app.mcp_server.tooling.route_request_registration import (
 from app.mcp_server.tooling.session_context_registration import (
     register_session_context_tools,
 )
+from app.mcp_server.tooling.toss_manual_activity_tools import (
+    register_toss_manual_activity_tools,
+)
 from app.mcp_server.tooling.trade_journal_registration import (
     register_trade_journal_tools,
 )
@@ -295,6 +298,8 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_kis_mock_order_tools(mcp)
         register_live_reconcile_tools(mcp)
         register_toss_live_order_tools(mcp)
+        # ROB-866: Toss manual-activity detection sweep (read-only; alert-only).
+        register_toss_manual_activity_tools(mcp)
         # ROB-601: optionally surface kiwoom_mock_* in the operator DEFAULT
         # session so analyze→approval→order can run through kiwoom mock without
         # switching to the isolated KIWOOM profile (which drops every other

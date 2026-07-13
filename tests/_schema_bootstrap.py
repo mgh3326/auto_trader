@@ -32,7 +32,9 @@ from sqlalchemy import text
 # v10 (ROB-844 review): broker-ack identity adds instrument_id. Persistent test
 # DBs may already have the same named 3-column index, so a shape-aware refresher
 # replaces only a mismatched definition before CREATE IF NOT EXISTS.
-SCHEMA_BOOTSTRAP_VERSION = 10
+# v11 (ROB-866): review.toss_manual_activity_alerts (new ORM table) — create_all
+# builds it; bump forces a persistent local DB to re-bootstrap once.
+SCHEMA_BOOTSTRAP_VERSION = 11
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
