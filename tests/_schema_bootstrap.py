@@ -34,7 +34,8 @@ from sqlalchemy import text
 # replaces only a mismatched definition before CREATE IF NOT EXISTS.
 # v11 (ROB-866): review.toss_manual_activity_alerts (new ORM table) — create_all
 # builds it; bump forces a persistent local DB to re-bootstrap once.
-SCHEMA_BOOTSTRAP_VERSION = 14
+# v15 (ROB-849): paper cohort immutable/composition triggers.
+SCHEMA_BOOTSTRAP_VERSION = 15
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -240,7 +241,65 @@ async def _ensure_trade_forecast_status_constraint(conn) -> None:
 # apply_test_schema() (they need a catalog probe so an unconditional form     #
 # would force an AccessExclusive lock on hot tables).                         #
 # --------------------------------------------------------------------------- #
+_PAPER_COHORT_AUDIT_TABLES = (
+    "paper_validation_cohorts",
+    "paper_validation_cohort_assignments",
+    "canonical_market_snapshots",
+    "paper_cohort_decisions",
+    "paper_cohort_venue_intents",
+    "paper_run_order_links",
+)
+_PAPER_COHORT_TRIGGER_DDL: tuple[str, ...] = (
+    "CREATE OR REPLACE FUNCTION research.reject_paper_cohort_audit_mutation() "
+    "RETURNS trigger AS $$ BEGIN RAISE EXCEPTION "
+    "'research.% is append-only/immutable; % rejected', TG_TABLE_NAME, TG_OP "
+    "USING ERRCODE = 'restrict_violation'; END; $$ LANGUAGE plpgsql",
+    "CREATE OR REPLACE FUNCTION research.validate_paper_cohort_composition() "
+    "RETURNS trigger AS $$ DECLARE target_cohort_id text; "
+    "champion_count integer; challenger_count integer; assignment_count integer; "
+    "BEGIN target_cohort_id := NEW.cohort_id; "
+    "SELECT count(*) FILTER (WHERE role = 'champion'), "
+    "count(*) FILTER (WHERE role = 'challenger'), count(*) "
+    "INTO champion_count, challenger_count, assignment_count "
+    "FROM research.paper_validation_cohort_assignments "
+    "WHERE cohort_id = target_cohort_id; "
+    "IF champion_count <> 1 OR challenger_count > 2 "
+    "OR assignment_count < 1 OR assignment_count > 3 THEN "
+    "RAISE EXCEPTION 'paper cohort % requires exactly one champion and at most "
+    "two challengers', target_cohort_id "
+    "USING ERRCODE = 'integrity_constraint_violation'; END IF; "
+    "RETURN NEW; END; $$ LANGUAGE plpgsql",
+    *tuple(
+        statement
+        for table in _PAPER_COHORT_AUDIT_TABLES
+        for statement in (
+            f"DROP TRIGGER IF EXISTS trg_{table}_immutable ON research.{table}",
+            f"CREATE TRIGGER trg_{table}_immutable BEFORE UPDATE OR DELETE ON "
+            f"research.{table} FOR EACH ROW EXECUTE FUNCTION "
+            "research.reject_paper_cohort_audit_mutation()",
+            f"DROP TRIGGER IF EXISTS trg_{table}_truncate_immutable ON "
+            f"research.{table}",
+            f"CREATE TRIGGER trg_{table}_truncate_immutable BEFORE TRUNCATE ON "
+            f"research.{table} FOR EACH STATEMENT EXECUTE FUNCTION "
+            "research.reject_paper_cohort_audit_mutation()",
+        )
+    ),
+    "DROP TRIGGER IF EXISTS trg_paper_cohort_composition_from_assignment ON "
+    "research.paper_validation_cohort_assignments",
+    "DROP TRIGGER IF EXISTS trg_paper_cohort_composition_from_cohort ON "
+    "research.paper_validation_cohorts",
+    "CREATE CONSTRAINT TRIGGER trg_paper_cohort_composition_from_cohort "
+    "AFTER INSERT ON research.paper_validation_cohorts "
+    "DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "
+    "research.validate_paper_cohort_composition()",
+    "CREATE CONSTRAINT TRIGGER trg_paper_cohort_composition_from_assignment "
+    "AFTER INSERT ON research.paper_validation_cohort_assignments "
+    "DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "
+    "research.validate_paper_cohort_composition()",
+)
+
 _DDL_STATEMENTS: tuple[str, ...] = (
+    *_PAPER_COHORT_TRIGGER_DDL,
     # ---- market_events / us_symbol_universe ----
     "ALTER TABLE market_events ADD COLUMN IF NOT EXISTS currency TEXT",
     "ALTER TABLE us_symbol_universe ADD COLUMN IF NOT EXISTS is_common_stock BOOLEAN",
