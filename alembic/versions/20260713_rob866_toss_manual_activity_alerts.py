@@ -13,7 +13,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "20260713_rob866_toss_manual_activity"
-down_revision = "20260713_rob844_root_reservation"
+down_revision = "20260713_rob844_ack_scope"
 branch_labels = None
 depends_on = None
 
