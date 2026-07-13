@@ -39,6 +39,9 @@ from app.services.alpaca_paper_submit_service import (
     derive_automated_key,
 )
 from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
+from app.services.crypto_execution_mapping import (
+    map_alpaca_paper_to_binance_public_spot,
+)
 from app.services.paper_approval_packet import (
     PaperApprovalPacket,
     PaperApprovalPacketError,
@@ -127,7 +130,7 @@ class AlpacaVerifiedDecision:
             raise ValueError("snapshot_as_of must be timezone-aware")
         if not self.reference_price.is_finite() or self.reference_price <= 0:
             raise ValueError("reference_price must be finite and positive")
-        expected_signal = self.order.symbol.replace("/USD", "USDT")
+        expected_signal = map_alpaca_paper_to_binance_public_spot(self.order.symbol)
         if self.signal_symbol != expected_signal:
             raise ValueError("signal symbol does not match execution symbol")
         if (

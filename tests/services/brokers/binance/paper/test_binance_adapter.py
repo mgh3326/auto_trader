@@ -26,6 +26,7 @@ from app.services.brokers.binance.paper_adapter import BinanceSpotDemoPaperAdapt
 from app.services.brokers.capabilities import Broker
 from app.services.brokers.paper.contracts import (
     PaperOperationStatus,
+    PaperReasonCode,
     VerifiedPaperOrderIntent,
 )
 
@@ -323,6 +324,33 @@ async def test_preview_runs_guarded_preflight_without_signed_client() -> None:
     assert result.risk_snapshot.quote_as_of == _NOW - dt.timedelta(seconds=5)
     assert deps.clients == []
     assert deps.market_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_preview_market_data_factory_failure_closes_created_reference() -> None:
+    deps = _Dependencies()
+
+    def failing_market_data_factory() -> _MarketData:
+        raise RuntimeError("market data factory unavailable")
+
+    adapter = BinanceSpotDemoPaperAdapter(
+        session_factory=AsyncSessionLocal,
+        client_factory=deps.client_factory,
+        reference_factory=deps.reference_factory,
+        market_data_factory=failing_market_data_factory,
+        market_conditions_builder=deps.market_builder,
+        clock=lambda: deps.now,
+    )
+
+    result = await adapter.preview(_intent())
+
+    assert result.status is PaperOperationStatus.FAILED
+    assert result.reason_code is PaperReasonCode.ADAPTER_UNAVAILABLE
+    assert result.evidence == {"error_type": "RuntimeError"}
+    assert deps.references[0].closed is True
+    assert deps.market_data == []
+    assert deps.clients == []
+    assert deps.market_calls == 0
 
 
 @pytest.mark.asyncio

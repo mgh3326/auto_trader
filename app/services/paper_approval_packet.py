@@ -314,16 +314,20 @@ async def verify_sell_packet_source(
 
     For sell packets:
     - qty_source must be a ledger/reconcile-derived value.
-    - Calls ledger.list_by_correlation_id to retrieve the correlation scope.
-    - Exactly one buy execution row must exist.
+    - source_client_order_id selects one exact native buy execution when present;
+      legacy packets fall back to ledger.list_by_correlation_id.
+    - Exactly one eligible buy execution row must exist.
     - That buy row must be in a reconciled state (position_reconciled / filled / closed / final_reconciled).
-    - execution_symbol must match between packet and source row.
-    - packet.max_qty (if set) must not exceed the source buy filled_qty.
+    - account, venue, asset class, instrument type, and execution symbol must match.
+    - requested_qty (or packet.max_qty for legacy callers) must not exceed the
+      source buy filled_qty.
 
     Raises:
         PaperApprovalPacketError with one of the stable codes:
             invalid_qty_source, missing_source_order, multiple_source_orders,
-            source_not_reconciled, wrong_symbol, qty_exceeds_source.
+            source_not_reconciled, wrong_account_mode, wrong_execution_venue,
+            wrong_asset_class, wrong_instrument_type, wrong_symbol,
+            source_filled_qty_unknown, qty_exceeds_source.
     """
     if packet.side == "buy":
         return

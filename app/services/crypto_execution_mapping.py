@@ -129,6 +129,19 @@ def map_binance_public_spot_to_alpaca_paper(
     )
 
 
+def map_alpaca_paper_to_binance_public_spot(execution_symbol: str) -> str:
+    """Reverse map an Alpaca Paper V1 pair to its Binance public Spot signal."""
+    normalized = (execution_symbol or "").strip().upper()
+    for signal, execution in _BINANCE_PUBLIC_SPOT_TO_EXECUTION.items():
+        if execution == normalized:
+            return signal
+    allowed = ", ".join(sorted(_BINANCE_PUBLIC_SPOT_TO_EXECUTION.values()))
+    raise CryptoExecutionMappingError(
+        f"unsupported Alpaca Paper execution symbol {execution_symbol!r}; "
+        f"allowed: {allowed}"
+    )
+
+
 def build_alpaca_paper_crypto_preview_payload(
     mapping: CryptoSignalExecutionMapping,
     *,
@@ -212,6 +225,7 @@ __all__ = [
     "build_alpaca_paper_crypto_preview_payload",
     "build_crypto_paper_approval_metadata",
     "build_operator_candidate_crypto_metadata",
+    "map_alpaca_paper_to_binance_public_spot",
     "map_alpaca_paper_to_upbit",
     "map_binance_public_spot_to_alpaca_paper",
     "map_upbit_to_alpaca_paper",

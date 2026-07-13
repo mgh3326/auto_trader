@@ -135,10 +135,10 @@ async def test_missing_verifier_fails_before_registry_or_adapter() -> None:
 
 
 @pytest.mark.asyncio
-async def test_verifier_exception_fails_before_registry_or_adapter() -> None:
+async def test_verifier_exception_fails_before_registry_or_adapter(caplog) -> None:
     adapter = _Adapter()
     registry = _Registry(adapter)
-    verifier = _Verifier(RuntimeError("provider unavailable"))
+    verifier = _Verifier(RuntimeError("api_secret=must-not-leak"))
     application = PaperExecutionApplication(registry=registry, verifier=verifier)
 
     result = await application.submit(_request())
@@ -146,10 +146,12 @@ async def test_verifier_exception_fails_before_registry_or_adapter() -> None:
     assert result.reason_code is PaperReasonCode.PROVENANCE_VERIFICATION_FAILED
     assert registry.resolve_calls == 0
     assert adapter.calls == []
+    assert "paper provenance verifier failed" in caplog.text
+    assert "api_secret" not in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_missing_verified_field_fails_before_registry_or_adapter() -> None:
+async def test_missing_verified_field_fails_before_registry_or_adapter(caplog) -> None:
     request = _request()
     evidence = VerifiedExperimentProvenance.model_construct(
         **{
@@ -170,6 +172,7 @@ async def test_missing_verified_field_fails_before_registry_or_adapter() -> None
     assert result.reason_code is PaperReasonCode.PROVENANCE_EVIDENCE_INVALID
     assert registry.resolve_calls == 0
     assert adapter.calls == []
+    assert "paper provenance evidence invalid" in caplog.text
 
 
 @pytest.mark.asyncio

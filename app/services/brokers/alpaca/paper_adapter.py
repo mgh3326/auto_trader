@@ -20,6 +20,9 @@ from app.services.brokers.paper.contracts import (
     PaperReasonCode,
     VerifiedPaperOrderIntent,
 )
+from app.services.crypto_execution_mapping import (
+    map_alpaca_paper_to_binance_public_spot,
+)
 
 
 class _AlpacaApplication(Protocol):
@@ -98,7 +101,7 @@ class AlpacaCryptoPaperAdapter:
     def _decision(intent: VerifiedPaperOrderIntent) -> AlpacaVerifiedDecision:
         assert intent.qty is not None
         assert intent.price is not None
-        signal_symbol = intent.symbol.removesuffix("/USD") + "USDT"
+        signal_symbol = map_alpaca_paper_to_binance_public_spot(intent.symbol)
         identity_hash = hashlib.sha256(intent.idempotency_key.encode()).hexdigest()
         return AlpacaVerifiedDecision(
             order=AlpacaPaperOrderSpec(
@@ -161,10 +164,17 @@ class AlpacaCryptoPaperAdapter:
         )
         if outcome.message is not None:
             evidence["message"] = outcome.message
+        reason_code: PaperReasonCode | str
+        if outcome.reason_code is not None:
+            reason_code = outcome.reason_code
+        elif status is PaperOperationStatus.FAILED:
+            reason_code = PaperReasonCode.ADAPTER_UNAVAILABLE
+        else:
+            reason_code = PaperReasonCode.OK
         return PaperOperationResult(
             operation=operation,
             status=status,
-            reason_code=outcome.reason_code or PaperReasonCode.OK,
+            reason_code=reason_code,
             venue=self.broker,
             native_order_id=outcome.native_order_id,
             native_client_order_id=outcome.native_client_order_id,

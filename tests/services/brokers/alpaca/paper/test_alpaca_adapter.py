@@ -18,7 +18,7 @@ from app.services.brokers.paper.contracts import (
 )
 
 
-def _intent(*, side: str = "buy") -> VerifiedPaperOrderIntent:
+def _intent(*, side: str = "buy", symbol: str = "BTC/USD") -> VerifiedPaperOrderIntent:
     is_sell = side == "sell"
     return VerifiedPaperOrderIntent(
         intent_id=f"intent-{side}",
@@ -32,7 +32,7 @@ def _intent(*, side: str = "buy") -> VerifiedPaperOrderIntent:
         venue=Broker.ALPACA,
         account_mode="paper",
         product="crypto",
-        symbol="BTC/USD",
+        symbol=symbol,
         side=side,
         order_type="limit",
         time_in_force="gtc",
@@ -163,6 +163,50 @@ async def test_adapter_maps_unexpected_application_failure_to_sanitized_result(
     assert result.reason_code is PaperReasonCode.ADAPTER_UNAVAILABLE
     assert result.evidence == {"error_type": "_SensitiveApplicationFailure"}
     assert application.calls[0][0] == method
+
+
+@pytest.mark.asyncio
+async def test_adapter_fails_closed_before_application_for_unmapped_symbol() -> None:
+    from app.services.brokers.alpaca.paper_adapter import AlpacaCryptoPaperAdapter
+
+    application = _Application(AlpacaPaperApplicationOutcome(status="submitted"))
+    adapter = AlpacaCryptoPaperAdapter(application=application)
+
+    result = await adapter.preview(_intent(symbol="SOL/USD"))
+
+    assert result.status is PaperOperationStatus.FAILED
+    assert result.reason_code is PaperReasonCode.ADAPTER_UNAVAILABLE
+    assert result.evidence == {"error_type": "CryptoExecutionMappingError"}
+    assert application.calls == []
+
+
+@pytest.mark.asyncio
+async def test_adapter_unexpected_failed_outcome_never_reports_ok() -> None:
+    from app.services.brokers.alpaca.paper_adapter import AlpacaCryptoPaperAdapter
+
+    application = _Application(AlpacaPaperApplicationOutcome(status="unexpected"))
+
+    result = await AlpacaCryptoPaperAdapter(application=application).submit(_intent())
+
+    assert result.status is PaperOperationStatus.FAILED
+    assert result.reason_code is PaperReasonCode.ADAPTER_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_adapter_unexpected_failed_outcome_preserves_explicit_reason() -> None:
+    from app.services.brokers.alpaca.paper_adapter import AlpacaCryptoPaperAdapter
+
+    application = _Application(
+        AlpacaPaperApplicationOutcome(
+            status="unexpected",
+            reason_code="native_failure",
+        )
+    )
+
+    result = await AlpacaCryptoPaperAdapter(application=application).submit(_intent())
+
+    assert result.status is PaperOperationStatus.FAILED
+    assert result.reason_code == "native_failure"
 
 
 @pytest.mark.asyncio

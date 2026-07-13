@@ -102,9 +102,11 @@ class BinanceSpotDemoPaperAdapter:
         unsupported = self._unsupported(PaperOperation.PREVIEW, intent)
         if unsupported is not None:
             return unsupported
-        reference = self._reference_factory()
-        market_data = self._market_data_factory()
+        reference: Any = None
+        market_data: Any = None
         try:
+            reference = self._reference_factory()
+            market_data = self._market_data_factory()
             market = await self._market_conditions_builder(
                 market_data, product="spot", symbol=intent.symbol
             )
@@ -432,7 +434,7 @@ class BinanceSpotDemoPaperAdapter:
         return PaperOperationResult(
             operation=operation,
             status=PaperOperationStatus.FAILED,
-            reason_code="adapter_error",
+            reason_code=PaperReasonCode.ADAPTER_UNAVAILABLE,
             venue=self.broker,
             evidence={"error_type": type(exc).__name__},
         )

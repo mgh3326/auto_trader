@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Protocol
 
 from pydantic import ValidationError
@@ -22,6 +23,8 @@ from app.services.brokers.paper.contracts import (
     VerifiedPaperOrderIntent,
     derive_paper_idempotency_key,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class _AdapterResolver(Protocol):
@@ -116,13 +119,25 @@ class PaperExecutionApplication:
             )
         try:
             raw = await self._verifier.verify(request)
-        except Exception:
+        except Exception as exc:
+            logger.error(
+                "paper provenance verifier failed operation=%s venue=%s error_type=%s",
+                operation.value,
+                request.venue.value,
+                type(exc).__name__,
+            )
             return PaperOperationResult.blocked(
                 operation=operation,
                 venue=request.venue,
                 reason_code=PaperReasonCode.PROVENANCE_VERIFICATION_FAILED,
             )
         if not isinstance(raw, VerifiedExperimentProvenance):
+            logger.warning(
+                "paper provenance evidence invalid operation=%s venue=%s evidence_type=%s",
+                operation.value,
+                request.venue.value,
+                type(raw).__name__,
+            )
             return PaperOperationResult.blocked(
                 operation=operation,
                 venue=request.venue,
@@ -130,7 +145,13 @@ class PaperExecutionApplication:
             )
         try:
             return VerifiedExperimentProvenance.model_validate(raw.model_dump())
-        except (AttributeError, TypeError, ValidationError, ValueError):
+        except (AttributeError, TypeError, ValidationError, ValueError) as exc:
+            logger.warning(
+                "paper provenance evidence invalid operation=%s venue=%s error_type=%s",
+                operation.value,
+                request.venue.value,
+                type(exc).__name__,
+            )
             return PaperOperationResult.blocked(
                 operation=operation,
                 venue=request.venue,

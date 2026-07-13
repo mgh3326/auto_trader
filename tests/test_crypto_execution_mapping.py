@@ -59,6 +59,35 @@ def test_maps_binance_public_spot_symbols_to_alpaca_paper(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("execution_symbol", "signal_symbol"),
+    [("BTC/USD", "BTCUSDT"), (" eth/usd ", "ETHUSDT")],
+)
+def test_maps_alpaca_paper_symbols_to_binance_public_spot(
+    execution_symbol: str, signal_symbol: str
+):
+    from app.services.crypto_execution_mapping import (
+        map_alpaca_paper_to_binance_public_spot,
+    )
+
+    assert map_alpaca_paper_to_binance_public_spot(execution_symbol) == signal_symbol
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("execution_symbol", ["SOL/USD", "BTCUSDT", "", "KRW-BTC"])
+def test_alpaca_to_binance_public_spot_mapping_fails_closed_outside_v1(
+    execution_symbol: str,
+):
+    from app.services.crypto_execution_mapping import (
+        CryptoExecutionMappingError,
+        map_alpaca_paper_to_binance_public_spot,
+    )
+
+    with pytest.raises(CryptoExecutionMappingError):
+        map_alpaca_paper_to_binance_public_spot(execution_symbol)
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("signal_symbol", ["SOLUSDT", "BTC/USD", "", "KRW-BTC"])
 def test_binance_public_spot_mapping_fails_closed_outside_v1(
     signal_symbol: str,
