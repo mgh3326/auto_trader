@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added (ROB-847 — honest offline research promotion gate; migration 0)
+- **Research signals now execute causally.** A signal observed at bar `t` can fill only at the next valid executable open, with frozen fees, spread, and slippage; missing, malformed, and final-bar signals remain unfilled, and overlapping CV/sealed-OOS windows fail closed.
+- **Promotion now requires sealed, point-in-time evidence.** One-time OOS finalization validates the PIT manifest and information cutoff, keeps sealed results out of parameter ranking, computes trial-aware DSR/PBO/FDR and baseline/cost/MDD evidence, and links the deterministic artifact through the ROB-846 experiment registry using exact experiment/config/data hashes.
+- **Every registered trial remains auditable before rollback.** Completed, rejected, crashed, and timed-out experiment runs are recorded once through ROB-846 append-only trial accounting before any safe revert; legacy identity-less results remain non-promotable. No database migration or broker execution surface is added.
+
 ### Added (ROB-839 — crypto judgment rules policy promotion; migration 0)
 - **Crypto policy reads now return lane-filtered judgment rules.** `get_trading_policy(market="crypto", lane=...)` exposes an advisory `market_rules` block for the 2-of-4 recovery frame, support/resistance source priority, and no-chasing criteria while retaining the existing `{version, content_hash}` stamp.
 - **Missing report thresholds stay explicitly unknown.** Fear & Greed, kimchi premium, same-day gain, and 24-hour liquidity cutoffs remain `null`, so callers cannot invent model-specific numbers; the report-backed breadth (`>50%`) and BTC long/short (`<=1.5`) thresholds remain explicit.
