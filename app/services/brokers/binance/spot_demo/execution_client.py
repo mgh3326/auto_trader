@@ -203,16 +203,11 @@ class BinanceSpotDemoExecutionClient:
         )
 
     def __repr__(self) -> str:
-        # Never reference _api_secret in repr/str. api_key half is
-        # fingerprinted to avoid log exposure of credentials.
-        api_key_fp = (
-            f"{self._api_key[:4]}…{self._api_key[-2:]}"
-            if len(self._api_key) >= 6
-            else "***"
-        )
+        # Use only the one-way identity; raw key substrings and the secret must
+        # never cross the logging boundary.
         return (
             f"<BinanceSpotDemoExecutionClient base_url={self._base_url!r} "
-            f"api_key={api_key_fp!r}>"
+            f"credential_fingerprint={self.credential_fingerprint!r}>"
         )
 
     async def aclose(self) -> None:

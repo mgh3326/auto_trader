@@ -39,12 +39,11 @@ async def test_spot_and_futures_clients_expose_only_opaque_fingerprint() -> None
     futures = BinanceFuturesDemoExecutionClient(api_key=raw_key, api_secret=raw_secret)
     try:
         assert spot.credential_fingerprint == futures.credential_fingerprint
-        evidence = {
-            "credential_fingerprint": spot.credential_fingerprint,
-        }
-        rendered = repr(evidence)
-        assert raw_key not in rendered
-        assert raw_secret not in rendered
+        for client in (spot, futures):
+            rendered = repr(client)
+            assert client.credential_fingerprint in rendered
+            assert raw_key not in rendered
+            assert raw_secret not in rendered
     finally:
         await spot.aclose()
         await futures.aclose()
