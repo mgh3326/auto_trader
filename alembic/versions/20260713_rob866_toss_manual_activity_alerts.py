@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "20260713_rob866_toss_manual_activity"
+revision = "20260713_rob866_manual_alerts"
 down_revision = "20260713_rob844_ack_scope"
 branch_labels = None
 depends_on = None
