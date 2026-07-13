@@ -589,6 +589,11 @@ proposal describes a possible order; creating or voiding one is not a broker
 order mutation.
 
 - `order_proposal_create(...)`
+  - `market` uses canonical `equity_kr`, `equity_us`, or `crypto`; the tool
+    accepts `kr` and `us` aliases and normalizes them before validation,
+    payload hashing, and persistence.
+  - Supported place combinations are `kis_live` or `toss_live` with
+    `equity_kr`/`equity_us`, and `upbit` with `crypto`.
   - `action="place"` is the default and `target_broker_order_id=None` is the
     default.
   - `place`: `target_broker_order_id` must be absent; one or more proposal

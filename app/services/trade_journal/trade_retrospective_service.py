@@ -297,7 +297,10 @@ async def save_retrospective(
     if account_mode not in _VALID_ACCOUNT_MODES:
         raise RetrospectiveValidationError(f"invalid account_mode: {account_mode}")
     if outcome not in _VALID_OUTCOMES:
-        raise RetrospectiveValidationError(f"invalid outcome: {outcome}")
+        raise RetrospectiveValidationError(
+            f"invalid outcome: {outcome} "
+            f"(allowed: {', '.join(sorted(_VALID_OUTCOMES))})"
+        )
     if side is not None and side not in ("buy", "sell"):
         raise RetrospectiveValidationError(f"invalid side: {side}")
     if realized_pnl_currency is not None and realized_pnl_currency not in (
