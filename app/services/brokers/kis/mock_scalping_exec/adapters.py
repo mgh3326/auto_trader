@@ -68,6 +68,10 @@ from app.services.brokers.kis.mock_scalping_exec.reservation import (
 )
 from app.services.brokers.kis.mock_scalping_ws.state import MarketState
 from app.services.brokers.kis.pre_send import PreSendFreshnessError
+from app.services.brokers.kis.send_outcome import (
+    OrderSendDisposition,
+    OrderSendOutcomeTracker,
+)
 from app.services.order_send_intent_service import DuplicateOrderIntent
 
 logger = logging.getLogger("rob321.kis_mock_scalping_exec")
@@ -75,6 +79,7 @@ logger = logging.getLogger("rob321.kis_mock_scalping_exec")
 StateProvider = Callable[[str], MarketState | None]
 OrderHistoryLoader = Callable[..., Awaitable[MockOrderHistory]]
 HoldingsProvider = Callable[[], Awaitable[Mapping[str, Any]]]
+ReservedSubmit = Callable[[OrderSendOutcomeTracker | None], Awaitable[dict[str, Any]]]
 
 
 async def _default_mock_holdings_snapshot() -> Mapping[str, Any]:
@@ -147,6 +152,65 @@ class KisMockBroker:
                 "scalping reservation release failed cid=%s: %s", correlation_id, exc
             )
 
+    async def _submit_with_reservation(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        correlation_id: str,
+        confirm: bool,
+        submit: ReservedSubmit,
+    ) -> dict[str, Any]:
+        """Apply one explicit reservation lifecycle to BUY and SELL mutations."""
+        if not confirm:
+            return await submit(None)
+
+        try:
+            await reserve_entry(correlation_id=correlation_id, symbol=symbol, side=side)
+        except DuplicateOrderIntent:
+            return {
+                "success": False,
+                "reservation_blocked": True,
+                "reason_codes": ["duplicate_send"],
+                "detail": f"scalping order already reserved: {correlation_id}",
+                "dry_run": False,
+            }
+        except Exception as exc:  # noqa: BLE001 — durable write lost → POST 0
+            logger.warning(
+                "scalping reservation failed sym=%s side=%s: %s", symbol, side, exc
+            )
+            return {
+                "success": False,
+                "reservation_blocked": True,
+                "reason_codes": ["reservation_unavailable"],
+                "detail": f"{type(exc).__name__}: {exc}"[:200],
+                "dry_run": False,
+            }
+
+        outcome = OrderSendOutcomeTracker()
+        try:
+            result = await submit(outcome)
+        except OrderSendOutcomeUnknown:
+            # A timeout/network failure after dispatch may have created an order.
+            raise
+        except Exception:
+            # Only an explicitly proven pre-send/definitive no-order exception
+            # releases. Any post-dispatch exception leaves UNKNOWN and keeps it.
+            if outcome.disposition is OrderSendDisposition.NOT_CREATED:
+                await self._safe_release_reservation(correlation_id)
+            raise
+
+        if outcome.disposition is OrderSendDisposition.NOT_CREATED:
+            await self._safe_release_reservation(correlation_id)
+        elif outcome.disposition is OrderSendDisposition.ACCEPTED:
+            tracked = bool(result.get("success")) and not result.get(
+                "ledger_tracking_unavailable"
+            )
+            if tracked:
+                await self._safe_release_reservation(correlation_id)
+        # UNKNOWN or accepted-but-untracked: KEEP until explicit reconciliation.
+        return result
+
     async def submit_buy(
         self,
         *,
@@ -165,36 +229,11 @@ class KisMockBroker:
             if confirm
             else None
         )
-        # ROB-843 P1: WRITE-AHEAD durable reservation, recorded BEFORE the POST.
-        # If this durable write cannot land, the broker POST must never happen
-        # (POST 0). An unresolved reservation is the durable in-flight/uncertain
-        # state that survives restart and fail-closes new orders until an
-        # explicit reconciliation releases it.
-        if confirm:
-            try:
-                await reserve_entry(
-                    correlation_id=correlation_id, symbol=symbol, side="buy"
-                )
-            except DuplicateOrderIntent:
-                return {
-                    "success": False,
-                    "reservation_blocked": True,
-                    "reason_codes": ["duplicate_send"],
-                    "detail": f"scalping entry already reserved: {correlation_id}",
-                    "dry_run": False,
-                }
-            except Exception as exc:  # noqa: BLE001 — durable write lost → POST 0
-                logger.warning("scalping reservation failed sym=%s: %s", symbol, exc)
-                return {
-                    "success": False,
-                    "reservation_blocked": True,
-                    "reason_codes": ["reservation_unavailable"],
-                    "detail": f"{type(exc).__name__}: {exc}"[:200],
-                    "dry_run": False,
-                }
 
-        try:
-            result = await _place_order_impl(
+        async def _submit(
+            send_outcome: OrderSendOutcomeTracker | None,
+        ) -> dict[str, Any]:
+            return await _place_order_impl(
                 symbol=symbol,
                 side="buy",
                 market="kr",
@@ -211,27 +250,16 @@ class KisMockBroker:
                 # Final freshness re-check right before the POST (entry only; an
                 # exit must always be allowed to close a live position).
                 pre_send_hook=self._make_pre_send_hook(symbol),
+                send_outcome=send_outcome,
             )
-        except OrderSendOutcomeUnknown:
-            # Uncertain send (timeout/network after the POST): KEEP the
-            # reservation so the order stays fail-closed until reconciliation.
-            raise
-        except Exception:
-            # Deterministic broker error before/at send (rejection, token cap,
-            # validation): no order was created — release the reservation.
-            if confirm:
-                await self._safe_release_reservation(correlation_id)
-            raise
 
-        if confirm:
-            tracked = bool(result.get("success")) and not result.get(
-                "ledger_tracking_unavailable"
-            )
-            if result.get("pre_send_blocked") or tracked:
-                # Certain no-order (POST 0) OR fully-tracked native row → release.
-                await self._safe_release_reservation(correlation_id)
-            # else: native write lost / unknown / malformed = uncertain → KEEP
-            # the reservation (durable fail-close until reconciliation).
+        result = await self._submit_with_reservation(
+            symbol=symbol,
+            side="buy",
+            correlation_id=correlation_id,
+            confirm=confirm,
+            submit=_submit,
+        )
 
         if isinstance(result, dict) and baseline is not None:
             result["_baseline"] = baseline
@@ -255,24 +283,37 @@ class KisMockBroker:
             if confirm
             else None
         )
-        result = await _place_order_impl(
+
+        async def _submit(
+            send_outcome: OrderSendOutcomeTracker | None,
+        ) -> dict[str, Any]:
+            return await _place_order_impl(
+                symbol=symbol,
+                side="sell",
+                market="kr",
+                order_type="limit",
+                quantity=float(quantity),
+                price=float(price),
+                dry_run=not confirm,
+                is_mock=True,
+                reason=f"scalp_exit:{correlation_id}",
+                exit_reason=exit_reason,
+                strategy=strategy_id,
+                scalping_exit=True,
+                scalping_strategy_id=strategy_id,
+                scalping_exit_reason=exit_reason,
+                # Link native + synthetic exit evidence (ROB-843 P1-2). No
+                # freshness hook on exits: a live position remains closable.
+                correlation_id=correlation_id,
+                send_outcome=send_outcome,
+            )
+
+        result = await self._submit_with_reservation(
             symbol=symbol,
             side="sell",
-            market="kr",
-            order_type="limit",
-            quantity=float(quantity),
-            price=float(price),
-            dry_run=not confirm,
-            is_mock=True,
-            reason=f"scalp_exit:{correlation_id}",
-            exit_reason=exit_reason,
-            strategy=strategy_id,
-            scalping_exit=True,
-            scalping_strategy_id=strategy_id,
-            scalping_exit_reason=exit_reason,
-            # Link native + synthetic exit evidence (ROB-843 P1-2). No pre-send
-            # freshness gate on the exit: a live position must always be closable.
             correlation_id=correlation_id,
+            confirm=confirm,
+            submit=_submit,
         )
         if isinstance(result, dict) and baseline is not None:
             result["_baseline"] = baseline

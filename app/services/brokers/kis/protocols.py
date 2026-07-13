@@ -11,6 +11,7 @@ from typing import Any, Protocol, runtime_checkable
 import httpx
 
 from app.services.brokers.kis.pre_send import PreSendHook
+from app.services.brokers.kis.send_outcome import OrderSendOutcomeTracker
 from app.services.redis_token_manager import RedisTokenManager
 
 
@@ -58,6 +59,7 @@ class KISClientProtocol(Protocol):
         retry_request_errors: bool = True,
         max_retries_override: int | None = None,
         pre_send_hook: PreSendHook | None = None,
+        send_outcome: OrderSendOutcomeTracker | None = None,
     ) -> dict[str, Any]:
         """Make HTTP request with rate limiting and retry logic."""
         ...
@@ -76,6 +78,7 @@ class KISClientProtocol(Protocol):
         retry_request_errors: bool = True,
         max_retries_override: int | None = None,
         pre_send_hook: PreSendHook | None = None,
+        send_outcome: OrderSendOutcomeTracker | None = None,
     ) -> tuple[dict[str, Any], dict[str, str]]:
         """Make HTTP request with rate limiting and return parsed data plus headers."""
         ...

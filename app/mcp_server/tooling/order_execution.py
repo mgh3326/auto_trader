@@ -57,6 +57,7 @@ from app.mcp_server.tooling.shared import (
 )
 from app.services.brokers.kis import KISClient
 from app.services.brokers.kis.pre_send import PreSendFreshnessError
+from app.services.brokers.kis.send_outcome import OrderSendOutcomeTracker
 from app.services.crypto_trade_cooldown_service import CryptoTradeCooldownService
 from app.services.order_send_intent_service import (
     DuplicateOrderIntent,
@@ -141,6 +142,7 @@ async def _execute_order(
     is_mock: bool = False,
     identifier: str | None = None,
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+    send_outcome: OrderSendOutcomeTracker | None = None,
 ) -> dict[str, Any]:
     if market_type == "crypto":
         if is_mock:
@@ -157,6 +159,7 @@ async def _execute_order(
             price,
             is_mock=is_mock,
             pre_send_hook=pre_send_hook,
+            send_outcome=send_outcome,
         )
     return await _execute_us_order(
         symbol, side, quantity, price, is_mock=is_mock, pre_send_hook=pre_send_hook
@@ -208,6 +211,7 @@ async def _execute_kr_order(
     price: float | None,
     is_mock: bool = False,
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+    send_outcome: OrderSendOutcomeTracker | None = None,
 ) -> dict[str, Any]:
     kis = _create_kis_client(is_mock=is_mock)
     stock_code = symbol
@@ -240,6 +244,8 @@ async def _execute_kr_order(
     # ROB-843 P1: only thread the hook when present (mock scalping). The live /
     # normal path passes no callback at all → byte-for-byte identical behavior.
     hook_kw = {"pre_send_hook": pre_send_hook} if pre_send_hook is not None else {}
+    if send_outcome is not None:
+        hook_kw["send_outcome"] = send_outcome
     if side == "buy":
         result = await _call_kis(
             kis.order_korea_stock,
@@ -746,6 +752,7 @@ async def _execute_and_record(
     mirror_cohort: str | None = None,
     mirror_source_bucket: str | None = None,
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+    send_outcome: OrderSendOutcomeTracker | None = None,
 ) -> dict[str, Any]:
     """Execute a live order, record history, fills, and journals."""
     # ROB-102: capture pre-order KIS mock holdings as the reconciler baseline.
@@ -866,7 +873,12 @@ async def _execute_and_record(
             is_mock=is_mock,
             identifier=idempotency_key if market_type == "crypto" else None,
             pre_send_hook=pre_send_hook,
+            send_outcome=send_outcome,
         )
+        if send_outcome is not None:
+            # A transport response crossed the send boundary. Until the mock
+            # result normalizer proves accepted/rejected, the outcome is unknown.
+            send_outcome.mark_unknown()
     except PreSendFreshnessError as fresh_exc:
         await _release_reserved_mock_mirror_intent_after_send_failure(fresh_exc)
         logger.info(
@@ -884,6 +896,8 @@ async def _execute_and_record(
             "dry_run": False,
         }
     except httpx.RequestError as send_exc:
+        if send_outcome is not None:
+            send_outcome.mark_unknown()
         retry_allowed = await _release_reserved_mock_mirror_intent_after_send_failure(
             send_exc
         )
@@ -943,7 +957,7 @@ async def _execute_and_record(
     if is_mock:
         from app.mcp_server.tooling.kis_mock_ledger import _record_kis_mock_order
 
-        return await _record_kis_mock_order(
+        result = await _record_kis_mock_order(
             normalized_symbol=normalized_symbol,
             market_type=market_type,
             side=side,
@@ -962,6 +976,14 @@ async def _execute_and_record(
             mirror_cohort=mirror_cohort,
             mirror_source_bucket=mirror_source_bucket,
         )
+        if send_outcome is not None:
+            if result.get("success"):
+                send_outcome.mark_accepted()
+            elif result.get("reason") == "broker_rejected":
+                send_outcome.mark_provider_rejected()
+            else:
+                send_outcome.mark_unknown()
+        return result
 
     # ROB-395: live KR orders record accepted-only to the live ledger; fills,
     # journals, and realized_pnl are applied later by kis_live_reconcile_orders
@@ -1263,6 +1285,7 @@ async def _place_order_impl(
     mirror_source_bucket: str | None = None,
     client_order_id: str | None = None,
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+    send_outcome: OrderSendOutcomeTracker | None = None,
 ) -> dict[str, Any]:
     symbol, side_lower, order_type_lower = _validate_inputs(
         symbol,
@@ -1603,6 +1626,7 @@ async def _place_order_impl(
             mirror_cohort=mirror_cohort,
             mirror_source_bucket=mirror_source_bucket,
             pre_send_hook=pre_send_hook,
+            send_outcome=send_outcome,
         )
     except Exception as exc:
         logger.exception(

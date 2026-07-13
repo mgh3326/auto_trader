@@ -1,4 +1,4 @@
-"""ROB-843 P1 — write-ahead durable reservation for KIS mock scalping entries.
+"""ROB-843 P1 — write-ahead durable reservation for KIS mock scalping order legs.
 
 The reservation is inserted into ``review.order_send_intents`` BEFORE the broker
 POST, so a DB that cannot record the send never reaches the network. It is
@@ -27,7 +27,9 @@ def _session_factory():
 
 
 async def reserve_entry(*, correlation_id: str, symbol: str, side: str) -> None:
-    """Reserve BEFORE the POST. Raises ``DuplicateOrderIntent`` on a same-key
+    """Reserve a BUY or SELL leg BEFORE the POST.
+
+    Raises ``DuplicateOrderIntent`` on a same-key
     resend and any other exception on a durable-write failure — both must abort
     the send (the caller returns before the broker POST)."""
     async with _session_factory()() as db:

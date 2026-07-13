@@ -11,6 +11,7 @@ from app.services.kr_symbol_universe_service import is_nxt_eligible
 from . import constants
 from .base import _log_kis_api_failure
 from .pre_send import PreSendHook
+from .send_outcome import OrderSendOutcomeTracker
 
 if TYPE_CHECKING:
     from .protocols import KISClientProtocol
@@ -238,6 +239,7 @@ class DomesticOrderClient:
         is_mock: bool = False,
         *,
         pre_send_hook: PreSendHook | None = None,
+        send_outcome: OrderSendOutcomeTracker | None = None,
         _token_retry_depth: int = 0,
     ) -> dict:
         """
@@ -333,9 +335,12 @@ class DomesticOrderClient:
             # ROB-843 P1: mock-only freshness re-check fired at the actual HTTP
             # send boundary (None for live → identical behavior).
             pre_send_hook=pre_send_hook,
+            send_outcome=send_outcome,
         )
 
         if js.get("rt_cd") != "0":
+            if send_outcome is not None:
+                send_outcome.mark_provider_rejected()
             msg_cd = js.get("msg_cd", "")
             msg1 = js.get("msg1", "")
             _log_kis_api_failure(
@@ -378,6 +383,7 @@ class DomesticOrderClient:
                     price,
                     is_mock,
                     pre_send_hook=pre_send_hook,
+                    send_outcome=send_outcome,
                     _token_retry_depth=_token_retry_depth + 1,
                 )
 

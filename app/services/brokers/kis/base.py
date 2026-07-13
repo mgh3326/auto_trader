@@ -23,6 +23,7 @@ from app.services.brokers.kis.circuit_breaker import (
     is_kis_connect_failure,
 )
 from app.services.brokers.kis.pre_send import PreSendFreshnessError, PreSendHook
+from app.services.brokers.kis.send_outcome import OrderSendOutcomeTracker
 from app.services.redis_token_manager import redis_token_manager
 
 
@@ -419,6 +420,7 @@ class BaseKISClient:
         retry_request_errors: bool = True,
         max_retries_override: int | None = None,
         pre_send_hook: PreSendHook | None = None,
+        send_outcome: OrderSendOutcomeTracker | None = None,
     ) -> dict[str, Any]:
         """Make HTTP request with rate limiting and 429 retry logic.
 
@@ -456,6 +458,7 @@ class BaseKISClient:
             retry_request_errors=retry_request_errors,
             max_retries_override=max_retries_override,
             pre_send_hook=pre_send_hook,
+            send_outcome=send_outcome,
         )
         return data
 
@@ -473,6 +476,7 @@ class BaseKISClient:
         retry_request_errors: bool = True,
         max_retries_override: int | None = None,
         pre_send_hook: PreSendHook | None = None,
+        send_outcome: OrderSendOutcomeTracker | None = None,
     ) -> tuple[dict[str, Any], dict[str, str]]:
         """ROB-699 — breaker-guarded wrapper over the KIS dispatch.
 
@@ -495,6 +499,7 @@ class BaseKISClient:
                 retry_request_errors=retry_request_errors,
                 max_retries_override=max_retries_override,
                 pre_send_hook=pre_send_hook,
+                send_outcome=send_outcome,
             )
         except PreSendFreshnessError:
             # ROB-843 P1: a mock pre-send freshness block means NO HTTP happened —
@@ -523,6 +528,7 @@ class BaseKISClient:
         retry_request_errors: bool = True,
         max_retries_override: int | None = None,
         pre_send_hook: PreSendHook | None = None,
+        send_outcome: OrderSendOutcomeTracker | None = None,
     ) -> tuple[dict[str, Any], dict[str, str]]:
         """Like :meth:`_request_with_rate_limit` but also returns response headers.
 
@@ -569,6 +575,8 @@ class BaseKISClient:
                 # Error propagates cleanly (zero POST); live passes no hook.
                 if pre_send_hook is not None:
                     await pre_send_hook()
+                if send_outcome is not None:
+                    send_outcome.mark_dispatched()
                 response = await self._execute_http_request(
                     client,
                     method,
@@ -579,6 +587,8 @@ class BaseKISClient:
                     timeout=timeout,
                 )
                 status_code = _safe_status_code(response)
+                if send_outcome is not None:
+                    send_outcome.mark_http_response(status_code)
 
                 if status_code == 429:
                     retry_after = _safe_parse_retry_after(
