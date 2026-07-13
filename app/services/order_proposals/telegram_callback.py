@@ -44,6 +44,7 @@ import secrets
 import uuid
 from collections.abc import Callable
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,6 +59,10 @@ from app.services.order_proposals.approval_message import (
     build_loss_cut_confirmation_message,
     parse_callback_data,
 )
+from app.services.order_proposals.broker_gateway import (
+    cancel_target_order,
+    fetch_target_order,
+)
 from app.services.order_proposals.errors import OrderProposalError
 from app.services.order_proposals.revalidation import (
     RungOutcome,
@@ -69,6 +74,8 @@ logger = logging.getLogger(__name__)
 
 ServiceFactory = Callable[[], Any]
 RevalidateFn = Callable[..., Any]
+TargetCancelFn = Callable[..., Any]
+TargetFetchFn = Callable[..., Any]
 
 # Rung states from which a direct transition to "rejected" is legal (see
 # app/services/order_proposals/state_machine.py). A Telegram deny only ever
@@ -256,6 +263,144 @@ async def _handle_deny(
         "reason": "denied",
         "proposal_id": str(proposal_id),
         "rejected_rungs": rejected_rungs,
+    }
+
+
+async def _handle_auto_veto(
+    *,
+    session: AsyncSession,
+    service: OrderProposalsService,
+    proposal_id: uuid.UUID,
+    nonce: str,
+    now: datetime,
+    notifier: Any,
+    chat_id: Any,
+    message_id: int | None,
+    telegram_user_id: str,
+    cancel_fn: TargetCancelFn,
+    fetch_fn: TargetFetchFn,
+) -> dict[str, Any]:
+    """Cancel every still-open auto-submitted rung and converge evidence."""
+    try:
+        await service.consume_auto_veto_nonce(proposal_id, nonce, now=now)
+    except OrderProposalError as exc:
+        await session.commit()
+        return {"handled": False, "reason": str(exc), "proposal_id": str(proposal_id)}
+
+    group, rungs = await service.get_proposal(proposal_id)
+    outcomes: list[dict[str, Any]] = []
+    saw_filled = False
+    saw_failure = False
+    cancellable = {"acked", "resting", "partially_filled", "unverified"}
+    for rung in rungs:
+        if rung.state == "filled":
+            saw_filled = True
+            outcomes.append({"rung_index": rung.rung_index, "result": "filled"})
+            continue
+        if rung.state == "cancelled":
+            outcomes.append({"rung_index": rung.rung_index, "result": "cancelled"})
+            continue
+        if rung.state not in cancellable or not rung.broker_order_id:
+            saw_failure = True
+            outcomes.append(
+                {"rung_index": rung.rung_index, "result": "not_cancellable"}
+            )
+            continue
+
+        cancel_error: str | None = None
+        try:
+            cancel_result = await cancel_fn(
+                order_id=rung.broker_order_id,
+                symbol=group.symbol,
+                market=group.market,
+                account_mode=group.account_mode,
+            )
+            if (
+                not isinstance(cancel_result, dict)
+                or cancel_result.get("success") is not True
+            ):
+                cancel_error = str(
+                    cancel_result.get("error") or "cancel_rejected"
+                    if isinstance(cancel_result, dict)
+                    else "cancel_rejected"
+                )
+        except Exception as exc:  # noqa: BLE001 - confirm state after ambiguity
+            cancel_error = str(exc)
+
+        try:
+            snapshot = await fetch_fn(
+                order_id=rung.broker_order_id,
+                symbol=group.symbol,
+                market=group.market,
+                account_mode=group.account_mode,
+                now=now,
+            )
+            status = snapshot.status
+        except Exception as exc:  # noqa: BLE001 - audit explicit uncertainty
+            status = None
+            cancel_error = cancel_error or str(exc)
+
+        if status == "cancelled":
+            await service.record_cancelled(
+                proposal_id,
+                rung.rung_index,
+                broker_order_id=rung.broker_order_id,
+                now=now,
+            )
+            outcomes.append({"rung_index": rung.rung_index, "result": "cancelled"})
+        elif status == "filled":
+            await service.transition_rung(
+                proposal_id,
+                rung.rung_index,
+                new_state="filled",
+                broker_order_id=rung.broker_order_id,
+                filled_qty=Decimal(rung.quantity),
+                validated_at=now,
+                updated_at=now,
+            )
+            saw_filled = True
+            outcomes.append({"rung_index": rung.rung_index, "result": "filled"})
+        else:
+            saw_failure = True
+            outcomes.append(
+                {
+                    "rung_index": rung.rung_index,
+                    "result": "cancel_failed",
+                    "broker_status": status,
+                    "error": cancel_error,
+                }
+            )
+
+    await service.record_auto_veto(
+        proposal_id,
+        telegram_user_id=telegram_user_id,
+        outcomes=outcomes,
+        now=now,
+    )
+    await session.commit()
+
+    if saw_filled:
+        reason = "auto_veto_filled"
+        text = "✅ 체결됨 — 취소 시점에 이미 체결된 주문입니다."
+    elif saw_failure:
+        reason = "auto_veto_failed"
+        text = "⚠️ 취소 실패 — 브로커 주문 상태를 확인해 주세요."
+    else:
+        reason = "auto_veto_cancelled"
+        text = "🛑 취소됨"
+    if message_id is not None:
+        await _safe_edit_message(
+            notifier,
+            chat_id,
+            message_id,
+            text,
+            reply_markup={"inline_keyboard": []},
+        )
+    return {
+        "handled": True,
+        "reason": reason,
+        "proposal_id": str(proposal_id),
+        "outcomes": outcomes,
     }
 
 
@@ -494,6 +639,8 @@ async def handle_callback_update(
     notifier: Any = None,
     revalidate_fn: RevalidateFn = revalidate_and_submit,
     loss_cut_preview_fn: RevalidateFn | None = None,
+    veto_cancel_fn: TargetCancelFn = cancel_target_order,
+    veto_fetch_fn: TargetFetchFn = fetch_target_order,
 ) -> dict[str, Any]:
     """Handle one Telegram webhook update. Never raises (fail-closed)."""
     callback_query_id: str | None = None
@@ -534,7 +681,23 @@ async def handle_callback_update(
                 await session.commit()
                 return {"handled": False, "reason": "proposal_not_found"}
 
-            if action == "dn":
+            if action == "vc":
+                result = await _handle_auto_veto(
+                    session=session,
+                    service=service,
+                    proposal_id=proposal_id,
+                    nonce=nonce,
+                    now=now,
+                    notifier=active_notifier,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    telegram_user_id=(
+                        str(telegram_user_id) if telegram_user_id is not None else ""
+                    ),
+                    cancel_fn=veto_cancel_fn,
+                    fetch_fn=veto_fetch_fn,
+                )
+            elif action == "dn":
                 result = await _handle_deny(
                     session=session,
                     service=service,

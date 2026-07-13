@@ -5,7 +5,7 @@ from app.services import trading_policy_service as svc
 
 def test_version_stamp_has_version_and_hash():
     stamp = svc.policy_version_stamp()
-    assert stamp["version"] == "2026-07-12.1"
+    assert stamp["version"] == "2026-07-14.1"
     assert len(stamp["content_hash"]) == 12
 
 
@@ -15,7 +15,7 @@ def test_content_hash_stable_across_calls():
 
 def test_get_policy_for_buy_kr_includes_cap_and_version():
     view = svc.get_policy_for("kr", "buy")
-    assert view["version"] == "2026-07-12.1"
+    assert view["version"] == "2026-07-14.1"
     assert view["content_hash"]
     t = view["thresholds"]
     # buy lane references these (playbook lane tags)
@@ -31,7 +31,7 @@ def test_get_policy_for_buy_kr_includes_cap_and_version():
 def test_get_policy_for_crypto_buy_exposes_report_derived_market_rules():
     view = svc.get_policy_for("crypto", "buy")
 
-    assert view["version"] == "2026-07-12.1"
+    assert view["version"] == "2026-07-14.1"
     assert set(view["market_rules"]) == {
         "recovery_gate",
         "support_resistance",

@@ -22,16 +22,27 @@ import secrets
 import uuid
 from collections.abc import Callable
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.services.order_proposals.approval_message import build_approval_message
+from app.services.order_proposals.auto_approve import (
+    build_auto_approved_message,
+    evaluate_auto_approve_eligibility,
+    limits_for_market,
+)
+from app.services.order_proposals.revalidation import (
+    RungOutcome,
+    revalidate_and_submit,
+)
 from app.services.order_proposals.service import OrderProposalsService
 
 logger = logging.getLogger(__name__)
 
 ServiceFactory = Callable[[], Any]
+RevalidateFn = Callable[..., Any]
 
 
 def _generate_nonce() -> str:
@@ -89,4 +100,109 @@ async def send_proposal_for_approval(
         return message_id
 
 
-__all__ = ["send_proposal_for_approval"]
+async def dispatch_proposal(
+    proposal_id: uuid.UUID,
+    *,
+    notifier: Any,
+    now: datetime,
+    service_factory: ServiceFactory = AsyncSessionLocal,
+    revalidate_fn: RevalidateFn = revalidate_and_submit,
+) -> int | None:
+    """Auto-submit an eligible resting proposal, otherwise send for approval."""
+    if not settings.ORDER_PROPOSALS_AUTO_APPROVE:
+        return await send_proposal_for_approval(
+            proposal_id,
+            notifier=notifier,
+            now=now,
+            service_factory=service_factory,
+        )
+
+    auto_submitted = False
+    message: tuple[str, dict[str, Any]] | None = None
+    async with service_factory() as session:
+        service = OrderProposalsService(session)
+        group, initial_rungs = await service.get_proposal(proposal_id)
+        pending_count = sum(rung.state == "pending_approval" for rung in initial_rungs)
+        limits = limits_for_market(group.market)
+        decisions: list[dict[str, Any]] = []
+        if limits is not None:
+            daily_notional = await service.auto_approved_daily_notional(group, now=now)
+
+            async def eligibility_gate(**kwargs: Any) -> Any:
+                nonlocal daily_notional
+                decision = evaluate_auto_approve_eligibility(
+                    group=kwargs["group"],
+                    rung=kwargs["rung"],
+                    preview=kwargs["preview"],
+                    limits=limits,
+                    daily_notional=daily_notional,
+                )
+                decisions.append(
+                    {
+                        "rung_index": kwargs["rung"].rung_index,
+                        "eligible": decision.eligible,
+                        "reason": decision.reason,
+                        **decision.details,
+                    }
+                )
+                if decision.eligible:
+                    daily_notional = Decimal(decision.details["daily_notional_after"])
+                return decision
+
+            outcomes: list[RungOutcome] = await revalidate_fn(
+                service=service,
+                proposal_id=proposal_id,
+                now=now,
+                eligibility_gate=eligibility_gate,
+            )
+            submitted_results = {"submitted_acked", "submitted_resting"}
+            auto_submitted = (
+                bool(outcomes)
+                and len(outcomes) == pending_count
+                and all(outcome.result in submitted_results for outcome in outcomes)
+            )
+            if auto_submitted:
+                await service.record_auto_approval(
+                    proposal_id,
+                    policy_version=limits.policy_version,
+                    eligibility=decisions,
+                    outcomes=[outcome.result for outcome in outcomes],
+                    now=now,
+                )
+                veto_nonce = _generate_nonce()
+                await service.set_approval_nonce(proposal_id, veto_nonce)
+                group, rungs = await service.get_proposal(proposal_id)
+                message = build_auto_approved_message(
+                    group=group,
+                    rungs=rungs,
+                    nonce=veto_nonce,
+                    policy_version=limits.policy_version,
+                )
+        # Persist broker outcomes and the audit/nonce before Telegram I/O.
+        await session.commit()
+
+    if not auto_submitted or message is None:
+        return await send_proposal_for_approval(
+            proposal_id,
+            notifier=notifier,
+            now=now,
+            service_factory=service_factory,
+        )
+
+    allowlist = settings.order_proposals_telegram_chat_allowlist
+    if not allowlist:
+        return None
+    chat_id = allowlist[0]
+    text, keyboard = message
+    message_id = await notifier.send_approval_message(text, keyboard, chat_id=chat_id)
+    if message_id is not None:
+        async with service_factory() as session:
+            service = OrderProposalsService(session)
+            await service.record_approval_dispatch(
+                proposal_id, message_id=message_id, chat_id=chat_id, now=now
+            )
+            await session.commit()
+    return message_id
+
+
+__all__ = ["dispatch_proposal", "send_proposal_for_approval"]

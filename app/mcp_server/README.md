@@ -668,6 +668,16 @@ order mutation.
     has a 90-second single-use nonce bound to proposal/rung/revision. Only the
     second click reruns full preview, <=72h retrospective, slip-band, price
     diff, and approval-hash checks and may submit.
+  - ROB-871 adds a separate default-off
+    `ORDER_PROPOSALS_AUTO_APPROVE` gate. When enabled, only `limit` + `place`
+    proposals with no `exit_intent` may auto-submit. The fresh preview price,
+    configured minimum resting distance, per-order cap, and account/KST-day
+    cumulative cap are checked immediately before the existing submit path.
+    Market orders, loss cuts, replace/cancel actions, guard failures, 861
+    buying-power reconfirmations, and policy misses fall back to the normal
+    Telegram approval message without being discarded. Account/market pairs
+    without the existing cancel adapter and multi-rung ladders also remain
+    human-gated so veto and all-or-human fallback are enforceable.
 - `order_proposal_void(proposal_id, reason)`
   - Requires a non-blank operator reason.
   - Pre-submit rungs retain the existing local `voided` path. An `unverified`
@@ -688,6 +698,11 @@ order mutation.
 Telegram approval runs fresh broker-specific checks at the submit-capable
 click. KIS/Upbit rerun their applicable ROB-800 checks through
 `_place_order_impl`.
+Successful automatic submissions retain `approved_by_telegram_user_id=NULL`
+and write policy/version/eligibility evidence under
+`source_asof.auto_approved`. Their Telegram summary carries a single-use
+`취소` veto button; the callback uses the existing broker cancel adapter and a
+fresh status lookup to converge the rung to `cancelled` or report `체결됨`.
 `ORDER_PROPOSALS_SUBMIT_AGENT_ID` has no default identity (`""`) and is used
 only while the Telegram callback revalidates and submits the approved proposal.
 Operators must set it explicitly and add the exact same trimmed identity to

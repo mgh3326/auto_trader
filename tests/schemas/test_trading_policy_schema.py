@@ -15,7 +15,7 @@ def _raw() -> dict:
 
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-07-12.1"
+    assert doc.version == "2026-07-14.1"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -33,6 +33,17 @@ def test_shipped_config_validates():
     ]
     assert trim_rule.tiers[1].conditions["resistance_near_pct_max"] == 2
     assert trim_rule.tie_breaks["sell.upside_place_max_pct"] == "size_limit_only"
+
+
+def test_auto_approve_policy_has_conservative_market_caps():
+    auto = TradingPolicyDocument.model_validate(_raw()).order_proposals.auto_approve
+
+    assert auto.min_distance_pct > 0
+    assert set(auto.per_order_cap) == {"kr", "us", "crypto"}
+    assert set(auto.daily_cap) == {"kr", "us", "crypto"}
+    for market, per_order in auto.per_order_cap.items():
+        assert per_order > 0
+        assert auto.daily_cap[market] >= per_order
 
 
 def test_crypto_market_rules_preserve_report_derived_and_null_thresholds():

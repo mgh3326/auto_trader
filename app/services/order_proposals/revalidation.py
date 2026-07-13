@@ -68,6 +68,7 @@ RungOutcomeResult = Literal[
     "unverified",
     "error",
     "cancelled",
+    "approval_required",
 ]
 
 
@@ -84,6 +85,7 @@ TargetFetchFn = Callable[..., Any]
 TargetCancelFn = Callable[..., Any]
 SubmitEvidenceFetchFn = Callable[..., Any]
 RetrospectiveLookupFn = Callable[[int], Any]
+EligibilityGate = Callable[..., Any]
 
 _PREVIEW_REASON = "order_proposal revalidation (rung {rung})"
 _SUBMIT_REASON = "order_proposal submit after revalidation (rung {rung})"
@@ -534,6 +536,7 @@ async def revalidate_and_submit(
     fetch_submit_evidence_fn: SubmitEvidenceFetchFn = fetch_submit_evidence,
     buying_power_claimer: BuyingPowerClaimer = default_buying_power_claimer,
     buying_power_releaser: BuyingPowerReleaser = default_buying_power_releaser,
+    eligibility_gate: EligibilityGate | None = None,
 ) -> list[RungOutcome]:
     """Revalidate + (maybe) submit every ``pending_approval`` rung.
 
@@ -547,6 +550,20 @@ async def revalidate_and_submit(
         return [
             RungOutcome(rung.rung_index, "error", {"error": block_reason})
             for rung in rungs
+        ]
+    pending_rungs = [rung for rung in rungs if rung.state == "pending_approval"]
+    if eligibility_gate is not None and len(pending_rungs) > 1:
+        # Auto-dispatch must be lossless: submitting one ladder rung before a
+        # later rung fails eligibility or buying-power checks would violate
+        # the all-or-human-fallback contract. Until the submit path supports a
+        # broker-side atomic ladder, multi-rung proposals stay human-gated.
+        return [
+            RungOutcome(
+                rung.rung_index,
+                "approval_required",
+                {"reason": "multi_rung_requires_approval"},
+            )
+            for rung in pending_rungs
         ]
     outcomes: list[RungOutcome] = []
     for rung in rungs:
@@ -585,6 +602,7 @@ async def revalidate_and_submit(
                 fetch_submit_evidence_fn=fetch_submit_evidence_fn,
                 buying_power_claimer=buying_power_claimer,
                 buying_power_releaser=buying_power_releaser,
+                eligibility_gate=eligibility_gate,
             )
         outcomes.append(outcome)
     return outcomes
@@ -601,6 +619,7 @@ async def _revalidate_place_rung(
     fetch_submit_evidence_fn: SubmitEvidenceFetchFn,
     buying_power_claimer: BuyingPowerClaimer,
     buying_power_releaser: BuyingPowerReleaser,
+    eligibility_gate: EligibilityGate | None,
 ) -> RungOutcome:
     proposal_id = group.proposal_id
     rung_index = rung.rung_index
@@ -702,6 +721,45 @@ async def _revalidate_place_rung(
         return RungOutcome(
             rung_index, "needs_reconfirm", {"before": before, "after": after}
         )
+
+    if eligibility_gate is not None:
+        try:
+            decision = await _maybe_await(
+                eligibility_gate(
+                    group=group,
+                    rung=rung,
+                    preview=preview,
+                    now=now,
+                )
+            )
+            eligible = (
+                decision.get("eligible")
+                if isinstance(decision, dict)
+                else getattr(decision, "eligible", False)
+            )
+            reason = (
+                decision.get("reason")
+                if isinstance(decision, dict)
+                else getattr(decision, "reason", "eligibility_unknown")
+            )
+            details = (
+                decision.get("details", {})
+                if isinstance(decision, dict)
+                else getattr(decision, "details", {})
+            )
+        except Exception as exc:  # noqa: BLE001 - auto path fails closed
+            eligible = False
+            reason = "eligibility_error"
+            details = {"error": str(exc)}
+        if eligible is not True:
+            await service.transition_rung(
+                proposal_id, rung_index, new_state="pending_approval"
+            )
+            return RungOutcome(
+                rung_index,
+                "approval_required",
+                {"reason": str(reason), **dict(details or {})},
+            )
 
     buying_power_reservation: tuple[str, Decimal, str | None] | None = None
     if rung.side == "buy" and rung.limit_price is not None:
