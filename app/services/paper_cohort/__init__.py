@@ -8,12 +8,20 @@ from app.services.paper_cohort.contracts import (
     RunMode,
     SymbolTargetWeight,
 )
+from app.services.paper_cohort.market_snapshot import (
+    CanonicalSnapshotCapture,
+    CanonicalSnapshotPayload,
+    SnapshotCaptureRequest,
+)
 
 __all__ = [
     "CohortActivation",
     "CohortAssignmentInput",
+    "CanonicalSnapshotCapture",
+    "CanonicalSnapshotPayload",
     "PaperCohortError",
     "PaperCohortService",
     "RunMode",
+    "SnapshotCaptureRequest",
     "SymbolTargetWeight",
 ]
