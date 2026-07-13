@@ -78,6 +78,7 @@ from app.services.market_data.toss_ohlcv import (
     fetch_daily_toss_frame,
     fetch_kr_intraday_toss_frame,
 )
+from app.services.symbol_analysis.freshness import compute_is_stale
 from app.services.upbit_symbol_universe_service import search_upbit_symbols
 from app.services.us_intraday_candles_read_service import read_us_intraday_candles
 from app.services.us_symbol_universe_service import (
@@ -431,6 +432,7 @@ async def _apply_nxt_quote_overlay(
     quote.update(overlay)
     quote["regular_session_data_state"] = data_state
     quote["data_state"] = DATA_STATE_FRESH
+    _annotate_kr_price_freshness(quote, now_kst())
     return True
 
 
@@ -570,6 +572,65 @@ async def _search_master_data(
 # ---------------------------------------------------------------------------
 
 
+def _parse_price_as_of(value: Any) -> datetime.datetime | None:
+    """Parse a provider timestamp without turning integer indexes into epoch data."""
+    if value is None:
+        return None
+    try:
+        timestamp = pd.Timestamp(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if pd.isna(timestamp) or timestamp.value <= 0:
+        return None
+    return timestamp.to_pydatetime()
+
+
+def _kr_price_as_of_from_frame(df: pd.DataFrame) -> datetime.datetime | None:
+    """Read a real candle date; RangeIndex values are not timestamps."""
+    if df.empty:
+        return None
+    row_value = df.iloc[-1].get("date")
+    if row_value is not None and not pd.isna(row_value):
+        return _parse_price_as_of(row_value)
+    if isinstance(df.index, pd.DatetimeIndex):
+        return _parse_price_as_of(df.index[-1])
+    return None
+
+
+def _annotate_kr_price_freshness(
+    quote: dict[str, Any],
+    as_of: Any,
+    *,
+    trading_date: datetime.date | None = None,
+) -> None:
+    """Expose whether a KR quote is safe to consume as a current price."""
+    parsed = _parse_price_as_of(as_of)
+    quote["price_as_of"] = parsed.isoformat() if parsed is not None else None
+    if parsed is None:
+        quote.update(
+            {
+                "is_stale_price": True,
+                "price_freshness": "unavailable",
+                "price_usable": False,
+                "price_unavailable_reason": "missing_price_asof",
+            }
+        )
+        return
+
+    stale = compute_is_stale(
+        "price",
+        parsed,
+        trading_date=trading_date or now_kst().date(),
+    )
+    quote["is_stale_price"] = stale
+    quote["price_freshness"] = "stale" if stale else "fresh"
+    quote["price_usable"] = not stale
+    if stale:
+        quote["price_unavailable_reason"] = "stale_price_asof"
+    else:
+        quote.pop("price_unavailable_reason", None)
+
+
 async def _fetch_quote_crypto(symbol: str) -> dict[str, Any]:
     """Fetch crypto quote from Upbit."""
     prices = await upbit_service.fetch_multiple_current_prices([symbol])
@@ -603,7 +664,7 @@ async def _fetch_quote_equity_kr(symbol: str) -> dict[str, Any]:
         prev_close_raw = df.iloc[-2].to_dict().get("close")
         if prev_close_raw is not None and not pd.isna(prev_close_raw):
             previous_close = float(prev_close_raw)
-    return {
+    quote = {
         "symbol": symbol,
         "instrument_type": "equity_kr",
         "price": last.get("close"),
@@ -615,6 +676,8 @@ async def _fetch_quote_equity_kr(symbol: str) -> dict[str, Any]:
         "value": last.get("value"),
         "source": "kis",
     }
+    _annotate_kr_price_freshness(quote, _kr_price_as_of_from_frame(df))
+    return quote
 
 
 async def _fetch_kr_live_quote(symbol: str) -> dict[str, Any] | None:

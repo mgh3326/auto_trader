@@ -1306,7 +1306,10 @@ async def test_get_quote_kr_exposes_nxt_tradable(monkeypatch):
     monkeypatch.setattr(market_data_quotes, "get_kr_nxt_tradability", fake_tradability)
 
     result = await tools["get_quote"]("005930")
-    assert result["nxt_tradable"] is True
+    assert result["nxt_tradable"] is None
+    assert result["nxt_tradable_observed"] is True
+    assert result["nxt_tradable_stale"] is True
+    assert result["nxt_tradable_reason"] == "stale_asof"
     assert result["nxt_tradable_source"] == "kr_symbol_universe"
     assert result["nxt_tradable_asof"] is not None
 

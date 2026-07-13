@@ -127,7 +127,9 @@ async def test_suggest_order_account_kr_carries_nxt_advisory(monkeypatch):
     result = await art.suggest_order_account_impl(
         symbol="005930", market="kr", side="buy", quantity=1
     )
-    assert result["nxt_tradable"] is False
+    assert result["nxt_tradable"] is None
+    assert result["nxt_tradable_observed"] is False
+    assert result["nxt_tradable_reason"] == "missing_asof"
     assert result["nxt_tradable_source"] == "kr_symbol_universe"
     assert result["nxt_preflight"]["block"] is True
     assert result["nxt_preflight"]["session"] == "nxt_premarket"
