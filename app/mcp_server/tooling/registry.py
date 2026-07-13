@@ -157,6 +157,9 @@ from app.mcp_server.tooling.paper_journal_registration import (
 from app.mcp_server.tooling.paper_limit_order_handler import (
     register_paper_limit_order_tools,
 )
+from app.mcp_server.tooling.paper_validation_registration import (
+    register_paper_validation_tools,
+)
 from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
 from app.mcp_server.tooling.route_request_registration import (
     register_route_request_tools,
@@ -238,6 +241,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         # the broad "Always" registrations below.
         if settings.PAPER_EXECUTION_ENABLED:
             register_paper_execution_tools(mcp)
+            register_paper_validation_tools(mcp)
         return
 
     # Always: side-effect-free research + read-only tools

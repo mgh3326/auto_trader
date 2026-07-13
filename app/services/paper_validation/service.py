@@ -380,13 +380,6 @@ class PaperValidationService:
     async def confirm_promotion(
         self, caller_id: str, confirmation: PromotionConfirmationInput
     ) -> PaperValidationStateTransition:
-        actor = await self._resolve_actor(caller_id)
-        self._require_role(actor, _MUTATION_ROLES)
-        latest = await self._latest(confirmation.identity.validation_id)
-        if latest is None or not self._identity_matches(latest, confirmation.identity):
-            raise PaperValidationError("promotion_confirmation_mismatch")
-        if ValidationState(latest.new_state) is not ValidationState.PROMOTION_ELIGIBLE:
-            raise PaperValidationError("promotion_confirmation_mismatch")
         request = TransitionRequest(
             identity=confirmation.identity,
             expected_prior_state=ValidationState.PROMOTION_ELIGIBLE,
@@ -396,9 +389,19 @@ class PaperValidationService:
             reason_text=confirmation.reason,
             evidence_ids=confirmation.evidence_ids,
         )
-        return await self.transition(
-            caller_id, request, _promotion_confirmed=confirmation.confirmed
-        )
+        try:
+            return await self.transition(
+                caller_id, request, _promotion_confirmed=confirmation.confirmed
+            )
+        except PaperValidationError as exc:
+            if exc.reason_code in {
+                "experiment_identity_mismatch",
+                "concurrent_transition_conflict",
+                "invalid_transition",
+                "terminal_state",
+            }:
+                raise PaperValidationError("promotion_confirmation_mismatch") from exc
+            raise
 
     async def get_audit(self, caller_id: str, validation_id: str) -> dict[str, list]:
         transitions = await self.get_history(caller_id, validation_id)

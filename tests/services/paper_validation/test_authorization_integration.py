@@ -338,6 +338,16 @@ async def test_promotion_requires_explicit_exact_confirmation(
         ),
     )
     assert event.new_state == "promoted"
+    replay = await app.confirm_promotion(
+        "operator-1",
+        PromotionConfirmationInput(
+            identity=validation_identity,
+            idempotency_key="promotion-confirm-ok",
+            reason="operator reviewed exact frozen evidence",
+            evidence_ids=("operator-confirmation",),
+        ),
+    )
+    assert replay.id == event.id
 
 
 def test_review_model_has_no_llm_controlled_metric_or_gate_fields() -> None:

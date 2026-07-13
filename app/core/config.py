@@ -318,6 +318,9 @@ class Settings(BaseSettings):
     # façade. The dedicated MCP profile must remain physically absent unless
     # the operator opts in; startup also requires MCP bearer authentication.
     PAPER_EXECUTION_ENABLED: bool = False
+    # ROB-848 — authenticated caller id -> validation role. Empty/unmapped is
+    # intentionally fail-closed; caller-owned payload roles are never accepted.
+    PAPER_VALIDATION_ACTOR_ROLES: dict[str, str] = Field(default_factory=dict)
 
     # KIS Rate Limiting (HTTP API)
     kis_rate_limit_rate: int = 19  # 초당 최대 요청 수 (안전 마진으로 20-1)

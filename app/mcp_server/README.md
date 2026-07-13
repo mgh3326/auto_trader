@@ -274,6 +274,32 @@ without refreshing it. Likewise, a provider failure captured as an unavailable
 section retains its original error and remains unavailable; get never calls a
 provider to fill it.
 
+### Paper execution validation boundary (ROB-848)
+
+The default-off `paper_execution` profile is one exact union under
+`PAPER_EXECUTION_ENABLED`: the unchanged six names in
+`PAPER_EXECUTION_TOOL_NAMES` plus the independent names in
+`PAPER_VALIDATION_TOOL_NAMES`. The broker registrar does not import validation;
+the two surfaces meet only in the profile registry composition branch.
+
+Validation caller identity is taken from the authenticated MCP request context.
+`PAPER_VALIDATION_ACTOR_ROLES` maps that server-derived ID to `researcher`,
+`reviewer`, `operator`, or `system`; the default empty map and every unmapped or
+invalid role fail closed. Actor ID and role are absent from all tool payloads.
+Frozen-input and policy providers are injected contracts. Until their production
+composition is supplied by their owning follow-ups, evidence-requiring mutations
+return `evidence_stamp_unavailable` and never reach a broker, adapter, or ledger.
+
+Researchers may append only fixed-shape hypothesis drafts, reviewers may append
+only narrative postmortems, and operators/systems own registration, state
+transitions, order-submit authorization, promotion, rejection, and abort. Order
+authorization returns an exact-bound frozen contract; it does not submit an
+order. Promotion requires a separate explicit confirmation against the current
+experiment/cohort/strategy/config/policy/input hashes.
+
+Operational rollback disables `PAPER_EXECUTION_ENABLED`, physically removing both
+registrars. Existing audit rows are immutable and are never deleted for rollback.
+
 The `analysis_readonly` Codex/headless profile exposes
 `analysis_bundle_get` only when the gate is enabled. It never exposes
 `analysis_bundle_create`, preserving the consumer's get-only boundary.
