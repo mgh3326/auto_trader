@@ -69,6 +69,12 @@ _ACTION_CAPABILITIES = {
     "cancel": SUPPORTED_TARGET_ACTIONS,
 }
 
+_ALLOWED_ACTION_CONTRACT_MESSAGE = (
+    "allowed: kis_live×equity_kr|equity_us, "
+    "toss_live×equity_kr|equity_us, upbit×crypto; "
+    "market aliases kr→equity_kr, us→equity_us"
+)
+
 _LOSS_CUT_EXIT_REASONS = frozenset({"stop_loss", "thesis_change"})
 _LOSS_CUT_TRIGGER_TYPES = frozenset({"stop_loss", "thesis_change"})
 _LOSS_CUT_MAX_AGE = timedelta(hours=72)
@@ -102,7 +108,8 @@ def _validate_action_contract(
     if (account_mode, market) not in _ACTION_CAPABILITIES[normalized]:
         raise OrderProposalError(
             "unsupported account_mode/market/action: "
-            f"{account_mode}/{market}/{normalized}"
+            f"{account_mode}/{market}/{normalized} "
+            f"({_ALLOWED_ACTION_CONTRACT_MESSAGE})"
         )
     if normalized == "place":
         if target_broker_order_id is not None or target_order_snapshot is not None:
