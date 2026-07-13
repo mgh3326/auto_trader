@@ -1,7 +1,7 @@
 """ROB-858 Toss loss-cut audit binding.
 
 Revision ID: 20260713_rob858_toss_loss_cut
-Revises: 20260712_rob846_experiments
+Revises: 20260713_rob859_no_claim
 Create Date: 2026-07-13
 
 Additive-only audit fields for accepted Toss live orders. Existing rows remain
@@ -18,7 +18,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260713_rob858_toss_loss_cut"
-down_revision: str | Sequence[str] | None = "20260712_rob846_experiments"
+down_revision: str | Sequence[str] | None = "20260713_rob859_no_claim"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
