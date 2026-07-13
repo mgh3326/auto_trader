@@ -8,6 +8,12 @@ import pytest
 
 from app.core.config import settings
 from app.mcp_server.profiles import McpProfile
+from app.mcp_server.tooling.paper_execution_registration import (
+    PAPER_EXECUTION_TOOL_NAMES,
+)
+from app.mcp_server.tooling.paper_validation_registration import (
+    PAPER_VALIDATION_TOOL_NAMES,
+)
 from app.mcp_server.tooling.registry import register_all_tools
 from tests._mcp_tooling_support import DummyMCP
 
@@ -161,7 +167,12 @@ def test_profile_and_capability_registry_have_one_source_of_truth(
     assert definitions == [expected_path]
 
 
-def test_paper_execution_profile_is_exact_facade_allowlist(
+def test_paper_execution_broker_facade_remains_exactly_six() -> None:
+    assert PAPER_EXECUTION_TOOL_NAMES == _EXPECTED_PROFILE_TOOLS
+    assert len(PAPER_EXECUTION_TOOL_NAMES) == 6
+
+
+def test_paper_execution_profile_is_exact_composed_allowlist(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "PAPER_EXECUTION_ENABLED", True)
@@ -169,7 +180,7 @@ def test_paper_execution_profile_is_exact_facade_allowlist(
 
     register_all_tools(mcp, profile=McpProfile.PAPER_EXECUTION)  # type: ignore[arg-type]
 
-    assert set(mcp.tools) == _EXPECTED_PROFILE_TOOLS
+    assert set(mcp.tools) == _EXPECTED_PROFILE_TOOLS | PAPER_VALIDATION_TOOL_NAMES
     forbidden_fragments = {
         "alpaca_paper",
         "binance_demo",
