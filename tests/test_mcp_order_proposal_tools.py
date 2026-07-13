@@ -142,9 +142,17 @@ async def test_place_create_never_fetches_a_target(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_create_normalizes_kr_alias_before_storage_and_payload_hash():
-    alias = await opt.order_proposal_create(**_create_kwargs(market="kr"))
-    canonical = await opt.order_proposal_create(**_create_kwargs(market="equity_kr"))
+@pytest.mark.parametrize(
+    ("market_alias", "canonical_market"),
+    [("kr", "equity_kr"), ("us", "equity_us")],
+)
+async def test_create_normalizes_market_alias_before_storage_and_payload_hash(
+    market_alias, canonical_market
+):
+    alias = await opt.order_proposal_create(**_create_kwargs(market=market_alias))
+    canonical = await opt.order_proposal_create(
+        **_create_kwargs(market=canonical_market)
+    )
 
     assert alias["success"] is True
     assert canonical["success"] is True
@@ -156,9 +164,9 @@ async def test_create_normalizes_kr_alias_before_storage_and_payload_hash():
             uuid.UUID(canonical["proposal_id"])
         )
 
-    assert got["proposal"]["market"] == "equity_kr"
-    assert alias_group.market == "equity_kr"
-    assert canonical_group.market == "equity_kr"
+    assert got["proposal"]["market"] == canonical_market
+    assert alias_group.market == canonical_market
+    assert canonical_group.market == canonical_market
     assert alias_group.payload_hash == canonical_group.payload_hash
 
 
