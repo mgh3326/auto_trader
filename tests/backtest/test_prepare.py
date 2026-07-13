@@ -1052,6 +1052,32 @@ class TestRunBacktestInterval:
 class TestCVFolds:
     """Tests for walk-forward CV fold definitions."""
 
+    def test_historical_fold_four_overlaps_sealed_oos(self):
+        historical_folds = [
+            {
+                "train_start": "2024-04-01",
+                "train_end": "2025-12-31",
+                "val_start": "2026-01-01",
+                "val_end": "2026-03-22",
+            }
+        ]
+
+        with pytest.raises(prepare.EvaluationWindowError) as exc_info:
+            prepare.validate_evaluation_windows(
+                folds=historical_folds,
+                sealed_oos=prepare.SPLITS["test"],
+            )
+
+        error = exc_info.value
+        assert error.reason_code == "overlapping_evaluation_windows"
+        assert error.window_names == ("cv_fold_1_validation", "sealed_oos")
+
+    def test_default_evaluation_windows_do_not_overlap(self):
+        prepare.validate_evaluation_windows(
+            folds=prepare.CV_FOLDS,
+            sealed_oos=prepare.SPLITS["test"],
+        )
+
     def test_cv_folds_exist(self):
         assert hasattr(prepare, "CV_FOLDS")
         assert len(prepare.CV_FOLDS) >= 3

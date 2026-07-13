@@ -1,6 +1,7 @@
 """Backtest data preparation and engine."""
 
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -111,9 +112,77 @@ CV_FOLDS = [
         "train_start": "2024-04-01",
         "train_end": "2025-12-31",
         "val_start": "2026-01-01",
-        "val_end": "2026-03-22",
+        "val_end": "2026-01-31",
     },
 ]
+
+
+class EvaluationWindowError(ValueError):
+    """Fail-closed evaluation-window admission error."""
+
+    def __init__(self, reason_code: str, *window_names: str) -> None:
+        self.reason_code = reason_code
+        self.window_names = tuple(sorted(window_names))
+        names = ", ".join(self.window_names)
+        super().__init__(f"{reason_code}: {names}")
+
+
+def _closed_window(
+    *, name: str, start: str, end: str
+) -> tuple[str, date, date]:
+    try:
+        start_date = date.fromisoformat(start)
+        end_date = date.fromisoformat(end)
+    except (TypeError, ValueError) as exc:
+        raise EvaluationWindowError("invalid_evaluation_window", name) from exc
+    if start_date > end_date:
+        raise EvaluationWindowError("invalid_evaluation_window", name)
+    return name, start_date, end_date
+
+
+def validate_evaluation_windows(
+    *, folds: list[dict[str, str]], sealed_oos: dict[str, str]
+) -> None:
+    """Reject scored validation/OOS overlap before any backtest executes.
+
+    Expanding train windows intentionally overlap one another. Admission checks
+    each fold's train-to-validation boundary, then pairwise checks the scored
+    validation windows and sealed OOS closed interval.
+    """
+    scored: list[tuple[str, date, date]] = []
+    for index, fold in enumerate(folds, start=1):
+        train_name = f"cv_fold_{index}_train"
+        validation_name = f"cv_fold_{index}_validation"
+        _, train_start, train_end = _closed_window(
+            name=train_name,
+            start=fold["train_start"],
+            end=fold["train_end"],
+        )
+        del train_start
+        validation = _closed_window(
+            name=validation_name,
+            start=fold["val_start"],
+            end=fold["val_end"],
+        )
+        if train_end >= validation[1]:
+            raise EvaluationWindowError(
+                "overlapping_evaluation_windows", train_name, validation_name
+            )
+        scored.append(validation)
+
+    scored.append(
+        _closed_window(
+            name="sealed_oos",
+            start=sealed_oos["start"],
+            end=sealed_oos["end"],
+        )
+    )
+    for left_index, (left_name, left_start, left_end) in enumerate(scored):
+        for right_name, right_start, right_end in scored[left_index + 1 :]:
+            if left_start <= right_end and right_start <= left_end:
+                raise EvaluationWindowError(
+                    "overlapping_evaluation_windows", left_name, right_name
+                )
 
 
 @dataclass(frozen=True)
@@ -846,6 +915,8 @@ def cross_validate(
     """
     if folds is None:
         folds = CV_FOLDS
+
+    validate_evaluation_windows(folds=folds, sealed_oos=SPLITS["test"])
 
     fold_scores: list[float] = []
     fold_results: list[BacktestResult] = []
