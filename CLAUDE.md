@@ -487,7 +487,7 @@ chore/<설명>                 # 유지보수
 
 ### 워크플로우
 1. `main` 브랜치에서 feature branch 생성
-2. 코드 변경 후 커밋 (`Co-Authored-By: Paperclip <noreply@paperclip.ing>`)
+2. 코드 변경 후 커밋
 3. PR 생성 (base: `main`)
 4. 리뷰 후 머지
 5. 배포 시 `main` → `production` 머지
