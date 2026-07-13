@@ -148,6 +148,7 @@ async def test_create_normalizes_kr_alias_before_storage_and_payload_hash():
 
     assert alias["success"] is True
     assert canonical["success"] is True
+    got = await opt.order_proposal_get(alias["proposal_id"])
     async with opt.AsyncSessionLocal() as session:
         service = opt.OrderProposalsService(session)
         alias_group, _ = await service.get_proposal(uuid.UUID(alias["proposal_id"]))
@@ -155,6 +156,7 @@ async def test_create_normalizes_kr_alias_before_storage_and_payload_hash():
             uuid.UUID(canonical["proposal_id"])
         )
 
+    assert got["proposal"]["market"] == "equity_kr"
     assert alias_group.market == "equity_kr"
     assert canonical_group.market == "equity_kr"
     assert alias_group.payload_hash == canonical_group.payload_hash
