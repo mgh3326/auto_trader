@@ -24,7 +24,8 @@ class OrderProposalInvalidStateTransition(OrderProposalError):
         acked            -> {filled, partially_filled, cancelled, unverified}
         resting          -> {filled, partially_filled, cancelled, expired, unverified}
         partially_filled -> {filled, cancelled, expired, unverified}
-        unverified       -> {filled, partially_filled, cancelled, expired, rejected}
+        unverified       -> {filled, partially_filled, cancelled, expired, rejected,
+                             voided_local_stale}
         draft            -> {pending_approval, voided}
         (terminal: filled, cancelled, expired, rejected, voided,
                    voided_local_stale, superseded)

@@ -1,11 +1,13 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 
 from app.core.config import settings
+from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling import order_proposal_tools as opt
+from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.errors import OrderProposalError
 from app.services.order_proposals.target_order import TargetOrderSnapshot
 
@@ -13,11 +15,16 @@ from app.services.order_proposals.target_order import TargetOrderSnapshot
 class _FakeNotifier:
     def __init__(self, *, message_id: int | None = 4242) -> None:
         self.calls: list[tuple[str, dict, str]] = []
+        self.edited: list[tuple[str, int, str, object]] = []
         self._message_id = message_id
 
     async def send_approval_message(self, text, inline_keyboard, *, chat_id):
         self.calls.append((text, inline_keyboard, chat_id))
         return self._message_id
+
+    async def edit_message(self, chat_id, message_id, text, reply_markup=None):
+        self.edited.append((chat_id, message_id, text, reply_markup))
+        return True
 
 
 class _RaisingNotifier:
@@ -355,6 +362,62 @@ async def test_void_requires_reason_and_terminalizes_proposal():
     assert result["success"] is True
     assert result["lifecycle_state"] == "voided"
     assert result["void_reason"] == "superseded thesis"
+
+
+@pytest.mark.asyncio
+async def test_void_unverified_uses_broker_evidence_and_disables_telegram_buttons(
+    monkeypatch,
+):
+    from app.services.order_proposals.broker_gateway import OperatorVoidEvidence
+
+    created = await opt.order_proposal_create(
+        **_create_kwargs(account_mode="toss_live")
+    )
+    now = datetime.now(UTC)
+    async with AsyncSessionLocal() as session:
+        service = OrderProposalsService(session)
+        proposal_id = uuid.UUID(created["proposal_id"])
+        for state in ("revalidating", "approved", "submitting"):
+            await service.transition_rung(proposal_id, 0, new_state=state)
+        await service.record_unverified(
+            proposal_id,
+            0,
+            reason="legacy_timeout",
+            idempotency_key="tosprop-legacy-1",
+            now=now - timedelta(minutes=6),
+        )
+        await service.record_approval_dispatch(
+            proposal_id,
+            message_id=4242,
+            chat_id="chat-1",
+            now=now,
+        )
+        await session.commit()
+
+    async def absent_evidence(**_kwargs):
+        return {
+            0: OperatorVoidEvidence(
+                "absent", "toss GET /orders OPEN + CLOSED 2026-07-13..2026-07-13"
+            )
+        }
+
+    notifier = _FakeNotifier()
+    monkeypatch.setattr(opt, "fetch_operator_void_evidence", absent_evidence)
+    monkeypatch.setattr(opt, "_get_trade_notifier", lambda: notifier)
+
+    result = await opt.order_proposal_void(created["proposal_id"], "operator cleanup")
+
+    assert result["success"] is True
+    assert result["rungs"][0]["state"] == "voided_local_stale"
+    assert "outcome=absent" in result["void_reason"]
+    assert notifier.edited == [
+        (
+            "chat-1",
+            4242,
+            "🗑️ 제안 무효화됨\n사유: " + result["void_reason"].replace("_", "\\_"),
+            {"inline_keyboard": []},
+        )
+    ]
 
 
 @pytest.mark.asyncio

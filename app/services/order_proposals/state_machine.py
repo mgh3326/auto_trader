@@ -45,7 +45,14 @@ _ALLOWED: dict[str, frozenset[str]] = {
     ),
     "partially_filled": frozenset({"filled", "cancelled", "expired", "unverified"}),
     "unverified": frozenset(
-        {"filled", "partially_filled", "cancelled", "expired", "rejected"}
+        {
+            "filled",
+            "partially_filled",
+            "cancelled",
+            "expired",
+            "rejected",
+            "voided_local_stale",
+        }
     ),
     # terminals
     "filled": frozenset(),

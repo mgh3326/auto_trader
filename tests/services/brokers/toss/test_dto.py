@@ -97,6 +97,7 @@ def test_parse_orders_converts_execution_decimals() -> None:
             "orders": [
                 {
                     "orderId": "ord-1",
+                    "clientOrderId": "tosprop-legacy-1",
                     "symbol": "AAPL",
                     "side": "BUY",
                     "orderType": "LIMIT",
@@ -125,6 +126,7 @@ def test_parse_orders_converts_execution_decimals() -> None:
     )
 
     assert orders.orders[0].status == "FUTURE_STATUS"
+    assert orders.orders[0].client_order_id == "tosprop-legacy-1"
     assert orders.orders[0].execution["commission"] == Decimal("0.10")
 
 

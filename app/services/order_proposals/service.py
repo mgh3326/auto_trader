@@ -14,11 +14,12 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 
-from sqlalchemy import text
+from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import KST
 from app.models.order_proposals import OrderProposal, OrderProposalRung
+from app.models.review import TossLiveOrderLedger
 from app.services.order_proposals import state_machine as sm
 from app.services.order_proposals.broker_gateway import SUPPORTED_TARGET_ACTIONS
 from app.services.order_proposals.errors import (
@@ -78,6 +79,7 @@ _ALLOWED_ACTION_CONTRACT_MESSAGE = (
 _LOSS_CUT_EXIT_REASONS = frozenset({"stop_loss", "thesis_change"})
 _LOSS_CUT_TRIGGER_TYPES = frozenset({"stop_loss", "thesis_change"})
 _LOSS_CUT_MAX_AGE = timedelta(hours=72)
+_UNVERIFIED_VOID_SETTLEMENT_GRACE = timedelta(minutes=5)
 _VOIDABLE_RUNG_STATES = frozenset(
     {"draft", "pending_approval", "revalidating", "needs_reconfirm", "approved"}
 )
@@ -525,7 +527,12 @@ class OrderProposalsService:
         return True
 
     async def void_proposal(
-        self, proposal_id: uuid.UUID, *, reason: str, now: datetime
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        reason: str,
+        now: datetime,
+        broker_evidence: Callable[..., Any] | None = None,
     ) -> list[OrderProposalRung]:
         self._require_timezone_aware(now)
         reason = reason.strip()
@@ -536,8 +543,9 @@ class OrderProposalsService:
         if group is None:
             raise OrderProposalNotFound(str(proposal_id))
         rungs = await self._repo.list_rungs(group.id)
+        allowed_states = _VOIDABLE_RUNG_STATES | {"unverified"}
         invalid_rung = next(
-            (rung for rung in rungs if rung.state not in _VOIDABLE_RUNG_STATES), None
+            (rung for rung in rungs if rung.state not in allowed_states), None
         )
         if invalid_rung is not None:
             raise OrderProposalError(
@@ -545,16 +553,159 @@ class OrderProposalsService:
                 f"in state {invalid_rung.state!r}"
             )
 
+        unverified_rungs = [rung for rung in rungs if rung.state == "unverified"]
+        evidence_summary = ""
+        if unverified_rungs:
+            if broker_evidence is None:
+                invalid_rung = unverified_rungs[0]
+                raise OrderProposalError(
+                    f"cannot void proposal with rung {invalid_rung.rung_index} "
+                    "in state 'unverified' without broker absence evidence"
+                )
+            # The submit path records ``unverified`` only after its broker call
+            # has returned or raised. A successful Toss response commits its
+            # accepted-only ledger row before that path can transition the
+            # proposal. The grace interval covers broker-side visibility after
+            # an ambiguous timeout; the proposal row lock then prevents submit
+            # state changes while the remote scan and final ledger read run.
+            recent_rung = next(
+                (
+                    rung
+                    for rung in unverified_rungs
+                    if now - rung.updated_at < _UNVERIFIED_VOID_SETTLEMENT_GRACE
+                ),
+                None,
+            )
+            if recent_rung is not None:
+                raise OrderProposalError(
+                    "cannot void proposal: broker settlement grace has not elapsed "
+                    f"for unverified rung {recent_rung.rung_index} "
+                    f"(required={int(_UNVERIFIED_VOID_SETTLEMENT_GRACE.total_seconds())}s)"
+                )
+            try:
+                evidence_by_rung = broker_evidence(
+                    group=group,
+                    rungs=unverified_rungs,
+                    now=now,
+                )
+                if inspect.isawaitable(evidence_by_rung):
+                    evidence_by_rung = await evidence_by_rung
+            except Exception as exc:
+                raise OrderProposalError(
+                    f"broker evidence lookup failed; refusing void: {exc}"
+                ) from exc
+
+            toss_ledger_rows: list[TossLiveOrderLedger] = []
+            if group.account_mode == "toss_live":
+                client_order_ids = [
+                    str(rung.idempotency_key).strip()
+                    for rung in unverified_rungs
+                    if rung.idempotency_key
+                ]
+                broker_order_ids = [
+                    str(rung.broker_order_id).strip()
+                    for rung in unverified_rungs
+                    if rung.broker_order_id
+                ]
+                predicates = []
+                if client_order_ids:
+                    predicates.append(
+                        TossLiveOrderLedger.client_order_id.in_(client_order_ids)
+                    )
+                if broker_order_ids:
+                    predicates.append(
+                        TossLiveOrderLedger.broker_order_id.in_(broker_order_ids)
+                    )
+                if predicates:
+                    toss_ledger_rows = list(
+                        (
+                            await self._session.execute(
+                                select(TossLiveOrderLedger).where(or_(*predicates))
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+
+            summaries = []
+            for rung in unverified_rungs:
+                evidence = evidence_by_rung.get(rung.rung_index)
+                if evidence is None:
+                    raise OrderProposalError(
+                        "broker evidence lookup incomplete; refusing void for "
+                        f"unverified rung {rung.rung_index}"
+                    )
+                outcome = str(getattr(evidence, "outcome", "unknown"))
+                scope = " ".join(str(getattr(evidence, "lookup_scope", "")).split())
+                if outcome == "found":
+                    broker_state = getattr(evidence, "broker_state", None)
+                    broker_order_id = getattr(evidence, "broker_order_id", None)
+                    raise OrderProposalError(
+                        f"cannot void proposal: broker order exists for rung "
+                        f"{rung.rung_index} (state={broker_state!r}, "
+                        f"broker_order_id={broker_order_id!r}, scope={scope!r}); "
+                        "run reconcile"
+                    )
+                if outcome != "absent":
+                    evidence_reason = getattr(evidence, "reason", None)
+                    raise OrderProposalError(
+                        f"cannot void proposal: broker absence is unverified for rung "
+                        f"{rung.rung_index} (outcome={outcome!r}, "
+                        f"reason={evidence_reason!r}, scope={scope!r})"
+                    )
+                matching_ledger_rows = [
+                    row
+                    for row in toss_ledger_rows
+                    if (row.broker_order_id is not None or row.status != "rejected")
+                    and (
+                        (
+                            rung.idempotency_key
+                            and row.client_order_id == rung.idempotency_key
+                        )
+                        or (
+                            rung.broker_order_id
+                            and row.broker_order_id == rung.broker_order_id
+                        )
+                    )
+                ]
+                if matching_ledger_rows:
+                    ledger_row = matching_ledger_rows[0]
+                    raise OrderProposalError(
+                        "cannot void proposal: toss_live_order_ledger contains "
+                        f"broker evidence for rung {rung.rung_index} "
+                        f"(status={ledger_row.status!r}, "
+                        f"broker_order_id={ledger_row.broker_order_id!r})"
+                    )
+                ledger_summary = (
+                    " toss_live_order_ledger rows=0"
+                    if group.account_mode == "toss_live"
+                    else ""
+                )
+                summaries.append(
+                    f"rung={rung.rung_index} outcome=absent "
+                    f"scope={scope!r}{ledger_summary}"
+                )
+            evidence_summary = " | broker_evidence: " + "; ".join(summaries)
+
+        audit_reason = reason + evidence_summary
+
         voided_rungs = []
         for rung in rungs:
-            sm.assert_rung_transition(rung.state, "voided")
-            voided_rungs.append(
-                await self._repo.update_rung(rung, state="voided", updated_at=now)
+            target_state = (
+                "voided_local_stale" if rung.state == "unverified" else "voided"
             )
+            sm.assert_rung_transition(rung.state, target_state)
+            audit_fields: dict[str, Any] = {
+                "state": target_state,
+                "updated_at": now,
+            }
+            if target_state == "voided_local_stale":
+                audit_fields["void_reason"] = audit_reason
+            voided_rungs.append(await self._repo.update_rung(rung, **audit_fields))
         await self._repo.update_group(
             group,
             lifecycle_state=self._recompute_group_state(voided_rungs),
-            void_reason=reason,
+            void_reason=audit_reason,
             no_resubmit=True,
             approval_nonce=None,
             approval_nonce_used_at=now,
