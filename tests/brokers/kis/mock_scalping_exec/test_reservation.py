@@ -12,6 +12,7 @@ import asyncio
 import time
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -31,7 +32,12 @@ from app.services.brokers.kis.mock_scalping.contract import (
     MarketConditions,
 )
 from app.services.brokers.kis.mock_scalping.order_intent import OrderIntent
-from app.services.brokers.kis.mock_scalping_exec import adapters
+from app.services.brokers.kis.mock_scalping_exec import (
+    adapters,
+)
+from app.services.brokers.kis.mock_scalping_exec import (
+    reservation as reservation_service,
+)
 from app.services.brokers.kis.mock_scalping_exec.executor import (
     ExecutorConfig,
     Fill,
@@ -47,7 +53,9 @@ from app.services.brokers.kis.mock_scalping_exec.reservation import (
 from app.services.brokers.kis.mock_scalping_exec.tracking_state import LedgerWriteError
 from app.services.brokers.kis.mock_scalping_ws.state import MarketState
 from app.services.order_send_intent_service import (
-    KIS_MOCK_SCALPING_SCOPE,
+    KIS_MOCK_SCALPING_SCOPE as PRODUCTION_KIS_MOCK_SCALPING_SCOPE,
+)
+from app.services.order_send_intent_service import (
     OrderSendIntentService,
 )
 
@@ -183,7 +191,8 @@ def _patch_production_domestic_path(
 async def _has_key(correlation_id: str, side: str | None = None) -> bool:
     async with _order_session_factory()() as db:
         stmt = select(OrderSendIntent.id).where(
-            OrderSendIntent.account_scope == KIS_MOCK_SCALPING_SCOPE,
+            OrderSendIntent.account_scope
+            == reservation_service.KIS_MOCK_SCALPING_SCOPE,
             OrderSendIntent.idempotency_key.contains(correlation_id),
         )
         if side is not None:
@@ -207,7 +216,8 @@ async def _reservation_row(correlation_id: str, side: str) -> tuple[int, str] | 
         row = (
             await db.execute(
                 select(OrderSendIntent.id, OrderSendIntent.idempotency_key).where(
-                    OrderSendIntent.account_scope == KIS_MOCK_SCALPING_SCOPE,
+                    OrderSendIntent.account_scope
+                    == reservation_service.KIS_MOCK_SCALPING_SCOPE,
                     OrderSendIntent.idempotency_key.contains(correlation_id),
                     func.lower(OrderSendIntent.side) == side.lower(),
                 )
@@ -217,12 +227,19 @@ async def _reservation_row(correlation_id: str, side: str) -> tuple[int, str] | 
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _clear_reservations():
+async def _clear_reservations(monkeypatch: pytest.MonkeyPatch):
+    test_scope = f"{PRODUCTION_KIS_MOCK_SCALPING_SCOPE}:{uuid4()}"
+    monkeypatch.setattr(
+        reservation_service,
+        "KIS_MOCK_SCALPING_SCOPE",
+        test_scope,
+    )
+
     async def _c():
         async with _order_session_factory()() as db:
             await db.execute(
                 delete(OrderSendIntent).where(
-                    OrderSendIntent.account_scope == KIS_MOCK_SCALPING_SCOPE
+                    OrderSendIntent.account_scope == test_scope
                 )
             )
             await db.execute(
@@ -309,7 +326,7 @@ async def test_legacy_raw_same_leg_reservation_blocks_new_leg_key_post(
     cid = f"{_TEST_CID_PREFIX}legacy-buy"
     async with _order_session_factory()() as db:
         await OrderSendIntentService(db).reserve(
-            account_scope=KIS_MOCK_SCALPING_SCOPE,
+            account_scope=reservation_service.KIS_MOCK_SCALPING_SCOPE,
             idempotency_key=cid,
             symbol="005930",
             side="buy",
@@ -348,8 +365,21 @@ async def test_native_lost_keeps_reservation(monkeypatch) -> None:
         "_place_order_impl",
         AsyncMock(side_effect=_accepted_untracked),
     )
-    await _submit(_broker(), "cid-native-lost")
-    assert await has_unresolved_entries() is True  # kept — uncertain/lost
+    cid = f"{_TEST_CID_PREFIX}native-lost-{uuid4()}"
+    await _submit(_broker(), cid)
+    assert await _has_key(cid, "buy") is True  # kept — uncertain/lost
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_reservation_survives_foreign_production_scope_cleanup() -> None:
+    assert (
+        reservation_service.KIS_MOCK_SCALPING_SCOPE
+        != PRODUCTION_KIS_MOCK_SCALPING_SCOPE
+    )
+    cid = f"{_TEST_CID_PREFIX}foreign-cleanup-{uuid4()}"
+    await reserve_entry(correlation_id=cid, symbol="005930", side="buy")
+    assert await _has_key(cid, "buy") is True
 
 
 @pytest.mark.integration
