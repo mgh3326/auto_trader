@@ -14,6 +14,7 @@ import pytest
 
 from app.core.config import settings
 from app.mcp_server.profiles import McpProfile, resolve_mcp_profile
+from app.mcp_server.tooling import tradingcodex_execution_registration
 from app.mcp_server.tooling.account_read_registration import (
     ACCOUNT_READ_FORBIDDEN_TOOL_NAMES,
     ACCOUNT_READ_TOOL_NAMES,
@@ -93,6 +94,16 @@ _REMOVED_GENERIC_TOOL_NAMES = {
     "get_funding_rate",
     "get_open_interest",
     "get_long_short_ratio",
+}
+
+_EXPECTED_KIWOOM_EXECUTION_TOOL_NAMES = {
+    "kiwoom_mock_preview_order",
+    "kiwoom_mock_place_order",
+    "kiwoom_mock_cancel_order",
+    "kiwoom_mock_modify_order",
+    "kiwoom_mock_get_order_history",
+    "kiwoom_mock_get_positions",
+    "kiwoom_mock_get_orderable_cash",
 }
 
 
@@ -557,6 +568,24 @@ class TestAccountReadProfile:
 
 
 class TestTradingCodexExecutionProfile:
+    def test_kiwoom_execution_allowlist_is_explicit_exact_seven(self) -> None:
+        explicit_allowlist = getattr(
+            tradingcodex_execution_registration,
+            "KIWOOM_MOCK_EXECUTION_TOOL_NAMES",
+            None,
+        )
+
+        assert explicit_allowlist is not None
+        assert set(explicit_allowlist) == _EXPECTED_KIWOOM_EXECUTION_TOOL_NAMES
+        assert (
+            TRADINGCODEX_EXECUTION_TOOL_NAMES & KIWOOM_MOCK_TOOL_NAMES
+            == _EXPECTED_KIWOOM_EXECUTION_TOOL_NAMES
+        )
+
+        mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
+        registered = {name for name in mcp.tools if name.startswith("kiwoom_mock_")}
+        assert registered == _EXPECTED_KIWOOM_EXECUTION_TOOL_NAMES
+
     def test_registers_exact_tradingcodex_execution_allowlist(self) -> None:
         mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
         # ROB-816: order_proposal_* tools are additionally gated by
@@ -588,7 +617,7 @@ class TestTradingCodexExecutionProfile:
             "cancel_order",
             "kis_live_place_order",
             "kis_live_cancel_order",
-            *KIWOOM_MOCK_TOOL_NAMES,
+            *_EXPECTED_KIWOOM_EXECUTION_TOOL_NAMES,
             "toss_preview_order",
             "toss_place_order",
             "toss_cancel_order",
@@ -610,7 +639,9 @@ class TestTradingCodexExecutionProfile:
 
     def test_registers_exact_typed_kiwoom_mock_surface(self) -> None:
         mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
-        assert KIWOOM_MOCK_TOOL_NAMES & mcp.tools.keys() == KIWOOM_MOCK_TOOL_NAMES
+        assert KIWOOM_MOCK_TOOL_NAMES & mcp.tools.keys() == (
+            _EXPECTED_KIWOOM_EXECUTION_TOOL_NAMES
+        )
         assert {
             "kiwoom_place_order",
             "kiwoom_live_place_order",

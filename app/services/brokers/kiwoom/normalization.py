@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from app.services.brokers.kiwoom import constants
+from app.services.brokers.kiwoom.validation import normalize_krx_symbol
 
 REDACTED_VALUE = "[REDACTED]"
 
@@ -44,6 +45,18 @@ _COMPACT_SENSITIVE_KEYS = frozenset(
         "approval",
         "approvalkey",
         "approvalhash",
+        "accountno",
+        "accountnumber",
+        "accountid",
+        "accountidentifier",
+        "acctno",
+        "acctnumber",
+        "acctid",
+        "acctidentifier",
+        "acntno",
+        "acntnumber",
+        "acntid",
+        "acntidentifier",
     }
 )
 _SENSITIVE_PARTS = frozenset(
@@ -61,6 +74,18 @@ _SENSITIVE_PARTS = frozenset(
 )
 _ACCOUNT_KEY_PREFIXES = frozenset({"account", "acct", "acnt"})
 _ACCOUNT_IDENTIFIER_PARTS = frozenset({"no", "number", "id", "identifier"})
+
+
+def _key_parts(value: Any) -> tuple[str, ...]:
+    raw = str(value).strip()
+    with_camel_boundaries = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", raw)
+    return tuple(
+        part for part in re.split(r"[^a-z0-9]+", with_camel_boundaries.lower()) if part
+    )
+
+
+def _compact_key(value: Any) -> str:
+    return "".join(_key_parts(value))
 
 
 def _required_rows(payload: Mapping[str, Any], key: str) -> list[Mapping[str, Any]]:
@@ -106,9 +131,10 @@ def _normalize_kr_symbol(row: Mapping[str, Any]) -> str:
     symbol = _required_text(row, "stk_cd")
     if len(symbol) == 7 and symbol[0].upper() in {"A", "J", "Q"}:
         symbol = symbol[1:]
-    if len(symbol) != 6 or not symbol.isdigit():
-        raise KiwoomMockEvidenceError("Kiwoom row has invalid KRX symbol")
-    return symbol
+    try:
+        return normalize_krx_symbol(symbol)
+    except ValueError as exc:
+        raise KiwoomMockEvidenceError("Kiwoom row has invalid KRX symbol") from exc
 
 
 def normalize_positions(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -165,15 +191,15 @@ def normalize_orders(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 def redact_broker_response(payload: dict[str, Any]) -> dict[str, Any]:
     def is_sensitive_key(value: Any) -> bool:
-        raw = str(value).strip()
-        with_camel_boundaries = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", raw)
-        parts = tuple(
-            part
-            for part in re.split(r"[^a-z0-9]+", with_camel_boundaries.lower())
-            if part
-        )
+        parts = _key_parts(value)
         compact = "".join(parts)
-        if compact in _COMPACT_SENSITIVE_KEYS:
+        compact_without_header_prefix = (
+            "".join(parts[1:]) if parts and parts[0] == "x" else compact
+        )
+        if {
+            compact,
+            compact_without_header_prefix,
+        }.intersection(_COMPACT_SENSITIVE_KEYS):
             return True
         if _SENSITIVE_PARTS.intersection(parts):
             return True
@@ -208,14 +234,14 @@ def validate_mock_response_provenance(payload: dict[str, Any]) -> None:
     def walk(value: Any) -> None:
         if isinstance(value, Mapping):
             for raw_key, item in value.items():
-                key = str(raw_key).strip().lower()
+                key = _compact_key(raw_key)
                 is_scalar = isinstance(item, (str, int, bool))
                 text = str(item).strip().lower() if is_scalar else ""
                 if key == "environment" and text != "mock":
                     reject(
                         "Kiwoom mock response contains non-mock environment provenance"
                     )
-                if key == "account_mode" and text != "kiwoom_mock":
+                if key == "accountmode" and text != "kiwoom_mock":
                     reject(
                         "Kiwoom mock response contains conflicting account provenance"
                     )
@@ -224,7 +250,7 @@ def validate_mock_response_provenance(payload: dict[str, Any]) -> None:
                     "kiwoom_mock",
                 }:
                     reject("Kiwoom mock response contains non-mock broker provenance")
-                if key == "is_mock" and not (
+                if key == "ismock" and not (
                     item is True
                     or type(item) is int
                     and item == 1
@@ -232,13 +258,20 @@ def validate_mock_response_provenance(payload: dict[str, Any]) -> None:
                     and text in {"true", "1"}
                 ):
                     reject("Kiwoom mock response contains non-mock provenance")
-                if key in {"host", "base_url"}:
+                if key in {"host", "baseurl"}:
                     if not isinstance(item, str) or not text:
                         reject(
                             "Kiwoom mock response contains malformed host provenance"
                         )
-                    host = urlparse(text).hostname if "://" in text else text
-                    if host and host.rstrip("/") != "mockapi.kiwoom.com":
+                    allowed_values = (
+                        {"mockapi.kiwoom.com"}
+                        if key == "host"
+                        else {
+                            constants.MOCK_BASE_URL.lower(),
+                            f"{constants.MOCK_BASE_URL.lower()}/",
+                        }
+                    )
+                    if text not in allowed_values:
                         reject("Kiwoom mock response contains non-mock host provenance")
                 walk(item)
         elif isinstance(value, (list, tuple)):

@@ -2149,6 +2149,10 @@ Kiwoom safety boundaries are unchanged on both restricted profiles:
   credentials and the exact `https://mockapi.kiwoom.com` base URL.
 - Kiwoom mock tools remain KRX-only. A broker mutation still requires both
   `dry_run=false` and `confirm=true`.
+- Caller-supplied Kiwoom symbols are canonicalized after trimming and must be
+  exactly six ASCII digits (for example, `005930`). Provider evidence may use
+  the documented `A`/`J`/`Q` prefix, which read normalization removes; callers
+  cannot use those provider-only aliases for mutations.
 - No `kiwoom_live_*`, generic `kiwoom_*`, or live-host routing is registered.
 
 #### Kiwoom mock stable read envelopes (ROB-824)
@@ -2172,6 +2176,10 @@ All three account reads add fixed `provenance` for broker `kiwoom`, environment
 `mock`, account mode `kiwoom_mock`, host `mockapi.kiwoom.com`, and their expected
 API ID. Cash uses kt00010 when `symbol` is provided and kt00018 otherwise, and
 validates raw provenance before deriving broker success or returning cash.
+Only a canonical integer `0` or exact string `"0"` broker return code is
+successful. Missing, malformed, boolean, or floating-point return codes fail
+closed. Successful broker evidence without a parseable non-negative cash field
+also fails closed with `cash=null` and a stable `*_unavailable` source.
 
 The responses retain the broker payload as `broker_response`. Recursive
 redaction covers authorization/token/cookie/credential/password/approval,

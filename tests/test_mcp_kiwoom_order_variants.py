@@ -716,6 +716,14 @@ async def test_modify_order_allows_omitted_amounts(monkeypatch):
     [
         ({"return_code": 0}, True),
         ({"return_code": "0"}, True),
+        ({"return_code": False}, False),
+        ({"return_code": 0.0}, False),
+        ({"return_code": 0.5}, False),
+        ({"return_code": -0.5}, False),
+        ({"return_code": "0.0"}, False),
+        ({"return_code": " 0 "}, False),
+        ({"return_code": "+0"}, False),
+        ({"return_code": "00"}, False),
         ({}, False),  # fail-closed: missing return_code is NOT success
         ({"return_code": 1}, False),
         ({"return_code": "40"}, False),
@@ -790,6 +798,123 @@ async def test_preview_order_allows_positive_amounts(monkeypatch):
 
     assert response["success"] is True
     assert response["preview"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "symbol",
+    [
+        "A005930",
+        "AAPL",
+        "",
+        "   ",
+        "5930",
+        "../005930",
+        "005930?x",
+        "005930.KS",
+        "0123G0",
+        "００５９３０",
+        "٠٠٥٩٣٠",
+        "00\n5930",
+    ],
+)
+async def test_registered_symbol_tools_reject_noncanonical_krx_symbols_without_calls(
+    monkeypatch, symbol
+):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    calls: list[dict[str, Any]] = []
+
+    async def fake_impl(**kwargs):
+        calls.append(kwargs)
+        return {"success": True}
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    for name in (
+        "_kiwoom_mock_preview_impl",
+        "_kiwoom_mock_place_order_impl",
+        "_kiwoom_mock_cancel_impl",
+        "_kiwoom_mock_cancel_confirmed_impl",
+        "_kiwoom_mock_modify_impl",
+        "_kiwoom_mock_modify_confirmed_impl",
+        "_kiwoom_mock_orderable_cash_impl",
+    ):
+        monkeypatch.setattr(mod, name, fake_impl)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    responses = [
+        await mcp.tools["kiwoom_mock_preview_order"](
+            symbol=symbol, side="buy", quantity=1, price=70000
+        ),
+        await mcp.tools["kiwoom_mock_place_order"](
+            symbol=symbol, side="buy", quantity=1, price=70000
+        ),
+        await mcp.tools["kiwoom_mock_place_order"](
+            symbol=symbol,
+            side="buy",
+            quantity=1,
+            price=70000,
+            dry_run=False,
+            confirm=True,
+        ),
+        await mcp.tools["kiwoom_mock_cancel_order"](
+            order_id="0000111222",
+            symbol=symbol,
+            cancel_quantity=1,
+        ),
+        await mcp.tools["kiwoom_mock_cancel_order"](
+            order_id="0000111222",
+            symbol=symbol,
+            cancel_quantity=1,
+            dry_run=False,
+            confirm=True,
+        ),
+        await mcp.tools["kiwoom_mock_modify_order"](
+            order_id="0000111222",
+            symbol=symbol,
+            new_quantity=1,
+            new_price=70000,
+        ),
+        await mcp.tools["kiwoom_mock_modify_order"](
+            order_id="0000111222",
+            symbol=symbol,
+            new_quantity=1,
+            new_price=70000,
+            dry_run=False,
+            confirm=True,
+        ),
+        await mcp.tools["kiwoom_mock_get_orderable_cash"](symbol=symbol),
+    ]
+
+    assert calls == []
+    assert all(response["success"] is False for response in responses)
+    assert all("symbol" in response["error"].lower() for response in responses)
+    assert responses[-1]["cash"] is None
+
+
+@pytest.mark.asyncio
+async def test_registered_symbol_tools_forward_trimmed_canonical_symbol(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    calls: list[dict[str, Any]] = []
+
+    async def fake_impl(**kwargs):
+        calls.append(kwargs)
+        return {"success": True}
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    monkeypatch.setattr(mod, "_kiwoom_mock_preview_impl", fake_impl)
+    monkeypatch.setattr(mod, "_kiwoom_mock_orderable_cash_impl", fake_impl)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    await mcp.tools["kiwoom_mock_preview_order"](
+        symbol=" 005930 ", side="buy", quantity=1, price=70000
+    )
+    await mcp.tools["kiwoom_mock_get_orderable_cash"](symbol=" 005930 ")
+
+    assert [call["symbol"] for call in calls] == ["005930", "005930"]
 
 
 # ---------------------------------------------------------------------------
@@ -896,27 +1021,125 @@ async def test_orderable_cash_without_symbol_calls_balance(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_orderable_cash_unparseable_returns_null_cash_with_source(monkeypatch):
+@pytest.mark.parametrize(
+    ("symbol", "payload_key", "payload", "api_id", "cash_source"),
+    [
+        (
+            "005930",
+            "orderable_amount",
+            {"return_code": 0, "some_unknown_field": "x"},
+            "kt00010",
+            "orderable_amount_unavailable",
+        ),
+        (
+            "005930",
+            "orderable_amount",
+            {"return_code": 0, "ord_psbl_cash": "not-a-number"},
+            "kt00010",
+            "orderable_amount_unavailable",
+        ),
+        (
+            "005930",
+            "orderable_amount",
+            {"return_code": 0, "ord_psbl_cash": "-1"},
+            "kt00010",
+            "orderable_amount_unavailable",
+        ),
+        (
+            None,
+            "balance",
+            {"return_code": 0, "some_unknown_field": "x"},
+            "kt00018",
+            "balance_unavailable",
+        ),
+        (
+            None,
+            "balance",
+            {"return_code": 0, "entr": "not-a-number"},
+            "kt00018",
+            "balance_unavailable",
+        ),
+        (
+            None,
+            "balance",
+            {"return_code": 0, "entr": "-1"},
+            "kt00018",
+            "balance_unavailable",
+        ),
+    ],
+)
+async def test_orderable_cash_unavailable_evidence_fails_closed(
+    monkeypatch, symbol, payload_key, payload, api_id, cash_source
+):
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
 
+    payloads = {
+        "orderable_amount": {"return_code": 0, "ord_psbl_cash": "1500000"},
+        "balance": {"return_code": 0, "entr": "987654"},
+        "order_status": {"return_code": 0},
+    }
+    payloads[payload_key] = payload
     _patch_fake_kiwoom_account_client(
         monkeypatch,
         mod,
-        payloads={
-            "orderable_amount": {"return_code": 0, "some_unknown_field": "x"},
-            "balance": {"return_code": 0},
-            "order_status": {"return_code": 0},
-        },
+        payloads=payloads,
     )
     mcp = DummyMCP()
     _register(mcp)
 
-    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](symbol="005930")
+    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](symbol=symbol)
 
-    assert response["success"] is True  # broker returned 0
+    assert response["success"] is False
+    assert response["error"] == "kiwoom_mock_evidence_invalid"
     assert response["cash"] is None
-    assert response["cash_source"] == "orderable_amount_unparsed"
-    assert response["broker_response"]["some_unknown_field"] == "x"
+    assert response["cash_source"] == cash_source
+    assert response["broker_response"] == payload
+    assert response["provenance"]["api_id"] == api_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("symbol", "payload_key", "api_id", "cash_source", "return_code"),
+    [
+        ("005930", "orderable_amount", "kt00010", "orderable_amount_unavailable", 40),
+        (
+            "005930",
+            "orderable_amount",
+            "kt00010",
+            "orderable_amount_unavailable",
+            False,
+        ),
+        ("005930", "orderable_amount", "kt00010", "orderable_amount_unavailable", 0.5),
+        (None, "balance", "kt00018", "balance_unavailable", 40),
+        (None, "balance", "kt00018", "balance_unavailable", False),
+        (None, "balance", "kt00018", "balance_unavailable", 0.5),
+    ],
+)
+async def test_orderable_cash_broker_rejection_has_stable_failure_source(
+    monkeypatch, symbol, payload_key, api_id, cash_source, return_code
+):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    payloads = {
+        "orderable_amount": {"return_code": 0, "ord_psbl_cash": "1500000"},
+        "balance": {"return_code": 0, "entr": "987654"},
+        "order_status": {"return_code": 0},
+    }
+    payloads[payload_key] = {
+        "return_code": return_code,
+        "return_msg": "broker rejected",
+    }
+    _patch_fake_kiwoom_account_client(monkeypatch, mod, payloads=payloads)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](symbol=symbol)
+
+    assert response["success"] is False
+    assert response["error"] == "kiwoom_mock_broker_error"
+    assert response["cash"] is None
+    assert response["cash_source"] == cash_source
+    assert response["provenance"]["api_id"] == api_id
 
 
 @pytest.mark.asyncio
@@ -1222,6 +1445,12 @@ async def test_orderable_cash_both_branches_fail_closed_on_live_provenance(
         {"is_mock": 0},
         {"is_mock": "maybe"},
         {"environment": {}},
+        {"accountMode": "kiwoom_live"},
+        {"account-mode": "kiwoom_live"},
+        {"isMock": False},
+        {"is-mock": False},
+        {"baseUrl": "https://api.kiwoom.com"},
+        {"base-url": "https://api.kiwoom.com"},
     ],
 )
 async def test_registered_order_history_rejects_non_mock_or_malformed_provenance(
@@ -1348,6 +1577,34 @@ async def test_registered_reads_config_failure_has_stable_envelope(
         api_id=api_id,
         error="kiwoom_mock_config_invalid",
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("symbol", "api_id", "cash_source"),
+    [
+        ("005930", "kt00010", "orderable_amount_unavailable"),
+        (None, "kt00018", "balance_unavailable"),
+    ],
+)
+async def test_registered_cash_config_failure_has_stable_source(
+    monkeypatch, symbol, api_id, cash_source
+):
+    from app.core import config as cfg
+
+    monkeypatch.setattr(cfg.settings, "kiwoom_mock_enabled", False)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](symbol=symbol)
+
+    assert response["success"] is False
+    assert response["cash"] is None
+    assert response["error"] == "kiwoom_mock_config_invalid"
+    assert response["cash_source"] == cash_source
+    assert response["provenance"]["api_id"] == api_id
+    if symbol is not None:
+        assert response["symbol"] == symbol
 
 
 @pytest.mark.asyncio

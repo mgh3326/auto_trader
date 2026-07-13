@@ -162,6 +162,6 @@ The Kiwoom mock request body field names and the orderable-cash candidate keys
 (`_ORDERABLE_CASH_KEYS` in `orders_kiwoom_variants.py`) are mirrored from the
 Kiwoom REST docs and validated by unit tests with fakes. The real mock API is
 first exercised by this smoke. If a field name is wrong, the tool degrades to an
-explicit broker-evidence failure (or `cash: null` + `cash_source: "*_unparsed"`)
-rather than faking success — capture that as a follow-up and adjust the field
-mapping.
+explicit `kiwoom_mock_evidence_invalid` failure with `cash: null` and
+`cash_source: "*_unavailable"` rather than faking success — capture that as a
+follow-up and adjust the field mapping.

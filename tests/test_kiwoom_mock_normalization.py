@@ -158,6 +158,19 @@ def test_normalizers_fail_closed_on_malformed_required_fields(
         normalizer(payload)
 
 
+@pytest.mark.parametrize("symbol", ["Ａ００５９３０", "A００５９３０", "٠٠٥٩٣٠"])
+def test_normalize_positions_rejects_unicode_digit_symbols(symbol: str) -> None:
+    payload = {
+        "return_code": 0,
+        "acnt_evlt_remn_indv_tot": [
+            {"stk_cd": symbol, "rmnd_qty": "1", "pur_pric": "70000"}
+        ],
+    }
+
+    with pytest.raises(KiwoomMockEvidenceError, match="KRX symbol"):
+        normalize_positions(payload)
+
+
 def test_redact_broker_response_deep_copies_and_redacts_sensitive_fields() -> None:
     payload = {
         "return_code": 0,
@@ -188,6 +201,28 @@ def test_redact_broker_response_deep_copies_and_redacts_sensitive_fields() -> No
 
 
 @pytest.mark.parametrize(
+    "sensitive_key",
+    [
+        "x-api-key",
+        "x-app-key",
+        "accountno",
+        "ACNTNO",
+        "acctno",
+        "acctid",
+    ],
+)
+def test_redact_broker_response_covers_header_and_compact_account_aliases(
+    sensitive_key: str,
+) -> None:
+    payload = {"nested": {sensitive_key: "must-not-escape"}}
+
+    redacted = redact_broker_response(payload)
+
+    assert redacted["nested"][sensitive_key] == REDACTED_VALUE
+    assert payload["nested"][sensitive_key] == "must-not-escape"
+
+
+@pytest.mark.parametrize(
     "conflicting_provenance",
     [
         {"environment": "live"},
@@ -201,6 +236,42 @@ def test_redact_broker_response_deep_copies_and_redacts_sensitive_fields() -> No
 def test_live_provenance_conflict_fails_closed(conflicting_provenance) -> None:
     with pytest.raises(KiwoomMockEvidenceError, match="provenance"):
         validate_mock_response_provenance({"provenance": conflicting_provenance})
+
+
+@pytest.mark.parametrize(
+    "conflicting_provenance",
+    [
+        {"accountMode": "kiwoom_live"},
+        {"account-mode": "kiwoom_live"},
+        {"isMock": False},
+        {"is-mock": False},
+        {"baseUrl": "https://api.kiwoom.com"},
+        {"base-url": "https://api.kiwoom.com"},
+    ],
+)
+def test_provenance_key_aliases_cannot_bypass_mock_validation(
+    conflicting_provenance: dict[str, object],
+) -> None:
+    with pytest.raises(KiwoomMockEvidenceError, match="provenance"):
+        validate_mock_response_provenance({"provenance": conflicting_provenance})
+
+
+@pytest.mark.parametrize(
+    "invalid_url",
+    [
+        "https://",
+        "https:///missing-host",
+        "http://mockapi.kiwoom.com",
+        "https://mockapi.kiwoom.com:443",
+        "https://mockapi.kiwoom.com/path",
+        "http://[",
+    ],
+)
+def test_mock_provenance_rejects_malformed_or_noncanonical_base_url(
+    invalid_url: str,
+) -> None:
+    with pytest.raises(KiwoomMockEvidenceError, match="provenance"):
+        validate_mock_response_provenance({"provenance": {"base_url": invalid_url}})
 
 
 def test_mock_provenance_is_stable_and_api_specific() -> None:

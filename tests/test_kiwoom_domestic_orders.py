@@ -255,3 +255,61 @@ async def test_cancel_rejects_non_positive_quantity_before_post_api(bad_quantity
             cancel_quantity=bad_quantity,
         )
     assert fake.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "symbol",
+    [
+        "A005930",
+        "AAPL",
+        "",
+        "   ",
+        "5930",
+        "../005930",
+        "005930?x",
+        "0123G0",
+        "００５９３０",
+        "٠٠٥٩٣٠",
+        "00\n5930",
+    ],
+)
+@pytest.mark.parametrize(
+    ("method_name", "kwargs"),
+    [
+        ("place_buy_order", {"quantity": 1, "price": 70000}),
+        ("place_sell_order", {"quantity": 1, "price": 70000}),
+        (
+            "modify_order",
+            {
+                "original_order_no": "0000111222",
+                "new_quantity": 1,
+                "new_price": 70000,
+            },
+        ),
+        (
+            "cancel_order",
+            {"original_order_no": "0000111222", "cancel_quantity": 1},
+        ),
+    ],
+)
+async def test_order_methods_reject_noncanonical_symbol_before_post_api(
+    method_name, kwargs, symbol
+):
+    fake = FakeClient()
+    orders = KiwoomDomesticOrderClient(fake)
+
+    with pytest.raises(KiwoomOrderRejected, match="symbol"):
+        await getattr(orders, method_name)(symbol=symbol, **kwargs)
+
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+async def test_order_methods_forward_trimmed_canonical_symbol():
+    fake = FakeClient()
+    orders = KiwoomDomesticOrderClient(fake)
+
+    await orders.place_buy_order(symbol=" 005930 ", quantity=1, price=70000)
+
+    assert fake.calls[-1]["body"]["stk_cd"] == "005930"
