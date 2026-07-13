@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from fastmcp.tools.tool import ToolResult
 
 
+# Canonical legacy Paperclip-named compatibility header; do not rename.
 CALLER_AGENT_ID_HEADER = "x-paperclip-agent-id"
 
 

@@ -119,7 +119,7 @@ def _validate_caller_agent_id_fallback(mcp_type: str) -> None:
         raise RuntimeError(
             "MCP_CALLER_AGENT_ID is only allowed for stdio/local dev transports; "
             "unset it for production HTTP deployments and send "
-            "x-paperclip-agent-id explicitly."
+            "x-paperclip-agent-id explicitly (canonical legacy compatibility header)."
         )
 
 

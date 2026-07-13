@@ -94,9 +94,9 @@ class IntendedVsHappened(BaseModel):
 class NextAction(BaseModel):
     """A follow-up action derived from the postmortem.
 
-    ``issue_id`` stores a Linear identifier ONLY (mirrors
-    trade_journal.paperclip_issue_id) — issue creation is the caller/session's
-    job; the repo never adds a Linear API client.
+    ``issue_id`` stores an external issue key (legacy Paperclip name; current
+    Linear ROB key) and mirrors ``trade_journal.paperclip_issue_id`` — issue
+    creation is the caller/session's job; the repo never adds a Linear API client.
     """
 
     model_config = ConfigDict(extra="forbid")

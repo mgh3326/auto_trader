@@ -145,8 +145,8 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - `status="pending"` 만 symbol 없이 호출 가능
   - `status in {"all", "filled", "cancelled"}` 는 symbol 필요
   - filled/cancelled 조회는 시장별 historical endpoint 제약 때문에 symbol fan-out을 자동 수행하지 않음
-- `save_trade_journal(symbol, thesis, ..., paperclip_issue_id=None)` - Save the thesis, strategy, account context, and optional Paperclip issue link for a trade.
-- `get_trade_journal(symbol=None, status=None, ..., paperclip_issue_id=None)` - Query active journal entries by symbol/account or reverse-lookup a journal from a Paperclip issue ID.
+- `save_trade_journal(symbol, thesis, ..., paperclip_issue_id=None)` - Save the thesis, strategy, account context, and optional external issue key (legacy Paperclip name; current Linear ROB key) for a trade.
+- `get_trade_journal(symbol=None, status=None, ..., paperclip_issue_id=None)` - Query active journal entries by symbol/account or reverse-lookup an external issue key (legacy Paperclip name; current Linear ROB key).
 - `update_trade_journal(journal_id=None, symbol=None, ...)` - Activate, close, stop, or adjust the latest matching journal entry.
 - `get_latest_market_brief(symbols=None, market=None, limit=10)` - Return concise latest AI analysis context for recent or selected symbols.
 - `get_market_reports(symbol, days=7, limit=10)` - Return detailed AI analysis report history and decision trend for one symbol.
@@ -1825,9 +1825,10 @@ Behavior:
 ## Caller Identity Header (required)
 
 All MCP callers (Scout, Trader, CIO bridges, and any future client) MUST send
-`x-paperclip-agent-id: <calling agent's Paperclip agent id>` on every
-`tools/call` request. The value is the caller's Paperclip agent id, not the
-target trader agent id.
+`x-paperclip-agent-id: <calling agent id>` on every `tools/call` request. The
+header is a canonical legacy Paperclip-named compatibility surface and MUST NOT
+be renamed; its value is the current caller agent id, not the target trader
+agent id.
 
 - The `CallerIdentityMiddleware` added in ROB-214 (ST-3.1) reads this header,
   stores it in a request-scoped contextvar, and records the extraction source
@@ -1854,7 +1855,7 @@ their local `/tmp/mcp_call.sh` from that template so the header is present.
 export MCP_ENDPOINT="http://127.0.0.1:8765/mcp"
 export MCP_AUTH_TOKEN="<value from env.MCP_AUTH_TOKEN>"
 export MCP_SESSION_ID="<MCP session id>"
-export PAPERCLIP_AGENT_ID="<calling agent's Paperclip agent id>"
+export PAPERCLIP_AGENT_ID="<calling agent id>"
 envsubst '$MCP_ENDPOINT $MCP_AUTH_TOKEN $MCP_SESSION_ID $PAPERCLIP_AGENT_ID' \
   < scripts/templates/mcp_call.sh.tmpl > /tmp/mcp_call.sh
 # 0700 — owner-only. The rendered script bakes MCP_AUTH_TOKEN in plaintext,
@@ -1867,7 +1868,7 @@ chmod 700 /tmp/mcp_call.sh
 
 The rendered bridge intentionally calls curl with `-N --max-time 15` and sends
 `Connection: close`. It only consumes the first SSE `data:` line, so no-buffer
-mode and the timeout keep the helper from holding a completed Paperclip run open
+mode and the timeout keep the helper from holding a completed agent run open
 if the server keeps the stream alive.
 
 If the Trader adapter is later migrated to an in-process MCP client (for

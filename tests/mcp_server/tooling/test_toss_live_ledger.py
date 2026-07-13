@@ -578,8 +578,6 @@ async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "42")
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_SUBMIT_AGENT_ID", submit_agent_id)
     monkeypatch.setattr(settings, "LOSS_CUT_ALLOWED_AGENT_IDS", [submit_agent_id])
-    monkeypatch.setattr(settings, "paperclip_api_url", None)
-    monkeypatch.setattr(settings, "paperclip_api_key", None)
     monkeypatch.setattr(toss_orders, "validate_toss_api_config", lambda: [])
     monkeypatch.setattr(toss_orders.TossReadClient, "from_settings", lambda: client)
     monkeypatch.setattr(toss_orders.settings, "toss_api_enabled", True)
