@@ -89,12 +89,12 @@ def _create_functions() -> None:
 
 def _create_immutable_triggers(table: str) -> None:
     op.execute(
-        f"CREATE TRIGGER trg_{table}_immutable "
+        f"CREATE TRIGGER trg_rob849_{table}_immutable "
         f"BEFORE UPDATE OR DELETE ON research.{table} FOR EACH ROW EXECUTE "
         "FUNCTION research.reject_paper_cohort_audit_mutation()"
     )
     op.execute(
-        f"CREATE TRIGGER trg_{table}_truncate_immutable "
+        f"CREATE TRIGGER trg_rob849_{table}_truncate_immutable "
         f"BEFORE TRUNCATE ON research.{table} FOR EACH STATEMENT EXECUTE "
         "FUNCTION research.reject_paper_cohort_audit_mutation()"
     )
@@ -481,9 +481,12 @@ def downgrade() -> None:
     )
     for table in reversed(_AUDIT_TABLES):
         op.execute(
-            f"DROP TRIGGER IF EXISTS trg_{table}_truncate_immutable ON research.{table}"
+            f"DROP TRIGGER IF EXISTS trg_rob849_{table}_truncate_immutable "
+            f"ON research.{table}"
         )
-        op.execute(f"DROP TRIGGER IF EXISTS trg_{table}_immutable ON research.{table}")
+        op.execute(
+            f"DROP TRIGGER IF EXISTS trg_rob849_{table}_immutable ON research.{table}"
+        )
     op.execute("DROP FUNCTION IF EXISTS research.validate_paper_cohort_composition()")
     op.execute("DROP FUNCTION IF EXISTS research.reject_paper_cohort_audit_mutation()")
     op.drop_table("paper_run_order_links", schema="research")

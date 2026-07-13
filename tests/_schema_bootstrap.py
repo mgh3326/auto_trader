@@ -274,12 +274,15 @@ _PAPER_COHORT_TRIGGER_DDL: tuple[str, ...] = (
         for table in _PAPER_COHORT_AUDIT_TABLES
         for statement in (
             f"DROP TRIGGER IF EXISTS trg_{table}_immutable ON research.{table}",
-            f"CREATE TRIGGER trg_{table}_immutable BEFORE UPDATE OR DELETE ON "
+            f"DROP TRIGGER IF EXISTS trg_rob849_{table}_immutable ON research.{table}",
+            f"CREATE TRIGGER trg_rob849_{table}_immutable BEFORE UPDATE OR DELETE ON "
             f"research.{table} FOR EACH ROW EXECUTE FUNCTION "
             "research.reject_paper_cohort_audit_mutation()",
             f"DROP TRIGGER IF EXISTS trg_{table}_truncate_immutable ON "
             f"research.{table}",
-            f"CREATE TRIGGER trg_{table}_truncate_immutable BEFORE TRUNCATE ON "
+            f"DROP TRIGGER IF EXISTS trg_rob849_{table}_truncate_immutable ON "
+            f"research.{table}",
+            f"CREATE TRIGGER trg_rob849_{table}_truncate_immutable BEFORE TRUNCATE ON "
             f"research.{table} FOR EACH STATEMENT EXECUTE FUNCTION "
             "research.reject_paper_cohort_audit_mutation()",
         )
