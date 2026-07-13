@@ -34,7 +34,7 @@ from sqlalchemy import text
 # replaces only a mismatched definition before CREATE IF NOT EXISTS.
 # v11 (ROB-866): review.toss_manual_activity_alerts (new ORM table) — create_all
 # builds it; bump forces a persistent local DB to re-bootstrap once.
-SCHEMA_BOOTSTRAP_VERSION = 11
+SCHEMA_BOOTSTRAP_VERSION = 12
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -678,6 +678,69 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "CREATE TRIGGER trg_backtest_runs_trial_immutable "
     "BEFORE UPDATE OR DELETE ON research.backtest_runs "
     "FOR EACH ROW EXECUTE FUNCTION research.reject_backtest_trial_mutation()",
+    # ---- ROB-848: immutable paper-validation audit + experiment hash binding
+    # Tables/checks/FKs are owned by the ORM metadata above; these PostgreSQL
+    # trigger functions are non-ORM DDL and mirror the Alembic revision.
+    "CREATE OR REPLACE FUNCTION "
+    "research.reject_paper_validation_audit_mutation() "
+    "RETURNS trigger AS $$ BEGIN "
+    "RAISE EXCEPTION "
+    "'research.% is append-only/immutable; % rejected', TG_TABLE_NAME, TG_OP "
+    "USING ERRCODE = 'restrict_violation'; "
+    "END; $$ LANGUAGE plpgsql",
+    "CREATE OR REPLACE FUNCTION "
+    "research.validate_paper_validation_experiment_identity() "
+    "RETURNS trigger AS $$ DECLARE "
+    "registered research.strategy_experiments%ROWTYPE; "
+    "BEGIN SELECT * INTO registered FROM research.strategy_experiments "
+    "WHERE experiment_id = NEW.experiment_id; "
+    "IF NOT FOUND THEN RAISE EXCEPTION "
+    "'paper validation experiment % is not registered', NEW.experiment_id "
+    "USING ERRCODE = 'foreign_key_violation'; END IF; "
+    "IF NEW.experiment_hash <> NEW.experiment_id "
+    "OR NEW.strategy_version_id <> registered.strategy_version "
+    "OR NEW.strategy_hash <> registered.strategy_hash "
+    "OR NEW.config_hash <> registered.frozen_config_hash "
+    "OR NEW.policy_hash <> registered.policy_hash THEN "
+    "RAISE EXCEPTION 'paper validation experiment identity mismatch for %', "
+    "NEW.experiment_id USING ERRCODE = 'integrity_constraint_violation'; "
+    "END IF; RETURN NEW; END; $$ LANGUAGE plpgsql",
+    "DROP TRIGGER IF EXISTS trg_paper_validation_transitions_experiment_identity "
+    "ON research.paper_validation_state_transitions",
+    "CREATE TRIGGER trg_paper_validation_transitions_experiment_identity "
+    "BEFORE INSERT ON research.paper_validation_state_transitions "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "research.validate_paper_validation_experiment_identity()",
+    "DROP TRIGGER IF EXISTS trg_paper_validation_transitions_immutable "
+    "ON research.paper_validation_state_transitions",
+    "CREATE TRIGGER trg_paper_validation_transitions_immutable "
+    "BEFORE UPDATE OR DELETE ON research.paper_validation_state_transitions "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "research.reject_paper_validation_audit_mutation()",
+    "DROP TRIGGER IF EXISTS trg_paper_validation_hypotheses_experiment_identity "
+    "ON research.strategy_hypothesis_drafts",
+    "CREATE TRIGGER trg_paper_validation_hypotheses_experiment_identity "
+    "BEFORE INSERT ON research.strategy_hypothesis_drafts "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "research.validate_paper_validation_experiment_identity()",
+    "DROP TRIGGER IF EXISTS trg_paper_validation_hypotheses_immutable "
+    "ON research.strategy_hypothesis_drafts",
+    "CREATE TRIGGER trg_paper_validation_hypotheses_immutable "
+    "BEFORE UPDATE OR DELETE ON research.strategy_hypothesis_drafts "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "research.reject_paper_validation_audit_mutation()",
+    "DROP TRIGGER IF EXISTS trg_paper_validation_reviews_experiment_identity "
+    "ON research.paper_validation_postmortem_reviews",
+    "CREATE TRIGGER trg_paper_validation_reviews_experiment_identity "
+    "BEFORE INSERT ON research.paper_validation_postmortem_reviews "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "research.validate_paper_validation_experiment_identity()",
+    "DROP TRIGGER IF EXISTS trg_paper_validation_reviews_immutable "
+    "ON research.paper_validation_postmortem_reviews",
+    "CREATE TRIGGER trg_paper_validation_reviews_immutable "
+    "BEFORE UPDATE OR DELETE ON research.paper_validation_postmortem_reviews "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "research.reject_paper_validation_audit_mutation()",
     # ---- ROB-844: binance_demo_order_ledger root-exposure + broker-ack partial
     # uniqueness (mirrors migration 20260713_rob844_*). create_all skips these on
     # a persistent DB where the table already exists, so mirror them here.
