@@ -118,7 +118,12 @@ class GateArtifact:
         return self.reason_codes[0] if self.reason_codes else "ok"
 
     def to_metrics(self) -> dict[str, Any]:
-        return asdict(self)
+        metrics = asdict(self)
+        metrics["pit"] = {
+            key: value.isoformat() if isinstance(value, datetime) else value
+            for key, value in metrics["pit"].items()
+        }
+        return metrics
 
 
 def _reasons(*codes: str) -> tuple[str, ...]:
