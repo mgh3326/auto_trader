@@ -34,17 +34,12 @@ async def test_ingest_summary_payload_returns_run_id(
 
     run_row = SimpleNamespace(id=100, run_id=parsed.run_id)
     upsert_backtest_run = AsyncMock(return_value=run_row)
-    upsert_promotion_candidate = AsyncMock()
     replace_backtest_pairs = AsyncMock()
     create_sync_job = AsyncMock(return_value=SimpleNamespace(id=1, status="running"))
     update_sync_job_status = AsyncMock()
     monkeypatch.setattr(
         "app.services.research_ingestion_service.upsert_backtest_run",
         upsert_backtest_run,
-    )
-    monkeypatch.setattr(
-        "app.services.research_ingestion_service.upsert_promotion_candidate",
-        upsert_promotion_candidate,
     )
     monkeypatch.setattr(
         "app.services.research_ingestion_service.replace_backtest_pairs",
@@ -77,10 +72,16 @@ async def test_ingest_summary_payload_returns_run_id(
 
     assert run_id == "run-20260219-01"
     upsert_backtest_run.assert_awaited_once()
-    upsert_promotion_candidate.assert_awaited_once()
     create_sync_job.assert_awaited_once()
     update_sync_job_status.assert_awaited_once()
     session.commit.assert_awaited_once()
+
+    # ROB-846: identity-less ingest writes NO promotion candidate; the gate
+    # evaluation is preserved as a structured non-promotion result instead.
+    outcome = update_sync_job_status.await_args.kwargs["error_payload"]
+    assert outcome["promotion"]["status"] == "not_promoted"
+    assert outcome["promotion"]["reason"] == "no_experiment_identity"
+    assert outcome["promotion"]["gate"]["status"] == "PASS"
 
 
 @pytest.mark.asyncio
