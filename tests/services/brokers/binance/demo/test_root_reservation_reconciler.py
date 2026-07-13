@@ -31,7 +31,7 @@ class _CredentialBoundClient:
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _cleanup_rows():
+async def _cleanup_rows(binance_demo_reservation_lock):
     async def _clean() -> None:
         async with AsyncSessionLocal() as db:
             await db.execute(

@@ -40,7 +40,7 @@ pytestmark = pytest.mark.usefixtures("binance_demo_reservation_lock")
 
 _NOW = dt.datetime(2026, 5, 24, 12, 0, 0, tzinfo=dt.UTC)
 _HOST = "demo-api.binance.com"
-_CID_PREFIX = "rob844-"
+_CID_PREFIX = "rob844-reserve-"
 _HIGH_CAP = 1_000_000  # per-instrument tests: never trip the global cap
 
 
@@ -87,7 +87,7 @@ async def _reserve(session, *, instrument_id, cid, cap=_HIGH_CAP, product="spot"
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _clean_test_rows():
+async def _clean_test_rows(binance_demo_reservation_lock):
     async def _c():
         async with AsyncSessionLocal() as db:
             await db.execute(
