@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import re
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -82,6 +83,8 @@ _GUARD_ERROR_MARKERS = (
     "stop-loss cooldown",
     "opposite pending order",
 )
+_TOSS_CLIENT_ORDER_ID_MAX_LENGTH = 36
+_TOSS_CLIENT_ORDER_ID_PATTERN = re.compile(r"[a-zA-Z0-9\-_]+")
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -138,8 +141,16 @@ def _toss_decimal_arg(value: Decimal | None) -> str | int | None:
 
 def _toss_proposal_client_order_id(proposal_id: uuid.UUID, rung_index: int) -> str:
     """Return a proposal/rung-stable, Toss-safe private idempotency key."""
-    digest = hashlib.sha256(f"{proposal_id}:{rung_index}".encode()).hexdigest()[:32]
+    digest = hashlib.sha256(f"{proposal_id}:{rung_index}".encode()).hexdigest()[:24]
     return f"tosprop-{digest}"
+
+
+def _is_valid_toss_client_order_id(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) <= _TOSS_CLIENT_ORDER_ID_MAX_LENGTH
+        and _TOSS_CLIENT_ORDER_ID_PATTERN.fullmatch(value) is not None
+    )
 
 
 def _proposal_client_order_id(proposal_id: uuid.UUID, rung_index: int) -> str:
@@ -298,6 +309,16 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
             return _adapt_toss_preview_response(preview)
 
         approval_hash = kwargs.get("approval_hash")
+        if not _is_valid_toss_client_order_id(proposal_client_order_id):
+            return {
+                "success": False,
+                "mutation_sent": False,
+                "error_code": "invalid_toss_client_order_id",
+                "error": (
+                    "Toss clientOrderId must be at most 36 characters and match "
+                    "[a-zA-Z0-9\\-_]+"
+                ),
+            }
         with _bind_order_proposal_context(
             client_order_id=str(proposal_client_order_id),
             correlation_id=kwargs.get("correlation_id"),
