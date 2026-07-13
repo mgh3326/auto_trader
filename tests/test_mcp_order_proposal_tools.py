@@ -1,5 +1,6 @@
 import uuid
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -146,6 +147,155 @@ async def test_place_create_never_fetches_a_target(monkeypatch):
     assert result["success"] is True
     assert result["action"] == "place"
     assert result["target_broker_order_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_toss_create_warns_on_same_account_pending_buying_power_shortfall(
+    monkeypatch,
+):
+    broker_account_id = f"rob-861-{uuid.uuid4()}"
+
+    async def reader(**kwargs):
+        assert kwargs["account_mode"] == "toss_live"
+        assert kwargs["broker_account_id"] == broker_account_id
+        assert kwargs["currency"] == "KRW"
+        return Decimal("500000")
+
+    monkeypatch.setattr(opt, "default_buying_power_reader", reader, raising=False)
+    first = await opt.order_proposal_create(
+        **_create_kwargs(
+            account_mode="toss_live",
+            broker_account_id=broker_account_id,
+            rungs=[
+                {
+                    "rung_index": 0,
+                    "side": "buy",
+                    "quantity": "2",
+                    "limit_price": "100000",
+                    "notional": None,
+                }
+            ],
+        )
+    )
+    created = await opt.order_proposal_create(
+        **_create_kwargs(
+            account_mode="toss_live",
+            broker_account_id=broker_account_id,
+            rungs=[
+                {
+                    "rung_index": 0,
+                    "side": "buy",
+                    "quantity": "5",
+                    "limit_price": "100000",
+                    "notional": None,
+                }
+            ],
+        )
+    )
+
+    assert first["success"] is True
+    assert created["success"] is True
+    assert created["buying_power_advisory"] == [
+        {
+            "status": "insufficient",
+            "currency": "KRW",
+            "buying_power": "500000",
+            "pending_required": "700000",
+            "shortfall": "200000",
+            "skipped_market_rungs": 0,
+            "warning": (
+                "매수가능 500,000원 / 승인대기 필요 700,000원 → 부족 200,000원"
+            ),
+        }
+    ]
+    assert created["warnings"] == [
+        "매수가능 500,000원 / 승인대기 필요 700,000원 → 부족 200,000원"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_toss_create_reports_sufficient_buying_power_without_warning(monkeypatch):
+    broker_account_id = f"rob-861-sufficient-{uuid.uuid4()}"
+
+    async def reader(**kwargs):
+        return Decimal("1000000")
+
+    monkeypatch.setattr(opt, "default_buying_power_reader", reader)
+    created = await opt.order_proposal_create(
+        **_create_kwargs(
+            account_mode="toss_live",
+            broker_account_id=broker_account_id,
+            rungs=[
+                {
+                    "rung_index": 0,
+                    "side": "buy",
+                    "quantity": "2",
+                    "limit_price": "100000",
+                    "notional": None,
+                }
+            ],
+        )
+    )
+
+    assert created["success"] is True
+    assert created["buying_power_advisory"][0]["status"] == "sufficient"
+    assert created["buying_power_advisory"][0]["pending_required"] == "200000"
+    assert created["buying_power_advisory"][0]["shortfall"] == "0"
+    assert created["buying_power_advisory"][0]["warning"] is None
+    assert "warnings" not in created
+
+
+@pytest.mark.asyncio
+async def test_toss_create_reader_failure_is_non_blocking_unavailable_advisory(
+    monkeypatch,
+):
+    broker_account_id = f"rob-861-unavailable-{uuid.uuid4()}"
+
+    async def failed_reader(**kwargs):
+        raise RuntimeError("buying-power unavailable")
+
+    monkeypatch.setattr(opt, "default_buying_power_reader", failed_reader)
+    created = await opt.order_proposal_create(
+        **_create_kwargs(
+            account_mode="toss_live",
+            broker_account_id=broker_account_id,
+        )
+    )
+
+    assert created["success"] is True
+    assert created["buying_power_advisory"][0]["status"] == "unavailable"
+    assert created["buying_power_advisory"][0]["buying_power"] is None
+    assert created["buying_power_advisory"][0]["pending_required"] == "700000"
+    assert "warnings" not in created
+
+
+@pytest.mark.asyncio
+async def test_create_advisory_skips_kis_and_sell_proposals(monkeypatch):
+    async def forbidden_reader(**kwargs):
+        pytest.fail(f"unsupported create advisory read: {kwargs}")
+
+    monkeypatch.setattr(opt, "default_buying_power_reader", forbidden_reader)
+    kis = await opt.order_proposal_create(**_create_kwargs())
+    toss_sell = await opt.order_proposal_create(
+        **_create_kwargs(
+            account_mode="toss_live",
+            side="sell",
+            rungs=[
+                {
+                    "rung_index": 0,
+                    "side": "sell",
+                    "quantity": "10",
+                    "limit_price": "70000",
+                    "notional": None,
+                }
+            ],
+        )
+    )
+
+    assert kis["success"] is True
+    assert toss_sell["success"] is True
+    assert "buying_power_advisory" not in kis
+    assert "buying_power_advisory" not in toss_sell
 
 
 @pytest.mark.asyncio
