@@ -13,6 +13,7 @@ from app.core.db import AsyncSessionLocal
 from app.models.binance_demo_order_ledger import BinanceDemoOrderLedger
 from app.models.crypto_instruments import CryptoInstrument
 from app.models.scalp_trade_analytics import ScalpTradeAnalytics
+from app.services.brokers.binance.demo.ledger import BinanceDemoLedgerService
 from app.services.brokers.binance.demo_scalping.contract import MarketConditions
 from app.services.brokers.binance.demo_scalping.market_data import (
     MarketConditionsUnavailable,
@@ -80,11 +81,19 @@ def _intent(**overrides) -> VerifiedPaperOrderIntent:
 
 
 class _Order:
-    def __init__(self, status: str, client_order_id: str) -> None:
+    def __init__(
+        self,
+        status: str,
+        client_order_id: str,
+        *,
+        executed_qty: Decimal = Decimal("0.0002"),
+    ) -> None:
         self.status = status
         self.client_order_id = client_order_id
-        self.broker_order_id = f"broker-{client_order_id}"
-        self.executed_qty = Decimal("0.0002")
+        self.broker_order_id = (
+            "84501" if client_order_id.startswith("rob845r-") else "84502"
+        )
+        self.executed_qty = executed_qty
         self.cummulative_quote_qty = Decimal("10")
 
 
@@ -102,15 +111,65 @@ class _OpenOrders:
 class _SpotClient:
     credential_fingerprint = "sha256:" + "12" * 32
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        initial_free: Decimal = Decimal("0"),
+        buy_executed_qty: Decimal = Decimal("0.0002"),
+        buy_submit_status: str = "FILLED",
+        buy_submit_executed_qty: Decimal | None = None,
+        timeout_after_accept_sides: frozenset[str] = frozenset(),
+    ) -> None:
         self.submits: list[dict[str, object]] = []
-        self.free = Decimal("0")
+        self.free = initial_free
+        self.buy_executed_qty = buy_executed_qty
+        self.buy_submit_status = buy_submit_status
+        self.buy_submit_executed_qty = buy_submit_executed_qty
+        self.timeout_after_accept_sides = set(timeout_after_accept_sides)
+        self.orders: dict[str, dict[str, object]] = {}
+        self.order_status_calls: list[str] = []
         self.closed = False
 
     async def submit_order(self, **kwargs):
         self.submits.append(kwargs)
-        self.free = Decimal("0.0002") if kwargs["side"] == "BUY" else Decimal("0")
-        return _Order("FILLED", kwargs["client_order_id"])
+        if kwargs["side"] == "BUY":
+            balance_delta = self.buy_executed_qty
+            self.free += balance_delta
+            submit_executed_qty = (
+                self.buy_submit_executed_qty
+                if self.buy_submit_executed_qty is not None
+                else balance_delta
+            )
+            submit_status = self.buy_submit_status
+        else:
+            balance_delta = kwargs["qty"]
+            self.free -= balance_delta
+            submit_executed_qty = balance_delta
+            submit_status = "FILLED"
+        order = _Order(
+            submit_status,
+            kwargs["client_order_id"],
+            executed_qty=submit_executed_qty,
+        )
+        self.orders[kwargs["client_order_id"]] = {
+            "clientOrderId": kwargs["client_order_id"],
+            "orderId": order.broker_order_id,
+            "symbol": kwargs["symbol"],
+            "side": kwargs["side"],
+            "type": kwargs["order_type"],
+            "origQty": str(kwargs["qty"]),
+            "executedQty": str(balance_delta),
+            "cummulativeQuoteQty": "10",
+            "status": "FILLED",
+        }
+        if kwargs["side"] in self.timeout_after_accept_sides:
+            self.timeout_after_accept_sides.remove(kwargs["side"])
+            raise TimeoutError(f"response lost after {kwargs['side']} acceptance")
+        return order
+
+    async def get_order_status(self, *, symbol: str, client_order_id: str):
+        self.order_status_calls.append(client_order_id)
+        return self.orders[client_order_id]
 
     async def get_asset_balance(self, *, asset: str):
         return _Balance(self.free)
@@ -142,16 +201,35 @@ class _MarketData:
 
 
 class _Dependencies:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        initial_free: Decimal = Decimal("0"),
+        buy_executed_qty: Decimal = Decimal("0.0002"),
+        buy_submit_status: str = "FILLED",
+        buy_submit_executed_qty: Decimal | None = None,
+        timeout_after_accept_sides: frozenset[str] = frozenset(),
+    ) -> None:
         self.clients: list[_SpotClient] = []
         self.references: list[_Reference] = []
         self.market_data: list[_MarketData] = []
         self.market_error: Exception | None = None
         self.market_calls = 0
         self.now = _NOW
+        self.initial_free = initial_free
+        self.buy_executed_qty = buy_executed_qty
+        self.buy_submit_status = buy_submit_status
+        self.buy_submit_executed_qty = buy_submit_executed_qty
+        self.timeout_after_accept_sides = timeout_after_accept_sides
 
     def client_factory(self) -> _SpotClient:
-        client = _SpotClient()
+        client = _SpotClient(
+            initial_free=self.initial_free,
+            buy_executed_qty=self.buy_executed_qty,
+            buy_submit_status=self.buy_submit_status,
+            buy_submit_executed_qty=self.buy_submit_executed_qty,
+            timeout_after_accept_sides=self.timeout_after_accept_sides,
+        )
         self.clients.append(client)
         return client
 
@@ -261,6 +339,37 @@ async def test_blocked_preview_returns_truthful_native_risk_snapshot() -> None:
 
 
 @pytest.mark.asyncio
+async def test_risk_snapshot_does_not_mix_canonical_quote_or_native_policy_owners() -> (
+    None
+):
+    deps = _Dependencies()
+    intent = _intent(reference_price=Decimal("40000"))
+
+    result = await deps.adapter().preview(intent)
+
+    assert result.risk_snapshot is not None
+    snapshot = result.risk_snapshot
+    assert snapshot.quote_price == Decimal("40000")
+    assert snapshot.quote_source == intent.market_snapshot_source
+    assert snapshot.quote_as_of == intent.market_snapshot_as_of
+    assert snapshot.policy_hash != intent.policy_hash
+    assert result.evidence["canonical_market_snapshot"] == {
+        "price": "40000",
+        "source": intent.market_snapshot_source,
+        "as_of": intent.market_snapshot_as_of.isoformat(),
+        "snapshot_id": intent.market_snapshot_id,
+        "snapshot_hash": intent.market_snapshot_hash,
+        "experiment_policy_hash": intent.policy_hash,
+    }
+    assert result.evidence["native_demo_risk"] == {
+        "reference_price": "50000",
+        "reference_source": "binance_demo_ticker_price",
+        "policy_version": snapshot.policy_version,
+        "policy_hash": snapshot.policy_hash,
+    }
+
+
+@pytest.mark.asyncio
 async def test_submit_uses_deterministic_native_round_trip_and_links_evidence() -> None:
     deps = _Dependencies()
     adapter = deps.adapter()
@@ -287,6 +396,63 @@ async def test_submit_uses_deterministic_native_round_trip_and_links_evidence() 
 
 
 @pytest.mark.asyncio
+async def test_round_trip_close_preserves_preexisting_spot_balance() -> None:
+    preexisting = Decimal("0.001")
+    bought = Decimal("0.0002")
+    deps = _Dependencies(initial_free=preexisting, buy_executed_qty=bought)
+
+    result = await deps.adapter().submit(_intent())
+
+    assert result.status is PaperOperationStatus.SUCCEEDED
+    assert [call["side"] for call in deps.clients[0].submits] == ["BUY", "SELL"]
+    assert deps.clients[0].submits[1]["qty"] == bought
+    assert deps.clients[0].free == preexisting
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("preexisting", [Decimal("0"), Decimal("0.001")])
+async def test_spot_new_submit_polled_filled_closes_only_observed_buy_delta(
+    preexisting: Decimal,
+) -> None:
+    bought = Decimal("0.0002")
+    deps = _Dependencies(
+        initial_free=preexisting,
+        buy_executed_qty=bought,
+        buy_submit_status="NEW",
+        buy_submit_executed_qty=Decimal("0"),
+    )
+
+    result = await deps.adapter().submit(_intent())
+
+    assert result.status is PaperOperationStatus.SUCCEEDED
+    assert [call["side"] for call in deps.clients[0].submits] == ["BUY", "SELL"]
+    assert deps.clients[0].submits[1]["qty"] == bought
+    assert deps.clients[0].free == preexisting
+    assert deps.clients[0].order_status_calls == [result.native_client_order_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lost_side", ["BUY", "SELL"])
+async def test_accept_then_timeout_recovers_by_client_order_id_without_repost(
+    lost_side: str,
+) -> None:
+    deps = _Dependencies(timeout_after_accept_sides=frozenset({lost_side}))
+    adapter = deps.adapter()
+    intent = _intent()
+
+    result = await adapter.submit(intent)
+
+    assert result.status is PaperOperationStatus.SUCCEEDED
+    assert [call["side"] for call in deps.clients[0].submits] == ["BUY", "SELL"]
+    assert sum(call["side"] == lost_side for call in deps.clients[0].submits) == 1
+    assert deps.clients[0].free == 0
+
+    linked = await adapter.link_native_order(intent)
+    leg = "root" if lost_side == "BUY" else "close"
+    assert linked.evidence[leg]["metadata"]["submit_recovered_by_client_order_id"]
+
+
+@pytest.mark.asyncio
 async def test_terminal_submit_replays_before_market_or_client_construction() -> None:
     deps = _Dependencies()
     adapter = deps.adapter()
@@ -304,6 +470,73 @@ async def test_terminal_submit_replays_before_market_or_client_construction() ->
     assert replay.native_client_order_id == first.native_client_order_id
     assert deps.market_calls == initial_market_calls
     assert len(deps.clients) == initial_client_count
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "release_reason", ["broker_order_not_found", "terminal_zero_fill"]
+)
+async def test_released_reservation_replays_as_non_success_without_dependencies(
+    release_reason: str,
+) -> None:
+    deps = _Dependencies()
+    adapter = deps.adapter()
+    intent = _intent()
+    identity = adapter._execution_identity(intent)
+    native_intent = adapter._native_intent(intent)
+
+    async with AsyncSessionLocal() as session:
+        ledger = BinanceDemoLedgerService(session)
+        instrument_id = await ledger.resolve_or_create_instrument(
+            venue="binance",
+            product="spot",
+            venue_symbol="ROB845PAPERBTCUSDT",
+            base_asset="ROB845PAPERBTC",
+            quote_asset="USDT",
+        )
+        reservation = await ledger.reserve_root_planned(
+            instrument_id=instrument_id,
+            product="spot",
+            venue_host="demo-api.binance.com",
+            client_order_id=identity.root_client_order_id,
+            side="BUY",
+            order_type="MARKET",
+            qty=Decimal("0.0002"),
+            price=None,
+            notional_usdt=Decimal("10"),
+            extra_metadata={
+                "credential_fingerprint": _SpotClient.credential_fingerprint
+            },
+            idempotency_metadata=identity.ledger_metadata(native_intent),
+            global_open_root_cap=100,
+            now=_NOW,
+        )
+        assert reservation.status == "reserved"
+        release_evidence = {"reservation_reconcile_reason": release_reason}
+        if release_reason == "terminal_zero_fill":
+            release_evidence["reservation_reconcile_broker_order_id"] = "12345"
+        await ledger.record_cancelled(
+            client_order_id=identity.root_client_order_id,
+            now=_NOW + dt.timedelta(hours=1),
+            extra_metadata_merge=release_evidence,
+        )
+        await ledger.record_reconciled(
+            client_order_id=identity.root_client_order_id,
+            now=_NOW + dt.timedelta(hours=1),
+            extra_metadata_merge=release_evidence,
+        )
+        await session.commit()
+
+    replay = await adapter.submit(intent)
+
+    assert replay.status is PaperOperationStatus.BLOCKED
+    assert replay.reason_code == release_reason
+    assert replay.replayed is True
+    assert replay.native_order_id is None
+    assert deps.market_calls == 0
+    assert deps.clients == []
+    assert deps.references == []
+    assert deps.market_data == []
 
 
 @pytest.mark.asyncio

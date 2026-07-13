@@ -28,8 +28,9 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.services.brokers.binance.demo.ledger import BinanceDemoLedgerService
@@ -86,6 +87,27 @@ _FILL_POLL_DELAY_SECONDS = 1.0
 _BPS = Decimal("10000")
 
 
+def _finite_nonnegative_decimal(value: Any) -> Decimal | None:
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return parsed if parsed.is_finite() and parsed >= 0 else None
+
+
+def _normalize_positive_order_id(value: Any) -> str | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(value) if value > 0 else None
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized.isascii() or not normalized.isdecimal():
+        return None
+    return normalized if int(normalized) > 0 else None
+
+
 @dataclass(frozen=True)
 class _ExposureSlotTaken:
     """Sentinel: the atomic root reservation lost the race (ROB-844).
@@ -104,6 +126,21 @@ class _IdempotencyReservationOutcome:
 
     status: str
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class _RecoveredSubmit:
+    """Narrow broker-truth order shape after a lost submit response."""
+
+    client_order_id: str
+    broker_order_id: str
+    symbol: str
+    side: str
+    order_type: str
+    status: str
+    executed_qty: Decimal
+    cummulative_quote_qty: Decimal | None = None
+    avg_price: Decimal | None = None
 
 
 def _new_cid() -> str:
@@ -338,6 +375,10 @@ class DemoScalpingExecutor:
         # Avg fill prices captured during a single run (ROB-313 cost capture).
         self._open_fill_price: Decimal | None = None
         self._close_fill_price: Decimal | None = None
+        # Spot close ownership is limited to the base quantity acquired by
+        # this executor run. Never liquidate a balance that predated the BUY.
+        self._spot_preexisting_free_qty: Decimal | None = None
+        self._spot_open_executed_qty: Decimal | None = None
         # Spread at the preflight market snapshot ≈ spread at the open fill
         # (ROB-315 0c spread@fill entry leg).
         self._entry_spread_bps: Decimal | None = None
@@ -569,29 +610,53 @@ class DemoScalpingExecutor:
         identity = self.execution_identity
         if not confirm or identity is None:
             return None
-        row = await self.ledger.get_by_client_order_id(identity.root_client_order_id)
-        if row is None:
-            return None
-        expected = identity.ledger_metadata(intent)
-        actual = (row.extra_metadata or {}).get("paper_execution_identity")
-        if actual != expected:
-            return ExecutionResult(
-                intent=intent,
-                status="blocked",
-                open_client_order_id=identity.root_client_order_id,
-                reason_codes=("idempotency_collision",),
+        # Keep canonical provenance lookup in one short independent session.
+        # A SELECT on the owner AsyncSession starts a transaction and pins its
+        # connection; the subsequent snapshot/identity/reservation work also
+        # requires an independent connection and would starve a size-one pool.
+        factory = self.ledger.independent_session_factory()
+        async with factory() as identity_session:
+            identity_ledger = BinanceDemoLedgerService(
+                identity_session, reservation_session_factory=factory
             )
-        if row.lifecycle_state not in {"cancelled", "reconciled", "anomaly"}:
-            return ExecutionResult(
-                intent=intent,
-                status="blocked",
-                open_client_order_id=identity.root_client_order_id,
-                reason_codes=("idempotency_in_progress",),
+            row = await identity_ledger.get_by_client_order_id(
+                identity.root_client_order_id
             )
-        close = await self.ledger.get_by_client_order_id(identity.close_client_order_id)
-        if row.lifecycle_state == "reconciled":
+            if row is None:
+                return None
+            expected = identity.ledger_metadata(intent)
+            actual = (row.extra_metadata or {}).get("paper_execution_identity")
+            if actual != expected:
+                return ExecutionResult(
+                    intent=intent,
+                    status="blocked",
+                    open_client_order_id=identity.root_client_order_id,
+                    reason_codes=("idempotency_collision",),
+                )
+            if row.lifecycle_state not in {"cancelled", "reconciled", "anomaly"}:
+                return ExecutionResult(
+                    intent=intent,
+                    status="blocked",
+                    open_client_order_id=identity.root_client_order_id,
+                    reason_codes=("idempotency_in_progress",),
+                )
+            metadata = row.extra_metadata or {}
+            reservation_release_reason = metadata.get("reservation_reconcile_reason")
+            released_without_execution = (
+                row.lifecycle_state == "reconciled"
+                and row.broker_order_id is None
+                and reservation_release_reason
+                in {"broker_order_not_found", "terminal_zero_fill"}
+            )
+            close = await identity_ledger.get_by_client_order_id(
+                identity.close_client_order_id
+            )
+        if released_without_execution:
+            status = "blocked"
+            reasons = (str(reservation_release_reason),)
+        elif row.lifecycle_state == "reconciled":
             status = "reconciled"
-            reasons: tuple[str, ...] = ()
+            reasons = ()
         elif row.lifecycle_state == "anomaly":
             status = "anomaly"
             reasons = ()
@@ -928,13 +993,37 @@ class DemoScalpingExecutor:
                     )
             return open_cid, None
 
+        base = _base_asset(intent.symbol)
+        balance_before = await self.client.get_asset_balance(asset=base)
+        preexisting_free = getattr(balance_before, "free", None)
+        if (
+            not isinstance(preexisting_free, Decimal)
+            or not preexisting_free.is_finite()
+            or preexisting_free < 0
+        ):
+            return None, ExecutionResult(
+                intent=intent,
+                status="blocked",
+                reason_codes=("spot_balance_unavailable",),
+                sized_qty=qty,
+                sized_notional_usdt=notional,
+            )
+        self._spot_preexisting_free_qty = preexisting_free
+
         opened = await self._open_leg(intent, instrument_id, qty, notional)
         if isinstance(opened, _ExposureSlotTaken):
             return None, self._exposure_slot_taken_result(intent, opened)
         if isinstance(opened, _IdempotencyReservationOutcome):
             return None, await self._idempotency_reservation_result(intent, opened)
         open_cid, submit = opened
-        if submit.status != "FILLED":
+        proven, polled_price = await self._fill_proven(
+            intent.symbol,
+            open_cid,
+            submit.status,
+            side=intent.side,
+            qty=qty,
+        )
+        if not proven:
             reason = f"spot_open_not_filled: {submit.status}"
             await self.ledger.record_anomaly(
                 client_order_id=open_cid, reason=reason, now=self.now
@@ -948,7 +1037,19 @@ class DemoScalpingExecutor:
                 sized_notional_usdt=notional,
             )
         await self.ledger.record_filled(client_order_id=open_cid, now=self.now)
-        self._open_fill_price = self._extract_fill_price(submit)
+        self._open_fill_price = (
+            polled_price
+            if polled_price is not None
+            else self._extract_fill_price(submit)
+        )
+        executed_qty = getattr(submit, "executed_qty", None)
+        self._spot_open_executed_qty = (
+            executed_qty
+            if isinstance(executed_qty, Decimal)
+            and executed_qty.is_finite()
+            and executed_qty > 0
+            else qty
+        )
         return open_cid, None
 
     # ------------------------------------------------------------------
@@ -1000,7 +1101,13 @@ class DemoScalpingExecutor:
     # Fill resolution (no ledger writes; caller records)
     # ------------------------------------------------------------------
     async def _fill_proven(
-        self, symbol: str, cid: str, submit_status: str
+        self,
+        symbol: str,
+        cid: str,
+        submit_status: str,
+        *,
+        side: str | None = None,
+        qty: Decimal | None = None,
     ) -> tuple[bool, Decimal | None]:
         """Prove a fill, returning ``(proven, polled_fill_price)``.
 
@@ -1018,7 +1125,19 @@ class DemoScalpingExecutor:
             if attempt > 0:
                 await asyncio.sleep(self.poll_delay_seconds)
             try:
-                order = await self.client.get_order(symbol=symbol, client_order_id=cid)
+                if self.product == "spot":
+                    if side is None or qty is None:
+                        raise ValueError("spot fill poll requires side and qty")
+                    order = await self._recover_submitted_order(
+                        symbol=symbol,
+                        side=side,
+                        qty=qty,
+                        client_order_id=cid,
+                    )
+                else:
+                    order = await self.client.get_order(
+                        symbol=symbol, client_order_id=cid
+                    )
             except Exception:  # noqa: BLE001 — transient poll error, retry
                 continue
             if order.status == "FILLED":
@@ -1026,6 +1145,130 @@ class DemoScalpingExecutor:
             if order.status in _TERMINAL_NONFILL:
                 return False, None
         return False, None  # fail-closed: fill not proven
+
+    async def _submit_with_broker_truth_recovery(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        qty: Decimal,
+        client_order_id: str,
+        submit_kwargs: dict[str, Any],
+    ) -> tuple[Any, bool]:
+        """Submit once; on response loss recover by deterministic client id.
+
+        The POST is never retried. A successful read-side lookup is the only
+        path that advances the native ledger past ``validated`` after an
+        exception from the submit await.
+        """
+        try:
+            return await self.client.submit_order(**submit_kwargs), False
+        except Exception as submit_error:  # noqa: BLE001 - outcome is uncertain
+            try:
+                recovered = await self._recover_submitted_order(
+                    symbol=symbol,
+                    side=side,
+                    qty=qty,
+                    client_order_id=client_order_id,
+                )
+            except Exception as recovery_error:  # noqa: BLE001 - preserve POST error
+                submit_error.add_note(
+                    "broker submit outcome could not be recovered by client_order_id"
+                )
+                raise submit_error from recovery_error
+            return recovered, True
+
+    async def _recover_submitted_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        qty: Decimal,
+        client_order_id: str,
+    ) -> _RecoveredSubmit:
+        if self.product == "spot":
+            payload = await self.client.get_order_status(
+                symbol=symbol, client_order_id=client_order_id
+            )
+            if not isinstance(payload, Mapping):
+                raise ValueError("malformed spot broker truth")
+            truth_cid = payload.get("clientOrderId")
+            truth_symbol = payload.get("symbol")
+            truth_side = payload.get("side")
+            truth_type = payload.get("type")
+            status = payload.get("status")
+            if (
+                truth_cid != client_order_id
+                or truth_symbol != symbol
+                or truth_side != side
+                or truth_type != "MARKET"
+                or not isinstance(status, str)
+                or not status.strip()
+            ):
+                raise ValueError("spot broker truth identity mismatch")
+            broker_order_id = _normalize_positive_order_id(payload.get("orderId"))
+            orig_qty = _finite_nonnegative_decimal(payload.get("origQty"))
+            executed_qty = _finite_nonnegative_decimal(payload.get("executedQty"))
+            quote_qty = _finite_nonnegative_decimal(payload.get("cummulativeQuoteQty"))
+            if (
+                broker_order_id is None
+                or orig_qty != qty
+                or executed_qty is None
+                or quote_qty is None
+            ):
+                raise ValueError("malformed spot broker truth quantities")
+            return _RecoveredSubmit(
+                client_order_id=client_order_id,
+                broker_order_id=broker_order_id,
+                symbol=symbol,
+                side=side,
+                order_type="MARKET",
+                status=status.strip().upper(),
+                executed_qty=executed_qty,
+                cummulative_quote_qty=quote_qty,
+            )
+
+        truth = await self.client.get_order(
+            symbol=symbol, client_order_id=client_order_id
+        )
+        if (
+            getattr(truth, "client_order_id", None) != client_order_id
+            or getattr(truth, "symbol", None) != symbol
+            or getattr(truth, "side", None) != side
+            or getattr(truth, "order_type", None) != "MARKET"
+        ):
+            raise ValueError("futures broker truth identity mismatch")
+        broker_order_id = _normalize_positive_order_id(
+            getattr(truth, "broker_order_id", None)
+        )
+        orig_qty = getattr(truth, "orig_qty", None)
+        executed_qty = getattr(truth, "executed_qty", None)
+        avg_price = getattr(truth, "avg_price", None)
+        status = getattr(truth, "status", None)
+        if (
+            broker_order_id is None
+            or not isinstance(orig_qty, Decimal)
+            or orig_qty != qty
+            or not isinstance(executed_qty, Decimal)
+            or not executed_qty.is_finite()
+            or executed_qty < 0
+            or not isinstance(avg_price, Decimal)
+            or not avg_price.is_finite()
+            or avg_price < 0
+            or not isinstance(status, str)
+            or not status.strip()
+        ):
+            raise ValueError("malformed futures broker truth")
+        return _RecoveredSubmit(
+            client_order_id=client_order_id,
+            broker_order_id=broker_order_id,
+            symbol=symbol,
+            side=side,
+            order_type="MARKET",
+            status=status.strip().upper(),
+            executed_qty=executed_qty,
+            avg_price=avg_price,
+        )
 
     def _exposure_slot_taken_result(
         self, intent, slot_taken: _ExposureSlotTaken
@@ -1123,12 +1366,21 @@ class DemoScalpingExecutor:
         }
         if intent.product == "usdm_futures":
             submit_kwargs["reduce_only"] = reduce_only
-        submit = await self.client.submit_order(**submit_kwargs)
+        submit, recovered = await self._submit_with_broker_truth_recovery(
+            symbol=intent.symbol,
+            side=intent.side,
+            qty=qty,
+            client_order_id=cid,
+            submit_kwargs=submit_kwargs,
+        )
         await self.ledger.record_submitted(
             client_order_id=cid,
             broker_order_id=submit.broker_order_id,
             now=self.now,
-            extra_metadata_merge={"submit_status": submit.status},
+            extra_metadata_merge={
+                "submit_status": submit.status,
+                "submit_recovered_by_client_order_id": recovered,
+            },
         )
         return cid, submit
 
@@ -1180,11 +1432,25 @@ class DemoScalpingExecutor:
         exit_reason,
         monitor_error=None,
     ) -> ExecutionResult:
-        # Close: SELL the free base balance (never reuse the BUY qty).
+        # Close only the quantity acquired by this BUY. The sellable amount is
+        # bounded by both broker-reported execution and the observed balance
+        # delta, so unrelated pre-existing holdings can never be liquidated.
         base = _base_asset(intent.symbol)
         balance = await self.client.get_asset_balance(asset=base)
+        preexisting_free = self._spot_preexisting_free_qty
+        executed_qty = self._spot_open_executed_qty
+        free_delta = (
+            balance.free - preexisting_free
+            if preexisting_free is not None
+            else Decimal("0")
+        )
+        closeable_qty = (
+            min(free_delta, executed_qty)
+            if executed_qty is not None and free_delta > 0
+            else Decimal("0")
+        )
         close = compute_close_qty(
-            free_balance=balance.free,
+            free_balance=closeable_qty,
             price=ref.price,
             min_notional=ref.min_notional,
             step_size=ref.step_size,
@@ -1220,19 +1486,29 @@ class DemoScalpingExecutor:
             )
             await self.ledger.record_previewed(client_order_id=close_cid, now=self.now)
             await self.ledger.record_validated(client_order_id=close_cid, now=self.now)
-            csubmit = await self.client.submit_order(
+            close_submit_kwargs = {
+                "symbol": intent.symbol,
+                "side": "SELL",
+                "order_type": "MARKET",
+                "qty": close.qty,
+                "client_order_id": close_cid,
+                "confirm": True,
+            }
+            csubmit, recovered = await self._submit_with_broker_truth_recovery(
                 symbol=intent.symbol,
                 side="SELL",
-                order_type="MARKET",
                 qty=close.qty,
                 client_order_id=close_cid,
-                confirm=True,
+                submit_kwargs=close_submit_kwargs,
             )
             await self.ledger.record_submitted(
                 client_order_id=close_cid,
                 broker_order_id=csubmit.broker_order_id,
                 now=self.now,
-                extra_metadata_merge={"submit_status": csubmit.status},
+                extra_metadata_merge={
+                    "submit_status": csubmit.status,
+                    "submit_recovered_by_client_order_id": recovered,
+                },
             )
             if csubmit.status == "FILLED":
                 await self.ledger.record_filled(client_order_id=close_cid, now=self.now)
@@ -1244,8 +1520,13 @@ class DemoScalpingExecutor:
         # Reconcile: open orders empty AND only benign dust remaining.
         open_orders = await self.client.get_open_orders(symbol=intent.symbol)
         balance_after = await self.client.get_asset_balance(asset=base)
+        free_after = (
+            balance_after.free - preexisting_free
+            if preexisting_free is not None
+            else balance_after.free
+        )
         residual = classify_close_residual(
-            free_after=balance_after.free,
+            free_after=free_after,
             price=ref.price,
             min_notional=ref.min_notional,
             step_size=ref.step_size,
@@ -1343,20 +1624,30 @@ class DemoScalpingExecutor:
             )
             await self.ledger.record_previewed(client_order_id=close_cid, now=self.now)
             await self.ledger.record_validated(client_order_id=close_cid, now=self.now)
-            csubmit = await self.client.submit_order(
+            close_submit_kwargs = {
+                "symbol": intent.symbol,
+                "side": close_side,
+                "order_type": "MARKET",
+                "qty": close_qty,
+                "client_order_id": close_cid,
+                "reduce_only": True,
+                "confirm": True,
+            }
+            csubmit, recovered = await self._submit_with_broker_truth_recovery(
                 symbol=intent.symbol,
                 side=close_side,
-                order_type="MARKET",
                 qty=close_qty,
                 client_order_id=close_cid,
-                reduce_only=True,
-                confirm=True,
+                submit_kwargs=close_submit_kwargs,
             )
             await self.ledger.record_submitted(
                 client_order_id=close_cid,
                 broker_order_id=csubmit.broker_order_id,
                 now=self.now,
-                extra_metadata_merge={"submit_status": csubmit.status},
+                extra_metadata_merge={
+                    "submit_status": csubmit.status,
+                    "submit_recovered_by_client_order_id": recovered,
+                },
             )
             self._close_fill_price = self._extract_fill_price(csubmit)
             cproven, cpolled_price = await self._fill_proven(

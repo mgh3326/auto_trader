@@ -147,7 +147,9 @@ class _GatedSpotClient:
         return _Order("FILLED", client_order_id)
 
     async def get_asset_balance(self, *, asset):
-        if self._close_gate is not None:
+        # The executor now snapshots the pre-BUY balance. Gate only the
+        # post-submit close read that this concurrency fake intends to hold.
+        if self._close_gate is not None and self.submits:
             await self._close_gate.wait()
         return _Balance(self._free)
 
@@ -482,5 +484,52 @@ async def test_pool_size_one_preflight_identity_reservation_and_transition_do_no
         assert blocked.status == "blocked"
         assert ReasonCode.EXPOSURE_SLOT_TAKEN in blocked.reason_codes
         assert loser_client.submits == []
+    finally:
+        await pool_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_pool_size_one_canonical_identity_lookup_releases_connection_before_work() -> (
+    None
+):
+    """Canonical replay provenance must not pin the sole owner connection."""
+    pool_engine = create_async_engine(
+        shared_engine.url,
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=0.5,
+        pool_pre_ping=True,
+    )
+    factory = async_sessionmaker(pool_engine, expire_on_commit=False)
+    symbol = "R845POOLIDENTITYUSDT"
+    identity = DemoExecutionIdentity.from_verified_metadata(
+        decision_id="decision-pool-identity",
+        idempotency_key="paper-binance-pool-identity",
+        immutable_metadata={
+            "experiment_id": "experiment-pool-identity",
+            "run_id": "run-pool-identity",
+            "cohort_id": "cohort-pool-identity",
+            "intent_hash": "8" * 64,
+        },
+    )
+    try:
+        client = _GatedSpotClient()
+        async with factory() as owner:
+            executor = DemoScalpingExecutor(
+                product="spot",
+                client=client,
+                session=owner,
+                reference=_FakeReference(_REF),
+                now=_NOW,
+                limits=_limits(symbol),
+                execution_identity=identity,
+            )
+            result = await asyncio.wait_for(
+                executor.execute(_intent(symbol), confirm=True, market=_FRESH_MARKET),
+                timeout=5,
+            )
+
+        assert result.status == "reconciled"
+        assert client.submits == ["BUY", "SELL"]
     finally:
         await pool_engine.dispose()

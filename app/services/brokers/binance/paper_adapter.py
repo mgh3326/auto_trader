@@ -8,6 +8,8 @@ MCP-tooling mutation surface.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 from collections.abc import Awaitable, Callable
 from decimal import Decimal
 from typing import Any
@@ -46,6 +48,24 @@ _LIMITS = ScalpingRiskLimits(
     excluded=frozenset(),
 )
 _POLICY_VERSION = "rob845-binance-spot-demo-v1"
+_POLICY_CANONICAL = json.dumps(
+    {
+        "allowlist": sorted(_LIMITS.allowlist),
+        "excluded": sorted(_LIMITS.excluded),
+        "max_notional_usdt": str(_LIMITS.max_notional_usdt),
+        "global_open_lifecycle_cap": _LIMITS.global_open_lifecycle_cap,
+        "daily_order_count_cap": _LIMITS.daily_order_count_cap,
+        "daily_loss_budget_usdt": str(_LIMITS.daily_loss_budget_usdt),
+        "cooldown_seconds": _LIMITS.cooldown_seconds,
+        "max_spread_bps": str(_LIMITS.max_spread_bps),
+        "max_data_age_seconds": _LIMITS.max_data_age_seconds,
+    },
+    sort_keys=True,
+    separators=(",", ":"),
+    ensure_ascii=True,
+    allow_nan=False,
+)
+_POLICY_HASH = hashlib.sha256(_POLICY_CANONICAL.encode("utf-8")).hexdigest()
 
 _SessionFactory = Callable[[], Any]
 _ObjectFactory = Callable[[], Any]
@@ -270,6 +290,24 @@ class BinanceSpotDemoPaperAdapter:
             evidence={
                 **result.to_evidence_dict(),
                 "close_client_order_id": result.close_client_order_id,
+                "canonical_market_snapshot": {
+                    "price": str(intent.reference_price),
+                    "source": intent.market_snapshot_source,
+                    "as_of": intent.market_snapshot_as_of.isoformat(),
+                    "snapshot_id": intent.market_snapshot_id,
+                    "snapshot_hash": intent.market_snapshot_hash,
+                    "experiment_policy_hash": intent.policy_hash,
+                },
+                "native_demo_risk": {
+                    "reference_price": (
+                        None
+                        if result.reference_price is None
+                        else str(result.reference_price)
+                    ),
+                    "reference_source": "binance_demo_ticker_price",
+                    "policy_version": _POLICY_VERSION,
+                    "policy_hash": _POLICY_HASH,
+                },
             },
             risk_snapshot=risk_snapshot,
             replayed=result.replayed,
@@ -287,13 +325,13 @@ class BinanceSpotDemoPaperAdapter:
             open_exposure=None,
             reserved_notional=None,
             daily_realized_loss=ledger.realized_loss_today_usdt,
-            quote_price=quote_price,
+            quote_price=intent.reference_price,
             spread_bps=market.spread_bps,
             data_age_seconds=Decimal(str(market.data_age_seconds)),
             quote_source=intent.market_snapshot_source,
             quote_as_of=intent.market_snapshot_as_of,
             policy_version=_POLICY_VERSION,
-            policy_hash=intent.policy_hash,
+            policy_hash=_POLICY_HASH,
         )
 
     def _unsupported(
