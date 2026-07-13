@@ -30,7 +30,7 @@
 - Produces: `validate_evaluation_windows(windows: dict[str, dict[str, str]]) -> None`
 - Produces: `EvaluationWindowError` carrying `reason_code` and overlapping window names.
 
-- [ ] **Step 1: Write the failing overlap regression and valid-default tests**
+- [x] **Step 1: Write the failing overlap regression and valid-default tests**
 
 ```python
 def test_historical_fold_four_overlaps_sealed_test() -> None:
@@ -47,12 +47,12 @@ def test_default_evaluation_windows_do_not_overlap() -> None:
     prepare.validate_evaluation_windows(prepare.default_evaluation_windows())
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `uv run pytest -q tests/backtest/test_prepare.py -k evaluation_window`
 Expected: FAIL because the admission interfaces do not exist.
 
-- [ ] **Step 3: Implement deterministic closed-interval validation and move fold 4 before sealed OOS**
+- [x] **Step 3: Implement deterministic closed-interval validation and move fold 4 before sealed OOS**
 
 ```python
 class EvaluationWindowError(ValueError):
@@ -68,12 +68,12 @@ Build named validation windows from `CV_FOLDS`, name `SPLITS["test"]` as
 `left.start <= right.end and right.start <= left.end`. Set production fold 4
 validation end to `2026-01-31`.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 Run: `uv run pytest -q tests/backtest/test_prepare.py -k 'evaluation_window or cross_validate'`
 Expected: all selected tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backtest/prepare.py tests/backtest/test_prepare.py
@@ -91,7 +91,7 @@ git commit -m "fix(ROB-847): reject overlapping evaluation windows"
 - Changes: `_execute_signal` accepts a validated executable price and separate signal/fill timestamps.
 - Changes: `run_backtest` carries pending signals exactly one chronological bar.
 
-- [ ] **Step 1: Write failing causal fixtures**
+- [x] **Step 1: Write failing causal fixtures**
 
 Add synthetic tests proving:
 
@@ -104,12 +104,12 @@ assert malformed_next_open_result.num_trades == 0
 assert final_bar_signal_result.num_trades == 0
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `uv run pytest -q tests/backtest/test_prepare.py -k 'same_close or next_open or next_bar or final_bar'`
 Expected: same-close fixture profits or new audit fields/interfaces are missing.
 
-- [ ] **Step 3: Implement pending-signal carry and frozen fill costs**
+- [x] **Step 3: Implement pending-signal carry and frozen fill costs**
 
 ```python
 @dataclass(frozen=True)
@@ -127,7 +127,7 @@ At each date: build bars; execute only prior pending signals at current valid
 opens; mark equity at current closes; call `strategy.on_bar`; replace pending
 signals with the returned list. Never drain pending signals after the loop.
 
-- [ ] **Step 4: Run GREEN and the full backtest suite**
+- [x] **Step 4: Run GREEN and the full backtest suite**
 
 Run: `uv run pytest -q tests/backtest/test_prepare.py`
 Expected: pass.
@@ -135,7 +135,7 @@ Expected: pass.
 Run: `uv run pytest -q tests/backtest`
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backtest/prepare.py tests/backtest/test_prepare.py
@@ -154,7 +154,7 @@ git commit -m "fix(ROB-847): execute signals at causal next opens"
 - Produces: `HonestGateConfig`, `PITEvidence`, `SelectionCandidate`, `SelectionResult`, `SealedOOS`, and `GateArtifact`.
 - Produces: `select_parameters`, `validate_pit_evidence`, `deflated_sharpe_ratio`, `probability_backtest_overfitting`, `benjamini_hochberg`, and `build_gate_artifact`.
 
-- [ ] **Step 1: Write failing tests for statistics, PIT, baselines, hashes, and OOS isolation**
+- [x] **Step 1: Write failing tests for statistics, PIT, baselines, hashes, and OOS isolation**
 
 Tests cover finite normal cases plus small-sample, zero variance, non-finite,
 boundary equality, PIT missing/future/mismatch, and deterministic reason codes.
@@ -171,12 +171,12 @@ with pytest.raises(TypeError):
 Assert changing each threshold, baseline, cost, or MDD definition changes
 `config_hash()`.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `uv run pytest -q research/nautilus_scalping/tests/test_honest_offline_gate.py research/nautilus_scalping/tests/test_frozen_config.py`
 Expected: import/interface failures.
 
-- [ ] **Step 3: Implement fail-closed pure functions**
+- [x] **Step 3: Implement fail-closed pure functions**
 
 Use `statistics.NormalDist` for `cdf`/`inv_cdf`; calculate DSR with the approved
 Bailey–López de Prado formula, CSCV PBO over all half-slice combinations, and
@@ -193,12 +193,12 @@ REQUIRED_BASELINES = ("cash", "btc_eth_equal_weight", "same_turnover_random")
 The artifact includes accounting, DSR/PBO/FDR, fold/OOS metrics, baselines,
 cost stress, MDD, PIT, hashes, and canonical artifact hash.
 
-- [ ] **Step 4: Run GREEN and Nautilus pure-gate regressions**
+- [x] **Step 4: Run GREEN and Nautilus pure-gate regressions**
 
 Run: `uv run pytest -q research/nautilus_scalping/tests/test_honest_offline_gate.py research/nautilus_scalping/tests/test_frozen_config.py research/nautilus_scalping/tests/test_validated_gate.py research/nautilus_scalping/tests/test_gate_stats_hardening.py`
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add research/nautilus_scalping/honest_offline_gate.py research/nautilus_scalping/frozen_config.py research/nautilus_scalping/tests/test_honest_offline_gate.py research/nautilus_scalping/tests/test_frozen_config.py
@@ -216,18 +216,18 @@ git commit -m "feat(ROB-847): add trial-aware honest gate statistics"
 - Produces: `finalize_offline_gate(session, *, backtest_run_id, experiment_id, expected_config_hash, expected_data_hash, selection, sealed_oos, pit_evidence, statistics_evidence) -> ResearchPromotionCandidate`.
 - Consumes: `get_trial_accounting` and `link_promotion_candidate` from ROB-846.
 
-- [ ] **Step 1: Write failing integration/unit tests**
+- [x] **Step 1: Write failing integration/unit tests**
 
 Cover accounting-derived trial count, all outcome counts, exact hash linkage,
 hash mismatch, identity-less run, missing PIT, one-time finalize, and concurrent
 finalize. Assert caller input has no trial-count parameter.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `uv run pytest -q tests/services/research/test_research_offline_gate_service.py`
 Expected: service import failure.
 
-- [ ] **Step 3: Implement the async adapter without direct model writes for promotion**
+- [x] **Step 3: Implement the async adapter without direct model writes for promotion**
 
 ```python
 accounting = await get_trial_accounting(session, experiment_id)
@@ -253,12 +253,12 @@ return await link_promotion_candidate(session, backtest_run_id=backtest_run_id, 
 Check for an existing candidate before OOS evaluation and normalize the unique
 constraint race as `sealed_oos_already_finalized`.
 
-- [ ] **Step 4: Run GREEN plus ROB-846 regressions and AST guard**
+- [x] **Step 4: Run GREEN plus ROB-846 regressions and AST guard**
 
 Run: `uv run pytest -q tests/services/research`
 Expected: pass or DB-dependent tests skip under the existing fixture policy.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/services/research_offline_gate_service.py tests/services/research/test_research_offline_gate_service.py tests/services/research/test_no_broker_import_guard.py
@@ -276,18 +276,18 @@ git commit -m "feat(ROB-847): seal OOS promotion through ROB-846 registry"
 - Produces: async `record_terminal_trial` adapter using `register_experiment` and `record_trial`.
 - Adds: registered identity input and stable invocation idempotency key.
 
-- [ ] **Step 1: Write failing tests for every status and record-before-revert ordering**
+- [x] **Step 1: Write failing tests for every status and record-before-revert ordering**
 
 Parameterize `completed`, `rejected`, `crashed`, and `timeout`. Use call-order
 spies to assert `record_trial` completes before `git_revert`. Reinvoke with the
 same key and assert the registry returns the original row.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `uv run pytest -q tests/backtest/test_run_experiment.py`
 Expected: registered lifecycle interfaces missing.
 
-- [ ] **Step 3: Implement registered mode and explicit legacy non-promotion**
+- [x] **Step 3: Implement registered mode and explicit legacy non-promotion**
 
 Parse a canonical identity JSON path plus `information_cutoff` and
 `idempotency_key`. Map successful parsed evaluation to `completed`, policy/no
@@ -296,12 +296,12 @@ improvement to `rejected`, timeout to `timeout`, and process/parse failures to
 identity input, retain exploratory TSV behavior but emit
 `missing_experiment_identity` and never invoke promotion.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 Run: `uv run pytest -q tests/backtest/test_run_experiment.py tests/backtest/test_orchestrator.py`
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backtest/run_experiment.py tests/backtest/test_run_experiment.py backtest/program.md
@@ -316,7 +316,7 @@ git commit -m "feat(ROB-847): record every registered research trial"
 **Interfaces:**
 - Verifies all ROB-847 contracts and preserves known unrelated baseline failures.
 
-- [ ] **Step 1: Run requested test groups**
+- [x] **Step 1: Run requested test groups**
 
 ```bash
 uv run pytest -q tests/backtest
@@ -324,13 +324,13 @@ uv run pytest -q research/nautilus_scalping/tests
 uv run pytest -q tests/services/research tests/test_research_ingestion_service.py
 ```
 
-- [ ] **Step 2: Repeat related tests with xdist**
+- [x] **Step 2: Repeat related tests with xdist**
 
 ```bash
 uv run pytest -q -n auto --dist loadfile tests/backtest/test_prepare.py tests/backtest/test_run_experiment.py research/nautilus_scalping/tests/test_honest_offline_gate.py tests/services/research/test_research_offline_gate_service.py
 ```
 
-- [ ] **Step 3: Run static and repository checks**
+- [x] **Step 3: Run static and repository checks**
 
 ```bash
 uv run ruff check
@@ -340,21 +340,21 @@ git diff --check
 uv run pytest -q tests/services/research/test_no_broker_import_guard.py
 ```
 
-- [ ] **Step 4: Audit scope and requirements**
+- [x] **Step 4: Audit scope and requirements**
 
 Confirm no migration, Binance Demo execution/ledger, broker/order/fill import,
 or unrelated strategy-search file appears in `git diff origin/main...HEAD`.
 Record exact pass/fail/skip counts and distinguish the seven known Nautilus
 baseline failures from ROB-847 regressions.
 
-- [ ] **Step 5: Commit any verification-only corrections separately**
+- [x] **Step 5: Commit any verification-only corrections separately**
 
 If verification requires a correction, stage each named file shown by
 `git status --short`, inspect `git diff --cached`, and commit only that correction
 with `git commit -m "fix(ROB-847): close honest gate verification gaps"`. If no
 correction is required, do not create an empty commit.
 
-- [ ] **Step 6: Comment on Linear and retain In Progress**
+- [x] **Step 6: Comment on Linear and retain In Progress**
 
 Post root cause, formulas, red-to-green evidence, per-command counts, commit
 SHAs, known baseline limitations, and no-migration/no-execution-ledger scope.
