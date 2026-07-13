@@ -2211,8 +2211,69 @@ async def test_toss_explicit_rejection_records_rejected(db_session, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_toss_typed_400_rejection_converges_with_broker_diagnostics(
+    db_session, monkeypatch
+):
+    from app.services.order_proposals.telegram_callback import _build_result_summary
+
+    svc = OrderProposalsService(db_session)
+    group = await svc.create_proposal(
+        symbol="000660",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("50000"), None)],
+    )
+    await db_session.commit()
+
+    async def fake_preview(**kwargs):
+        client_order_id = _bound_toss_context().client_order_id
+        return {
+            "success": True,
+            "approval_hash": "reject-token",
+            "payload_preview": {
+                "price": "50000",
+                "quantity": "1",
+                "clientOrderId": client_order_id,
+            },
+        }
+
+    async def fake_submit(**kwargs):
+        return {
+            "success": False,
+            "mutation_sent": True,
+            "status_code": 400,
+            "code": "invalid-client-order-id",
+            "message": "clientOrderId must be at most 36 characters " + ("x" * 400),
+            "error": "Toss API error status=400",
+        }
+
+    import app.mcp_server.tooling.orders_toss_variants as toss
+
+    monkeypatch.setattr(toss, "toss_preview_order", fake_preview)
+    monkeypatch.setattr(toss, "toss_place_order", fake_submit)
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+    )
+
+    assert outcomes[0].result == "error"
+    assert "invalid-client-order-id" in outcomes[0].detail["error"]
+    assert "clientOrderId must be at most 36 characters" in outcomes[0].detail["error"]
+    assert len(outcomes[0].detail["error"]) <= 240
+    _, rungs = await svc.get_proposal(group.proposal_id)
+    assert rungs[0].state == "rejected"
+    assert "invalid-client-order-id" in rungs[0].void_reason
+    assert "clientOrderId must be at most 36 characters" in rungs[0].void_reason
+    assert "invalid-client-order-id" in _build_result_summary(outcomes)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("submit_result", "expected_order_id"),
+    ("submit_result", "expected_order_id", "reason_fragments"),
     [
         (
             {
@@ -2221,6 +2282,19 @@ async def test_toss_explicit_rejection_records_rejected(db_session, monkeypatch)
                 "error": "broker timeout; order state unknown",
             },
             None,
+            ("broker timeout",),
+        ),
+        (
+            {
+                "success": False,
+                "mutation_sent": True,
+                "status_code": 500,
+                "code": "internal-error",
+                "message": "temporary upstream failure",
+                "error": "Toss API error status=500",
+            },
+            None,
+            ("internal-error", "temporary upstream failure"),
         ),
         (
             {
@@ -2231,12 +2305,13 @@ async def test_toss_explicit_rejection_records_rejected(db_session, monkeypatch)
                 "client_order_id": "ambiguous-client",
             },
             "preserved-broker-order",
+            ("ledger write failed",),
         ),
     ],
-    ids=["timeout_unknown", "ledger_failure_preserves_order_id"],
+    ids=["timeout_unknown", "server_500_unknown", "ledger_failure_preserves_order_id"],
 )
 async def test_toss_post_send_failure_records_unverified(
-    db_session, monkeypatch, submit_result, expected_order_id
+    db_session, monkeypatch, submit_result, expected_order_id, reason_fragments
 ):
     svc = OrderProposalsService(db_session)
     group = await svc.create_proposal(
@@ -2276,12 +2351,14 @@ async def test_toss_post_send_failure_records_unverified(
     )
 
     assert outcomes[0].result == "unverified"
-    assert outcomes[0].detail["submit"]["error"] == submit_result["error"]
+    assert outcomes[0].detail["submit"]["error"]
     assert outcomes[0].detail["submit"].get("order_id") == expected_order_id
     _, rungs = await svc.get_proposal(group.proposal_id)
     assert rungs[0].state == "unverified"
     assert rungs[0].state != "pending_approval"
     assert rungs[0].void_reason.startswith("ambiguous_submit_response:")
+    for fragment in reason_fragments:
+        assert fragment in rungs[0].void_reason
 
 
 @pytest.mark.asyncio
