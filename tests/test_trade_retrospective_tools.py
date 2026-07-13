@@ -50,15 +50,34 @@ async def test_save_success_envelope():
 
 
 @pytest.mark.asyncio
-async def test_save_validation_error_envelope():
+async def test_save_validation_error_enumerates_outcomes():
     res = await save_trade_retrospective(
         symbol="005930",
         instrument_type="equity_kr",
         account_mode="kis_mock",
-        outcome="bogus",
+        outcome="win",
     )
     assert res["success"] is False
-    assert "outcome" in res["error"]
+    for value in (
+        "filled",
+        "partially_filled",
+        "unfilled",
+        "rejected",
+        "cancelled",
+    ):
+        assert value in res["error"]
+
+
+def test_save_docstring_enumerates_outcomes():
+    doc = save_trade_retrospective.__doc__ or ""
+    for value in (
+        "filled",
+        "partially_filled",
+        "unfilled",
+        "rejected",
+        "cancelled",
+    ):
+        assert value in doc
 
 
 @pytest.mark.asyncio

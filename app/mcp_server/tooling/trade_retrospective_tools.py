@@ -65,6 +65,11 @@ async def save_trade_retrospective(
     guardrail_fired: str | None = None,
     policy_version: str | None = None,
 ) -> dict[str, Any]:
+    """Store a structured trade retrospective.
+
+    Args:
+        outcome: One of filled, partially_filled, unfilled, rejected, cancelled.
+    """
     symbol = (symbol or "").strip()
     if not symbol:
         return {"success": False, "error": "symbol is required"}
