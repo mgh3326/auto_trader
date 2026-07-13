@@ -19,8 +19,10 @@ from __future__ import annotations
 import re
 from decimal import Decimal
 
+import httpx
 import pytest
 
+from app.services.brokers.binance.demo.errors import BinanceDemoOrderNotFound
 from app.services.brokers.binance.futures_demo.dto import (
     FuturesDemoOrderStatusResult,
 )
@@ -135,6 +137,28 @@ async def test_get_order_surfaces_new_status_verbatim(
 
 
 @pytest.mark.asyncio
+async def test_general_get_order_keeps_legacy_defaults_for_sparse_body(
+    client: BinanceFuturesDemoExecutionClient, httpx_mock
+) -> None:
+    """Strict reconciliation reads raw_response; the polling DTO stays compatible."""
+    httpx_mock.add_response(
+        method="GET",
+        url=re.compile(r"^https://demo-fapi\.binance\.com/fapi/v1/order\?.*$"),
+        status_code=200,
+        json={"status": "CANCELED"},
+    )
+
+    result = await client.get_order(
+        symbol="XRPUSDT", client_order_id="rob305-sparse-cid"
+    )
+
+    assert result.client_order_id == "rob305-sparse-cid"
+    assert result.symbol == "XRPUSDT"
+    assert result.executed_qty == Decimal("0")
+    assert result.raw_response_redacted == {"status": "CANCELED"}
+
+
+@pytest.mark.asyncio
 async def test_get_order_rejects_empty_args_before_http(
     client: BinanceFuturesDemoExecutionClient, httpx_mock
 ) -> None:
@@ -144,3 +168,33 @@ async def test_get_order_rejects_empty_args_before_http(
     with pytest.raises(ValueError):
         await client.get_order(symbol="XRPUSDT", client_order_id="")
     assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_get_order_normalizes_explicit_binance_not_found(
+    client: BinanceFuturesDemoExecutionClient, httpx_mock
+) -> None:
+    httpx_mock.add_response(
+        method="GET",
+        url=re.compile(r"^https://demo-fapi\.binance\.com/fapi/v1/order\?.*$"),
+        status_code=400,
+        json={"code": -2013, "msg": "Order does not exist."},
+    )
+
+    with pytest.raises(BinanceDemoOrderNotFound):
+        await client.get_order(symbol="XRPUSDT", client_order_id="missing-cid")
+
+
+@pytest.mark.asyncio
+async def test_get_order_does_not_normalize_malformed_400_as_not_found(
+    client: BinanceFuturesDemoExecutionClient, httpx_mock
+) -> None:
+    httpx_mock.add_response(
+        method="GET",
+        url=re.compile(r"^https://demo-fapi\.binance\.com/fapi/v1/order\?.*$"),
+        status_code=400,
+        content=b"not-json",
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.get_order(symbol="XRPUSDT", client_order_id="malformed-400")

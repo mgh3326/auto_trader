@@ -22,6 +22,13 @@ from sqlalchemy import select
 from app.models.crypto_instruments import CryptoInstrument
 from app.services.brokers.binance.demo.ledger import BinanceDemoLedgerService
 
+# The real futures smoke commits an XRPUSDT root on a separate xdist worker.
+# Hold the shared test-only lock so this module's deliberately uncommitted raw
+# ledger roots cannot overlap that committed row under the production partial
+# unique index.  The smoke fixture removes its committed residue before it
+# releases the same lock.
+pytestmark = pytest.mark.usefixtures("binance_demo_reservation_lock")
+
 
 @pytest_asyncio.fixture
 async def demo_ledger_service(db_session) -> BinanceDemoLedgerService:

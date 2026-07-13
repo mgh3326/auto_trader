@@ -1022,3 +1022,33 @@ async def binance_demo_reservation_lock():
                 text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
                 {"lock_id": BINANCE_DEMO_RESERVATION_TEST_LOCK_ID},
             )
+
+
+@pytest_asyncio.fixture
+async def binance_demo_smoke_ledger_isolation(binance_demo_reservation_lock):
+    """Serialize and remove rows committed by the two real-ledger smoke tests.
+
+    The smoke kernels intentionally commit every lifecycle transition. Their
+    randomized ``rob298-*`` ids previously escaped the ordinary ``db_session``
+    rollback and changed table-wide count assertions on another xdist worker.
+    """
+    from sqlalchemy import delete, or_
+
+    from app.core.db import AsyncSessionLocal
+    from app.models.binance_demo_order_ledger import BinanceDemoOrderLedger
+
+    async def _cleanup() -> None:
+        async with AsyncSessionLocal() as session:
+            await session.execute(
+                delete(BinanceDemoOrderLedger).where(
+                    or_(
+                        BinanceDemoOrderLedger.client_order_id.like("rob298-%"),
+                        BinanceDemoOrderLedger.client_order_id.like("rob-298-fut-%"),
+                    )
+                )
+            )
+            await session.commit()
+
+    await _cleanup()
+    yield
+    await _cleanup()

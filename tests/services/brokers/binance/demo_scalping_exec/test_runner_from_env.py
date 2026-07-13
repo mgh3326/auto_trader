@@ -99,3 +99,74 @@ async def test_enabled_path_wires_without_import_errors(monkeypatch) -> None:
 
     result = await run_demo_scalping_tick()
     assert result["status"] == "ran"
+
+
+@pytest.mark.asyncio
+async def test_enabled_runner_uses_one_transaction_per_execution(monkeypatch) -> None:
+    """One symbol's terminal ledger state is committed before the next claim."""
+    import app.core.db as dbmod
+    import app.services.brokers.binance.demo_scalping_exec.executor as execmod
+    import app.services.brokers.binance.demo_scalping_exec.scheduler as schedmod
+    from app.services.brokers.binance.futures_demo.execution_client import (
+        BinanceFuturesDemoExecutionClient,
+    )
+    from app.services.brokers.binance.spot_demo.execution_client import (
+        BinanceSpotDemoExecutionClient,
+    )
+
+    monkeypatch.setenv("BINANCE_DEMO_SCALPING_ENABLED", "true")
+    monkeypatch.setenv("BINANCE_DEMO_SCALPING_SCHEDULER_ENABLED", "true")
+
+    class _Cli:
+        async def aclose(self):
+            return None
+
+    for cls in (BinanceSpotDemoExecutionClient, BinanceFuturesDemoExecutionClient):
+        monkeypatch.setattr(cls, "from_env", classmethod(lambda cls: _Cli()))
+
+    sessions: list[_Sess] = []
+
+    class _Sess:
+        def __init__(self):
+            self.commits = 0
+
+        async def __aenter__(self):
+            sessions.append(self)
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def commit(self):
+            self.commits += 1
+
+    monkeypatch.setattr(dbmod, "AsyncSessionLocal", _Sess)
+
+    executor_sessions: list[_Sess] = []
+
+    class _Executor:
+        def __init__(self, **kwargs):
+            executor_sessions.append(kwargs["session"])
+
+        async def execute_monitored(self, *_args, **_kwargs):
+            return object()
+
+    monkeypatch.setattr(execmod, "DemoScalpingExecutor", _Executor)
+
+    class _Summary:
+        def to_evidence_dict(self):
+            return {"status": "ran", "entered_count": 2}
+
+    async def _fake_tick(**kwargs):
+        await kwargs["executors"]["spot"].execute_monitored(object())
+        await kwargs["executors"]["spot"].execute_monitored(object())
+        return _Summary()
+
+    monkeypatch.setattr(schedmod, "run_scalping_tick", _fake_tick)
+
+    result = await run_demo_scalping_tick()
+
+    assert result["status"] == "ran"
+    assert len(sessions) == 2
+    assert executor_sessions == sessions
+    assert [session.commits for session in sessions] == [1, 1]

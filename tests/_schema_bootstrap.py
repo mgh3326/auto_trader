@@ -29,7 +29,10 @@ from sqlalchemy import text
 # v8 (ROB-859): trade_forecasts accepts the unscored closed_no_claim status.
 # v9 (ROB-844): binance_demo_order_ledger partial-unique indexes
 # (uq_binance_demo_ledger_open_root / _broker_ack) mirrored in _DDL_STATEMENTS.
-SCHEMA_BOOTSTRAP_VERSION = 9
+# v10 (ROB-844 review): broker-ack identity adds instrument_id. Persistent test
+# DBs may already have the same named 3-column index, so a shape-aware refresher
+# replaces only a mismatched definition before CREATE IF NOT EXISTS.
+SCHEMA_BOOTSTRAP_VERSION = 10
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -91,6 +94,40 @@ def _constraint_definitions_need_refresh(
         not all(value in (definition or "") for value in required_values)
         for definition in definitions
     )
+
+
+ROB844_ACK_INDEX_REFRESH_DDL = (
+    "DO $rob844_ack$ DECLARE current_columns text[]; "
+    "current_is_unique boolean; current_predicate text; BEGIN "
+    "IF to_regclass('uq_binance_demo_ledger_broker_ack') IS NOT NULL THEN "
+    "SELECT array_agg(attribute.attname ORDER BY key.ordinality), "
+    "index_meta.indisunique, "
+    "pg_get_expr(index_meta.indpred, index_meta.indrelid) "
+    "INTO current_columns, current_is_unique, current_predicate "
+    "FROM pg_index index_meta "
+    "JOIN pg_class index_class ON index_class.oid = index_meta.indexrelid "
+    "CROSS JOIN LATERAL unnest(index_meta.indkey) WITH ORDINALITY "
+    "AS key(attnum, ordinality) "
+    "JOIN pg_attribute attribute "
+    "ON attribute.attrelid = index_meta.indrelid "
+    "AND attribute.attnum = key.attnum "
+    "WHERE index_class.oid = "
+    "to_regclass('uq_binance_demo_ledger_broker_ack') "
+    "GROUP BY index_meta.indisunique, index_meta.indpred, index_meta.indrelid; "
+    "IF current_columns IS DISTINCT FROM "
+    "ARRAY['product','venue_host','instrument_id','broker_order_id']::text[] "
+    "OR current_is_unique IS DISTINCT FROM true "
+    "OR regexp_replace(lower(coalesce(current_predicate, '')), "
+    "'[^a-z0-9_]', '', 'g') <> 'broker_order_idisnotnull' "
+    "THEN DROP INDEX uq_binance_demo_ledger_broker_ack; END IF; "
+    "END IF; END $rob844_ack$"
+)
+ROB844_ACK_INDEX_CREATE_DDL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_binance_demo_ledger_broker_ack "
+    "ON binance_demo_order_ledger "
+    "(product, venue_host, instrument_id, broker_order_id) "
+    "WHERE broker_order_id IS NOT NULL"
+)
 
 
 async def _ensure_market_valuation_source_constraint(conn) -> None:
@@ -647,9 +684,8 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "WHERE parent_client_order_id IS NULL "
     "AND lifecycle_state IN "
     "('planned','previewed','validated','submitted','filled','anomaly')",
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_binance_demo_ledger_broker_ack "
-    "ON binance_demo_order_ledger (product, venue_host, broker_order_id) "
-    "WHERE broker_order_id IS NOT NULL",
+    ROB844_ACK_INDEX_REFRESH_DDL,
+    ROB844_ACK_INDEX_CREATE_DDL,
 )
 
 

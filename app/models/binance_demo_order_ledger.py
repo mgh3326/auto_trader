@@ -114,12 +114,15 @@ class BinanceDemoOrderLedger(Base):
             ),
         ),
         # ROB-844 defense-in-depth #2 — a non-null broker acknowledgement
-        # ``(product, venue_host, broker_order_id)`` may be attached to exactly
-        # one ledger row, so a replayed ack cannot populate a second row.
+        # ``(product, venue_host, instrument_id, broker_order_id)`` may be
+        # attached to exactly one ledger row. Binance order ids can repeat in a
+        # different symbol sequence, while a same-instrument replay must not
+        # populate a second row.
         Index(
             "uq_binance_demo_ledger_broker_ack",
             "product",
             "venue_host",
+            "instrument_id",
             "broker_order_id",
             unique=True,
             postgresql_where=text("broker_order_id IS NOT NULL"),
