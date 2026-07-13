@@ -44,7 +44,12 @@ from app.mcp_server.tooling.orders_kis_variants import (
     LIVE_RECONCILE_TOOL_NAMES,
     register_kis_live_order_tools,
 )
-from app.mcp_server.tooling.orders_kiwoom_variants import KIWOOM_MOCK_TOOL_NAMES
+from app.mcp_server.tooling.orders_kiwoom_variants import (
+    KIWOOM_MOCK_TOOL_NAMES,
+)
+from app.mcp_server.tooling.orders_kiwoom_variants import (
+    register as register_kiwoom_mock_tools,
+)
 from app.mcp_server.tooling.orders_registration import (
     ORDER_TOOL_NAMES,
     register_order_tools,
@@ -91,6 +96,20 @@ _TRADINGCODEX_EXECUTION_ORDER_TOOL_NAMES: set[str] = {
     "buy_ladder_fill_preview",
 }
 
+# Security boundary: do not reuse the globally registered Kiwoom set here.
+# Adding a new Kiwoom tool must not silently expand this privileged profile.
+KIWOOM_MOCK_EXECUTION_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "kiwoom_mock_preview_order",
+        "kiwoom_mock_place_order",
+        "kiwoom_mock_cancel_order",
+        "kiwoom_mock_modify_order",
+        "kiwoom_mock_get_order_history",
+        "kiwoom_mock_get_positions",
+        "kiwoom_mock_get_orderable_cash",
+    }
+)
+
 _TRADINGCODEX_EXECUTION_ADVISORY_TOOL_NAMES: set[str] = {
     "suggest_order_account",
     "get_fx_rate",
@@ -124,6 +143,7 @@ _TRADINGCODEX_EXECUTION_ORDER_PROPOSAL_TOOL_NAMES: set[str] = ORDER_PROPOSAL_TOO
 
 TRADINGCODEX_EXECUTION_TOOL_NAMES: set[str] = (
     ACCOUNT_READ_TOOL_NAMES
+    | KIWOOM_MOCK_EXECUTION_TOOL_NAMES
     | _TRADINGCODEX_EXECUTION_ORDER_TOOL_NAMES
     | _TRADINGCODEX_EXECUTION_ADVISORY_TOOL_NAMES
     | _TRADINGCODEX_EXECUTION_WATCH_READ_TOOL_NAMES
@@ -151,7 +171,7 @@ TRADINGCODEX_EXECUTION_FORBIDDEN_TOOL_NAMES: set[str] = (
     | (KIS_LIVE_ORDER_TOOL_NAMES - TRADINGCODEX_EXECUTION_TOOL_NAMES)
     | KIS_MOCK_ORDER_TOOL_NAMES
     | LIVE_RECONCILE_TOOL_NAMES
-    | KIWOOM_MOCK_TOOL_NAMES
+    | (KIWOOM_MOCK_TOOL_NAMES - KIWOOM_MOCK_EXECUTION_TOOL_NAMES)
     | PAPER_LIMIT_ORDER_TOOL_NAMES
     | (TOSS_LIVE_ORDER_TOOL_NAMES - TRADINGCODEX_EXECUTION_TOOL_NAMES)
     | ANALYSIS_ARTIFACT_TOOL_NAMES
@@ -404,6 +424,7 @@ def register_tradingcodex_execution_tools(mcp: FastMCP) -> None:
     register_order_tools(filtered)
     register_kis_live_order_tools(filtered)
     register_toss_live_order_tools(filtered)
+    register_kiwoom_mock_tools(filtered)
     register_account_routing_tools(filtered)
     register_fundamentals_tools(filtered)
     register_trading_policy_tools(filtered)
