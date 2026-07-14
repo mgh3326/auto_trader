@@ -205,7 +205,7 @@ def _allow_chat(monkeypatch, chat_id=CHAT_ID):
     )
 
 
-async def _seed_approval_batch(db_session, monkeypatch, *, member_count=2):
+async def _seed_approval_batch(db_session, monkeypatch, *, member_count=2, rungs=1):
     chat_id = int(uuid.uuid4().hex[:8], 16)
     _allow_chat(monkeypatch, chat_id)
     now = datetime(2026, 7, 14, 1, 0, tzinfo=UTC)
@@ -217,6 +217,7 @@ async def _seed_approval_batch(db_session, monkeypatch, *, member_count=2):
             db_session,
             nonce=f"batch-member-{uuid.uuid4().hex}",
             symbol=f"B{index}",
+            rungs=rungs,
         )
         groups.append(group)
         registration = await service.register_approval_batch_member(
@@ -430,7 +431,7 @@ async def test_batch_approve_keeps_rob861_reconfirm_member_independently_actiona
     monkeypatch, db_session
 ):
     chat_id, now, groups, _batch, data = await _seed_approval_batch(
-        db_session, monkeypatch
+        db_session, monkeypatch, rungs=3
     )
     group_ids = [group.proposal_id for group in groups]
     original_nonce = groups[0].approval_nonce
@@ -447,10 +448,10 @@ async def test_batch_approve_keeps_rob861_reconfirm_member_independently_actiona
 
     async def fake_revalidate(*, service, proposal_id, now):
         if proposal_id == group_ids[0]:
-            await service.transition_rung(proposal_id, 0, new_state="revalidating")
-            await service.mark_needs_reconfirm(proposal_id, 0, now=now)
-            return [RungOutcome(0, "needs_reconfirm", detail)]
-        return [RungOutcome(0, "submitted_resting", {})]
+            await service.transition_rung(proposal_id, 2, new_state="revalidating")
+            await service.mark_needs_reconfirm(proposal_id, 2, now=now)
+            return [RungOutcome(2, "needs_reconfirm", detail)]
+        return [RungOutcome(1, "submitted_resting", {})]
 
     result = await handle_callback_update(
         _make_update(data=data, chat_id=chat_id),
@@ -464,17 +465,25 @@ async def test_batch_approve_keeps_rob861_reconfirm_member_independently_actiona
         "needs_reconfirm",
         "approved",
     ]
+    assert result["results"][0]["rung_results"] == [
+        {"rung_index": 2, "result": "needs_reconfirm"}
+    ]
+    assert result["results"][1]["rung_results"] == [
+        {"rung_index": 1, "result": "submitted_resting"}
+    ]
     service = OrderProposalsService(db_session)
     reconfirm_group, reconfirm_rungs = await service.get_proposal(group_ids[0])
     approved_group, _ = await service.get_proposal(group_ids[1])
     assert reconfirm_group.approval_nonce != original_nonce
     assert reconfirm_group.approval_nonce_used_at is None
-    assert reconfirm_rungs[0].state == "needs_reconfirm"
+    assert reconfirm_rungs[2].state == "needs_reconfirm"
     assert approved_group.approval_nonce_used_at is not None
     assert len(notifier.sent_messages) == 1
     summary = next(text for _chat, mid, text, _markup in notifier.edited if mid == 555)
     assert "재확인 필요" in summary
     assert "승인 완료" in summary
+    assert "#3 재확인 필요" in summary
+    assert "#2 주문 유지(대기)" in summary
 
 
 @pytest.mark.asyncio

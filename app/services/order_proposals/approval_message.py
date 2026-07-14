@@ -156,6 +156,9 @@ def build_batch_approval_message(
         market = str(getattr(group, "market", None) or "")
         currency = _currency_for_market(market=market, symbol=symbol) or "기타"
         account_label = _batch_account_label(group)
+        is_market_order = (
+            str(getattr(group, "order_type", "") or "").lower() == "market"
+        )
         rung_parts: list[str] = []
         proposal_total = Decimal("0")
         has_notional = False
@@ -164,7 +167,7 @@ def build_batch_approval_message(
             price = _safe_decimal(getattr(rung, "limit_price", None))
             explicit = _safe_decimal(getattr(rung, "notional", None))
             notional = None
-            if price is not None:
+            if not is_market_order and price is not None:
                 notional = (
                     explicit
                     if explicit is not None
@@ -178,7 +181,7 @@ def build_batch_approval_message(
             rung_parts.append(
                 f"#{int(getattr(rung, 'rung_index', 0)) + 1} "
                 f"{_format_decimal(getattr(rung, 'quantity', None))} × "
-                f"{_format_money(getattr(rung, 'limit_price', None), currency=currency, none_label='시장가')}"
+                f"{_format_money(None if is_market_order else getattr(rung, 'limit_price', None), currency=currency, none_label='시장가')}"
             )
         lines.append(
             f"- `{_escape_inline_code(symbol)}` "
@@ -256,10 +259,18 @@ def build_batch_result_message(
         if isinstance(rung_results, Sequence) and not isinstance(
             rung_results, (str, bytes)
         ):
-            details.extend(
-                f"#{index} {_escape_markdown(_BATCH_RUNG_RESULT_LABELS.get(str(value), str(value)))}"
-                for index, value in enumerate(rung_results, start=1)
-            )
+            for fallback_index, value in enumerate(rung_results, start=1):
+                if isinstance(value, Mapping):
+                    try:
+                        display_index = int(value.get("rung_index", 0)) + 1
+                    except (TypeError, ValueError):
+                        display_index = fallback_index
+                    result_value = str(value.get("result") or "unknown")
+                else:
+                    display_index = fallback_index
+                    result_value = str(value)
+                label = _BATCH_RUNG_RESULT_LABELS.get(result_value, result_value)
+                details.append(f"#{display_index} {_escape_markdown(label)}")
         suffix = f" — {'; '.join(details)}" if details else ""
         grouped[status].append(f"- `{_escape_inline_code(symbol)}`{suffix}")
 

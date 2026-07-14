@@ -42,7 +42,7 @@ from __future__ import annotations
 import logging
 import secrets
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 
@@ -107,6 +107,28 @@ _BATCH_SUCCESS_RESULTS = frozenset(
     {"submitted_acked", "submitted_resting", "cancelled"}
 )
 _BATCH_SKIP_RESULTS = frozenset({"guard_blocked", "approval_required"})
+
+
+def _serialize_rung_outcomes(outcomes: list[RungOutcome]) -> list[dict[str, Any]]:
+    """Preserve the original rung index for batch summaries and audits."""
+    return [
+        {"rung_index": outcome.rung_index, "result": outcome.result}
+        for outcome in outcomes
+    ]
+
+
+def _batch_result_values(approval_result: Mapping[str, Any]) -> list[str]:
+    """Read structured rung results, falling back to the legacy value list."""
+    structured = approval_result.get("rung_results")
+    if isinstance(structured, list):
+        values = [
+            str(item.get("result"))
+            for item in structured
+            if isinstance(item, Mapping) and item.get("result") is not None
+        ]
+        if values:
+            return values
+    return [str(value) for value in approval_result.get("results") or []]
 
 
 def _outcome_error_summary(outcome: RungOutcome, *, limit: int = 240) -> str | None:
@@ -217,7 +239,7 @@ def _classify_batch_approval_result(
     if approval_result.get("reason") == "needs_reconfirm":
         return "needs_reconfirm", None
 
-    outcomes = [str(value) for value in approval_result.get("results") or []]
+    outcomes = _batch_result_values(approval_result)
     if outcomes and all(value in _BATCH_SUCCESS_RESULTS for value in outcomes):
         return "approved", None
     if outcomes and all(value in _BATCH_SKIP_RESULTS for value in outcomes):
@@ -525,6 +547,8 @@ async def _handle_approve(
             "reason": "needs_reconfirm",
             "proposal_id": str(proposal_id),
             "new_message_id": new_message_id,
+            "results": [outcome.result for outcome in outcomes],
+            "rung_results": _serialize_rung_outcomes(outcomes),
         }
 
     summary = _build_result_summary(outcomes)
@@ -541,6 +565,7 @@ async def _handle_approve(
         "reason": "approved",
         "proposal_id": str(proposal_id),
         "results": [outcome.result for outcome in outcomes],
+        "rung_results": _serialize_rung_outcomes(outcomes),
     }
 
 
@@ -618,10 +643,17 @@ async def _handle_batch_approve(
                         telegram_user_id=telegram_user_id,
                         revalidate_fn=revalidate_fn,
                     )
-                    rung_results = approval_result.get("results")
+                    rung_results = approval_result.get("rung_results")
                     if isinstance(rung_results, list):
                         member_result["rung_results"] = [
-                            str(value) for value in rung_results
+                            {
+                                "rung_index": int(value["rung_index"]),
+                                "result": str(value["result"]),
+                            }
+                            for value in rung_results
+                            if isinstance(value, Mapping)
+                            and "rung_index" in value
+                            and "result" in value
                         ]
                     status, reason = _classify_batch_approval_result(approval_result)
                     member_result["status"] = status
@@ -651,7 +683,10 @@ async def _handle_batch_approve(
                     detail={
                         "proposal_id": member_result["proposal_id"],
                         "reason": member_result.get("reason", ""),
-                        "rung_results": ",".join(member_result.get("rung_results", [])),
+                        "rung_results": ",".join(
+                            f"{value['rung_index']}:{value['result']}"
+                            for value in member_result.get("rung_results", [])
+                        ),
                     },
                     now=now,
                 )

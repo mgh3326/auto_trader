@@ -132,11 +132,16 @@ def test_batch_summary_omits_market_order_notional_from_totals():
     )
     proposals = [
         (
-            _group(symbol="AAPL", market="equity_us", account_mode="kis_live"),
+            _group(
+                symbol="AAPL",
+                market="equity_us",
+                account_mode="kis_live",
+                order_type="market",
+            ),
             [
                 _rung(
                     quantity=Decimal("1"),
-                    limit_price=None,
+                    limit_price=Decimal("999"),
                     notional=Decimal("999"),
                 )
             ],
@@ -170,7 +175,7 @@ def test_batch_result_groups_each_member_outcome():
             {
                 "proposal_id": str(groups[0].proposal_id),
                 "status": "approved",
-                "rung_results": ["submitted_resting"],
+                "rung_results": [{"rung_index": 2, "result": "submitted_resting"}],
             },
             {
                 "proposal_id": str(groups[1].proposal_id),
@@ -185,7 +190,7 @@ def test_batch_result_groups_each_member_outcome():
                 "proposal_id": str(groups[3].proposal_id),
                 "status": "failed",
                 "reason": "broker unavailable",
-                "rung_results": ["unverified"],
+                "rung_results": [{"rung_index": 4, "result": "unverified"}],
             },
         ],
     )
@@ -194,8 +199,8 @@ def test_batch_result_groups_each_member_outcome():
     assert "재확인 필요" in text and "MSFT" in text
     assert "제외/건너뜀" in text and "NVDA" in text
     assert "실패" in text and "AMZN" in text
-    assert "#1 주문 유지(대기)" in text
-    assert "#1 확인 불가(수동 확인 필요)" in text
+    assert "#3 주문 유지(대기)" in text
+    assert "#5 확인 불가(수동 확인 필요)" in text
 
 
 @pytest.mark.unit
