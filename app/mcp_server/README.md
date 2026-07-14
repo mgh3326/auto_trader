@@ -2368,9 +2368,11 @@ trackable 1-18 digit order ID. Broker success without such an ID returns
 `success=false`, `status="accepted_untracked"`,
 `reconcile_required=true`, and `retry_allowed=false`, while retaining redacted
 broker evidence. Callers must reconcile broker history and must not retry the
-place automatically. A non-success broker code is the distinct
-`status="rejected"` case. Read, modify, and cancel response shaping is
-unchanged.
+place automatically. A well-formed, non-zero broker code is the distinct
+`status="rejected"` case. Missing or malformed acceptance evidence returns
+`status="acceptance_uncertain"`, `reconcile_required=true`, and
+`retry_allowed=false`; it must not be treated as an explicit rejection or
+retried automatically. Read, modify, and cancel response shaping is unchanged.
 
 #### Exchange mapping
 

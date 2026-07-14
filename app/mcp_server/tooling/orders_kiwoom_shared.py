@@ -7,6 +7,7 @@ from typing import Any
 
 from app.services.brokers.kiwoom import constants
 from app.services.brokers.kiwoom.normalization import redact_broker_response
+from app.services.brokers.kiwoom.us_orders import validate_us_order_id
 
 _PASSTHROUGH_KEYS = (
     "return_code",
@@ -15,8 +16,8 @@ _PASSTHROUGH_KEYS = (
     "ord_no",
     "order_no",
 )
-_ORDER_ID_RE = re.compile(r"^[0-9]{1,18}$")
 _ORDER_ID_KEYS = ("ord_no", "order_no")
+_RETURN_CODE_RE = re.compile(r"^-?[0-9]{1,18}$")
 
 
 def derive_broker_success(broker_response: dict[str, Any]) -> bool:
@@ -24,6 +25,15 @@ def derive_broker_success(broker_response: dict[str, Any]) -> bool:
     if type(value) is int:  # bool is an int subclass and must fail closed.
         return value == constants.SUCCESS_RETURN_CODE
     return isinstance(value, str) and value == str(constants.SUCCESS_RETURN_CODE)
+
+
+def _is_explicit_broker_rejection(broker_response: dict[str, Any]) -> bool:
+    value = broker_response.get("return_code")
+    if type(value) is int:
+        return value != constants.SUCCESS_RETURN_CODE
+    if not isinstance(value, str) or not _RETURN_CODE_RE.fullmatch(value):
+        return False
+    return int(value) != constants.SUCCESS_RETURN_CODE
 
 
 def classify_capability_unsupported(
@@ -67,7 +77,16 @@ def finalize_place_broker_response(
 
     response = finalize_broker_response(base, broker_response)
     if not derive_broker_success(broker_response):
-        response.update({"status": "rejected", "reconcile_required": False})
+        if _is_explicit_broker_rejection(broker_response):
+            response.update({"status": "rejected", "reconcile_required": False})
+        else:
+            response.update(
+                {
+                    "status": "acceptance_uncertain",
+                    "reconcile_required": True,
+                    "retry_allowed": False,
+                }
+            )
         return response
 
     order_id = None
@@ -75,10 +94,11 @@ def finalize_place_broker_response(
         raw_order_id = broker_response.get(key)
         if not isinstance(raw_order_id, str):
             continue
-        candidate = raw_order_id.strip()
-        if _ORDER_ID_RE.fullmatch(candidate):
-            order_id = candidate
-            break
+        try:
+            order_id = validate_us_order_id(raw_order_id)
+        except ValueError:
+            continue
+        break
     if order_id is None:
         response.update(
             {

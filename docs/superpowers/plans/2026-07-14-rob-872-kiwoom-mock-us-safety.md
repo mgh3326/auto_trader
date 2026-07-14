@@ -25,12 +25,12 @@
 - Modify: `app/mcp_server/tooling/orders_kiwoom_us_variants.py`
 
 **Interfaces:**
-- Produces: `finalize_place_broker_response(base, broker_response)` with `submitted`, `accepted_untracked`, and `rejected` outcomes.
+- Produces: `finalize_place_broker_response(base, broker_response)` with `submitted`, `accepted_untracked`, `acceptance_uncertain`, and `rejected` outcomes.
 
-- [ ] Add parametrized failing tests for non-strict return codes and missing/invalid place IDs.
-- [ ] Run the named tests and confirm failures are contract mismatches.
-- [ ] Implement a place-only finalizer using `derive_broker_success` and `validate_us_order_id` without changing common read/modify/cancel shaping.
-- [ ] Re-run the named tests and preserve redacted `broker_response` evidence.
+- [x] Add parametrized failing tests for non-strict return codes and missing/invalid place IDs.
+- [x] Run the named tests and confirm failures are contract mismatches.
+- [x] Implement a place-only finalizer using `derive_broker_success` and `validate_us_order_id` without changing common read/modify/cancel shaping.
+- [x] Re-run the named tests and preserve redacted `broker_response` evidence.
 
 ### Task 2: Truthful smoke lifecycle
 
@@ -41,13 +41,13 @@
 **Interfaces:**
 - Produces: documented-field order extraction, `collect_pages`, target classifier, position snapshot, and shared `prove_cleanup` with injected `clock`/`sleep`.
 
-- [ ] Add failing tests for arbitrary-number non-match and bounded order-ID normalization.
-- [ ] Add failing async tests for empty history, page-two discovery, repeated tokens/page cap, partial fill plus delta, timeout, and probe-open-after-cancel.
-- [ ] Run each red group and record the expected assertion failure.
-- [ ] Implement bounded schema-aware page collection and fail-close continuation validation.
-- [ ] Implement documented history/position extractors and lifecycle classification.
-- [ ] Refactor full and probe through the same baseline/cleanup proof and injected polling dependencies.
-- [ ] Re-run the smoke suite with no real sleep and confirm all new cases pass.
+- [x] Add failing tests for arbitrary-number non-match and bounded order-ID normalization.
+- [x] Add failing async tests for empty history, page-two discovery, repeated tokens/page cap, partial fill plus delta, timeout, and probe-open-after-cancel.
+- [x] Run each red group and record the expected assertion failure.
+- [x] Implement bounded schema-aware page collection and fail-close continuation validation.
+- [x] Implement documented history/position extractors and lifecycle classification.
+- [x] Refactor full and probe through the same baseline/cleanup proof and injected polling dependencies.
+- [x] Re-run the smoke suite with no real sleep and confirm all new cases pass.
 
 ### Task 3: Transport-aware startup authentication
 
@@ -58,11 +58,11 @@
 **Interfaces:**
 - Produces: `_validate_profile_auth_token(profile, token, mcp_type)` where network Kiwoom mutation exposure requires auth.
 
-- [ ] Extend the isolated main-module loader with Kiwoom/default profile, `MCP_TYPE`, and US gate settings.
-- [ ] Add red tests for HTTP/SSE Kiwoom no-token and default-profile gate-on no-token, plus green regression expectations for valid token, stdio, unrelated profile, and gate-off.
-- [ ] Run the startup tests and confirm the network cases fail before implementation.
-- [ ] Read transport before import-time validation and enforce the narrow network predicate.
-- [ ] Re-run startup/profile tests and confirm environment/module isolation.
+- [x] Extend the isolated main-module loader with Kiwoom/default profile, `MCP_TYPE`, and US gate settings.
+- [x] Add red tests for HTTP/SSE Kiwoom no-token and default-profile gate-on no-token, plus green regression expectations for valid token, stdio, unrelated profile, and gate-off.
+- [x] Run the startup tests and confirm the network cases fail before implementation.
+- [x] Read transport before import-time validation and enforce the narrow network predicate.
+- [x] Re-run startup/profile tests and confirm environment/module isolation.
 
 ### Task 4: Documentation alignment and verification
 
@@ -73,10 +73,10 @@
 **Interfaces:**
 - Documents: exit 2, accepted-untracked reconciliation, bounded 1-18 digit IDs, cleanup polling, and pending/unverified mutation evidence.
 
-- [ ] Replace exact-nine-digit operator wording and document the actual lifecycle statuses and cleanup proof.
-- [ ] Run the required nine-file pytest command and wider non-live Kiwoom/MCP/profile regression, recording exact pass counts.
-- [ ] Run Ruff check/format on changed files, ty on related modules, `git diff --check origin/main..HEAD`, and `git status --short`.
-- [ ] Fetch origin, rebase only if main advanced, make a separate local commit, and record final SHA/base/status in Linear while leaving ROB-872 In Progress.
+- [x] Replace exact-nine-digit operator wording and document the actual lifecycle statuses and cleanup proof.
+- [x] Run the required nine-file pytest command and wider non-live Kiwoom/MCP/profile regression, recording exact pass counts.
+- [x] Run Ruff check/format on changed files, ty on related modules, `git diff --check origin/main..HEAD`, and `git status --short`.
+- [x] Fetch origin, rebase only if main advanced, make a separate local commit, and record final SHA/base/status in Linear while leaving ROB-872 In Progress.
 
 ## Self-review
 

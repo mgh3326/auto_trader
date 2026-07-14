@@ -14,7 +14,10 @@ from typing import Any
 
 from app.core.config import validate_kiwoom_mock_us_config
 from app.mcp_server.tooling import orders_kiwoom_us_variants as us_variants
-from app.mcp_server.tooling.orders_kiwoom_shared import derive_broker_success
+from app.mcp_server.tooling.orders_kiwoom_shared import (
+    derive_broker_success,
+    finalize_place_broker_response,
+)
 from app.services.brokers.kiwoom import constants
 from app.services.brokers.kiwoom.normalization import redact_broker_response
 from app.services.brokers.kiwoom.us_account import KiwoomUsAccountClient
@@ -115,7 +118,7 @@ def _normalize_digits(value: str) -> str | None:
     text = value.strip()
     if not _ORDER_ID_RE.fullmatch(text):
         return None
-    return text.lstrip("0") or "0"
+    return text
 
 
 def _payload_contains_order_id(value: Any, order_id: str) -> bool:
@@ -250,18 +253,12 @@ def _classify_target(
         else:
             states.add("unknown")
 
-    for state in (
-        "partial",
-        "filled",
-        "cancel_pending",
-        "cancelled",
-        "rejected",
-        "open",
-        "unknown",
-    ):
+    for state in ("partial", "filled", "cancel_pending"):
         if state in states:
             return state
-    return "unknown"
+    if "unknown" in states or len(states) != 1:
+        return "unknown"
+    return next(iter(states))
 
 
 async def _position_snapshot(
@@ -453,12 +450,12 @@ async def run_full(
     )
     _emit({"step": "place_confirmed", **placed})
     if not _response_succeeded(placed):
-        if placed.get("status") == "accepted_untracked":
+        if placed.get("status") in {"accepted_untracked", "acceptance_uncertain"}:
             _emit(
                 {
                     "step": "cleanup_required",
                     "reason": (
-                        "broker accepted the order without a trackable id; "
+                        "broker acceptance is not safely trackable; "
                         "do not retry; reconcile in broker UI"
                     ),
                 }
@@ -702,6 +699,7 @@ async def run_probe(
                         stop_price=stop_price,
                     )
             except Exception as exc:  # noqa: BLE001 - record unsupported evidence
+                exit_code = 2
                 _emit(
                     {
                         "step": "probe_order_type",
@@ -710,9 +708,20 @@ async def run_probe(
                         "error": f"{type(exc).__name__}: {exc}",
                     }
                 )
+                _emit(
+                    {
+                        "step": "cleanup_required",
+                        "trde_tp": code,
+                        "reason": (
+                            "probe place raised with an uncertain send outcome; "
+                            "do not retry; reconcile in broker UI"
+                        ),
+                    }
+                )
                 continue
             accepted = derive_broker_success(raw)
             order_id = extract_order_id(raw)
+            acceptance = finalize_place_broker_response({}, raw)
             _emit(
                 {
                     "step": "probe_order_type",
@@ -730,6 +739,18 @@ async def run_probe(
                         "reason": (
                             "accepted probe returned no bounded 1-18 digit order id; "
                             "do not retry; reconcile in broker UI"
+                        ),
+                    }
+                )
+            elif acceptance.get("status") == "acceptance_uncertain":
+                exit_code = 2
+                _emit(
+                    {
+                        "step": "cleanup_required",
+                        "trde_tp": code,
+                        "reason": (
+                            "probe acceptance is uncertain; do not retry; "
+                            "reconcile in broker UI"
                         ),
                     }
                 )

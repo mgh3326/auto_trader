@@ -137,7 +137,7 @@ Exit codes:
   cleanup times out, a fill or position delta appears, or an accepted order is
   untrackable. **Manual cleanup/unwind required** — see the redacted
   `cleanup_required` and `final_reconciliation` output. Do not retry a place
-  reported as `accepted_untracked`.
+  reported as `accepted_untracked` or `acceptance_uncertain`.
 
 `full` mode without `--confirm` stops after the dry-run and emits a `stop` step.
 
@@ -275,7 +275,7 @@ broker evidence.
 | place confirmed | AAPL | NASD | limit | confirm | `00001112…` | return_code=0 | — |
 | order history (open) | AAPL | NASD | — | — | `00001112…` | pending | — |
 | cancel confirmed | AAPL | NASD | — | confirm | `00001112…` | return_code=0 | closed |
-| final reconcile | — | — | — | — | — | 0 open orders | clean |
+| final reconcile | AAPL | NASD | — | — | `00001112…` | target cancelled/rejected; baseline position delta 0 | clean |
 
 Omit all secret values. If `cancel`/account queries return a non-zero
 `return_code`, record the `return_msg` as **unsupported evidence** and a

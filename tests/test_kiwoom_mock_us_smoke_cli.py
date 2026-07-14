@@ -272,6 +272,96 @@ async def test_probe_cleanup_failure_returns_nonzero(monkeypatch) -> None:
     assert await smoke.run_probe(args) == 2
 
 
+@pytest.mark.asyncio
+async def test_probe_uncertain_acceptance_returns_nonzero(monkeypatch) -> None:
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeOrders:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def place_buy_order(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return {"return_code": False}
+
+    class FakeAccount:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def get_positions(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return _page([])
+
+    monkeypatch.setattr(smoke, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(smoke, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(smoke, "KiwoomUsOrderClient", FakeOrders)
+    monkeypatch.setattr(smoke, "KiwoomUsAccountClient", FakeAccount)
+    args = Namespace(
+        confirm_probes=True,
+        confirm_existing_position=False,
+        probe_order_types="26",
+        probe_side="buy",
+        symbol="NVDA",
+        quantity=1,
+        price=1.0,
+        stop_price=None,
+    )
+
+    assert await smoke.run_probe(args) == 2
+
+
+@pytest.mark.asyncio
+async def test_probe_place_exception_returns_nonzero(monkeypatch) -> None:
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeOrders:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def place_buy_order(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            raise TimeoutError("send outcome unknown")
+
+    class FakeAccount:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def get_positions(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return _page([])
+
+    monkeypatch.setattr(smoke, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(smoke, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(smoke, "KiwoomUsOrderClient", FakeOrders)
+    monkeypatch.setattr(smoke, "KiwoomUsAccountClient", FakeAccount)
+    args = Namespace(
+        confirm_probes=True,
+        confirm_existing_position=False,
+        probe_order_types="26",
+        probe_side="buy",
+        symbol="NVDA",
+        quantity=1,
+        price=1.0,
+        stop_price=None,
+    )
+
+    assert await smoke.run_probe(args) == 2
+
+
 def test_extract_order_id_accepts_bounded_digits_only() -> None:
     assert smoke.extract_order_id({"ord_no": "000000282"}) == "000000282"
     assert smoke.extract_order_id({"ord_no": "282"}) == "282"
@@ -282,9 +372,10 @@ def test_extract_order_id_accepts_bounded_digits_only() -> None:
     assert smoke.extract_order_id({"ord_no": ""}) is None
 
 
-def test_reconcile_compare_is_zero_padding_insensitive() -> None:
+def test_reconcile_compare_preserves_leading_zeroes() -> None:
     payload = {"result_list": [{"ord_no": "000000000282"}]}
-    assert smoke._payload_contains_order_id(payload, "000000282")
+    assert not smoke._payload_contains_order_id(payload, "000000282")
+    assert smoke._payload_contains_order_id(payload, "000000000282")
     assert not smoke._payload_contains_order_id(payload, "000000283")
     assert not smoke._payload_contains_order_id({"ord_no": "28a2"}, "282")
 
@@ -344,6 +435,62 @@ def test_target_classifier_covers_documented_lifecycle_states() -> None:
         == "rejected"
     )
     assert smoke._classify_target([], [], target) == "unknown"
+
+
+def test_target_classifier_fails_closed_on_open_and_terminal_conflict() -> None:
+    target = "000000282"
+    open_row = {
+        "ord_no": target,
+        "cntr_qty": "0",
+        "ord_remnq": "2",
+    }
+    cancelled_row = {
+        "ord_no": target,
+        "cntr_qty": "0",
+        "ord_remnq": "0",
+        "ord_cntr_tp": "12",
+    }
+
+    assert smoke._classify_target([open_row], [cancelled_row], target) == "unknown"
+
+
+def test_target_classifier_fails_closed_on_malformed_terminal_evidence() -> None:
+    target = "000000282"
+    malformed_row = {
+        "ord_no": target,
+        "ord_remnq": "0",
+        "ord_cntr_tp": "12",
+    }
+    cancelled_row = {
+        "ord_no": target,
+        "cntr_qty": "0",
+        "ord_remnq": "0",
+        "ord_cntr_tp": "12",
+    }
+
+    assert (
+        smoke._classify_target([], [malformed_row, cancelled_row], target) == "unknown"
+    )
+
+
+def test_target_classifier_fails_closed_on_conflicting_terminal_states() -> None:
+    target = "000000282"
+    cancelled_row = {
+        "ord_no": target,
+        "cntr_qty": "0",
+        "ord_remnq": "0",
+        "ord_cntr_tp": "12",
+    }
+    rejected_row = {
+        "ord_no": target,
+        "cntr_qty": "0",
+        "ord_remnq": "0",
+        "ord_stat": "rejected",
+    }
+
+    assert (
+        smoke._classify_target([], [cancelled_row, rejected_row], target) == "unknown"
+    )
 
 
 def _page(

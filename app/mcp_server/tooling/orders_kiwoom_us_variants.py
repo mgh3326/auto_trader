@@ -259,7 +259,12 @@ def register(mcp: FastMCP) -> None:
             else:
                 raw = await orders.place_sell_order(**kwargs)
         except Exception as exc:  # noqa: BLE001 - stable MCP error envelope
-            return _exception_response("place_order", exc)
+            return {
+                **_exception_response("place_order", exc),
+                "status": "acceptance_uncertain",
+                "reconcile_required": True,
+                "retry_allowed": False,
+            }
         return _finalize_us(
             {
                 "source": "kiwoom",
