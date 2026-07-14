@@ -37,6 +37,12 @@ proposal execution and ROB-858 Toss loss-cut/reconcile convergence:
   adding shared ROB-800 guards, Toss audit fields, broker-evidence projection,
   and a terminal-row repair sweep. The canonical GO rationale and risks are in
   [`docs/plans/2026-07-13-rob-858-toss-losscut-decision.md`](../plans/2026-07-13-rob-858-toss-losscut-decision.md).
+- **ROB-870** — adds a durable Telegram `전체 승인` summary for eligible
+  manual proposals. It preserves every proposal's individual buttons, nonce,
+  audit, fresh revalidation, and result message; a batch is only a single-use
+  trigger over those existing approval paths. See the
+  [ROB-870 design](../superpowers/specs/2026-07-14-rob-870-telegram-batch-approval-design.md)
+  and [implementation plan](../superpowers/plans/2026-07-14-rob-870-telegram-batch-approval.md).
 
 There is still **no**
 `order_proposal_approve` / `order_proposal_submit` MCP tool in any slice —
@@ -81,6 +87,12 @@ See the full design in
   callback) — so neither a stale cached message nor a duplicate callback can
   ever re-trigger approval/deny. See Troubleshooting for the two error
   strings.
+- **Batch nonce is not proposal authorization.** ROB-870 atomically consumes a
+  separate batch nonce before processing its frozen member list. It then
+  consumes each member's snapshotted proposal nonce through the same single-
+  proposal approval path. Replaying the batch trigger cannot run the list
+  twice, and a stale or already-used member nonce is skipped rather than
+  bypassed.
 - **Chat allowlist (authz, separate from the webhook secret).**
   `handle_callback_update` rejects any callback whose `chat.id` is not in
   `settings.order_proposals_telegram_chat_allowlist`
@@ -421,6 +433,19 @@ WHERE root_proposal_id = (
   SELECT root_proposal_id FROM review.order_proposals WHERE proposal_id = '<PROPOSAL_UUID>'
 )
 ORDER BY revision;
+
+-- A batch, its members, and per-member outcomes (nonce values remain secret)
+SELECT
+  b.batch_id, b.chat_id, b.window_started_at, b.window_closes_at,
+  b.expires_at, b.approval_nonce_used_at, b.approved_at,
+  b.approved_by_telegram_user_id, b.summary_message_id,
+  p.proposal_id, p.symbol, m.approval_message_id,
+  m.result, m.result_detail, m.processed_at, m.added_at
+FROM review.order_proposal_approval_batches b
+JOIN review.order_proposal_approval_batch_members m ON m.batch_pk = b.id
+JOIN review.order_proposals p ON p.id = m.proposal_pk
+WHERE b.batch_id = '<BATCH_UUID>'
+ORDER BY m.added_at, m.id;
 ```
 
 No SQL INSERT/UPDATE/DELETE against these tables is supported outside
@@ -474,6 +499,60 @@ Canary sequence: deploy with the flag off; enable only the smallest checked-in
 caps and confirm one resting order plus veto; verify DB/broker convergence;
 then raise caps in a reviewed policy PR. Never enable by changing both the env
 gate and caps broadly in the same operational step.
+
+### Manual batch approval (ROB-870)
+
+The production DB source of truth for the 2026-07-13 US session is: raw 19
+groups/20 rungs, minus 3/3 superseded by ROB-869, leaving 16/17 valid. The
+ROB-871 counterfactual classifies 3/3 as automatic candidates, so the manual
+remainder is 13 groups/14 rungs:
+
+| Exclusive manual reason | Groups | Rungs | Operational interpretation |
+|---|---:|---:|---|
+| Per-order cap above the $150 US canary seed | 9 | 9 | Temporary rollout policy; expected to shrink as the reviewed cap rises. |
+| Resting distance below 3% | 3 | 3 | Structurally human-gated at the current resting policy. |
+| Action type (`replace` / `cancel`) | 0 | 0 | Structurally human-gated even though this session had no such rows. |
+| Other: multi-rung all-or-human fallback | 1 | 2 | Structurally human-gated until atomic ladder execution exists. |
+| **Total manual remainder** | **13** | **14** | |
+
+Excluding the temporary cap leaves a structural floor of 4 groups/5 rungs in
+this session. The implementation value is based on that structural manual work
+(immediate/non-resting proposals, replace/cancel, multi-rung all-or-human) and
+on gate-off periods where all valid proposals fall back to human approval, not
+on treating the conservative $150 canary cap as permanent demand.
+
+ROB-870 has no separate activation flag. When the existing proposal Telegram
+surface is enabled, every successfully delivered, eligible manual approval
+message is registered into a batch for that destination chat. The first member
+opens a fixed ten-minute collection window; later members do not move the
+window boundary. A summary with `전체 승인` appears at member two and is edited
+as more eligible messages arrive. The batch click expires ten minutes after
+the latest member, capped by the earliest non-null member `valid_until`.
+
+Registration and click-time checks both exclude loss cuts, terminal or
+superseded proposals, already auto-approved proposals, expired proposals,
+used/missing proposal nonces, and groups with no pending approval rung. Loss
+cuts keep their mandatory two-click evidence flow. Market orders and explicit
+replace/cancel actions remain human-gated and may use the batch surface; the
+batch does not weaken any action-specific fresh broker checks.
+
+Clicking `전체 승인` performs these steps:
+
+1. Consume and commit the batch nonce once, freezing the ordered members.
+2. Re-read each proposal and rerun the eligibility checks at click time.
+3. Process each remaining member in its own transaction through the normal
+   single-proposal nonce, approval audit, commit lease, fresh preview, guards,
+   and submit path.
+4. Continue after a skipped or failed member and edit each individual message
+   with its own outcome.
+5. Replace the summary with grouped `승인 완료`, `재확인 필요`,
+   `제외/건너뜀`, and `실패` results.
+
+The individual `✅ 승인` / `❌ 거부` messages remain available. A ROB-861
+buying-power shortfall affects only that member: it receives the existing new
+nonce and reconfirmation message, while later batch members continue. A
+member-level unexpected error is recorded as `failed`; it does not roll back
+already committed members or stop the rest of the batch.
 
 For a deployment that will approve loss cuts, configure both sides of the
 identity binding with an operator-managed identity (placeholder shown; do not
@@ -621,8 +700,9 @@ submitted blind would defeat the entire point of a human-approval gate.
    `chat.id` against `settings.order_proposals_telegram_chat_allowlist`
    first, before parsing anything else about the callback.
 2. **Callback-data parse + proposal resolution.** `parse_callback_data`
-   extracts `(action, proposal_short, nonce)` from the compact
-   `op:<8-char-prefix>:<nonce>` / `dn:<8-char-prefix>:<nonce>` string (no raw
+   extracts `(action, subject_short, nonce)` from the compact
+   `op:<8-char-prefix>:<nonce>` / `dn:<8-char-prefix>:<nonce>` /
+   `ba:<8-char-batch-prefix>:<nonce>` string (no raw
    `approval_hash` ever appears in a Telegram message —
    `build_approval_message` explicitly redacts `payload_hash`,
    `approval_hash`, the nonce, and every rung's `approval_hash_digest` from
@@ -928,6 +1008,12 @@ The ROB-816 migration (`20260710_rob816_order_proposals`) is additive-only
 `20260710_rob800_exit_intent`. `downgrade()` drops indexes then tables in
 reverse order and is safe in non-production environments.
 
+ROB-870 adds the equally additive
+`20260714_rob870_approval_batches` head with
+`review.order_proposal_approval_batches` and
+`review.order_proposal_approval_batch_members`. Apply it before enabling the
+updated runtime; its downgrade drops the member table before the batch table.
+
 ### `403 Telegram callback token not configured`
 
 `AuthMiddleware` returns this when `ORDER_PROPOSALS_TELEGRAM_TOKEN` is unset
@@ -991,6 +1077,27 @@ nonce on that message, so its buttons remain clickable but inert). If
 neither explains it, check whether something outside the Telegram flow
 called `set_approval_nonce`/`consume_approval_nonce` directly (should never
 happen outside `dispatch.py`/`telegram_callback.py`).
+
+### `approval_batch_nonce_replay` / `approval_batch_expired`
+
+`approval_batch_nonce_replay` means the `전체 승인` trigger was already
+consumed. The original execution may still be processing or may already have
+finished; inspect the summary and the batch DB query above instead of clicking
+again. `approval_batch_expired` means its click TTL or a member's earlier
+`valid_until` boundary passed. Use the still-current individual messages, or
+create/dispatch fresh proposals where their individual approval window also
+expired. `approval_batch_not_found` means the compact batch prefix resolves to
+no unique durable batch; fail closed and use individual approvals.
+
+### Batch summary contains `제외/건너뜀` or `실패`
+
+`제외/건너뜀` is an expected click-time race outcome: the member became
+terminal/superseded/auto-approved/expired, its proposal nonce was already used,
+or it no longer has a pending approval rung. `실패` is an isolated unexpected
+member error. Later members still run in both cases. Check the individual
+message, `result_detail` in the batch DB query, and the proposal/rung state;
+retry only through a current individual approval button or a newly dispatched
+proposal. Never replay the batch callback.
 
 ### `NEEDS_RECONFIRM` loop (a rung keeps coming back needs_reconfirm)
 

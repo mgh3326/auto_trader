@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.services.order_proposals import approval_message as approval_messages
 from app.services.order_proposals.approval_message import (
     build_action_diff,
     build_approval_message,
@@ -71,6 +72,135 @@ def _snapshot_rung():
         quantity=Decimal("3.5"),
         limit_price=Decimal("42000"),
     )
+
+
+def test_batch_callback_round_trip_and_telegram_limit():
+    batch_id = uuid.UUID("aaaaaaaa-1111-4111-8111-111111111111")
+
+    data = approval_messages.build_batch_callback_data(
+        batch_id=batch_id, nonce="batch_nonce-1"
+    )
+
+    assert parse_callback_data(data) == ("ba", "aaaaaaaa", "batch_nonce-1")
+    assert len(data.encode()) <= 64
+
+
+def test_batch_summary_lists_notional_and_account_subtotals():
+    batch = SimpleNamespace(
+        batch_id=uuid.UUID("aaaaaaaa-1111-4111-8111-111111111111"),
+        approval_nonce="batch-nonce",
+        expires_at=datetime(2026, 7, 14, 1, 30, tzinfo=UTC),
+    )
+    proposals = [
+        (
+            _group(
+                symbol="AAPL",
+                market="equity_us",
+                side="buy",
+                account_mode="kis_live",
+                broker_account_id="account-1234",
+            ),
+            [_rung(quantity=Decimal("1"), limit_price=Decimal("100"))],
+        ),
+        (
+            _group(
+                symbol="MSFT",
+                market="equity_us",
+                side="sell",
+                account_mode="toss_live",
+                broker_account_id=None,
+            ),
+            [_rung(quantity=Decimal("2"), limit_price=Decimal("50"))],
+        ),
+    ]
+
+    text, keyboard = approval_messages.build_batch_approval_message(
+        batch=batch, proposals=proposals
+    )
+
+    assert "AAPL" in text and "MSFT" in text
+    assert r"kis\_live ···1234" in text and r"toss\_live" in text
+    assert "합계: $200" in text
+    assert keyboard["inline_keyboard"][0][0]["text"] == "전체 승인"
+
+
+def test_batch_summary_omits_market_order_notional_from_totals():
+    batch = SimpleNamespace(
+        batch_id=uuid.uuid4(),
+        approval_nonce="batch-nonce",
+        expires_at=datetime(2026, 7, 14, 1, 30, tzinfo=UTC),
+    )
+    proposals = [
+        (
+            _group(
+                symbol="AAPL",
+                market="equity_us",
+                account_mode="kis_live",
+                order_type="market",
+            ),
+            [
+                _rung(
+                    quantity=Decimal("1"),
+                    limit_price=Decimal("999"),
+                    notional=Decimal("999"),
+                )
+            ],
+        ),
+        (
+            _group(symbol="MSFT", market="equity_us", account_mode="kis_live"),
+            [_rung(quantity=Decimal("1"), limit_price=Decimal("100"))],
+        ),
+    ]
+
+    text, _keyboard = approval_messages.build_batch_approval_message(
+        batch=batch, proposals=proposals
+    )
+
+    assert "합계: $100" in text
+    assert "$999" not in text
+    assert "$1,099" not in text
+
+
+def test_batch_result_groups_each_member_outcome():
+    groups = [
+        _group(symbol="AAPL"),
+        _group(symbol="MSFT"),
+        _group(symbol="NVDA"),
+        _group(symbol="AMZN"),
+    ]
+
+    text = approval_messages.build_batch_result_message(
+        proposals=[(group, [_rung()]) for group in groups],
+        results=[
+            {
+                "proposal_id": str(groups[0].proposal_id),
+                "status": "approved",
+                "rung_results": [{"rung_index": 2, "result": "submitted_resting"}],
+            },
+            {
+                "proposal_id": str(groups[1].proposal_id),
+                "status": "needs_reconfirm",
+            },
+            {
+                "proposal_id": str(groups[2].proposal_id),
+                "status": "skipped",
+                "reason": "nonce_replay",
+            },
+            {
+                "proposal_id": str(groups[3].proposal_id),
+                "status": "failed",
+                "reason": "broker unavailable",
+                "rung_results": [{"rung_index": 4, "result": "unverified"}],
+            },
+        ],
+    )
+
+    assert "승인 완료" in text and "AAPL" in text
+    assert "재확인 필요" in text and "MSFT" in text
+    assert "제외/건너뜀" in text and "NVDA" in text
+    assert "실패" in text and "AMZN" in text
+    assert "#3 주문 유지(대기)" in text
+    assert "#5 확인 불가(수동 확인 필요)" in text
 
 
 @pytest.mark.unit
