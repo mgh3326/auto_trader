@@ -42,7 +42,7 @@ from __future__ import annotations
 import logging
 import secrets
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 
@@ -54,6 +54,7 @@ from app.mcp_server.caller_identity import caller_agent_id_var
 from app.services.order_proposals.approval_message import (
     _escape_markdown,
     build_approval_message,
+    build_batch_result_message,
     build_buying_power_shortfall_text,
     build_loss_cut_confirmation_message,
     parse_callback_data,
@@ -73,7 +74,10 @@ from app.services.order_proposals.revalidation import (
     RungOutcome,
     revalidate_and_submit,
 )
-from app.services.order_proposals.service import OrderProposalsService
+from app.services.order_proposals.service import (
+    OrderProposalsService,
+    batch_member_block_reason,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +102,33 @@ _RESULT_LABELS: dict[str, str] = {
     "needs_reconfirm": "재확인 필요",
     "cancelled": "취소 확인",
 }
+
+_BATCH_SUCCESS_RESULTS = frozenset(
+    {"submitted_acked", "submitted_resting", "cancelled"}
+)
+_BATCH_SKIP_RESULTS = frozenset({"guard_blocked", "approval_required"})
+
+
+def _serialize_rung_outcomes(outcomes: list[RungOutcome]) -> list[dict[str, Any]]:
+    """Preserve the original rung index for batch summaries and audits."""
+    return [
+        {"rung_index": outcome.rung_index, "result": outcome.result}
+        for outcome in outcomes
+    ]
+
+
+def _batch_result_values(approval_result: Mapping[str, Any]) -> list[str]:
+    """Read structured rung results, falling back to the legacy value list."""
+    structured = approval_result.get("rung_results")
+    if isinstance(structured, list):
+        values = [
+            str(item.get("result"))
+            for item in structured
+            if isinstance(item, Mapping) and item.get("result") is not None
+        ]
+        if values:
+            return values
+    return [str(value) for value in approval_result.get("results") or []]
 
 
 def _outcome_error_summary(outcome: RungOutcome, *, limit: int = 240) -> str | None:
@@ -197,6 +228,28 @@ def _build_result_summary(outcomes: list[RungOutcome]) -> str:
             label = f"{label} — {reason}"
         lines.append(f"- #{outcome.rung_index + 1}: {label}")
     return "\n".join(lines)
+
+
+def _classify_batch_approval_result(
+    approval_result: dict[str, Any],
+) -> tuple[str, str | None]:
+    """Map the reused single-approval result without hiding rung failures."""
+    if not approval_result.get("handled"):
+        return "skipped", str(approval_result.get("reason") or "approval_skipped")
+    if approval_result.get("reason") == "needs_reconfirm":
+        return "needs_reconfirm", None
+
+    outcomes = _batch_result_values(approval_result)
+    if outcomes and all(value in _BATCH_SUCCESS_RESULTS for value in outcomes):
+        return "approved", None
+    if outcomes and all(value in _BATCH_SKIP_RESULTS for value in outcomes):
+        return "skipped", ",".join(dict.fromkeys(outcomes))
+    if outcomes:
+        non_success = [
+            value for value in outcomes if value not in _BATCH_SUCCESS_RESULTS
+        ]
+        return "failed", ",".join(dict.fromkeys(non_success or outcomes))
+    return "skipped", "no_rung_outcomes"
 
 
 def _build_extra_reconfirm_block(reconfirm_outcomes: list[RungOutcome]) -> str:
@@ -494,6 +547,8 @@ async def _handle_approve(
             "reason": "needs_reconfirm",
             "proposal_id": str(proposal_id),
             "new_message_id": new_message_id,
+            "results": [outcome.result for outcome in outcomes],
+            "rung_results": _serialize_rung_outcomes(outcomes),
         }
 
     summary = _build_result_summary(outcomes)
@@ -510,6 +565,166 @@ async def _handle_approve(
         "reason": "approved",
         "proposal_id": str(proposal_id),
         "results": [outcome.result for outcome in outcomes],
+        "rung_results": _serialize_rung_outcomes(outcomes),
+    }
+
+
+async def _handle_batch_approve(
+    *,
+    service_factory: ServiceFactory,
+    batch_short: str,
+    nonce: str,
+    now: datetime,
+    notifier: Any,
+    chat_id: Any,
+    message_id: int | None,
+    telegram_user_id: str,
+    revalidate_fn: RevalidateFn,
+) -> dict[str, Any]:
+    """Consume one batch trigger and process every frozen member independently."""
+    async with service_factory() as session:
+        service = OrderProposalsService(session)
+        batch_id = await service.resolve_approval_batch_id_prefix(batch_short)
+        if batch_id is None:
+            await session.commit()
+            return {"handled": False, "reason": "approval_batch_not_found"}
+        try:
+            _batch, members = await service.consume_approval_batch_nonce(
+                batch_id,
+                nonce,
+                chat_id=str(chat_id),
+                telegram_user_id=telegram_user_id,
+                now=now,
+            )
+        except OrderProposalError as exc:
+            await session.commit()
+            if str(exc) == "approval_batch_expired" and message_id is not None:
+                await _safe_edit_message(
+                    notifier,
+                    chat_id,
+                    message_id,
+                    "⌛ 일괄 승인 만료",
+                    reply_markup={"inline_keyboard": []},
+                )
+            return {"handled": False, "reason": str(exc)}
+
+        # Commit the single-use batch trigger before touching any member. A
+        # crash or Telegram retry can then never execute the frozen set twice.
+        await session.commit()
+
+    results: list[dict[str, Any]] = []
+    for member in members:
+        member_result: dict[str, Any] = {
+            "proposal_id": str(member.proposal_id),
+            "status": "failed",
+        }
+        member_message: str | None = None
+        async with service_factory() as member_session:
+            member_service = OrderProposalsService(member_session)
+            try:
+                group, rungs = await member_service.get_proposal(member.proposal_id)
+                block_reason = batch_member_block_reason(group, rungs, now=now)
+                if block_reason is not None:
+                    member_result.update(status="skipped", reason=block_reason)
+                    member_message = (
+                        f"⚠️ 일괄 승인 제외 — {_escape_markdown(block_reason)}"
+                    )
+                else:
+                    approval_result = await _handle_approve(
+                        session=member_session,
+                        service=member_service,
+                        proposal_id=member.proposal_id,
+                        nonce=member.approval_nonce,
+                        now=now,
+                        notifier=notifier,
+                        chat_id=chat_id,
+                        message_id=member.approval_message_id,
+                        callback_query_id=None,
+                        telegram_user_id=telegram_user_id,
+                        revalidate_fn=revalidate_fn,
+                    )
+                    rung_results = approval_result.get("rung_results")
+                    if isinstance(rung_results, list):
+                        member_result["rung_results"] = [
+                            {
+                                "rung_index": int(value["rung_index"]),
+                                "result": str(value["result"]),
+                            }
+                            for value in rung_results
+                            if isinstance(value, Mapping)
+                            and "rung_index" in value
+                            and "result" in value
+                        ]
+                    status, reason = _classify_batch_approval_result(approval_result)
+                    member_result["status"] = status
+                    if reason is not None:
+                        member_result["reason"] = reason
+                    if not approval_result.get("handled"):
+                        member_message = (
+                            f"⚠️ 일괄 승인 제외 — {_escape_markdown(reason)}"
+                        )
+            except Exception:  # noqa: BLE001 - isolate each batch member
+                logger.exception(
+                    "order_proposals batch member approval failed",
+                    extra={"proposal_id": str(member.proposal_id)},
+                )
+                await member_session.rollback()
+                member_result.update(status="failed", reason="internal_error")
+                member_message = (
+                    "❌ 일괄 승인 처리 실패 — 단건 승인을 다시 확인해 주세요."
+                )
+
+            # Record the member outcome before any batch-owned Telegram edit.
+            # `_handle_approve` already commits its own broker/proposal work.
+            try:
+                await member_service.record_approval_batch_member_result(
+                    member.member_id,
+                    result=str(member_result["status"]),
+                    detail={
+                        "proposal_id": member_result["proposal_id"],
+                        "reason": member_result.get("reason", ""),
+                        "rung_results": ",".join(
+                            f"{value['rung_index']}:{value['result']}"
+                            for value in member_result.get("rung_results", [])
+                        ),
+                    },
+                    now=now,
+                )
+                await member_session.commit()
+            except Exception:  # noqa: BLE001 - observation must not stop the batch
+                logger.exception(
+                    "order_proposals batch member result audit failed",
+                    extra={"proposal_id": str(member.proposal_id)},
+                )
+                await member_session.rollback()
+
+        if member_message is not None:
+            await _safe_edit_message(
+                notifier,
+                chat_id,
+                member.approval_message_id,
+                member_message,
+                reply_markup={"inline_keyboard": []},
+            )
+        results.append(member_result)
+
+    async with service_factory() as display_session:
+        display_service = OrderProposalsService(display_session)
+        _batch, proposals = await display_service.get_approval_batch_display(batch_id)
+        await display_session.commit()
+    if message_id is not None:
+        await _safe_edit_message(
+            notifier,
+            chat_id,
+            message_id,
+            build_batch_result_message(proposals=proposals, results=results),
+            reply_markup={"inline_keyboard": []},
+        )
+    return {
+        "handled": True,
+        "reason": "batch_approved",
+        "batch_id": str(batch_id),
+        "results": results,
     }
 
 
@@ -608,13 +823,28 @@ async def handle_callback_update(
             return {"handled": False, "reason": "chat_not_allowed"}
 
         try:
-            action, proposal_short, nonce = parse_callback_data(data)
+            action, subject_short, nonce = parse_callback_data(data)
         except ValueError:
             return {"handled": False, "reason": "malformed_callback_data"}
 
+        if action == "ba":
+            return await _handle_batch_approve(
+                service_factory=service_factory,
+                batch_short=subject_short,
+                nonce=nonce,
+                now=now,
+                notifier=active_notifier,
+                chat_id=chat_id,
+                message_id=message_id,
+                telegram_user_id=(
+                    str(telegram_user_id) if telegram_user_id is not None else ""
+                ),
+                revalidate_fn=revalidate_fn,
+            )
+
         async with service_factory() as session:
             service = OrderProposalsService(session)
-            proposal_id = await _resolve_proposal_id(service, proposal_short)
+            proposal_id = await _resolve_proposal_id(service, subject_short)
             if proposal_id is None:
                 await session.commit()
                 return {"handled": False, "reason": "proposal_not_found"}

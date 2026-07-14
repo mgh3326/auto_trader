@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added (ROB-870 — Telegram manual batch approval; migration 1)
+- **Operators can approve a burst of manual proposals from one Telegram summary.** Successfully delivered proposals collect by chat in a fixed ten-minute window; the summary appears at member two, retains every individual approve/deny message, and reports approved, reconfirmation, skipped, and failed members separately.
+- **Batching preserves every existing live-order safety boundary.** A single-use batch trigger still consumes each proposal's original nonce and audit, reruns fresh broker checks in an isolated transaction, excludes loss cuts/terminal/superseded/auto-approved rows at registration and click time, continues after member failures, and leaves ROB-861 buying-power misses independently reconfirmable.
+- **The batch ledger and operator contract are durable.** Additive migration `20260714_rob870_approval_batches` stores batches, immutable membership nonce snapshots, delivery claims, and bounded member results; the runbook records the 2026-07-13 manual 13-group/14-rung basis and its cap-independent structural floor.
+
+### Fixed (ROB-868 — Upbit websocket proposal fill projection; migration 0)
+- **Committed Upbit websocket fills now converge proposal rungs immediately.** `trade` events project cumulative partial-fill evidence and `done` events project terminal fill evidence through an independent committed proposal-service session, matching both the broker UUID and Upbit client identifier while keeping projection failures best-effort. Individual ledger rows retain per-trade `volume`; terminal cumulative evidence is applied only after an existing durable fill is verified and is not double-counted as another fill.
+- **Matched proposal fills retain operator visibility at small notionals.** Proposal-rung fills bypass the ordinary notification threshold without changing unmatched-fill policy, and duplicate ledger deliveries remain notification-idempotent.
+- **Upbit consumer health is observable.** Runtime health logs now include Upbit message/execution counters and last-seen timestamps alongside the existing KIS metrics. The single-active Upbit launchd service requires a restart after deployment; `scripts/deploy-native.sh` performs that restart.
+
 ### Fixed (ROB-872 — Kiwoom mock US post-merge safety hardening; migration 0)
 - **Full and probe smoke lifecycles now prove cleanup from broker evidence.** Bounded open/today-order and position pagination, exact 1-18 ASCII-digit order-ID matching with leading zeroes preserved, baseline position deltas, and bounded cancel polling fail closed on missing, conflicting, filled, unknown, or timed-out evidence. Broker read exceptions become redacted cleanup evidence, probes stop immediately after an unsafe baseline, and modify cleanup must prove every original/replacement order ID terminal.
 - **Kiwoom place acceptance is strict and non-retryable when untrackable.** Only a strict broker success code plus exactly one non-conflicting canonical ID across documented fields yields `submitted`; missing, invalid, or conflicting ID evidence returns `accepted_untracked` with reconciliation required, while explicit rejection remains distinct.

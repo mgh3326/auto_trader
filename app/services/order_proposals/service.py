@@ -7,6 +7,7 @@ and never commits — callers own the transaction (see global-constraints.md).
 from __future__ import annotations
 
 import inspect
+import secrets
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -18,7 +19,12 @@ from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import KST
-from app.models.order_proposals import OrderProposal, OrderProposalRung
+from app.models.order_proposals import (
+    OrderProposal,
+    OrderProposalApprovalBatch,
+    OrderProposalApprovalBatchMember,
+    OrderProposalRung,
+)
 from app.models.review import TossLiveOrderLedger
 from app.services.order_proposals import state_machine as sm
 from app.services.order_proposals.broker_gateway import SUPPORTED_TARGET_ACTIONS
@@ -47,6 +53,21 @@ class RungInput:
     quantity: Decimal
     limit_price: Decimal | None
     notional: Decimal | None
+
+
+@dataclass(frozen=True)
+class BatchMemberSnapshot:
+    member_id: int
+    proposal_id: uuid.UUID
+    approval_nonce: str
+    approval_message_id: int
+
+
+@dataclass(frozen=True)
+class BatchRegistration:
+    batch: OrderProposalApprovalBatch
+    member_count: int
+    summary_action: Literal["none", "send", "edit"]
 
 
 # (account_mode, market) combinations the submit path
@@ -108,6 +129,31 @@ def proposal_approval_block_reason(group: OrderProposal) -> str | None:
         return "proposal_superseded_by:unknown"
     if group.lifecycle_state in _APPROVAL_TERMINAL_GROUP_STATES:
         return f"proposal_terminal:{group.lifecycle_state}"
+    return None
+
+
+def batch_member_block_reason(
+    group: OrderProposal,
+    rungs: list[OrderProposalRung],
+    *,
+    now: datetime,
+) -> str | None:
+    """Return why a proposal cannot be represented by a batch trigger."""
+    block_reason = proposal_approval_block_reason(group)
+    if block_reason is not None:
+        return block_reason
+    if group.exit_intent == "loss_cut":
+        return "loss_cut_excluded"
+    if isinstance((group.source_asof or {}).get("auto_approved"), dict):
+        return "auto_approved_excluded"
+    if group.valid_until is not None and now >= group.valid_until:
+        return "proposal_expired"
+    if not group.approval_nonce:
+        return "approval_nonce_missing"
+    if group.approval_nonce_used_at is not None:
+        return "approval_nonce_used"
+    if not any(rung.state == "pending_approval" for rung in rungs):
+        return "no_pending_approval_rungs"
     return None
 
 
@@ -978,6 +1024,244 @@ class OrderProposalsService:
         }
         return await self._repo.update_group(group, source_asof=merged)
 
+    async def register_approval_batch_member(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        chat_id: str,
+        approval_message_id: int,
+        now: datetime,
+        window_seconds: int = 600,
+        ttl_seconds: int = 600,
+    ) -> BatchRegistration | None:
+        """Register one still-manual proposal in the chat's open batch."""
+        self._require_timezone_aware(now)
+        await self._repo.acquire_approval_batch_chat_lock(chat_id)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        rungs = await self._repo.list_rungs(group.id)
+        if batch_member_block_reason(group, rungs, now=now) is not None:
+            return None
+        if await self._repo.get_approval_batch_member_by_nonce(
+            proposal_pk=group.id,
+            approval_nonce=str(group.approval_nonce),
+        ):
+            return None
+
+        batch = await self._repo.get_open_approval_batch(
+            chat_id=chat_id, now=now, for_update=True
+        )
+        if batch is None:
+            batch = await self._repo.insert_approval_batch(
+                batch_id=uuid.uuid4(),
+                chat_id=chat_id,
+                window_started_at=now,
+                window_closes_at=now + timedelta(seconds=window_seconds),
+                expires_at=self._bounded_batch_expiry(
+                    now=now,
+                    ttl_seconds=ttl_seconds,
+                    validity_deadlines=[group.valid_until],
+                ),
+                approval_nonce=secrets.token_urlsafe(12),
+                summary_dispatch_state="idle",
+            )
+
+        existing_members = await self._repo.list_approval_batch_members(batch.id)
+        if any(member.proposal_pk == group.id for member in existing_members):
+            return None
+
+        await self._repo.insert_approval_batch_member(
+            batch_pk=batch.id,
+            proposal_pk=group.id,
+            approval_nonce_snapshot=str(group.approval_nonce),
+            approval_message_id=approval_message_id,
+            added_at=now,
+        )
+        members = await self._repo.list_approval_batch_members(batch.id)
+        validity_deadlines: list[datetime | None] = []
+        # The two-member summary threshold must count only members that are
+        # still batch-eligible right now. A replacement created via supersede
+        # registers into the same window as the proposal it just invalidated;
+        # counting that dead member would announce an "전체 승인" batch whose
+        # live membership is a single proposal.
+        live_member_count = 0
+        for member in members:
+            member_group = await self._repo.get_group_by_pk(member.proposal_pk)
+            if member_group is None:
+                continue
+            validity_deadlines.append(member_group.valid_until)
+            member_rungs = await self._repo.list_rungs(member_group.id)
+            if batch_member_block_reason(member_group, member_rungs, now=now) is None:
+                live_member_count += 1
+        await self._repo.update_approval_batch(
+            batch,
+            expires_at=self._bounded_batch_expiry(
+                now=now,
+                ttl_seconds=ttl_seconds,
+                validity_deadlines=validity_deadlines,
+            ),
+        )
+
+        member_count = live_member_count
+        summary_action: Literal["none", "send", "edit"] = "none"
+        if member_count >= 2:
+            if batch.summary_message_id is not None:
+                summary_action = "edit"
+            elif batch.summary_dispatch_state == "idle" or (
+                batch.summary_dispatch_state == "sending"
+                and batch.summary_dispatch_lease_until is not None
+                and batch.summary_dispatch_lease_until <= now
+            ):
+                await self._repo.update_approval_batch(
+                    batch,
+                    summary_dispatch_state="sending",
+                    summary_dispatch_lease_until=now + timedelta(seconds=30),
+                )
+                summary_action = "send"
+        return BatchRegistration(
+            batch=batch,
+            member_count=member_count,
+            summary_action=summary_action,
+        )
+
+    @staticmethod
+    def _bounded_batch_expiry(
+        *,
+        now: datetime,
+        ttl_seconds: int,
+        validity_deadlines: list[datetime | None],
+    ) -> datetime:
+        expiry = now + timedelta(seconds=ttl_seconds)
+        bounded = [deadline for deadline in validity_deadlines if deadline is not None]
+        return min([expiry, *bounded]) if bounded else expiry
+
+    async def resolve_approval_batch_id_prefix(
+        self, batch_short: str
+    ) -> uuid.UUID | None:
+        return await self._repo.resolve_approval_batch_id_prefix(batch_short)
+
+    async def consume_approval_batch_nonce(
+        self,
+        batch_id: uuid.UUID,
+        nonce: str,
+        *,
+        chat_id: str,
+        telegram_user_id: str,
+        now: datetime,
+    ) -> tuple[OrderProposalApprovalBatch, list[BatchMemberSnapshot]]:
+        """Atomically consume a batch trigger and freeze its ordered members."""
+        self._require_timezone_aware(now)
+        batch = await self._repo.get_approval_batch_by_id(batch_id, for_update=True)
+        if batch is None:
+            raise OrderProposalError("approval_batch_not_found")
+        if batch.chat_id != chat_id:
+            raise OrderProposalError("approval_batch_chat_mismatch")
+        if batch.approval_nonce != nonce:
+            raise OrderProposalError("approval_batch_nonce_mismatch")
+        if batch.approval_nonce_used_at is not None:
+            raise OrderProposalError("approval_batch_nonce_replay")
+        if now >= batch.expires_at:
+            raise OrderProposalError("approval_batch_expired")
+        members = await self._repo.list_approval_batch_members(batch.id)
+        if len(members) < 2:
+            raise OrderProposalError("approval_batch_too_small")
+
+        await self._repo.update_approval_batch(
+            batch,
+            approval_nonce_used_at=now,
+            approved_by_telegram_user_id=telegram_user_id,
+            approved_at=now,
+        )
+        snapshots: list[BatchMemberSnapshot] = []
+        for member in members:
+            group = await self._repo.get_group_by_pk(member.proposal_pk)
+            if group is None:
+                continue
+            snapshots.append(
+                BatchMemberSnapshot(
+                    member_id=member.id,
+                    proposal_id=group.proposal_id,
+                    approval_nonce=member.approval_nonce_snapshot,
+                    approval_message_id=member.approval_message_id,
+                )
+            )
+        return batch, snapshots
+
+    async def record_approval_batch_summary(
+        self,
+        batch_id: uuid.UUID,
+        *,
+        message_id: int,
+        now: datetime,
+    ) -> OrderProposalApprovalBatch:
+        self._require_timezone_aware(now)
+        batch = await self._repo.get_approval_batch_by_id(batch_id, for_update=True)
+        if batch is None:
+            raise OrderProposalError("approval_batch_not_found")
+        return await self._repo.update_approval_batch(
+            batch,
+            summary_message_id=message_id,
+            summary_dispatch_state="sent",
+            summary_dispatch_lease_until=None,
+            updated_at=now,
+        )
+
+    async def release_approval_batch_summary_claim(
+        self, batch_id: uuid.UUID, *, now: datetime
+    ) -> OrderProposalApprovalBatch:
+        self._require_timezone_aware(now)
+        batch = await self._repo.get_approval_batch_by_id(batch_id, for_update=True)
+        if batch is None:
+            raise OrderProposalError("approval_batch_not_found")
+        return await self._repo.update_approval_batch(
+            batch,
+            summary_dispatch_state="idle",
+            summary_dispatch_lease_until=None,
+            updated_at=now,
+        )
+
+    async def get_approval_batch_display(
+        self, batch_id: uuid.UUID
+    ) -> tuple[
+        OrderProposalApprovalBatch,
+        list[tuple[OrderProposal, list[OrderProposalRung]]],
+    ]:
+        batch = await self._repo.get_approval_batch_by_id(batch_id)
+        if batch is None:
+            raise OrderProposalError("approval_batch_not_found")
+        proposals: list[tuple[OrderProposal, list[OrderProposalRung]]] = []
+        for member in await self._repo.list_approval_batch_members(batch.id):
+            group = await self._repo.get_group_by_pk(member.proposal_pk)
+            if group is None:
+                continue
+            proposals.append((group, await self._repo.list_rungs(group.id)))
+        return batch, proposals
+
+    async def record_approval_batch_member_result(
+        self,
+        member_id: int,
+        *,
+        result: str,
+        detail: dict[str, Any],
+        now: datetime,
+    ) -> OrderProposalApprovalBatchMember:
+        self._require_timezone_aware(now)
+        member = await self._repo.get_approval_batch_member_by_id(
+            member_id, for_update=True
+        )
+        if member is None:
+            raise OrderProposalError("approval_batch_member_not_found")
+        bounded_detail = {
+            str(key)[:80]: str(value)[:500] for key, value in detail.items()
+        }
+        return await self._repo.update_approval_batch_member(
+            member,
+            result=result[:40],
+            result_detail=bounded_detail,
+            processed_at=now,
+        )
+
     async def record_auto_approval(
         self,
         proposal_id: uuid.UUID,
@@ -1193,6 +1477,7 @@ class OrderProposalsService:
         *,
         correlation_id: str | None = None,
         broker_order_id: str | None = None,
+        idempotency_key: str | None = None,
         filled_qty: Decimal | None = None,
         terminal_state: Literal["filled", "partially_filled", "cancelled"] = "filled",
         now: datetime,
@@ -1211,11 +1496,14 @@ class OrderProposalsService:
         - ``cancelled`` carries no fill quantity (``filled_qty=None``) so a
           partial fill booked before a cancel is preserved, not zeroed.
         - No terminal state is ever inferred without matching broker evidence.
+        - Upbit client identifiers match the rung ``idempotency_key`` while
+          broker UUIDs continue to match ``broker_order_id``.
         """
         self._require_timezone_aware(now)
         match = await self._repo.find_rung_by_evidence(
             correlation_id=correlation_id,
             broker_order_id=broker_order_id,
+            idempotency_key=idempotency_key,
             states=_EVIDENCE_ACCEPTING_RUNG_STATES,
             account_mode=account_mode,
         )
@@ -1239,6 +1527,12 @@ class OrderProposalsService:
             # Repeated non-terminal evidence (e.g. a larger partial fill on an
             # already-partially_filled rung): refresh audit fields in place
             # rather than attempt an illegal self-transition.
+            if (
+                filled_qty is not None
+                and locked.filled_qty is not None
+                and filled_qty <= Decimal(str(locked.filled_qty))
+            ):
+                return None
             return await self._repo.update_rung(locked, **audit)
         return await self._transition_locked_rung(
             group, locked, new_state=terminal_state, **audit

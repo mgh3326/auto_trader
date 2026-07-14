@@ -34,7 +34,15 @@ from sqlalchemy import text
 # replaces only a mismatched definition before CREATE IF NOT EXISTS.
 # v11 (ROB-866): review.toss_manual_activity_alerts (new ORM table) — create_all
 # builds it; bump forces a persistent local DB to re-bootstrap once.
-SCHEMA_BOOTSTRAP_VERSION = 14
+# v15 (ROB-849): paper cohort immutable/composition triggers.
+# v16 (ROB-849 review): sealed assignment_count for immutable membership.
+# v17 (ROB-849 review): rebuild the unshipped cohort test schema with full
+# lineage, terminal fences, target reservations, and explicit claim states.
+# v18 (ROB-849 review): enforce terminal-fence audit text bounds at the DB edge.
+# v19 (ROB-849 review): treat every PostgreSQL whitespace class as blank.
+# v20 (ROB-849 + ROB-870): include the approval-batch ORM tables merged after
+# the cohort branch and force one combined create_all/bootstrap pass.
+SCHEMA_BOOTSTRAP_VERSION = 20
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -240,7 +248,139 @@ async def _ensure_trade_forecast_status_constraint(conn) -> None:
 # apply_test_schema() (they need a catalog probe so an unconditional form     #
 # would force an AccessExclusive lock on hot tables).                         #
 # --------------------------------------------------------------------------- #
+_PAPER_COHORT_AUDIT_TABLES = (
+    "paper_validation_cohorts",
+    "paper_validation_cohort_assignments",
+    "canonical_market_snapshots",
+    "paper_cohort_decisions",
+    "paper_cohort_venue_intents",
+    "paper_run_order_links",
+    "paper_cohort_target_reservations",
+    "paper_cohort_terminal_fences",
+)
+
+_PAPER_COHORT_REBUILD_ORDER = (
+    "paper_cohort_target_reservations",
+    "paper_cohort_terminal_fences",
+    "paper_run_order_links",
+    "paper_cohort_run_claims",
+    "paper_cohort_venue_intents",
+    "paper_cohort_decisions",
+    "canonical_market_snapshots",
+    "paper_validation_cohort_assignments",
+    "paper_validation_cohorts",
+)
+
+
+async def _rebuild_legacy_paper_cohort_schema(conn) -> None:
+    """Recreate only the unshipped ROB-849 test tables when their shape is stale."""
+
+    intent_exists = await conn.scalar(
+        text("SELECT to_regclass('research.paper_cohort_venue_intents') IS NOT NULL")
+    )
+    if not intent_exists:
+        return
+    expected_columns = {
+        ("paper_cohort_venue_intents", "round_decision_id"),
+        ("paper_run_order_links", "intent_id"),
+        ("paper_cohort_run_claims", "claim_status"),
+    }
+    present = {
+        (row.table_name, row.column_name)
+        for row in (
+            await conn.execute(
+                text(
+                    "SELECT table_name, column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'research' AND "
+                    "(table_name, column_name) IN "
+                    "(('paper_cohort_venue_intents','round_decision_id'),"
+                    "('paper_run_order_links','intent_id'),"
+                    "('paper_cohort_run_claims','claim_status'))"
+                )
+            )
+        )
+    }
+    fence_text_bounds_definition = await conn.scalar(
+        text(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conname = 'ck_paper_cohort_terminal_fence_text_bounds' "
+            "AND conrelid = "
+            "to_regclass('research.paper_cohort_terminal_fences')"
+        )
+    )
+    if (
+        expected_columns <= present
+        and fence_text_bounds_definition
+        and "[:space:]" in fence_text_bounds_definition
+    ):
+        return
+    for table in _PAPER_COHORT_REBUILD_ORDER:
+        await conn.execute(text(f"DROP TABLE IF EXISTS research.{table} CASCADE"))
+
+
+_PAPER_COHORT_TRIGGER_DDL: tuple[str, ...] = (
+    "ALTER TABLE research.paper_validation_cohorts ADD COLUMN IF NOT EXISTS "
+    "assignment_count INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE research.paper_validation_cohorts "
+    "ALTER COLUMN assignment_count DROP DEFAULT",
+    "CREATE OR REPLACE FUNCTION research.reject_paper_cohort_audit_mutation() "
+    "RETURNS trigger AS $$ BEGIN RAISE EXCEPTION "
+    "'research.% is append-only/immutable; % rejected', TG_TABLE_NAME, TG_OP "
+    "USING ERRCODE = 'restrict_violation'; END; $$ LANGUAGE plpgsql",
+    "CREATE OR REPLACE FUNCTION research.validate_paper_cohort_composition() "
+    "RETURNS trigger AS $$ DECLARE target_cohort_id text; "
+    "champion_count integer; challenger_count integer; assignment_count integer; "
+    "expected_assignment_count integer; "
+    "BEGIN target_cohort_id := NEW.cohort_id; "
+    "SELECT count(*) FILTER (WHERE role = 'champion'), "
+    "count(*) FILTER (WHERE role = 'challenger'), count(*) "
+    "INTO champion_count, challenger_count, assignment_count "
+    "FROM research.paper_validation_cohort_assignments "
+    "WHERE cohort_id = target_cohort_id; "
+    "SELECT c.assignment_count INTO expected_assignment_count "
+    "FROM research.paper_validation_cohorts AS c "
+    "WHERE c.cohort_id = target_cohort_id; "
+    "IF champion_count <> 1 OR challenger_count > 2 "
+    "OR assignment_count < 1 OR assignment_count > 3 "
+    "OR assignment_count <> expected_assignment_count THEN "
+    "RAISE EXCEPTION 'paper cohort % requires exactly one champion and at most "
+    "two challengers', target_cohort_id "
+    "USING ERRCODE = 'integrity_constraint_violation'; END IF; "
+    "RETURN NEW; END; $$ LANGUAGE plpgsql",
+    *tuple(
+        statement
+        for table in _PAPER_COHORT_AUDIT_TABLES
+        for statement in (
+            f"DROP TRIGGER IF EXISTS trg_{table}_immutable ON research.{table}",
+            f"DROP TRIGGER IF EXISTS trg_rob849_{table}_immutable ON research.{table}",
+            f"CREATE TRIGGER trg_rob849_{table}_immutable BEFORE UPDATE OR DELETE ON "
+            f"research.{table} FOR EACH ROW EXECUTE FUNCTION "
+            "research.reject_paper_cohort_audit_mutation()",
+            f"DROP TRIGGER IF EXISTS trg_{table}_truncate_immutable ON "
+            f"research.{table}",
+            f"DROP TRIGGER IF EXISTS trg_rob849_{table}_truncate_immutable ON "
+            f"research.{table}",
+            f"CREATE TRIGGER trg_rob849_{table}_truncate_immutable BEFORE TRUNCATE ON "
+            f"research.{table} FOR EACH STATEMENT EXECUTE FUNCTION "
+            "research.reject_paper_cohort_audit_mutation()",
+        )
+    ),
+    "DROP TRIGGER IF EXISTS trg_paper_cohort_composition_from_assignment ON "
+    "research.paper_validation_cohort_assignments",
+    "DROP TRIGGER IF EXISTS trg_paper_cohort_composition_from_cohort ON "
+    "research.paper_validation_cohorts",
+    "CREATE CONSTRAINT TRIGGER trg_paper_cohort_composition_from_cohort "
+    "AFTER INSERT ON research.paper_validation_cohorts "
+    "DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "
+    "research.validate_paper_cohort_composition()",
+    "CREATE CONSTRAINT TRIGGER trg_paper_cohort_composition_from_assignment "
+    "AFTER INSERT ON research.paper_validation_cohort_assignments "
+    "DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "
+    "research.validate_paper_cohort_composition()",
+)
+
 _DDL_STATEMENTS: tuple[str, ...] = (
+    *_PAPER_COHORT_TRIGGER_DDL,
     # ---- market_events / us_symbol_universe ----
     "ALTER TABLE market_events ADD COLUMN IF NOT EXISTS currency TEXT",
     "ALTER TABLE us_symbol_universe ADD COLUMN IF NOT EXISTS is_common_stock BOOLEAN",
@@ -1069,6 +1209,7 @@ async def apply_test_schema(conn) -> None:
             text("DROP TABLE IF EXISTS public.crypto_candles_1d CASCADE")
         )
 
+    await _rebuild_legacy_paper_cohort_schema(conn)
     await conn.run_sync(Base.metadata.create_all)
 
     # --- conditional "only when genuinely missing" probes (per-table catalog

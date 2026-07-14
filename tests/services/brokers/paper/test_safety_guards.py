@@ -8,6 +8,9 @@ import pytest
 
 from app.core.config import settings
 from app.mcp_server.profiles import McpProfile
+from app.mcp_server.tooling.paper_cohort_control_registration import (
+    PAPER_COHORT_CONTROL_TOOL_NAMES,
+)
 from app.mcp_server.tooling.paper_execution_registration import (
     PAPER_EXECUTION_TOOL_NAMES,
 )
@@ -180,7 +183,11 @@ def test_paper_execution_profile_is_exact_composed_allowlist(
 
     register_all_tools(mcp, profile=McpProfile.PAPER_EXECUTION)  # type: ignore[arg-type]
 
-    assert set(mcp.tools) == _EXPECTED_PROFILE_TOOLS | PAPER_VALIDATION_TOOL_NAMES
+    assert set(mcp.tools) == (
+        _EXPECTED_PROFILE_TOOLS
+        | PAPER_VALIDATION_TOOL_NAMES
+        | PAPER_COHORT_CONTROL_TOOL_NAMES
+    )
     forbidden_fragments = {
         "alpaca_paper",
         "binance_demo",

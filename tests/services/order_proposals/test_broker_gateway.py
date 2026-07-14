@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -26,6 +27,36 @@ def _order_row(**overrides):
         "order_type": "limit",
         **overrides,
     }
+
+
+def _toss_order(**overrides):
+    values = {
+        "order_id": "broker-1",
+        "client_order_id": None,
+        "status": "FILLED",
+        "symbol": "005930",
+        "side": "BUY",
+        "quantity": Decimal("1.00000000"),
+        "price": Decimal("100.00"),
+        "ordered_at": NOW.isoformat(),
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def _toss_rung(**overrides):
+    values = {
+        "rung_index": 0,
+        "idempotency_key": "tosprop-legacy-1",
+        "broker_order_id": None,
+        "side": "buy",
+        "quantity": Decimal("1"),
+        "limit_price": Decimal("100.0000"),
+        "created_at": NOW,
+        "updated_at": NOW + timedelta(hours=2),
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 @pytest.mark.unit
@@ -341,12 +372,7 @@ async def test_operator_void_toss_scan_proves_absence_across_open_and_closed():
             calls.append(kwargs)
             return SimpleNamespace(orders=[], has_next=False, next_cursor=None)
 
-    rung = SimpleNamespace(
-        rung_index=0,
-        idempotency_key="tosprop-legacy-1",
-        broker_order_id=None,
-        created_at=NOW - timedelta(days=2),
-    )
+    rung = _toss_rung(created_at=NOW - timedelta(days=2))
     evidence = await broker_gateway.fetch_operator_void_evidence(
         account_mode="toss_live",
         market="equity_kr",
@@ -364,14 +390,44 @@ async def test_operator_void_toss_scan_proves_absence_across_open_and_closed():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_operator_void_toss_scan_fails_closed_when_open_is_paginated():
+    from app.services.order_proposals import broker_gateway
+
+    calls = []
+
+    class FakeTossClient:
+        async def list_orders(self, **kwargs):
+            calls.append(kwargs)
+            if kwargs["status"] == "OPEN":
+                return SimpleNamespace(
+                    orders=[], has_next=True, next_cursor="unexpected-open-cursor"
+                )
+            return SimpleNamespace(orders=[], has_next=False, next_cursor=None)
+
+    evidence = await broker_gateway.fetch_operator_void_evidence(
+        account_mode="toss_live",
+        market="equity_kr",
+        symbol="005930",
+        rungs=[_toss_rung()],
+        now=NOW,
+        toss_client=FakeTossClient(),
+    )
+
+    assert [call["status"] for call in calls] == ["OPEN", "CLOSED"]
+    assert evidence[0].outcome == "unknown"
+    assert evidence[0].reason == "OPEN order scan unexpectedly paginated"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 @pytest.mark.parametrize("broker_state", ["OPEN", "FILLED"])
 async def test_operator_void_toss_scan_exposes_found_broker_state(broker_state):
     from app.services.order_proposals import broker_gateway
 
-    found = SimpleNamespace(
-        order_id="broker-1",
-        client_order_id="tosprop-legacy-1",
+    found = _toss_order(
         status=broker_state,
+        quantity=Decimal("1.00000000"),
+        price=Decimal("100.00"),
     )
 
     class FakeTossClient:
@@ -383,12 +439,7 @@ async def test_operator_void_toss_scan_exposes_found_broker_state(broker_state):
             )
             return SimpleNamespace(orders=orders, has_next=False, next_cursor=None)
 
-    rung = SimpleNamespace(
-        rung_index=0,
-        idempotency_key="tosprop-legacy-1",
-        broker_order_id=None,
-        created_at=NOW,
-    )
+    rung = _toss_rung()
     evidence = await broker_gateway.fetch_operator_void_evidence(
         account_mode="toss_live",
         market="equity_kr",
@@ -412,12 +463,7 @@ async def test_operator_void_toss_scan_fails_closed_on_timeout():
         async def list_orders(self, **_kwargs):
             raise httpx.ReadTimeout("")
 
-    rung = SimpleNamespace(
-        rung_index=0,
-        idempotency_key="tosprop-legacy-1",
-        broker_order_id=None,
-        created_at=NOW,
-    )
+    rung = _toss_rung()
     evidence = await broker_gateway.fetch_operator_void_evidence(
         account_mode="toss_live",
         market="equity_kr",
@@ -433,26 +479,21 @@ async def test_operator_void_toss_scan_fails_closed_on_timeout():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_operator_void_toss_scan_requires_client_id_field_for_absence():
+async def test_operator_void_toss_scan_proves_composite_absence_without_client_id():
     from app.services.order_proposals import broker_gateway
 
-    order_without_client_id = SimpleNamespace(
+    unrelated_order = _toss_order(
         order_id="unrelated-order",
-        client_order_id=None,
+        symbol="000660",
         status="OPEN",
     )
 
     class FakeTossClient:
         async def list_orders(self, **kwargs):
-            orders = [order_without_client_id] if kwargs["status"] == "OPEN" else []
+            orders = [unrelated_order] if kwargs["status"] == "OPEN" else []
             return SimpleNamespace(orders=orders, has_next=False, next_cursor=None)
 
-    rung = SimpleNamespace(
-        rung_index=0,
-        idempotency_key="tosprop-legacy-1",
-        broker_order_id=None,
-        created_at=NOW,
-    )
+    rung = _toss_rung()
     evidence = await broker_gateway.fetch_operator_void_evidence(
         account_mode="toss_live",
         market="equity_kr",
@@ -462,8 +503,189 @@ async def test_operator_void_toss_scan_requires_client_id_field_for_absence():
         toss_client=FakeTossClient(),
     )
 
+    assert evidence[0].outcome == "absent"
+    assert "combination_matches=0" in evidence[0].lookup_scope
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("candidate_overrides", "expected_reason"),
+    [
+        ({"quantity": "not-a-decimal"}, "invalid decimal order evidence"),
+        ({"price": Decimal("Infinity")}, "non-finite decimal order evidence"),
+        ({"ordered_at": "not-a-datetime"}, "invalid ordered_at order evidence"),
+        (
+            {"ordered_at": NOW.replace(tzinfo=None).isoformat()},
+            "ordered_at must be a timezone-aware datetime",
+        ),
+    ],
+)
+async def test_operator_void_toss_scan_fails_closed_on_malformed_potential_candidate(
+    candidate_overrides, expected_reason
+):
+    from app.services.order_proposals import broker_gateway
+
+    candidate = _toss_order(**candidate_overrides)
+
+    class FakeTossClient:
+        async def list_orders(self, **kwargs):
+            orders = [candidate] if kwargs["status"] == "OPEN" else []
+            return SimpleNamespace(orders=orders, has_next=False, next_cursor=None)
+
+    evidence = await broker_gateway.fetch_operator_void_evidence(
+        account_mode="toss_live",
+        market="equity_kr",
+        symbol="005930",
+        rungs=[_toss_rung()],
+        now=NOW,
+        toss_client=FakeTossClient(),
+    )
+
     assert evidence[0].outcome == "unknown"
-    assert evidence[0].reason == "broker order list omitted clientOrderId"
+    assert evidence[0].reason == expected_reason
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["start", "end"])
+async def test_operator_void_toss_scan_includes_composite_window_boundaries(boundary):
+    from app.services.order_proposals import broker_gateway
+
+    rung = _toss_rung()
+    valid_until = NOW + timedelta(hours=4)
+    window_start = rung.created_at - timedelta(hours=24)
+    window_end = max(valid_until, rung.updated_at) + timedelta(hours=24)
+    ordered_at = window_start if boundary == "start" else window_end
+    found = _toss_order(ordered_at=ordered_at.isoformat())
+
+    class FakeTossClient:
+        async def list_orders(self, **kwargs):
+            orders = [found] if kwargs["status"] == "CLOSED" else []
+            return SimpleNamespace(orders=orders, has_next=False, next_cursor=None)
+
+    evidence = await broker_gateway.fetch_operator_void_evidence(
+        account_mode="toss_live",
+        market="equity_kr",
+        symbol="005930",
+        rungs=[rung],
+        now=window_end + timedelta(days=3),
+        valid_until=valid_until,
+        toss_client=FakeTossClient(),
+    )
+
+    assert evidence[0].outcome == "found"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["before_start", "after_end"])
+async def test_operator_void_toss_scan_excludes_orders_outside_composite_window(
+    boundary,
+):
+    from app.services.order_proposals import broker_gateway
+
+    rung = _toss_rung()
+    valid_until = NOW + timedelta(hours=4)
+    window_start = rung.created_at - timedelta(hours=24)
+    window_end = max(valid_until, rung.updated_at) + timedelta(hours=24)
+    ordered_at = (
+        window_start - timedelta(microseconds=1)
+        if boundary == "before_start"
+        else window_end + timedelta(microseconds=1)
+    )
+    outside_order = _toss_order(ordered_at=ordered_at.isoformat())
+
+    class FakeTossClient:
+        async def list_orders(self, **kwargs):
+            orders = [outside_order] if kwargs["status"] == "CLOSED" else []
+            return SimpleNamespace(orders=orders, has_next=False, next_cursor=None)
+
+    evidence = await broker_gateway.fetch_operator_void_evidence(
+        account_mode="toss_live",
+        market="equity_kr",
+        symbol="005930",
+        rungs=[rung],
+        now=window_end + timedelta(days=3),
+        valid_until=valid_until,
+        toss_client=FakeTossClient(),
+    )
+
+    assert evidence[0].outcome == "absent"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_operator_void_toss_scan_uses_kst_dates_and_attempt_anchor():
+    from app.core.timezone import KST
+    from app.services.order_proposals import broker_gateway
+
+    created_at = datetime(2026, 7, 10, 16, 30, tzinfo=UTC)
+    updated_at = datetime(2026, 7, 11, 16, 30, tzinfo=UTC)
+    valid_until = datetime(2026, 7, 12, 16, 30, tzinfo=UTC)
+    expected_start = created_at - timedelta(hours=24)
+    expected_end = max(valid_until, updated_at) + timedelta(hours=24)
+    calls = []
+
+    class FakeTossClient:
+        async def list_orders(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(orders=[], has_next=False, next_cursor=None)
+
+    evidence = await broker_gateway.fetch_operator_void_evidence(
+        account_mode="toss_live",
+        market="equity_kr",
+        symbol="005930",
+        rungs=[_toss_rung(created_at=created_at, updated_at=updated_at)],
+        now=expected_end + timedelta(days=3),
+        valid_until=valid_until,
+        toss_client=FakeTossClient(),
+    )
+
+    expected_dates = {
+        "from_date": expected_start.astimezone(KST).date().isoformat(),
+        "to_date": expected_end.astimezone(KST).date().isoformat(),
+    }
+    assert evidence[0].outcome == "absent"
+    assert [call["status"] for call in calls] == ["OPEN", "CLOSED"]
+    assert [{key: call[key] for key in ("from_date", "to_date")} for call in calls] == [
+        expected_dates,
+        expected_dates,
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_operator_void_toss_scan_fails_closed_at_closed_page_cap():
+    from app.services.order_proposals import broker_gateway
+
+    closed_pages = 0
+
+    class FakeTossClient:
+        async def list_orders(self, **kwargs):
+            nonlocal closed_pages
+            if kwargs["status"] == "OPEN":
+                return SimpleNamespace(orders=[], has_next=False, next_cursor=None)
+            closed_pages += 1
+            return SimpleNamespace(
+                orders=[],
+                has_next=True,
+                next_cursor=f"cursor-{closed_pages}",
+            )
+
+    evidence = await broker_gateway.fetch_operator_void_evidence(
+        account_mode="toss_live",
+        market="equity_kr",
+        symbol="005930",
+        rungs=[_toss_rung()],
+        now=NOW,
+        toss_client=FakeTossClient(),
+    )
+
+    assert closed_pages == broker_gateway._TOSS_CLOSED_PAGE_CAP
+    assert evidence[0].outcome == "unknown"
+    assert evidence[0].reason == "CLOSED order scan page cap reached"
+    assert all(item.outcome != "absent" for item in evidence.values())
 
 
 @pytest.mark.unit
@@ -478,12 +700,7 @@ async def test_operator_void_toss_scan_fails_closed_on_invalid_pagination(cursor
                 return SimpleNamespace(orders=[], has_next=False, next_cursor=None)
             return SimpleNamespace(orders=[], has_next=True, next_cursor=cursor)
 
-    rung = SimpleNamespace(
-        rung_index=0,
-        idempotency_key="tosprop-legacy-1",
-        broker_order_id=None,
-        created_at=NOW,
-    )
+    rung = _toss_rung()
     evidence = await broker_gateway.fetch_operator_void_evidence(
         account_mode="toss_live",
         market="equity_kr",

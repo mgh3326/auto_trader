@@ -127,6 +127,7 @@ async def _fetch_void_evidence(*, group: Any, rungs: list[Any], now: datetime) -
         symbol=group.symbol,
         rungs=rungs,
         now=now,
+        valid_until=group.valid_until,
     )
 
 
