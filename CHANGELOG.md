@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added (ROB-878 / ROB-879 — retrospective action shadow ledger; migration 1)
+- **Retrospective actions now have a durable shadow ledger.** Additive `review.trade_retrospective_actions` and singleton control tables preserve stable UUID identity, lifecycle metadata, legacy JSON objects, ordering, provenance, and terminal evidence while parent `next_actions` JSONB remains authoritative and byte-for-byte unchanged.
+- **Legacy backfill fails safely before any cast.** SQL `NULL`, JSONB `null`, and empty arrays produce no children; malformed arrays, blank actions, unknown states, and impossible calendar dates report the retrospective and action ordinal. The migration verifies exact count, field, and ordinal parity against the parent JSON.
+- **Cutover authority is fenced but not activated.** The control row ships in `shadow`; missing authority fails closed, canonical parent writes require the internal projection marker, and downgrade locks parent→control→actions and refuses canonical or non-migration history. No canonical read path, manual mutation surface, cutover, or deployment activation is included in this foundation.
+
 ### Added (ROB-870 — Telegram manual batch approval; migration 1)
 - **Operators can approve a burst of manual proposals from one Telegram summary.** Successfully delivered proposals collect by chat in a fixed ten-minute window; the summary appears at member two, retains every individual approve/deny message, and reports approved, reconfirmation, skipped, and failed members separately.
 - **Batching preserves every existing live-order safety boundary.** A single-use batch trigger still consumes each proposal's original nonce and audit, reruns fresh broker checks in an isolated transaction, excludes loss cuts/terminal/superseded/auto-approved rows at registration and click time, continues after member failures, and leaves ROB-861 buying-power misses independently reconfirmable.
