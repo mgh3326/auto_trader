@@ -195,9 +195,7 @@ class OrderProposalApprovalBatch(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    batch_id: Mapped[uuid.UUID] = mapped_column(
-        PG_UUID(as_uuid=True), nullable=False
-    )
+    batch_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     chat_id: Mapped[str] = mapped_column(Text, nullable=False)
     window_started_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False
@@ -250,9 +248,7 @@ class OrderProposalApprovalBatchMember(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     batch_pk: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey(
-            "review.order_proposal_approval_batches.id", ondelete="CASCADE"
-        ),
+        ForeignKey("review.order_proposal_approval_batches.id", ondelete="CASCADE"),
         nullable=False,
     )
     proposal_pk: Mapped[int] = mapped_column(
@@ -264,9 +260,5 @@ class OrderProposalApprovalBatchMember(Base):
     approval_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     result: Mapped[str | None] = mapped_column(Text)
     result_detail: Mapped[dict | None] = mapped_column(JSONB)
-    processed_at: Mapped[datetime | None] = mapped_column(
-        TIMESTAMP(timezone=True)
-    )
-    added_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=False
-    )
+    processed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    added_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
