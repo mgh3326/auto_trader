@@ -2375,18 +2375,23 @@ Every mutation defaults to `dry_run=true`. Broker I/O requires both
 `https://mockapi.kiwoom.com` (transport-layer fail-closed); the live host cannot
 be selected.
 
-A confirmed place is `status="submitted"` only when the broker response has a
-strict success code (`return_code` is integer `0` or string `"0"`) and a
-single non-conflicting canonical 1-18 digit order ID across the documented ID
-fields. Missing, invalid, or conflicting ID evidence returns
+A confirmed place or modify is `status="submitted"` only when the broker
+response has a strict success code (`return_code` is integer `0` or string
+`"0"`) and a single non-conflicting canonical 1-18 digit order ID across the
+documented ID fields. Missing, invalid, or conflicting ID evidence returns
 `success=false`, `status="accepted_untracked"`,
 `reconcile_required=true`, and `retry_allowed=false`, while retaining redacted
 broker evidence. Callers must reconcile broker history and must not retry the
-place automatically. A well-formed, non-zero broker code is the distinct
+tracked mutation automatically. A well-formed, non-zero broker code is the distinct
 `status="rejected"` case. Missing or malformed acceptance evidence returns
 `status="acceptance_uncertain"`, `reconcile_required=true`, and
 `retry_allowed=false`; it must not be treated as an explicit rejection or
-retried automatically. Read, modify, and cancel response shaping is unchanged.
+retried automatically. An uncertain modify may have created an unknown
+replacement ID, so smoke cleanup remains failed until an operator reconciles
+broker history. Read and cancel response shaping is unchanged. All seven tools
+registered in one MCP process share one mock-host-pinned client and its locked
+OAuth token cache; bounded pagination and cleanup polling therefore do not
+issue a token request per page.
 
 #### Exchange mapping
 

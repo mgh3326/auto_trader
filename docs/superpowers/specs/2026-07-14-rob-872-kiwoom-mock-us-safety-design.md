@@ -35,15 +35,21 @@ and the final paginated position quantities equal the baseline. Unknown state,
 timeouts, fill evidence, or position deltas return exit 2 with redacted manual
 cleanup/unwind guidance.
 
-The shared Kiwoom response layer remains backward compatible for read,
-modify, and cancel. Place adds an operation-specific finalizer: strict broker
-success plus exactly one non-conflicting canonical ID across documented fields
-yields `submitted`; strict success with missing, invalid, or conflicting ID
-evidence yields `accepted_untracked`, `reconcile_required=true`, and
-`success=false`; a missing/malformed response or place exception yields
-`acceptance_uncertain`; explicit broker failure remains `rejected`. Raw broker
-evidence is retained through existing redaction and uncertain acceptance is
-never automatically retried.
+The shared Kiwoom response layer remains backward compatible for reads and
+cancel. Confirmed place and modify use the tracked-mutation finalizer: strict
+broker success plus exactly one non-conflicting canonical ID across documented
+fields yields `submitted`; strict success with missing, invalid, or conflicting
+ID evidence yields `accepted_untracked`, `reconcile_required=true`, and
+`success=false`; a missing/malformed response, transport exception, or
+post-send provenance conflict yields `acceptance_uncertain`; explicit broker
+failure remains `rejected`. Raw broker evidence is retained through existing
+redaction and uncertain acceptance is never automatically retried. An uncertain
+modify also leaves replacement lineage unknown, so proving the original order
+terminal cannot produce a successful final reconciliation by itself.
+
+The seven registered tools lazily share one mock-host-pinned client per MCP
+registration. Its locked OAuth cache prevents bounded page walks and cleanup
+polling from issuing a token request for every tool invocation.
 
 MCP startup reads `MCP_TYPE` before import-time auth validation. Network
 transports (`streamable-http` and `sse`) require a non-empty token when the

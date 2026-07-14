@@ -143,18 +143,21 @@ def _normalize_digits(value: str) -> str | None:
     return text
 
 
+def _row_contains_order_id(row: dict[str, Any], order_id: str) -> bool:
+    target = _normalize_digits(order_id)
+    if target is None:
+        return False
+    for key in _ORDER_ID_FIELDS:
+        raw = row.get(key)
+        if isinstance(raw, str) and _normalize_digits(raw) == target:
+            return True
+    return False
+
+
 def _payload_contains_order_id(value: Any, order_id: str) -> bool:
     if isinstance(value, dict):
-        target = _normalize_digits(order_id)
-        for key in _ORDER_ID_FIELDS:
-            if key not in value:
-                continue
-            raw = value[key]
-            if not isinstance(raw, str):
-                continue
-            candidate = _normalize_digits(raw)
-            if target is not None and candidate == target:
-                return True
+        if _row_contains_order_id(value, order_id):
+            return True
         return any(
             _payload_contains_order_id(item, order_id)
             for item in value.values()
@@ -243,7 +246,7 @@ def _non_negative_decimal(row: dict[str, Any], key: str) -> Decimal | None:
 
 
 def _target_rows(rows: list[dict[str, Any]], order_id: str) -> list[dict[str, Any]]:
-    return [row for row in rows if _payload_contains_order_id(row, order_id)]
+    return [row for row in rows if _row_contains_order_id(row, order_id)]
 
 
 def _classify_target(
@@ -276,7 +279,7 @@ def _classify_target(
         elif status in {"cancelled", "canceled", "취소", "취소완료"}:
             states.add("cancelled" if remaining == 0 else "cancel_pending")
         elif status in {"rejected", "거부"}:
-            states.add("rejected")
+            states.add("rejected" if remaining == 0 else "unknown")
         elif remaining > 0:
             states.add("open")
         else:
@@ -421,7 +424,7 @@ async def run_preflight() -> dict[str, Any]:
                 result["ok"] = False
     except Exception as exc:  # noqa: BLE001 - operator evidence, fail closed
         result["ok"] = False
-        result["error"] = f"{type(exc).__name__}: {exc}"
+        result["error"] = type(exc).__name__
     return result
 
 
@@ -543,6 +546,7 @@ async def run_full(
     )
 
     lifecycle_order_ids = [order_id]
+    lineage_complete = True
     exit_code = 0
     try:
         try:
@@ -585,12 +589,28 @@ async def run_full(
             _emit({"step": "modify_confirmed", **modified})
             if not _response_succeeded(modified):
                 exit_code = 2
+                if not (
+                    modified.get("status") == "rejected"
+                    and modified.get("reconcile_required") is False
+                ):
+                    lineage_complete = False
+                    _emit(
+                        {
+                            "step": "cleanup_required",
+                            "order_id": order_id,
+                            "reason": (
+                                "modify outcome is uncertain and an unknown replacement "
+                                "may exist; do not retry; reconcile in broker UI"
+                            ),
+                        }
+                    )
             elif modified_id := _extract_unique_mutation_order_id(modified):
                 if modified_id not in lifecycle_order_ids:
                     lifecycle_order_ids.append(modified_id)
                 order_id = modified_id
             else:
                 exit_code = 2
+                lineage_complete = False
                 _emit(
                     {
                         "step": "cleanup_required",
@@ -625,7 +645,7 @@ async def run_full(
                 {
                     "step": "cleanup_required",
                     "order_id": order_id,
-                    "reason": f"cancel raised {type(exc).__name__}: {exc}",
+                    "reason": f"cancel raised {type(exc).__name__}",
                 }
             )
 
@@ -641,17 +661,24 @@ async def run_full(
         timeout=cleanup_timeout,
         poll_interval=poll_interval,
     )
+    reconciliation_ok = proof.ok and lineage_complete
+    reconciliation_reason = proof.reason
+    if not lineage_complete:
+        reconciliation_reason = (
+            "modify outcome left order lineage uncertain; " + proof.reason
+        )
     _emit(
         {
             "step": "final_reconciliation",
-            "ok": proof.ok,
+            "ok": reconciliation_ok,
             "state": proof.state,
             "order_states": proof.order_states,
-            "reason": proof.reason,
+            "lineage_complete": lineage_complete,
+            "reason": reconciliation_reason,
             "position_delta": proof.position_delta,
         }
     )
-    if not proof.ok:
+    if not reconciliation_ok:
         exit_code = 2
         _emit(
             {
@@ -662,8 +689,9 @@ async def run_full(
                     for tracked_id, state in proof.order_states.items()
                     if state not in {"cancelled", "rejected"}
                 ],
+                "unknown_replacement_possible": not lineage_complete,
                 "reason": (
-                    f"{proof.reason}; inspect broker history/positions and manually "
+                    f"{reconciliation_reason}; inspect broker history/positions and manually "
                     "cancel or unwind without retrying the place"
                 ),
             }
@@ -712,15 +740,20 @@ async def run_probe(
             f"trde_tp={sorted(invalid)} is not valid for probe_side={args.probe_side}"
         )
 
-    exchange = str(await get_us_exchange_by_symbol(args.symbol)).strip().upper()
     try:
-        stex_tp = constants.US_EXCHANGE_TO_STEX[exchange]
-    except KeyError as exc:
-        raise SmokeRejected(f"unsupported exchange={exchange!r}") from exc
-
-    client = KiwoomMockUsClient.from_app_settings()
-    orders = KiwoomUsOrderClient(client)
-    account = KiwoomUsAccountClient(client)
+        exchange = str(await get_us_exchange_by_symbol(args.symbol)).strip().upper()
+        try:
+            stex_tp = constants.US_EXCHANGE_TO_STEX[exchange]
+        except KeyError as exc:
+            raise SmokeRejected(f"unsupported exchange={exchange!r}") from exc
+        client = KiwoomMockUsClient.from_app_settings()
+        orders = KiwoomUsOrderClient(client)
+        account = KiwoomUsAccountClient(client)
+    except SmokeRejected:
+        raise
+    except Exception as exc:  # noqa: BLE001 - redact setup/provider details
+        _emit({"step": "probe_setup_failed", "error": type(exc).__name__})
+        return 2
 
     async def history_reader(
         *, scope: str, cont_yn: str | None = None, next_key: str | None = None
@@ -788,7 +821,7 @@ async def run_probe(
                         "step": "probe_order_type",
                         "trde_tp": code,
                         "accepted": False,
-                        "error": f"{type(exc).__name__}: {exc}",
+                        "error": type(exc).__name__,
                     }
                 )
                 _emit(
@@ -886,7 +919,7 @@ async def run_probe(
                             "step": "cleanup_required",
                             "trde_tp": code,
                             "order_id": order_id,
-                            "reason": f"cancel raised {type(exc).__name__}: {exc}",
+                            "reason": f"cancel raised {type(exc).__name__}",
                         }
                     )
                 proof = await _prove_cleanup(
@@ -982,7 +1015,18 @@ async def _amain(args: argparse.Namespace) -> int:
 
 def main() -> None:
     args = build_parser().parse_args()
-    raise SystemExit(asyncio.run(_amain(args)))
+    try:
+        exit_code = asyncio.run(_amain(args))
+    except SmokeRejected as exc:
+        _emit(
+            {
+                "step": "rejected",
+                "error_code": "smoke_rejected",
+                "reason": str(exc),
+            }
+        )
+        exit_code = 2
+    raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":

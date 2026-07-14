@@ -73,6 +73,43 @@ async def test_complete_preflight_calls_all_read_trs(monkeypatch) -> None:
     assert calls == ["ust21050", "ust21070", "ust21510", "ust21110", "ust21160"]
 
 
+@pytest.mark.asyncio
+async def test_preflight_exception_does_not_expose_provider_text(monkeypatch) -> None:
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeAccount:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def get_open_orders(self) -> dict[str, Any]:
+            raise TimeoutError("provider-secret-must-not-leak")
+
+        async def get_positions(self) -> dict[str, Any]:
+            return {"return_code": 0}
+
+        async def get_today_orders(self) -> dict[str, Any]:
+            return {"return_code": 0}
+
+        async def get_foreign_deposit(self) -> dict[str, Any]:
+            return {"return_code": 0}
+
+        async def get_us_deposit_detail(self) -> dict[str, Any]:
+            return {"return_code": 0}
+
+    monkeypatch.setattr(smoke, "validate_kiwoom_mock_us_config", lambda: [])
+    monkeypatch.setattr(smoke, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(smoke, "KiwoomUsAccountClient", FakeAccount)
+
+    result = await smoke.run_preflight()
+
+    assert result["ok"] is False
+    assert result["error"] == "TimeoutError"
+    assert "provider-secret-must-not-leak" not in str(result)
+
+
 def test_parse_probe_codes_is_ordered_and_deduplicated() -> None:
     assert smoke.parse_probe_codes("26,27,26,30") == ("26", "27", "30")
     assert smoke.parse_probe_codes(None) == ()
@@ -347,6 +384,60 @@ async def test_probe_read_exception_returns_structured_cleanup_required(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "expected_error"),
+    [("exchange", "RuntimeError"), ("client", "ConnectionError")],
+)
+async def test_probe_setup_exception_is_redacted_and_stops_before_mutation(
+    monkeypatch, capsys, failure: str, expected_error: str
+) -> None:
+    mutation_clients = 0
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        if failure == "exchange":
+            raise RuntimeError("postgresql://user:secret@provider/db")
+        return "NASDAQ"
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            if failure == "client":
+                raise ConnectionError("credential=provider-secret-must-not-leak")
+            return cls()
+
+    class GuardMutationClient:
+        def __init__(self, client: Any) -> None:
+            nonlocal mutation_clients
+            del client
+            mutation_clients += 1
+
+    monkeypatch.setattr(smoke, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(smoke, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(smoke, "KiwoomUsOrderClient", GuardMutationClient)
+    args = Namespace(
+        confirm_probes=True,
+        confirm_existing_position=False,
+        probe_order_types="26",
+        probe_side="buy",
+        symbol="NVDA",
+        quantity=1,
+        price=1.0,
+        stop_price=None,
+    )
+
+    assert await smoke.run_probe(args) == 2
+    output = capsys.readouterr().out
+    assert json.loads(output) == {
+        "step": "probe_setup_failed",
+        "error": expected_error,
+    }
+    assert "secret" not in output
+    assert "credential" not in output
+    assert mutation_clients == 0
+
+
+@pytest.mark.asyncio
 async def test_probe_baseline_failure_stops_before_all_mutations(
     monkeypatch, capsys
 ) -> None:
@@ -461,7 +552,7 @@ async def test_probe_uncertain_acceptance_returns_nonzero(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_probe_place_exception_returns_nonzero(monkeypatch) -> None:
+async def test_probe_place_exception_returns_nonzero(monkeypatch, capsys) -> None:
     async def fake_lookup(symbol: str) -> str:
         del symbol
         return "NASDAQ"
@@ -477,7 +568,7 @@ async def test_probe_place_exception_returns_nonzero(monkeypatch) -> None:
 
         async def place_buy_order(self, **kwargs: Any) -> dict[str, Any]:
             del kwargs
-            raise TimeoutError("send outcome unknown")
+            raise TimeoutError("provider-secret-must-not-leak")
 
     class FakeAccount:
         def __init__(self, client: Any) -> None:
@@ -503,6 +594,9 @@ async def test_probe_place_exception_returns_nonzero(monkeypatch) -> None:
     )
 
     assert await smoke.run_probe(args) == 2
+    output = capsys.readouterr().out
+    assert "TimeoutError" in output
+    assert "provider-secret-must-not-leak" not in output
 
 
 def test_extract_order_id_accepts_bounded_digits_only() -> None:
@@ -559,6 +653,19 @@ def test_reconcile_ignores_unrelated_numeric_values() -> None:
         ]
     }
     assert not smoke._payload_contains_order_id(payload, "000000282")
+
+
+def test_target_classifier_ignores_nested_unrelated_order_id() -> None:
+    target = "000000282"
+    unrelated_cancel = {
+        "ord_no": "000000999",
+        "cntr_qty": "0",
+        "ord_remnq": "0",
+        "ord_cntr_tp": "12",
+        "metadata": {"ord_no": target},
+    }
+
+    assert smoke._classify_target([], [unrelated_cancel], target) == "unknown"
 
 
 def test_accepted_untracked_wrapper_is_not_cli_success() -> None:
@@ -643,6 +750,18 @@ def test_target_classifier_fails_closed_on_malformed_terminal_evidence() -> None
     assert (
         smoke._classify_target([], [malformed_row, cancelled_row], target) == "unknown"
     )
+
+
+def test_target_classifier_rejects_rejected_status_with_remaining_quantity() -> None:
+    target = "000000282"
+    contradictory_row = {
+        "ord_no": target,
+        "cntr_qty": "0",
+        "ord_remnq": "1",
+        "ord_stat": "rejected",
+    }
+
+    assert smoke._classify_target([], [contradictory_row], target) == "unknown"
 
 
 def test_target_classifier_fails_closed_on_conflicting_terminal_states() -> None:
@@ -1236,6 +1355,121 @@ async def test_full_modify_proves_original_and_replacement_terminality(
 
 
 @pytest.mark.asyncio
+async def test_full_uncertain_modify_requires_unknown_replacement_reconciliation(
+    monkeypatch, capsys
+) -> None:
+    original_order_id = "000000111"
+    cancelled = False
+
+    def wrapped(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "success": True,
+            "return_code": 0,
+            "broker_response": _page(rows),
+        }
+
+    async def preview(**kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        return {"success": True}
+
+    async def place(**kwargs: Any) -> dict[str, Any]:
+        if kwargs["dry_run"]:
+            return {"success": True}
+        return {"success": True, "return_code": 0, "ord_no": original_order_id}
+
+    async def modify(**kwargs: Any) -> dict[str, Any]:
+        assert kwargs["order_id"] == original_order_id
+        return {
+            "success": False,
+            "status": "acceptance_uncertain",
+            "reconcile_required": True,
+            "retry_allowed": False,
+            "error": "TimeoutError",
+        }
+
+    async def cancel(**kwargs: Any) -> dict[str, Any]:
+        nonlocal cancelled
+        assert kwargs["order_id"] == original_order_id
+        cancelled = True
+        return {"success": True, "return_code": 0, "ord_no": "000000333"}
+
+    async def history(**kwargs: Any) -> dict[str, Any]:
+        if kwargs["scope"] == "open":
+            if cancelled:
+                return wrapped([])
+            return wrapped(
+                [
+                    {
+                        "ord_no": original_order_id,
+                        "ord_qty": "1",
+                        "cntr_qty": "0",
+                        "ord_remnq": "1",
+                    }
+                ]
+            )
+        if cancelled:
+            return wrapped(
+                [
+                    {
+                        "ord_no": "000000333",
+                        "orig_ord_no": original_order_id,
+                        "ord_cntr_tp": "12",
+                        "ord_qty": "1",
+                        "cntr_qty": "0",
+                        "ord_remnq": "0",
+                    }
+                ]
+            )
+        return wrapped([])
+
+    async def positions(**kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        return wrapped([])
+
+    monkeypatch.setattr(
+        smoke,
+        "_tools",
+        lambda: {
+            "kiwoom_mock_us_preview_order": preview,
+            "kiwoom_mock_us_place_order": place,
+            "kiwoom_mock_us_get_order_history": history,
+            "kiwoom_mock_us_get_positions": positions,
+            "kiwoom_mock_us_modify_order": modify,
+            "kiwoom_mock_us_cancel_order": cancel,
+        },
+    )
+    args = smoke.build_parser().parse_args(
+        [
+            "--mode",
+            "full",
+            "--symbol",
+            "NVDA",
+            "--quantity",
+            "1",
+            "--price",
+            "1.00",
+            "--new-price",
+            "0.90",
+            "--confirm",
+        ]
+    )
+
+    assert await smoke.run_full(args, cleanup_timeout=0, poll_interval=0) == 2
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    reconciliation = next(
+        event for event in events if event["step"] == "final_reconciliation"
+    )
+    assert reconciliation["ok"] is False
+    assert reconciliation["lineage_complete"] is False
+    assert any(
+        event["step"] == "cleanup_required"
+        and "unknown replacement" in event.get("reason", "")
+        for event in events
+    )
+    assert cancelled is True
+
+
+@pytest.mark.asyncio
 async def test_full_returns_zero_only_after_terminal_cleanup_and_no_position_delta(
     monkeypatch,
 ) -> None:
@@ -1460,6 +1694,27 @@ async def test_probe_mode_requires_symbol_quantity_and_codes(monkeypatch) -> Non
     )
     with pytest.raises(smoke.SmokeRejected, match="probe-order-types"):
         await smoke._amain(args)
+
+
+def test_main_normalizes_smoke_rejection_to_structured_exit_two(
+    monkeypatch, capsys
+) -> None:
+    async def reject(args: Any) -> int:
+        del args
+        raise smoke.SmokeRejected("full mode is limit-only")
+
+    monkeypatch.setattr(smoke, "_amain", reject)
+    monkeypatch.setattr("sys.argv", ["kiwoom_mock_us_smoke", "--mode", "preflight"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        smoke.main()
+
+    assert exc_info.value.code == 2
+    assert json.loads(capsys.readouterr().out) == {
+        "step": "rejected",
+        "error_code": "smoke_rejected",
+        "reason": "full mode is limit-only",
+    }
 
 
 @pytest.mark.asyncio

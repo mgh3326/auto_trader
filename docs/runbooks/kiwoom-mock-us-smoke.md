@@ -204,10 +204,13 @@ The schema-aware classifier reports `open`, `partial`, `filled`,
 `cancel_pending`, `cancelled`, `rejected`, or `unknown`. Only a terminal
 `cancelled`/`rejected` target with no position delta is clean for this smoke.
 Immediate/partial fills, unknown/malformed evidence, position changes, and poll
-timeouts all exit 2. Broker read exceptions are normalized into the same
-redacted cleanup evidence. Full mode skips modify after any unsafe post-place
-state; probe mode stops before submitting another order type after its first
-unsafe baseline or lifecycle outcome.
+timeouts all exit 2. Provider exceptions expose only their exception type and
+are normalized into the same redacted cleanup evidence. The seven registered
+US mock tools share one mock-host-pinned client and OAuth token cache so bounded
+pagination and cleanup polling do not request a new token for every page. Full
+mode skips modify after any unsafe post-place state; probe mode stops before
+submitting another order type after its first unsafe baseline or lifecycle
+outcome.
 
 ## Cleanup / verification after smoke
 

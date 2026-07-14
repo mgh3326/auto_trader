@@ -4,7 +4,7 @@
 
 **Goal:** Make Kiwoom Mock US smoke cleanup, broker acceptance, and MCP network authentication fail closed with fake-only evidence.
 
-**Architecture:** Keep schema-aware reconciliation private to the smoke CLI, add a place-only acceptance finalizer beside the existing shared response finalizer, and validate transport-aware auth at MCP module import. Preserve existing read/modify/cancel contracts.
+**Architecture:** Keep schema-aware reconciliation private to the smoke CLI, apply the tracked-mutation acceptance finalizer to confirmed place/modify operations, and validate transport-aware auth at MCP module import. Preserve existing read/cancel contracts.
 
 **Tech Stack:** Python 3.13, pytest/pytest-asyncio, FastMCP startup fakes, Ruff, ty, uv.
 
@@ -25,11 +25,11 @@
 - Modify: `app/mcp_server/tooling/orders_kiwoom_us_variants.py`
 
 **Interfaces:**
-- Produces: `finalize_place_broker_response(base, broker_response)` with `submitted`, `accepted_untracked`, `acceptance_uncertain`, and `rejected` outcomes.
+- Produces: `finalize_place_broker_response(base, broker_response)` with `submitted`, `accepted_untracked`, `acceptance_uncertain`, and `rejected` outcomes for confirmed place/modify operations.
 
 - [x] Add parametrized failing tests for non-strict return codes and missing/invalid place IDs.
 - [x] Run the named tests and confirm failures are contract mismatches.
-- [x] Implement a place-only finalizer using `derive_broker_success` and `validate_us_order_id` without changing common read/modify/cancel shaping.
+- [x] Implement a tracked-mutation finalizer using `derive_broker_success` and `validate_us_order_id` without changing common read/cancel shaping.
 - [x] Re-run the named tests and preserve redacted `broker_response` evidence.
 
 ### Task 2: Truthful smoke lifecycle
