@@ -581,6 +581,35 @@ async def test_void_requires_reason_and_terminalizes_proposal():
 
 
 @pytest.mark.asyncio
+async def test_fetch_void_evidence_forwards_group_valid_until(monkeypatch):
+    valid_until = datetime(2026, 7, 15, 15, 0, tzinfo=UTC)
+    now = datetime(2026, 7, 13, 9, 0, tzinfo=UTC)
+    rungs = [SimpleNamespace(rung_index=0)]
+    captured = {}
+    expected = object()
+
+    async def capture_evidence(**kwargs):
+        captured.update(kwargs)
+        return expected
+
+    monkeypatch.setattr(opt, "fetch_operator_void_evidence", capture_evidence)
+
+    result = await opt._fetch_void_evidence(
+        group=SimpleNamespace(
+            account_mode="toss_live",
+            market="equity_kr",
+            symbol="005930",
+            valid_until=valid_until,
+        ),
+        rungs=rungs,
+        now=now,
+    )
+
+    assert result is expected
+    assert captured["valid_until"] == valid_until
+
+
+@pytest.mark.asyncio
 async def test_void_unverified_uses_broker_evidence_and_disables_telegram_buttons(
     monkeypatch,
 ):

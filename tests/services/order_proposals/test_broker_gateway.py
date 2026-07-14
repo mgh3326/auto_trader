@@ -579,9 +579,10 @@ async def test_operator_void_toss_scan_uses_kst_dates_and_attempt_anchor():
     }
     assert evidence[0].outcome == "absent"
     assert [call["status"] for call in calls] == ["OPEN", "CLOSED"]
-    assert [
-        {key: call[key] for key in ("from_date", "to_date")} for call in calls
-    ] == [expected_dates, expected_dates]
+    assert [{key: call[key] for key in ("from_date", "to_date")} for call in calls] == [
+        expected_dates,
+        expected_dates,
+    ]
 
 
 @pytest.mark.unit

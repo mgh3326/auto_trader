@@ -431,9 +431,7 @@ async def fetch_operator_void_evidence(
                     )
                     or (
                         idempotency_key
-                        and str(
-                            getattr(order, "client_order_id", "") or ""
-                        ).strip()
+                        and str(getattr(order, "client_order_id", "") or "").strip()
                         == idempotency_key
                     )
                 ),
