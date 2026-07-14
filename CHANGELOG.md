@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added (ROB-870 — Telegram manual batch approval; migration 1)
+- **Operators can approve a burst of manual proposals from one Telegram summary.** Successfully delivered proposals collect by chat in a fixed ten-minute window; the summary appears at member two, retains every individual approve/deny message, and reports approved, reconfirmation, skipped, and failed members separately.
+- **Batching preserves every existing live-order safety boundary.** A single-use batch trigger still consumes each proposal's original nonce and audit, reruns fresh broker checks in an isolated transaction, excludes loss cuts/terminal/superseded/auto-approved rows at registration and click time, continues after member failures, and leaves ROB-861 buying-power misses independently reconfirmable.
+- **The batch ledger and operator contract are durable.** Additive migration `20260714_rob870_approval_batches` stores batches, immutable membership nonce snapshots, delivery claims, and bounded member results; the runbook records the 2026-07-13 manual 13-group/14-rung basis and its cap-independent structural floor.
+
 ### Fixed (ROB-868 — Upbit websocket proposal fill projection; migration 0)
 - **Committed Upbit websocket fills now converge proposal rungs immediately.** `trade` events project cumulative partial-fill evidence and `done` events project terminal fill evidence through an independent committed proposal-service session, matching both the broker UUID and Upbit client identifier while keeping projection failures best-effort. Individual ledger rows retain per-trade `volume`; terminal cumulative evidence is applied only after an existing durable fill is verified and is not double-counted as another fill.
 - **Matched proposal fills retain operator visibility at small notionals.** Proposal-rung fills bypass the ordinary notification threshold without changing unmatched-fill policy, and duplicate ledger deliveries remain notification-idempotent.
