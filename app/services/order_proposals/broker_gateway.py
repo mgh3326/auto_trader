@@ -3,7 +3,8 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
 import httpx
@@ -39,6 +40,70 @@ class OperatorVoidEvidence:
 
 
 _TOSS_CLOSED_PAGE_CAP = 20
+_TOSS_VOID_WINDOW_PAD = timedelta(hours=24)
+
+
+def _finite_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise ValueError("invalid decimal order evidence") from None
+    if not parsed.is_finite():
+        raise ValueError("non-finite decimal order evidence")
+    return parsed
+
+
+def _toss_rung_window(
+    rung: Any, *, valid_until: datetime | None
+) -> tuple[datetime, datetime]:
+    start = rung.created_at - _TOSS_VOID_WINDOW_PAD
+    attempt_end = max(
+        value for value in (valid_until, rung.updated_at) if value is not None
+    )
+    return start, attempt_end + _TOSS_VOID_WINDOW_PAD
+
+
+def _aware_datetime(value: Any, *, field: str) -> datetime:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
+        raise ValueError(f"{field} must be a timezone-aware datetime")
+    return value
+
+
+def _parse_aware_iso_datetime(value: Any, *, field: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        raise ValueError(f"invalid {field} order evidence") from None
+    return _aware_datetime(parsed, field=field)
+
+
+def _normalize_order_text(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _toss_lookup_scope(
+    *,
+    window_from: str,
+    window_to: str,
+    rung_window: tuple[datetime, datetime],
+    closed_pages: int,
+    complete: bool,
+    combination_matches: int,
+) -> str:
+    rung_start, rung_end = rung_window
+    return (
+        "toss GET /orders OPEN + CLOSED "
+        f"scan_kst={window_from}..{window_to} "
+        f"rung_window={rung_start.isoformat()}..{rung_end.isoformat()} "
+        f"closed_pages={closed_pages} complete={str(complete).lower()} "
+        f"combination_matches={combination_matches}"
+    )
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -129,6 +194,7 @@ async def fetch_operator_void_evidence(
     symbol: str,
     rungs: list[Any],
     now: datetime,
+    valid_until: datetime | None = None,
     toss_client: Any | None = None,
     history_fn: Callable[..., Any] | None = None,
     upbit_identifier_lookup_fn: Callable[..., Any] | None = None,
@@ -288,18 +354,41 @@ async def fetch_operator_void_evidence(
     from app.core.timezone import KST
     from app.services.brokers.toss.client import TossReadClient
 
-    window_from = (
-        min(rung.created_at for rung in rungs).astimezone(KST).date().isoformat()
-    )
-    window_to = now.astimezone(KST).date().isoformat()
+    window_from: str | None = None
+    window_to: str | None = None
+    rung_windows: dict[int, tuple[datetime, datetime]] = {}
     owns_client = toss_client is None
-    client = toss_client or TossReadClient.from_settings()
+    client = toss_client
     orders: list[Any] = []
     closed_pages = 0
     incomplete_reason: str | None = None
     try:
-        open_page = await client.list_orders(status="OPEN", symbol=symbol)
+        _aware_datetime(now, field="now")
+        if valid_until is not None:
+            _aware_datetime(valid_until, field="valid_until")
+        for rung in rungs:
+            _aware_datetime(rung.created_at, field="rung.created_at")
+            if rung.updated_at is not None:
+                _aware_datetime(rung.updated_at, field="rung.updated_at")
+            rung_windows[rung.rung_index] = _toss_rung_window(
+                rung, valid_until=valid_until
+            )
+
+        scan_start = min(start for start, _end in rung_windows.values())
+        scan_end = max(end for _start, end in rung_windows.values())
+        window_from = scan_start.astimezone(KST).date().isoformat()
+        window_to = scan_end.astimezone(KST).date().isoformat()
+
+        client = client or TossReadClient.from_settings()
+        open_page = await client.list_orders(
+            status="OPEN",
+            symbol=symbol,
+            from_date=window_from,
+            to_date=window_to,
+        )
         orders.extend(open_page.orders)
+        if open_page.has_next:
+            incomplete_reason = "OPEN order scan unexpectedly paginated"
 
         cursor: str | None = None
         seen_cursors: set[str] = set()
@@ -316,62 +405,124 @@ async def fetch_operator_void_evidence(
             closed_pages += 1
             if not page.has_next:
                 break
+            if closed_pages >= _TOSS_CLOSED_PAGE_CAP:
+                incomplete_reason = "CLOSED order scan page cap reached"
+                break
             if not page.next_cursor:
                 incomplete_reason = "CLOSED order scan missing next cursor"
                 break
             if page.next_cursor == cursor or page.next_cursor in seen_cursors:
                 incomplete_reason = "CLOSED order scan repeated cursor"
                 break
-            if closed_pages >= _TOSS_CLOSED_PAGE_CAP:
-                incomplete_reason = "CLOSED order scan page cap reached"
-                break
             seen_cursors.add(page.next_cursor)
             cursor = page.next_cursor
 
-        scope = (
-            "toss GET /orders OPEN + CLOSED "
-            f"{window_from}..{window_to} pages={closed_pages} "
-            f"complete={str(incomplete_reason is None).lower()}"
-        )
         result: dict[int, OperatorVoidEvidence] = {}
         for rung in rungs:
+            rung_window = rung_windows[rung.rung_index]
             broker_order_id = str(rung.broker_order_id or "").strip()
             idempotency_key = str(rung.idempotency_key or "").strip()
-            match = next(
+            identifier_match = next(
                 (
                     order
                     for order in orders
-                    if (broker_order_id and str(order.order_id) == broker_order_id)
+                    if (
+                        broker_order_id
+                        and str(getattr(order, "order_id", "") or "").strip()
+                        == broker_order_id
+                    )
                     or (
                         idempotency_key
-                        and str(getattr(order, "client_order_id", "") or "")
+                        and str(getattr(order, "client_order_id", "") or "").strip()
                         == idempotency_key
                     )
                 ),
                 None,
             )
-            if match is not None:
+            if identifier_match is not None:
+                scope = _toss_lookup_scope(
+                    window_from=window_from,
+                    window_to=window_to,
+                    rung_window=rung_window,
+                    closed_pages=closed_pages,
+                    complete=incomplete_reason is None,
+                    combination_matches=0,
+                )
                 result[rung.rung_index] = OperatorVoidEvidence(
                     "found",
                     scope,
-                    broker_order_id=str(match.order_id),
-                    broker_state=str(match.status),
+                    broker_order_id=str(identifier_match.order_id),
+                    broker_state=str(identifier_match.status),
                 )
-            elif not broker_order_id and not idempotency_key:
+                continue
+
+            malformed_reason: str | None = None
+            combination_match: Any | None = None
+            rung_quantity: Decimal | None = None
+            rung_price: Decimal | None = None
+            normalized_symbol = _normalize_order_text(symbol)
+            normalized_side = _normalize_order_text(rung.side)
+            if not normalized_symbol or not normalized_side:
+                malformed_reason = "invalid symbol or side order evidence"
+            else:
+                try:
+                    rung_quantity = _finite_decimal(rung.quantity)
+                    rung_price = _finite_decimal(rung.limit_price)
+                    if rung_quantity is None:
+                        raise ValueError("invalid decimal order evidence")
+                except (TypeError, ValueError) as exc:
+                    malformed_reason = describe_exception(exc)
+
+            if malformed_reason is None:
+                for order in orders:
+                    if (
+                        _normalize_order_text(getattr(order, "symbol", None))
+                        != normalized_symbol
+                        or _normalize_order_text(getattr(order, "side", None))
+                        != normalized_side
+                    ):
+                        continue
+                    try:
+                        order_quantity = _finite_decimal(
+                            getattr(order, "quantity", None)
+                        )
+                        order_price = _finite_decimal(getattr(order, "price", None))
+                        if order_quantity is None:
+                            raise ValueError("invalid decimal order evidence")
+                    except (TypeError, ValueError) as exc:
+                        malformed_reason = describe_exception(exc)
+                        continue
+                    if order_quantity != rung_quantity or order_price != rung_price:
+                        continue
+                    try:
+                        ordered_at = _parse_aware_iso_datetime(
+                            getattr(order, "ordered_at", None), field="ordered_at"
+                        )
+                    except ValueError as exc:
+                        malformed_reason = describe_exception(exc)
+                        continue
+                    if rung_window[0] <= ordered_at <= rung_window[1]:
+                        combination_match = order
+                        break
+
+            scope = _toss_lookup_scope(
+                window_from=window_from,
+                window_to=window_to,
+                rung_window=rung_window,
+                closed_pages=closed_pages,
+                complete=incomplete_reason is None,
+                combination_matches=int(combination_match is not None),
+            )
+            if combination_match is not None:
                 result[rung.rung_index] = OperatorVoidEvidence(
-                    "unknown", scope, reason="rung has no broker lookup identifier"
-                )
-            elif (
-                idempotency_key
-                and not broker_order_id
-                and any(
-                    getattr(order, "client_order_id", None) is None for order in orders
-                )
-            ):
-                result[rung.rung_index] = OperatorVoidEvidence(
-                    "unknown",
+                    "found",
                     scope,
-                    reason="broker order list omitted clientOrderId",
+                    broker_order_id=str(combination_match.order_id),
+                    broker_state=str(combination_match.status),
+                )
+            elif malformed_reason is not None:
+                result[rung.rung_index] = OperatorVoidEvidence(
+                    "unknown", scope, reason=malformed_reason
                 )
             elif incomplete_reason is not None:
                 result[rung.rung_index] = OperatorVoidEvidence(
@@ -381,15 +532,30 @@ async def fetch_operator_void_evidence(
                 result[rung.rung_index] = OperatorVoidEvidence("absent", scope)
         return result
     except Exception as exc:
-        scope = f"toss GET /orders OPEN + CLOSED {window_from}..{window_to} incomplete"
+        reason = describe_exception(exc)
+        if window_from is not None and window_to is not None:
+            return {
+                rung.rung_index: OperatorVoidEvidence(
+                    "unknown",
+                    _toss_lookup_scope(
+                        window_from=window_from,
+                        window_to=window_to,
+                        rung_window=rung_windows[rung.rung_index],
+                        closed_pages=closed_pages,
+                        complete=False,
+                        combination_matches=0,
+                    ),
+                    reason=reason,
+                )
+                for rung in rungs
+            }
+        scope = "toss GET /orders OPEN + CLOSED invalid temporal window"
         return {
-            rung.rung_index: OperatorVoidEvidence(
-                "unknown", scope, reason=describe_exception(exc)
-            )
+            rung.rung_index: OperatorVoidEvidence("unknown", scope, reason=reason)
             for rung in rungs
         }
     finally:
-        if owns_client:
+        if owns_client and client is not None:
             await client.aclose()
 
 

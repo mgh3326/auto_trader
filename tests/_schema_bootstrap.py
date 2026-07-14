@@ -40,7 +40,9 @@ from sqlalchemy import text
 # lineage, terminal fences, target reservations, and explicit claim states.
 # v18 (ROB-849 review): enforce terminal-fence audit text bounds at the DB edge.
 # v19 (ROB-849 review): treat every PostgreSQL whitespace class as blank.
-SCHEMA_BOOTSTRAP_VERSION = 19
+# v20 (ROB-849 + ROB-870): include the approval-batch ORM tables merged after
+# the cohort branch and force one combined create_all/bootstrap pass.
+SCHEMA_BOOTSTRAP_VERSION = 20
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"

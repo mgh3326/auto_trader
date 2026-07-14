@@ -1,7 +1,7 @@
 """ROB-849 immutable paper cohort and canonical snapshots.
 
 Revision ID: 20260714_rob849_paper_cohort
-Revises: 20260713_rob848_paper_validation
+Revises: 20260714_rob870_approval_batches
 Create Date: 2026-07-14
 """
 
@@ -15,7 +15,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision = "20260714_rob849_paper_cohort"
-down_revision = "20260713_rob848_paper_validation"
+down_revision = "20260714_rob870_approval_batches"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
