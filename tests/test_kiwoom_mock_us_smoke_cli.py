@@ -191,6 +191,7 @@ async def test_probe_cancels_every_accepted_order(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_probe_cleanup_failure_returns_nonzero(monkeypatch) -> None:
     cancel_attempted = False
+    place_calls = 0
 
     async def fake_lookup(symbol: str) -> str:
         del symbol
@@ -206,7 +207,9 @@ async def test_probe_cleanup_failure_returns_nonzero(monkeypatch) -> None:
             del client
 
         async def place_buy_order(self, **kwargs: Any) -> dict[str, Any]:
+            nonlocal place_calls
             del kwargs
+            place_calls += 1
             return {"return_code": 0, "ord_no": "000000282"}
 
         async def cancel_order(self, **kwargs: Any) -> dict[str, Any]:
@@ -262,7 +265,7 @@ async def test_probe_cleanup_failure_returns_nonzero(monkeypatch) -> None:
     args = Namespace(
         confirm_probes=True,
         confirm_existing_position=False,
-        probe_order_types="26",
+        probe_order_types="26,27",
         probe_side="buy",
         symbol="NVDA",
         quantity=1,
@@ -270,10 +273,13 @@ async def test_probe_cleanup_failure_returns_nonzero(monkeypatch) -> None:
         stop_price=None,
     )
     assert await smoke.run_probe(args) == 2
+    assert place_calls == 1
 
 
 @pytest.mark.asyncio
 async def test_probe_uncertain_acceptance_returns_nonzero(monkeypatch) -> None:
+    place_calls = 0
+
     async def fake_lookup(symbol: str) -> str:
         del symbol
         return "NASDAQ"
@@ -288,7 +294,9 @@ async def test_probe_uncertain_acceptance_returns_nonzero(monkeypatch) -> None:
             del client
 
         async def place_buy_order(self, **kwargs: Any) -> dict[str, Any]:
+            nonlocal place_calls
             del kwargs
+            place_calls += 1
             return {"return_code": False}
 
     class FakeAccount:
@@ -306,7 +314,7 @@ async def test_probe_uncertain_acceptance_returns_nonzero(monkeypatch) -> None:
     args = Namespace(
         confirm_probes=True,
         confirm_existing_position=False,
-        probe_order_types="26",
+        probe_order_types="26,27",
         probe_side="buy",
         symbol="NVDA",
         quantity=1,
@@ -315,6 +323,7 @@ async def test_probe_uncertain_acceptance_returns_nonzero(monkeypatch) -> None:
     )
 
     assert await smoke.run_probe(args) == 2
+    assert place_calls == 1
 
 
 @pytest.mark.asyncio
@@ -769,6 +778,11 @@ async def test_full_empty_post_place_history_fails_closed(monkeypatch) -> None:
         calls.append("cancel")
         return {"success": True, "return_code": 0, "ord_no": "000000283"}
 
+    async def modify(**kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        calls.append("modify")
+        return {"success": True, "return_code": 0, "ord_no": "000000284"}
+
     monkeypatch.setattr(
         smoke,
         "_tools",
@@ -777,6 +791,7 @@ async def test_full_empty_post_place_history_fails_closed(monkeypatch) -> None:
             "kiwoom_mock_us_place_order": place,
             "kiwoom_mock_us_get_order_history": history,
             "kiwoom_mock_us_cancel_order": cancel,
+            "kiwoom_mock_us_modify_order": modify,
             "kiwoom_mock_us_get_positions": history,
         },
     )
@@ -791,10 +806,109 @@ async def test_full_empty_post_place_history_fails_closed(monkeypatch) -> None:
             "--price",
             "1.00",
             "--confirm",
+            "--new-price",
+            "0.90",
         ]
     )
     assert await smoke.run_full(args) == 2
     assert calls.index("cancel") > calls.index("place-live")
+    assert "modify" not in calls
+
+
+@pytest.mark.asyncio
+async def test_full_cancel_pending_state_skips_modify(monkeypatch) -> None:
+    cancelled = False
+    calls: list[str] = []
+
+    def wrapped(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "success": True,
+            "return_code": 0,
+            "broker_response": _page(rows),
+        }
+
+    async def preview(**kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        return {"success": True}
+
+    async def place(**kwargs: Any) -> dict[str, Any]:
+        if kwargs["dry_run"]:
+            return {"success": True}
+        return {"success": True, "return_code": 0, "ord_no": "000000282"}
+
+    async def history(**kwargs: Any) -> dict[str, Any]:
+        if kwargs["scope"] == "open":
+            return wrapped([])
+        if cancelled:
+            return wrapped(
+                [
+                    {
+                        "ord_no": "000000283",
+                        "orig_ord_no": "000000282",
+                        "ord_cntr_tp": "12",
+                        "cntr_qty": "0",
+                        "ord_remnq": "0",
+                    }
+                ]
+            )
+        return wrapped(
+            [
+                {
+                    "ord_no": "000000283",
+                    "orig_ord_no": "000000282",
+                    "ord_cntr_tp": "12",
+                    "cntr_qty": "0",
+                    "ord_remnq": "1",
+                }
+            ]
+        )
+
+    async def positions(**kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        return wrapped([])
+
+    async def modify(**kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        calls.append("modify")
+        return {"success": True, "return_code": 0, "ord_no": "000000284"}
+
+    async def cancel(**kwargs: Any) -> dict[str, Any]:
+        nonlocal cancelled
+        del kwargs
+        cancelled = True
+        calls.append("cancel")
+        return {"success": True, "return_code": 0, "ord_no": "000000283"}
+
+    monkeypatch.setattr(
+        smoke,
+        "_tools",
+        lambda: {
+            "kiwoom_mock_us_preview_order": preview,
+            "kiwoom_mock_us_place_order": place,
+            "kiwoom_mock_us_get_order_history": history,
+            "kiwoom_mock_us_get_positions": positions,
+            "kiwoom_mock_us_modify_order": modify,
+            "kiwoom_mock_us_cancel_order": cancel,
+        },
+    )
+    args = smoke.build_parser().parse_args(
+        [
+            "--mode",
+            "full",
+            "--symbol",
+            "NVDA",
+            "--quantity",
+            "1",
+            "--price",
+            "1.00",
+            "--new-price",
+            "0.90",
+            "--confirm",
+        ]
+    )
+
+    assert await smoke.run_full(args) == 0
+    assert calls == ["cancel"]
 
 
 @pytest.mark.asyncio

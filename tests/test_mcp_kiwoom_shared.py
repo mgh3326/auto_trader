@@ -79,3 +79,16 @@ def test_place_explicit_nonzero_broker_code_is_rejected(
     assert response["success"] is False
     assert response["status"] == "rejected"
     assert response["reconcile_required"] is False
+
+
+def test_place_conflicting_valid_order_ids_are_accepted_untracked() -> None:
+    response = finalize_place_broker_response(
+        {"source": "kiwoom"},
+        {"return_code": 0, "ord_no": "000000282", "order_no": "000000283"},
+    )
+
+    assert response["success"] is False
+    assert response["status"] == "accepted_untracked"
+    assert response["reconcile_required"] is True
+    assert response["retry_allowed"] is False
+    assert "order_id" not in response

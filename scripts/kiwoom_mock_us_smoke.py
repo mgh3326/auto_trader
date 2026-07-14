@@ -512,7 +512,7 @@ async def run_full(
                 }
             )
 
-        if args.new_price is not None:
+        if args.new_price is not None and placed_state == "open" and exit_code == 0:
             modified = await tools["kiwoom_mock_us_modify_order"](
                 order_id=order_id,
                 symbol=args.symbol,
@@ -718,10 +718,12 @@ async def run_probe(
                         ),
                     }
                 )
-                continue
+                return 2
             accepted = derive_broker_success(raw)
-            order_id = extract_order_id(raw)
             acceptance = finalize_place_broker_response({}, raw)
+            order_id = acceptance.get("order_id")
+            if not isinstance(order_id, str):
+                order_id = None
             _emit(
                 {
                     "step": "probe_order_type",
@@ -730,7 +732,7 @@ async def run_probe(
                     "broker_response": raw,
                 }
             )
-            if accepted and order_id is None:
+            if acceptance.get("status") == "accepted_untracked":
                 exit_code = 2
                 _emit(
                     {
@@ -839,6 +841,8 @@ async def run_probe(
                             ),
                         }
                     )
+        if exit_code != 0:
+            return exit_code
     return exit_code
 
 

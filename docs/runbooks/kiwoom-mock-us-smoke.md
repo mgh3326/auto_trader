@@ -196,7 +196,9 @@ The schema-aware classifier reports `open`, `partial`, `filled`,
 `cancel_pending`, `cancelled`, `rejected`, or `unknown`. Only a terminal
 `cancelled`/`rejected` target with no position delta is clean for this smoke.
 Immediate/partial fills, unknown/malformed evidence, position changes, and poll
-timeouts all exit 2.
+timeouts all exit 2. Full mode skips modify after any unsafe post-place state;
+probe mode stops before submitting another order type after its first unsafe
+outcome.
 
 ## Cleanup / verification after smoke
 

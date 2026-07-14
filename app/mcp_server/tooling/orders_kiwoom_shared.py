@@ -89,17 +89,21 @@ def finalize_place_broker_response(
             )
         return response
 
-    order_id = None
+    order_ids: set[str] = set()
+    invalid_order_id_evidence = False
     for key in _ORDER_ID_KEYS:
+        if key not in broker_response:
+            continue
         raw_order_id = broker_response.get(key)
         if not isinstance(raw_order_id, str):
+            invalid_order_id_evidence = True
             continue
         try:
-            order_id = validate_us_order_id(raw_order_id)
+            order_ids.add(validate_us_order_id(raw_order_id))
         except ValueError:
+            invalid_order_id_evidence = True
             continue
-        break
-    if order_id is None:
+    if invalid_order_id_evidence or len(order_ids) != 1:
         response.update(
             {
                 "success": False,
@@ -110,6 +114,7 @@ def finalize_place_broker_response(
         )
         return response
 
+    order_id = next(iter(order_ids))
     response.update(
         {
             "success": True,
