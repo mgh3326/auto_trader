@@ -116,3 +116,20 @@ async def test_alpaca_quantity_rounds_down_to_an_exact_increment_multiple() -> N
     assert evidence.order is not None
     assert evidence.order["qty"] == "61.2"
     assert Decimal(evidence.order["qty"]) % Decimal("0.05") == 0
+
+
+@pytest.mark.asyncio
+async def test_alpaca_missing_asset_constraints_remains_fail_closed_without_asserts() -> (
+    None
+):
+    signal = compute_target_signal(await snapshot(), signal_input())
+    valid = quote("alpaca", "101")
+    malformed = VenueQuote.model_construct(
+        **valid.model_dump(exclude={"qty_increment"}),
+        qty_increment=None,
+    )
+
+    evidence = build_would_order_evidence(signal, malformed)
+
+    assert evidence.reason_code == "unsupported_capability"
+    assert evidence.order is None

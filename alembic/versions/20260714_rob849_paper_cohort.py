@@ -27,6 +27,8 @@ _AUDIT_TABLES = (
     "paper_cohort_decisions",
     "paper_cohort_venue_intents",
     "paper_run_order_links",
+    "paper_cohort_target_reservations",
+    "paper_cohort_terminal_fences",
 )
 
 
@@ -127,6 +129,11 @@ def upgrade() -> None:
         sa.Column("stop_at", sa.DateTime(timezone=True), nullable=True),
         _timestamps(),
         sa.UniqueConstraint("cohort_id", name="uq_paper_validation_cohort_id"),
+        sa.UniqueConstraint(
+            "cohort_id",
+            "cohort_hash",
+            name="uq_paper_validation_cohort_lineage",
+        ),
         sa.CheckConstraint(
             'venues = \'["binance", "alpaca"]\'::jsonb',
             name=op.f("ck_paper_validation_cohort_venues"),
@@ -205,6 +212,11 @@ def upgrade() -> None:
             name="fk_paper_cohort_assignment_backtest_run",
         ),
         sa.UniqueConstraint("assignment_id", name="uq_paper_cohort_assignment_id"),
+        sa.UniqueConstraint(
+            "cohort_id",
+            "assignment_id",
+            name="uq_paper_cohort_assignment_lineage",
+        ),
         sa.UniqueConstraint(
             "cohort_id", "ordinal", name="uq_paper_cohort_assignment_ordinal"
         ),
@@ -287,6 +299,14 @@ def upgrade() -> None:
             "round_decision_id",
             name="uq_canonical_snapshot_round",
         ),
+        sa.UniqueConstraint(
+            "cohort_id",
+            "run_id",
+            "round_decision_id",
+            "snapshot_id",
+            "content_hash",
+            name="uq_canonical_snapshot_lineage",
+        ),
         sa.CheckConstraint(
             "schema_id = 'canonical_market_snapshot.v1'",
             name=op.f("ck_canonical_snapshot_schema"),
@@ -324,22 +344,31 @@ def upgrade() -> None:
         sa.Column("signal_hash", sa.String(64), nullable=False),
         _timestamps(),
         sa.ForeignKeyConstraint(
-            ["cohort_id"],
-            ["research.paper_validation_cohorts.cohort_id"],
+            ["cohort_id", "assignment_id"],
+            [
+                "research.paper_validation_cohort_assignments.cohort_id",
+                "research.paper_validation_cohort_assignments.assignment_id",
+            ],
             ondelete="RESTRICT",
-            name="fk_paper_cohort_decision_cohort",
+            name="fk_paper_cohort_decision_assignment_lineage",
         ),
         sa.ForeignKeyConstraint(
-            ["assignment_id"],
-            ["research.paper_validation_cohort_assignments.assignment_id"],
+            [
+                "cohort_id",
+                "run_id",
+                "round_decision_id",
+                "snapshot_id",
+                "snapshot_hash",
+            ],
+            [
+                "research.canonical_market_snapshots.cohort_id",
+                "research.canonical_market_snapshots.run_id",
+                "research.canonical_market_snapshots.round_decision_id",
+                "research.canonical_market_snapshots.snapshot_id",
+                "research.canonical_market_snapshots.content_hash",
+            ],
             ondelete="RESTRICT",
-            name="fk_paper_cohort_decision_assignment",
-        ),
-        sa.ForeignKeyConstraint(
-            ["snapshot_id"],
-            ["research.canonical_market_snapshots.snapshot_id"],
-            ondelete="RESTRICT",
-            name="fk_paper_cohort_decision_snapshot",
+            name="fk_paper_cohort_decision_snapshot_lineage",
         ),
         sa.UniqueConstraint("decision_id", name="uq_paper_cohort_decision_id"),
         sa.UniqueConstraint(
@@ -349,6 +378,17 @@ def upgrade() -> None:
             "assignment_id",
             "symbol",
             name="uq_paper_cohort_decision_identity",
+        ),
+        sa.UniqueConstraint(
+            "cohort_id",
+            "run_id",
+            "round_decision_id",
+            "decision_id",
+            "assignment_id",
+            "symbol",
+            "snapshot_id",
+            "snapshot_hash",
+            name="uq_paper_cohort_decision_lineage",
         ),
         sa.CheckConstraint(
             "mode IN ('shadow','paper_active')",
@@ -370,36 +410,80 @@ def upgrade() -> None:
         sa.Column("intent_id", sa.String(128), nullable=False),
         sa.Column("cohort_id", sa.String(128), nullable=False),
         sa.Column("run_id", sa.String(128), nullable=False),
+        sa.Column("round_decision_id", sa.String(128), nullable=False),
         sa.Column("decision_id", sa.String(128), nullable=False),
+        sa.Column("assignment_id", sa.String(128), nullable=False),
+        sa.Column("symbol", sa.String(16), nullable=False),
         sa.Column("snapshot_id", sa.String(128), nullable=False),
         sa.Column("snapshot_hash", sa.String(64), nullable=False),
         sa.Column("venue", sa.String(16), nullable=False),
+        sa.Column("execution_ordinal", sa.Integer(), nullable=False),
         sa.Column("request_payload", postgresql.JSONB(), nullable=False),
         sa.Column("request_hash", sa.String(64), nullable=False),
         sa.Column("venue_quote_evidence", postgresql.JSONB(), nullable=False),
         sa.Column("would_order_evidence", postgresql.JSONB(), nullable=False),
         _timestamps(),
         sa.ForeignKeyConstraint(
-            ["cohort_id"],
-            ["research.paper_validation_cohorts.cohort_id"],
+            [
+                "cohort_id",
+                "run_id",
+                "round_decision_id",
+                "decision_id",
+                "assignment_id",
+                "symbol",
+                "snapshot_id",
+                "snapshot_hash",
+            ],
+            [
+                "research.paper_cohort_decisions.cohort_id",
+                "research.paper_cohort_decisions.run_id",
+                "research.paper_cohort_decisions.round_decision_id",
+                "research.paper_cohort_decisions.decision_id",
+                "research.paper_cohort_decisions.assignment_id",
+                "research.paper_cohort_decisions.symbol",
+                "research.paper_cohort_decisions.snapshot_id",
+                "research.paper_cohort_decisions.snapshot_hash",
+            ],
             ondelete="RESTRICT",
-            name="fk_paper_cohort_venue_intent_cohort",
-        ),
-        sa.ForeignKeyConstraint(
-            ["decision_id"],
-            ["research.paper_cohort_decisions.decision_id"],
-            ondelete="RESTRICT",
-            name="fk_paper_cohort_venue_intent_decision",
-        ),
-        sa.ForeignKeyConstraint(
-            ["snapshot_id"],
-            ["research.canonical_market_snapshots.snapshot_id"],
-            ondelete="RESTRICT",
-            name="fk_paper_cohort_venue_intent_snapshot",
+            name="fk_paper_cohort_intent_decision_lineage",
         ),
         sa.UniqueConstraint("intent_id", name="uq_paper_cohort_venue_intent_id"),
         sa.UniqueConstraint(
             "decision_id", "venue", name="uq_paper_cohort_venue_intent"
+        ),
+        sa.UniqueConstraint(
+            "cohort_id",
+            "run_id",
+            "round_decision_id",
+            "intent_id",
+            "decision_id",
+            "assignment_id",
+            "symbol",
+            "snapshot_id",
+            "snapshot_hash",
+            "venue",
+            name="uq_paper_cohort_intent_lineage",
+        ),
+        sa.UniqueConstraint(
+            "cohort_id",
+            "run_id",
+            "round_decision_id",
+            "intent_id",
+            "decision_id",
+            "assignment_id",
+            "symbol",
+            "snapshot_id",
+            "snapshot_hash",
+            "venue",
+            "execution_ordinal",
+            name="uq_paper_cohort_intent_reservation_lineage",
+        ),
+        sa.UniqueConstraint(
+            "cohort_id",
+            "run_id",
+            "round_decision_id",
+            "execution_ordinal",
+            name="uq_paper_cohort_intent_execution_ordinal",
         ),
         sa.CheckConstraint(
             "venue IN ('binance','alpaca')",
@@ -408,6 +492,10 @@ def upgrade() -> None:
         sa.CheckConstraint(
             f"request_hash ~ '{_SHA256}'",
             name=op.f("ck_paper_cohort_venue_intent_hash"),
+        ),
+        sa.CheckConstraint(
+            "symbol IN ('BTCUSDT','ETHUSDT') AND execution_ordinal >= 0",
+            name=op.f("ck_paper_cohort_venue_intent_execution_identity"),
         ),
         schema="research",
     )
@@ -420,8 +508,16 @@ def upgrade() -> None:
         sa.Column("request_hash", sa.String(64), nullable=False),
         sa.Column("owner_token", sa.String(128), nullable=False),
         sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column(
+            "claim_status",
+            sa.String(32),
+            nullable=False,
+            server_default=sa.text("'in_progress'"),
+        ),
         sa.Column("result_payload", postgresql.JSONB(), nullable=True),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("terminal_reason", sa.String(64), nullable=True),
+        sa.Column("terminal_at", sa.DateTime(timezone=True), nullable=True),
         _timestamps(),
         sa.ForeignKeyConstraint(
             ["cohort_id"],
@@ -439,6 +535,23 @@ def upgrade() -> None:
             f"request_hash ~ '{_SHA256}'",
             name=op.f("ck_paper_cohort_run_claim_hash"),
         ),
+        sa.CheckConstraint(
+            "claim_status IN ('in_progress','completed','blocked',"
+            "'reconciliation_required')",
+            name=op.f("ck_paper_cohort_run_claim_status"),
+        ),
+        sa.CheckConstraint(
+            "(claim_status = 'in_progress' AND result_payload IS NULL "
+            "AND completed_at IS NULL AND terminal_reason IS NULL "
+            "AND terminal_at IS NULL) OR "
+            "(claim_status = 'completed' AND result_payload IS NOT NULL "
+            "AND completed_at IS NOT NULL AND terminal_reason IS NULL "
+            "AND terminal_at IS NULL) OR "
+            "(claim_status IN ('blocked','reconciliation_required') "
+            "AND result_payload IS NULL AND completed_at IS NULL "
+            "AND terminal_reason IS NOT NULL AND terminal_at IS NOT NULL)",
+            name=op.f("ck_paper_cohort_run_claim_state_consistency"),
+        ),
         schema="research",
     )
     op.create_table(
@@ -446,7 +559,11 @@ def upgrade() -> None:
         sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
         sa.Column("cohort_id", sa.String(128), nullable=False),
         sa.Column("run_id", sa.String(128), nullable=False),
+        sa.Column("round_decision_id", sa.String(128), nullable=False),
+        sa.Column("intent_id", sa.String(128), nullable=False),
         sa.Column("decision_id", sa.String(128), nullable=False),
+        sa.Column("assignment_id", sa.String(128), nullable=False),
+        sa.Column("symbol", sa.String(16), nullable=False),
         sa.Column("snapshot_id", sa.String(128), nullable=False),
         sa.Column("snapshot_hash", sa.String(64), nullable=False),
         sa.Column("venue", sa.String(16), nullable=False),
@@ -456,28 +573,35 @@ def upgrade() -> None:
         sa.Column("broker_order_id", sa.String(128), nullable=False),
         _timestamps(),
         sa.ForeignKeyConstraint(
-            ["cohort_id"],
-            ["research.paper_validation_cohorts.cohort_id"],
+            [
+                "cohort_id",
+                "run_id",
+                "round_decision_id",
+                "intent_id",
+                "decision_id",
+                "assignment_id",
+                "symbol",
+                "snapshot_id",
+                "snapshot_hash",
+                "venue",
+            ],
+            [
+                "research.paper_cohort_venue_intents.cohort_id",
+                "research.paper_cohort_venue_intents.run_id",
+                "research.paper_cohort_venue_intents.round_decision_id",
+                "research.paper_cohort_venue_intents.intent_id",
+                "research.paper_cohort_venue_intents.decision_id",
+                "research.paper_cohort_venue_intents.assignment_id",
+                "research.paper_cohort_venue_intents.symbol",
+                "research.paper_cohort_venue_intents.snapshot_id",
+                "research.paper_cohort_venue_intents.snapshot_hash",
+                "research.paper_cohort_venue_intents.venue",
+            ],
             ondelete="RESTRICT",
-            name="fk_paper_run_order_link_cohort",
-        ),
-        sa.ForeignKeyConstraint(
-            ["decision_id"],
-            ["research.paper_cohort_decisions.decision_id"],
-            ondelete="RESTRICT",
-            name="fk_paper_run_order_link_decision",
-        ),
-        sa.ForeignKeyConstraint(
-            ["snapshot_id"],
-            ["research.canonical_market_snapshots.snapshot_id"],
-            ondelete="RESTRICT",
-            name="fk_paper_run_order_link_snapshot",
+            name="fk_paper_run_order_link_intent_lineage",
         ),
         sa.UniqueConstraint(
-            "cohort_id",
-            "run_id",
-            "decision_id",
-            "venue",
+            "intent_id",
             name="uq_paper_run_order_link_intent",
         ),
         sa.UniqueConstraint(
@@ -500,8 +624,147 @@ def upgrade() -> None:
             name=op.f("ck_paper_run_order_link_ledger_kind"),
         ),
         sa.CheckConstraint(
+            "(venue = 'binance' AND "
+            "native_ledger_kind = 'binance_demo_order_ledger') OR "
+            "(venue = 'alpaca' AND "
+            "native_ledger_kind = 'alpaca_paper_order_ledger')",
+            name=op.f("ck_paper_run_order_link_venue_ledger"),
+        ),
+        sa.CheckConstraint(
             f"snapshot_hash ~ '{_SHA256}'",
             name=op.f("ck_paper_run_order_link_snapshot_hash"),
+        ),
+        schema="research",
+    )
+    op.create_table(
+        "paper_cohort_target_reservations",
+        sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
+        sa.Column("cohort_id", sa.String(128), nullable=False),
+        sa.Column("run_id", sa.String(128), nullable=False),
+        sa.Column("round_decision_id", sa.String(128), nullable=False),
+        sa.Column("intent_id", sa.String(128), nullable=False),
+        sa.Column("decision_id", sa.String(128), nullable=False),
+        sa.Column("assignment_id", sa.String(128), nullable=False),
+        sa.Column("symbol", sa.String(16), nullable=False),
+        sa.Column("snapshot_id", sa.String(128), nullable=False),
+        sa.Column("snapshot_hash", sa.String(64), nullable=False),
+        sa.Column("venue", sa.String(16), nullable=False),
+        sa.Column("execution_ordinal", sa.Integer(), nullable=False),
+        _timestamps(),
+        sa.ForeignKeyConstraint(
+            [
+                "cohort_id",
+                "run_id",
+                "round_decision_id",
+                "intent_id",
+                "decision_id",
+                "assignment_id",
+                "symbol",
+                "snapshot_id",
+                "snapshot_hash",
+                "venue",
+                "execution_ordinal",
+            ],
+            [
+                "research.paper_cohort_venue_intents.cohort_id",
+                "research.paper_cohort_venue_intents.run_id",
+                "research.paper_cohort_venue_intents.round_decision_id",
+                "research.paper_cohort_venue_intents.intent_id",
+                "research.paper_cohort_venue_intents.decision_id",
+                "research.paper_cohort_venue_intents.assignment_id",
+                "research.paper_cohort_venue_intents.symbol",
+                "research.paper_cohort_venue_intents.snapshot_id",
+                "research.paper_cohort_venue_intents.snapshot_hash",
+                "research.paper_cohort_venue_intents.venue",
+                "research.paper_cohort_venue_intents.execution_ordinal",
+            ],
+            ondelete="RESTRICT",
+            name="fk_paper_cohort_target_reservation_intent_lineage",
+        ),
+        sa.UniqueConstraint(
+            "intent_id",
+            name="uq_paper_cohort_target_reservation_intent",
+        ),
+        sa.UniqueConstraint(
+            "cohort_id",
+            "assignment_id",
+            "symbol",
+            "venue",
+            name="uq_paper_cohort_target_reservation_target",
+        ),
+        sa.CheckConstraint(
+            "symbol IN ('BTCUSDT','ETHUSDT') "
+            "AND venue IN ('binance','alpaca') AND execution_ordinal >= 0",
+            name=op.f("ck_paper_cohort_target_reservation_identity"),
+        ),
+        sa.CheckConstraint(
+            f"snapshot_hash ~ '{_SHA256}'",
+            name=op.f("ck_paper_cohort_target_reservation_snapshot_hash"),
+        ),
+        schema="research",
+    )
+    op.create_table(
+        "paper_cohort_terminal_fences",
+        sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
+        sa.Column("fence_id", sa.String(128), nullable=False),
+        sa.Column("cohort_id", sa.String(128), nullable=False),
+        sa.Column("cohort_hash", sa.String(64), nullable=False),
+        sa.Column("idempotency_key", sa.String(128), nullable=False),
+        sa.Column("request_hash", sa.String(64), nullable=False),
+        sa.Column("actor_id", sa.String(128), nullable=False),
+        sa.Column("actor_role", sa.String(16), nullable=False),
+        sa.Column("reason_code", sa.String(64), nullable=False),
+        sa.Column("reason_text", sa.Text(), nullable=False),
+        sa.Column("validation_evidence", postgresql.JSONB(), nullable=False),
+        sa.Column("fenced_at", sa.DateTime(timezone=True), nullable=False),
+        _timestamps(),
+        sa.ForeignKeyConstraint(
+            ["cohort_id", "cohort_hash"],
+            [
+                "research.paper_validation_cohorts.cohort_id",
+                "research.paper_validation_cohorts.cohort_hash",
+            ],
+            ondelete="RESTRICT",
+            name="fk_paper_cohort_terminal_fence_cohort_lineage",
+        ),
+        sa.UniqueConstraint(
+            "fence_id",
+            name="uq_paper_cohort_terminal_fence_id",
+        ),
+        sa.UniqueConstraint(
+            "cohort_id",
+            name="uq_paper_cohort_terminal_fence_cohort",
+        ),
+        sa.UniqueConstraint(
+            "cohort_id",
+            "idempotency_key",
+            name="uq_paper_cohort_terminal_fence_idempotency",
+        ),
+        sa.CheckConstraint(
+            "actor_role IN ('operator','system')",
+            name=op.f("ck_paper_cohort_terminal_fence_actor_role"),
+        ),
+        sa.CheckConstraint(
+            f"cohort_hash ~ '{_SHA256}' AND request_hash ~ '{_SHA256}'",
+            name=op.f("ck_paper_cohort_terminal_fence_hashes"),
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(validation_evidence) = 'object'",
+            name=op.f("ck_paper_cohort_terminal_fence_evidence"),
+        ),
+        sa.CheckConstraint(
+            "fence_id ~ '[^[:space:]]' AND char_length(fence_id) <= 128 "
+            "AND cohort_id ~ '[^[:space:]]' "
+            "AND char_length(cohort_id) <= 128 "
+            "AND idempotency_key ~ '[^[:space:]]' "
+            "AND char_length(idempotency_key) <= 128 "
+            "AND actor_id ~ '[^[:space:]]' "
+            "AND char_length(actor_id) <= 128 "
+            "AND reason_code ~ '[^[:space:]]' "
+            "AND char_length(reason_code) <= 64 "
+            "AND reason_text ~ '[^[:space:]]' "
+            "AND char_length(reason_text) <= 1024",
+            name=op.f("ck_paper_cohort_terminal_fence_text_bounds"),
         ),
         schema="research",
     )
@@ -542,6 +805,8 @@ def downgrade() -> None:
         )
     op.execute("DROP FUNCTION IF EXISTS research.validate_paper_cohort_composition()")
     op.execute("DROP FUNCTION IF EXISTS research.reject_paper_cohort_audit_mutation()")
+    op.drop_table("paper_cohort_terminal_fences", schema="research")
+    op.drop_table("paper_cohort_target_reservations", schema="research")
     op.drop_table("paper_run_order_links", schema="research")
     op.drop_table("paper_cohort_run_claims", schema="research")
     op.drop_table("paper_cohort_venue_intents", schema="research")

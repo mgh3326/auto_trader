@@ -11,6 +11,9 @@ from fastmcp import FastMCP
 
 from app.core.config import Settings, settings
 from app.mcp_server.profiles import McpProfile
+from app.mcp_server.tooling.paper_cohort_control_registration import (
+    PAPER_COHORT_CONTROL_TOOL_NAMES,
+)
 from app.mcp_server.tooling.paper_execution_registration import (
     PAPER_EXECUTION_TOOL_NAMES,
     PaperOrderToolInput,
@@ -123,7 +126,9 @@ def test_direct_registry_flag_on_registers_exact_profile_union(
     register_all_tools(mcp, profile=McpProfile.PAPER_EXECUTION)  # type: ignore[arg-type]
 
     assert PAPER_EXECUTION_TOOL_NAMES == EXPECTED_TOOLS
-    assert set(mcp.tools) == EXPECTED_TOOLS | PAPER_VALIDATION_TOOL_NAMES
+    assert set(mcp.tools) == (
+        EXPECTED_TOOLS | PAPER_VALIDATION_TOOL_NAMES | PAPER_COHORT_CONTROL_TOOL_NAMES
+    )
     forbidden_fragments = {
         "alpaca_paper",
         "binance_demo",

@@ -12,6 +12,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    field_validator,
     model_validator,
 )
 
@@ -20,6 +21,12 @@ from app.services.research_canonical_hash import canonical_sha256
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 Identifier128 = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)
+]
+ReasonCode64 = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)
+]
+ReasonText1024 = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1024)
 ]
 
 
@@ -48,6 +55,45 @@ class RunMode(StrEnum):
 
 class FrozenContract(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class PaperCohortKillRequest(FrozenContract):
+    """Caller-safe request for the server-owned cohort terminal fence."""
+
+    cohort_id: Identifier128
+    idempotency_key: Identifier128
+    reason_code: ReasonCode64
+    reason_text: ReasonText1024
+
+
+class PaperCohortLinkCleanupResult(FrozenContract):
+    """Stable, secret-free result for one cohort-owned native link."""
+
+    link_id: int = Field(gt=0)
+    venue: Literal["binance", "alpaca"]
+    status: Literal["complete", "pending", "manual_required"]
+    action: Literal["none", "cancel", "close"]
+    reason_code: ReasonCode64
+    replayed: bool = False
+
+
+class PaperCohortKillResult(FrozenContract):
+    """Durable fence receipt plus the bounded cleanup pass outcome."""
+
+    status: Literal["fenced", "already_fenced"]
+    fence_id: Identifier128
+    cohort_id: Identifier128
+    fenced_at: datetime
+    replayed: bool
+    cleanup_status: Literal["complete", "pending", "manual_required"]
+    cleanup_results: tuple[PaperCohortLinkCleanupResult, ...] = ()
+
+    @field_validator("fenced_at")
+    @classmethod
+    def fenced_at_is_aware(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+            raise ValueError("fenced_at must be timezone-aware")
+        return value
 
 
 class SymbolTargetWeight(FrozenContract):
@@ -149,7 +195,8 @@ class CohortActivation(FrozenContract):
     def identity_payload(self) -> dict[str, object]:
         payload = self.model_dump(mode="python", exclude={"expected_cohort_hash"})
         normalized = _normalize_hash_value(payload)
-        assert isinstance(normalized, dict)
+        if not isinstance(normalized, dict):
+            raise TypeError("cohort identity payload must be an object")
         return {"schema_id": "paper_validation_cohort.v1", **normalized}
 
     def computed_cohort_hash(self) -> str:
@@ -160,6 +207,9 @@ __all__ = [
     "CohortActivation",
     "CohortAssignmentInput",
     "PaperCohortError",
+    "PaperCohortKillRequest",
+    "PaperCohortKillResult",
+    "PaperCohortLinkCleanupResult",
     "RunMode",
     "SymbolTargetWeight",
 ]

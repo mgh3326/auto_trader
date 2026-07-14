@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.models.paper_cohort import (
     PaperCohortDecision,
     PaperCohortRunClaim,
+    PaperCohortTerminalFence,
     PaperCohortVenueIntent,
     PaperRunOrderLink,
 )
@@ -108,6 +109,82 @@ class ChangingCapture:
 
 
 @pytest.mark.asyncio
+async def test_fresh_and_reloaded_intents_share_persisted_execution_order(
+    db_session,
+) -> None:
+    nonce, activation, _ = await _setup(db_session)
+    invocation = CohortRunInvocation(
+        cohort_id=activation.cohort_id,
+        run_id=f"ordered-run-{nonce}",
+        round_decision_id=f"ordered-round-{nonce}",
+        mode=RunMode.SHADOW,
+    )
+    runner = PaperCohortRunner(
+        db_session,
+        capture=FakeCapture(),
+        quote_provider=FakeQuotes(db_session),
+        clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
+    )
+    cohort, assignments = await runner._cohort(invocation.cohort_id)
+
+    fresh = await runner._prepare(invocation, cohort, assignments)
+    fresh_intents = fresh[2]
+    await db_session.commit()
+    reloaded = await runner._load_prepared(invocation)
+
+    assert reloaded is not None
+    reloaded_intents = reloaded[2]
+    assert [item[0].intent_id for item in reloaded_intents] == [
+        item[0].intent_id for item in fresh_intents
+    ]
+    assert [item[0].execution_ordinal for item in reloaded_intents] == [0, 1, 2, 3]
+    assert [
+        (item[0].assignment_id, item[0].symbol, item[0].venue)
+        for item in reloaded_intents
+    ] == [
+        (activation.assignments[0].assignment_id, "BTCUSDT", "binance"),
+        (activation.assignments[0].assignment_id, "BTCUSDT", "alpaca"),
+        (activation.assignments[0].assignment_id, "ETHUSDT", "binance"),
+        (activation.assignments[0].assignment_id, "ETHUSDT", "alpaca"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_prepared_reload_isolated_by_round_when_run_id_is_reused(
+    db_session,
+) -> None:
+    nonce, activation, _ = await _setup(db_session)
+    runner = PaperCohortRunner(
+        db_session,
+        capture=FakeCapture(),
+        quote_provider=FakeQuotes(db_session),
+        clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
+    )
+    run_id = f"shared-run-{nonce}"
+    invocations = [
+        CohortRunInvocation(
+            cohort_id=activation.cohort_id,
+            run_id=run_id,
+            round_decision_id=f"shared-round-{index}-{nonce}",
+            mode=RunMode.SHADOW,
+        )
+        for index in range(2)
+    ]
+    cohort, assignments = await runner._cohort(activation.cohort_id)
+    for invocation in invocations:
+        await runner._prepare(invocation, cohort, assignments)
+        await db_session.commit()
+
+    reloaded = await runner._load_prepared(invocations[1])
+
+    assert reloaded is not None
+    assert len(reloaded[2]) == 4
+    assert {intent.round_decision_id for intent, _signal, _evidence in reloaded[2]} == {
+        invocations[1].round_decision_id
+    }
+
+
+@pytest.mark.asyncio
 async def test_crash_after_submit_recovers_native_truth_without_second_post(
     db_session,
 ) -> None:
@@ -154,6 +231,13 @@ async def test_crash_after_submit_recovers_native_truth_without_second_post(
     await db_session.rollback()
     assert sum(adapter.broker_posts for adapter in adapters.values()) == 1
     assert native.calls == []
+    uncertain_claim = await db_session.scalar(
+        select(PaperCohortRunClaim).where(
+            PaperCohortRunClaim.run_id == invocation.run_id
+        )
+    )
+    assert uncertain_claim is not None
+    assert uncertain_claim.claim_status == "in_progress"
     submitted_venue = next(
         venue for venue, adapter in adapters.items() if adapter.broker_posts == 1
     )
@@ -213,11 +297,19 @@ async def test_crash_after_submit_recovers_native_truth_without_second_post(
         )
         == 4
     )
+    completed_claim = await db_session.scalar(
+        select(PaperCohortRunClaim).where(
+            PaperCohortRunClaim.run_id == invocation.run_id
+        )
+    )
+    assert completed_claim is not None
+    assert completed_claim.claim_status == "completed"
 
 
 @pytest.mark.asyncio
-async def test_recovery_only_links_native_truth_after_abort_and_kill_switch(
-    db_session, monkeypatch
+@pytest.mark.parametrize("durable_fence", [True, False])
+async def test_reconciliation_required_can_resume_with_or_without_fence(
+    db_session, monkeypatch, durable_fence: bool
 ) -> None:
     nonce, activation, validation = await _setup(db_session)
     verifier = PaperCohortProvenanceVerifier(
@@ -233,6 +325,7 @@ async def test_recovery_only_links_native_truth_after_abort_and_kill_switch(
     native = FakeNativeResolver()
     crash = CrashOnce()
     capture = ChangingCapture()
+    clock = AdvancingClock()
     invocation = CohortRunInvocation(
         cohort_id=activation.cohort_id,
         run_id=f"terminal-recovery-run-{nonce}",
@@ -254,10 +347,17 @@ async def test_recovery_only_links_native_truth_after_abort_and_kill_switch(
             application_factory=app_factory,
             native_resolver=native,
             after_submit_hook=crash,
-            clock=lambda: CAPTURED_AT,
+            clock=clock,
             enablement=lambda _mode: True,
         ).run(invocation)
     await db_session.rollback()
+    live_claim = await db_session.scalar(
+        select(PaperCohortRunClaim).where(
+            PaperCohortRunClaim.run_id == invocation.run_id
+        )
+    )
+    assert live_claim is not None
+    assert live_claim.lease_expires_at > clock()
 
     submitted_venue = next(
         venue for venue, adapter in adapters.items() if adapter.broker_posts == 1
@@ -321,11 +421,31 @@ async def test_recovery_only_links_native_truth_after_abort_and_kill_switch(
                 evidence_ids=["kill-switch"],
             )
         )
+    if durable_fence:
+        db_session.add(
+            PaperCohortTerminalFence(
+                fence_id=f"terminal-recovery-fence-{nonce}",
+                cohort_id=activation.cohort_id,
+                cohort_hash=activation.expected_cohort_hash,
+                idempotency_key=f"terminal-recovery-stop-{nonce}",
+                request_hash=stable_hash(f"terminal-recovery-stop-{nonce}"),
+                actor_id="operator-1",
+                actor_role="operator",
+                reason_code="kill_switch",
+                reason_text="terminal recovery fence",
+                validation_evidence={},
+                fenced_at=CAPTURED_AT,
+            )
+        )
+    else:
+        # A state mismatch alone does not authorize stealing an unexpired live
+        # in-progress claim. Let the original lease expire before recovery.
+        clock.now += timedelta(minutes=6)
     await db_session.commit()
     monkeypatch.setattr(settings, "PAPER_COHORT_ENABLED", False)
     monkeypatch.setattr(settings, "PAPER_EXECUTION_ENABLED", False)
 
-    with pytest.raises(PaperCohortError, match="recovery_incomplete"):
+    with pytest.raises(PaperCohortError, match="reconciliation_required"):
         await PaperCohortRunner(
             db_session,
             capture=capture,
@@ -333,7 +453,7 @@ async def test_recovery_only_links_native_truth_after_abort_and_kill_switch(
             verifier=verifier,
             application_factory=app_factory,
             native_resolver=native,
-            clock=lambda: CAPTURED_AT,
+            clock=clock,
             enablement=lambda _mode: True,
         ).recover(invocation)
 
@@ -354,5 +474,67 @@ async def test_recovery_only_links_native_truth_after_abort_and_kill_switch(
         )
     )
     assert claim is not None
+    assert claim.claim_status == "reconciliation_required"
+    assert claim.terminal_reason == "reconciliation_required"
+    assert claim.terminal_at is not None
     assert claim.completed_at is None
     assert claim.result_payload is None
+
+    intents = list(
+        (
+            await db_session.scalars(
+                select(PaperCohortVenueIntent).where(
+                    PaperCohortVenueIntent.run_id == invocation.run_id
+                )
+            )
+        ).all()
+    )
+    for prepared_intent in intents:
+        native.prepared.setdefault(
+            prepared_intent.intent_id,
+            NativeOrderIdentity(
+                venue=prepared_intent.venue,
+                ledger_kind=(
+                    "binance_demo_order_ledger"
+                    if prepared_intent.venue == "binance"
+                    else "alpaca_paper_order_ledger"
+                ),
+                ledger_row_id=int(
+                    stable_hash(f"retry-native-{prepared_intent.intent_id}")[:12], 16
+                ),
+                client_order_id=(
+                    f"retry-client-{prepared_intent.execution_ordinal}-{nonce}"
+                ),
+                broker_order_id=(
+                    f"retry-broker-{prepared_intent.execution_ordinal}-{nonce}"
+                ),
+            ),
+        )
+    for prepared_native in native.prepared.values():
+        native.identities[(prepared_native.venue, prepared_native.client_order_id)] = (
+            prepared_native
+        )
+
+    recovered = await PaperCohortRunner(
+        db_session,
+        capture=capture,
+        quote_provider=FakeQuotes(db_session),
+        verifier=verifier,
+        application_factory=app_factory,
+        native_resolver=native,
+        clock=clock,
+        enablement=lambda _mode: True,
+    ).recover(invocation)
+
+    assert recovered.intent_count == 4
+    assert sum(adapter.broker_posts for adapter in adapters.values()) == 1
+    assert (
+        await db_session.scalar(
+            select(func.count())
+            .select_from(PaperRunOrderLink)
+            .where(PaperRunOrderLink.run_id == invocation.run_id)
+        )
+        == 4
+    )
+    await db_session.refresh(claim)
+    assert claim.claim_status == "completed"

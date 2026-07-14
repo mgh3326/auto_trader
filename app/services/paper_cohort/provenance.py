@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Protocol
+from typing import NoReturn, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.paper_cohort import (
     CanonicalMarketSnapshot,
     PaperCohortDecision,
+    PaperCohortTerminalFence,
     PaperCohortVenueIntent,
     PaperValidationCohort,
     PaperValidationCohortAssignment,
@@ -67,7 +68,7 @@ class PaperCohortProvenanceVerifier:
         self._clock = clock or (lambda: datetime.now(UTC))
 
     @staticmethod
-    def _fail() -> None:
+    def _fail() -> NoReturn:
         raise PaperCohortError("provenance_mismatch")
 
     @staticmethod
@@ -144,7 +145,6 @@ class PaperCohortProvenanceVerifier:
         )
         if intent is None:
             self._fail()
-        assert intent is not None
         decision = await self._session.scalar(
             select(PaperCohortDecision).where(
                 PaperCohortDecision.decision_id == intent.decision_id
@@ -162,7 +162,6 @@ class PaperCohortProvenanceVerifier:
         )
         if decision is None or snapshot is None or cohort is None:
             self._fail()
-        assert decision is not None and snapshot is not None and cohort is not None
         assignment = await self._session.scalar(
             select(PaperValidationCohortAssignment).where(
                 PaperValidationCohortAssignment.assignment_id == decision.assignment_id
@@ -170,7 +169,6 @@ class PaperCohortProvenanceVerifier:
         )
         if assignment is None:
             self._fail()
-        assert assignment is not None
         assignments = list(
             (
                 await self._session.scalars(
@@ -192,11 +190,20 @@ class PaperCohortProvenanceVerifier:
         )
         if experiment is None or backtest is None:
             self._fail()
-        assert experiment is not None and backtest is not None
         if (
             authorize_submission
             and cohort.stop_at is not None
             and self._clock() >= cohort.stop_at
+        ):
+            raise PaperCohortError("cohort_stopped")
+        if (
+            authorize_submission
+            and await self._session.scalar(
+                select(PaperCohortTerminalFence.id).where(
+                    PaperCohortTerminalFence.cohort_id == cohort.cohort_id
+                )
+            )
+            is not None
         ):
             raise PaperCohortError("cohort_stopped")
         if decision.mode != "paper_active":
@@ -244,9 +251,13 @@ class PaperCohortProvenanceVerifier:
             recomputed_cohort_hash = self._cohort_contract(
                 cohort, assignments
             ).computed_cohort_hash()
+            execution_ordinal = (
+                assignment.ordinal * 4
+                + cohort.symbols.index(decision.symbol) * 2
+                + cohort.venues.index(intent.venue)
+            )
         except (ArithmeticError, KeyError, TypeError, ValueError):
             self._fail()
-            raise AssertionError("unreachable")
 
         order = intent.request_payload.get("order")
         if not isinstance(order, dict):
@@ -262,9 +273,14 @@ class PaperCohortProvenanceVerifier:
             intent.request_hash == canonical_sha256(intent.request_payload),
             intent.cohort_id == decision.cohort_id == snapshot.cohort_id,
             intent.run_id == decision.run_id == snapshot.run_id,
+            intent.round_decision_id
+            == decision.round_decision_id
+            == snapshot.round_decision_id,
+            intent.assignment_id == decision.assignment_id,
+            intent.symbol == decision.symbol,
+            intent.execution_ordinal == execution_ordinal,
             intent.snapshot_id == decision.snapshot_id == snapshot.snapshot_id,
             intent.snapshot_hash == decision.snapshot_hash == snapshot.content_hash,
-            decision.round_decision_id == snapshot.round_decision_id,
             assignment.cohort_id == cohort.cohort_id,
             decision.assignment_id == assignment.assignment_id,
             decision.symbol == signal.symbol,

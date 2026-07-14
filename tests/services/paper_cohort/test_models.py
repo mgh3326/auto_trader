@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-from sqlalchemy import CheckConstraint, UniqueConstraint
+from sqlalchemy import CheckConstraint, ForeignKeyConstraint, UniqueConstraint
 
+import app.models as model_exports
+from app.models import paper_cohort as paper_cohort_models
 from app.models.paper_cohort import (
     CanonicalMarketSnapshot,
     PaperCohortDecision,
     PaperCohortRunClaim,
+    PaperCohortTargetReservation,
+    PaperCohortTerminalFence,
     PaperCohortVenueIntent,
     PaperRunOrderLink,
     PaperValidationCohort,
@@ -22,6 +26,66 @@ def _constraint_names(model: type) -> set[str]:
     }
 
 
+def _foreign_key_names(model: type) -> set[str]:
+    return {
+        constraint.name
+        for constraint in model.__table__.constraints
+        if isinstance(constraint, ForeignKeyConstraint) and constraint.name is not None
+    }
+
+
+def test_models_expose_full_lineage_reservation_fence_and_claim_state() -> None:
+    assert hasattr(paper_cohort_models, "PaperCohortTargetReservation")
+    assert hasattr(paper_cohort_models, "PaperCohortTerminalFence")
+    assert hasattr(model_exports, "PaperCohortTargetReservation")
+    assert hasattr(model_exports, "PaperCohortTerminalFence")
+    reservation = paper_cohort_models.PaperCohortTargetReservation
+    fence = paper_cohort_models.PaperCohortTerminalFence
+
+    assert set(PaperCohortVenueIntent.__table__.columns.keys()) >= {
+        "round_decision_id",
+        "assignment_id",
+        "symbol",
+        "execution_ordinal",
+    }
+    assert set(PaperRunOrderLink.__table__.columns.keys()) >= {
+        "round_decision_id",
+        "intent_id",
+        "assignment_id",
+        "symbol",
+    }
+    assert set(PaperCohortRunClaim.__table__.columns.keys()) >= {
+        "claim_status",
+        "terminal_reason",
+        "terminal_at",
+    }
+    assert str(PaperCohortRunClaim.__table__.c.claim_status.server_default.arg) == (
+        "'in_progress'"
+    )
+    assert reservation.__table__.schema == fence.__table__.schema == "research"
+    assert {
+        "uq_paper_cohort_target_reservation_target",
+    } <= _constraint_names(reservation)
+    assert {
+        "uq_paper_cohort_terminal_fence_id",
+        "uq_paper_cohort_terminal_fence_cohort",
+        "uq_paper_cohort_terminal_fence_idempotency",
+    } <= _constraint_names(fence)
+    assert {
+        "fk_paper_cohort_decision_assignment_lineage",
+        "fk_paper_cohort_decision_snapshot_lineage",
+    } <= _foreign_key_names(PaperCohortDecision)
+    assert "fk_paper_cohort_intent_decision_lineage" in _foreign_key_names(
+        PaperCohortVenueIntent
+    )
+    assert "fk_paper_run_order_link_intent_lineage" in _foreign_key_names(
+        PaperRunOrderLink
+    )
+    assert "fk_paper_cohort_target_reservation_intent_lineage" in _foreign_key_names(
+        reservation
+    )
+
+
 def test_models_use_research_schema_and_exact_table_names() -> None:
     assert {
         model.__table__.name: model.__table__.schema
@@ -33,6 +97,8 @@ def test_models_use_research_schema_and_exact_table_names() -> None:
             PaperCohortVenueIntent,
             PaperCohortRunClaim,
             PaperRunOrderLink,
+            PaperCohortTargetReservation,
+            PaperCohortTerminalFence,
         )
     } == {
         "paper_validation_cohorts": "research",
@@ -42,6 +108,8 @@ def test_models_use_research_schema_and_exact_table_names() -> None:
         "paper_cohort_venue_intents": "research",
         "paper_cohort_run_claims": "research",
         "paper_run_order_links": "research",
+        "paper_cohort_target_reservations": "research",
+        "paper_cohort_terminal_fences": "research",
     }
 
 
@@ -78,7 +146,11 @@ def test_thin_link_schema_has_only_identity_columns() -> None:
         "id",
         "cohort_id",
         "run_id",
+        "round_decision_id",
+        "intent_id",
         "decision_id",
+        "assignment_id",
+        "symbol",
         "snapshot_id",
         "snapshot_hash",
         "venue",
@@ -127,5 +199,7 @@ def test_only_run_claim_carries_mutable_orchestration_fields() -> None:
         PaperCohortDecision,
         PaperCohortVenueIntent,
         PaperRunOrderLink,
+        PaperCohortTargetReservation,
+        PaperCohortTerminalFence,
     ):
         assert "updated_at" not in immutable_model.__table__.columns

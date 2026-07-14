@@ -13,6 +13,7 @@ from app.core.db import AsyncSessionLocal
 from app.models.paper_cohort import (
     PaperCohortDecision,
     PaperCohortRunClaim,
+    PaperCohortTerminalFence,
     PaperValidationCohort,
     PaperValidationCohortAssignment,
 )
@@ -72,15 +73,27 @@ async def _runtime_mode(session: Any, cohort_id: str) -> RunMode | None:
     return None
 
 
-def _invocation(cohort_id: str, mode: RunMode, now: datetime) -> CohortRunInvocation:
-    bucket = now.astimezone(UTC).replace(second=0, microsecond=0)
-    identity = canonical_sha256(
-        {"cohort_id": cohort_id, "minute": bucket, "mode": mode}
-    )
+def _invocation(
+    cohort_id: str,
+    cohort_hash: str,
+    mode: RunMode,
+    now: datetime,
+) -> CohortRunInvocation:
+    identity_input: dict[str, object] = {
+        "cohort_id": cohort_id,
+        "cohort_hash": cohort_hash,
+        "mode": mode,
+    }
+    prefix = "observation"
+    if mode is RunMode.SHADOW:
+        identity_input["minute"] = now.astimezone(UTC).replace(second=0, microsecond=0)
+    else:
+        prefix = "one-shot"
+    identity = canonical_sha256(identity_input)
     return CohortRunInvocation(
         cohort_id=cohort_id,
         run_id=f"scheduled-{identity[:40]}",
-        round_decision_id=f"minute-{identity[:40]}",
+        round_decision_id=f"{prefix}-{identity[:40]}",
         mode=mode,
     )
 
@@ -100,7 +113,9 @@ async def _recoverable_invocations(session: Any) -> list[CohortRunInvocation]:
                 ),
             )
             .where(
-                PaperCohortRunClaim.completed_at.is_(None),
+                PaperCohortRunClaim.claim_status.in_(
+                    ("in_progress", "reconciliation_required")
+                ),
             )
             .order_by(PaperCohortRunClaim.created_at)
         )
@@ -132,7 +147,8 @@ async def run_active_paper_cohorts(
     client_factory: Callable[[], BinancePublicRestClient] = BinancePublicRestClient,
     clock: Callable[[], datetime] | None = None,
 ) -> dict[str, object]:
-    now = (clock or (lambda: datetime.now(UTC)))()
+    runtime_clock = clock or (lambda: datetime.now(UTC))
+    now = runtime_clock()
     actor_id = settings.PAPER_VALIDATION_AUTHENTICATED_ACTOR_ID.strip()
 
     async with session_factory() as discovery:
@@ -147,11 +163,17 @@ async def run_active_paper_cohorts(
                         PaperValidationCohort.cohort_id == invocation.cohort_id
                     )
                 )
+                terminal_fence = await session.scalar(
+                    select(PaperCohortTerminalFence.id).where(
+                        PaperCohortTerminalFence.cohort_id == invocation.cohort_id
+                    )
+                )
                 current_mode = await _runtime_mode(session, invocation.cohort_id)
                 fresh_resume_allowed = bool(
                     settings.PAPER_COHORT_ENABLED
                     and actor_id
                     and cohort is not None
+                    and terminal_fence is None
                     and (cohort.stop_at is None or cohort.stop_at > now)
                     and current_mode is invocation.mode
                     and (
@@ -169,7 +191,7 @@ async def run_active_paper_cohorts(
                     session,
                     validation_service=validation,
                     caller_id=actor_id or "paper-cohort-recovery",
-                    clock=lambda: now,
+                    clock=runtime_clock,
                 )
                 unused = _RecoveryOnlyBoundary()
                 runner = PaperCohortRunner(
@@ -177,7 +199,7 @@ async def run_active_paper_cohorts(
                     capture=unused,
                     quote_provider=unused,
                     verifier=verifier,
-                    clock=lambda: now,
+                    clock=runtime_clock,
                 )
                 result = (
                     await runner.run(invocation)
@@ -211,10 +233,10 @@ async def run_active_paper_cohorts(
         }
 
     async with session_factory() as discovery:
-        cohort_ids = list(
+        cohorts = list(
             (
                 await discovery.scalars(
-                    select(PaperValidationCohort.cohort_id).where(
+                    select(PaperValidationCohort).where(
                         PaperValidationCohort.activated_at <= now,
                         (
                             PaperValidationCohort.stop_at.is_(None)
@@ -225,7 +247,8 @@ async def run_active_paper_cohorts(
             ).all()
         )
 
-    for cohort_id in cohort_ids:
+    for cohort in cohorts:
+        cohort_id = cohort.cohort_id
         async with session_factory() as session:
             mode = await _runtime_mode(session, cohort_id)
             if mode is None:
@@ -254,15 +277,15 @@ async def run_active_paper_cohorts(
                     session,
                     validation_service=validation,
                     caller_id=actor_id,
-                    clock=lambda: now,
+                    clock=runtime_clock,
                 )
                 result = await PaperCohortRunner(
                     session,
                     capture=CanonicalSnapshotCapture(client),
                     quote_provider=ProductionVenueQuoteProvider(client, alpaca_quotes),
                     verifier=verifier,
-                    clock=lambda: now,
-                ).run(_invocation(cohort_id, mode, now))
+                    clock=runtime_clock,
+                ).run(_invocation(cohort_id, cohort.cohort_hash, mode, now))
                 await session.commit()
                 outcomes.append(
                     {

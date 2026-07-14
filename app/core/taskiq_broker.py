@@ -37,7 +37,7 @@ result_backend = RedisAsyncResultBackend(
 )
 
 retry_schedule_source = ListRedisScheduleSource(
-    settings.get_redis_url(), prefix="paper-cohort-retry"
+    settings.get_redis_url(), prefix="task-retry"
 )
 
 broker = (

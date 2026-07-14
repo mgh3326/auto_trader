@@ -23,6 +23,7 @@ from app.services.paper_cohort.contracts import (
     CohortAssignmentInput,
     PaperCohortError,
 )
+from app.services.paper_validation.locking import lock_validation_streams
 
 _ACTIVATABLE_STATES = frozenset(
     {"offline_eligible", "shadow_soak", "paper_active", "promotion_eligible"}
@@ -120,6 +121,10 @@ class PaperCohortService:
         if computed_hash != request.expected_cohort_hash:
             raise PaperCohortError("cohort_hash_mismatch")
         self._validate_symbol_mapping(request)
+        # Lifecycle lock suffix: sorted validation streams, then this cohort.
+        await lock_validation_streams(
+            self._session, (item.validation_id for item in request.assignments)
+        )
         await self._lock(request.cohort_id)
 
         existing = await self._existing(request.cohort_id)

@@ -5,6 +5,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PACKAGE = REPO_ROOT / "app" / "services" / "paper_cohort"
+MCP_TOOLING = REPO_ROOT / "app" / "mcp_server" / "tooling"
 
 
 def _imports(path: Path) -> set[str]:
@@ -87,3 +88,49 @@ def test_task_decorator_is_not_declared_in_job_layer() -> None:
     )
     assert "@broker.task" not in source
     assert "@taskiq_broker.task" not in source
+
+
+def test_kill_control_reaches_mutation_only_through_rob845_composition() -> None:
+    paths = (
+        PACKAGE / "kill_switch.py",
+        PACKAGE / "order_control.py",
+        MCP_TOOLING / "paper_cohort_control_handlers.py",
+        MCP_TOOLING / "paper_cohort_control_registration.py",
+    )
+    forbidden_import_fragments = (
+        "rest_client",
+        "execution_client",
+        "submit_service",
+        "alpaca_paper_order_application",
+        "demo_scalping_exec",
+        "signed",
+        "live_order",
+    )
+    forbidden_native_calls = {
+        "create_order",
+        "place_order",
+        "submit_order",
+        "_execute_http_request",
+    }
+    submit_call_paths: list[Path] = []
+
+    for path in paths:
+        imports = _imports(path)
+        assert not any(
+            fragment in module.lower()
+            for module in imports
+            for fragment in forbidden_import_fragments
+        ), path
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(
+                node.func, ast.Attribute
+            ):
+                continue
+            assert node.func.attr not in forbidden_native_calls, path
+            if node.func.attr == "submit":
+                submit_call_paths.append(path)
+
+    order_control = PACKAGE / "order_control.py"
+    assert submit_call_paths == [order_control]
+    assert "app.services.brokers.paper.composition" in _imports(order_control)

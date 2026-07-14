@@ -13,6 +13,9 @@ from app.core.config import settings
 from app.models.paper_cohort import (
     CanonicalMarketSnapshot,
     PaperCohortDecision,
+    PaperCohortRunClaim,
+    PaperCohortTargetReservation,
+    PaperCohortTerminalFence,
     PaperCohortVenueIntent,
     PaperRunOrderLink,
     PaperValidationCohortAssignment,
@@ -145,6 +148,46 @@ class FailSecondPreflightVerifier:
         return await self.delegate.verify(request)
 
 
+@dataclass
+class BlockSecondApplication:
+    calls: list[PaperOrderRequest] = field(default_factory=list)
+
+    async def submit(self, request: PaperOrderRequest) -> PaperOperationResult:
+        self.calls.append(request)
+        if len(self.calls) == 2:
+            return PaperOperationResult.blocked(
+                operation=PaperOperation.SUBMIT,
+                venue=request.venue,
+                reason_code="risk_limit_reached",
+            )
+        suffix = stable_hash(request.intent_id)[:16]
+        return PaperOperationResult(
+            operation=PaperOperation.SUBMIT,
+            status=PaperOperationStatus.SUCCEEDED,
+            reason_code="ok",
+            venue=request.venue,
+            native_order_id=f"broker-{suffix}",
+            native_client_order_id=f"client-{suffix}",
+        )
+
+
+@dataclass
+class UncertainOutcomeApplication:
+    status: PaperOperationStatus
+    calls: list[PaperOrderRequest] = field(default_factory=list)
+
+    async def submit(self, request: PaperOrderRequest) -> PaperOperationResult:
+        self.calls.append(request)
+        return PaperOperationResult(
+            operation=PaperOperation.SUBMIT,
+            status=self.status,
+            reason_code=(
+                "provider_error" if self.status is PaperOperationStatus.FAILED else "ok"
+            ),
+            venue=request.venue,
+        )
+
+
 async def _setup(
     db_session: AsyncSession,
 ) -> tuple[str, object, PaperValidationService]:
@@ -202,6 +245,7 @@ async def test_paper_active_submits_via_rob845_and_stores_only_native_links(
         verifier=verifier,
         application_factory=_app_factory(adapters),
         native_resolver=native,
+        clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
         enablement=lambda _mode: True,
     )
 
@@ -403,6 +447,7 @@ async def test_non_exact_paper_active_state_blocks_adapter_native_and_links(
         verifier=verifier,
         application_factory=_app_factory(adapters),
         native_resolver=native,
+        clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
         enablement=lambda _mode: True,
     )
 
@@ -469,6 +514,7 @@ async def test_all_intents_are_preflighted_before_first_adapter_mutation(
             verifier=verifier,
             application_factory=_app_factory(adapters),
             native_resolver=native,
+            clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
             enablement=lambda _mode: True,
         ).run(
             CohortRunInvocation(
@@ -483,6 +529,305 @@ async def test_all_intents_are_preflighted_before_first_adapter_mutation(
     assert adapters[Broker.BINANCE].calls == []
     assert adapters[Broker.ALPACA].calls == []
     assert native.calls == []
+
+
+@pytest.mark.asyncio
+async def test_later_definitive_block_preserves_prior_link_and_terminalizes_claim(
+    db_session: AsyncSession,
+) -> None:
+    nonce, activation, validation = await _setup(db_session)
+    verifier = PaperCohortProvenanceVerifier(
+        db_session,
+        validation_service=validation,
+        caller_id="paper-cohort-runner",
+        clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
+    )
+    application = BlockSecondApplication()
+    native = FakeNativeResolver()
+    invocation = CohortRunInvocation(
+        cohort_id=activation.cohort_id,
+        run_id=f"durable-link-run-{nonce}",
+        round_decision_id=f"durable-link-round-{nonce}",
+        mode=RunMode.PAPER_ACTIVE,
+    )
+
+    with pytest.raises(PaperCohortError) as exc_info:
+        await PaperCohortRunner(
+            db_session,
+            capture=FakeCapture(),
+            quote_provider=FakeQuotes(db_session),
+            verifier=verifier,
+            application_factory=lambda _verifier: application,
+            native_resolver=native,
+            clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
+        ).run(invocation)
+    await db_session.rollback()
+
+    assert exc_info.value.reason_code == "risk_limit_reached"
+    assert len(application.calls) == 2
+    assert (
+        await db_session.scalar(
+            select(func.count())
+            .select_from(PaperRunOrderLink)
+            .where(PaperRunOrderLink.run_id == invocation.run_id)
+        )
+        == 1
+    )
+    claim = await db_session.scalar(
+        select(PaperCohortRunClaim).where(
+            PaperCohortRunClaim.cohort_id == invocation.cohort_id,
+            PaperCohortRunClaim.run_id == invocation.run_id,
+            PaperCohortRunClaim.round_decision_id == invocation.round_decision_id,
+        )
+    )
+    assert claim is not None
+    assert claim.claim_status == "blocked"
+    assert claim.terminal_reason == "risk_limit_reached"
+    assert claim.terminal_at is not None
+
+
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [
+        (PaperOperationStatus.FAILED, "provider_error"),
+        (PaperOperationStatus.SUCCEEDED, "native_order_identity_mismatch"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_uncertain_adapter_outcome_keeps_durable_recoverable_claim(
+    db_session: AsyncSession,
+    status: PaperOperationStatus,
+    reason: str,
+) -> None:
+    nonce, activation, validation = await _setup(db_session)
+    verifier = PaperCohortProvenanceVerifier(
+        db_session,
+        validation_service=validation,
+        caller_id="paper-cohort-runner",
+        clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
+    )
+    application = UncertainOutcomeApplication(status)
+    invocation = CohortRunInvocation(
+        cohort_id=activation.cohort_id,
+        run_id=f"uncertain-run-{status.value}-{nonce}",
+        round_decision_id=f"uncertain-round-{status.value}-{nonce}",
+        mode=RunMode.PAPER_ACTIVE,
+    )
+
+    with pytest.raises(PaperCohortError) as exc_info:
+        await PaperCohortRunner(
+            db_session,
+            capture=FakeCapture(),
+            quote_provider=FakeQuotes(db_session),
+            verifier=verifier,
+            application_factory=lambda _verifier: application,
+            native_resolver=FakeNativeResolver(),
+            clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
+        ).run(invocation)
+    await db_session.rollback()
+
+    assert exc_info.value.reason_code == reason
+    assert len(application.calls) == 1
+    claim = await db_session.scalar(
+        select(PaperCohortRunClaim).where(
+            PaperCohortRunClaim.run_id == invocation.run_id
+        )
+    )
+    assert claim is not None
+    assert claim.claim_status == "in_progress"
+    assert claim.terminal_reason is None
+    assert claim.terminal_at is None
+    assert (
+        await db_session.scalar(
+            select(func.count())
+            .select_from(PaperCohortTargetReservation)
+            .where(PaperCohortTargetReservation.run_id == invocation.run_id)
+        )
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_later_round_observes_one_shot_target_without_another_submit(
+    db_session: AsyncSession,
+) -> None:
+    nonce, activation, validation = await _setup(db_session)
+    verifier = PaperCohortProvenanceVerifier(
+        db_session,
+        validation_service=validation,
+        caller_id="paper-cohort-runner",
+        clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
+    )
+    adapters = {
+        Broker.BINANCE: FakeAdapter(Broker.BINANCE),
+        Broker.ALPACA: FakeAdapter(Broker.ALPACA),
+    }
+    runner = PaperCohortRunner(
+        db_session,
+        capture=FakeCapture(),
+        quote_provider=FakeQuotes(db_session),
+        verifier=verifier,
+        application_factory=_app_factory(adapters),
+        native_resolver=FakeNativeResolver(),
+        clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
+    )
+    invocations = [
+        CohortRunInvocation(
+            cohort_id=activation.cohort_id,
+            run_id=f"one-shot-run-{index}-{nonce}",
+            round_decision_id=f"one-shot-round-{index}-{nonce}",
+            mode=RunMode.PAPER_ACTIVE,
+        )
+        for index in range(2)
+    ]
+
+    first = await runner.run(invocations[0])
+    second = await runner.run(invocations[1])
+
+    assert first.intent_count == second.intent_count == 4
+    assert sum(len(adapter.calls) for adapter in adapters.values()) == 4
+    assert (
+        await db_session.scalar(
+            select(func.count())
+            .select_from(PaperCohortTargetReservation)
+            .where(PaperCohortTargetReservation.cohort_id == activation.cohort_id)
+        )
+        == 4
+    )
+    assert (
+        await db_session.scalar(
+            select(func.count())
+            .select_from(PaperRunOrderLink)
+            .where(PaperRunOrderLink.run_id == invocations[1].run_id)
+        )
+        == 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_terminal_fence_survives_reenable_and_blocks_fresh_submit(
+    db_session: AsyncSession,
+) -> None:
+    nonce, activation, validation = await _setup(db_session)
+    fence_id = f"fence-{nonce}"
+    db_session.add(
+        PaperCohortTerminalFence(
+            fence_id=fence_id,
+            cohort_id=activation.cohort_id,
+            cohort_hash=activation.expected_cohort_hash,
+            idempotency_key=f"stop-{nonce}",
+            request_hash=stable_hash(f"stop-{nonce}"),
+            actor_id="operator-1",
+            actor_role="operator",
+            reason_code="operator_stop",
+            reason_text="durable test fence",
+            validation_evidence={},
+            fenced_at=CAPTURED_AT,
+        )
+    )
+    await db_session.commit()
+    verifier = PaperCohortProvenanceVerifier(
+        db_session,
+        validation_service=validation,
+        caller_id="paper-cohort-runner",
+        clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
+    )
+    adapters = {
+        Broker.BINANCE: FakeAdapter(Broker.BINANCE),
+        Broker.ALPACA: FakeAdapter(Broker.ALPACA),
+    }
+    capture = FakeCapture()
+
+    with pytest.raises(PaperCohortError) as exc_info:
+        await PaperCohortRunner(
+            db_session,
+            capture=capture,
+            quote_provider=FakeQuotes(db_session),
+            verifier=verifier,
+            application_factory=_app_factory(adapters),
+            native_resolver=FakeNativeResolver(),
+            clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
+        ).run(
+            CohortRunInvocation(
+                cohort_id=activation.cohort_id,
+                run_id=f"fenced-run-{nonce}",
+                round_decision_id=f"fenced-round-{nonce}",
+                mode=RunMode.PAPER_ACTIVE,
+            )
+        )
+
+    assert exc_info.value.reason_code == "cohort_stopped"
+    assert capture.calls == []
+    assert adapters[Broker.BINANCE].calls == []
+    assert adapters[Broker.ALPACA].calls == []
+    assert (
+        await db_session.scalar(
+            select(func.count())
+            .select_from(PaperCohortRunClaim)
+            .where(PaperCohortRunClaim.run_id == f"fenced-run-{nonce}")
+        )
+        == 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_fresh_provenance_honors_fence_but_persisted_recovery_is_allowed(
+    db_session: AsyncSession,
+) -> None:
+    nonce, activation, validation = await _setup(db_session)
+    verifier = PaperCohortProvenanceVerifier(
+        db_session,
+        validation_service=validation,
+        caller_id="paper-cohort-runner",
+        clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
+    )
+    adapters = {
+        Broker.BINANCE: FakeAdapter(Broker.BINANCE),
+        Broker.ALPACA: FakeAdapter(Broker.ALPACA),
+    }
+    await PaperCohortRunner(
+        db_session,
+        capture=FakeCapture(),
+        quote_provider=FakeQuotes(db_session),
+        verifier=verifier,
+        application_factory=_app_factory(adapters),
+        native_resolver=FakeNativeResolver(),
+        clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
+    ).run(
+        CohortRunInvocation(
+            cohort_id=activation.cohort_id,
+            run_id=f"verify-fence-run-{nonce}",
+            round_decision_id=f"verify-fence-round-{nonce}",
+            mode=RunMode.PAPER_ACTIVE,
+        )
+    )
+    submitted = adapters[Broker.BINANCE].calls[0]
+    request = PaperOrderRequest(
+        **{name: getattr(submitted, name) for name in PaperOrderRequest.model_fields}
+    )
+    db_session.add(
+        PaperCohortTerminalFence(
+            fence_id=f"verify-fence-{nonce}",
+            cohort_id=activation.cohort_id,
+            cohort_hash=activation.expected_cohort_hash,
+            idempotency_key=f"verify-stop-{nonce}",
+            request_hash=stable_hash(f"verify-stop-{nonce}"),
+            actor_id="operator-1",
+            actor_role="operator",
+            reason_code="operator_stop",
+            reason_text="provenance fence test",
+            validation_evidence={},
+            fenced_at=CAPTURED_AT,
+        )
+    )
+    await db_session.commit()
+
+    with pytest.raises(PaperCohortError) as exc_info:
+        await verifier.verify(request)
+    persisted = await verifier.verify_persisted(request)
+
+    assert exc_info.value.reason_code == "cohort_stopped"
+    assert persisted.intent_id == request.intent_id
 
 
 @pytest.mark.asyncio
@@ -509,6 +854,7 @@ async def test_cancel_and_close_are_limited_to_linked_cohort_capabilities(
         verifier=verifier,
         application_factory=_app_factory(adapters),
         native_resolver=native,
+        clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
         enablement=lambda _mode: True,
     ).run(
         CohortRunInvocation(
@@ -619,6 +965,7 @@ async def test_all_owned_rows_are_append_only_after_paper_run(
             }
         ),
         native_resolver=native,
+        clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
         enablement=lambda _mode: True,
     ).run(
         CohortRunInvocation(

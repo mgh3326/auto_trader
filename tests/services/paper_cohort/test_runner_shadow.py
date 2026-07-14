@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.paper_cohort import (
     CanonicalMarketSnapshot,
     PaperCohortDecision,
+    PaperCohortRunClaim,
     PaperCohortVenueIntent,
     PaperRunOrderLink,
 )
@@ -91,6 +92,15 @@ class FakeQuotes:
         )
 
 
+@dataclass
+class TimestampedFakeQuotes(FakeQuotes):
+    fetched_at: datetime = CAPTURED_AT
+
+    async def get_quote(self, venue: str, symbol: str) -> VenueQuote:
+        quote = await super().get_quote(venue, symbol)
+        return quote.model_copy(update={"fetched_at": self.fetched_at})
+
+
 async def _active_cohort(db_session: AsyncSession, nonce: str) -> str:
     experiment, backtest = await _registry_rows(db_session, nonce)
     activation = _activation(
@@ -136,6 +146,7 @@ async def test_shadow_persists_signal_before_quotes_and_never_mutates_brokers(
         quote_provider=quotes,
         application_factory=lambda: application_calls.append("constructed"),
         native_resolver=lambda: native_calls.append("resolved"),
+        clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
         enablement=lambda _mode: True,
     )
 
@@ -217,6 +228,7 @@ async def test_capture_failure_leaves_no_snapshot_signal_quote_or_mutation(
         quote_provider=quotes,
         application_factory=lambda: application_calls.append("constructed"),
         native_resolver=lambda: native_calls.append("resolved"),
+        clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
         enablement=lambda _mode: True,
     )
 
@@ -245,3 +257,91 @@ async def test_capture_failure_leaves_no_snapshot_signal_quote_or_mutation(
         == baseline[PaperCohortVenueIntent]
     )
     assert await _count(db_session, PaperRunOrderLink) == baseline[PaperRunOrderLink]
+
+
+@pytest.mark.asyncio
+async def test_direct_runner_before_activation_fails_before_capture_or_quote(
+    db_session: AsyncSession,
+) -> None:
+    nonce = uuid4().hex
+    experiment, backtest = await _registry_rows(db_session, nonce)
+    activation = _activation(
+        (_assignment(experiment, backtest, nonce=nonce),), nonce=nonce
+    ).model_copy(update={"required_lookback": 3})
+    activation = activation.model_copy(
+        update={
+            "activated_at": CAPTURED_AT + timedelta(minutes=5),
+            "stop_at": CAPTURED_AT + timedelta(days=1),
+        }
+    )
+    activation = activation.model_copy(
+        update={"expected_cohort_hash": activation.computed_cohort_hash()}
+    )
+    await _authoritative_history(db_session, activation)
+    await PaperCohortService(db_session).activate(activation)
+    await db_session.commit()
+    capture = FakeCapture()
+    quotes = FakeQuotes(db_session)
+
+    with pytest.raises(PaperCohortError) as exc_info:
+        await PaperCohortRunner(
+            db_session,
+            capture=capture,
+            quote_provider=quotes,
+            clock=lambda: CAPTURED_AT,
+        ).run(
+            CohortRunInvocation(
+                cohort_id=activation.cohort_id,
+                run_id=f"future-run-{nonce}",
+                round_decision_id=f"future-round-{nonce}",
+                mode=RunMode.SHADOW,
+            )
+        )
+
+    assert exc_info.value.reason_code == "cohort_not_active"
+    assert capture.calls == []
+    assert quotes.calls == []
+    assert (
+        await db_session.scalar(
+            select(func.count())
+            .select_from(PaperCohortRunClaim)
+            .where(PaperCohortRunClaim.run_id == f"future-run-{nonce}")
+        )
+        == 0
+    )
+
+
+@pytest.mark.parametrize(
+    "fetched_at",
+    [
+        CAPTURED_AT - timedelta(seconds=6),
+        CAPTURED_AT + timedelta(seconds=3),
+    ],
+)
+@pytest.mark.asyncio
+async def test_stale_or_future_venue_quote_fails_before_intent_persistence(
+    db_session: AsyncSession,
+    fetched_at,
+) -> None:
+    nonce = uuid4().hex
+    cohort_id = await _active_cohort(db_session, nonce)
+    quotes = TimestampedFakeQuotes(db_session, fetched_at=fetched_at)
+    baseline = await _count(db_session, PaperCohortVenueIntent)
+
+    with pytest.raises(PaperCohortError) as exc_info:
+        await PaperCohortRunner(
+            db_session,
+            capture=FakeCapture(),
+            quote_provider=quotes,
+            clock=lambda: CAPTURED_AT,
+        ).run(
+            CohortRunInvocation(
+                cohort_id=cohort_id,
+                run_id=f"quote-run-{nonce}",
+                round_decision_id=f"quote-round-{nonce}",
+                mode=RunMode.SHADOW,
+            )
+        )
+
+    assert exc_info.value.reason_code == "venue_quote_provider_error"
+    assert await _count(db_session, PaperCohortVenueIntent) == baseline

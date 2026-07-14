@@ -16,6 +16,9 @@ from fastmcp import FastMCP
 
 from app.core.config import settings
 from app.mcp_server.tooling import register_all_tools
+from app.mcp_server.tooling.paper_cohort_control_registration import (
+    PAPER_COHORT_CONTROL_TOOL_NAMES,
+)
 from app.mcp_server.tooling.paper_execution_registration import (
     PAPER_EXECUTION_TOOL_NAMES,
 )
@@ -62,5 +65,7 @@ async def test_paper_execution_real_fastmcp_has_exact_allowlist(
 
     tools = await mcp.list_tools()
     assert {tool.name for tool in tools} == (
-        PAPER_EXECUTION_TOOL_NAMES | PAPER_VALIDATION_TOOL_NAMES
+        PAPER_EXECUTION_TOOL_NAMES
+        | PAPER_VALIDATION_TOOL_NAMES
+        | PAPER_COHORT_CONTROL_TOOL_NAMES
     )

@@ -86,14 +86,19 @@ async def test_two_postgresql_sessions_create_one_snapshot_and_intent_set(
                 session,
                 capture=capture,
                 quote_provider=FakeQuotes(session),
+                clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
                 enablement=lambda _mode: True,
             ).run(invocation)
             await session.commit()
             return result
 
-    first, second = await asyncio.gather(worker(), worker())
+    outcomes = await asyncio.gather(worker(), worker(), return_exceptions=True)
+    successes = [item for item in outcomes if not isinstance(item, BaseException)]
+    conflicts = [item for item in outcomes if isinstance(item, PaperCohortError)]
 
-    assert first == second
+    assert successes
+    assert all(item == successes[0] for item in successes)
+    assert all(item.reason_code == "invocation_in_progress" for item in conflicts)
     assert len(capture.calls) == 1
     async with AsyncSessionLocal() as session:
         assert (
@@ -146,6 +151,7 @@ async def test_same_claim_identity_with_different_request_is_stable_conflict(
         db_session,
         capture=capture,
         quote_provider=FakeQuotes(db_session),
+        clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
         enablement=lambda _mode: True,
     )
     await shadow.run(CohortRunInvocation(**base, mode=RunMode.SHADOW))
@@ -158,11 +164,73 @@ async def test_same_claim_identity_with_different_request_is_stable_conflict(
             capture=capture,
             quote_provider=FakeQuotes(db_session),
             verifier=verifier,
+            clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
             enablement=lambda _mode: True,
         ).run(CohortRunInvocation(**base, mode=RunMode.PAPER_ACTIVE))
     assert exc_info.value.reason_code == "invocation_conflict"
     assert len(capture.calls) == 1
     assert verifier.calls == []
+
+
+@pytest.mark.asyncio
+async def test_live_unexpired_prepared_claim_cannot_be_stolen(db_session) -> None:
+    nonce = uuid4().hex
+    cohort_id = await _active_cohort(db_session, nonce)
+    invocation = CohortRunInvocation(
+        cohort_id=cohort_id,
+        run_id=f"live-prepared-run-{nonce}",
+        round_decision_id=f"live-prepared-round-{nonce}",
+        mode=RunMode.SHADOW,
+    )
+    first = PaperCohortRunner(
+        db_session,
+        capture=FakeCapture(),
+        quote_provider=FakeQuotes(db_session),
+        clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
+    )
+    claim, replay = await first._claim(invocation)
+    assert claim is not None and replay is None
+    cohort, assignments = await first._cohort(cohort_id)
+    await first._prepare(invocation, cohort, assignments)
+    await db_session.commit()
+
+    contender = PaperCohortRunner(
+        db_session,
+        capture=FakeCapture(),
+        quote_provider=FakeQuotes(db_session),
+        clock=lambda: CAPTURED_AT + timedelta(minutes=1),
+    )
+    with pytest.raises(PaperCohortError) as exc_info:
+        await contender._claim(invocation)
+
+    assert exc_info.value.reason_code == "invocation_in_progress"
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_rejects_a_stale_owner_token(db_session) -> None:
+    nonce = uuid4().hex
+    cohort_id = await _active_cohort(db_session, nonce)
+    invocation = CohortRunInvocation(
+        cohort_id=cohort_id,
+        run_id=f"strict-owner-run-{nonce}",
+        round_decision_id=f"strict-owner-round-{nonce}",
+        mode=RunMode.SHADOW,
+    )
+    runner = PaperCohortRunner(
+        db_session,
+        capture=FakeCapture(),
+        quote_provider=FakeQuotes(db_session),
+        clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
+    )
+    claim, replay = await runner._claim(invocation)
+    assert claim is not None and replay is None
+    claim_id = claim.id
+    await db_session.commit()
+
+    with pytest.raises(PaperCohortError) as exc_info:
+        await runner._lock_owned_claim(claim_id, "stale-owner-token")
+
+    assert exc_info.value.reason_code == "invocation_owner_mismatch"
 
 
 @pytest.mark.asyncio
@@ -215,14 +283,19 @@ async def test_two_sessions_submit_each_paper_intent_exactly_once(db_session) ->
                 verifier=verifier,
                 application_factory=app_factory,
                 native_resolver=native,
+                clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
                 enablement=lambda _mode: True,
             ).run(invocation)
             await session.commit()
             return result
 
-    first, second = await asyncio.gather(worker(), worker())
+    outcomes = await asyncio.gather(worker(), worker(), return_exceptions=True)
+    successes = [item for item in outcomes if not isinstance(item, BaseException)]
+    conflicts = [item for item in outcomes if isinstance(item, PaperCohortError)]
 
-    assert first == second
+    assert successes
+    assert all(item == successes[0] for item in successes)
+    assert all(item.reason_code == "invocation_in_progress" for item in conflicts)
     assert len(capture.calls) == 1
     assert sum(adapter.broker_posts for adapter in adapters.values()) == 4
     assert sum(adapter.replay_count for adapter in adapters.values()) == 0
@@ -314,11 +387,14 @@ async def test_live_owner_crossing_lease_expiry_is_fenced_without_deadlock(
     second_task = asyncio.create_task(worker(block=False))
     await asyncio.sleep(0.1)
     hook.release.set()
-    first, second = await asyncio.wait_for(
-        asyncio.gather(first_task, second_task), timeout=10
+    outcomes = await asyncio.wait_for(
+        asyncio.gather(first_task, second_task, return_exceptions=True), timeout=10
     )
 
-    assert first == second
+    successes = [item for item in outcomes if not isinstance(item, BaseException)]
+    fenced = [item for item in outcomes if isinstance(item, PaperCohortError)]
+    assert len(successes) == 1
+    assert [item.reason_code for item in fenced] == ["invocation_owner_mismatch"]
     assert sum(adapter.broker_posts for adapter in adapters.values()) == 4
     assert sum(adapter.replay_count for adapter in adapters.values()) == 0
     assert len(capture.calls) == 1

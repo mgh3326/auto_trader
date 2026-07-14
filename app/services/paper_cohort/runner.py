@@ -18,6 +18,8 @@ from app.models.paper_cohort import (
     CanonicalMarketSnapshot,
     PaperCohortDecision,
     PaperCohortRunClaim,
+    PaperCohortTargetReservation,
+    PaperCohortTerminalFence,
     PaperCohortVenueIntent,
     PaperRunOrderLink,
     PaperValidationCohort,
@@ -48,6 +50,7 @@ from app.services.paper_cohort.signals import (
     build_would_order_evidence,
     compute_target_signal,
 )
+from app.services.paper_validation.locking import lock_validation_streams
 from app.services.research_canonical_hash import canonical_sha256
 
 
@@ -140,7 +143,11 @@ class PaperCohortRunner:
         )
 
     async def _claim(
-        self, invocation: CohortRunInvocation
+        self,
+        invocation: CohortRunInvocation,
+        *,
+        allow_reconciliation_retry: bool = False,
+        allow_live_terminal_takeover: bool = False,
     ) -> tuple[PaperCohortRunClaim | None, CohortRunResult | None]:
         request_hash = canonical_sha256(invocation.model_dump(mode="python"))
         now = self._clock()
@@ -176,22 +183,29 @@ class PaperCohortRunner:
             raise PaperCohortError("invocation_claim_unavailable")
         if existing.request_hash != request_hash:
             raise PaperCohortError("invocation_conflict")
-        if existing.completed_at is not None and existing.result_payload is not None:
+        if existing.claim_status == "completed":
+            if existing.result_payload is None:
+                raise PaperCohortError("invocation_claim_unavailable")
             return None, CohortRunResult.model_validate(existing.result_payload)
-        prepared_exists = await self._session.scalar(
-            select(CanonicalMarketSnapshot.id).where(
-                CanonicalMarketSnapshot.cohort_id == invocation.cohort_id,
-                CanonicalMarketSnapshot.run_id == invocation.run_id,
-                CanonicalMarketSnapshot.round_decision_id
-                == invocation.round_decision_id,
+        if existing.claim_status == "blocked":
+            raise PaperCohortError(
+                existing.terminal_reason or "invocation_claim_unavailable"
             )
-        )
-        if prepared_exists is None and existing.lease_expires_at > now:
+        resuming_reconciliation = existing.claim_status == "reconciliation_required"
+        if resuming_reconciliation:
+            if not allow_reconciliation_retry:
+                raise PaperCohortError(
+                    existing.terminal_reason or "invocation_claim_unavailable"
+                )
+            existing.claim_status = "in_progress"
+            existing.terminal_reason = None
+            existing.terminal_at = None
+        if (
+            existing.lease_expires_at > now
+            and not resuming_reconciliation
+            and not allow_live_terminal_takeover
+        ):
             raise PaperCohortError("invocation_in_progress")
-        # The claim row is locked before any validation advisory lock.  A
-        # durable prepared invocation may be reclaimed immediately after a
-        # worker crash; a live owner still holds this row lock, so contenders
-        # wait rather than racing the broker boundary.
         existing.owner_token = owner_token
         existing.lease_expires_at = now + timedelta(minutes=5)
         return existing, None
@@ -207,12 +221,16 @@ class PaperCohortRunner:
         )
         if claim is None:
             raise PaperCohortError("invocation_claim_unavailable")
-        if claim.completed_at is not None and claim.result_payload is not None:
+        if claim.claim_status == "completed":
+            if claim.result_payload is None:
+                raise PaperCohortError("invocation_claim_unavailable")
             return None, CohortRunResult.model_validate(claim.result_payload)
+        if claim.claim_status in {"blocked", "reconciliation_required"}:
+            raise PaperCohortError(
+                claim.terminal_reason or "invocation_claim_unavailable"
+            )
         if claim.owner_token != owner_token:
-            # The prior owner lost the post-prepare race but no other owner can
-            # be active while this row lock is held.  Fence it and continue.
-            claim.owner_token = owner_token
+            raise PaperCohortError("invocation_owner_mismatch")
         claim.lease_expires_at = self._clock() + timedelta(minutes=5)
         await self._session.flush()
         return claim, None
@@ -240,20 +258,52 @@ class PaperCohortRunner:
             raise PaperCohortError("cohort_not_found")
         return cohort, assignments
 
-    async def _validate_authoritative_state(
+    async def _lock_execution_boundary(
+        self,
+        cohort_id: str,
+        assignments: list[PaperValidationCohortAssignment],
+    ) -> None:
+        # Total order: runner-owned claim row -> sorted/deduplicated validation
+        # locks -> cohort lock. Activation and kill use the validation/cohort
+        # suffix and never request a claim row, so no reverse edge exists.
+        await lock_validation_streams(
+            self._session, (item.validation_id for item in assignments)
+        )
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"paper-cohort:{cohort_id}"},
+        )
+
+    async def _has_terminal_fence(self, cohort_id: str) -> bool:
+        return (
+            await self._session.scalar(
+                select(PaperCohortTerminalFence.id).where(
+                    PaperCohortTerminalFence.cohort_id == cohort_id
+                )
+            )
+            is not None
+        )
+
+    async def _precheck_submission_boundary(
+        self, cohort: PaperValidationCohort
+    ) -> None:
+        now = self._clock()
+        if now < cohort.activated_at:
+            raise PaperCohortError("cohort_not_active")
+        if cohort.stop_at is not None and now >= cohort.stop_at:
+            raise PaperCohortError("cohort_stopped")
+        if await self._has_terminal_fence(cohort.cohort_id):
+            raise PaperCohortError("cohort_stopped")
+
+    async def _authoritative_state_matches(
         self,
         invocation: CohortRunInvocation,
         cohort: PaperValidationCohort,
         assignments: list[PaperValidationCohortAssignment],
-    ) -> None:
+    ) -> bool:
         expected_state = (
             "paper_active" if invocation.mode is RunMode.PAPER_ACTIVE else "shadow_soak"
         )
-        for validation_id in sorted(item.validation_id for item in assignments):
-            await self._session.execute(
-                text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-                {"key": validation_id},
-            )
         for assignment in assignments:
             latest = await self._session.scalar(
                 select(PaperValidationStateTransition)
@@ -280,7 +330,40 @@ class PaperCohortRunner:
                 )
             )
             if not exact:
+                return False
+        return True
+
+    async def _checkpoint_boundary(
+        self,
+        invocation: CohortRunInvocation,
+        cohort: PaperValidationCohort,
+        assignments: list[PaperValidationCohortAssignment],
+        *,
+        recovery_only: bool,
+    ) -> bool:
+        """Lock and revalidate every durable boundary before native work.
+
+        Returns whether the invocation is behind a terminal boundary. Recovery
+        may reconcile persisted native truth behind that boundary, while fresh
+        submission always fails closed.
+        """
+
+        await self._lock_execution_boundary(cohort.cohort_id, assignments)
+        fenced = await self._has_terminal_fence(cohort.cohort_id)
+        now = self._clock()
+        not_active = now < cohort.activated_at
+        stopped = cohort.stop_at is not None and now >= cohort.stop_at
+        state_matches = await self._authoritative_state_matches(
+            invocation, cohort, assignments
+        )
+        if not recovery_only:
+            if not_active:
+                raise PaperCohortError("cohort_not_active")
+            if fenced or stopped:
+                raise PaperCohortError("cohort_stopped")
+            if not state_matches:
                 raise PaperCohortError("authoritative_state_mismatch")
+        return bool(fenced or stopped or not state_matches)
 
     @staticmethod
     def _signal_input(
@@ -300,6 +383,22 @@ class PaperCohortRunner:
             target_weight=assignment.target_weights[symbol],
             capital_notional_usd=cohort.capital_notional_usd,
         )
+
+    @staticmethod
+    def _validate_venue_quote(
+        quote: VenueQuote,
+        *,
+        observed_at: datetime,
+        max_age_ms: int,
+        max_future_skew_ms: int,
+    ) -> None:
+        if observed_at.tzinfo is None or quote.fetched_at.tzinfo is None:
+            raise PaperCohortError("venue_quote_provider_error")
+        age = observed_at - quote.fetched_at
+        if age > timedelta(milliseconds=max_age_ms) or age < -timedelta(
+            milliseconds=max_future_skew_ms
+        ):
+            raise PaperCohortError("venue_quote_provider_error")
 
     async def _load_prepared(
         self, invocation: CohortRunInvocation
@@ -346,11 +445,10 @@ class PaperCohortRunner:
                     .where(
                         PaperCohortVenueIntent.cohort_id == invocation.cohort_id,
                         PaperCohortVenueIntent.run_id == invocation.run_id,
+                        PaperCohortVenueIntent.round_decision_id
+                        == invocation.round_decision_id,
                     )
-                    .order_by(
-                        PaperCohortVenueIntent.decision_id,
-                        PaperCohortVenueIntent.venue,
-                    )
+                    .order_by(PaperCohortVenueIntent.execution_ordinal)
                 )
             ).all()
         )
@@ -361,9 +459,23 @@ class PaperCohortRunner:
             decision = by_id.get(intent.decision_id)
             if decision is None:
                 raise PaperCohortError("prepared_identity_mismatch")
+            if not all(
+                (
+                    intent.round_decision_id == invocation.round_decision_id,
+                    intent.assignment_id == decision.assignment_id,
+                    intent.symbol == decision.symbol,
+                    intent.snapshot_id == decision.snapshot_id,
+                    intent.snapshot_hash == decision.snapshot_hash,
+                )
+            ):
+                raise PaperCohortError("prepared_identity_mismatch")
             signal = CanonicalTargetSignal.model_validate(decision.signal_payload)
             active.append((intent, signal, intent.would_order_evidence))
         if not decisions or not intents:
+            raise PaperCohortError("prepared_identity_mismatch")
+        if [intent.execution_ordinal for intent in intents] != list(
+            range(len(intents))
+        ):
             raise PaperCohortError("prepared_identity_mismatch")
         return snapshot, decisions, active
 
@@ -418,7 +530,13 @@ class PaperCohortRunner:
         await self._session.flush()
 
         decisions: list[PaperCohortDecision] = []
-        signals: list[tuple[str, CanonicalTargetSignal]] = []
+        signals: list[
+            tuple[
+                str,
+                CanonicalTargetSignal,
+                PaperValidationCohortAssignment,
+            ]
+        ] = []
         for assignment in assignments:
             for symbol in cohort.symbols:
                 signal = compute_target_signal(
@@ -450,15 +568,22 @@ class PaperCohortRunner:
                 )
                 self._session.add(decision)
                 decisions.append(decision)
-                signals.append((decision_id, signal))
+                signals.append((decision_id, signal, assignment))
         await self._session.flush()
 
         active: list[
             tuple[PaperCohortVenueIntent, CanonicalTargetSignal, dict[str, object]]
         ] = []
-        for decision_id, signal in signals:
-            for venue in cohort.venues:
+        for decision_id, signal, assignment in signals:
+            symbol_index = cohort.symbols.index(signal.symbol)
+            for venue_index, venue in enumerate(cohort.venues):
                 quote = await self._quote_provider.get_quote(venue, signal.symbol)
+                self._validate_venue_quote(
+                    quote,
+                    observed_at=self._clock(),
+                    max_age_ms=cohort.max_ticker_age_ms,
+                    max_future_skew_ms=cohort.max_capture_skew_ms,
+                )
                 would_order = build_would_order_evidence(signal, quote)
                 idempotency_key = canonical_sha256(
                     {
@@ -480,10 +605,16 @@ class PaperCohortRunner:
                     ),
                     cohort_id=invocation.cohort_id,
                     run_id=invocation.run_id,
+                    round_decision_id=invocation.round_decision_id,
                     decision_id=decision_id,
+                    assignment_id=assignment.assignment_id,
+                    symbol=signal.symbol,
                     snapshot_id=snapshot.snapshot_id,
                     snapshot_hash=snapshot.content_hash,
                     venue=venue,
+                    execution_ordinal=(
+                        assignment.ordinal * 4 + symbol_index * 2 + venue_index
+                    ),
                     request_payload=request_payload,
                     request_hash=canonical_sha256(request_payload),
                     venue_quote_evidence=would_order.quote_evidence,
@@ -541,6 +672,80 @@ class PaperCohortRunner:
             source_buy_reference=None,
         )
 
+    async def _reserve_target(self, intent: PaperCohortVenueIntent) -> bool:
+        values = {
+            "cohort_id": intent.cohort_id,
+            "run_id": intent.run_id,
+            "round_decision_id": intent.round_decision_id,
+            "intent_id": intent.intent_id,
+            "decision_id": intent.decision_id,
+            "assignment_id": intent.assignment_id,
+            "symbol": intent.symbol,
+            "snapshot_id": intent.snapshot_id,
+            "snapshot_hash": intent.snapshot_hash,
+            "venue": intent.venue,
+            "execution_ordinal": intent.execution_ordinal,
+        }
+        inserted_id = await self._session.scalar(
+            pg_insert(PaperCohortTargetReservation)
+            .values(**values)
+            .on_conflict_do_nothing()
+            .returning(PaperCohortTargetReservation.id)
+        )
+        if inserted_id is not None:
+            await self._session.commit()
+            return True
+        reservation = await self._session.scalar(
+            select(PaperCohortTargetReservation).where(
+                PaperCohortTargetReservation.cohort_id == intent.cohort_id,
+                PaperCohortTargetReservation.assignment_id == intent.assignment_id,
+                PaperCohortTargetReservation.symbol == intent.symbol,
+                PaperCohortTargetReservation.venue == intent.venue,
+            )
+        )
+        if reservation is None:
+            raise PaperCohortError("target_reservation_unavailable")
+        same_origin = all(
+            getattr(reservation, field) == value for field, value in values.items()
+        )
+        await self._session.commit()
+        return same_origin
+
+    @staticmethod
+    def _link_row(
+        intent: PaperCohortVenueIntent, native: NativeOrderIdentity
+    ) -> PaperRunOrderLink:
+        return PaperRunOrderLink(
+            cohort_id=intent.cohort_id,
+            run_id=intent.run_id,
+            round_decision_id=intent.round_decision_id,
+            intent_id=intent.intent_id,
+            decision_id=intent.decision_id,
+            assignment_id=intent.assignment_id,
+            symbol=intent.symbol,
+            snapshot_id=intent.snapshot_id,
+            snapshot_hash=intent.snapshot_hash,
+            venue=intent.venue,
+            native_ledger_kind=native.ledger_kind,
+            native_ledger_row_id=native.ledger_row_id,
+            client_order_id=native.client_order_id,
+            broker_order_id=native.broker_order_id,
+        )
+
+    async def _terminalize_claim(
+        self,
+        claim: PaperCohortRunClaim,
+        *,
+        status: str,
+        reason: str,
+    ) -> None:
+        terminal_at = self._clock()
+        claim.claim_status = status
+        claim.terminal_reason = reason
+        claim.terminal_at = terminal_at
+        claim.lease_expires_at = terminal_at
+        await self._session.commit()
+
     async def run(self, invocation: CohortRunInvocation) -> CohortRunResult:
         return await self._execute(invocation, recovery_only=False)
 
@@ -562,25 +767,53 @@ class PaperCohortRunner:
             raise PaperCohortError("paper_cohort_disabled")
         if invocation.mode is RunMode.PAPER_ACTIVE and self._verifier is None:
             raise PaperCohortError("provenance_verifier_unavailable")
-        claim, replay = await self._claim(invocation)
+
+        cohort, assignments = await self._cohort(invocation.cohort_id)
+        if not recovery_only:
+            # Avoid creating a dangling in-progress claim for a boundary that is
+            # already known to be terminal. The locked checkpoint below closes
+            # the read/check race after the claim is acquired.
+            await self._precheck_submission_boundary(cohort)
+        allow_live_terminal_takeover = bool(
+            recovery_only
+            and (
+                await self._has_terminal_fence(cohort.cohort_id)
+                or (cohort.stop_at is not None and self._clock() >= cohort.stop_at)
+            )
+        )
+        claim, replay = await self._claim(
+            invocation,
+            allow_reconciliation_retry=recovery_only,
+            allow_live_terminal_takeover=allow_live_terminal_takeover,
+        )
         if replay is not None:
             return replay
         if claim is None:
             raise PaperCohortError("invocation_claim_unavailable")
-        cohort, assignments = await self._cohort(invocation.cohort_id)
-        if (
-            not recovery_only
-            and cohort.stop_at is not None
-            and self._clock() >= cohort.stop_at
-        ):
-            raise PaperCohortError("cohort_stopped")
-        if not recovery_only:
-            await self._validate_authoritative_state(invocation, cohort, assignments)
+        claim_id = claim.id
+        owner_token = claim.owner_token
+        terminal_boundary = await self._checkpoint_boundary(
+            invocation,
+            cohort,
+            assignments,
+            recovery_only=recovery_only,
+        )
         prepared = await self._load_prepared(invocation)
         if prepared is None:
             if recovery_only:
                 raise PaperCohortError("prepared_invocation_required")
-            prepared = await self._prepare(invocation, cohort, assignments)
+            await self._prepare(invocation, cohort, assignments)
+            # The exact execution plan is durable before it is consumed. Both
+            # fresh execution and retry therefore use the same persisted order.
+            await self._session.commit()
+            claim, replay = await self._lock_owned_claim(claim_id, owner_token)
+            if replay is not None:
+                return replay
+            if claim is None:
+                raise PaperCohortError("invocation_claim_unavailable")
+            prepared = await self._load_prepared(invocation)
+            if prepared is None:
+                raise PaperCohortError("prepared_identity_mismatch")
         snapshot, decisions, active_intents = prepared
 
         completed = CohortRunResult(
@@ -593,142 +826,200 @@ class PaperCohortRunner:
             intent_count=len(active_intents),
         )
         if invocation.mode is RunMode.SHADOW:
+            claim, replay = await self._lock_owned_claim(claim_id, owner_token)
+            if replay is not None:
+                return replay
+            if claim is None:
+                raise PaperCohortError("invocation_claim_unavailable")
+            cohort, assignments = await self._cohort(invocation.cohort_id)
+            await self._checkpoint_boundary(
+                invocation,
+                cohort,
+                assignments,
+                recovery_only=recovery_only,
+            )
             claim.result_payload = completed.model_dump(mode="json")
             claim.completed_at = self._clock()
+            claim.claim_status = "completed"
+            claim.lease_expires_at = claim.completed_at
             await self._session.commit()
             return completed
 
-        # This is the exactly-once boundary: snapshot, decision, quote evidence,
-        # intent, and claim are durable before the first broker mutation. Recovery
-        # only replays these immutable requests and never captures again.
+        # Persist an expired-claim takeover and release preparation locks. Every
+        # intent below reacquires the strict owner and full execution boundary.
         await self._session.commit()
-        if invocation.mode is RunMode.PAPER_ACTIVE:
-            assert self._verifier is not None
-            claim, replay = await self._lock_owned_claim(claim.id, claim.owner_token)
+        verifier = self._verifier
+        if verifier is None:
+            raise PaperCohortError("provenance_verifier_unavailable")
+        verify_persisted = getattr(verifier, "verify_persisted", None)
+        if recovery_only and verify_persisted is None:
+            raise PaperCohortError("recovery_verifier_unavailable")
+        application = None
+        if not recovery_only:
+            application = (
+                build_paper_execution_application(verifier=verifier)
+                if self._application_factory is None
+                else self._application_factory(verifier)
+            )
+
+        unresolved_intents = 0
+        requests = [
+            self.build_request(intent, signal, evidence, snapshot)
+            for intent, signal, evidence in active_intents
+        ]
+        for (intent, _signal, _evidence), request in zip(
+            active_intents, requests, strict=True
+        ):
+            claim, replay = await self._lock_owned_claim(claim_id, owner_token)
             if replay is not None:
                 return replay
-            assert claim is not None
+            if claim is None:
+                raise PaperCohortError("invocation_claim_unavailable")
             cohort, assignments = await self._cohort(invocation.cohort_id)
-            if not recovery_only:
-                await self._validate_authoritative_state(
-                    invocation, cohort, assignments
+            terminal_boundary = (
+                await self._checkpoint_boundary(
+                    invocation,
+                    cohort,
+                    assignments,
+                    recovery_only=recovery_only,
                 )
-            requests = [
-                self.build_request(intent, signal, evidence, snapshot)
-                for intent, signal, evidence in active_intents
-            ]
-            # All cohort members and persisted provenance are authorized before
-            # the first adapter call. Advisory locks remain held through the
-            # final commit, so an abort/hash transition cannot interleave.
-            provenance_by_intent: dict[str, object] = {}
-            for request in requests:
-                if recovery_only:
-                    verify_persisted = getattr(self._verifier, "verify_persisted", None)
-                    if verify_persisted is None:
-                        raise PaperCohortError("recovery_verifier_unavailable")
-                    provenance_by_intent[request.intent_id] = await verify_persisted(
-                        request
-                    )
-                else:
-                    provenance_by_intent[
-                        request.intent_id
-                    ] = await self._verifier.verify(request)
-            application = None
-            if not recovery_only:
-                application = (
-                    build_paper_execution_application(verifier=self._verifier)
-                    if self._application_factory is None
-                    else self._application_factory(self._verifier)
+                or terminal_boundary
+            )
+            provenance = (
+                await verify_persisted(request)  # type: ignore[misc]
+                if recovery_only
+                else await verifier.verify(request)
+            )
+            existing_link = await self._session.scalar(
+                select(PaperRunOrderLink).where(
+                    PaperRunOrderLink.intent_id == intent.intent_id
                 )
-            unresolved_intents = 0
-            for (intent, _signal, _evidence), request in zip(
-                active_intents, requests, strict=True
-            ):
-                existing_link = await self._session.scalar(
-                    select(PaperRunOrderLink).where(
-                        PaperRunOrderLink.cohort_id == intent.cohort_id,
-                        PaperRunOrderLink.run_id == intent.run_id,
-                        PaperRunOrderLink.decision_id == intent.decision_id,
-                        PaperRunOrderLink.venue == intent.venue,
-                    )
+            )
+            if existing_link is not None:
+                native = await self._native_resolver.resolve(
+                    existing_link.venue,
+                    existing_link.client_order_id,
+                    existing_link.broker_order_id,
                 )
-                if existing_link is not None:
-                    native = await self._native_resolver.resolve(
-                        existing_link.venue,
-                        existing_link.client_order_id,
-                        existing_link.broker_order_id,
+                if not all(
+                    (
+                        native.ledger_kind == existing_link.native_ledger_kind,
+                        native.ledger_row_id == existing_link.native_ledger_row_id,
+                        native.client_order_id == existing_link.client_order_id,
+                        native.broker_order_id == existing_link.broker_order_id,
                     )
-                    if not all(
-                        (
-                            native.ledger_kind == existing_link.native_ledger_kind,
-                            native.ledger_row_id == existing_link.native_ledger_row_id,
-                            native.client_order_id == existing_link.client_order_id,
-                            native.broker_order_id == existing_link.broker_order_id,
-                        )
-                    ):
-                        raise PaperCohortError("native_order_identity_mismatch")
-                    continue
+                ):
+                    raise PaperCohortError("native_order_identity_mismatch")
+                await self._session.commit()
+                continue
+
+            if recovery_only:
                 try:
                     native = await self._native_resolver.resolve_prepared(
-                        request, provenance_by_intent[request.intent_id]
+                        request, provenance
                     )
                 except PaperCohortError as exc:
                     if exc.reason_code != "native_order_not_found":
                         raise
                     native = None
-                if native is None and recovery_only:
-                    unresolved_intents += 1
-                    continue
                 if native is None:
-                    assert application is not None
-                    result = await application.submit(request)
-                else:
-                    result = None
-                if result is not None and (
-                    result.status is not PaperOperationStatus.SUCCEEDED
-                    or result.native_client_order_id is None
+                    unresolved_intents += 1
+                    await self._session.commit()
+                    continue
+                self._session.add(self._link_row(intent, native))
+                await self._session.flush()
+                await self._session.commit()
+                continue
+
+            # The unique target allocation is committed before the POST. A
+            # later round observes the reservation and performs no mutation.
+            if not await self._reserve_target(intent):
+                continue
+
+            # Reservation commit released every transaction lock. Reacquire the
+            # strict owner, state/fence locks, and fresh provenance immediately
+            # before resolving or submitting the native request.
+            claim, replay = await self._lock_owned_claim(claim_id, owner_token)
+            if replay is not None:
+                return replay
+            if claim is None:
+                raise PaperCohortError("invocation_claim_unavailable")
+            cohort, assignments = await self._cohort(invocation.cohort_id)
+            await self._checkpoint_boundary(
+                invocation,
+                cohort,
+                assignments,
+                recovery_only=False,
+            )
+            provenance = await verifier.verify(request)
+            try:
+                native = await self._native_resolver.resolve_prepared(
+                    request, provenance
+                )
+            except PaperCohortError as exc:
+                if exc.reason_code != "native_order_not_found":
+                    raise
+                native = None
+
+            result = None
+            if native is None:
+                if application is None:
+                    raise PaperCohortError("paper_application_unavailable")
+                result = await application.submit(request)
+                if result.status is PaperOperationStatus.BLOCKED:
+                    reason = str(result.reason_code)
+                    await self._terminalize_claim(
+                        claim, status="blocked", reason=reason
+                    )
+                    raise PaperCohortError(reason)
+                if result.status is not PaperOperationStatus.SUCCEEDED:
+                    raise PaperCohortError(str(result.reason_code))
+                if (
+                    result.native_client_order_id is None
                     or result.native_order_id is None
                 ):
-                    raise PaperCohortError(str(result.reason_code))
-                if result is not None and self._after_submit_hook is not None:
+                    raise PaperCohortError("native_order_identity_mismatch")
+                if self._after_submit_hook is not None:
                     await self._after_submit_hook(result)
-                if result is not None:
-                    native = await self._native_resolver.resolve(
-                        intent.venue,
-                        result.native_client_order_id,
-                        result.native_order_id,
-                    )
-                assert native is not None
-                self._session.add(
-                    PaperRunOrderLink(
-                        cohort_id=intent.cohort_id,
-                        run_id=intent.run_id,
-                        decision_id=intent.decision_id,
-                        snapshot_id=intent.snapshot_id,
-                        snapshot_hash=intent.snapshot_hash,
-                        venue=intent.venue,
-                        native_ledger_kind=native.ledger_kind,
-                        native_ledger_row_id=native.ledger_row_id,
-                        client_order_id=native.client_order_id,
-                        broker_order_id=native.broker_order_id,
-                    )
+                native = await self._native_resolver.resolve(
+                    intent.venue,
+                    result.native_client_order_id,
+                    result.native_order_id,
                 )
+            self._session.add(self._link_row(intent, native))
             await self._session.flush()
-            if recovery_only and unresolved_intents:
-                # Persist any recovered thin links, but leave the durable claim
-                # incomplete.  A terminal/disabled recovery may never silently
-                # convert unsubmitted intents into a completed run.
-                await self._session.commit()
-                raise PaperCohortError("recovery_incomplete")
+            await self._session.commit()
+
+        if recovery_only and unresolved_intents:
+            if terminal_boundary:
+                claim, replay = await self._lock_owned_claim(claim_id, owner_token)
+                if replay is not None:
+                    return replay
+                if claim is None:
+                    raise PaperCohortError("invocation_claim_unavailable")
+                await self._terminalize_claim(
+                    claim,
+                    status="reconciliation_required",
+                    reason="reconciliation_required",
+                )
+                raise PaperCohortError("reconciliation_required")
+            raise PaperCohortError("recovery_incomplete")
+
+        claim, replay = await self._lock_owned_claim(claim_id, owner_token)
+        if replay is not None:
+            return replay
+        if claim is None:
+            raise PaperCohortError("invocation_claim_unavailable")
         completed_at = self._clock()
         completion = await self._session.execute(
             update(PaperCohortRunClaim)
             .where(
-                PaperCohortRunClaim.id == claim.id,
-                PaperCohortRunClaim.owner_token == claim.owner_token,
-                PaperCohortRunClaim.completed_at.is_(None),
+                PaperCohortRunClaim.id == claim_id,
+                PaperCohortRunClaim.owner_token == owner_token,
+                PaperCohortRunClaim.claim_status == "in_progress",
             )
             .values(
+                claim_status="completed",
                 result_payload=completed.model_dump(mode="json"),
                 completed_at=completed_at,
                 lease_expires_at=completed_at,

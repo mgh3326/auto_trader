@@ -176,9 +176,15 @@ def build_would_order_evidence(
         )
 
     mapping = map_binance_public_spot_to_alpaca_paper(signal.symbol)
-    assert quote.qty_increment is not None
-    assert quote.min_qty is not None
-    assert quote.min_notional is not None
+    qty_increment = quote.qty_increment
+    min_qty = quote.min_qty
+    min_notional = quote.min_notional
+    if qty_increment is None or min_qty is None or min_notional is None:
+        return WouldOrderEvidence(
+            reason_code="unsupported_capability",
+            order=None,
+            quote_evidence=quote_evidence,
+        )
     if quote.symbol != mapping.execution_symbol:
         return WouldOrderEvidence(
             reason_code="unsupported_capability",
@@ -186,14 +192,9 @@ def build_would_order_evidence(
             quote_evidence=quote_evidence,
         )
     raw_qty = Decimal(signal.target_notional) / quote.ask_price
-    increment_count = (raw_qty / quote.qty_increment).to_integral_value(
-        rounding=ROUND_DOWN
-    )
-    rounded_qty = increment_count * quote.qty_increment
-    if (
-        rounded_qty < quote.min_qty
-        or rounded_qty * quote.ask_price < quote.min_notional
-    ):
+    increment_count = (raw_qty / qty_increment).to_integral_value(rounding=ROUND_DOWN)
+    rounded_qty = increment_count * qty_increment
+    if rounded_qty < min_qty or rounded_qty * quote.ask_price < min_notional:
         return WouldOrderEvidence(
             reason_code="unsupported_capability",
             order=None,

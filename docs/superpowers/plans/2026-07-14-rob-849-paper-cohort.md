@@ -260,7 +260,7 @@ Run: `uv run pytest tests/services/paper_cohort/test_taskiq.py tests/services/pa
 
 - [ ] **Step 3: Add thin task and job composition**
 
-The decorator schedule helper returns `[]` while disabled. The task checks the flag again before job construction. The job derives stable UTC minute-bucket run/decision IDs, creates the public client and ROB-845 application only for enabled active cohorts, and closes resources.
+The decorator schedule helper returns `[]` while disabled. A direct disabled task invocation audits only already prepared incomplete claims in recovery-only mode. For enabled cohorts, the job derives stable UTC minute-bucket identities for shadow observations and one cohort-hash-bound identity for paper-active target allocation, creates the public client and ROB-845 application only for new enabled work, and closes resources.
 
 - [ ] **Step 4: Verify GREEN and TaskIQ regression**
 
@@ -303,3 +303,44 @@ Wait for every required check. Fix failures test-first, push follow-ups, and lea
 - [ ] **Step 7: Record Linear completion evidence**
 
 Comment base/ROB-848 SHA, red→green evidence, per-suite pass counts, migration/head state, final commit SHA, PR URL, and remaining risks.
+
+### Task 9: Pre-merge concurrency, lineage, and operations hardening
+
+**Files:**
+- Modify: `app/models/paper_cohort.py`
+- Modify: `alembic/versions/20260714_rob849_paper_cohort.py`
+- Modify: `tests/_schema_bootstrap.py`
+- Modify: `app/services/paper_cohort/cohort_service.py`
+- Modify: `app/services/paper_cohort/runner.py`
+- Modify: `app/services/paper_cohort/order_control.py`
+- Modify: `app/jobs/paper_cohort.py`
+- Modify: PAPER_EXECUTION operator tooling and contract documentation
+- Add/modify: focused PostgreSQL, runner recovery, quote freshness, and kill-switch tests
+
+- [ ] **Step 1: Witness the nine review failures with regression tests**
+
+Cover fresh/retry ordering, per-intent durable links, same-run/different-round isolation, activation/state serialization, one-shot target reservations, future activation, stale/future venue quotes, cross-table lineage, and durable stop/re-enable behavior.
+
+- [ ] **Step 2: Strengthen immutable lineage and activation serialization**
+
+Add exact composite foreign keys and venue/ledger checks. Lock sorted/deduplicated validation IDs and then the cohort before activation state reads. Runner checkpoints prepend their claim-row lock to the same suffix. Verify with real two-session PostgreSQL barriers and invalid cross-wire inserts.
+
+- [ ] **Step 3: Make execution order and checkpoints deterministic**
+
+Load prepared intents by assignment ordinal, cohort symbol order, and venue order for the exact round. Commit each resolved native link independently, and reacquire/revalidate claim, stop, activation, authoritative state, and provenance before every subsequent adapter call.
+
+- [ ] **Step 4: Enforce one-shot target allocation**
+
+Persist a pre-send target reservation unique by cohort/assignment/symbol/venue. Allow only the reservation's originating intent to retry; later rounds complete as no-mutation observations.
+
+- [ ] **Step 5: Add an operational stop boundary**
+
+Expose an authenticated operator-only PAPER_EXECUTION entrypoint that commits an immutable cohort stop fence before cleanup, then idempotently cancels/closes only linked cohort-owned paper orders and returns resumable per-link outcomes. Runner and scheduler must honor the fence even after feature flags are re-enabled.
+
+- [ ] **Step 6: Close temporal and documentation gaps**
+
+Reject direct pre-activation runs and stale/future venue quotes. Correct disabled-job and rollback documentation to match recovery-audit behavior.
+
+- [ ] **Step 7: Verify, independently re-review, push, and merge**
+
+Run migration upgrade/downgrade/upgrade, focused and adjacent suites, full non-live regression, Ruff/format/ty/security/diff checks, independent SQL/concurrency/security reviews, all PR checks, and only then merge PR #1532 and mark ROB-849 Done.

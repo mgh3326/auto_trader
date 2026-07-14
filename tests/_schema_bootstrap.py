@@ -36,7 +36,11 @@ from sqlalchemy import text
 # builds it; bump forces a persistent local DB to re-bootstrap once.
 # v15 (ROB-849): paper cohort immutable/composition triggers.
 # v16 (ROB-849 review): sealed assignment_count for immutable membership.
-SCHEMA_BOOTSTRAP_VERSION = 16
+# v17 (ROB-849 review): rebuild the unshipped cohort test schema with full
+# lineage, terminal fences, target reservations, and explicit claim states.
+# v18 (ROB-849 review): enforce terminal-fence audit text bounds at the DB edge.
+# v19 (ROB-849 review): treat every PostgreSQL whitespace class as blank.
+SCHEMA_BOOTSTRAP_VERSION = 19
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -249,7 +253,69 @@ _PAPER_COHORT_AUDIT_TABLES = (
     "paper_cohort_decisions",
     "paper_cohort_venue_intents",
     "paper_run_order_links",
+    "paper_cohort_target_reservations",
+    "paper_cohort_terminal_fences",
 )
+
+_PAPER_COHORT_REBUILD_ORDER = (
+    "paper_cohort_target_reservations",
+    "paper_cohort_terminal_fences",
+    "paper_run_order_links",
+    "paper_cohort_run_claims",
+    "paper_cohort_venue_intents",
+    "paper_cohort_decisions",
+    "canonical_market_snapshots",
+    "paper_validation_cohort_assignments",
+    "paper_validation_cohorts",
+)
+
+
+async def _rebuild_legacy_paper_cohort_schema(conn) -> None:
+    """Recreate only the unshipped ROB-849 test tables when their shape is stale."""
+
+    intent_exists = await conn.scalar(
+        text("SELECT to_regclass('research.paper_cohort_venue_intents') IS NOT NULL")
+    )
+    if not intent_exists:
+        return
+    expected_columns = {
+        ("paper_cohort_venue_intents", "round_decision_id"),
+        ("paper_run_order_links", "intent_id"),
+        ("paper_cohort_run_claims", "claim_status"),
+    }
+    present = {
+        (row.table_name, row.column_name)
+        for row in (
+            await conn.execute(
+                text(
+                    "SELECT table_name, column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'research' AND "
+                    "(table_name, column_name) IN "
+                    "(('paper_cohort_venue_intents','round_decision_id'),"
+                    "('paper_run_order_links','intent_id'),"
+                    "('paper_cohort_run_claims','claim_status'))"
+                )
+            )
+        )
+    }
+    fence_text_bounds_definition = await conn.scalar(
+        text(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conname = 'ck_paper_cohort_terminal_fence_text_bounds' "
+            "AND conrelid = "
+            "to_regclass('research.paper_cohort_terminal_fences')"
+        )
+    )
+    if (
+        expected_columns <= present
+        and fence_text_bounds_definition
+        and "[:space:]" in fence_text_bounds_definition
+    ):
+        return
+    for table in _PAPER_COHORT_REBUILD_ORDER:
+        await conn.execute(text(f"DROP TABLE IF EXISTS research.{table} CASCADE"))
+
+
 _PAPER_COHORT_TRIGGER_DDL: tuple[str, ...] = (
     "ALTER TABLE research.paper_validation_cohorts ADD COLUMN IF NOT EXISTS "
     "assignment_count INTEGER NOT NULL DEFAULT 1",
@@ -1141,6 +1207,7 @@ async def apply_test_schema(conn) -> None:
             text("DROP TABLE IF EXISTS public.crypto_candles_1d CASCADE")
         )
 
+    await _rebuild_legacy_paper_cohort_schema(conn)
     await conn.run_sync(Base.metadata.create_all)
 
     # --- conditional "only when genuinely missing" probes (per-table catalog

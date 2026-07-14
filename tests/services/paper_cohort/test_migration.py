@@ -74,6 +74,24 @@ def test_migration_defines_composition_and_immutable_triggers() -> None:
     assert "BEFORE TRUNCATE" in source
 
 
+def test_migration_defines_full_lineage_reservation_fence_and_claim_states() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+    for required in (
+        "paper_cohort_target_reservations",
+        "paper_cohort_terminal_fences",
+        "fk_paper_cohort_decision_assignment_lineage",
+        "fk_paper_cohort_decision_snapshot_lineage",
+        "fk_paper_cohort_intent_decision_lineage",
+        "fk_paper_run_order_link_intent_lineage",
+        "fk_paper_cohort_target_reservation_intent_lineage",
+        "ck_paper_run_order_link_venue_ledger",
+        "ck_paper_cohort_run_claim_state_consistency",
+        "ck_paper_cohort_terminal_fence_text_bounds",
+        "reconciliation_required",
+    ):
+        assert required in source
+
+
 @pytest.mark.asyncio
 async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
     base_url = make_url(settings.DATABASE_URL)
@@ -134,7 +152,7 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                     "AND NOT t.tgisinternal"
                 )
             )
-            assert triggers == 12
+            assert triggers == 16
     finally:
         await engine.dispose()
         await admin.execute(
