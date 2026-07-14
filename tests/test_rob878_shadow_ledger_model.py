@@ -23,7 +23,8 @@ async def test_trade_retrospective_action_columns_exist(db_session):
     """The action table has all required columns with correct types."""
     result = await db_session.execute(
         text(
-            "SELECT column_name, data_type, is_nullable "
+            "SELECT column_name, data_type, is_nullable, column_default, "
+            "character_maximum_length "
             "FROM information_schema.columns "
             "WHERE table_schema = 'review' "
             "AND table_name = 'trade_retrospective_actions' "
@@ -58,12 +59,15 @@ async def test_trade_retrospective_action_columns_exist(db_session):
     assert cols["position"].data_type == "integer"
     assert cols["action"].data_type == "text"
     assert cols["status"].data_type == "text"
+    assert cols["status_source"].data_type == "character varying"
+    assert cols["status_source"].character_maximum_length == 32
     assert cols["version"].data_type == "integer"
     assert cols["legacy_payload"].data_type == "jsonb"
     assert cols["status"].is_nullable == "NO"
     assert cols["version"].is_nullable == "NO"
     assert cols["position"].is_nullable == "NO"
     assert cols["legacy_payload"].is_nullable == "NO"
+    assert cols["id"].column_default == "gen_random_uuid()"
 
 
 @pytest.mark.asyncio
@@ -93,8 +97,7 @@ async def test_control_row_exists_in_shadow_mode(db_session):
     """Exactly one control row exists with mode='shadow' after bootstrap."""
     result = await db_session.execute(
         text(
-            "SELECT id, mode FROM review.trade_retrospective_action_control "
-            "ORDER BY id"
+            "SELECT id, mode FROM review.trade_retrospective_action_control ORDER BY id"
         )
     )
     rows = result.fetchall()

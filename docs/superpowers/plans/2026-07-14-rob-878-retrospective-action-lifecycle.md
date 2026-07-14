@@ -23,6 +23,24 @@
 
 `docs/superpowers/specs/2026-07-14-rob-878-retrospective-action-lifecycle-design.md` (commit `18c7b911`) — user-approved. This plan does not re-litigate design decisions.
 
+### Child-1 reviewed baseline
+
+The detailed child-1 snippets below preserve the original execution sequence;
+the migration and its contract tests are the executable source of truth for
+later children. Pre-merge review hardened the baseline as follows:
+
+- the revision is chained to `20260714_rob849_paper_cohort`, the current main
+  head at integration time;
+- SQL `NULL`, JSONB `null`, and `[]` are normalized safely before expansion;
+- action values must be JSON strings and `status_source` is bounded to
+  `VARCHAR(32)` in ORM, Alembic, bootstrap, and DDL tests;
+- due dates require both exact `YYYY-MM-DD` syntax and a real calendar date;
+- missing/invalid control authority fails closed in the parent write fence;
+- parity covers count, field values, and zero-based ordinal;
+- downgrade locks parent → control → actions and requires exact `shadow` mode;
+- production Alembic defaults and ORM/bootstrap UUID defaults are rendered and
+  tested against real PostgreSQL DDL.
+
 ---
 
 ## Dependency Graph
@@ -52,7 +70,7 @@ Related (non-blocking):
 | Create (ORM) | `app/models/review.py` — add `TradeRetrospectiveAction` + `TradeRetrospectiveActionControl` |
 | Modify (exports) | `app/models/__init__.py` — add new model imports + `__all__` entries |
 | Create (migration) | `alembic/versions/20260714_rob878_trade_retrospective_actions_shadow.py` |
-| Modify (test bootstrap) | `tests/_schema_bootstrap.py` — bump `SCHEMA_BOOTSTRAP_VERSION` 14→15 + mirror trigger DDL |
+| Modify (test bootstrap) | `tests/_schema_bootstrap.py` — bump `SCHEMA_BOOTSTRAP_VERSION` and mirror trigger/default DDL |
 | Create (tests) | `tests/test_rob878_shadow_ledger_migration.py` |
 | Create (tests) | `tests/test_rob878_shadow_ledger_model.py` |
 
@@ -116,14 +134,16 @@ Related (non-blocking):
 
 **Contracts (must hold):**
 - SQL NULL, JSONB null, `[]` → 0 actions.
-- Non-array, non-object element, blank action, unknown status, invalid ISO date → fail with retrospective ID + ordinal.
+- Non-array, non-object element, non-string/blank action, unknown status, or invalid calendar date → fail with retrospective ID and, for elements, zero-based ordinal.
 - Missing/null/blank status → backfill as `open`.
 - Existing `open`/`in_progress`/`done` → preserved.
 - Due date alone → never `expired`.
 - Parent JSONB → byte-for-byte unchanged.
 - Provisional child IDs → not exposed to any reader/API/MCP.
 - Control mode → `shadow`.
-- Downgrade supported only while mode = `shadow`.
+- Missing or invalid control authority fails parent writes closed; only exact `shadow` permits unmarked legacy writes.
+- Parity covers row count, zero-based ordinal, every projected lifecycle field, provenance, timestamps, evidence, and full `legacy_payload`.
+- Downgrade locks parent → control → actions and is supported only when the control row exists with exact mode = `shadow` and every action retains migration provenance/version.
 
 ---
 
@@ -145,7 +165,7 @@ Create `tests/test_rob878_shadow_ledger_model.py`:
 """ROB-878 child-1: ORM model smoke tests for shadow ledger tables."""
 
 import pytest
-from sqlalchemy import inspect, text
+from sqlalchemy import text
 
 
 @pytest.mark.asyncio
@@ -163,7 +183,8 @@ async def test_trade_retrospective_action_columns_exist(db_session):
     """The action table has all required columns with correct types."""
     result = await db_session.execute(
         text(
-            "SELECT column_name, data_type, is_nullable "
+            "SELECT column_name, data_type, is_nullable, column_default, "
+            "character_maximum_length "
             "FROM information_schema.columns "
             "WHERE table_schema = 'review' "
             "AND table_name = 'trade_retrospective_actions' "
@@ -184,11 +205,15 @@ async def test_trade_retrospective_action_columns_exist(db_session):
     assert cols["position"].data_type == "integer"
     assert cols["action"].data_type == "text"
     assert cols["status"].data_type == "text"
+    assert cols["status_source"].data_type == "character varying"
+    assert cols["status_source"].character_maximum_length == 32
     assert cols["version"].data_type == "integer"
     assert cols["legacy_payload"].data_type == "jsonb"
     assert cols["status"].is_nullable == "NO"
     assert cols["version"].is_nullable == "NO"
     assert cols["position"].is_nullable == "NO"
+    assert cols["legacy_payload"].is_nullable == "NO"
+    assert cols["id"].column_default == "gen_random_uuid()"
 
 
 @pytest.mark.asyncio
@@ -268,33 +293,33 @@ class TradeRetrospectiveAction(Base):
         ),
         CheckConstraint(
             "status IN ('open','in_progress','done','obsolete','expired')",
-            name="ck_trade_retrospective_actions_status",
+            name="status",
         ),
         CheckConstraint(
             "status_source IN ('migration','retrospective_save','web','mcp','triage','reconciler')",
-            name="ck_trade_retrospective_actions_status_source",
+            name="status_source",
         ),
-        CheckConstraint("version >= 1", name="ck_trade_retrospective_actions_version"),
-        CheckConstraint("position >= 0", name="ck_trade_retrospective_actions_position"),
+        CheckConstraint("version >= 1", name="version"),
+        CheckConstraint("position >= 0", name="position_col"),
         # terminal states must have resolved_at; active states must not
         CheckConstraint(
             "(status IN ('done','obsolete','expired') AND resolved_at IS NOT NULL) "
             "OR (status IN ('open','in_progress') AND resolved_at IS NULL)",
-            name="ck_trade_retrospective_actions_resolved_terminal",
+            name="resolved_terminal",
         ),
         # obsolete and expired require a nonblank reason
         CheckConstraint(
             "(status NOT IN ('obsolete','expired')) "
             "OR (status_reason IS NOT NULL AND btrim(status_reason) <> '' "
             "AND length(status_reason) <= 2000)",
-            name="ck_trade_retrospective_actions_reason_required",
+            name="reason_required",
         ),
         # expired requires structured evidence object
         CheckConstraint(
             "(status <> 'expired') "
             "OR (status_evidence IS NOT NULL "
             "AND jsonb_typeof(status_evidence) = 'object')",
-            name="ck_trade_retrospective_actions_evidence_required",
+            name="evidence_required",
         ),
         Index(
             "ix_trade_retrospective_actions_parent_position",
@@ -330,12 +355,13 @@ class TradeRetrospectiveAction(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
-        postgresql.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
     )
     retrospective_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    creation_key: Mapped[uuid.UUID | None] = mapped_column(
-        postgresql.UUID(as_uuid=True)
-    )
+    creation_key: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     action: Mapped[str] = mapped_column(Text, nullable=False)
     owner: Mapped[str | None] = mapped_column(Text)
@@ -352,7 +378,7 @@ class TradeRetrospectiveAction(Base):
     )
     resolved_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     status_actor: Mapped[str] = mapped_column(VARCHAR(128), nullable=False)
-    status_source: Mapped[str] = mapped_column(Text, nullable=False)
+    status_source: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
     status_reason: Mapped[str | None] = mapped_column(Text)
     status_evidence: Mapped[dict | None] = mapped_column(JSONB)
     legacy_payload: Mapped[dict] = mapped_column(
@@ -374,11 +400,8 @@ class TradeRetrospectiveActionControl(Base):
 
     __tablename__ = "trade_retrospective_action_control"
     __table_args__ = (
-        CheckConstraint("id = 1", name="ck_trade_retrospective_action_control_singleton"),
-        CheckConstraint(
-            "mode IN ('shadow','canonical')",
-            name="ck_trade_retrospective_action_control_mode",
-        ),
+        CheckConstraint("id = 1", name="singleton"),
+        CheckConstraint("mode IN ('shadow','canonical')", name="mode"),
         {"schema": "review"},
     )
 
@@ -395,7 +418,7 @@ class TradeRetrospectiveActionControl(Base):
 ```
 
 Add necessary imports at the top of `review.py` if not already present:
-`import uuid`, `from datetime import date`, `from sqlalchemy import Integer, SmallInteger, Date, VARCHAR`, `from sqlalchemy import ForeignKeyConstraint` (if not already imported).
+`import uuid`, `from datetime import date`, `from sqlalchemy import Integer, SmallInteger, Date, VARCHAR`, `from sqlalchemy import ForeignKeyConstraint`, and the existing `PG_UUID` alias (if not already imported).
 
 - [ ] **Step 4: Add exports to `app/models/__init__.py`**
 
@@ -427,14 +450,14 @@ git commit -m "feat(ROB-878): add TradeRetrospectiveAction + Control ORM models"
 
 ---
 
-### Task 1.2: Schema Bootstrap Bump + Trigger DDL Mirroring
+### Task 1.2: Schema Bootstrap Bump + Trigger/Default DDL Mirroring
 
 **Files:**
-- Modify: `tests/_schema_bootstrap.py` — bump version 14→15, mirror trigger function + singleton insert
+- Modify: `tests/_schema_bootstrap.py` — record ROB-878 bootstrap revisions v21–v23 and mirror UUID default, bounded source type, trigger function, and singleton insert
 
 **Interfaces:**
 - Consumes: `app.models.review.TradeRetrospectiveAction` (for `create_all`)
-- Produces: test DB has both tables + write-fence trigger + shadow control row
+- Produces: persistent test DB has both tables, `gen_random_uuid()` action IDs, `VARCHAR(32)` status source, fail-closed write fence, and shadow control row
 
 - [ ] **Step 1: Write the failing bootstrap test**
 
@@ -478,19 +501,26 @@ Expected: FAIL — trigger not found.
 
 In `tests/_schema_bootstrap.py`:
 
-1. Change `SCHEMA_BOOTSTRAP_VERSION = 14` to `SCHEMA_BOOTSTRAP_VERSION = 15`.
-2. Add a comment entry after the v11 line:
+1. Advance the bootstrap version through the reviewed ROB-878 revisions:
 ```python
-# v12 (ROB-848): paper-validation triggers mirrored below.
-# v13–14: incremental mirror updates.
-# v15 (ROB-878): review.trade_retrospective_actions (new ORM table via
-# create_all) + write-fence trigger + singleton control row mirrored below.
+# v21 (ROB-878): review.trade_retrospective_actions (new ORM table via
+# create_all) + review.trade_retrospective_action_control (singleton) +
+# write-fence trigger function + shadow control row mirrored below.
+# v22 (ROB-878 review): mirror the action UUID database default and fail-closed
+# control-row fence in persistent test databases.
+# v23 (ROB-878 review): align status_source with the bounded VARCHAR(32)
+# design contract in persistent test databases.
+SCHEMA_BOOTSTRAP_VERSION = 23
 ```
 
-3. Append the following statements at the END of the `_DDL_STATEMENTS` tuple (before the closing `)`):
+2. Append the following statements at the END of the `_DDL_STATEMENTS` tuple (before the closing `)`):
 
 ```python
     # ---- ROB-878: retrospective action write-fence trigger ----
+    "ALTER TABLE review.trade_retrospective_actions "
+    "ALTER COLUMN id SET DEFAULT gen_random_uuid()",
+    "ALTER TABLE review.trade_retrospective_actions "
+    "ALTER COLUMN status_source TYPE VARCHAR(32)",
     # The trigger permits legacy writes in shadow mode and rejects direct
     # next_actions changes in canonical mode unless the transaction has set
     # the projection-writer GUC marker.
@@ -500,8 +530,16 @@ In `tests/_schema_bootstrap.py`:
     "BEGIN "
     "SELECT mode INTO ctrl_mode "
     "FROM review.trade_retrospective_action_control WHERE id = 1; "
-    "IF ctrl_mode IS NULL OR ctrl_mode = 'shadow' THEN "
+    "IF ctrl_mode IS NULL THEN "
+    "RAISE EXCEPTION 'retrospective action control row is missing; writes fail closed' "
+    "USING ERRCODE = 'restrict_violation'; "
+    "ELSIF ctrl_mode = 'shadow' THEN "
     "RETURN NEW; "
+    "ELSIF ctrl_mode <> 'canonical' THEN "
+    "RAISE EXCEPTION "
+    "'retrospective action control mode \"%\" is invalid; writes fail closed', "
+    "ctrl_mode "
+    "USING ERRCODE = 'restrict_violation'; "
     "END IF; "
     "writer_marker := current_setting("
     "'app.retrospective_action_projection_writer', true); "
@@ -557,7 +595,7 @@ git commit -m "feat(ROB-878): bump schema bootstrap + mirror write-fence trigger
 - Create: `alembic/versions/20260714_rob878_trade_retrospective_actions_shadow.py`
 
 **Interfaces:**
-- Consumes: existing head `20260713_rob848_paper_validation`
+- Consumes: existing head `20260714_rob849_paper_cohort`
 - Produces: `review.trade_retrospective_actions` + `review.trade_retrospective_action_control` tables in real DB
 
 - [ ] **Step 1: Write the failing migration test**
@@ -567,27 +605,74 @@ Create `tests/test_rob878_shadow_ledger_migration.py`:
 ```python
 """ROB-878 child-1: migration tests for shadow ledger schema.
 
-Tests use rolled-back transactions against the test DB engine (Pattern A
-from the binance root-reservation precedent). They do NOT shell out to
-alembic; instead they import the migration module and call its DDL helpers
-or re-run the op statements in a controlled scope.
+Tests render production DDL offline and use rolled-back PostgreSQL
+transactions for executable guards and round trips.
 """
 
+import ast
+import importlib.util
+import io
+from pathlib import Path
+
 import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from sqlalchemy import text
 
 from app.core.db import engine
+from app.models.base import Base
+
+_MIGRATION_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "alembic"
+    / "versions"
+    / "20260714_rob878_trade_retrospective_actions_shadow.py"
+)
+_SPEC = importlib.util.spec_from_file_location(
+    "rob878_shadow_ledger_migration", _MIGRATION_PATH
+)
+assert _SPEC is not None and _SPEC.loader is not None
+_MIGRATION = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_MIGRATION)
 
 
 @pytest.mark.asyncio
 async def test_migration_revision_metadata():
     """The migration module has correct revision chain."""
-    import importlib
-    mod = importlib.import_module(
-        "alembic.versions.20260714_rob878_trade_retrospective_actions_shadow"
+    tree = ast.parse(_MIGRATION_PATH.read_text())
+    assignments = {
+        node.targets[0].id: node.value.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and isinstance(node.value, ast.Constant)
+        and node.targets[0].id in ("revision", "down_revision")
+    }
+    assert assignments["revision"] == "20260714_rob878_shadow"
+    assert assignments["down_revision"] == "20260714_rob849_paper_cohort"
+
+
+def test_offline_upgrade_renders_valid_server_defaults():
+    """Alembic must emit SQL expressions, not double-quoted defaults."""
+    output = io.StringIO()
+    context = MigrationContext.configure(
+        dialect_name="postgresql",
+        opts={"as_sql": True, "output_buffer": output, "target_metadata": Base.metadata},
     )
-    assert mod.revision == "20260714_rob878_shadow"
-    assert mod.down_revision == "20260713_rob848_paper_validation"
+    original_op = _MIGRATION.op
+    _MIGRATION.op = Operations(context)
+    try:
+        _MIGRATION.upgrade()
+    finally:
+        _MIGRATION.op = original_op
+
+    sql = output.getvalue()
+    assert "status TEXT DEFAULT 'open' NOT NULL" in sql
+    assert "status_source VARCHAR(32) NOT NULL" in sql
+    assert "version INTEGER DEFAULT 1 NOT NULL" in sql
+    assert "legacy_payload JSONB DEFAULT '{}'::jsonb NOT NULL" in sql
+    assert "DEFAULT '''" not in sql
 
 
 @pytest.mark.asyncio
@@ -663,7 +748,7 @@ Create `alembic/versions/20260714_rob878_trade_retrospective_actions_shadow.py`:
 """ROB-878 child-1: retrospective action shadow ledger (schema + backfill).
 
 Revision ID: 20260714_rob878_shadow
-Revises: 20260713_rob848_paper_validation
+Revises: 20260714_rob849_paper_cohort
 Create Date: 2026-07-14
 """
 
@@ -677,14 +762,13 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision = "20260714_rob878_shadow"
-down_revision = "20260713_rob848_paper_validation"
+down_revision = "20260714_rob849_paper_cohort"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 _SCHEMA = "review"
 _ACTIONS_TABLE = "trade_retrospective_actions"
 _CONTROL_TABLE = "trade_retrospective_action_control"
-_PARENT_TABLE = "trade_retrospectives"
 
 
 # ---------------------------------------------------------------------------
@@ -702,9 +786,19 @@ BEGIN
     SELECT mode INTO ctrl_mode
     FROM review.trade_retrospective_action_control WHERE id = 1;
 
-    -- Shadow mode or missing control row: permit all legacy writes.
-    IF ctrl_mode IS NULL OR ctrl_mode = 'shadow' THEN
+    -- Missing database authority fails closed; only exact shadow permits
+    -- unmarked legacy writes.
+    IF ctrl_mode IS NULL THEN
+        RAISE EXCEPTION
+            'retrospective action control row is missing; writes fail closed'
+            USING ERRCODE = 'restrict_violation';
+    ELSIF ctrl_mode = 'shadow' THEN
         RETURN NEW;
+    ELSIF ctrl_mode <> 'canonical' THEN
+        RAISE EXCEPTION
+            'retrospective action control mode "%" is invalid; writes fail closed',
+            ctrl_mode
+            USING ERRCODE = 'restrict_violation';
     END IF;
 
     -- Canonical mode: only the repository projection writer may change
@@ -750,51 +844,55 @@ def upgrade() -> None:
         sa.Column("action", sa.Text(), nullable=False),
         sa.Column("owner", sa.Text(), nullable=True),
         sa.Column("issue_id", sa.Text(), nullable=True),
-        sa.Column("status", sa.Text(), nullable=False, server_default="'open'"),
+        sa.Column("status", sa.Text(), nullable=False,
+                  server_default=sa.text("'open'")),
         sa.Column("due_kst_date", sa.Date(), nullable=True),
-        sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
+        sa.Column(
+            "version",
+            sa.Integer(),
+            nullable=False,
+            server_default=sa.text("1"),
+        ),
         sa.Column("status_changed_at", sa.TIMESTAMP(timezone=True),
                   server_default=sa.text("now()"), nullable=False),
         sa.Column("resolved_at", sa.TIMESTAMP(timezone=True), nullable=True),
         sa.Column("status_actor", sa.VARCHAR(128), nullable=False),
-        sa.Column("status_source", sa.Text(), nullable=False),
+        sa.Column("status_source", sa.VARCHAR(32), nullable=False),
         sa.Column("status_reason", sa.Text(), nullable=True),
         sa.Column("status_evidence", postgresql.JSONB(astext_type=sa.Text()),
                   nullable=True),
         sa.Column("legacy_payload", postgresql.JSONB(astext_type=sa.Text()),
-                  nullable=False, server_default="'{}'::jsonb"),
+                  nullable=False, server_default=sa.text("'{}'::jsonb")),
         sa.Column("created_at", sa.TIMESTAMP(timezone=True),
                   server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", sa.TIMESTAMP(timezone=True),
                   server_default=sa.text("now()"), nullable=False),
         sa.CheckConstraint(
             "status IN ('open','in_progress','done','obsolete','expired')",
-            name="ck_trade_retrospective_actions_status",
+            name="status",
         ),
         sa.CheckConstraint(
             "status_source IN ('migration','retrospective_save','web','mcp','triage','reconciler')",
-            name="ck_trade_retrospective_actions_status_source",
+            name="status_source",
         ),
-        sa.CheckConstraint("version >= 1",
-            name="ck_trade_retrospective_actions_version"),
-        sa.CheckConstraint("position >= 0",
-            name="ck_trade_retrospective_actions_position"),
+        sa.CheckConstraint("version >= 1", name="version"),
+        sa.CheckConstraint("position >= 0", name="position_col"),
         sa.CheckConstraint(
             "(status IN ('done','obsolete','expired') AND resolved_at IS NOT NULL) "
             "OR (status IN ('open','in_progress') AND resolved_at IS NULL)",
-            name="ck_trade_retrospective_actions_resolved_terminal",
+            name="resolved_terminal",
         ),
         sa.CheckConstraint(
             "(status NOT IN ('obsolete','expired')) "
             "OR (status_reason IS NOT NULL AND btrim(status_reason) <> '' "
             "AND length(status_reason) <= 2000)",
-            name="ck_trade_retrospective_actions_reason_required",
+            name="reason_required",
         ),
         sa.CheckConstraint(
             "(status <> 'expired') "
             "OR (status_evidence IS NOT NULL "
             "AND jsonb_typeof(status_evidence) = 'object')",
-            name="ck_trade_retrospective_actions_evidence_required",
+            name="evidence_required",
         ),
         sa.ForeignKeyConstraint(
             ["retrospective_id"], ["review.trade_retrospectives.id"],
@@ -845,10 +943,8 @@ def upgrade() -> None:
         sa.Column("cutover_action_count", sa.Integer(), nullable=True),
         sa.Column("updated_at", sa.TIMESTAMP(timezone=True),
                   server_default=sa.text("now()"), nullable=False),
-        sa.CheckConstraint("id = 1",
-            name="ck_trade_retrospective_action_control_singleton"),
-        sa.CheckConstraint("mode IN ('shadow','canonical')",
-            name="ck_trade_retrospective_action_control_mode"),
+        sa.CheckConstraint("id = 1", name="singleton"),
+        sa.CheckConstraint("mode IN ('shadow','canonical')", name="mode"),
         schema=_SCHEMA,
     )
 
@@ -882,13 +978,6 @@ def upgrade() -> None:
 
 
 def _run_preflight() -> None:
-    """Classify legacy values before casting. Fail on malformed data.
-
-    SQL NULL, JSONB null, and [] each mean zero actions.
-    Any non-array value fails. Every array element must be an object with
-    a nonblank action; status must be null/blank or one of
-    open/in_progress/done; a nonblank due date must pass strict YYYY-MM-DD.
-    """
     op.execute(
         """
         DO $$
@@ -898,6 +987,7 @@ def _run_preflight() -> None:
             idx INTEGER;
             raw_status TEXT;
             raw_due TEXT;
+            parsed_due DATE;
         BEGIN
             FOR r IN
                 SELECT id, next_actions
@@ -905,41 +995,61 @@ def _run_preflight() -> None:
                 WHERE next_actions IS NOT NULL
                   AND jsonb_typeof(next_actions) <> 'null'
             LOOP
-                IF jsonb_typeof(r.next_actions) = 'array' THEN
-                    idx := 0;
-                    FOR elem IN SELECT * FROM jsonb_array_elements(r.next_actions)
-                    LOOP
-                        IF jsonb_typeof(elem) <> 'object' THEN
-                            RAISE EXCEPTION
-                                'retrospective % action[%]: element is not an object',
-                                r.id, idx;
-                        END IF;
-                        IF btrim(COALESCE(elem->>'action', '')) = '' THEN
-                            RAISE EXCEPTION
-                                'retrospective % action[%]: blank action',
-                                r.id, idx;
-                        END IF;
-                        raw_status := elem->>'status';
-                        IF raw_status IS NOT NULL AND btrim(raw_status) <> ''
-                           AND raw_status NOT IN ('open','in_progress','done') THEN
-                            RAISE EXCEPTION
-                                'retrospective % action[%]: unknown status "%"',
-                                r.id, idx, raw_status;
-                        END IF;
-                        raw_due := elem->>'due_kst_date';
-                        IF raw_due IS NOT NULL AND btrim(raw_due) <> ''
-                           AND raw_due !~ '^\d{4}-\d{2}-\d{2}$' THEN
-                            RAISE EXCEPTION
-                                'retrospective % action[%]: invalid due_kst_date "%"',
-                                r.id, idx, raw_due;
-                        END IF;
-                        idx := idx + 1;
-                    END LOOP;
-                ELSIF jsonb_typeof(r.next_actions) <> 'array' THEN
+                IF jsonb_typeof(r.next_actions) <> 'array' THEN
                     RAISE EXCEPTION
                         'retrospective %: next_actions is not an array (type=%)',
                         r.id, jsonb_typeof(r.next_actions);
                 END IF;
+                idx := 0;
+                FOR elem IN SELECT * FROM jsonb_array_elements(r.next_actions)
+                LOOP
+                    IF jsonb_typeof(elem) <> 'object' THEN
+                        RAISE EXCEPTION
+                            'retrospective % action[%]: element is not an object',
+                            r.id, idx;
+                    END IF;
+                    IF jsonb_typeof(elem->'action') IS NOT NULL
+                       AND jsonb_typeof(elem->'action') NOT IN ('string', 'null') THEN
+                        RAISE EXCEPTION
+                            'retrospective % action[%]: action must be a string',
+                            r.id, idx;
+                    END IF;
+                    IF btrim(COALESCE(elem->>'action', '')) = '' THEN
+                        RAISE EXCEPTION
+                            'retrospective % action[%]: blank action',
+                            r.id, idx;
+                    END IF;
+                    raw_status := elem->>'status';
+                    IF raw_status IS NOT NULL
+                       AND btrim(raw_status) <> ''
+                       AND raw_status NOT IN ('open','in_progress','done') THEN
+                        RAISE EXCEPTION
+                            'retrospective % action[%]: unknown status "%"',
+                            r.id, idx, raw_status;
+                    END IF;
+                    raw_due := elem->>'due_kst_date';
+                    IF raw_due IS NOT NULL
+                       AND btrim(raw_due) <> '' THEN
+                        IF raw_due !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                            RAISE EXCEPTION
+                                'retrospective % action[%]: invalid due_kst_date "%"',
+                                r.id, idx, raw_due;
+                        END IF;
+                        BEGIN
+                            parsed_due := raw_due::date;
+                        EXCEPTION WHEN OTHERS THEN
+                            RAISE EXCEPTION
+                                'retrospective % action[%]: invalid due_kst_date "%"',
+                                r.id, idx, raw_due;
+                        END;
+                        IF to_char(parsed_due, 'YYYY-MM-DD') <> raw_due THEN
+                            RAISE EXCEPTION
+                                'retrospective % action[%]: invalid due_kst_date "%"',
+                                r.id, idx, raw_due;
+                        END IF;
+                    END IF;
+                    idx := idx + 1;
+                END LOOP;
             END LOOP;
         END;
         $$
@@ -1005,11 +1115,14 @@ def _run_backfill() -> None:
             elem.value,  -- entire original element preserved
             t.created_at,
             t.updated_at
-        FROM review.trade_retrospectives t,
-             jsonb_array_elements(t.next_actions) WITH ORDINALITY AS elem(value, ordinality)
-        WHERE t.next_actions IS NOT NULL
-          AND jsonb_typeof(t.next_actions) = 'array'
-          AND jsonb_array_length(t.next_actions) > 0
+        FROM review.trade_retrospectives t
+        CROSS JOIN LATERAL jsonb_array_elements(
+            CASE
+                WHEN jsonb_typeof(t.next_actions) = 'array'
+                    THEN t.next_actions
+                ELSE '[]'::jsonb
+            END
+        ) WITH ORDINALITY AS elem(value, ordinality)
         """
     )
 
@@ -1020,14 +1133,14 @@ def _assert_parity() -> None:
         """
         DO $$
         DECLARE
-            parent_count INTEGER;
-            child_count INTEGER;
+            parent_count BIGINT;
+            child_count BIGINT;
+            mismatch_retrospective_id BIGINT;
+            mismatch_position INTEGER;
         BEGIN
             SELECT COALESCE(SUM(
                 CASE
-                    WHEN next_actions IS NOT NULL
-                     AND jsonb_typeof(next_actions) = 'array'
-                     AND jsonb_array_length(next_actions) > 0
+                    WHEN jsonb_typeof(next_actions) = 'array'
                     THEN jsonb_array_length(next_actions)
                     ELSE 0
                 END
@@ -1040,8 +1153,89 @@ def _assert_parity() -> None:
 
             IF parent_count <> child_count THEN
                 RAISE EXCEPTION
-                    'parity mismatch: parent has % actions, child has %',
+                    'ROB-878 parity mismatch: parent has % actions, child has %',
                     parent_count, child_count;
+            END IF;
+
+            WITH expected AS (
+                SELECT
+                    t.id AS retrospective_id,
+                    (elem.ordinality - 1)::integer AS position,
+                    btrim(elem.value->>'action') AS action,
+                    elem.value->>'owner' AS owner,
+                    elem.value->>'issue_id' AS issue_id,
+                    CASE
+                        WHEN btrim(COALESCE(elem.value->>'status', '')) = ''
+                            THEN 'open'
+                        ELSE elem.value->>'status'
+                    END AS status,
+                    CASE
+                        WHEN btrim(COALESCE(elem.value->>'due_kst_date', '')) = ''
+                            THEN NULL
+                        ELSE (elem.value->>'due_kst_date')::date
+                    END AS due_kst_date,
+                    t.updated_at AS status_changed_at,
+                    CASE
+                        WHEN elem.value->>'status' = 'done' THEN t.updated_at
+                        ELSE NULL
+                    END AS resolved_at,
+                    CASE
+                        WHEN elem.value->>'status' = 'done' THEN
+                            jsonb_build_object(
+                                'schema_version', 1,
+                                'kind', 'legacy_status',
+                                'source', 'migration',
+                                'reference',
+                                'review.trade_retrospectives.next_actions',
+                                'observed_at', t.updated_at,
+                                'summary',
+                                'historical done; exact completion time unavailable'
+                            )
+                        ELSE NULL
+                    END AS status_evidence,
+                    elem.value AS legacy_payload,
+                    t.created_at,
+                    t.updated_at
+                FROM review.trade_retrospectives t
+                CROSS JOIN LATERAL jsonb_array_elements(
+                    CASE
+                        WHEN jsonb_typeof(t.next_actions) = 'array'
+                            THEN t.next_actions
+                        ELSE '[]'::jsonb
+                    END
+                ) WITH ORDINALITY AS elem(value, ordinality)
+            )
+            SELECT e.retrospective_id, e.position
+            INTO mismatch_retrospective_id, mismatch_position
+            FROM expected e
+            LEFT JOIN review.trade_retrospective_actions a
+              ON a.retrospective_id = e.retrospective_id
+             AND a.position = e.position
+            WHERE a.id IS NULL
+               OR a.creation_key IS NOT NULL
+               OR a.action IS DISTINCT FROM e.action
+               OR a.owner IS DISTINCT FROM e.owner
+               OR a.issue_id IS DISTINCT FROM e.issue_id
+               OR a.status IS DISTINCT FROM e.status
+               OR a.due_kst_date IS DISTINCT FROM e.due_kst_date
+               OR a.version <> 1
+               OR a.status_changed_at IS DISTINCT FROM e.status_changed_at
+               OR a.resolved_at IS DISTINCT FROM e.resolved_at
+               OR a.status_actor <> 'migration:rob-878'
+               OR a.status_source <> 'migration'
+               OR a.status_reason IS NOT NULL
+               OR a.status_evidence IS DISTINCT FROM e.status_evidence
+               OR a.legacy_payload IS DISTINCT FROM e.legacy_payload
+               OR a.created_at IS DISTINCT FROM e.created_at
+               OR a.updated_at IS DISTINCT FROM e.updated_at
+            ORDER BY e.retrospective_id, e.position
+            LIMIT 1;
+
+            IF FOUND THEN
+                RAISE EXCEPTION
+                    'ROB-878 parity mismatch: retrospective % action[%] '
+                    'field/ordinal mismatch',
+                    mismatch_retrospective_id, mismatch_position;
             END IF;
 
             RAISE NOTICE 'ROB-878 shadow backfill: % actions migrated', child_count;
@@ -1052,11 +1246,6 @@ def _assert_parity() -> None:
 
 
 def downgrade() -> None:
-    """Downgrade is supported only while control mode is shadow.
-
-    Abort if mode is canonical, any action has version > 1, any source is
-    not migration, or a canonical application has created an action.
-    """
     op.execute(
         """
         DO $$
@@ -1065,13 +1254,24 @@ def downgrade() -> None:
             max_version INTEGER;
             non_migration_count INTEGER;
         BEGIN
+            LOCK TABLE
+                review.trade_retrospectives,
+                review.trade_retrospective_action_control,
+                review.trade_retrospective_actions
+            IN SHARE ROW EXCLUSIVE MODE;
+
             SELECT mode INTO ctrl_mode
             FROM review.trade_retrospective_action_control WHERE id = 1;
 
-            IF ctrl_mode = 'canonical' THEN
+            IF ctrl_mode IS NULL THEN
                 RAISE EXCEPTION
-                    'cannot downgrade: control mode is canonical; '
+                    'cannot downgrade: control row is missing; '
                     'recovery is mutation-disable plus roll-forward';
+            ELSIF ctrl_mode <> 'shadow' THEN
+                RAISE EXCEPTION
+                    'cannot downgrade: control mode must be shadow (found %); '
+                    'recovery is mutation-disable plus roll-forward',
+                    ctrl_mode;
             END IF;
 
             SELECT COALESCE(max(version), 1) INTO max_version
@@ -1084,11 +1284,13 @@ def downgrade() -> None:
 
             SELECT count(*) INTO non_migration_count
             FROM review.trade_retrospective_actions
-            WHERE status_source <> 'migration';
+            WHERE status_source <> 'migration'
+               OR status_actor <> 'migration:rob-878'
+               OR creation_key IS NOT NULL;
 
             IF non_migration_count > 0 THEN
                 RAISE EXCEPTION
-                    'cannot downgrade: % actions have non-migration source',
+                    'cannot downgrade: % actions have non-migration provenance',
                     non_migration_count;
             END IF;
         END;
@@ -1132,15 +1334,17 @@ def downgrade() -> None:
 - [ ] **Step 4: Run migration tests**
 
 Run: `uv run pytest tests/test_rob878_shadow_ledger_migration.py -v`
-Expected: PASS.
+Expected: PASS, including offline default rendering, parent-first downgrade
+lock ordering, downgrade/upgrade round trip, and rejection of missing control,
+non-shadow mode, or non-migration provenance.
 
 Run: `uv run python -c "import importlib; m = importlib.import_module('alembic.versions.20260714_rob878_trade_retrospective_actions_shadow'); print(m.revision, '->', m.down_revision)"`
-Expected: `20260714_rob878_shadow -> 20260713_rob848_paper_validation`
+Expected: `20260714_rob878_shadow -> 20260714_rob849_paper_cohort`
 
-- [ ] **Step 5: Verify alembic chain integrity**
+- [ ] **Step 5: Verify Alembic has exactly one head**
 
-Run: `uv run alembic history --rev-range="-2:" 2>&1 | head -5`
-Expected: New revision at head, correctly chained.
+Run: `uv run alembic heads`
+Expected: exactly `20260714_rob878_shadow (head)`; no second branch head.
 
 - [ ] **Step 6: Commit**
 
@@ -1156,13 +1360,44 @@ git commit -m "feat(ROB-878): shadow ledger migration with preflight, backfill, 
 **Files:**
 - Modify: `tests/test_rob878_shadow_ledger_migration.py` (append edge-case tests)
 
-These tests exercise the migration's preflight and backfill SQL against seeded parent rows in rolled-back transactions. They do NOT shell out to `alembic`; they re-run the preflight/backfill SQL in a controlled scope.
+These tests load the real migration module and execute `_run_preflight`,
+`_run_backfill`, `_assert_parity`, and the leading downgrade guard on
+rolled-back PostgreSQL transactions. Focused valid-row assertions may share a
+scoped backfill fragment, but malformed/scalar, parity, and downgrade behavior
+must execute the migration helper itself.
 
 - [ ] **Step 1: Write edge-case tests**
 
 Append to `tests/test_rob878_shadow_ledger_migration.py`:
 
 ```python
+import importlib.util
+from pathlib import Path
+
+_MIGRATION_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "alembic"
+    / "versions"
+    / "20260714_rob878_trade_retrospective_actions_shadow.py"
+)
+_SPEC = importlib.util.spec_from_file_location(
+    "rob878_shadow_ledger_migration", _MIGRATION_PATH
+)
+assert _SPEC is not None and _SPEC.loader is not None
+_MIGRATION = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_MIGRATION)
+
+
+def _run_migration_step(sync_conn, step):
+    """Run one op.execute-only migration helper on the active connection."""
+    original_execute = _MIGRATION.op.execute
+    _MIGRATION.op.execute = lambda statement: sync_conn.execute(text(statement))
+    try:
+        step()
+    finally:
+        _MIGRATION.op.execute = original_execute
+
+
 @pytest.mark.asyncio
 async def test_preflight_rejects_non_array_next_actions():
     """A non-array next_actions value fails preflight."""
@@ -1175,33 +1410,103 @@ async def test_preflight_rejects_non_array_next_actions():
                 "VALUES (990001, 'TEST', 'equity_kr', 'kis_mock', 'filled', "
                 "'{\"action\": \"not an array\"}'::jsonb)"
             ))
-            with pytest.raises(Exception, match="not an array|preflight"):
-                await conn.execute(text(
-                    # Re-run the preflight DO block (simplified check)
-                    "DO $$ DECLARE r RECORD; BEGIN "
-                    "FOR r IN SELECT id, next_actions FROM review.trade_retrospectives "
-                    "WHERE id = 990001 LOOP "
-                    "IF jsonb_typeof(r.next_actions) NOT IN ('array', 'null') THEN "
-                    "RAISE EXCEPTION 'retrospective %: not an array', r.id; "
-                    "END IF; END LOOP; END; $$"
-                ))
+            with pytest.raises(
+                Exception,
+                match="retrospective 990001.*not an array",
+            ):
+                await conn.run_sync(
+                    lambda sync_conn: _run_migration_step(
+                        sync_conn, _MIGRATION._run_preflight
+                    )
+                )
         finally:
             await trans.rollback()
 
 
 @pytest.mark.asyncio
-async def test_null_next_actions_means_zero_actions(db_session):
-    """SQL NULL next_actions produces zero child rows after backfill."""
-    from sqlalchemy import text
-    result = await db_session.execute(text(
-        "SELECT count(*) FROM review.trade_retrospective_actions "
-        "WHERE retrospective_id IN ("
-        "  SELECT id FROM review.trade_retrospectives WHERE next_actions IS NULL"
-        ")"
-    ))
-    # The test DB may have no NULL rows; the point is the query doesn't error
-    # and returns a count (even if 0).
-    assert result.scalar() is not None
+async def test_preflight_rejects_invalid_due_date():
+    """Exact syntax is insufficient: impossible calendar dates must fail."""
+    async with engine.connect() as conn:
+        trans = await conn.begin()
+        try:
+            await conn.execute(text(
+                "INSERT INTO review.trade_retrospectives "
+                "(id, symbol, instrument_type, account_mode, outcome, next_actions) "
+                "VALUES (990008, 'TEST', 'equity_kr', 'kis_mock', 'filled', "
+                "'[{\"action\": \"bad date\", "
+                "\"due_kst_date\": \"2026-02-31\"}]'::jsonb)"
+            ))
+            with pytest.raises(
+                Exception,
+                match=r"retrospective 990008 action\[0\].*invalid due_kst_date",
+            ):
+                await conn.run_sync(
+                    lambda sync_conn: _run_migration_step(
+                        sync_conn, _MIGRATION._run_preflight
+                    )
+                )
+        finally:
+            await trans.rollback()
+
+
+@pytest.mark.asyncio
+async def test_preflight_rejects_non_string_action():
+    """Action text must never be coerced from a JSON scalar."""
+    async with engine.connect() as conn:
+        trans = await conn.begin()
+        try:
+            await conn.execute(text(
+                "INSERT INTO review.trade_retrospectives "
+                "(id, symbol, instrument_type, account_mode, outcome, next_actions) "
+                "VALUES (990023, 'TEST', 'equity_kr', 'kis_mock', 'filled', "
+                "'[{\"action\": 42}]'::jsonb)"
+            ))
+            with pytest.raises(
+                Exception,
+                match=r"retrospective 990023 action\[0\].*must be a string",
+            ):
+                await conn.run_sync(
+                    lambda sync_conn: _run_migration_step(
+                        sync_conn, _MIGRATION._run_preflight
+                    )
+                )
+        finally:
+            await trans.rollback()
+
+
+@pytest.mark.asyncio
+async def test_null_like_next_actions_produce_zero_rows():
+    """SQL NULL, JSON null, and [] each backfill as zero actions."""
+    async with engine.connect() as conn:
+        trans = await conn.begin()
+        try:
+            await conn.execute(text(
+                "INSERT INTO review.trade_retrospectives "
+                "(id, symbol, instrument_type, account_mode, outcome, next_actions) "
+                "VALUES "
+                "(990019, 'TEST', 'equity_kr', 'kis_mock', 'filled', NULL), "
+                "(990020, 'TEST', 'equity_kr', 'kis_mock', 'filled', "
+                "'null'::jsonb), "
+                "(990021, 'TEST', 'equity_kr', 'kis_mock', 'filled', '[]'::jsonb)"
+            ))
+            await conn.execute(text("DELETE FROM review.trade_retrospective_actions"))
+            await conn.run_sync(
+                lambda sync_conn: _run_migration_step(
+                    sync_conn, _MIGRATION._run_preflight
+                )
+            )
+            await conn.run_sync(
+                lambda sync_conn: _run_migration_step(
+                    sync_conn, _MIGRATION._run_backfill
+                )
+            )
+            count = (await conn.execute(text(
+                "SELECT count(*) FROM review.trade_retrospective_actions "
+                "WHERE retrospective_id BETWEEN 990019 AND 990021"
+            ))).scalar_one()
+            assert count == 0
+        finally:
+            await trans.rollback()
 
 
 @pytest.mark.asyncio
@@ -1226,8 +1531,11 @@ async def test_missing_status_backfills_to_open():
                 " CASE WHEN btrim(COALESCE(elem.value->>'status','')) = '' "
                 "   THEN 'open' ELSE elem.value->>'status' END, "
                 " 1, 'migration:rob-878', 'migration', elem.value "
-                "FROM review.trade_retrospectives t, "
-                " jsonb_array_elements(t.next_actions) WITH ORDINALITY AS elem(value, ordinality) "
+                "FROM review.trade_retrospectives t "
+                "CROSS JOIN LATERAL jsonb_array_elements(CASE "
+                "WHEN jsonb_typeof(t.next_actions) = 'array' "
+                "THEN t.next_actions ELSE '[]'::jsonb END) "
+                "WITH ORDINALITY AS elem(value, ordinality) "
                 "WHERE t.id = 990002"
             ))
             result = await conn.execute(text(
@@ -1247,21 +1555,18 @@ async def test_legacy_payload_preserves_unknown_keys():
     async with engine.connect() as conn:
         trans = await conn.begin()
         try:
-            original = {"action": "do thing", "owner": "alice",
-                        "custom_key": "custom_value", "another": 42}
+            original = json.dumps([{
+                "action": "do thing",
+                "owner": "alice",
+                "custom_key": "custom_value",
+                "another": 42,
+            }])
             await conn.execute(text(
                 "INSERT INTO review.trade_retrospectives "
                 "(id, symbol, instrument_type, account_mode, outcome, next_actions) "
                 "VALUES (990003, 'TEST', 'equity_kr', 'kis_mock', 'filled', "
-                ":actions::jsonb)"
-            ), {"actions": f"[{original!r}]".replace("'", '"').replace("True", "true").replace("None", "null").replace("42", "42")})
-            # Actually use proper JSON:
-            import json
-            await conn.execute(text(
-                "UPDATE review.trade_retrospectives SET next_actions = :actions "
-                "WHERE id = 990003"
-            ), {"actions": json.dumps([{"action": "do thing", "owner": "alice",
-                 "custom_key": "custom_value", "another": 42}])})
+                "CAST(:actions AS jsonb))"
+            ), {"actions": original})
 
             await conn.execute(text(
                 "INSERT INTO review.trade_retrospective_actions "
@@ -1270,8 +1575,11 @@ async def test_legacy_payload_preserves_unknown_keys():
                 "SELECT gen_random_uuid(), t.id, 0, "
                 " btrim(elem.value->>'action'), 'open', 1, "
                 " 'migration:rob-878', 'migration', elem.value "
-                "FROM review.trade_retrospectives t, "
-                " jsonb_array_elements(t.next_actions) WITH ORDINALITY AS elem(value, ordinality) "
+                "FROM review.trade_retrospectives t "
+                "CROSS JOIN LATERAL jsonb_array_elements(CASE "
+                "WHEN jsonb_typeof(t.next_actions) = 'array' "
+                "THEN t.next_actions ELSE '[]'::jsonb END) "
+                "WITH ORDINALITY AS elem(value, ordinality) "
                 "WHERE t.id = 990003"
             ))
             result = await conn.execute(text(
@@ -1281,6 +1589,42 @@ async def test_legacy_payload_preserves_unknown_keys():
             payload = result.fetchone().legacy_payload
             assert payload.get("custom_key") == "custom_value"
             assert payload.get("another") == 42
+        finally:
+            await trans.rollback()
+
+
+@pytest.mark.asyncio
+async def test_parity_rejects_backfilled_field_mismatch():
+    """Parity checks field values and ordinal, not only aggregate row counts."""
+    async with engine.connect() as conn:
+        trans = await conn.begin()
+        try:
+            await conn.execute(text(
+                "INSERT INTO review.trade_retrospectives "
+                "(id, symbol, instrument_type, account_mode, outcome, next_actions) "
+                "VALUES (990016, 'TEST', 'equity_kr', 'kis_mock', 'filled', "
+                "'[{\"action\": \"parity source\", \"owner\": \"alice\"}]'::jsonb)"
+            ))
+            await conn.execute(text("DELETE FROM review.trade_retrospective_actions"))
+            await conn.run_sync(
+                lambda sync_conn: _run_migration_step(
+                    sync_conn, _MIGRATION._run_backfill
+                )
+            )
+            await conn.execute(text(
+                "UPDATE review.trade_retrospective_actions "
+                "SET action = 'corrupted shadow row' "
+                "WHERE retrospective_id = 990016"
+            ))
+            with pytest.raises(
+                Exception,
+                match=r"ROB-878 parity mismatch.*retrospective 990016 action\[0\]",
+            ):
+                await conn.run_sync(
+                    lambda sync_conn: _run_migration_step(
+                        sync_conn, _MIGRATION._assert_parity
+                    )
+                )
         finally:
             await trans.rollback()
 
@@ -1376,6 +1720,34 @@ async def test_canonical_mode_permits_write_with_guc_marker():
 
 
 @pytest.mark.asyncio
+async def test_missing_control_row_fails_parent_json_write_closed():
+    """Absent database authority must never silently behave as shadow mode."""
+    async with engine.connect() as conn:
+        trans = await conn.begin()
+        try:
+            await conn.execute(text(
+                "INSERT INTO review.trade_retrospectives "
+                "(id, symbol, instrument_type, account_mode, outcome, next_actions) "
+                "VALUES (990017, 'TEST', 'equity_kr', 'kis_mock', 'filled', '[]'::jsonb)"
+            ))
+            await conn.execute(text(
+                "DELETE FROM review.trade_retrospective_action_control WHERE id = 1"
+            ))
+            sp = await conn.begin_nested()
+            try:
+                with pytest.raises(Exception, match="control row is missing.*fail closed"):
+                    await conn.execute(text(
+                        "UPDATE review.trade_retrospectives SET next_actions = "
+                        "'[{\"action\": \"must be blocked\"}]'::jsonb "
+                        "WHERE id = 990017"
+                    ))
+            finally:
+                await sp.rollback()
+        finally:
+            await trans.rollback()
+
+
+@pytest.mark.asyncio
 async def test_parent_json_immutable_after_backfill():
     """Parent next_actions JSONB is byte-for-byte unchanged after backfill."""
     async with engine.connect() as conn:
@@ -1387,7 +1759,7 @@ async def test_parent_json_immutable_after_backfill():
                 "INSERT INTO review.trade_retrospectives "
                 "(id, symbol, instrument_type, account_mode, outcome, next_actions) "
                 "VALUES (990007, 'TEST', 'equity_kr', 'kis_mock', 'filled', "
-                ":actions::jsonb)"
+                "CAST(:actions AS jsonb))"
             ), {"actions": json.dumps(original)})
 
             before = (await conn.execute(text(
@@ -1402,8 +1774,11 @@ async def test_parent_json_immutable_after_backfill():
                 "SELECT gen_random_uuid(), t.id, 0, "
                 " btrim(elem.value->>'action'), elem.value->>'status', "
                 " 1, 'migration:rob-878', 'migration', elem.value "
-                "FROM review.trade_retrospectives t, "
-                " jsonb_array_elements(t.next_actions) WITH ORDINALITY AS elem(value, ordinality) "
+                "FROM review.trade_retrospectives t "
+                "CROSS JOIN LATERAL jsonb_array_elements(CASE "
+                "WHEN jsonb_typeof(t.next_actions) = 'array' "
+                "THEN t.next_actions ELSE '[]'::jsonb END) "
+                "WITH ORDINALITY AS elem(value, ordinality) "
                 "WHERE t.id = 990007"
             ))
 
@@ -1658,27 +2033,35 @@ Starts after child-4 + child-7, alias traffic = zero, and 14 consecutive product
 ## Verification Commands (child-1 scope)
 
 ```bash
-# ORM model + bootstrap
-uv run pytest tests/test_rob878_shadow_ledger_model.py -v
+# One Alembic head, chained after ROB-849/ROB-870 integration
+uv run alembic heads
 
-# Migration + edge cases
-uv run pytest tests/test_rob878_shadow_ledger_migration.py -v
+# Executable child-1 contracts + persistent-schema/revision regressions
+uv run pytest \
+  tests/test_rob878_shadow_ledger_model.py \
+  tests/test_rob878_shadow_ledger_migration.py \
+  tests/infra/test_schema_barrier.py \
+  tests/test_alembic_revision_ids.py -v
 
-# Schema barrier regression
-uv run pytest tests/infra/test_schema_barrier.py -v
-
-# Alembic revision-id check
-uv run pytest tests/test_alembic_revision_ids.py -v
-
-# Lint + type
+# Changed-file lint/format, then repository lint/type gate
 uv run ruff check app/models/review.py app/models/__init__.py \
   alembic/versions/20260714_rob878_trade_retrospective_actions_shadow.py \
   tests/test_rob878_shadow_ledger_model.py tests/test_rob878_shadow_ledger_migration.py \
   tests/_schema_bootstrap.py
-
-# Whitespace
-git diff --check
+uv run ruff format --check app/models/review.py app/models/__init__.py \
+  alembic/versions/20260714_rob878_trade_retrospective_actions_shadow.py \
+  tests/test_rob878_shadow_ledger_model.py tests/test_rob878_shadow_ledger_migration.py \
+  tests/_schema_bootstrap.py
+make lint
 
 # Existing retrospective tests (no regression)
 uv run pytest tests/test_trade_retrospective_web_read.py tests/test_trade_retrospective_schema.py -v
+
+# Full non-live suite and final whitespace gate before push/PR
+make test
+git diff --check
 ```
+
+Expected: `uv run alembic heads` prints exactly
+`20260714_rob878_shadow (head)`; every pytest command, `make lint`, and
+`make test` exits 0; `git diff --check` emits no output.

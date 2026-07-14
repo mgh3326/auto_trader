@@ -45,7 +45,11 @@ from sqlalchemy import text
 # v21 (ROB-878): review.trade_retrospective_actions (new ORM table via
 # create_all) + review.trade_retrospective_action_control (singleton) +
 # write-fence trigger function + shadow control row mirrored below.
-SCHEMA_BOOTSTRAP_VERSION = 21
+# v22 (ROB-878 review): mirror the action UUID database default and fail-closed
+# control-row fence in persistent test databases.
+# v23 (ROB-878 review): align status_source with the bounded VARCHAR(32)
+# design contract in persistent test databases.
+SCHEMA_BOOTSTRAP_VERSION = 23
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -1028,6 +1032,10 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     ROB844_ACK_INDEX_REFRESH_DDL,
     ROB844_ACK_INDEX_CREATE_DDL,
     # ---- ROB-878: retrospective action write-fence trigger + singleton ----
+    "ALTER TABLE review.trade_retrospective_actions "
+    "ALTER COLUMN id SET DEFAULT gen_random_uuid()",
+    "ALTER TABLE review.trade_retrospective_actions "
+    "ALTER COLUMN status_source TYPE VARCHAR(32)",
     # Shadow mode permits all legacy writes; canonical mode rejects direct
     # next_actions changes unless the GUC projection-writer marker is set.
     "CREATE OR REPLACE FUNCTION "
@@ -1036,8 +1044,16 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "BEGIN "
     "SELECT mode INTO ctrl_mode "
     "FROM review.trade_retrospective_action_control WHERE id = 1; "
-    "IF ctrl_mode IS NULL OR ctrl_mode = 'shadow' THEN "
+    "IF ctrl_mode IS NULL THEN "
+    "RAISE EXCEPTION "
+    "'retrospective action control row is missing; writes fail closed' "
+    "USING ERRCODE = 'restrict_violation'; "
+    "ELSIF ctrl_mode = 'shadow' THEN "
     "RETURN NEW; "
+    "ELSIF ctrl_mode <> 'canonical' THEN "
+    "RAISE EXCEPTION "
+    "'retrospective action control mode \"%\" is invalid; writes fail closed', "
+    "ctrl_mode USING ERRCODE = 'restrict_violation'; "
     "END IF; "
     "writer_marker := current_setting("
     "'app.retrospective_action_projection_writer', true); "

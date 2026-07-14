@@ -1,7 +1,7 @@
 """ROB-878 child-1: retrospective action shadow ledger (schema + backfill).
 
 Revision ID: 20260714_rob878_shadow
-Revises: 20260713_rob848_paper_validation
+Revises: 20260714_rob849_paper_cohort
 Create Date: 2026-07-14
 
 Expand-only shadow release: creates the canonical child table, singleton
@@ -21,7 +21,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision = "20260714_rob878_shadow"
-down_revision = "20260713_rob848_paper_validation"
+down_revision = "20260714_rob849_paper_cohort"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -40,8 +40,17 @@ BEGIN
     SELECT mode INTO ctrl_mode
     FROM review.trade_retrospective_action_control WHERE id = 1;
 
-    IF ctrl_mode IS NULL OR ctrl_mode = 'shadow' THEN
+    IF ctrl_mode IS NULL THEN
+        RAISE EXCEPTION
+            'retrospective action control row is missing; writes fail closed'
+            USING ERRCODE = 'restrict_violation';
+    ELSIF ctrl_mode = 'shadow' THEN
         RETURN NEW;
+    ELSIF ctrl_mode <> 'canonical' THEN
+        RAISE EXCEPTION
+            'retrospective action control mode "%" is invalid; writes fail closed',
+            ctrl_mode
+            USING ERRCODE = 'restrict_violation';
     END IF;
 
     writer_marker := current_setting(
@@ -88,11 +97,17 @@ def upgrade() -> None:
         sa.Column("owner", sa.Text(), nullable=True),
         sa.Column("issue_id", sa.Text(), nullable=True),
         sa.Column(
-            "status", sa.Text(), nullable=False, server_default="'open'"
+            "status",
+            sa.Text(),
+            nullable=False,
+            server_default=sa.text("'open'"),
         ),
         sa.Column("due_kst_date", sa.Date(), nullable=True),
         sa.Column(
-            "version", sa.Integer(), nullable=False, server_default="1"
+            "version",
+            sa.Integer(),
+            nullable=False,
+            server_default=sa.text("1"),
         ),
         sa.Column(
             "status_changed_at",
@@ -102,7 +117,7 @@ def upgrade() -> None:
         ),
         sa.Column("resolved_at", sa.TIMESTAMP(timezone=True), nullable=True),
         sa.Column("status_actor", sa.VARCHAR(128), nullable=False),
-        sa.Column("status_source", sa.Text(), nullable=False),
+        sa.Column("status_source", sa.VARCHAR(32), nullable=False),
         sa.Column("status_reason", sa.Text(), nullable=True),
         sa.Column(
             "status_evidence",
@@ -113,7 +128,7 @@ def upgrade() -> None:
             "legacy_payload",
             postgresql.JSONB(astext_type=sa.Text()),
             nullable=False,
-            server_default="'{}'::jsonb",
+            server_default=sa.text("'{}'::jsonb"),
         ),
         sa.Column(
             "created_at",
@@ -129,35 +144,33 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "status IN ('open','in_progress','done','obsolete','expired')",
-            name="ck_trade_retrospective_actions_status",
+            name="status",
         ),
         sa.CheckConstraint(
             "status_source IN ('migration','retrospective_save','web','mcp','triage','reconciler')",
-            name="ck_trade_retrospective_actions_status_source",
+            name="status_source",
         ),
-        sa.CheckConstraint(
-            "version >= 1", name="ck_trade_retrospective_actions_version"
-        ),
+        sa.CheckConstraint("version >= 1", name="version"),
         sa.CheckConstraint(
             "position >= 0",
-            name="ck_trade_retrospective_actions_position_col",
+            name="position_col",
         ),
         sa.CheckConstraint(
             "(status IN ('done','obsolete','expired') AND resolved_at IS NOT NULL) "
             "OR (status IN ('open','in_progress') AND resolved_at IS NULL)",
-            name="ck_trade_retrospective_actions_resolved_terminal",
+            name="resolved_terminal",
         ),
         sa.CheckConstraint(
             "(status NOT IN ('obsolete','expired')) "
             "OR (status_reason IS NOT NULL AND btrim(status_reason) <> '' "
             "AND length(status_reason) <= 2000)",
-            name="ck_trade_retrospective_actions_reason_required",
+            name="reason_required",
         ),
         sa.CheckConstraint(
             "(status <> 'expired') "
             "OR (status_evidence IS NOT NULL "
             "AND jsonb_typeof(status_evidence) = 'object')",
-            name="ck_trade_retrospective_actions_evidence_required",
+            name="evidence_required",
         ),
         sa.ForeignKeyConstraint(
             ["retrospective_id"],
@@ -214,13 +227,9 @@ def upgrade() -> None:
 
     op.create_table(
         _CONTROL_TABLE,
-        sa.Column(
-            "id", sa.SmallInteger(), primary_key=True, nullable=False
-        ),
+        sa.Column("id", sa.SmallInteger(), primary_key=True, nullable=False),
         sa.Column("mode", sa.Text(), nullable=False),
-        sa.Column(
-            "cutover_at", sa.TIMESTAMP(timezone=True), nullable=True
-        ),
+        sa.Column("cutover_at", sa.TIMESTAMP(timezone=True), nullable=True),
         sa.Column("cutover_action_count", sa.Integer(), nullable=True),
         sa.Column(
             "updated_at",
@@ -230,11 +239,11 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "id = 1",
-            name="ck_trade_retrospective_action_control_singleton",
+            name="singleton",
         ),
         sa.CheckConstraint(
             "mode IN ('shadow','canonical')",
-            name="ck_trade_retrospective_action_control_mode",
+            name="mode",
         ),
         schema=_SCHEMA,
     )
@@ -271,6 +280,7 @@ def _run_preflight() -> None:
             idx INTEGER;
             raw_status TEXT;
             raw_due TEXT;
+            parsed_due DATE;
         BEGIN
             FOR r IN
                 SELECT id, next_actions
@@ -291,6 +301,12 @@ def _run_preflight() -> None:
                             'retrospective % action[%]: element is not an object',
                             r.id, idx;
                     END IF;
+                    IF jsonb_typeof(elem->'action') IS NOT NULL
+                       AND jsonb_typeof(elem->'action') NOT IN ('string', 'null') THEN
+                        RAISE EXCEPTION
+                            'retrospective % action[%]: action must be a string',
+                            r.id, idx;
+                    END IF;
                     IF btrim(COALESCE(elem->>'action', '')) = '' THEN
                         RAISE EXCEPTION
                             'retrospective % action[%]: blank action',
@@ -306,11 +322,24 @@ def _run_preflight() -> None:
                     END IF;
                     raw_due := elem->>'due_kst_date';
                     IF raw_due IS NOT NULL
-                       AND btrim(raw_due) <> ''
-                       AND raw_due !~ '^\\d{4}-\\d{2}-\\d{2}$' THEN
-                        RAISE EXCEPTION
-                            'retrospective % action[%]: invalid due_kst_date "%"',
-                            r.id, idx, raw_due;
+                       AND btrim(raw_due) <> '' THEN
+                        IF raw_due !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                            RAISE EXCEPTION
+                                'retrospective % action[%]: invalid due_kst_date "%"',
+                                r.id, idx, raw_due;
+                        END IF;
+                        BEGIN
+                            parsed_due := raw_due::date;
+                        EXCEPTION WHEN OTHERS THEN
+                            RAISE EXCEPTION
+                                'retrospective % action[%]: invalid due_kst_date "%"',
+                                r.id, idx, raw_due;
+                        END;
+                        IF to_char(parsed_due, 'YYYY-MM-DD') <> raw_due THEN
+                            RAISE EXCEPTION
+                                'retrospective % action[%]: invalid due_kst_date "%"',
+                                r.id, idx, raw_due;
+                        END IF;
                     END IF;
                     idx := idx + 1;
                 END LOOP;
@@ -373,11 +402,14 @@ def _run_backfill() -> None:
             elem.value,
             t.created_at,
             t.updated_at
-        FROM review.trade_retrospectives t,
-             jsonb_array_elements(t.next_actions) WITH ORDINALITY AS elem(value, ordinality)
-        WHERE t.next_actions IS NOT NULL
-          AND jsonb_typeof(t.next_actions) = 'array'
-          AND jsonb_array_length(t.next_actions) > 0
+        FROM review.trade_retrospectives t
+        CROSS JOIN LATERAL jsonb_array_elements(
+            CASE
+                WHEN jsonb_typeof(t.next_actions) = 'array'
+                    THEN t.next_actions
+                ELSE '[]'::jsonb
+            END
+        ) WITH ORDINALITY AS elem(value, ordinality)
         """
     )
 
@@ -387,14 +419,14 @@ def _assert_parity() -> None:
         """
         DO $$
         DECLARE
-            parent_count INTEGER;
-            child_count INTEGER;
+            parent_count BIGINT;
+            child_count BIGINT;
+            mismatch_retrospective_id BIGINT;
+            mismatch_position INTEGER;
         BEGIN
             SELECT COALESCE(SUM(
                 CASE
-                    WHEN next_actions IS NOT NULL
-                     AND jsonb_typeof(next_actions) = 'array'
-                     AND jsonb_array_length(next_actions) > 0
+                    WHEN jsonb_typeof(next_actions) = 'array'
                     THEN jsonb_array_length(next_actions)
                     ELSE 0
                 END
@@ -409,6 +441,87 @@ def _assert_parity() -> None:
                 RAISE EXCEPTION
                     'ROB-878 parity mismatch: parent has % actions, child has %',
                     parent_count, child_count;
+            END IF;
+
+            WITH expected AS (
+                SELECT
+                    t.id AS retrospective_id,
+                    (elem.ordinality - 1)::integer AS position,
+                    btrim(elem.value->>'action') AS action,
+                    elem.value->>'owner' AS owner,
+                    elem.value->>'issue_id' AS issue_id,
+                    CASE
+                        WHEN btrim(COALESCE(elem.value->>'status', '')) = ''
+                            THEN 'open'
+                        ELSE elem.value->>'status'
+                    END AS status,
+                    CASE
+                        WHEN btrim(COALESCE(elem.value->>'due_kst_date', '')) = ''
+                            THEN NULL
+                        ELSE (elem.value->>'due_kst_date')::date
+                    END AS due_kst_date,
+                    t.updated_at AS status_changed_at,
+                    CASE
+                        WHEN elem.value->>'status' = 'done' THEN t.updated_at
+                        ELSE NULL
+                    END AS resolved_at,
+                    CASE
+                        WHEN elem.value->>'status' = 'done' THEN
+                            jsonb_build_object(
+                                'schema_version', 1,
+                                'kind', 'legacy_status',
+                                'source', 'migration',
+                                'reference',
+                                'review.trade_retrospectives.next_actions',
+                                'observed_at', t.updated_at,
+                                'summary',
+                                'historical done; exact completion time unavailable'
+                            )
+                        ELSE NULL
+                    END AS status_evidence,
+                    elem.value AS legacy_payload,
+                    t.created_at,
+                    t.updated_at
+                FROM review.trade_retrospectives t
+                CROSS JOIN LATERAL jsonb_array_elements(
+                    CASE
+                        WHEN jsonb_typeof(t.next_actions) = 'array'
+                            THEN t.next_actions
+                        ELSE '[]'::jsonb
+                    END
+                ) WITH ORDINALITY AS elem(value, ordinality)
+            )
+            SELECT e.retrospective_id, e.position
+            INTO mismatch_retrospective_id, mismatch_position
+            FROM expected e
+            LEFT JOIN review.trade_retrospective_actions a
+              ON a.retrospective_id = e.retrospective_id
+             AND a.position = e.position
+            WHERE a.id IS NULL
+               OR a.creation_key IS NOT NULL
+               OR a.action IS DISTINCT FROM e.action
+               OR a.owner IS DISTINCT FROM e.owner
+               OR a.issue_id IS DISTINCT FROM e.issue_id
+               OR a.status IS DISTINCT FROM e.status
+               OR a.due_kst_date IS DISTINCT FROM e.due_kst_date
+               OR a.version <> 1
+               OR a.status_changed_at IS DISTINCT FROM e.status_changed_at
+               OR a.resolved_at IS DISTINCT FROM e.resolved_at
+               OR a.status_actor <> 'migration:rob-878'
+               OR a.status_source <> 'migration'
+               OR a.status_reason IS NOT NULL
+               OR a.status_evidence IS DISTINCT FROM e.status_evidence
+               OR a.legacy_payload IS DISTINCT FROM e.legacy_payload
+               OR a.created_at IS DISTINCT FROM e.created_at
+               OR a.updated_at IS DISTINCT FROM e.updated_at
+            ORDER BY e.retrospective_id, e.position
+            LIMIT 1;
+
+            IF FOUND THEN
+                RAISE EXCEPTION
+                    'ROB-878 parity mismatch: retrospective % action[%] '
+                    'field/ordinal mismatch',
+                    mismatch_retrospective_id, mismatch_position;
             END IF;
 
             RAISE NOTICE 'ROB-878 shadow backfill: % actions migrated', child_count;
@@ -427,13 +540,24 @@ def downgrade() -> None:
             max_version INTEGER;
             non_migration_count INTEGER;
         BEGIN
+            LOCK TABLE
+                review.trade_retrospectives,
+                review.trade_retrospective_action_control,
+                review.trade_retrospective_actions
+            IN SHARE ROW EXCLUSIVE MODE;
+
             SELECT mode INTO ctrl_mode
             FROM review.trade_retrospective_action_control WHERE id = 1;
 
-            IF ctrl_mode = 'canonical' THEN
+            IF ctrl_mode IS NULL THEN
                 RAISE EXCEPTION
-                    'cannot downgrade: control mode is canonical; '
+                    'cannot downgrade: control row is missing; '
                     'recovery is mutation-disable plus roll-forward';
+            ELSIF ctrl_mode <> 'shadow' THEN
+                RAISE EXCEPTION
+                    'cannot downgrade: control mode must be shadow (found %); '
+                    'recovery is mutation-disable plus roll-forward',
+                    ctrl_mode;
             END IF;
 
             SELECT COALESCE(max(version), 1) INTO max_version
@@ -447,11 +571,13 @@ def downgrade() -> None:
 
             SELECT count(*) INTO non_migration_count
             FROM review.trade_retrospective_actions
-            WHERE status_source <> 'migration';
+            WHERE status_source <> 'migration'
+               OR status_actor <> 'migration:rob-878'
+               OR creation_key IS NOT NULL;
 
             IF non_migration_count > 0 THEN
                 RAISE EXCEPTION
-                    'cannot downgrade: % actions have non-migration source',
+                    'cannot downgrade: % actions have non-migration provenance',
                     non_migration_count;
             END IF;
         END;
@@ -464,8 +590,7 @@ def downgrade() -> None:
         "ON review.trade_retrospectives"
     )
     op.execute(
-        "DROP FUNCTION IF EXISTS "
-        "review.guard_trade_retrospective_next_actions()"
+        "DROP FUNCTION IF EXISTS review.guard_trade_retrospective_next_actions()"
     )
     op.drop_table(_CONTROL_TABLE, schema=_SCHEMA)
     op.drop_index(

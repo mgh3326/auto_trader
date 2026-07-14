@@ -1245,7 +1245,10 @@ class TradeRetrospectiveAction(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
-        PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
     )
     retrospective_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     creation_key: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
@@ -1265,7 +1268,7 @@ class TradeRetrospectiveAction(Base):
     )
     resolved_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     status_actor: Mapped[str] = mapped_column(VARCHAR(128), nullable=False)
-    status_source: Mapped[str] = mapped_column(Text, nullable=False)
+    status_source: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
     status_reason: Mapped[str | None] = mapped_column(Text)
     status_evidence: Mapped[dict | None] = mapped_column(JSONB)
     legacy_payload: Mapped[dict] = mapped_column(
@@ -1288,9 +1291,7 @@ class TradeRetrospectiveActionControl(Base):
     __tablename__ = "trade_retrospective_action_control"
     __table_args__ = (
         CheckConstraint("id = 1", name="singleton"),
-        CheckConstraint(
-            "mode IN ('shadow','canonical')", name="mode"
-        ),
+        CheckConstraint("mode IN ('shadow','canonical')", name="mode"),
         {"schema": "review"},
     )
 
