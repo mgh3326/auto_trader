@@ -390,6 +390,36 @@ async def test_operator_void_toss_scan_proves_absence_across_open_and_closed():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_operator_void_toss_scan_fails_closed_when_open_is_paginated():
+    from app.services.order_proposals import broker_gateway
+
+    calls = []
+
+    class FakeTossClient:
+        async def list_orders(self, **kwargs):
+            calls.append(kwargs)
+            if kwargs["status"] == "OPEN":
+                return SimpleNamespace(
+                    orders=[], has_next=True, next_cursor="unexpected-open-cursor"
+                )
+            return SimpleNamespace(orders=[], has_next=False, next_cursor=None)
+
+    evidence = await broker_gateway.fetch_operator_void_evidence(
+        account_mode="toss_live",
+        market="equity_kr",
+        symbol="005930",
+        rungs=[_toss_rung()],
+        now=NOW,
+        toss_client=FakeTossClient(),
+    )
+
+    assert [call["status"] for call in calls] == ["OPEN", "CLOSED"]
+    assert evidence[0].outcome == "unknown"
+    assert evidence[0].reason == "OPEN order scan unexpectedly paginated"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 @pytest.mark.parametrize("broker_state", ["OPEN", "FILLED"])
 async def test_operator_void_toss_scan_exposes_found_broker_state(broker_state):
     from app.services.order_proposals import broker_gateway
@@ -475,6 +505,45 @@ async def test_operator_void_toss_scan_proves_composite_absence_without_client_i
 
     assert evidence[0].outcome == "absent"
     assert "combination_matches=0" in evidence[0].lookup_scope
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("candidate_overrides", "expected_reason"),
+    [
+        ({"quantity": "not-a-decimal"}, "invalid decimal order evidence"),
+        ({"price": Decimal("Infinity")}, "non-finite decimal order evidence"),
+        ({"ordered_at": "not-a-datetime"}, "invalid ordered_at order evidence"),
+        (
+            {"ordered_at": NOW.replace(tzinfo=None).isoformat()},
+            "ordered_at must be a timezone-aware datetime",
+        ),
+    ],
+)
+async def test_operator_void_toss_scan_fails_closed_on_malformed_potential_candidate(
+    candidate_overrides, expected_reason
+):
+    from app.services.order_proposals import broker_gateway
+
+    candidate = _toss_order(**candidate_overrides)
+
+    class FakeTossClient:
+        async def list_orders(self, **kwargs):
+            orders = [candidate] if kwargs["status"] == "OPEN" else []
+            return SimpleNamespace(orders=orders, has_next=False, next_cursor=None)
+
+    evidence = await broker_gateway.fetch_operator_void_evidence(
+        account_mode="toss_live",
+        market="equity_kr",
+        symbol="005930",
+        rungs=[_toss_rung()],
+        now=NOW,
+        toss_client=FakeTossClient(),
+    )
+
+    assert evidence[0].outcome == "unknown"
+    assert evidence[0].reason == expected_reason
 
 
 @pytest.mark.unit

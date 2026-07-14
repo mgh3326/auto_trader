@@ -387,6 +387,8 @@ async def fetch_operator_void_evidence(
             to_date=window_to,
         )
         orders.extend(open_page.orders)
+        if open_page.has_next:
+            incomplete_reason = "OPEN order scan unexpectedly paginated"
 
         cursor: str | None = None
         seen_cursors: set[str] = set()
