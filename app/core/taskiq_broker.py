@@ -1,7 +1,12 @@
 import logging
 
 from taskiq import TaskiqMiddleware
-from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
+from taskiq.middlewares import SmartRetryMiddleware
+from taskiq_redis import (
+    ListQueueBroker,
+    ListRedisScheduleSource,
+    RedisAsyncResultBackend,
+)
 
 from app.core.config import settings
 from app.monitoring.sentry import init_sentry
@@ -31,11 +36,25 @@ result_backend = RedisAsyncResultBackend(
     result_ex_time=3600,
 )
 
+retry_schedule_source = ListRedisScheduleSource(
+    settings.get_redis_url(), prefix="paper-cohort-retry"
+)
+
 broker = (
     ListQueueBroker(
         url=settings.get_redis_url(),
         queue_name="auto-trader",
     )
     .with_result_backend(result_backend)
-    .with_middlewares(WorkerInitMiddleware())
+    .with_middlewares(
+        WorkerInitMiddleware(),
+        SmartRetryMiddleware(
+            default_retry_label=False,
+            default_retry_count=3,
+            default_delay=5,
+            use_delay_exponent=True,
+            max_delay_exponent=30,
+            schedule_source=retry_schedule_source,
+        ),
+    )
 )

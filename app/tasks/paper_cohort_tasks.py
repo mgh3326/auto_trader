@@ -17,10 +17,11 @@ def _scheduled_paper_cohort_labels() -> list[dict[str, str]]:
 @broker.task(
     task_name="paper_cohort.run_active",
     schedule=_scheduled_paper_cohort_labels(),
+    retry_on_error=True,
+    max_retries=3,
+    delay=5,
 )
 async def run_paper_cohorts() -> dict[str, object]:
-    if not settings.PAPER_COHORT_ENABLED:
-        return {"status": "disabled", "cohorts": []}
     result = await run_active_paper_cohorts()
     cohorts = result.get("cohorts")
     if isinstance(cohorts, list) and any(

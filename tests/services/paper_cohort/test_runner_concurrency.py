@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from datetime import timedelta
 from uuid import uuid4
 
 import pytest
@@ -28,7 +29,10 @@ from tests.services.paper_cohort.test_runner_paper_active import (
     FakeRegistry,
     _setup,
 )
-from tests.services.paper_cohort.test_runner_recovery import RecoveringAdapter
+from tests.services.paper_cohort.test_runner_recovery import (
+    AdvancingClock,
+    RecoveringAdapter,
+)
 from tests.services.paper_cohort.test_runner_shadow import (
     FakeCapture,
     FakeQuotes,
@@ -41,6 +45,14 @@ from tests.services.paper_validation.conftest import (
 )
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def _enabled_server_flags(monkeypatch) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "PAPER_COHORT_ENABLED", True)
+    monkeypatch.setattr(settings, "PAPER_EXECUTION_ENABLED", True)
 
 
 @dataclass
@@ -224,3 +236,89 @@ async def test_two_sessions_submit_each_paper_intent_exactly_once(db_session) ->
             )
             == 4
         )
+
+
+@dataclass
+class BlockingFirstSubmit:
+    started: asyncio.Event = field(default_factory=asyncio.Event)
+    release: asyncio.Event = field(default_factory=asyncio.Event)
+    calls: int = 0
+
+    async def __call__(self, _result) -> None:
+        self.calls += 1
+        if self.calls == 1:
+            self.started.set()
+            await self.release.wait()
+
+
+@pytest.mark.asyncio
+async def test_live_owner_crossing_lease_expiry_is_fenced_without_deadlock(
+    db_session,
+) -> None:
+    nonce, activation, _ = await _setup(db_session)
+    assignment = activation.assignments[0]
+    invocation = CohortRunInvocation(
+        cohort_id=activation.cohort_id,
+        run_id=f"lease-run-{nonce}",
+        round_decision_id=f"lease-round-{nonce}",
+        mode=RunMode.PAPER_ACTIVE,
+    )
+    clock = AdvancingClock()
+    hook = BlockingFirstSubmit()
+    capture = FakeCapture()
+    native = FakeNativeResolver()
+    adapters = {
+        Broker.BINANCE: RecoveringAdapter(Broker.BINANCE),
+        Broker.ALPACA: RecoveringAdapter(Broker.ALPACA),
+    }
+
+    async def worker(*, block: bool):
+        async with AsyncSessionLocal() as session:
+            validation = PaperValidationService(
+                session,
+                actor_role_provider=FakeActorRoleProvider(
+                    {"paper-cohort-runner": ActorRole.SYSTEM}
+                ),
+                frozen_input_provider=FakeFrozenInputHashProvider(
+                    assignment.input_hash
+                ),
+                policy_provider=FakePolicyHashProvider(assignment.policy_hash),
+            )
+            verifier = PaperCohortProvenanceVerifier(
+                session,
+                validation_service=validation,
+                caller_id="paper-cohort-runner",
+                clock=clock,
+            )
+
+            def app_factory(current_verifier):
+                return PaperExecutionApplication(
+                    registry=FakeRegistry(adapters), verifier=current_verifier
+                )
+
+            return await PaperCohortRunner(
+                session,
+                capture=capture,
+                quote_provider=FakeQuotes(session),
+                verifier=verifier,
+                application_factory=app_factory,
+                native_resolver=native,
+                after_submit_hook=hook if block else None,
+                clock=clock,
+                enablement=lambda _mode: True,
+            ).run(invocation)
+
+    first_task = asyncio.create_task(worker(block=True))
+    await asyncio.wait_for(hook.started.wait(), timeout=5)
+    clock.now += timedelta(minutes=6)
+    second_task = asyncio.create_task(worker(block=False))
+    await asyncio.sleep(0.1)
+    hook.release.set()
+    first, second = await asyncio.wait_for(
+        asyncio.gather(first_task, second_task), timeout=10
+    )
+
+    assert first == second
+    assert sum(adapter.broker_posts for adapter in adapters.values()) == 4
+    assert sum(adapter.replay_count for adapter in adapters.values()) == 0
+    assert len(capture.calls) == 1

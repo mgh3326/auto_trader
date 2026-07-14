@@ -37,6 +37,14 @@ from tests.services.paper_cohort.test_market_snapshot import (
 pytestmark = pytest.mark.integration
 
 
+@pytest.fixture(autouse=True)
+def _enabled_server_flags(monkeypatch) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "PAPER_COHORT_ENABLED", True)
+    monkeypatch.setattr(settings, "PAPER_EXECUTION_ENABLED", True)
+
+
 @dataclass
 class FakeCapture:
     calls: list[SnapshotCaptureRequest] = field(default_factory=list)

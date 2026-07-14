@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import os
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+import asyncpg
 import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import delete, text, update
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+from app.core.config import settings
+from app.models.base import Base
 from app.models.paper_cohort import (
     PaperValidationCohort,
     PaperValidationCohortAssignment,
@@ -65,6 +72,78 @@ def test_migration_defines_composition_and_immutable_triggers() -> None:
     assert "reject_paper_cohort_audit_mutation" in source
     assert "BEFORE UPDATE OR DELETE" in source
     assert "BEFORE TRUNCATE" in source
+
+
+@pytest.mark.asyncio
+async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
+    base_url = make_url(settings.DATABASE_URL)
+    if base_url.get_backend_name() != "postgresql":
+        pytest.skip("ROB-849 migration acceptance requires PostgreSQL")
+    database = f"rob849_migration_{uuid4().hex}"
+    admin = await asyncpg.connect(
+        user=base_url.username,
+        password=base_url.password,
+        host=base_url.host,
+        port=base_url.port,
+        database="postgres",
+    )
+    await admin.execute(f'CREATE DATABASE "{database}"')
+    target_url = base_url.set(database=database)
+    target_url_text = target_url.render_as_string(hide_password=False)
+    engine = create_async_engine(target_url_text)
+    try:
+        async with engine.begin() as connection:
+            for schema in ("paper", "research", "review"):
+                await connection.execute(
+                    text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+                )
+            await connection.run_sync(Base.metadata.create_all)
+
+        env = {**os.environ, "DATABASE_URL": target_url_text}
+
+        def alembic(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [str(REPO / ".venv/bin/alembic"), *args],
+                cwd=REPO,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        commands = (
+            ("stamp", "20260714_rob849_paper_cohort"),
+            ("downgrade", "20260713_rob848_paper_validation"),
+            ("upgrade", "head"),
+            ("downgrade", "20260713_rob848_paper_validation"),
+            ("upgrade", "head"),
+        )
+        for command in commands:
+            completed = await asyncio.to_thread(alembic, *command)
+            assert completed.returncode == 0, completed.stdout + completed.stderr
+        current = await asyncio.to_thread(alembic, "current")
+        assert current.returncode == 0, current.stdout + current.stderr
+        assert "20260714_rob849_paper_cohort (head)" in current.stdout
+
+        async with engine.connect() as connection:
+            triggers = await connection.scalar(
+                text(
+                    "SELECT count(*) FROM pg_trigger AS t "
+                    "JOIN pg_proc AS p ON p.oid = t.tgfoid "
+                    "WHERE p.proname = 'reject_paper_cohort_audit_mutation' "
+                    "AND NOT t.tgisinternal"
+                )
+            )
+            assert triggers == 12
+    finally:
+        await engine.dispose()
+        await admin.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            "WHERE datname = $1 AND pid <> pg_backend_pid()",
+            database,
+        )
+        await admin.execute(f'DROP DATABASE IF EXISTS "{database}"')
+        await admin.close()
 
 
 @pytest.mark.asyncio

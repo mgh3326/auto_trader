@@ -85,12 +85,11 @@ def _invocation(cohort_id: str, mode: RunMode, now: datetime) -> CohortRunInvoca
     )
 
 
-async def _recoverable_invocation(
-    session: Any, cohort_id: str, mode: RunMode
-) -> CohortRunInvocation | None:
-    row = (
+async def _recoverable_invocations(session: Any) -> list[CohortRunInvocation]:
+    rows = (
         await session.execute(
             select(PaperCohortRunClaim, PaperCohortDecision.mode)
+            .distinct()
             .join(
                 PaperCohortDecision,
                 (PaperCohortDecision.cohort_id == PaperCohortRunClaim.cohort_id)
@@ -101,23 +100,30 @@ async def _recoverable_invocation(
                 ),
             )
             .where(
-                PaperCohortRunClaim.cohort_id == cohort_id,
                 PaperCohortRunClaim.completed_at.is_(None),
-                PaperCohortDecision.mode == mode.value,
             )
             .order_by(PaperCohortRunClaim.created_at)
-            .limit(1)
         )
-    ).first()
-    if row is None:
-        return None
-    claim = row[0]
-    return CohortRunInvocation(
-        cohort_id=claim.cohort_id,
-        run_id=claim.run_id,
-        round_decision_id=claim.round_decision_id,
-        mode=mode,
-    )
+    ).all()
+    return [
+        CohortRunInvocation(
+            cohort_id=row[0].cohort_id,
+            run_id=row[0].run_id,
+            round_decision_id=row[0].round_decision_id,
+            mode=RunMode(row[1]),
+        )
+        for row in rows
+    ]
+
+
+class _RecoveryOnlyBoundary:
+    async def capture(self, request):  # noqa: ANN001, ANN202
+        del request
+        raise AssertionError("recovery must not capture a new snapshot")
+
+    async def get_quote(self, venue, symbol):  # noqa: ANN001, ANN202
+        del venue, symbol
+        raise AssertionError("recovery must not fetch a venue quote")
 
 
 async def run_active_paper_cohorts(
@@ -126,15 +132,60 @@ async def run_active_paper_cohorts(
     client_factory: Callable[[], BinancePublicRestClient] = BinancePublicRestClient,
     clock: Callable[[], datetime] | None = None,
 ) -> dict[str, object]:
-    if not settings.PAPER_COHORT_ENABLED:
-        return {"status": "disabled", "cohorts": []}
     now = (clock or (lambda: datetime.now(UTC)))()
     actor_id = settings.PAPER_VALIDATION_AUTHENTICATED_ACTOR_ID.strip()
+
+    async with session_factory() as discovery:
+        recoverable = await _recoverable_invocations(discovery)
+        await discovery.rollback()
+    outcomes: list[dict[str, object]] = []
+    for invocation in recoverable:
+        async with session_factory() as session:
+            try:
+                validation = PaperValidationService(
+                    session,
+                    actor_role_provider=_ConfiguredActorRoleProvider(),
+                    frozen_input_provider=CohortFrozenInputHashProvider(session),
+                    policy_provider=CohortPolicyHashProvider(session),
+                )
+                verifier = PaperCohortProvenanceVerifier(
+                    session,
+                    validation_service=validation,
+                    caller_id=actor_id or "paper-cohort-recovery",
+                    clock=lambda: now,
+                )
+                unused = _RecoveryOnlyBoundary()
+                result = await PaperCohortRunner(
+                    session,
+                    capture=unused,
+                    quote_provider=unused,
+                    verifier=verifier,
+                    clock=lambda: now,
+                ).recover(invocation)
+                outcomes.append(
+                    {
+                        "cohort_id": invocation.cohort_id,
+                        "status": "recovered",
+                        **result.model_dump(mode="json"),
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001 - recovery fail-close boundary
+                await session.rollback()
+                outcomes.append(
+                    {
+                        "cohort_id": invocation.cohort_id,
+                        "status": "failed",
+                        "reason": getattr(exc, "reason_code", type(exc).__name__),
+                    }
+                )
+
+    if not settings.PAPER_COHORT_ENABLED:
+        return {"status": "disabled", "cohorts": outcomes}
     if not actor_id:
         return {
             "status": "blocked",
             "reason": "actor_identity_unavailable",
-            "cohorts": [],
+            "cohorts": outcomes,
         }
 
     async with session_factory() as discovery:
@@ -152,7 +203,6 @@ async def run_active_paper_cohorts(
             ).all()
         )
 
-    outcomes: list[dict[str, object]] = []
     for cohort_id in cohort_ids:
         async with session_factory() as session:
             mode = await _runtime_mode(session, cohort_id)
@@ -184,14 +234,13 @@ async def run_active_paper_cohorts(
                     caller_id=actor_id,
                     clock=lambda: now,
                 )
-                invocation = await _recoverable_invocation(session, cohort_id, mode)
                 result = await PaperCohortRunner(
                     session,
                     capture=CanonicalSnapshotCapture(client),
                     quote_provider=ProductionVenueQuoteProvider(client, alpaca_quotes),
                     verifier=verifier,
                     clock=lambda: now,
-                ).run(invocation or _invocation(cohort_id, mode, now))
+                ).run(_invocation(cohort_id, mode, now))
                 await session.commit()
                 outcomes.append(
                     {

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -71,6 +70,12 @@ class NativeResolver(Protocol):
         self, venue: str, client_order_id: str, broker_order_id: str
     ) -> NativeOrderIdentity: ...
 
+    async def resolve_prepared(
+        self,
+        request: PaperOrderRequest,
+        provenance: object,
+    ) -> NativeOrderIdentity: ...
+
 
 class CohortRunInvocation(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -123,7 +128,10 @@ class PaperCohortRunner:
         self._native_resolver = native_resolver or NativeOrderResolver(session)
         self._clock = clock or (lambda: datetime.now(UTC))
         self._after_submit_hook = after_submit_hook
-        self._enablement = enablement or self._settings_enablement
+        # The injected predicate is a test/embedding seam that may only narrow
+        # the server-owned feature gates.  It must never turn a disabled paper
+        # execution surface on.
+        self._enablement = enablement or (lambda _mode: True)
 
     @staticmethod
     def _settings_enablement(mode: RunMode) -> bool:
@@ -156,11 +164,13 @@ class PaperCohortRunner:
             return await self._session.get(PaperCohortRunClaim, inserted_id), None
 
         existing = await self._session.scalar(
-            select(PaperCohortRunClaim).where(
+            select(PaperCohortRunClaim)
+            .where(
                 PaperCohortRunClaim.cohort_id == invocation.cohort_id,
                 PaperCohortRunClaim.run_id == invocation.run_id,
                 PaperCohortRunClaim.round_decision_id == invocation.round_decision_id,
             )
+            .with_for_update()
         )
         if existing is None:
             raise PaperCohortError("invocation_claim_unavailable")
@@ -168,44 +178,44 @@ class PaperCohortRunner:
             raise PaperCohortError("invocation_conflict")
         if existing.completed_at is not None and existing.result_payload is not None:
             return None, CohortRunResult.model_validate(existing.result_payload)
-        if existing.lease_expires_at > now:
-            # An INSERT .. ON CONFLICT contender waits for the owner transaction.
-            # Once the owner has durably prepared a paper run, briefly poll for its
-            # final result so concurrent scheduler deliveries return the same result.
-            existing_id = existing.id
-            await self._session.rollback()
-            for _ in range(100):
-                await asyncio.sleep(0.05)
-                observed = await self._session.scalar(
-                    select(PaperCohortRunClaim)
-                    .where(PaperCohortRunClaim.id == existing_id)
-                    .execution_options(populate_existing=True)
-                )
-                if (
-                    observed is not None
-                    and observed.completed_at is not None
-                    and observed.result_payload is not None
-                ):
-                    return None, CohortRunResult.model_validate(observed.result_payload)
-            raise PaperCohortError("invocation_in_progress")
-
-        takeover_id = await self._session.scalar(
-            update(PaperCohortRunClaim)
-            .where(
-                PaperCohortRunClaim.id == existing.id,
-                PaperCohortRunClaim.request_hash == request_hash,
-                PaperCohortRunClaim.completed_at.is_(None),
-                PaperCohortRunClaim.lease_expires_at <= now,
+        prepared_exists = await self._session.scalar(
+            select(CanonicalMarketSnapshot.id).where(
+                CanonicalMarketSnapshot.cohort_id == invocation.cohort_id,
+                CanonicalMarketSnapshot.run_id == invocation.run_id,
+                CanonicalMarketSnapshot.round_decision_id
+                == invocation.round_decision_id,
             )
-            .values(
-                owner_token=owner_token,
-                lease_expires_at=now + timedelta(minutes=5),
-            )
-            .returning(PaperCohortRunClaim.id)
         )
-        if takeover_id is None:
+        if prepared_exists is None and existing.lease_expires_at > now:
             raise PaperCohortError("invocation_in_progress")
-        return await self._session.get(PaperCohortRunClaim, takeover_id), None
+        # The claim row is locked before any validation advisory lock.  A
+        # durable prepared invocation may be reclaimed immediately after a
+        # worker crash; a live owner still holds this row lock, so contenders
+        # wait rather than racing the broker boundary.
+        existing.owner_token = owner_token
+        existing.lease_expires_at = now + timedelta(minutes=5)
+        return existing, None
+
+    async def _lock_owned_claim(
+        self, claim_id: int, owner_token: str
+    ) -> tuple[PaperCohortRunClaim | None, CohortRunResult | None]:
+        claim = await self._session.scalar(
+            select(PaperCohortRunClaim)
+            .where(PaperCohortRunClaim.id == claim_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if claim is None:
+            raise PaperCohortError("invocation_claim_unavailable")
+        if claim.completed_at is not None and claim.result_payload is not None:
+            return None, CohortRunResult.model_validate(claim.result_payload)
+        if claim.owner_token != owner_token:
+            # The prior owner lost the post-prepare race but no other owner can
+            # be active while this row lock is held.  Fence it and continue.
+            claim.owner_token = owner_token
+        claim.lease_expires_at = self._clock() + timedelta(minutes=5)
+        await self._session.flush()
+        return claim, None
 
     async def _cohort(
         self, cohort_id: str
@@ -532,7 +542,23 @@ class PaperCohortRunner:
         )
 
     async def run(self, invocation: CohortRunInvocation) -> CohortRunResult:
-        if not self._enablement(invocation.mode):
+        return await self._execute(invocation, recovery_only=False)
+
+    async def recover(self, invocation: CohortRunInvocation) -> CohortRunResult:
+        """Reconcile an immutable prepared invocation without creating intent."""
+
+        return await self._execute(invocation, recovery_only=True)
+
+    async def _execute(
+        self,
+        invocation: CohortRunInvocation,
+        *,
+        recovery_only: bool,
+    ) -> CohortRunResult:
+        if not recovery_only and (
+            not self._settings_enablement(invocation.mode)
+            or not self._enablement(invocation.mode)
+        ):
             raise PaperCohortError("paper_cohort_disabled")
         if invocation.mode is RunMode.PAPER_ACTIVE and self._verifier is None:
             raise PaperCohortError("provenance_verifier_unavailable")
@@ -542,11 +568,18 @@ class PaperCohortRunner:
         if claim is None:
             raise PaperCohortError("invocation_claim_unavailable")
         cohort, assignments = await self._cohort(invocation.cohort_id)
-        if cohort.stop_at is not None and self._clock() >= cohort.stop_at:
+        if (
+            not recovery_only
+            and cohort.stop_at is not None
+            and self._clock() >= cohort.stop_at
+        ):
             raise PaperCohortError("cohort_stopped")
-        await self._validate_authoritative_state(invocation, cohort, assignments)
+        if not recovery_only:
+            await self._validate_authoritative_state(invocation, cohort, assignments)
         prepared = await self._load_prepared(invocation)
         if prepared is None:
+            if recovery_only:
+                raise PaperCohortError("prepared_invocation_required")
             prepared = await self._prepare(invocation, cohort, assignments)
         snapshot, decisions, active_intents = prepared
 
@@ -571,8 +604,15 @@ class PaperCohortRunner:
         await self._session.commit()
         if invocation.mode is RunMode.PAPER_ACTIVE:
             assert self._verifier is not None
+            claim, replay = await self._lock_owned_claim(claim.id, claim.owner_token)
+            if replay is not None:
+                return replay
+            assert claim is not None
             cohort, assignments = await self._cohort(invocation.cohort_id)
-            await self._validate_authoritative_state(invocation, cohort, assignments)
+            if not recovery_only:
+                await self._validate_authoritative_state(
+                    invocation, cohort, assignments
+                )
             requests = [
                 self.build_request(intent, signal, evidence, snapshot)
                 for intent, signal, evidence in active_intents
@@ -580,13 +620,26 @@ class PaperCohortRunner:
             # All cohort members and persisted provenance are authorized before
             # the first adapter call. Advisory locks remain held through the
             # final commit, so an abort/hash transition cannot interleave.
+            provenance_by_intent: dict[str, object] = {}
             for request in requests:
-                await self._verifier.verify(request)
-            application = (
-                build_paper_execution_application(verifier=self._verifier)
-                if self._application_factory is None
-                else self._application_factory(self._verifier)
-            )
+                if recovery_only:
+                    verify_persisted = getattr(self._verifier, "verify_persisted", None)
+                    if verify_persisted is None:
+                        raise PaperCohortError("recovery_verifier_unavailable")
+                    provenance_by_intent[request.intent_id] = await verify_persisted(
+                        request
+                    )
+                else:
+                    provenance_by_intent[
+                        request.intent_id
+                    ] = await self._verifier.verify(request)
+            application = None
+            if not recovery_only:
+                application = (
+                    build_paper_execution_application(verifier=self._verifier)
+                    if self._application_factory is None
+                    else self._application_factory(self._verifier)
+                )
             for (intent, _signal, _evidence), request in zip(
                 active_intents, requests, strict=True
             ):
@@ -599,21 +652,51 @@ class PaperCohortRunner:
                     )
                 )
                 if existing_link is not None:
+                    native = await self._native_resolver.resolve(
+                        existing_link.venue,
+                        existing_link.client_order_id,
+                        existing_link.broker_order_id,
+                    )
+                    if not all(
+                        (
+                            native.ledger_kind == existing_link.native_ledger_kind,
+                            native.ledger_row_id == existing_link.native_ledger_row_id,
+                            native.client_order_id == existing_link.client_order_id,
+                            native.broker_order_id == existing_link.broker_order_id,
+                        )
+                    ):
+                        raise PaperCohortError("native_order_identity_mismatch")
                     continue
-                result = await application.submit(request)
-                if (
+                try:
+                    native = await self._native_resolver.resolve_prepared(
+                        request, provenance_by_intent[request.intent_id]
+                    )
+                except PaperCohortError as exc:
+                    if exc.reason_code != "native_order_not_found":
+                        raise
+                    native = None
+                if native is None and recovery_only:
+                    continue
+                if native is None:
+                    assert application is not None
+                    result = await application.submit(request)
+                else:
+                    result = None
+                if result is not None and (
                     result.status is not PaperOperationStatus.SUCCEEDED
                     or result.native_client_order_id is None
                     or result.native_order_id is None
                 ):
                     raise PaperCohortError(str(result.reason_code))
-                if self._after_submit_hook is not None:
+                if result is not None and self._after_submit_hook is not None:
                     await self._after_submit_hook(result)
-                native = await self._native_resolver.resolve(
-                    intent.venue,
-                    result.native_client_order_id,
-                    result.native_order_id,
-                )
+                if result is not None:
+                    native = await self._native_resolver.resolve(
+                        intent.venue,
+                        result.native_client_order_id,
+                        result.native_order_id,
+                    )
+                assert native is not None
                 self._session.add(
                     PaperRunOrderLink(
                         cohort_id=intent.cohort_id,
@@ -629,11 +712,22 @@ class PaperCohortRunner:
                     )
                 )
             await self._session.flush()
-        durable_claim = await self._session.get(PaperCohortRunClaim, claim.id)
-        if durable_claim is None:
+        completed_at = self._clock()
+        completion = await self._session.execute(
+            update(PaperCohortRunClaim)
+            .where(
+                PaperCohortRunClaim.id == claim.id,
+                PaperCohortRunClaim.owner_token == claim.owner_token,
+                PaperCohortRunClaim.completed_at.is_(None),
+            )
+            .values(
+                result_payload=completed.model_dump(mode="json"),
+                completed_at=completed_at,
+                lease_expires_at=completed_at,
+            )
+        )
+        if completion.rowcount != 1:
             raise PaperCohortError("invocation_claim_unavailable")
-        durable_claim.result_payload = completed.model_dump(mode="json")
-        durable_claim.completed_at = self._clock()
         await self._session.commit()
         return completed
 

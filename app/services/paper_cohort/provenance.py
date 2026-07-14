@@ -29,7 +29,13 @@ from app.services.paper_cohort.contracts import (
     SymbolTargetWeight,
 )
 from app.services.paper_cohort.market_snapshot import CanonicalSnapshotPayload
-from app.services.paper_cohort.signals import CanonicalTargetSignal
+from app.services.paper_cohort.signals import (
+    CanonicalTargetSignal,
+    SignalComputationInput,
+    VenueQuote,
+    build_would_order_evidence,
+    compute_target_signal,
+)
 from app.services.paper_validation.contracts import (
     FrozenInputStamp,
     PaperOrderAuthorization,
@@ -111,6 +117,26 @@ class PaperCohortProvenanceVerifier:
         )
 
     async def verify(self, request: PaperOrderRequest) -> VerifiedExperimentProvenance:
+        return await self._verify(request, authorize_submission=True)
+
+    async def verify_persisted(
+        self, request: PaperOrderRequest
+    ) -> VerifiedExperimentProvenance:
+        """Verify immutable ROB-849/native evidence without authorizing a new POST.
+
+        This narrower path exists for replay reconciliation and owned order
+        control after a validation has been stopped or aborted.  It must never
+        be wired into the fresh submit composition root.
+        """
+
+        return await self._verify(request, authorize_submission=False)
+
+    async def _verify(
+        self,
+        request: PaperOrderRequest,
+        *,
+        authorize_submission: bool,
+    ) -> VerifiedExperimentProvenance:
         intent = await self._session.scalar(
             select(PaperCohortVenueIntent).where(
                 PaperCohortVenueIntent.intent_id == request.intent_id
@@ -167,7 +193,11 @@ class PaperCohortProvenanceVerifier:
         if experiment is None or backtest is None:
             self._fail()
         assert experiment is not None and backtest is not None
-        if cohort.stop_at is not None and self._clock() >= cohort.stop_at:
+        if (
+            authorize_submission
+            and cohort.stop_at is not None
+            and self._clock() >= cohort.stop_at
+        ):
             raise PaperCohortError("cohort_stopped")
         if decision.mode != "paper_active":
             self._fail()
@@ -175,6 +205,42 @@ class PaperCohortProvenanceVerifier:
         try:
             snapshot_payload = CanonicalSnapshotPayload.model_validate(snapshot.payload)
             signal = CanonicalTargetSignal.model_validate(decision.signal_payload)
+            recomputed_signal = compute_target_signal(
+                snapshot_payload,
+                SignalComputationInput(
+                    cohort_id=cohort.cohort_id,
+                    assignment_id=assignment.assignment_id,
+                    experiment_id=assignment.experiment_id,
+                    strategy_version_id=assignment.strategy_version_id,
+                    strategy_hash=assignment.strategy_hash,
+                    config_hash=assignment.config_hash,
+                    policy_hash=assignment.policy_hash,
+                    symbol=decision.symbol,
+                    target_weight=Decimal(assignment.target_weights[decision.symbol]),
+                    capital_notional_usd=cohort.capital_notional_usd,
+                ),
+            )
+            quote_payload = intent.venue_quote_evidence
+
+            def optional_decimal(name: str) -> Decimal | None:
+                value = quote_payload.get(name)
+                return None if value == "not_applicable" else Decimal(str(value))
+
+            persisted_quote = VenueQuote(
+                venue=str(quote_payload["venue"]),  # type: ignore[arg-type]
+                symbol=str(quote_payload["symbol"]),
+                bid_price=Decimal(str(quote_payload["bid_price"])),
+                ask_price=Decimal(str(quote_payload["ask_price"])),
+                bid_qty=Decimal(str(quote_payload["bid_qty"])),
+                ask_qty=Decimal(str(quote_payload["ask_qty"])),
+                fetched_at=datetime.fromisoformat(str(quote_payload["fetched_at"])),
+                qty_increment=optional_decimal("qty_increment"),
+                min_qty=optional_decimal("min_qty"),
+                min_notional=optional_decimal("min_notional"),
+            )
+            recomputed_would_order = build_would_order_evidence(
+                recomputed_signal, persisted_quote
+            )
             recomputed_cohort_hash = self._cohort_contract(
                 cohort, assignments
             ).computed_cohort_hash()
@@ -208,6 +274,14 @@ class PaperCohortProvenanceVerifier:
             signal.snapshot_hash == snapshot.content_hash,
             signal.signal_hash == decision.signal_hash,
             signal.recomputed_signal_hash() == decision.signal_hash,
+            signal == recomputed_signal,
+            intent.venue_quote_evidence == recomputed_would_order.quote_evidence,
+            intent.would_order_evidence.get("reason_code")
+            == recomputed_would_order.reason_code,
+            intent.would_order_evidence.get("order") == recomputed_would_order.order,
+            intent.request_payload.get("order") == recomputed_would_order.order,
+            intent.request_payload.get("reason_code")
+            == recomputed_would_order.reason_code,
             snapshot_payload.snapshot_id == snapshot.snapshot_id,
             snapshot_payload.cohort_id == snapshot.cohort_id,
             snapshot_payload.run_id == snapshot.run_id,
@@ -276,11 +350,12 @@ class PaperCohortProvenanceVerifier:
             policy_hash=assignment.policy_hash,
             input_hash=assignment.input_hash,
         )
-        authorization = await self._validation.authorize_order_submission(
-            self._caller_id, identity
-        )
-        if authorization.state is not ValidationState.PAPER_ACTIVE:
-            raise PaperCohortError("paper_active_state_required")
+        if authorize_submission:
+            authorization = await self._validation.authorize_order_submission(
+                self._caller_id, identity
+            )
+            if authorization.state is not ValidationState.PAPER_ACTIVE:
+                raise PaperCohortError("paper_active_state_required")
         reference_price = Decimal(signal.reference_price)
         if not reference_price.is_finite() or reference_price <= 0:
             self._fail()

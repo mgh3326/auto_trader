@@ -5,9 +5,11 @@ from datetime import timedelta
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.paper_cohort import (
     CanonicalMarketSnapshot,
     PaperCohortDecision,
@@ -31,8 +33,10 @@ from app.services.paper_cohort.native_links import NativeOrderIdentity
 from app.services.paper_cohort.order_control import PaperCohortOrderControl
 from app.services.paper_cohort.provenance import PaperCohortProvenanceVerifier
 from app.services.paper_cohort.runner import CohortRunInvocation, PaperCohortRunner
+from app.services.paper_cohort.signals import CanonicalTargetSignal
 from app.services.paper_validation.contracts import ActorRole
 from app.services.paper_validation.service import PaperValidationService
+from app.services.research_canonical_hash import canonical_sha256
 from tests.services.paper_cohort.test_cohort_service import (
     _activation,
     _assignment,
@@ -49,6 +53,14 @@ from tests.services.paper_validation.conftest import (
 )
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def _enabled_server_flags(monkeypatch) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "PAPER_COHORT_ENABLED", True)
+    monkeypatch.setattr(settings, "PAPER_EXECUTION_ENABLED", True)
 
 
 @dataclass
@@ -92,6 +104,7 @@ class FakeRegistry:
 class FakeNativeResolver:
     calls: list[tuple[str, str, str]] = field(default_factory=list)
     identities: dict[tuple[str, str], NativeOrderIdentity] = field(default_factory=dict)
+    prepared: dict[str, NativeOrderIdentity] = field(default_factory=dict)
 
     async def resolve(
         self, venue: str, client_order_id: str, broker_order_id: str
@@ -111,6 +124,13 @@ class FakeNativeResolver:
                 broker_order_id=broker_order_id,
             )
         return self.identities[key]
+
+    async def resolve_prepared(self, request, provenance) -> NativeOrderIdentity:
+        del provenance
+        native = self.prepared.get(request.intent_id)
+        if native is None:
+            raise PaperCohortError("native_order_not_found")
+        return native
 
 
 @dataclass
@@ -255,6 +275,32 @@ async def test_paper_active_submits_via_rob845_and_stores_only_native_links(
         ResearchBacktestRun, assignment.source_backtest_run_id
     )
     assert backtest is not None
+    original_signal_payload = decision.signal_payload
+    original_signal_hash = decision.signal_hash
+    original_request_payload = intent.request_payload
+    original_request_hash = intent.request_hash
+    forged_signal = CanonicalTargetSignal.model_validate(
+        original_signal_payload
+    ).model_copy(update={"reference_price": "999999"})
+    forged_signal = forged_signal.model_copy(
+        update={"signal_hash": forged_signal.recomputed_signal_hash()}
+    )
+    decision.signal_payload = forged_signal.model_dump(mode="json")
+    decision.signal_hash = forged_signal.signal_hash
+    intent.request_payload = {
+        **original_request_payload,
+        "signal_hash": forged_signal.signal_hash,
+    }
+    intent.request_hash = canonical_sha256(intent.request_payload)
+    with (
+        db_session.no_autoflush,
+        pytest.raises(PaperCohortError, match="provenance_mismatch"),
+    ):
+        await verifier.verify(original_request)
+    decision.signal_payload = original_signal_payload
+    decision.signal_hash = original_signal_hash
+    intent.request_payload = original_request_payload
+    intent.request_hash = original_request_hash
     original_snapshot_payload = snapshot.payload
     persisted_mismatches = (
         (intent, "request_hash", intent.request_hash, "0" * 64),
@@ -430,6 +476,7 @@ async def test_all_intents_are_preflighted_before_first_adapter_mutation(
 @pytest.mark.asyncio
 async def test_cancel_and_close_are_limited_to_linked_cohort_capabilities(
     db_session: AsyncSession,
+    monkeypatch,
 ) -> None:
     nonce, activation, validation = await _setup(db_session)
     verifier = PaperCohortProvenanceVerifier(
@@ -442,13 +489,14 @@ async def test_cancel_and_close_are_limited_to_linked_cohort_capabilities(
         Broker.BINANCE: FakeAdapter(Broker.BINANCE),
         Broker.ALPACA: FakeAdapter(Broker.ALPACA),
     }
+    native = FakeNativeResolver()
     await PaperCohortRunner(
         db_session,
         capture=FakeCapture(),
         quote_provider=FakeQuotes(db_session),
         verifier=verifier,
         application_factory=_app_factory(adapters),
-        native_resolver=FakeNativeResolver(),
+        native_resolver=native,
         enablement=lambda _mode: True,
     ).run(
         CohortRunInvocation(
@@ -471,6 +519,7 @@ async def test_cancel_and_close_are_limited_to_linked_cohort_capabilities(
         db_session,
         verifier=verifier,
         application_factory=_app_factory(adapters),
+        native_resolver=native,
     )
     alpaca_link = next(link for link in links if link.venue == "alpaca")
     binance_link = next(link for link in links if link.venue == "binance")
@@ -479,13 +528,154 @@ async def test_cancel_and_close_are_limited_to_linked_cohort_capabilities(
 
     canceled = await control.cancel(activation.cohort_id, alpaca_link.id)
     unsupported_cancel = await control.cancel(activation.cohort_id, binance_link.id)
-    unsupported_close = await control.close(activation.cohort_id, alpaca_link.id)
+    closed = await control.close(activation.cohort_id, alpaca_link.id)
 
     assert canceled.operation is PaperOperation.CANCEL
     assert canceled.status is PaperOperationStatus.SUCCEEDED
-    assert len(adapters[Broker.ALPACA].calls) == alpaca_baseline + 1
+    assert len(adapters[Broker.ALPACA].calls) == alpaca_baseline + 2
     assert unsupported_cancel.reason_code == "unsupported_capability"
     assert len(adapters[Broker.BINANCE].calls) == binance_baseline
-    assert unsupported_close.reason_code == "unsupported_capability"
+    assert closed.operation is PaperOperation.SUBMIT
+    assert closed.status is PaperOperationStatus.SUCCEEDED
+    assert adapters[Broker.ALPACA].calls[-1].side == "sell"
+    assert (
+        adapters[Broker.ALPACA].calls[-1].source_buy_client_order_id
+        == alpaca_link.client_order_id
+    )
+    assignment = activation.assignments[0]
+    for sequence, prior_state, new_state in (
+        (5, "paper_active", "promotion_eligible"),
+        (6, "promotion_eligible", "aborted"),
+    ):
+        db_session.add(
+            PaperValidationStateTransition(
+                validation_id=assignment.validation_id,
+                validation_version=assignment.validation_version,
+                experiment_id=assignment.experiment_id,
+                strategy_version_id=assignment.strategy_version_id,
+                cohort_id=activation.cohort_id,
+                sequence=sequence,
+                idempotency_key=f"control-abort-{sequence}-{nonce}",
+                request_hash=stable_hash(f"control-abort-{sequence}-{nonce}"),
+                prior_state=prior_state,
+                new_state=new_state,
+                actor_id="operator-1",
+                actor_role="operator",
+                reason_code="kill_switch",
+                reason_text="test owned cancel after abort",
+                experiment_hash=assignment.experiment_hash,
+                cohort_hash=activation.expected_cohort_hash,
+                strategy_hash=assignment.strategy_hash,
+                config_hash=assignment.config_hash,
+                policy_hash=assignment.policy_hash,
+                input_hash=assignment.input_hash,
+                input_bundle_id="bundle-1",
+                policy_version="policy-v1",
+                evidence_ids=["kill-switch"],
+            )
+        )
+    await db_session.commit()
+    monkeypatch.setattr(settings, "PAPER_COHORT_ENABLED", False)
+    monkeypatch.setattr(settings, "PAPER_EXECUTION_ENABLED", False)
+    terminal_cancel = await control.cancel(activation.cohort_id, alpaca_link.id)
+    assert terminal_cancel.status is PaperOperationStatus.SUCCEEDED
     with pytest.raises(PaperCohortError, match="cohort_order_not_owned"):
         await control.cancel("another-cohort", alpaca_link.id)
+
+
+@pytest.mark.asyncio
+async def test_all_owned_rows_are_append_only_after_paper_run(
+    db_session: AsyncSession,
+) -> None:
+    nonce, activation, validation = await _setup(db_session)
+    verifier = PaperCohortProvenanceVerifier(
+        db_session,
+        validation_service=validation,
+        caller_id="paper-cohort-runner",
+        clock=lambda: CAPTURED_AT,
+    )
+    native = FakeNativeResolver()
+    await PaperCohortRunner(
+        db_session,
+        capture=FakeCapture(),
+        quote_provider=FakeQuotes(db_session),
+        verifier=verifier,
+        application_factory=_app_factory(
+            {
+                Broker.BINANCE: FakeAdapter(Broker.BINANCE),
+                Broker.ALPACA: FakeAdapter(Broker.ALPACA),
+            }
+        ),
+        native_resolver=native,
+        enablement=lambda _mode: True,
+    ).run(
+        CohortRunInvocation(
+            cohort_id=activation.cohort_id,
+            run_id=f"immutable-run-{nonce}",
+            round_decision_id=f"immutable-round-{nonce}",
+            mode=RunMode.PAPER_ACTIVE,
+        )
+    )
+    rows = (
+        (
+            "paper_validation_cohort_assignments",
+            await db_session.scalar(
+                select(PaperValidationCohortAssignment.id).where(
+                    PaperValidationCohortAssignment.cohort_id == activation.cohort_id
+                )
+            ),
+        ),
+        (
+            "canonical_market_snapshots",
+            await db_session.scalar(
+                select(CanonicalMarketSnapshot.id).where(
+                    CanonicalMarketSnapshot.run_id == f"immutable-run-{nonce}"
+                )
+            ),
+        ),
+        (
+            "paper_cohort_decisions",
+            await db_session.scalar(
+                select(PaperCohortDecision.id).where(
+                    PaperCohortDecision.run_id == f"immutable-run-{nonce}"
+                )
+            ),
+        ),
+        (
+            "paper_cohort_venue_intents",
+            await db_session.scalar(
+                select(PaperCohortVenueIntent.id).where(
+                    PaperCohortVenueIntent.run_id == f"immutable-run-{nonce}"
+                )
+            ),
+        ),
+        (
+            "paper_run_order_links",
+            await db_session.scalar(
+                select(PaperRunOrderLink.id).where(
+                    PaperRunOrderLink.run_id == f"immutable-run-{nonce}"
+                )
+            ),
+        ),
+    )
+    await db_session.commit()
+
+    for table_name, row_id in rows:
+        assert row_id is not None
+        with pytest.raises(DBAPIError, match="append-only"):
+            await db_session.execute(
+                text(
+                    f"UPDATE research.{table_name} SET created_at = created_at "
+                    "WHERE id = :row_id"
+                ),
+                {"row_id": row_id},
+            )
+            await db_session.commit()
+        await db_session.rollback()
+        with pytest.raises(DBAPIError, match="append-only"):
+            await db_session.execute(
+                text(f"DELETE FROM research.{table_name} WHERE id = :row_id"),
+                {"row_id": row_id},
+            )
+            await db_session.commit()
+        await db_session.rollback()
