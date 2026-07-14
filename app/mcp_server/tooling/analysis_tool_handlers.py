@@ -793,9 +793,15 @@ def _summarize_analysis_result(
 
     # ROB-725: surface NXT price provenance so the agent knows current_price is
     # an NXT-derived quote (not the stale KRX regular-session close).
+    # ROB-888: also carry the self-describing premarket fields (session_state /
+    # krx_prev_close / change_pct) so consumers judge the real gap from the MCP
+    # summary alone instead of scraping CDP naver's two-block premarket dump.
     for _px_key in (
         "price_source",
         "session",
+        "session_state",
+        "krx_prev_close",
+        "change_pct",
         "data_state",
         "data_state_reason",
         "venue",

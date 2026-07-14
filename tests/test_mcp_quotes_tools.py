@@ -451,6 +451,103 @@ async def test_apply_nxt_quote_overlay_applies_in_premarket(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_apply_nxt_quote_overlay_surfaces_self_describing_fields(monkeypatch):
+    """ROB-888: premarket overlay exposes krx_prev_close / change_pct /
+    session_state so consumers judge the real gap without scraping CDP naver."""
+    from app.mcp_server.tooling import market_data_quotes
+
+    async def fake_session(data_state, *, now=None):
+        return "nxt_premarket"
+
+    async def fake_overlay(symbol, *, session):
+        return {
+            "price": 2082500.0,  # NXT premarket realtime
+            "session": session,
+            "venue": "nxt",
+            "price_source": "nxt_mid",
+        }
+
+    monkeypatch.setattr(market_data_quotes, "_nxt_quote_session", fake_session)
+    monkeypatch.setattr(market_data_quotes, "_fetch_nxt_quote_overlay", fake_overlay)
+
+    # Pre-overlay price is the most recent completed KRX regular close (prev day).
+    quote = {"symbol": "000660", "price": 1913000.0, "source": "kis"}
+    applied = await market_data_quotes._apply_nxt_quote_overlay(
+        "000660", quote, data_state="premarket_unavailable"
+    )
+
+    assert applied is True
+    assert quote["price"] == 2082500.0
+    assert quote["price_source"] == "nxt_mid"
+    assert quote["session_state"] == "premarket"
+    assert quote["krx_prev_close"] == 1913000.0
+    # (2082500 - 1913000) / 1913000 * 100 = 8.86%
+    assert quote["change_pct"] == pytest.approx(8.86, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_apply_nxt_quote_overlay_after_hours_session_state(monkeypatch):
+    """ROB-888: nxt_after overlay tags session_state=nxt_after; krx_prev_close is
+    the just-closed KRX regular close."""
+    from app.mcp_server.tooling import market_data_quotes
+
+    async def fake_session(data_state, *, now=None):
+        return "nxt_after"
+
+    async def fake_overlay(symbol, *, session):
+        return {
+            "price": 68500.0,
+            "session": session,
+            "venue": "nxt",
+            "price_source": "nxt_mid",
+        }
+
+    monkeypatch.setattr(market_data_quotes, "_nxt_quote_session", fake_session)
+    monkeypatch.setattr(market_data_quotes, "_fetch_nxt_quote_overlay", fake_overlay)
+
+    quote = {"symbol": "005930", "price": 70000.0, "source": "kis"}
+    applied = await market_data_quotes._apply_nxt_quote_overlay(
+        "005930", quote, data_state="fresh"
+    )
+
+    assert applied is True
+    assert quote["session_state"] == "nxt_after"
+    assert quote["krx_prev_close"] == 70000.0
+    assert quote["change_pct"] == pytest.approx(-2.14, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_apply_nxt_quote_overlay_change_pct_null_when_no_prev_close(monkeypatch):
+    """ROB-888: no fake 0 / no raise when the pre-overlay KRX price is missing or
+    non-positive — krx_prev_close and change_pct honestly report null."""
+    from app.mcp_server.tooling import market_data_quotes
+
+    async def fake_session(data_state, *, now=None):
+        return "nxt_premarket"
+
+    async def fake_overlay(symbol, *, session):
+        return {
+            "price": 2082500.0,
+            "session": session,
+            "venue": "nxt",
+            "price_source": "nxt_mid",
+        }
+
+    monkeypatch.setattr(market_data_quotes, "_nxt_quote_session", fake_session)
+    monkeypatch.setattr(market_data_quotes, "_fetch_nxt_quote_overlay", fake_overlay)
+
+    quote = {"symbol": "000660", "price": None, "source": "kis"}
+    applied = await market_data_quotes._apply_nxt_quote_overlay(
+        "000660", quote, data_state="premarket_unavailable"
+    )
+
+    assert applied is True
+    assert quote["session_state"] == "premarket"
+    assert quote["krx_prev_close"] is None
+    assert quote["change_pct"] is None
+
+
+@pytest.mark.asyncio
 async def test_apply_nxt_quote_overlay_noop_outside_session(monkeypatch):
     from app.mcp_server.tooling import market_data_quotes
 
