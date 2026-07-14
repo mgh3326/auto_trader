@@ -274,7 +274,7 @@ async def _converge_toss_proposal_rung(
             # Project that quantity first, then cancel with filled_qty=None so the
             # service preserves the partial audit value on the terminal rung.
             if ledger_status == "cancelled" and filled_qty and filled_qty > 0:
-                partial = await service.record_fill_evidence(
+                await service.record_fill_evidence(
                     correlation_id=getattr(row, "correlation_id", None),
                     broker_order_id=row.broker_order_id,
                     filled_qty=filled_qty,
@@ -282,9 +282,6 @@ async def _converge_toss_proposal_rung(
                     now=datetime.now(UTC),
                     account_mode="toss_live",
                 )
-                if partial is None:
-                    await db.commit()
-                    return None
 
             terminal_state = {
                 "partial": "partially_filled",

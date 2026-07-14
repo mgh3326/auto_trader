@@ -122,10 +122,11 @@ class OrderProposalRepository:
         *,
         correlation_id: str | None,
         broker_order_id: str | None,
+        idempotency_key: str | None = None,
         states: frozenset[str] | None = None,
         account_mode: str | None = None,
     ) -> tuple[uuid.UUID, OrderProposalRung] | None:
-        """Locate a rung by broker evidence.
+        """Locate a rung by broker or client-order evidence.
 
         ``states``, when given, restricts the match to rungs currently in one of
         those states. Reconcile passes the evidence-accepting (non-terminal) set
@@ -134,8 +135,9 @@ class OrderProposalRepository:
         no longer transition — see OrderProposalsService.record_fill_evidence.
         """
         evidence = (
-            (OrderProposalRung.correlation_id, correlation_id),
             (OrderProposalRung.broker_order_id, broker_order_id),
+            (OrderProposalRung.idempotency_key, idempotency_key),
+            (OrderProposalRung.correlation_id, correlation_id),
         )
         for column, value in evidence:
             if value is None:

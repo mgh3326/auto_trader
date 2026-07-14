@@ -1355,6 +1355,122 @@ async def test_fill_evidence_books_by_correlation_id(db_session):
 
 
 @pytest.mark.asyncio
+async def test_fill_evidence_prefers_exact_broker_order_over_reused_correlation(
+    db_session,
+):
+    service, older_group = await _create_single_rung(db_session)
+    _, target_group = await _create_single_rung(db_session)
+    now = datetime(2026, 7, 14, 9, 6, tzinfo=UTC)
+    correlation_id = f"reused-correlation-{target_group.proposal_id}"
+    older_broker_order_id = f"older-{older_group.proposal_id}"
+    target_broker_order_id = f"target-{target_group.proposal_id}"
+
+    for group, broker_order_id in (
+        (older_group, older_broker_order_id),
+        (target_group, target_broker_order_id),
+    ):
+        await _drive_to_submitting(service, group.proposal_id)
+        await service.record_resting(
+            group.proposal_id,
+            0,
+            broker_order_id=broker_order_id,
+            correlation_id=correlation_id,
+            idempotency_key=f"idem-{group.proposal_id}",
+            approval_hash_digest=f"digest-{group.proposal_id}",
+            now=now,
+        )
+    await db_session.commit()
+
+    booked = await service.record_fill_evidence(
+        correlation_id=correlation_id,
+        broker_order_id=target_broker_order_id,
+        filled_qty=Decimal("0.5"),
+        terminal_state="partially_filled",
+        now=now + timedelta(seconds=1),
+    )
+    older_rung = (await service.get_proposal(older_group.proposal_id))[1][0]
+    target_rung = (await service.get_proposal(target_group.proposal_id))[1][0]
+
+    assert booked is not None
+    assert booked.id == target_rung.id
+    assert older_rung.state == "resting"
+    assert target_rung.state == "partially_filled"
+
+
+@pytest.mark.asyncio
+async def test_fill_evidence_books_upbit_rung_by_identifier(db_session):
+    service, group = await _create_single_rung(
+        db_session,
+        symbol="BTC/KRW",
+        account_mode="upbit",
+        market="crypto",
+    )
+    now = datetime(2026, 7, 14, 9, 6, tzinfo=UTC)
+    identifier = f"rob868-{group.proposal_id}"
+    await _drive_to_submitting(service, group.proposal_id)
+    await service.record_resting(
+        group.proposal_id,
+        0,
+        broker_order_id=f"upbit-{group.proposal_id}",
+        correlation_id=f"corr-{group.proposal_id}",
+        idempotency_key=identifier,
+        approval_hash_digest=f"digest-{group.proposal_id}",
+        now=now,
+    )
+    await db_session.commit()
+
+    booked = await service.record_fill_evidence(
+        idempotency_key=identifier,
+        filled_qty=Decimal("0.0003"),
+        terminal_state="partially_filled",
+        now=now + timedelta(seconds=1),
+        account_mode="upbit",
+    )
+
+    assert booked is not None
+    assert booked.state == "partially_filled"
+    assert booked.filled_qty == Decimal("0.0003")
+
+    duplicate_partial = await service.record_fill_evidence(
+        idempotency_key=identifier,
+        filled_qty=Decimal("0.0003"),
+        terminal_state="partially_filled",
+        now=now + timedelta(milliseconds=1500),
+        account_mode="upbit",
+    )
+    stale_partial = await service.record_fill_evidence(
+        idempotency_key=identifier,
+        filled_qty=Decimal("0.0002"),
+        terminal_state="partially_filled",
+        now=now + timedelta(milliseconds=1750),
+        account_mode="upbit",
+    )
+
+    assert duplicate_partial is None
+    assert stale_partial is None
+    assert booked.filled_qty == Decimal("0.0003")
+
+    filled = await service.record_fill_evidence(
+        idempotency_key=identifier,
+        filled_qty=Decimal("0.0003"),
+        terminal_state="filled",
+        now=now + timedelta(seconds=2),
+        account_mode="upbit",
+    )
+    duplicate_reconcile = await service.record_fill_evidence(
+        broker_order_id=f"upbit-{group.proposal_id}",
+        filled_qty=Decimal("0.0003"),
+        terminal_state="filled",
+        now=now + timedelta(seconds=3),
+        account_mode="upbit",
+    )
+
+    assert filled is not None
+    assert filled.state == "filled"
+    assert duplicate_reconcile is None
+
+
+@pytest.mark.asyncio
 async def test_fill_evidence_books_partial_then_filled_by_broker_order_id(db_session):
     service, group = await _create_single_rung(db_session)
     now = datetime(2026, 7, 10, 9, 7, tzinfo=UTC)

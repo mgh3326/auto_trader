@@ -1193,6 +1193,7 @@ class OrderProposalsService:
         *,
         correlation_id: str | None = None,
         broker_order_id: str | None = None,
+        idempotency_key: str | None = None,
         filled_qty: Decimal | None = None,
         terminal_state: Literal["filled", "partially_filled", "cancelled"] = "filled",
         now: datetime,
@@ -1211,11 +1212,14 @@ class OrderProposalsService:
         - ``cancelled`` carries no fill quantity (``filled_qty=None``) so a
           partial fill booked before a cancel is preserved, not zeroed.
         - No terminal state is ever inferred without matching broker evidence.
+        - Upbit client identifiers match the rung ``idempotency_key`` while
+          broker UUIDs continue to match ``broker_order_id``.
         """
         self._require_timezone_aware(now)
         match = await self._repo.find_rung_by_evidence(
             correlation_id=correlation_id,
             broker_order_id=broker_order_id,
+            idempotency_key=idempotency_key,
             states=_EVIDENCE_ACCEPTING_RUNG_STATES,
             account_mode=account_mode,
         )
@@ -1239,6 +1243,12 @@ class OrderProposalsService:
             # Repeated non-terminal evidence (e.g. a larger partial fill on an
             # already-partially_filled rung): refresh audit fields in place
             # rather than attempt an illegal self-transition.
+            if (
+                filled_qty is not None
+                and locked.filled_qty is not None
+                and filled_qty <= Decimal(str(locked.filled_qty))
+            ):
+                return None
             return await self._repo.update_rung(locked, **audit)
         return await self._transition_locked_rung(
             group, locked, new_state=terminal_state, **audit
