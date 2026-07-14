@@ -324,6 +324,18 @@ async def test_paper_active_submits_via_rob845_and_stores_only_native_links(
         assert len(adapters[Broker.BINANCE].calls) == adapter_baseline
         setattr(row, field_name, original)
 
+    original_quote_evidence = intent.venue_quote_evidence
+    intent.venue_quote_evidence = {
+        **original_quote_evidence,
+        "bid_price": "not-a-decimal",
+    }
+    with (
+        db_session.no_autoflush,
+        pytest.raises(PaperCohortError, match="provenance_mismatch"),
+    ):
+        await verifier.verify(original_request)
+    intent.venue_quote_evidence = original_quote_evidence
+
 
 @pytest.mark.asyncio
 async def test_non_exact_paper_active_state_blocks_adapter_native_and_links(

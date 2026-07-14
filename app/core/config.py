@@ -326,7 +326,7 @@ class Settings(BaseSettings):
     # the operator opts in; startup also requires MCP bearer authentication.
     PAPER_EXECUTION_ENABLED: bool = False
     # ROB-849 — immutable BTC/ETH cohort scheduler. Disabled means the TaskIQ
-    # label is absent and the task/job return before opening a DB session.
+    # label is absent; direct task calls audit recoverable claims before returning.
     PAPER_COHORT_ENABLED: bool = False
     PAPER_COHORT_CRON: str = "* * * * *"
     # ROB-848 — authenticated caller id -> validation role. Empty/unmapped is

@@ -186,7 +186,10 @@ def build_would_order_evidence(
             quote_evidence=quote_evidence,
         )
     raw_qty = Decimal(signal.target_notional) / quote.ask_price
-    rounded_qty = raw_qty.quantize(quote.qty_increment, rounding=ROUND_DOWN)
+    increment_count = (raw_qty / quote.qty_increment).to_integral_value(
+        rounding=ROUND_DOWN
+    )
+    rounded_qty = increment_count * quote.qty_increment
     if (
         rounded_qty < quote.min_qty
         or rounded_qty * quote.ask_price < quote.min_notional

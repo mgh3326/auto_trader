@@ -101,3 +101,18 @@ async def test_capability_conversion_is_exact_and_fail_closed() -> None:
     blocked = build_would_order_evidence(sell, quote("binance", "101"))
     assert blocked.reason_code == "unsupported_capability"
     assert blocked.order is None
+
+
+@pytest.mark.asyncio
+async def test_alpaca_quantity_rounds_down_to_an_exact_increment_multiple() -> None:
+    signal = compute_target_signal(await snapshot(), signal_input())
+    venue_quote = quote("alpaca", "98").model_copy(
+        update={"qty_increment": Decimal("0.05")}
+    )
+
+    evidence = build_would_order_evidence(signal, venue_quote)
+
+    assert evidence.reason_code == "ok"
+    assert evidence.order is not None
+    assert evidence.order["qty"] == "61.2"
+    assert Decimal(evidence.order["qty"]) % Decimal("0.05") == 0

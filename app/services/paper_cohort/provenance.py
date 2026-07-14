@@ -244,7 +244,7 @@ class PaperCohortProvenanceVerifier:
             recomputed_cohort_hash = self._cohort_contract(
                 cohort, assignments
             ).computed_cohort_hash()
-        except (KeyError, TypeError, ValueError):
+        except (ArithmeticError, KeyError, TypeError, ValueError):
             self._fail()
             raise AssertionError("unreachable")
 
