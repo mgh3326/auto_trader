@@ -444,5 +444,15 @@ verify_mcp_profile_release_paths
 log "Running healthcheck"
 run_healthcheck
 
+# ROB-880: post-switch canonical cutover for retrospective actions.
+# Runs only after blue/green is committed, traffic switched, services
+# restarted, and healthcheck passed. --if-shadow makes it idempotent.
+if (( BLUEGREEN_COMMITTED == 1 )); then
+  log "Running retrospective action canonical cutover (--if-shadow)"
+  uv run python scripts/retrospective_action_cutover.py --if-shadow
+else
+  log "Skipping retrospective action cutover (BLUEGREEN_COMMITTED != 1)"
+fi
+
 trap - ERR
 log "Deploy complete: $SHA"
