@@ -208,6 +208,82 @@ async def test_confirmed_limit_resolves_exchange_and_calls_broker(monkeypatch) -
 
 
 @pytest.mark.asyncio
+async def test_tracked_mutation_client_setup_failure_is_not_acceptance_uncertain(
+    monkeypatch,
+) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    class FailingClient:
+        @classmethod
+        def from_app_settings(cls):
+            raise RuntimeError("credential=provider-secret-must-not-leak")
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FailingClient)
+    tools = _tools()
+
+    place_result = await tools["kiwoom_mock_us_place_order"](
+        symbol="NVDA",
+        side="buy",
+        quantity=1,
+        price=213.04,
+        trde_tp="00",
+        dry_run=False,
+        confirm=True,
+    )
+    modify_result = await tools["kiwoom_mock_us_modify_order"](
+        order_id="000000282",
+        symbol="NVDA",
+        new_price=200.0,
+        dry_run=False,
+        confirm=True,
+    )
+
+    for result in (place_result, modify_result):
+        assert result["success"] is False
+        assert result["status"] == "not_submitted"
+        assert result["reconcile_required"] is False
+        assert result["retry_allowed"] is False
+        assert "provider-secret-must-not-leak" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_trusted_local_validation_messages_remain_actionable(monkeypatch) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    async def unsupported_lookup(symbol: str) -> str:
+        del symbol
+        return "OTC"
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", unsupported_lookup)
+    tools = _tools()
+
+    invalid_id = await tools["kiwoom_mock_us_modify_order"](
+        order_id="not-an-order-id",
+        symbol="NVDA",
+        new_price=200.0,
+    )
+    invalid_scope = await tools["kiwoom_mock_us_get_order_history"](scope="invalid")
+    unsupported_exchange = await tools["kiwoom_mock_us_preview_order"](
+        symbol="NVDA", side="buy", quantity=1, price=200.0
+    )
+
+    assert invalid_id["error"] == (
+        "Kiwoom US order id must be 1-18 digits (documented shape is nine)"
+    )
+    assert invalid_scope["error"] == "scope must be 'open' or 'today'"
+    assert unsupported_exchange["error"] == (
+        "Kiwoom US mock rejects unsupported exchange='OTC'"
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "raw",
     [

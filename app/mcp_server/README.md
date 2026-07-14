@@ -2388,7 +2388,10 @@ tracked mutation automatically. A well-formed, non-zero broker code is the disti
 `retry_allowed=false`; it must not be treated as an explicit rejection or
 retried automatically. An uncertain modify may have created an unknown
 replacement ID, so smoke cleanup remains failed until an operator reconciles
-broker history. Read and cancel response shaping is unchanged. All seven tools
+broker history. Client/configuration failure before any broker dispatch is the
+distinct `status="not_submitted"`, `reconcile_required=false` outcome. Trusted
+local validation failures retain actionable messages; provider exception text
+is withheld. Read and cancel response shaping is otherwise unchanged. All seven tools
 registered in one MCP process share one mock-host-pinned client and its locked
 OAuth token cache; bounded pagination and cleanup polling therefore do not
 issue a token request per page. That shared client enforces Kiwoom's stricter

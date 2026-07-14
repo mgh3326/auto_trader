@@ -33,7 +33,10 @@ class _PerTrRateLimiter:
         self._last_dispatch: dict[str, float] = {}
 
     async def wait(self, api_id: str) -> None:
-        lock = self._locks.setdefault(api_id, asyncio.Lock())
+        lock = self._locks.get(api_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[api_id] = lock
         async with lock:
             now = self._clock()
             last_dispatch = self._last_dispatch.get(api_id)
