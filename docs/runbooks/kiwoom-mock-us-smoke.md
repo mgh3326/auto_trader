@@ -133,12 +133,12 @@ uv run python -m scripts.kiwoom_mock_us_smoke --mode probe \
 
 Exit codes:
 - `0` — smoke OK (or stopped cleanly after dry-run when `--confirm` omitted)
-- `2` — anomaly: target evidence is absent/unknown, bounded pagination fails,
-  cleanup times out, a fill or position delta appears, or an accepted order is
-  untrackable. **Manual cleanup/unwind required** — see the redacted
-  `cleanup_required` output and `final_reconciliation` when available, then
-  reconcile in the broker UI. Do not retry a place reported as
-  `accepted_untracked` or `acceptance_uncertain`.
+- `2` — stopped or anomalous: the request was proven `not_submitted`, target
+  evidence is absent/unknown, bounded pagination fails, cleanup times out, a
+  fill or position delta appears, or an accepted order is untrackable. Manual
+  cleanup/unwind is required only when a redacted `cleanup_required` event is
+  emitted; use `final_reconciliation` when available. Do not retry a place
+  reported as `accepted_untracked` or `acceptance_uncertain`.
 
 `full` mode without `--confirm` stops after the dry-run and emits a `stop` step.
 
@@ -186,14 +186,17 @@ separate reviewed change.
 4. `kiwoom_mock_us_place_order(dry_run=False, confirm=True)` → require strict
    broker success and exactly one non-conflicting canonical 1-18 digit order ID
    across documented ID fields. Missing, invalid, or conflicting ID evidence is
-   `accepted_untracked`. Leading zeroes are retained.
+   `accepted_untracked`. A typed pre-dispatch failure is `not_submitted` and
+   requires no broker reconciliation. Leading zeroes are retained.
 5. Walk bounded `scope="open"` and `scope="today"` pages and require the exact
    normalized target ID. Repeated tokens, malformed continuation, and page-cap
    exhaustion fail closed.
 6. If `--new-price` is supplied, require one unambiguous broker-issued modify
    order ID and retain both the original and replacement IDs as one lifecycle.
    A successful modify with missing, malformed, or conflicting ID evidence is
-   reconciliation-required and must not be retried automatically.
+   reconciliation-required and must not be retried automatically. A
+   `not_submitted` modify leaves lineage complete and cleanup targets only the
+   original order.
 7. `kiwoom_mock_us_cancel_order(dry_run=False, confirm=True)` — in a finally-block,
    targeting the latest known lifecycle ID.
 8. Poll one bounded open/today-history and positions snapshot per attempt until

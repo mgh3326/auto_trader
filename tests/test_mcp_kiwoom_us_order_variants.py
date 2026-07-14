@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
 import pytest
 
 
@@ -250,6 +251,71 @@ async def test_tracked_mutation_client_setup_failure_is_not_acceptance_uncertain
         assert result["reconcile_required"] is False
         assert result["retry_allowed"] is False
         assert "provider-secret-must-not-leak" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_tracked_mutation_oauth_failure_is_not_submitted(monkeypatch) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+    from app.services.brokers.kiwoom import constants
+    from app.services.brokers.kiwoom.us_client import KiwoomMockUsClient
+
+    send_calls = 0
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    def transport_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal send_calls
+        del request
+        send_calls += 1
+        return httpx.Response(200, json={"return_code": 0})
+
+    class FailingAuth:
+        async def get_token(self) -> str:
+            raise RuntimeError("credential=provider-secret-must-not-leak")
+
+    client = KiwoomMockUsClient(
+        base_url=constants.MOCK_BASE_URL,
+        app_key="US-AK",
+        app_secret="US-SK",
+        account_no="US-ACCOUNT",
+    )
+    client._auth = FailingAuth()
+    client._transport = httpx.MockTransport(transport_handler)
+
+    class ClientFactory:
+        @classmethod
+        def from_app_settings(cls):
+            return client
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", ClientFactory)
+    tools = _tools()
+
+    place_result = await tools["kiwoom_mock_us_place_order"](
+        symbol="NVDA",
+        side="buy",
+        quantity=1,
+        price=213.04,
+        dry_run=False,
+        confirm=True,
+    )
+    modify_result = await tools["kiwoom_mock_us_modify_order"](
+        order_id="000000282",
+        symbol="NVDA",
+        new_price=200.0,
+        dry_run=False,
+        confirm=True,
+    )
+
+    for result in (place_result, modify_result):
+        assert result["status"] == "not_submitted"
+        assert result["reconcile_required"] is False
+        assert result["retry_allowed"] is False
+        assert "provider-secret-must-not-leak" not in str(result)
+    assert send_calls == 0
 
 
 @pytest.mark.asyncio

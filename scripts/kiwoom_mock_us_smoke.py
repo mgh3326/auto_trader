@@ -19,6 +19,7 @@ from app.mcp_server.tooling.orders_kiwoom_shared import (
     finalize_place_broker_response,
 )
 from app.services.brokers.kiwoom import constants
+from app.services.brokers.kiwoom.client import KiwoomPreDispatchError
 from app.services.brokers.kiwoom.normalization import redact_broker_response
 from app.services.brokers.kiwoom.us_account import KiwoomUsAccountClient
 from app.services.brokers.kiwoom.us_client import KiwoomMockUsClient
@@ -605,7 +606,7 @@ async def run_full(
             if not _response_succeeded(modified):
                 exit_code = 2
                 if not (
-                    modified.get("status") == "rejected"
+                    modified.get("status") in {"rejected", "not_submitted"}
                     and modified.get("reconcile_required") is False
                 ):
                     lineage_complete = False
@@ -830,6 +831,18 @@ async def run_probe(
                         price=price,
                         stop_price=stop_price,
                     )
+            except KiwoomPreDispatchError as exc:
+                exit_code = 2
+                _emit(
+                    {
+                        "step": "probe_order_type",
+                        "trde_tp": code,
+                        "accepted": False,
+                        "status": "not_submitted",
+                        "error": type(exc).__name__,
+                    }
+                )
+                return exit_code
             except Exception as exc:  # noqa: BLE001 - record unsupported evidence
                 exit_code = 2
                 _emit(

@@ -12,6 +12,7 @@ from app.mcp_server.tooling.orders_kiwoom_shared import (
     finalize_place_broker_response,
 )
 from app.services.brokers.kiwoom import constants
+from app.services.brokers.kiwoom.client import KiwoomPreDispatchError
 from app.services.brokers.kiwoom.normalization import (
     KiwoomMockEvidenceError,
     build_mock_provenance,
@@ -311,6 +312,8 @@ def register(mcp: FastMCP) -> None:
                 raw = await orders.place_buy_order(**kwargs)
             else:
                 raw = await orders.place_sell_order(**kwargs)
+        except KiwoomPreDispatchError as exc:
+            return _not_submitted_response("place_order", exc)
         except Exception as exc:  # noqa: BLE001 - stable MCP error envelope
             return {
                 **_exception_response("place_order", exc),
@@ -399,6 +402,8 @@ def register(mcp: FastMCP) -> None:
                 stex_tp=stex_tp,
                 new_price=new_price,
             )
+        except KiwoomPreDispatchError as exc:
+            return _not_submitted_response("modify_order", exc)
         except Exception as exc:  # noqa: BLE001 - stable MCP error envelope
             return {
                 **_exception_response("modify_order", exc),

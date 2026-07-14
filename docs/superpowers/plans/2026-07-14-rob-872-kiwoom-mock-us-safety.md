@@ -25,7 +25,7 @@
 - Modify: `app/mcp_server/tooling/orders_kiwoom_us_variants.py`
 
 **Interfaces:**
-- Produces: `finalize_place_broker_response(base, broker_response)` with `submitted`, `accepted_untracked`, `acceptance_uncertain`, and `rejected` outcomes for confirmed place/modify operations.
+- Produces: tracked mutation outcomes `not_submitted`, `submitted`, `accepted_untracked`, `acceptance_uncertain`, and `rejected` for confirmed place/modify operations.
 
 - [x] Add parametrized failing tests for non-strict return codes and missing/invalid place IDs.
 - [x] Run the named tests and confirm failures are contract mismatches.

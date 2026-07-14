@@ -46,10 +46,13 @@ failure remains `rejected`. Raw broker evidence is retained through existing
 redaction and uncertain acceptance is never automatically retried. An uncertain
 modify also leaves replacement lineage unknown, so proving the original order
 terminal cannot produce a successful final reconciliation by itself.
-Client construction is kept outside the potentially-sent exception region:
-setup failure is `not_submitted` with no reconciliation requirement, while only
-an awaited mutation failure is acceptance-uncertain. Fixed local validation
-messages remain actionable; provider-controlled exception text is withheld.
+Client construction and the transport's OAuth/rate-limit/request-build phases
+are distinguished from HTTP send: a typed pre-dispatch failure is
+`not_submitted` with no reconciliation requirement, while only failure after
+send begins is acceptance-uncertain. Full-smoke modify keeps lineage complete
+for `not_submitted` and cleans up only the original order. Fixed local
+validation messages remain actionable; provider-controlled exception text is
+withheld.
 
 The seven registered tools lazily share one mock-host-pinned client per MCP
 registration. Its locked OAuth cache prevents bounded page walks and cleanup

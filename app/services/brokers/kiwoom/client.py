@@ -28,6 +28,10 @@ class KiwoomEndpointError(RuntimeError):
     """Raised when a non-mock base URL would be used."""
 
 
+class KiwoomPreDispatchError(RuntimeError):
+    """Raised when a request fails before HTTP dispatch can begin."""
+
+
 def _validate_relative_path(path: str) -> None:
     """Reject absolute URLs, network-path references, and other non-relative shapes.
 
@@ -128,30 +132,43 @@ class KiwoomMockClient:
         next_key: str | None = None,
     ) -> dict[str, Any]:
         _validate_relative_path(path)
-        token = await self._resolve_token()
-        await self._before_api_dispatch(api_id)
-        headers = {
-            constants.HEADER_AUTHORIZATION: f"Bearer {token}",
-            constants.HEADER_API_ID: api_id,
-            "Content-Type": constants.OAUTH_CONTENT_TYPE,
-        }
-        if cont_yn is not None:
-            headers[constants.HEADER_CONT_YN] = cont_yn
-        if next_key is not None:
-            headers[constants.HEADER_NEXT_KEY] = next_key
+        if self._base_url != constants.MOCK_BASE_URL:
+            raise ValueError(
+                "Kiwoom mock request resolved to non-mock host; refusing to send."
+            )
+        dispatch_started = False
+        try:
+            token = await self._resolve_token()
+            await self._before_api_dispatch(api_id)
+            headers = {
+                constants.HEADER_AUTHORIZATION: f"Bearer {token}",
+                constants.HEADER_API_ID: api_id,
+                "Content-Type": constants.OAUTH_CONTENT_TYPE,
+            }
+            if cont_yn is not None:
+                headers[constants.HEADER_CONT_YN] = cont_yn
+            if next_key is not None:
+                headers[constants.HEADER_NEXT_KEY] = next_key
 
-        async with httpx.AsyncClient(
-            base_url=self._base_url,
-            transport=self._transport,
-            timeout=self._timeout,
-        ) as client:
-            request = client.build_request("POST", path, headers=headers, json=body)
-            if request.url.host != httpx.URL(constants.MOCK_BASE_URL).host:
-                raise ValueError(
-                    "Kiwoom mock request resolved to non-mock host "
-                    f"{request.url.host!r}; refusing to send."
-                )
-            response = await client.send(request)
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                transport=self._transport,
+                timeout=self._timeout,
+            ) as client:
+                request = client.build_request("POST", path, headers=headers, json=body)
+                if request.url.host != httpx.URL(constants.MOCK_BASE_URL).host:
+                    raise ValueError(
+                        "Kiwoom mock request resolved to non-mock host "
+                        f"{request.url.host!r}; refusing to send."
+                    )
+                dispatch_started = True
+                response = await client.send(request)
+        except Exception as exc:
+            if not dispatch_started:
+                raise KiwoomPreDispatchError(
+                    f"Kiwoom request failed before HTTP dispatch: {type(exc).__name__}"
+                ) from exc
+            raise
         response.raise_for_status()
         payload: dict[str, Any] = dict(response.json())
         payload["continuation"] = {

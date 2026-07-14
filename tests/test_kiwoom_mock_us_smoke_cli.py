@@ -599,6 +599,74 @@ async def test_probe_place_exception_returns_nonzero(monkeypatch, capsys) -> Non
     assert "provider-secret-must-not-leak" not in output
 
 
+@pytest.mark.asyncio
+async def test_probe_predispatch_place_failure_requires_no_cleanup(
+    monkeypatch, capsys
+) -> None:
+    cancel_calls = 0
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeOrders:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def place_buy_order(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            raise smoke.KiwoomPreDispatchError(
+                "Kiwoom request failed before HTTP dispatch: RuntimeError"
+            )
+
+        async def cancel_order(self, **kwargs: Any) -> dict[str, Any]:
+            nonlocal cancel_calls
+            del kwargs
+            cancel_calls += 1
+            return {"return_code": 0}
+
+    class FakeAccount:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def get_positions(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return _page([])
+
+    monkeypatch.setattr(smoke, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(smoke, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(smoke, "KiwoomUsOrderClient", FakeOrders)
+    monkeypatch.setattr(smoke, "KiwoomUsAccountClient", FakeAccount)
+    args = Namespace(
+        confirm_probes=True,
+        confirm_existing_position=False,
+        probe_order_types="26",
+        probe_side="buy",
+        symbol="NVDA",
+        quantity=1,
+        price=1.0,
+        stop_price=None,
+    )
+
+    assert await smoke.run_probe(args) == 2
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert events == [
+        {
+            "step": "probe_order_type",
+            "trde_tp": "26",
+            "accepted": False,
+            "status": "not_submitted",
+            "error": "KiwoomPreDispatchError",
+        }
+    ]
+    assert cancel_calls == 0
+
+
 def test_extract_order_id_accepts_bounded_digits_only() -> None:
     assert smoke.extract_order_id({"ord_no": "000000282"}) == "000000282"
     assert smoke.extract_order_id({"ord_no": "282"}) == "282"
@@ -1355,8 +1423,42 @@ async def test_full_modify_proves_original_and_replacement_terminality(
 
 
 @pytest.mark.asyncio
-async def test_full_uncertain_modify_requires_unknown_replacement_reconciliation(
-    monkeypatch, capsys
+@pytest.mark.parametrize(
+    ("modify_result", "expected_ok", "expected_lineage", "expects_unknown"),
+    [
+        (
+            {
+                "success": False,
+                "status": "acceptance_uncertain",
+                "reconcile_required": True,
+                "retry_allowed": False,
+                "error": "TimeoutError",
+            },
+            False,
+            False,
+            True,
+        ),
+        (
+            {
+                "success": False,
+                "status": "not_submitted",
+                "reconcile_required": False,
+                "retry_allowed": False,
+                "error": "KiwoomPreDispatchError",
+            },
+            True,
+            True,
+            False,
+        ),
+    ],
+)
+async def test_full_modify_failure_preserves_truthful_lineage(
+    monkeypatch,
+    capsys,
+    modify_result: dict[str, Any],
+    expected_ok: bool,
+    expected_lineage: bool,
+    expects_unknown: bool,
 ) -> None:
     original_order_id = "000000111"
     cancelled = False
@@ -1379,13 +1481,7 @@ async def test_full_uncertain_modify_requires_unknown_replacement_reconciliation
 
     async def modify(**kwargs: Any) -> dict[str, Any]:
         assert kwargs["order_id"] == original_order_id
-        return {
-            "success": False,
-            "status": "acceptance_uncertain",
-            "reconcile_required": True,
-            "retry_allowed": False,
-            "error": "TimeoutError",
-        }
+        return modify_result
 
     async def cancel(**kwargs: Any) -> dict[str, Any]:
         nonlocal cancelled
@@ -1459,13 +1555,14 @@ async def test_full_uncertain_modify_requires_unknown_replacement_reconciliation
     reconciliation = next(
         event for event in events if event["step"] == "final_reconciliation"
     )
-    assert reconciliation["ok"] is False
-    assert reconciliation["lineage_complete"] is False
-    assert any(
+    assert reconciliation["ok"] is expected_ok
+    assert reconciliation["lineage_complete"] is expected_lineage
+    has_unknown_guidance = any(
         event["step"] == "cleanup_required"
         and "unknown replacement" in event.get("reason", "")
         for event in events
     )
+    assert has_unknown_guidance is expects_unknown
     assert cancelled is True
 
 
