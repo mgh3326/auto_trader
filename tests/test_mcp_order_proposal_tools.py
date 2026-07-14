@@ -13,6 +13,12 @@ from app.services.order_proposals.errors import OrderProposalError
 from app.services.order_proposals.target_order import TargetOrderSnapshot
 
 
+def _unique_chat() -> str:
+    """Per-test chat id — batches scope by chat, so unique ids keep the
+    shared test DB's 10-minute batch windows from leaking across tests."""
+    return f"chat-{uuid.uuid4().hex[:10]}"
+
+
 class _FakeNotifier:
     def __init__(self, *, message_id: int | None = 4242) -> None:
         self.calls: list[tuple[str, dict, str]] = []
@@ -358,9 +364,8 @@ def test_create_docstring_documents_markets_aliases_and_account_modes():
 @pytest.mark.asyncio
 async def test_create_dispatches_telegram_when_enabled_and_allowlisted(monkeypatch):
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
-    monkeypatch.setattr(
-        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "chat-1"
-    )
+    chat = _unique_chat()
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", chat)
     fake_notifier = _FakeNotifier(message_id=9999)
     monkeypatch.setattr(
         "app.monitoring.trade_notifier.notifier.get_trade_notifier",
@@ -372,15 +377,14 @@ async def test_create_dispatches_telegram_when_enabled_and_allowlisted(monkeypat
     assert created["success"] is True
     assert len(fake_notifier.calls) == 1
     _, _, chat_id = fake_notifier.calls[0]
-    assert chat_id == "chat-1"
+    assert chat_id == chat
 
 
 @pytest.mark.asyncio
 async def test_supersede_edits_old_approval_message_and_removes_buttons(monkeypatch):
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
-    monkeypatch.setattr(
-        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "chat-1"
-    )
+    chat = _unique_chat()
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", chat)
     fake_notifier = _FakeNotifier(message_id=9999)
     monkeypatch.setattr(
         "app.monitoring.trade_notifier.notifier.get_trade_notifier",
@@ -407,7 +411,7 @@ async def test_supersede_edits_old_approval_message_and_removes_buttons(monkeypa
     assert replacement["success"] is True
     assert fake_notifier.edited == [
         (
-            "chat-1",
+            chat,
             9999,
             f"🔁 → {replacement['proposal_id'][:8]}로 대체됨",
             {"inline_keyboard": []},
@@ -418,9 +422,8 @@ async def test_supersede_edits_old_approval_message_and_removes_buttons(monkeypa
 @pytest.mark.asyncio
 async def test_supersede_message_edit_setup_failure_is_best_effort(monkeypatch):
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
-    monkeypatch.setattr(
-        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "chat-1"
-    )
+    chat = _unique_chat()
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", chat)
     fake_notifier = _FakeNotifier(message_id=9998)
     monkeypatch.setattr(
         "app.monitoring.trade_notifier.notifier.get_trade_notifier",
@@ -444,9 +447,8 @@ async def test_supersede_message_edit_setup_failure_is_best_effort(monkeypatch):
 @pytest.mark.asyncio
 async def test_create_does_not_dispatch_when_telegram_disabled(monkeypatch):
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", False)
-    monkeypatch.setattr(
-        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "chat-1"
-    )
+    chat = _unique_chat()
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", chat)
     fake_notifier = _FakeNotifier()
     monkeypatch.setattr(
         "app.monitoring.trade_notifier.notifier.get_trade_notifier",
@@ -478,9 +480,8 @@ async def test_create_does_not_dispatch_when_allowlist_empty(monkeypatch):
 @pytest.mark.asyncio
 async def test_create_succeeds_even_when_notifier_raises(monkeypatch):
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
-    monkeypatch.setattr(
-        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "chat-1"
-    )
+    chat = _unique_chat()
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", chat)
     monkeypatch.setattr(
         "app.monitoring.trade_notifier.notifier.get_trade_notifier",
         lambda: _RaisingNotifier(),
@@ -615,6 +616,7 @@ async def test_void_unverified_uses_broker_evidence_and_disables_telegram_button
 ):
     from app.services.order_proposals.broker_gateway import OperatorVoidEvidence
 
+    chat = _unique_chat()
     created = await opt.order_proposal_create(
         **_create_kwargs(account_mode="toss_live")
     )
@@ -634,7 +636,7 @@ async def test_void_unverified_uses_broker_evidence_and_disables_telegram_button
         await service.record_approval_dispatch(
             proposal_id,
             message_id=4242,
-            chat_id="chat-1",
+            chat_id=chat,
             now=now,
         )
         await session.commit()
@@ -657,7 +659,7 @@ async def test_void_unverified_uses_broker_evidence_and_disables_telegram_button
     assert "outcome=absent" in result["void_reason"]
     assert notifier.edited == [
         (
-            "chat-1",
+            chat,
             4242,
             "🗑️ 제안 무효화됨\n사유: " + result["void_reason"].replace("_", "\\_"),
             {"inline_keyboard": []},

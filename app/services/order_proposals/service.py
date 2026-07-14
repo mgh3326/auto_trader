@@ -1080,10 +1080,20 @@ class OrderProposalsService:
         )
         members = await self._repo.list_approval_batch_members(batch.id)
         validity_deadlines: list[datetime | None] = []
+        # The two-member summary threshold must count only members that are
+        # still batch-eligible right now. A replacement created via supersede
+        # registers into the same window as the proposal it just invalidated;
+        # counting that dead member would announce an "전체 승인" batch whose
+        # live membership is a single proposal.
+        live_member_count = 0
         for member in members:
             member_group = await self._repo.get_group_by_pk(member.proposal_pk)
-            if member_group is not None:
-                validity_deadlines.append(member_group.valid_until)
+            if member_group is None:
+                continue
+            validity_deadlines.append(member_group.valid_until)
+            member_rungs = await self._repo.list_rungs(member_group.id)
+            if batch_member_block_reason(member_group, member_rungs, now=now) is None:
+                live_member_count += 1
         await self._repo.update_approval_batch(
             batch,
             expires_at=self._bounded_batch_expiry(
@@ -1093,7 +1103,7 @@ class OrderProposalsService:
             ),
         )
 
-        member_count = len(members)
+        member_count = live_member_count
         summary_action: Literal["none", "send", "edit"] = "none"
         if member_count >= 2:
             if batch.summary_message_id is not None:
