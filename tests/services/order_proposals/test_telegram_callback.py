@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.caller_identity import caller_agent_id_var, get_caller_agent_id
 from app.services.order_proposals import OrderProposalsService
+from app.services.order_proposals import approval_message as approval_messages
 from app.services.order_proposals.approval_message import parse_callback_data
 from app.services.order_proposals.revalidation import RungOutcome, revalidate_and_submit
 from app.services.order_proposals.service import RungInput
@@ -202,6 +203,208 @@ def _allow_chat(monkeypatch, chat_id=CHAT_ID):
     monkeypatch.setattr(
         settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", str(chat_id)
     )
+
+
+async def _seed_approval_batch(db_session, monkeypatch, *, member_count=2):
+    chat_id = int(uuid.uuid4().hex[:8], 16)
+    _allow_chat(monkeypatch, chat_id)
+    now = datetime(2026, 7, 14, 1, 0, tzinfo=UTC)
+    groups = []
+    service = OrderProposalsService(db_session)
+    registration = None
+    for index in range(member_count):
+        group = await _seed_proposal(
+            db_session,
+            nonce=f"batch-member-{uuid.uuid4().hex}",
+            symbol=f"B{index}",
+        )
+        groups.append(group)
+        registration = await service.register_approval_batch_member(
+            group.proposal_id,
+            chat_id=str(chat_id),
+            approval_message_id=7100 + index,
+            now=now + timedelta(seconds=index),
+        )
+    await db_session.commit()
+    assert registration is not None
+    batch = registration.batch
+    data = approval_messages.build_batch_callback_data(
+        batch_id=batch.batch_id,
+        nonce=batch.approval_nonce,
+    )
+    return chat_id, now, groups, batch, data
+
+
+@pytest.mark.asyncio
+async def test_batch_approve_consumes_each_member_nonce_and_rejects_replay(
+    monkeypatch, db_session
+):
+    chat_id, now, groups, _batch, data = await _seed_approval_batch(
+        db_session, monkeypatch
+    )
+    notifier = _FakeNotifier()
+    calls: list[uuid.UUID] = []
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        calls.append(proposal_id)
+        return [RungOutcome(0, "submitted_resting", {})]
+
+    first = await handle_callback_update(
+        _make_update(data=data, chat_id=chat_id),
+        now=now + timedelta(minutes=1),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+
+    assert first["handled"] is True
+    assert first["reason"] == "batch_approved"
+    assert calls == [group.proposal_id for group in groups]
+    service = OrderProposalsService(db_session)
+    for group in groups:
+        refreshed, _ = await service.get_proposal(group.proposal_id)
+        assert refreshed.approval_nonce_used_at is not None
+        assert refreshed.approved_by_telegram_user_id == str(USER_ID)
+    edited_ids = {item[1] for item in notifier.edited}
+    assert {555, 7100, 7101} <= edited_ids
+
+    replay = await handle_callback_update(
+        _make_update(data=data, chat_id=chat_id, callback_id="batch-replay"),
+        now=now + timedelta(minutes=2),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+    assert replay == {
+        "handled": False,
+        "reason": "approval_batch_nonce_replay",
+    }
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_batch_approve_continues_after_one_member_raises(monkeypatch, db_session):
+    chat_id, now, groups, _batch, data = await _seed_approval_batch(
+        db_session, monkeypatch, member_count=3
+    )
+    group_ids = [group.proposal_id for group in groups]
+    notifier = _FakeNotifier()
+    calls: list[uuid.UUID] = []
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        calls.append(proposal_id)
+        if proposal_id == group_ids[1]:
+            raise RuntimeError("middle member failed")
+        return [RungOutcome(0, "submitted_resting", {})]
+
+    result = await handle_callback_update(
+        _make_update(data=data, chat_id=chat_id),
+        now=now + timedelta(minutes=1),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+
+    assert calls == group_ids
+    assert [item["status"] for item in result["results"]] == [
+        "approved",
+        "failed",
+        "approved",
+    ]
+    edited_ids = {item[1] for item in notifier.edited}
+    assert {555, 7100, 7101, 7102} <= edited_ids
+
+
+@pytest.mark.asyncio
+async def test_batch_click_rechecks_loss_cut_terminal_auto_and_superseded_exclusions(
+    monkeypatch, db_session
+):
+    chat_id, now, groups, _batch, data = await _seed_approval_batch(
+        db_session, monkeypatch, member_count=5
+    )
+    groups[0].exit_intent = "loss_cut"
+    groups[1].lifecycle_state = "terminal"
+    groups[2].source_asof = {
+        **(groups[2].source_asof or {}),
+        "auto_approved": {"approved_at": now.isoformat()},
+    }
+    groups[3].lifecycle_state = "superseded"
+    await db_session.commit()
+    notifier = _FakeNotifier()
+    calls: list[uuid.UUID] = []
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        calls.append(proposal_id)
+        return [RungOutcome(0, "submitted_resting", {})]
+
+    result = await handle_callback_update(
+        _make_update(data=data, chat_id=chat_id),
+        now=now + timedelta(minutes=1),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+
+    assert calls == [groups[4].proposal_id]
+    assert [item["status"] for item in result["results"]] == [
+        "skipped",
+        "skipped",
+        "skipped",
+        "skipped",
+        "approved",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_batch_approve_keeps_rob861_reconfirm_member_independently_actionable(
+    monkeypatch, db_session
+):
+    chat_id, now, groups, _batch, data = await _seed_approval_batch(
+        db_session, monkeypatch
+    )
+    group_ids = [group.proposal_id for group in groups]
+    original_nonce = groups[0].approval_nonce
+    notifier = _FakeNotifier()
+    detail = {
+        "reason": "insufficient_buying_power",
+        "currency": "KRW",
+        "available": "50000",
+        "required": "100000",
+        "shortfall": "50000",
+        "before": {"limit_price": "100", "quantity": "10"},
+        "after": {"limit_price": "100", "quantity": "10"},
+    }
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        if proposal_id == group_ids[0]:
+            await service.transition_rung(proposal_id, 0, new_state="revalidating")
+            await service.mark_needs_reconfirm(proposal_id, 0, now=now)
+            return [RungOutcome(0, "needs_reconfirm", detail)]
+        return [RungOutcome(0, "submitted_resting", {})]
+
+    result = await handle_callback_update(
+        _make_update(data=data, chat_id=chat_id),
+        now=now + timedelta(minutes=1),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+
+    assert [item["status"] for item in result["results"]] == [
+        "needs_reconfirm",
+        "approved",
+    ]
+    service = OrderProposalsService(db_session)
+    reconfirm_group, reconfirm_rungs = await service.get_proposal(group_ids[0])
+    approved_group, _ = await service.get_proposal(group_ids[1])
+    assert reconfirm_group.approval_nonce != original_nonce
+    assert reconfirm_group.approval_nonce_used_at is None
+    assert reconfirm_rungs[0].state == "needs_reconfirm"
+    assert approved_group.approval_nonce_used_at is not None
+    assert len(notifier.sent_messages) == 1
+    summary = next(text for _chat, mid, text, _markup in notifier.edited if mid == 555)
+    assert "재확인 필요" in summary
+    assert "승인 완료" in summary
 
 
 def test_result_summary_includes_bounded_escaped_guard_reason():

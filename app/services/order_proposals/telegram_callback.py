@@ -54,6 +54,7 @@ from app.mcp_server.caller_identity import caller_agent_id_var
 from app.services.order_proposals.approval_message import (
     _escape_markdown,
     build_approval_message,
+    build_batch_result_message,
     build_buying_power_shortfall_text,
     build_loss_cut_confirmation_message,
     parse_callback_data,
@@ -73,7 +74,10 @@ from app.services.order_proposals.revalidation import (
     RungOutcome,
     revalidate_and_submit,
 )
-from app.services.order_proposals.service import OrderProposalsService
+from app.services.order_proposals.service import (
+    OrderProposalsService,
+    batch_member_block_reason,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -513,6 +517,141 @@ async def _handle_approve(
     }
 
 
+async def _handle_batch_approve(
+    *,
+    service_factory: ServiceFactory,
+    batch_short: str,
+    nonce: str,
+    now: datetime,
+    notifier: Any,
+    chat_id: Any,
+    message_id: int | None,
+    telegram_user_id: str,
+    revalidate_fn: RevalidateFn,
+) -> dict[str, Any]:
+    """Consume one batch trigger and process every frozen member independently."""
+    async with service_factory() as session:
+        service = OrderProposalsService(session)
+        batch_id = await service.resolve_approval_batch_id_prefix(batch_short)
+        if batch_id is None:
+            await session.commit()
+            return {"handled": False, "reason": "approval_batch_not_found"}
+        try:
+            _batch, members = await service.consume_approval_batch_nonce(
+                batch_id,
+                nonce,
+                chat_id=str(chat_id),
+                telegram_user_id=telegram_user_id,
+                now=now,
+            )
+        except OrderProposalError as exc:
+            await session.commit()
+            return {"handled": False, "reason": str(exc)}
+
+        # Commit the single-use batch trigger before touching any member. A
+        # crash or Telegram retry can then never execute the frozen set twice.
+        await session.commit()
+
+    results: list[dict[str, Any]] = []
+    for member in members:
+        member_result: dict[str, Any] = {
+            "proposal_id": str(member.proposal_id),
+            "status": "failed",
+        }
+        member_message: str | None = None
+        async with service_factory() as member_session:
+            member_service = OrderProposalsService(member_session)
+            try:
+                group, rungs = await member_service.get_proposal(member.proposal_id)
+                block_reason = batch_member_block_reason(group, rungs, now=now)
+                if block_reason is not None:
+                    member_result.update(status="skipped", reason=block_reason)
+                    member_message = (
+                        f"⚠️ 일괄 승인 제외 — {_escape_markdown(block_reason)}"
+                    )
+                else:
+                    approval_result = await _handle_approve(
+                        session=member_session,
+                        service=member_service,
+                        proposal_id=member.proposal_id,
+                        nonce=member.approval_nonce,
+                        now=now,
+                        notifier=notifier,
+                        chat_id=chat_id,
+                        message_id=member.approval_message_id,
+                        callback_query_id=None,
+                        telegram_user_id=telegram_user_id,
+                        revalidate_fn=revalidate_fn,
+                    )
+                    if approval_result.get("handled"):
+                        reason = str(approval_result.get("reason") or "approved")
+                        member_result["status"] = (
+                            "needs_reconfirm"
+                            if reason == "needs_reconfirm"
+                            else "approved"
+                        )
+                    else:
+                        reason = str(
+                            approval_result.get("reason") or "approval_skipped"
+                        )
+                        member_result.update(status="skipped", reason=reason)
+                        member_message = (
+                            f"⚠️ 일괄 승인 제외 — {_escape_markdown(reason)}"
+                        )
+            except Exception:  # noqa: BLE001 - isolate each batch member
+                logger.exception(
+                    "order_proposals batch member approval failed",
+                    extra={"proposal_id": str(member.proposal_id)},
+                )
+                await member_session.rollback()
+                member_result.update(status="failed", reason="internal_error")
+                member_message = (
+                    "❌ 일괄 승인 처리 실패 — 단건 승인을 다시 확인해 주세요."
+                )
+
+            # Record the member outcome before any batch-owned Telegram edit.
+            # `_handle_approve` already commits its own broker/proposal work.
+            await member_service.record_approval_batch_member_result(
+                member.member_id,
+                result=str(member_result["status"]),
+                detail={
+                    "proposal_id": member_result["proposal_id"],
+                    "reason": member_result.get("reason", ""),
+                },
+                now=now,
+            )
+            await member_session.commit()
+
+        if member_message is not None:
+            await _safe_edit_message(
+                notifier,
+                chat_id,
+                member.approval_message_id,
+                member_message,
+                reply_markup={"inline_keyboard": []},
+            )
+        results.append(member_result)
+
+    async with service_factory() as display_session:
+        display_service = OrderProposalsService(display_session)
+        _batch, proposals = await display_service.get_approval_batch_display(batch_id)
+        await display_session.commit()
+    if message_id is not None:
+        await _safe_edit_message(
+            notifier,
+            chat_id,
+            message_id,
+            build_batch_result_message(proposals=proposals, results=results),
+            reply_markup={"inline_keyboard": []},
+        )
+    return {
+        "handled": True,
+        "reason": "batch_approved",
+        "batch_id": str(batch_id),
+        "results": results,
+    }
+
+
 async def _handle_loss_cut_first_click(
     *,
     session: AsyncSession,
@@ -608,13 +747,28 @@ async def handle_callback_update(
             return {"handled": False, "reason": "chat_not_allowed"}
 
         try:
-            action, proposal_short, nonce = parse_callback_data(data)
+            action, subject_short, nonce = parse_callback_data(data)
         except ValueError:
             return {"handled": False, "reason": "malformed_callback_data"}
 
+        if action == "ba":
+            return await _handle_batch_approve(
+                service_factory=service_factory,
+                batch_short=subject_short,
+                nonce=nonce,
+                now=now,
+                notifier=active_notifier,
+                chat_id=chat_id,
+                message_id=message_id,
+                telegram_user_id=(
+                    str(telegram_user_id) if telegram_user_id is not None else ""
+                ),
+                revalidate_fn=revalidate_fn,
+            )
+
         async with service_factory() as session:
             service = OrderProposalsService(session)
-            proposal_id = await _resolve_proposal_id(service, proposal_short)
+            proposal_id = await _resolve_proposal_id(service, subject_short)
             if proposal_id is None:
                 await session.commit()
                 return {"handled": False, "reason": "proposal_not_found"}
