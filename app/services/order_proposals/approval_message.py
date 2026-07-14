@@ -24,6 +24,15 @@ _CASH_LABELS = (
     ("buffer_cash", "현금 버퍼"),
     ("utilization_pct", "사용률"),
 )
+_BATCH_RUNG_RESULT_LABELS = {
+    "submitted_acked": "체결 대기(접수)",
+    "submitted_resting": "주문 유지(대기)",
+    "guard_blocked": "가드에 의해 차단됨",
+    "unverified": "확인 불가(수동 확인 필요)",
+    "error": "오류",
+    "needs_reconfirm": "재확인 필요",
+    "cancelled": "취소 확인",
+}
 
 
 def build_callback_data(
@@ -154,15 +163,15 @@ def build_batch_approval_message(
             quantity = _safe_decimal(getattr(rung, "quantity", None))
             price = _safe_decimal(getattr(rung, "limit_price", None))
             explicit = _safe_decimal(getattr(rung, "notional", None))
-            notional = (
-                explicit
-                if explicit is not None
-                else (
-                    quantity * price
-                    if quantity is not None and price is not None
+            notional = None
+            if price is not None:
+                notional = (
+                    explicit
+                    if explicit is not None
+                    else quantity * price
+                    if quantity is not None
                     else None
                 )
-            )
             if notional is not None:
                 proposal_total += notional
                 has_notional = True
@@ -237,10 +246,21 @@ def build_batch_result_message(
             status = "failed"
         proposal_id = str(result.get("proposal_id") or "")
         symbol = symbols.get(proposal_id, proposal_id[:8] or "미기재")
+        details: list[str] = []
         reason = " ".join(str(result.get("reason") or "").split())
         if len(reason) > 160:
             reason = reason[:159] + "…"
-        suffix = f" — {_escape_markdown(reason)}" if reason else ""
+        if reason:
+            details.append(_escape_markdown(reason))
+        rung_results = result.get("rung_results")
+        if isinstance(rung_results, Sequence) and not isinstance(
+            rung_results, (str, bytes)
+        ):
+            details.extend(
+                f"#{index} {_escape_markdown(_BATCH_RUNG_RESULT_LABELS.get(str(value), str(value)))}"
+                for index, value in enumerate(rung_results, start=1)
+            )
+        suffix = f" — {'; '.join(details)}" if details else ""
         grouped[status].append(f"- `{_escape_inline_code(symbol)}`{suffix}")
 
     lines = ["*일괄 승인 결과*"]

@@ -618,6 +618,11 @@ async def _handle_batch_approve(
                         telegram_user_id=telegram_user_id,
                         revalidate_fn=revalidate_fn,
                     )
+                    rung_results = approval_result.get("results")
+                    if isinstance(rung_results, list):
+                        member_result["rung_results"] = [
+                            str(value) for value in rung_results
+                        ]
                     status, reason = _classify_batch_approval_result(approval_result)
                     member_result["status"] = status
                     if reason is not None:
@@ -646,6 +651,7 @@ async def _handle_batch_approve(
                     detail={
                         "proposal_id": member_result["proposal_id"],
                         "reason": member_result.get("reason", ""),
+                        "rung_results": ",".join(member_result.get("rung_results", [])),
                     },
                     now=now,
                 )

@@ -124,6 +124,38 @@ def test_batch_summary_lists_notional_and_account_subtotals():
     assert keyboard["inline_keyboard"][0][0]["text"] == "전체 승인"
 
 
+def test_batch_summary_omits_market_order_notional_from_totals():
+    batch = SimpleNamespace(
+        batch_id=uuid.uuid4(),
+        approval_nonce="batch-nonce",
+        expires_at=datetime(2026, 7, 14, 1, 30, tzinfo=UTC),
+    )
+    proposals = [
+        (
+            _group(symbol="AAPL", market="equity_us", account_mode="kis_live"),
+            [
+                _rung(
+                    quantity=Decimal("1"),
+                    limit_price=None,
+                    notional=Decimal("999"),
+                )
+            ],
+        ),
+        (
+            _group(symbol="MSFT", market="equity_us", account_mode="kis_live"),
+            [_rung(quantity=Decimal("1"), limit_price=Decimal("100"))],
+        ),
+    ]
+
+    text, _keyboard = approval_messages.build_batch_approval_message(
+        batch=batch, proposals=proposals
+    )
+
+    assert "합계: $100" in text
+    assert "$999" not in text
+    assert "$1,099" not in text
+
+
 def test_batch_result_groups_each_member_outcome():
     groups = [
         _group(symbol="AAPL"),
@@ -135,7 +167,11 @@ def test_batch_result_groups_each_member_outcome():
     text = approval_messages.build_batch_result_message(
         proposals=[(group, [_rung()]) for group in groups],
         results=[
-            {"proposal_id": str(groups[0].proposal_id), "status": "approved"},
+            {
+                "proposal_id": str(groups[0].proposal_id),
+                "status": "approved",
+                "rung_results": ["submitted_resting"],
+            },
             {
                 "proposal_id": str(groups[1].proposal_id),
                 "status": "needs_reconfirm",
@@ -149,6 +185,7 @@ def test_batch_result_groups_each_member_outcome():
                 "proposal_id": str(groups[3].proposal_id),
                 "status": "failed",
                 "reason": "broker unavailable",
+                "rung_results": ["unverified"],
             },
         ],
     )
@@ -157,6 +194,8 @@ def test_batch_result_groups_each_member_outcome():
     assert "재확인 필요" in text and "MSFT" in text
     assert "제외/건너뜀" in text and "NVDA" in text
     assert "실패" in text and "AMZN" in text
+    assert "#1 주문 유지(대기)" in text
+    assert "#1 확인 불가(수동 확인 필요)" in text
 
 
 @pytest.mark.unit
