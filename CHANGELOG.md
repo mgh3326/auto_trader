@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed (ROB-868 — Upbit websocket proposal fill projection; migration 0)
+- **Committed Upbit websocket fills now converge proposal rungs immediately.** `trade` events project cumulative partial-fill evidence and `done` events project terminal fill evidence through an independent committed proposal-service session, matching both the broker UUID and Upbit client identifier while keeping projection failures best-effort. Individual ledger rows retain per-trade `volume`; terminal cumulative evidence is applied only after an existing durable fill is verified and is not double-counted as another fill.
+- **Matched proposal fills retain operator visibility at small notionals.** Proposal-rung fills bypass the ordinary notification threshold without changing unmatched-fill policy, and duplicate ledger deliveries remain notification-idempotent.
+- **Upbit consumer health is observable.** Runtime health logs now include Upbit message/execution counters and last-seen timestamps alongside the existing KIS metrics. The single-active Upbit launchd service requires a restart after deployment; `scripts/deploy-native.sh` performs that restart.
+
 ### Added (ROB-867 — Kiwoom mock US lifecycle; migration 0)
 - **Kiwoom US mock orders now have an isolated, fail-closed MCP surface.** Dedicated credentials and account mode expose preview/place/modify/cancel plus order, position, and USD-deposit reads without falling back to the KR namespace; symbols resolve their exchange from the active US universe before any broker mutation.
 - **Only evidence-backed order types are public.** MCP accepts limit (`00`) and market (`03`) orders and rejects every other `trde_tp` before lookup or network access, while the low-level client preserves the documented advanced request fields for later promotion after mock-environment proof.
