@@ -164,7 +164,9 @@ independent committed session and `account_mode="upbit"`, exceptions are
 swallowed, and `scripts/deploy-native.sh` restarts the single-active Upbit
 launchd service.
 
-- [ ] **Step 3: Commit, push, and create PR**
+- [x] **Step 3: Commit, push, and create PR**
 
 Commit with a ROB-868 message and the repository's standard trailer, push
 `rob-868`, then create a PR against `main` titled `fix(ROB-868): project Upbit websocket fills to proposal rungs`. The PR body must include test evidence and state that Upbit websocket is not blue/green and must be restarted after deployment (the native deploy workflow performs this restart).
+
+Delivered in commits `42727e4c` and `6d87f027`; PR #1534 targets `main`.
