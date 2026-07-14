@@ -2065,6 +2065,7 @@ async def _create_batch_candidate(
 @pytest.mark.asyncio
 async def test_approval_batch_registration_groups_same_chat_and_window(db_session):
     now = datetime(2026, 7, 14, 1, 0, tzinfo=UTC)
+    chat_id = f"batch-{uuid.uuid4().hex}"
     first = await _create_batch_candidate(
         db_session, symbol="AAPL", nonce="batch-member-1"
     )
@@ -2078,13 +2079,13 @@ async def test_approval_batch_registration_groups_same_chat_and_window(db_sessio
 
     one = await service.register_approval_batch_member(
         first.proposal_id,
-        chat_id="42",
+        chat_id=chat_id,
         approval_message_id=1001,
         now=now,
     )
     two = await service.register_approval_batch_member(
         second.proposal_id,
-        chat_id="42",
+        chat_id=chat_id,
         approval_message_id=1002,
         now=now + timedelta(minutes=1),
     )
@@ -2098,7 +2099,7 @@ async def test_approval_batch_registration_groups_same_chat_and_window(db_sessio
     )
     three = await service.register_approval_batch_member(
         third.proposal_id,
-        chat_id="42",
+        chat_id=chat_id,
         approval_message_id=1003,
         now=now + timedelta(minutes=2),
     )
@@ -2110,6 +2111,8 @@ async def test_approval_batch_registration_groups_same_chat_and_window(db_sessio
 @pytest.mark.asyncio
 async def test_approval_batch_registration_respects_chat_and_fixed_window(db_session):
     now = datetime(2026, 7, 14, 1, 0, tzinfo=UTC)
+    chat_id = f"batch-{uuid.uuid4().hex}"
+    other_chat_id = f"batch-{uuid.uuid4().hex}"
     first = await _create_batch_candidate(
         db_session, symbol="AAPL", nonce="window-member-1"
     )
@@ -2123,19 +2126,19 @@ async def test_approval_batch_registration_respects_chat_and_fixed_window(db_ses
 
     first_registration = await service.register_approval_batch_member(
         first.proposal_id,
-        chat_id="42",
+        chat_id=chat_id,
         approval_message_id=1001,
         now=now,
     )
     other_registration = await service.register_approval_batch_member(
         other_chat.proposal_id,
-        chat_id="99",
+        chat_id=other_chat_id,
         approval_message_id=1002,
         now=now + timedelta(minutes=1),
     )
     later_registration = await service.register_approval_batch_member(
         later.proposal_id,
-        chat_id="42",
+        chat_id=chat_id,
         approval_message_id=1003,
         now=now + timedelta(minutes=10),
     )
@@ -2158,6 +2161,7 @@ async def test_approval_batch_registration_respects_chat_and_fixed_window(db_ses
 @pytest.mark.asyncio
 async def test_approval_batch_registration_excludes_manual_safety_classes(db_session):
     now = datetime(2026, 7, 14, 1, 0, tzinfo=UTC)
+    chat_id = f"batch-{uuid.uuid4().hex}"
     loss_cut = await _create_batch_candidate(
         db_session, symbol="LOSS", nonce="excluded-loss"
     )
@@ -2182,7 +2186,7 @@ async def test_approval_batch_registration_excludes_manual_safety_classes(db_ses
     for index, group in enumerate((loss_cut, auto, terminal, superseded), start=1):
         registration = await service.register_approval_batch_member(
             group.proposal_id,
-            chat_id="42",
+            chat_id=chat_id,
             approval_message_id=1000 + index,
             now=now,
         )
@@ -2192,6 +2196,7 @@ async def test_approval_batch_registration_excludes_manual_safety_classes(db_ses
 @pytest.mark.asyncio
 async def test_approval_batch_nonce_is_single_use_and_bound_to_chat(db_session):
     now = datetime(2026, 7, 14, 1, 0, tzinfo=UTC)
+    chat_id = f"batch-{uuid.uuid4().hex}"
     first = await _create_batch_candidate(
         db_session, symbol="AAPL", nonce="consume-member-1"
     )
@@ -2201,13 +2206,13 @@ async def test_approval_batch_nonce_is_single_use_and_bound_to_chat(db_session):
     service = OrderProposalsService(db_session)
     registration = await service.register_approval_batch_member(
         first.proposal_id,
-        chat_id="42",
+        chat_id=chat_id,
         approval_message_id=1001,
         now=now,
     )
     await service.register_approval_batch_member(
         second.proposal_id,
-        chat_id="42",
+        chat_id=chat_id,
         approval_message_id=1002,
         now=now + timedelta(minutes=1),
     )
@@ -2215,7 +2220,7 @@ async def test_approval_batch_nonce_is_single_use_and_bound_to_chat(db_session):
     batch, members = await service.consume_approval_batch_nonce(
         registration.batch.batch_id,
         registration.batch.approval_nonce,
-        chat_id="42",
+        chat_id=chat_id,
         telegram_user_id="777",
         now=now + timedelta(minutes=2),
     )
@@ -2230,7 +2235,7 @@ async def test_approval_batch_nonce_is_single_use_and_bound_to_chat(db_session):
         await service.consume_approval_batch_nonce(
             batch.batch_id,
             batch.approval_nonce,
-            chat_id="42",
+            chat_id=chat_id,
             telegram_user_id="777",
             now=now + timedelta(minutes=3),
         )
@@ -2240,6 +2245,7 @@ async def test_approval_batch_nonce_is_single_use_and_bound_to_chat(db_session):
 @pytest.mark.asyncio
 async def test_approval_batch_nonce_expires_without_consuming_members(db_session):
     now = datetime(2026, 7, 14, 1, 0, tzinfo=UTC)
+    chat_id = f"batch-{uuid.uuid4().hex}"
     first = await _create_batch_candidate(
         db_session, symbol="AAPL", nonce="expiry-member-1"
     )
@@ -2249,13 +2255,13 @@ async def test_approval_batch_nonce_expires_without_consuming_members(db_session
     service = OrderProposalsService(db_session)
     registration = await service.register_approval_batch_member(
         first.proposal_id,
-        chat_id="42",
+        chat_id=chat_id,
         approval_message_id=1001,
         now=now,
     )
     await service.register_approval_batch_member(
         second.proposal_id,
-        chat_id="42",
+        chat_id=chat_id,
         approval_message_id=1002,
         now=now + timedelta(minutes=1),
     )
@@ -2267,7 +2273,7 @@ async def test_approval_batch_nonce_expires_without_consuming_members(db_session
         await service.consume_approval_batch_nonce(
             registration.batch.batch_id,
             registration.batch.approval_nonce,
-            chat_id="42",
+            chat_id=chat_id,
             telegram_user_id="777",
             now=now + timedelta(minutes=12),
         )

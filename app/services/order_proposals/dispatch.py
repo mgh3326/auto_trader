@@ -27,7 +27,10 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
-from app.services.order_proposals.approval_message import build_approval_message
+from app.services.order_proposals.approval_message import (
+    build_approval_message,
+    build_batch_approval_message,
+)
 from app.services.order_proposals.auto_approve import (
     build_auto_approved_message,
     evaluate_auto_approve_eligibility,
@@ -60,6 +63,57 @@ def _generate_nonce() -> str:
     # than imported -- that name is `_`-prefixed/module-private, and this
     # module is a peer top-level caller, not a consumer of that module.
     return secrets.token_urlsafe(12)
+
+
+async def _register_and_publish_batch_summary(
+    *,
+    service: OrderProposalsService,
+    proposal_id: uuid.UUID,
+    message_id: int,
+    chat_id: str,
+    now: datetime,
+    notifier: Any,
+) -> None:
+    """Best-effort batch registration after the individual message succeeds."""
+    registration = await service.register_approval_batch_member(
+        proposal_id,
+        chat_id=chat_id,
+        approval_message_id=message_id,
+        now=now,
+    )
+    if registration is None or registration.summary_action == "none":
+        return
+    batch, proposals = await service.get_approval_batch_display(
+        registration.batch.batch_id
+    )
+    text, keyboard = build_batch_approval_message(batch=batch, proposals=proposals)
+    if registration.summary_action == "send":
+        try:
+            summary_id = await notifier.send_approval_message(
+                text, keyboard, chat_id=chat_id
+            )
+        except Exception:  # noqa: BLE001 - individual dispatch remains valid
+            logger.exception("order proposal batch summary send failed")
+            await service.release_approval_batch_summary_claim(batch.batch_id, now=now)
+            return
+        if summary_id is None:
+            await service.release_approval_batch_summary_claim(batch.batch_id, now=now)
+            return
+        await service.record_approval_batch_summary(
+            batch.batch_id, message_id=summary_id, now=now
+        )
+        return
+    if batch.summary_message_id is None:
+        return
+    try:
+        await notifier.edit_message(
+            chat_id,
+            batch.summary_message_id,
+            text,
+            reply_markup=keyboard,
+        )
+    except Exception:  # noqa: BLE001 - summary is a best-effort surface
+        logger.exception("order proposal batch summary edit failed")
 
 
 async def send_proposal_for_approval(
@@ -100,6 +154,14 @@ async def send_proposal_for_approval(
         if message_id is not None:
             await service.record_approval_dispatch(
                 proposal_id, message_id=message_id, chat_id=chat_id, now=now
+            )
+            await _register_and_publish_batch_summary(
+                service=service,
+                proposal_id=proposal_id,
+                message_id=message_id,
+                chat_id=chat_id,
+                now=now,
+                notifier=notifier,
             )
 
         # Commit explicitly before returning -- see module docstring. The
