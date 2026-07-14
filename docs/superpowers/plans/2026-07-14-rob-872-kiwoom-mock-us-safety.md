@@ -31,6 +31,7 @@
 - [x] Run the named tests and confirm failures are contract mismatches.
 - [x] Implement a tracked-mutation finalizer using `derive_broker_success` and `validate_us_order_id` without changing common read/cancel shaping.
 - [x] Re-run the named tests and preserve redacted `broker_response` evidence.
+- [x] Reuse one US mock client per registration and enforce the documented one-second per-TR mock dispatch interval at the transport boundary.
 
 ### Task 2: Truthful smoke lifecycle
 

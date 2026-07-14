@@ -113,6 +113,11 @@ class KiwoomMockClient:
             return self._token_override
         return await self._auth.get_token()
 
+    async def _before_api_dispatch(self, api_id: str) -> None:
+        """Provider-specific dispatch hook; the base mock client is unrestricted."""
+
+        del api_id
+
     async def post_api(
         self,
         *,
@@ -124,6 +129,7 @@ class KiwoomMockClient:
     ) -> dict[str, Any]:
         _validate_relative_path(path)
         token = await self._resolve_token()
+        await self._before_api_dispatch(api_id)
         headers = {
             constants.HEADER_AUTHORIZATION: f"Bearer {token}",
             constants.HEADER_API_ID: api_id,
