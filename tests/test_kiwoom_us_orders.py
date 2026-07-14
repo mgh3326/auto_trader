@@ -178,7 +178,9 @@ def test_rejects_non_kiwoom_us_exchange(exchange: str) -> None:
         )
 
 
-@pytest.mark.parametrize("order_id", ["", "00000028A", "../000000282", "1" * 19])
+@pytest.mark.parametrize(
+    "order_id", ["", "00000028A", "../000000282", "١٢٣٤٥٦٧٨٩", "1" * 19]
+)
 def test_rejects_non_digit_or_unbounded_order_id(order_id: str) -> None:
     with pytest.raises(KiwoomUsOrderRejected, match="digits"):
         validate_us_order_id(order_id)

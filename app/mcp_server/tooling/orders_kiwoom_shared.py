@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.services.brokers.kiwoom import constants
@@ -14,6 +15,8 @@ _PASSTHROUGH_KEYS = (
     "ord_no",
     "order_no",
 )
+_ORDER_ID_RE = re.compile(r"^[0-9]{1,18}$")
+_ORDER_ID_KEYS = ("ord_no", "order_no")
 
 
 def derive_broker_success(broker_response: dict[str, Any]) -> bool:
@@ -54,4 +57,45 @@ def finalize_broker_response(
             response[key] = redacted_broker_response[key]
     if error_code := classify_capability_unsupported(broker_response):
         response["error_code"] = error_code
+    return response
+
+
+def finalize_place_broker_response(
+    base: dict[str, Any], broker_response: dict[str, Any]
+) -> dict[str, Any]:
+    """Distinguish rejected, submitted, and accepted-but-untrackable places."""
+
+    response = finalize_broker_response(base, broker_response)
+    if not derive_broker_success(broker_response):
+        response.update({"status": "rejected", "reconcile_required": False})
+        return response
+
+    order_id = None
+    for key in _ORDER_ID_KEYS:
+        raw_order_id = broker_response.get(key)
+        if not isinstance(raw_order_id, str):
+            continue
+        candidate = raw_order_id.strip()
+        if _ORDER_ID_RE.fullmatch(candidate):
+            order_id = candidate
+            break
+    if order_id is None:
+        response.update(
+            {
+                "success": False,
+                "status": "accepted_untracked",
+                "reconcile_required": True,
+                "retry_allowed": False,
+            }
+        )
+        return response
+
+    response.update(
+        {
+            "success": True,
+            "status": "submitted",
+            "reconcile_required": False,
+            "order_id": order_id,
+        }
+    )
     return response

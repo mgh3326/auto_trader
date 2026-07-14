@@ -6,10 +6,15 @@ import argparse
 import asyncio
 import json
 import re
+import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.core.config import validate_kiwoom_mock_us_config
 from app.mcp_server.tooling import orders_kiwoom_us_variants as us_variants
+from app.mcp_server.tooling.orders_kiwoom_shared import derive_broker_success
 from app.services.brokers.kiwoom import constants
 from app.services.brokers.kiwoom.normalization import redact_broker_response
 from app.services.brokers.kiwoom.us_account import KiwoomUsAccountClient
@@ -20,14 +25,26 @@ from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 # Bounded-digits acceptance: the guide documents nine digits, but the live
 # mock shape is unverified and cancel must never be skipped over a width
 # mismatch. The actual observed length is emitted as evidence per accept.
-_ORDER_ID_RE = re.compile(r"^\d{1,18}$")
+_ORDER_ID_RE = re.compile(r"^[0-9]{1,18}$")
 _PROBE_CODES = frozenset({"26", "27", "30", "33", "34", "35"})
 _BUY_PROBE_CODES = frozenset({"26", "27", "30"})
 _SELL_PROBE_CODES = frozenset({"33", "34", "35"})
+_ORDER_ID_FIELDS = frozenset({"ord_no", "order_no", "orig_ord_no", "orgn_odno", "odno"})
+_PAGE_CAP = 5
+_CLEANUP_TIMEOUT = 8.0
+_POLL_INTERVAL = 1.0
 
 
 class SmokeRejected(RuntimeError):
     """Raised when operator input violates a smoke safety boundary."""
+
+
+@dataclass(frozen=True)
+class CleanupProof:
+    ok: bool
+    state: str
+    reason: str
+    position_delta: dict[str, dict[str, str]]
 
 
 class _Recorder:
@@ -66,7 +83,10 @@ def _emit(payload: dict[str, Any]) -> None:
 
 def extract_order_id(payload: dict[str, Any]) -> str | None:
     for key in ("ord_no", "order_no", "orgn_odno", "odno"):
-        value = str(payload.get(key) or "").strip()
+        raw = payload.get(key)
+        if not isinstance(raw, str):
+            continue
+        value = raw.strip()
         if _ORDER_ID_RE.fullmatch(value):
             return value
     broker_response = payload.get("broker_response")
@@ -93,23 +113,227 @@ def parse_probe_codes(raw: str | None) -> tuple[str, ...]:
 
 def _normalize_digits(value: str) -> str | None:
     text = value.strip()
-    if not text.isdigit():
+    if not _ORDER_ID_RE.fullmatch(text):
         return None
     return text.lstrip("0") or "0"
 
 
 def _payload_contains_order_id(value: Any, order_id: str) -> bool:
     if isinstance(value, dict):
+        target = _normalize_digits(order_id)
+        for key in _ORDER_ID_FIELDS:
+            if key not in value:
+                continue
+            raw = value[key]
+            if not isinstance(raw, str):
+                continue
+            candidate = _normalize_digits(raw)
+            if target is not None and candidate == target:
+                return True
         return any(
-            _payload_contains_order_id(item, order_id) for item in value.values()
+            _payload_contains_order_id(item, order_id)
+            for item in value.values()
+            if isinstance(item, (dict, list))
         )
     if isinstance(value, list):
         return any(_payload_contains_order_id(item, order_id) for item in value)
-    # Zero-padding representation may differ between the accept response and
-    # the history TR (12-char left-padded), so compare digit-normalized.
-    normalized = _normalize_digits(str(value))
-    target = _normalize_digits(order_id)
-    return normalized is not None and target is not None and normalized == target
+    return False
+
+
+def _broker_payload(response: dict[str, Any]) -> dict[str, Any]:
+    nested = response.get("broker_response")
+    return nested if isinstance(nested, dict) else response
+
+
+def _response_succeeded(response: dict[str, Any]) -> bool:
+    if "success" in response and response.get("success") is not True:
+        return False
+    payload = _broker_payload(response)
+    if "return_code" in payload:
+        return derive_broker_success(payload)
+    return False
+
+
+async def _collect_pages(
+    reader: Callable[..., Awaitable[dict[str, Any]]], *, page_cap: int = _PAGE_CAP
+) -> list[dict[str, Any]]:
+    if page_cap <= 0:
+        raise SmokeRejected("pagination page cap must be positive")
+    rows: list[dict[str, Any]] = []
+    next_key: str | None = None
+    seen_tokens: set[str] = set()
+    for page_number in range(1, page_cap + 1):
+        response = await reader(
+            cont_yn="Y" if next_key is not None else None,
+            next_key=next_key,
+        )
+        payload = _broker_payload(response)
+        if not derive_broker_success(payload):
+            raise SmokeRejected("broker page query did not strictly succeed")
+        page_rows = payload.get("result_list")
+        if not isinstance(page_rows, list) or not all(
+            isinstance(row, dict) for row in page_rows
+        ):
+            raise SmokeRejected("malformed broker result_list")
+        rows.extend(page_rows)
+
+        continuation = payload.get("continuation")
+        if not isinstance(continuation, dict):
+            raise SmokeRejected("malformed continuation metadata")
+        cont_yn = continuation.get("cont_yn")
+        token = continuation.get("next_key")
+        if cont_yn in {"", "N"}:
+            if token not in {None, ""}:
+                raise SmokeRejected("malformed terminal continuation token")
+            return rows
+        if cont_yn != "Y" or not isinstance(token, str) or not token.strip():
+            raise SmokeRejected("malformed continuation metadata")
+        if token in seen_tokens:
+            raise SmokeRejected("repeated continuation token")
+        if page_number == page_cap:
+            raise SmokeRejected("pagination page cap exceeded")
+        seen_tokens.add(token)
+        next_key = token
+    raise SmokeRejected("pagination page cap exceeded")
+
+
+def _non_negative_decimal(row: dict[str, Any], key: str) -> Decimal | None:
+    raw = row.get(key)
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = Decimal(str(raw).replace(",", "").strip())
+    except (InvalidOperation, ValueError):
+        return None
+    if not value.is_finite() or value < 0:
+        return None
+    return value
+
+
+def _target_rows(rows: list[dict[str, Any]], order_id: str) -> list[dict[str, Any]]:
+    return [row for row in rows if _payload_contains_order_id(row, order_id)]
+
+
+def _classify_target(
+    open_rows: list[dict[str, Any]],
+    today_rows: list[dict[str, Any]],
+    order_id: str,
+) -> str:
+    rows = _target_rows([*open_rows, *today_rows], order_id)
+    if not rows:
+        return "unknown"
+
+    states: set[str] = set()
+    for row in rows:
+        filled = _non_negative_decimal(row, "cntr_qty")
+        remaining = _non_negative_decimal(row, "ord_remnq")
+        if filled is None or remaining is None:
+            states.add("unknown")
+            continue
+        if filled > 0 and remaining > 0:
+            states.add("partial")
+            continue
+        if filled > 0 and remaining == 0:
+            states.add("filled")
+            continue
+
+        status = str(row.get("ord_stat") or "").strip().casefold()
+        is_cancel_row = str(row.get("ord_cntr_tp") or "").strip() == "12"
+        if is_cancel_row:
+            states.add("cancelled" if remaining == 0 else "cancel_pending")
+        elif status in {"cancelled", "canceled", "취소", "취소완료"}:
+            states.add("cancelled" if remaining == 0 else "cancel_pending")
+        elif status in {"rejected", "거부"}:
+            states.add("rejected")
+        elif remaining > 0:
+            states.add("open")
+        else:
+            states.add("unknown")
+
+    for state in (
+        "partial",
+        "filled",
+        "cancel_pending",
+        "cancelled",
+        "rejected",
+        "open",
+        "unknown",
+    ):
+        if state in states:
+            return state
+    return "unknown"
+
+
+async def _position_snapshot(
+    reader: Callable[..., Awaitable[dict[str, Any]]], *, page_cap: int = _PAGE_CAP
+) -> dict[str, Decimal]:
+    snapshot: dict[str, Decimal] = {}
+    for row in await _collect_pages(reader, page_cap=page_cap):
+        symbol = str(row.get("stk_cd") or "").strip().upper()
+        quantity = _non_negative_decimal(row, "poss_qty")
+        if not symbol or quantity is None:
+            raise SmokeRejected("malformed position row")
+        snapshot[symbol] = snapshot.get(symbol, Decimal("0")) + quantity
+    return snapshot
+
+
+def _position_delta(
+    baseline: dict[str, Decimal], current: dict[str, Decimal]
+) -> dict[str, dict[str, str]]:
+    delta: dict[str, dict[str, str]] = {}
+    for symbol in sorted(set(baseline) | set(current)):
+        before = baseline.get(symbol, Decimal("0"))
+        after = current.get(symbol, Decimal("0"))
+        if before != after:
+            delta[symbol] = {"before": str(before), "after": str(after)}
+    return delta
+
+
+async def _prove_cleanup(
+    history_reader: Callable[..., Awaitable[dict[str, Any]]],
+    positions_reader: Callable[..., Awaitable[dict[str, Any]]],
+    *,
+    symbol: str,
+    order_id: str,
+    baseline: dict[str, Decimal],
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    timeout: float = _CLEANUP_TIMEOUT,
+    poll_interval: float = _POLL_INTERVAL,
+    page_cap: int = _PAGE_CAP,
+) -> CleanupProof:
+    del symbol  # The injected readers are already scoped to the requested symbol.
+    started = clock()
+    last_state = "unknown"
+    while True:
+        try:
+            open_rows = await _collect_pages(
+                lambda **cursor: history_reader(scope="open", **cursor),
+                page_cap=page_cap,
+            )
+            today_rows = await _collect_pages(
+                lambda **cursor: history_reader(scope="today", **cursor),
+                page_cap=page_cap,
+            )
+            current = await _position_snapshot(positions_reader, page_cap=page_cap)
+        except SmokeRejected as exc:
+            return CleanupProof(False, "unknown", str(exc), {})
+
+        last_state = _classify_target(open_rows, today_rows, order_id)
+        delta = _position_delta(baseline, current)
+        if delta:
+            return CleanupProof(False, last_state, "unexpected position delta", delta)
+        if last_state in {"partial", "filled"}:
+            return CleanupProof(False, last_state, "unexpected fill evidence", {})
+        if last_state == "unknown":
+            return CleanupProof(False, last_state, "unknown target order state", {})
+        if last_state in {"cancelled", "rejected"}:
+            return CleanupProof(True, last_state, "cleanup proven", {})
+        if clock() - started >= timeout:
+            return CleanupProof(
+                False, last_state, "cleanup reconciliation timed out", {}
+            )
+        await sleep(poll_interval)
 
 
 async def run_preflight() -> dict[str, Any]:
@@ -135,11 +359,7 @@ async def run_preflight() -> dict[str, Any]:
         for api_id, method in checks:
             raw = await method()
             _emit({"step": "preflight_read", "api_id": api_id, "broker_response": raw})
-            try:
-                succeeded = int(raw.get("return_code", -1)) == 0
-            except (TypeError, ValueError):
-                succeeded = False
-            if not succeeded:
+            if not derive_broker_success(raw):
                 result["ok"] = False
     except Exception as exc:  # noqa: BLE001 - operator evidence, fail closed
         result["ok"] = False
@@ -157,7 +377,14 @@ async def run_preview(args: argparse.Namespace) -> dict[str, Any]:
     )
 
 
-async def run_full(args: argparse.Namespace) -> int:
+async def run_full(
+    args: argparse.Namespace,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    cleanup_timeout: float = _CLEANUP_TIMEOUT,
+    poll_interval: float = _POLL_INTERVAL,
+) -> int:
     if args.trde_tp != "00":
         raise SmokeRejected("full mode is limit-only; use trde_tp=00")
     if args.price is None:
@@ -184,6 +411,37 @@ async def run_full(args: argparse.Namespace) -> int:
         _emit({"step": "stop", "reason": "no --confirm; no broker mutation"})
         return 0
 
+    async def history_reader(
+        *, scope: str, cont_yn: str | None = None, next_key: str | None = None
+    ) -> dict[str, Any]:
+        return await tools["kiwoom_mock_us_get_order_history"](
+            scope=scope,
+            symbol=args.symbol,
+            cont_yn=cont_yn,
+            next_key=next_key,
+        )
+
+    async def positions_reader(
+        *, cont_yn: str | None = None, next_key: str | None = None
+    ) -> dict[str, Any]:
+        return await tools["kiwoom_mock_us_get_positions"](
+            symbol=args.symbol,
+            cont_yn=cont_yn,
+            next_key=next_key,
+        )
+
+    try:
+        baseline = await _position_snapshot(positions_reader)
+    except SmokeRejected as exc:
+        _emit({"step": "baseline_failed", "reason": str(exc)})
+        return 2
+    _emit(
+        {
+            "step": "positions_baseline",
+            "positions": {key: str(value) for key, value in baseline.items()},
+        }
+    )
+
     placed = await tools["kiwoom_mock_us_place_order"](
         symbol=args.symbol,
         side=args.side,
@@ -194,14 +452,22 @@ async def run_full(args: argparse.Namespace) -> int:
         confirm=True,
     )
     _emit({"step": "place_confirmed", **placed})
-    if not placed.get("success"):
+    if not _response_succeeded(placed):
+        if placed.get("status") == "accepted_untracked":
+            _emit(
+                {
+                    "step": "cleanup_required",
+                    "reason": (
+                        "broker accepted the order without a trackable id; "
+                        "do not retry; reconcile in broker UI"
+                    ),
+                }
+            )
         return 2
 
     order_id = extract_order_id(placed)
     if order_id is None:
-        history = await tools["kiwoom_mock_us_get_order_history"](
-            scope="open", symbol=args.symbol
-        )
+        history = await history_reader(scope="open")
         _emit({"step": "reconcile_no_order_id", **history})
         _emit(
             {
@@ -214,18 +480,40 @@ async def run_full(args: argparse.Namespace) -> int:
         {
             "step": "order_id_evidence",
             "order_id_length": len(order_id),
-            "matches_documented_nine_digits": len(order_id) == 9,
+            "within_bounded_1_18_digits": True,
         }
     )
 
     exit_code = 0
     try:
-        history = await tools["kiwoom_mock_us_get_order_history"](
-            scope="open", symbol=args.symbol
-        )
-        _emit({"step": "history_after_place", **history})
-        if not history.get("success"):
+        try:
+            open_rows = await _collect_pages(
+                lambda **cursor: history_reader(scope="open", **cursor)
+            )
+            today_rows = await _collect_pages(
+                lambda **cursor: history_reader(scope="today", **cursor)
+            )
+            placed_state = _classify_target(open_rows, today_rows, order_id)
+            _emit({"step": "history_after_place", "state": placed_state})
+        except SmokeRejected as exc:
+            placed_state = "unknown"
             exit_code = 2
+            _emit(
+                {
+                    "step": "history_after_place",
+                    "state": placed_state,
+                    "reason": str(exc),
+                }
+            )
+        if placed_state in {"unknown", "partial", "filled"}:
+            exit_code = 2
+            _emit(
+                {
+                    "step": "cleanup_required",
+                    "order_id": order_id,
+                    "reason": f"unsafe post-place state={placed_state}",
+                }
+            )
 
         if args.new_price is not None:
             modified = await tools["kiwoom_mock_us_modify_order"](
@@ -236,7 +524,7 @@ async def run_full(args: argparse.Namespace) -> int:
                 confirm=True,
             )
             _emit({"step": "modify_confirmed", **modified})
-            if not modified.get("success"):
+            if not _response_succeeded(modified):
                 exit_code = 2
             elif modified_id := extract_order_id(modified):
                 order_id = modified_id
@@ -249,7 +537,7 @@ async def run_full(args: argparse.Namespace) -> int:
                 confirm=True,
             )
             _emit({"step": "cancel_confirmed", **cancelled})
-            if not cancelled.get("success"):
+            if not _response_succeeded(cancelled):
                 exit_code = 2
                 _emit(
                     {
@@ -268,25 +556,38 @@ async def run_full(args: argparse.Namespace) -> int:
                 }
             )
 
-    final_history = await tools["kiwoom_mock_us_get_order_history"](
-        scope="open", symbol=args.symbol
+    proof = await _prove_cleanup(
+        history_reader,
+        positions_reader,
+        symbol=args.symbol,
+        order_id=order_id,
+        baseline=baseline,
+        clock=clock,
+        sleep=sleep,
+        timeout=cleanup_timeout,
+        poll_interval=poll_interval,
     )
-    _emit({"step": "final_open_orders", **final_history})
-    if not final_history.get("success") or _payload_contains_order_id(
-        final_history, order_id
-    ):
+    _emit(
+        {
+            "step": "final_reconciliation",
+            "ok": proof.ok,
+            "state": proof.state,
+            "reason": proof.reason,
+            "position_delta": proof.position_delta,
+        }
+    )
+    if not proof.ok:
         exit_code = 2
         _emit(
             {
                 "step": "cleanup_required",
                 "order_id": order_id,
-                "reason": "final open-order reconciliation did not prove removal",
+                "reason": (
+                    f"{proof.reason}; inspect broker history/positions and manually "
+                    "cancel or unwind without retrying the place"
+                ),
             }
         )
-    positions = await tools["kiwoom_mock_us_get_positions"](symbol=args.symbol)
-    _emit({"step": "final_positions", **positions})
-    if not positions.get("success"):
-        exit_code = 2
     return exit_code
 
 
@@ -305,7 +606,14 @@ def _probe_price_args(
     return price, stop_price
 
 
-async def run_probe(args: argparse.Namespace) -> int:
+async def run_probe(
+    args: argparse.Namespace,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    cleanup_timeout: float = _CLEANUP_TIMEOUT,
+    poll_interval: float = _POLL_INTERVAL,
+) -> int:
     codes = parse_probe_codes(args.probe_order_types)
     if not codes:
         return 0
@@ -332,10 +640,47 @@ async def run_probe(args: argparse.Namespace) -> int:
 
     client = KiwoomMockUsClient.from_app_settings()
     orders = KiwoomUsOrderClient(client)
+    account = KiwoomUsAccountClient(client)
+
+    async def history_reader(
+        *, scope: str, cont_yn: str | None = None, next_key: str | None = None
+    ) -> dict[str, Any]:
+        method = (
+            account.get_open_orders if scope == "open" else account.get_today_orders
+        )
+        return await method(
+            stex_tp=stex_tp,
+            symbol=args.symbol,
+            cont_yn=cont_yn,
+            next_key=next_key,
+        )
+
+    async def positions_reader(
+        *, cont_yn: str | None = None, next_key: str | None = None
+    ) -> dict[str, Any]:
+        return await account.get_positions(
+            stex_tp=stex_tp,
+            symbol=args.symbol,
+            cont_yn=cont_yn,
+            next_key=next_key,
+        )
+
     exit_code = 0
     for code in codes:
         order_id: str | None = None
         accepted = False
+        try:
+            baseline = await _position_snapshot(positions_reader)
+        except SmokeRejected as exc:
+            exit_code = 2
+            _emit(
+                {
+                    "step": "probe_baseline_failed",
+                    "trde_tp": code,
+                    "reason": str(exc),
+                }
+            )
+            continue
         price, stop_price = _probe_price_args(code, args)
         try:
             try:
@@ -366,10 +711,7 @@ async def run_probe(args: argparse.Namespace) -> int:
                     }
                 )
                 continue
-            try:
-                accepted = int(raw.get("return_code", -1)) == 0
-            except (TypeError, ValueError):
-                accepted = False
+            accepted = derive_broker_success(raw)
             order_id = extract_order_id(raw)
             _emit(
                 {
@@ -385,9 +727,33 @@ async def run_probe(args: argparse.Namespace) -> int:
                     {
                         "step": "cleanup_required",
                         "trde_tp": code,
-                        "reason": "accepted probe returned no exact nine-digit order id",
+                        "reason": (
+                            "accepted probe returned no bounded 1-18 digit order id; "
+                            "do not retry; reconcile in broker UI"
+                        ),
                     }
                 )
+            elif accepted and order_id is not None:
+                try:
+                    open_rows = await _collect_pages(
+                        lambda **cursor: history_reader(scope="open", **cursor)
+                    )
+                    today_rows = await _collect_pages(
+                        lambda **cursor: history_reader(scope="today", **cursor)
+                    )
+                    placed_state = _classify_target(open_rows, today_rows, order_id)
+                except SmokeRejected:
+                    placed_state = "unknown"
+                if placed_state in {"unknown", "partial", "filled"}:
+                    exit_code = 2
+                    _emit(
+                        {
+                            "step": "cleanup_required",
+                            "trde_tp": code,
+                            "order_id": order_id,
+                            "reason": f"unsafe post-place state={placed_state}",
+                        }
+                    )
         finally:
             if accepted and order_id is not None:
                 try:
@@ -404,10 +770,7 @@ async def run_probe(args: argparse.Namespace) -> int:
                             "broker_response": cancelled,
                         }
                     )
-                    try:
-                        cancelled_ok = int(cancelled.get("return_code", -1)) == 0
-                    except (TypeError, ValueError):
-                        cancelled_ok = False
+                    cancelled_ok = derive_broker_success(cancelled)
                     if not cancelled_ok:
                         exit_code = 2
                 except Exception as exc:  # noqa: BLE001 - cleanup must fail the smoke
@@ -418,6 +781,41 @@ async def run_probe(args: argparse.Namespace) -> int:
                             "trde_tp": code,
                             "order_id": order_id,
                             "reason": f"cancel raised {type(exc).__name__}: {exc}",
+                        }
+                    )
+                proof = await _prove_cleanup(
+                    history_reader,
+                    positions_reader,
+                    symbol=args.symbol,
+                    order_id=order_id,
+                    baseline=baseline,
+                    clock=clock,
+                    sleep=sleep,
+                    timeout=cleanup_timeout,
+                    poll_interval=poll_interval,
+                )
+                _emit(
+                    {
+                        "step": "probe_final_reconciliation",
+                        "trde_tp": code,
+                        "order_id": order_id,
+                        "ok": proof.ok,
+                        "state": proof.state,
+                        "reason": proof.reason,
+                        "position_delta": proof.position_delta,
+                    }
+                )
+                if not proof.ok:
+                    exit_code = 2
+                    _emit(
+                        {
+                            "step": "cleanup_required",
+                            "trde_tp": code,
+                            "order_id": order_id,
+                            "reason": (
+                                f"{proof.reason}; inspect broker history/positions "
+                                "and manually cancel or unwind"
+                            ),
                         }
                     )
     return exit_code

@@ -159,9 +159,108 @@ async def test_confirmed_limit_resolves_exchange_and_calls_broker(monkeypatch) -
     )
 
     assert result["success"] is True
+    assert result["status"] == "submitted"
+    assert result["reconcile_required"] is False
     assert result["account_mode"] == "kiwoom_mock_us"
     assert calls[-1]["stex_tp"] == "ND"
     assert calls[-1]["trde_tp"] == "00"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"return_code": 0},
+        {"return_code": 0, "ord_no": ""},
+        {"return_code": 0, "ord_no": "not-digits"},
+        {"return_code": 0, "ord_no": 282},
+        {"return_code": 0, "ord_no": "١٢٣٤٥٦٧٨٩"},
+        {"return_code": 0, "ord_no": "1" * 19},
+    ],
+)
+async def test_confirmed_place_without_trackable_order_id_is_uncertain(
+    monkeypatch, raw: dict[str, Any]
+) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeOrders:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def place_buy_order(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return raw
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(module, "KiwoomUsOrderClient", FakeOrders)
+
+    result = await _tools()["kiwoom_mock_us_place_order"](
+        symbol="NVDA",
+        side="buy",
+        quantity=1,
+        price=213.04,
+        trde_tp="00",
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert result["success"] is False
+    assert result["status"] == "accepted_untracked"
+    assert result["reconcile_required"] is True
+    assert result["retry_allowed"] is False
+    assert result["broker_response"] == raw
+
+
+@pytest.mark.asyncio
+async def test_confirmed_place_broker_rejection_is_not_uncertain(monkeypatch) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeOrders:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def place_buy_order(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return {"return_code": 20, "return_msg": "rejected"}
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(module, "KiwoomUsOrderClient", FakeOrders)
+
+    result = await _tools()["kiwoom_mock_us_place_order"](
+        symbol="NVDA",
+        side="buy",
+        quantity=1,
+        price=213.04,
+        trde_tp="00",
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert result["success"] is False
+    assert result["status"] == "rejected"
+    assert result["reconcile_required"] is False
 
 
 @pytest.mark.asyncio

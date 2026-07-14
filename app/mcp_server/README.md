@@ -1967,6 +1967,13 @@ Environment variables:
 - `MCP_USER_ID` : `1` (manual holdings 조회에 사용할 기본 사용자 ID)
 - `MCP_CALLER_AGENT_ID` : DEV/stdio only — MUST NOT be set in production HTTP deployments (re-opens caller spoofing vector)
 
+For `streamable-http` and `sse`, startup fails before FastMCP construction when
+`MCP_PROFILE=kiwoom` has no non-empty `MCP_AUTH_TOKEN`. The same fail-closed
+rule applies to the default profile when `KIWOOM_MOCK_US_ENABLED=true` exposes
+the Kiwoom US mutation tools. An explicitly selected local `stdio` development
+transport may remain tokenless; changing that process to a network transport
+re-runs the auth check and cannot bypass this boundary.
+
 Example:
 ```bash
 docker compose -f docker-compose.prod.yml up -d mcp
@@ -2354,6 +2361,16 @@ Every mutation defaults to `dry_run=true`. Broker I/O requires both
 `dry_run=false` and `confirm=true`. Mock host is fixed to
 `https://mockapi.kiwoom.com` (transport-layer fail-closed); the live host cannot
 be selected.
+
+A confirmed place is `status="submitted"` only when the broker response has a
+strict success code (`return_code` is integer `0` or string `"0"`) and a
+trackable 1-18 digit order ID. Broker success without such an ID returns
+`success=false`, `status="accepted_untracked"`,
+`reconcile_required=true`, and `retry_allowed=false`, while retaining redacted
+broker evidence. Callers must reconcile broker history and must not retry the
+place automatically. A non-success broker code is the distinct
+`status="rejected"` case. Read, modify, and cancel response shaping is
+unchanged.
 
 #### Exchange mapping
 

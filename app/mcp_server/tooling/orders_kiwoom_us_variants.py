@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from app.core.config import validate_kiwoom_mock_us_config
 from app.mcp_server.tooling.orders_kiwoom_shared import (
     finalize_broker_response,
+    finalize_place_broker_response,
 )
 from app.services.brokers.kiwoom import constants
 from app.services.brokers.kiwoom.normalization import (
@@ -129,7 +130,11 @@ def _exception_response(operation: str, exc: Exception) -> dict[str, Any]:
 
 
 def _finalize_us(
-    base: dict[str, Any], broker_response: dict[str, Any], *, api_id: str
+    base: dict[str, Any],
+    broker_response: dict[str, Any],
+    *,
+    api_id: str,
+    place: bool = False,
 ) -> dict[str, Any]:
     """Anti-spoof provenance check + broker-evidence success + mock stamp."""
 
@@ -145,7 +150,8 @@ def _finalize_us(
             "error_code": exc.code,
             "error": str(exc),
         }
-    response = finalize_broker_response(base, broker_response)
+    finalizer = finalize_place_broker_response if place else finalize_broker_response
+    response = finalizer(base, broker_response)
     response["provenance"] = build_mock_provenance(
         api_id, account_mode=ACCOUNT_MODE_KIWOOM_MOCK_US
     )
@@ -273,6 +279,7 @@ def register(mcp: FastMCP) -> None:
                 if side == "buy"
                 else constants.US_ORDER_SELL_API_ID
             ),
+            place=True,
         )
 
     @mcp.tool(

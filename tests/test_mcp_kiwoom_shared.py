@@ -1,3 +1,5 @@
+import pytest
+
 from app.mcp_server.tooling.orders_kiwoom_shared import (
     derive_broker_success,
     finalize_broker_response,
@@ -10,6 +12,14 @@ def test_success_requires_explicit_zero_return_code() -> None:
     assert derive_broker_success({}) is False
     assert derive_broker_success({"return_code": None}) is False
     assert derive_broker_success({"return_code": 20}) is False
+
+
+@pytest.mark.parametrize(
+    "return_code",
+    [False, 0.0, " 0 ", "", "zero", [], {}],
+)
+def test_success_rejects_non_contract_return_codes(return_code: object) -> None:
+    assert derive_broker_success({"return_code": return_code}) is False
 
 
 def test_rc9000_is_classified_without_losing_raw_evidence() -> None:

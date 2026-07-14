@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -129,9 +130,50 @@ async def test_probe_cancels_every_accepted_order(monkeypatch) -> None:
             calls.append("cancel")
             return {"return_code": 0, "ord_no": "000000283"}
 
+    class FakeAccount:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def get_positions(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return _page([])
+
+        async def get_open_orders(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            if "cancel" in calls:
+                return _page([])
+            return _page(
+                [
+                    {
+                        "ord_no": "000000282",
+                        "ord_qty": "1",
+                        "cntr_qty": "0",
+                        "ord_remnq": "1",
+                    }
+                ]
+            )
+
+        async def get_today_orders(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            if "cancel" not in calls:
+                return _page([])
+            return _page(
+                [
+                    {
+                        "ord_no": "000000283",
+                        "orig_ord_no": "000000282",
+                        "ord_cntr_tp": "12",
+                        "ord_qty": "1",
+                        "cntr_qty": "0",
+                        "ord_remnq": "0",
+                    }
+                ]
+            )
+
     monkeypatch.setattr(smoke, "get_us_exchange_by_symbol", fake_lookup)
     monkeypatch.setattr(smoke, "KiwoomMockUsClient", FakeClient)
     monkeypatch.setattr(smoke, "KiwoomUsOrderClient", FakeOrders)
+    monkeypatch.setattr(smoke, "KiwoomUsAccountClient", FakeAccount)
     args = Namespace(
         confirm_probes=True,
         confirm_existing_position=False,
@@ -148,6 +190,8 @@ async def test_probe_cancels_every_accepted_order(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_probe_cleanup_failure_returns_nonzero(monkeypatch) -> None:
+    cancel_attempted = False
+
     async def fake_lookup(symbol: str) -> str:
         del symbol
         return "NASDAQ"
@@ -166,12 +210,55 @@ async def test_probe_cleanup_failure_returns_nonzero(monkeypatch) -> None:
             return {"return_code": 0, "ord_no": "000000282"}
 
         async def cancel_order(self, **kwargs: Any) -> dict[str, Any]:
+            nonlocal cancel_attempted
             del kwargs
+            cancel_attempted = True
             return {"return_code": 20, "return_msg": "cancel rejected"}
+
+    class FakeAccount:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def get_positions(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return _page([])
+
+        async def get_open_orders(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            if cancel_attempted:
+                return _page([])
+            return _page(
+                [
+                    {
+                        "ord_no": "000000282",
+                        "ord_qty": "1",
+                        "cntr_qty": "0",
+                        "ord_remnq": "1",
+                    }
+                ]
+            )
+
+        async def get_today_orders(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            if not cancel_attempted:
+                return _page([])
+            return _page(
+                [
+                    {
+                        "ord_no": "000000283",
+                        "orig_ord_no": "000000282",
+                        "ord_cntr_tp": "12",
+                        "ord_qty": "1",
+                        "cntr_qty": "0",
+                        "ord_remnq": "0",
+                    }
+                ]
+            )
 
     monkeypatch.setattr(smoke, "get_us_exchange_by_symbol", fake_lookup)
     monkeypatch.setattr(smoke, "KiwoomMockUsClient", FakeClient)
     monkeypatch.setattr(smoke, "KiwoomUsOrderClient", FakeOrders)
+    monkeypatch.setattr(smoke, "KiwoomUsAccountClient", FakeAccount)
     args = Namespace(
         confirm_probes=True,
         confirm_existing_position=False,
@@ -189,6 +276,8 @@ def test_extract_order_id_accepts_bounded_digits_only() -> None:
     assert smoke.extract_order_id({"ord_no": "000000282"}) == "000000282"
     assert smoke.extract_order_id({"ord_no": "282"}) == "282"
     assert smoke.extract_order_id({"ord_no": "../000000282"}) is None
+    assert smoke.extract_order_id({"ord_no": "١٢٣٤٥٦٧٨٩"}) is None
+    assert smoke.extract_order_id({"ord_no": 282}) is None
     assert smoke.extract_order_id({"ord_no": "1" * 19}) is None
     assert smoke.extract_order_id({"ord_no": ""}) is None
 
@@ -198,6 +287,224 @@ def test_reconcile_compare_is_zero_padding_insensitive() -> None:
     assert smoke._payload_contains_order_id(payload, "000000282")
     assert not smoke._payload_contains_order_id(payload, "000000283")
     assert not smoke._payload_contains_order_id({"ord_no": "28a2"}, "282")
+
+
+def test_reconcile_ignores_unrelated_numeric_values() -> None:
+    payload = {
+        "result_list": [
+            {"ord_qty": "000000282", "ord_uv": "282", "ord_no": "000000999"}
+        ]
+    }
+    assert not smoke._payload_contains_order_id(payload, "000000282")
+
+
+def test_accepted_untracked_wrapper_is_not_cli_success() -> None:
+    assert not smoke._response_succeeded({"success": True, "ord_no": "000000282"})
+    assert not smoke._response_succeeded(
+        {
+            "success": False,
+            "status": "accepted_untracked",
+            "reconcile_required": True,
+            "broker_response": {"return_code": 0},
+        }
+    )
+
+
+def test_target_classifier_covers_documented_lifecycle_states() -> None:
+    target = "000000282"
+
+    def row(**values: str) -> dict[str, str]:
+        return {
+            "ord_no": target,
+            "ord_qty": "2",
+            "cntr_qty": "0",
+            "ord_remnq": "2",
+            **values,
+        }
+
+    assert smoke._classify_target([row()], [], target) == "open"
+    assert (
+        smoke._classify_target([row(cntr_qty="1", ord_remnq="1")], [], target)
+        == "partial"
+    )
+    assert (
+        smoke._classify_target([], [row(cntr_qty="2", ord_remnq="0")], target)
+        == "filled"
+    )
+    assert (
+        smoke._classify_target([], [row(ord_cntr_tp="12", ord_remnq="1")], target)
+        == "cancel_pending"
+    )
+    assert (
+        smoke._classify_target([], [row(ord_cntr_tp="12", ord_remnq="0")], target)
+        == "cancelled"
+    )
+    assert (
+        smoke._classify_target([], [row(ord_stat="rejected", ord_remnq="0")], target)
+        == "rejected"
+    )
+    assert smoke._classify_target([], [], target) == "unknown"
+
+
+def _page(
+    rows: list[dict[str, Any]], *, cont_yn: str = "N", next_key: str = ""
+) -> dict[str, Any]:
+    return {
+        "return_code": 0,
+        "result_list": rows,
+        "continuation": {"cont_yn": cont_yn, "next_key": next_key},
+    }
+
+
+@pytest.mark.asyncio
+async def test_target_order_on_continuation_page_two_is_found() -> None:
+    calls: list[tuple[str | None, str | None]] = []
+
+    async def reader(*, cont_yn=None, next_key=None):
+        calls.append((cont_yn, next_key))
+        if next_key is None:
+            return _page([], cont_yn="Y", next_key="page-2")
+        return _page([{"ord_no": "000000282"}])
+
+    rows = await smoke._collect_pages(reader, page_cap=3)
+    assert smoke._payload_contains_order_id({"result_list": rows}, "000000282")
+    assert calls == [(None, None), ("Y", "page-2")]
+
+
+@pytest.mark.asyncio
+async def test_repeated_continuation_token_fails_closed() -> None:
+    async def reader(*, cont_yn=None, next_key=None):
+        del cont_yn, next_key
+        return _page([], cont_yn="Y", next_key="repeat")
+
+    with pytest.raises(smoke.SmokeRejected, match="repeated continuation"):
+        await smoke._collect_pages(reader, page_cap=3)
+
+
+@pytest.mark.asyncio
+async def test_malformed_continuation_fails_closed() -> None:
+    async def reader(*, cont_yn=None, next_key=None):
+        del cont_yn, next_key
+        return {"return_code": 0, "result_list": [], "continuation": "Y"}
+
+    with pytest.raises(smoke.SmokeRejected, match="malformed continuation"):
+        await smoke._collect_pages(reader)
+
+
+@pytest.mark.asyncio
+async def test_continuation_page_cap_fails_closed() -> None:
+    calls = 0
+
+    async def reader(*, cont_yn=None, next_key=None):
+        nonlocal calls
+        del cont_yn, next_key
+        calls += 1
+        return _page([], cont_yn="Y", next_key=f"page-{calls + 1}")
+
+    with pytest.raises(smoke.SmokeRejected, match="page cap"):
+        await smoke._collect_pages(reader, page_cap=2)
+
+
+@pytest.mark.asyncio
+async def test_partial_fill_and_position_delta_fail_cleanup() -> None:
+    async def history(*, scope, cont_yn=None, next_key=None):
+        del cont_yn, next_key
+        if scope == "open":
+            return _page(
+                [
+                    {
+                        "ord_no": "000000282",
+                        "ord_qty": "2",
+                        "cntr_qty": "1",
+                        "ord_remnq": "1",
+                    }
+                ]
+            )
+        return _page(
+            [
+                {
+                    "ord_no": "000000282",
+                    "ord_qty": "2",
+                    "cntr_qty": "1",
+                    "ord_remnq": "1",
+                }
+            ]
+        )
+
+    async def positions(*, cont_yn=None, next_key=None):
+        del cont_yn, next_key
+        return _page([{"stk_cd": "NVDA", "poss_qty": "1"}])
+
+    proof = await smoke._prove_cleanup(
+        history,
+        positions,
+        symbol="NVDA",
+        order_id="000000282",
+        baseline={"NVDA": Decimal("0")},
+    )
+    assert proof.ok is False
+    assert proof.state == "partial"
+    assert proof.position_delta
+
+
+@pytest.mark.asyncio
+async def test_cancel_pending_timeout_uses_injected_sleep() -> None:
+    now = 0.0
+    sleeps: list[float] = []
+
+    def clock() -> float:
+        return now
+
+    async def sleep(delay: float) -> None:
+        nonlocal now
+        sleeps.append(delay)
+        now += delay
+
+    async def history(*, scope, cont_yn=None, next_key=None):
+        del cont_yn, next_key
+        if scope == "open":
+            return _page(
+                [
+                    {
+                        "ord_no": "000000282",
+                        "ord_qty": "1",
+                        "cntr_qty": "0",
+                        "ord_remnq": "1",
+                    }
+                ]
+            )
+        return _page(
+            [
+                {
+                    "ord_no": "000000283",
+                    "orig_ord_no": "000000282",
+                    "ord_cntr_tp": "12",
+                    "ord_qty": "1",
+                    "cntr_qty": "0",
+                    "ord_remnq": "1",
+                }
+            ]
+        )
+
+    async def positions(*, cont_yn=None, next_key=None):
+        del cont_yn, next_key
+        return _page([])
+
+    proof = await smoke._prove_cleanup(
+        history,
+        positions,
+        symbol="NVDA",
+        order_id="000000282",
+        baseline={},
+        clock=clock,
+        sleep=sleep,
+        timeout=2.0,
+        poll_interval=1.0,
+    )
+    assert proof.ok is False
+    assert proof.state == "cancel_pending"
+    assert proof.reason == "cleanup reconciliation timed out"
+    assert sleeps == [1.0, 1.0]
 
 
 @pytest.mark.asyncio
@@ -288,7 +595,7 @@ async def test_full_stops_after_dry_run_without_confirm(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_full_always_cancels_accepted_order(monkeypatch) -> None:
+async def test_full_empty_post_place_history_fails_closed(monkeypatch) -> None:
     calls: list[str] = []
 
     async def preview(**kwargs: Any) -> dict[str, Any]:
@@ -299,17 +606,21 @@ async def test_full_always_cancels_accepted_order(monkeypatch) -> None:
         calls.append("place-live" if not kwargs["dry_run"] else "place-dry")
         if kwargs["dry_run"]:
             return {"success": True}
-        return {"success": True, "ord_no": "000000282"}
+        return {"success": True, "return_code": 0, "ord_no": "000000282"}
 
     async def history(**kwargs: Any) -> dict[str, Any]:
         del kwargs
         calls.append("history")
-        return {"success": True, "result_list": []}
+        return {
+            "success": True,
+            "return_code": 0,
+            "broker_response": _page([]),
+        }
 
     async def cancel(**kwargs: Any) -> dict[str, Any]:
         del kwargs
         calls.append("cancel")
-        return {"success": True, "ord_no": "000000283"}
+        return {"success": True, "return_code": 0, "ord_no": "000000283"}
 
     monkeypatch.setattr(
         smoke,
@@ -335,8 +646,180 @@ async def test_full_always_cancels_accepted_order(monkeypatch) -> None:
             "--confirm",
         ]
     )
-    assert await smoke.run_full(args) == 0
+    assert await smoke.run_full(args) == 2
     assert calls.index("cancel") > calls.index("place-live")
+
+
+@pytest.mark.asyncio
+async def test_full_returns_zero_only_after_terminal_cleanup_and_no_position_delta(
+    monkeypatch,
+) -> None:
+    cancelled = False
+
+    def wrapped(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "success": True,
+            "return_code": 0,
+            "broker_response": _page(rows),
+        }
+
+    async def preview(**kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        return {"success": True}
+
+    async def place(**kwargs: Any) -> dict[str, Any]:
+        if kwargs["dry_run"]:
+            return {"success": True}
+        return {"success": True, "return_code": 0, "ord_no": "000000282"}
+
+    async def history(**kwargs: Any) -> dict[str, Any]:
+        scope = kwargs["scope"]
+        if scope == "open" and not cancelled:
+            return wrapped(
+                [
+                    {
+                        "ord_no": "000000282",
+                        "ord_qty": "1",
+                        "cntr_qty": "0",
+                        "ord_remnq": "1",
+                    }
+                ]
+            )
+        if scope == "today" and cancelled:
+            return wrapped(
+                [
+                    {
+                        "ord_no": "000000283",
+                        "orig_ord_no": "000000282",
+                        "ord_cntr_tp": "12",
+                        "ord_qty": "1",
+                        "cntr_qty": "0",
+                        "ord_remnq": "0",
+                    }
+                ]
+            )
+        return wrapped([])
+
+    async def cancel(**kwargs: Any) -> dict[str, Any]:
+        nonlocal cancelled
+        del kwargs
+        cancelled = True
+        return {"success": True, "return_code": 0, "ord_no": "000000283"}
+
+    async def positions(**kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        return wrapped([])
+
+    monkeypatch.setattr(
+        smoke,
+        "_tools",
+        lambda: {
+            "kiwoom_mock_us_preview_order": preview,
+            "kiwoom_mock_us_place_order": place,
+            "kiwoom_mock_us_get_order_history": history,
+            "kiwoom_mock_us_cancel_order": cancel,
+            "kiwoom_mock_us_get_positions": positions,
+        },
+    )
+    args = smoke.build_parser().parse_args(
+        [
+            "--mode",
+            "full",
+            "--symbol",
+            "NVDA",
+            "--quantity",
+            "1",
+            "--price",
+            "1.00",
+            "--confirm",
+        ]
+    )
+
+    assert await smoke.run_full(args) == 0
+    assert cancelled is True
+
+
+@pytest.mark.asyncio
+async def test_probe_cancel_success_but_final_order_open_fails(monkeypatch) -> None:
+    now = 0.0
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    def clock() -> float:
+        return now
+
+    async def sleep(delay: float) -> None:
+        nonlocal now
+        now += delay
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeOrders:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def place_buy_order(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return {"return_code": 0, "ord_no": "000000282"}
+
+        async def cancel_order(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return {"return_code": 0, "ord_no": "000000283"}
+
+    class FakeAccount:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def get_positions(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return _page([])
+
+        async def get_open_orders(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return _page(
+                [
+                    {
+                        "ord_no": "000000282",
+                        "ord_qty": "1",
+                        "cntr_qty": "0",
+                        "ord_remnq": "1",
+                    }
+                ]
+            )
+
+        async def get_today_orders(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return _page([])
+
+    monkeypatch.setattr(smoke, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(smoke, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(smoke, "KiwoomUsOrderClient", FakeOrders)
+    monkeypatch.setattr(smoke, "KiwoomUsAccountClient", FakeAccount)
+    args = Namespace(
+        confirm_probes=True,
+        confirm_existing_position=False,
+        probe_order_types="26",
+        probe_side="buy",
+        symbol="NVDA",
+        quantity=1,
+        price=1.0,
+        stop_price=None,
+    )
+    assert (
+        await smoke.run_probe(
+            args,
+            clock=clock,
+            sleep=sleep,
+            cleanup_timeout=2.0,
+            poll_interval=1.0,
+        )
+        == 2
+    )
 
 
 def test_emit_does_not_add_sensitive_values(capsys) -> None:
