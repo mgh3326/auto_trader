@@ -359,6 +359,42 @@ def _positive_price(value: float | int | None) -> float | None:
     return price if price > 0 else None
 
 
+# ROB-888: map the internal NXT session label to a consumer-facing session_state.
+_NXT_SESSION_STATE = {
+    "nxt_premarket": "premarket",
+    "nxt_after": "nxt_after",
+}
+
+
+def _annotate_nxt_session_change(
+    quote: dict[str, Any], *, session: str, krx_prev_close: float | None
+) -> None:
+    """ROB-888: stamp self-describing fields onto an NXT-overlaid quote.
+
+    Consumers (e.g. the operator premarket cross-check) can then judge the real
+    gap from the MCP quote alone instead of scraping CDP naver, whose premarket
+    dump conflates the KRX prior close with the NXT realtime block.
+
+    - ``session_state``: ``premarket`` | ``nxt_after`` (normalized from the NXT
+      session label).
+    - ``krx_prev_close``: the most recent completed KRX regular close — captured
+      as the quote's pre-overlay price (prior-day close in premarket, today's
+      regular close during nxt_after). ``None`` when unavailable.
+    - ``change_pct``: ``(nxt_price - krx_prev_close) / krx_prev_close * 100``,
+      rounded to 2dp. ``None`` (never a fake 0, never raise) when either side is
+      missing/non-positive — mirrors the ROB-448 previous_close convention.
+    """
+    quote["session_state"] = _NXT_SESSION_STATE.get(session, session)
+    quote["krx_prev_close"] = krx_prev_close
+    nxt_price = _positive_price(quote.get("price"))
+    if krx_prev_close is not None and nxt_price is not None:
+        quote["change_pct"] = round(
+            (nxt_price - krx_prev_close) / krx_prev_close * 100.0, 2
+        )
+    else:
+        quote["change_pct"] = None
+
+
 def _nxt_price_from_orderbook(
     snapshot: market_data_service.OrderbookSnapshot,
 ) -> tuple[float | None, str | None]:
@@ -426,12 +462,16 @@ async def _apply_nxt_quote_overlay(
     session = await _nxt_quote_session(data_state)
     if session is None:
         return False
+    # ROB-888: capture the pre-overlay price (the most recent completed KRX
+    # regular close) before ``quote.update`` overwrites it with the NXT price.
+    krx_prev_close = _positive_price(quote.get("price"))
     overlay = await _fetch_nxt_quote_overlay(symbol, session=session)
     if overlay is None:
         return False
     quote.update(overlay)
     quote["regular_session_data_state"] = data_state
     quote["data_state"] = DATA_STATE_FRESH
+    _annotate_nxt_session_change(quote, session=session, krx_prev_close=krx_prev_close)
     _annotate_kr_price_freshness(quote, now_kst())
     return True
 
