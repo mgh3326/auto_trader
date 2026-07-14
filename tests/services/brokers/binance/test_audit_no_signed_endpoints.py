@@ -89,6 +89,15 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # binance_testnet_order_ledger.py file was deleted in ROB-298.
         "app/models/binance_demo_order_ledger.py",
         "app/models/__init__.py",
+        # ROB-850 — paper evaluation references "Binance" as a view/source
+        # identifier (ViewName.BINANCE_BROKER, ViewSource.BINANCE_DEMO_LEDGER).
+        # No Binance HTTP/WS client or signed path is defined here.
+        "app/models/paper_evaluation.py",
+        "app/services/paper_evaluation/__init__.py",
+        "app/services/paper_evaluation/contracts.py",
+        "app/services/paper_evaluation/pnl.py",
+        "app/services/paper_evaluation/scorecard.py",
+        "app/services/paper_evaluation/service.py",
         # ROB-313 / ROB-315 — the scalp_trade_analytics ORM model lives under
         # app/models/. It is analytics-only persistence (no HTTP/WS, no signed
         # surface); "Binance" appears only in its docstring as the venue whose

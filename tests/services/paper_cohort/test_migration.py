@@ -55,7 +55,7 @@ def _cohort() -> PaperValidationCohort:
     )
 
 
-def test_migration_descends_from_merged_rob870_and_is_the_single_head() -> None:
+def test_migration_descends_from_merged_rob870_and_maintains_single_head() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
     rob870_source = ROB870_MIGRATION.read_text(encoding="utf-8")
     assert 'revision = "20260714_rob849_paper_cohort"' in source
@@ -64,9 +64,7 @@ def test_migration_descends_from_merged_rob870_and_is_the_single_head() -> None:
 
     config = Config(str(REPO / "alembic.ini"))
     config.set_main_option("script_location", str(REPO / "alembic"))
-    assert ScriptDirectory.from_config(config).get_heads() == [
-        "20260714_rob849_paper_cohort"
-    ]
+    assert len(ScriptDirectory.from_config(config).get_heads()) == 1
 
 
 def test_migration_defines_composition_and_immutable_triggers() -> None:
@@ -133,7 +131,7 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             )
 
         commands = (
-            ("stamp", "20260714_rob849_paper_cohort"),
+            ("stamp", "20260714_rob850_paper_evaluation"),
             ("downgrade", "20260713_rob848_paper_validation"),
             ("upgrade", "head"),
             ("downgrade", "20260713_rob848_paper_validation"),
@@ -144,7 +142,7 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             assert completed.returncode == 0, completed.stdout + completed.stderr
         current = await asyncio.to_thread(alembic, "current")
         assert current.returncode == 0, current.stdout + current.stderr
-        assert "20260714_rob849_paper_cohort (head)" in current.stdout
+        assert "20260714_rob850_paper_evaluation (head)" in current.stdout
 
         async with engine.connect() as connection:
             triggers = await connection.scalar(

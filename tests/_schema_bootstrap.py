@@ -42,7 +42,11 @@ from sqlalchemy import text
 # v19 (ROB-849 review): treat every PostgreSQL whitespace class as blank.
 # v20 (ROB-849 + ROB-870): include the approval-batch ORM tables merged after
 # the cohort branch and force one combined create_all/bootstrap pass.
-SCHEMA_BOOTSTRAP_VERSION = 20
+# v21 (ROB-850): paper-evaluation immutable triggers
+# (research.reject_evaluation_mutation) for the four new evaluation tables.
+# The ORM tables are built by create_all; the trigger functions are non-ORM DDL
+# mirrored here.
+SCHEMA_BOOTSTRAP_VERSION = 21
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -259,6 +263,13 @@ _PAPER_COHORT_AUDIT_TABLES = (
     "paper_cohort_terminal_fences",
 )
 
+_PAPER_EVALUATION_AUDIT_TABLES = (
+    "evaluation_configs",
+    "evaluation_epochs",
+    "evaluation_scorecards",
+    "evaluation_verdicts",
+)
+
 _PAPER_COHORT_REBUILD_ORDER = (
     "paper_cohort_target_reservations",
     "paper_cohort_terminal_fences",
@@ -379,8 +390,32 @@ _PAPER_COHORT_TRIGGER_DDL: tuple[str, ...] = (
     "research.validate_paper_cohort_composition()",
 )
 
+_PAPER_EVALUATION_TRIGGER_DDL: tuple[str, ...] = (
+    "CREATE OR REPLACE FUNCTION research.reject_evaluation_mutation() "
+    "RETURNS trigger AS $$ BEGIN RAISE EXCEPTION "
+    "'research.% is append-only/immutable; % rejected', TG_TABLE_NAME, TG_OP "
+    "USING ERRCODE = 'restrict_violation'; END; $$ LANGUAGE plpgsql",
+    *tuple(
+        statement
+        for table in _PAPER_EVALUATION_AUDIT_TABLES
+        for statement in (
+            f"DROP TRIGGER IF EXISTS trg_rob850_{table}_immutable ON "
+            f"research.{table}",
+            f"CREATE TRIGGER trg_rob850_{table}_immutable BEFORE UPDATE OR "
+            f"DELETE ON research.{table} FOR EACH ROW EXECUTE FUNCTION "
+            "research.reject_evaluation_mutation()",
+            f"DROP TRIGGER IF EXISTS trg_rob850_{table}_truncate_immutable ON "
+            f"research.{table}",
+            f"CREATE TRIGGER trg_rob850_{table}_truncate_immutable BEFORE "
+            f"TRUNCATE ON research.{table} FOR EACH STATEMENT EXECUTE FUNCTION "
+            "research.reject_evaluation_mutation()",
+        )
+    ),
+)
+
 _DDL_STATEMENTS: tuple[str, ...] = (
     *_PAPER_COHORT_TRIGGER_DDL,
+    *_PAPER_EVALUATION_TRIGGER_DDL,
     # ---- market_events / us_symbol_universe ----
     "ALTER TABLE market_events ADD COLUMN IF NOT EXISTS currency TEXT",
     "ALTER TABLE us_symbol_universe ADD COLUMN IF NOT EXISTS is_common_stock BOOLEAN",
