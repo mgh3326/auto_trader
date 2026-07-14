@@ -99,7 +99,7 @@ Mock CLOSED pages with unique cursors and `has_next=True` through `_TOSS_CLOSED_
 Run:
 
 ```bash
-uv sync --group dev
+uv sync --all-groups
 uv run pytest tests/services/order_proposals/test_broker_gateway.py -q
 ```
 
