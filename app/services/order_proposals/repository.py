@@ -16,7 +16,12 @@ from sqlalchemy import TIMESTAMP, Text, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.models.order_proposals import OrderProposal, OrderProposalRung
+from app.models.order_proposals import (
+    OrderProposal,
+    OrderProposalApprovalBatch,
+    OrderProposalApprovalBatchMember,
+    OrderProposalRung,
+)
 
 
 class OrderProposalRepository:
@@ -122,10 +127,11 @@ class OrderProposalRepository:
         *,
         correlation_id: str | None,
         broker_order_id: str | None,
+        idempotency_key: str | None = None,
         states: frozenset[str] | None = None,
         account_mode: str | None = None,
     ) -> tuple[uuid.UUID, OrderProposalRung] | None:
-        """Locate a rung by broker evidence.
+        """Locate a rung by broker or client-order evidence.
 
         ``states``, when given, restricts the match to rungs currently in one of
         those states. Reconcile passes the evidence-accepting (non-terminal) set
@@ -134,8 +140,9 @@ class OrderProposalRepository:
         no longer transition — see OrderProposalsService.record_fill_evidence.
         """
         evidence = (
-            (OrderProposalRung.correlation_id, correlation_id),
             (OrderProposalRung.broker_order_id, broker_order_id),
+            (OrderProposalRung.idempotency_key, idempotency_key),
+            (OrderProposalRung.correlation_id, correlation_id),
         )
         for column, value in evidence:
             if value is None:
@@ -191,3 +198,123 @@ class OrderProposalRepository:
                 flag_modified(rung, k)
         await self._session.flush()
         return rung
+
+    async def acquire_approval_batch_chat_lock(self, chat_id: str) -> None:
+        await self._session.execute(
+            select(
+                func.pg_advisory_xact_lock(
+                    func.hashtextextended(
+                        f"order_proposals:approval_batch:{chat_id}", 0
+                    )
+                )
+            )
+        )
+
+    async def get_open_approval_batch(
+        self, *, chat_id: str, now: datetime, for_update: bool = False
+    ) -> OrderProposalApprovalBatch | None:
+        stmt = (
+            select(OrderProposalApprovalBatch)
+            .where(
+                OrderProposalApprovalBatch.chat_id == chat_id,
+                OrderProposalApprovalBatch.approval_nonce_used_at.is_(None),
+                OrderProposalApprovalBatch.window_closes_at > now,
+                OrderProposalApprovalBatch.expires_at > now,
+            )
+            .order_by(OrderProposalApprovalBatch.id.desc())
+            .limit(1)
+        )
+        if for_update:
+            stmt = stmt.with_for_update()
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def insert_approval_batch(self, **cols: Any) -> OrderProposalApprovalBatch:
+        row = OrderProposalApprovalBatch(**cols)
+        self._session.add(row)
+        await self._session.flush()
+        await self._session.refresh(row)
+        return row
+
+    async def insert_approval_batch_member(
+        self, **cols: Any
+    ) -> OrderProposalApprovalBatchMember:
+        row = OrderProposalApprovalBatchMember(**cols)
+        self._session.add(row)
+        await self._session.flush()
+        await self._session.refresh(row)
+        return row
+
+    async def get_approval_batch_member_by_nonce(
+        self, *, proposal_pk: int, approval_nonce: str
+    ) -> OrderProposalApprovalBatchMember | None:
+        stmt = select(OrderProposalApprovalBatchMember).where(
+            OrderProposalApprovalBatchMember.proposal_pk == proposal_pk,
+            OrderProposalApprovalBatchMember.approval_nonce_snapshot == approval_nonce,
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def get_approval_batch_member_by_id(
+        self, member_id: int, *, for_update: bool = False
+    ) -> OrderProposalApprovalBatchMember | None:
+        stmt = select(OrderProposalApprovalBatchMember).where(
+            OrderProposalApprovalBatchMember.id == member_id
+        )
+        if for_update:
+            stmt = stmt.with_for_update()
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def list_approval_batch_members(
+        self, batch_pk: int
+    ) -> list[OrderProposalApprovalBatchMember]:
+        stmt = (
+            select(OrderProposalApprovalBatchMember)
+            .where(OrderProposalApprovalBatchMember.batch_pk == batch_pk)
+            .order_by(
+                OrderProposalApprovalBatchMember.added_at,
+                OrderProposalApprovalBatchMember.id,
+            )
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
+
+    async def get_group_by_pk(self, proposal_pk: int) -> OrderProposal | None:
+        stmt = select(OrderProposal).where(OrderProposal.id == proposal_pk)
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def get_approval_batch_by_id(
+        self, batch_id: uuid.UUID, *, for_update: bool = False
+    ) -> OrderProposalApprovalBatch | None:
+        stmt = select(OrderProposalApprovalBatch).where(
+            OrderProposalApprovalBatch.batch_id == batch_id
+        )
+        if for_update:
+            stmt = stmt.with_for_update()
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def resolve_approval_batch_id_prefix(
+        self, batch_short: str
+    ) -> uuid.UUID | None:
+        stmt = (
+            select(OrderProposalApprovalBatch.batch_id)
+            .where(
+                cast(OrderProposalApprovalBatch.batch_id, Text).like(f"{batch_short}%")
+            )
+            .limit(2)
+        )
+        matches = list((await self._session.execute(stmt)).scalars().all())
+        return matches[0] if len(matches) == 1 else None
+
+    async def update_approval_batch(
+        self, batch: OrderProposalApprovalBatch, **fields: Any
+    ) -> OrderProposalApprovalBatch:
+        for key, value in fields.items():
+            setattr(batch, key, value)
+        await self._session.flush()
+        return batch
+
+    async def update_approval_batch_member(
+        self, member: OrderProposalApprovalBatchMember, **fields: Any
+    ) -> OrderProposalApprovalBatchMember:
+        for key, value in fields.items():
+            setattr(member, key, value)
+        await self._session.flush()
+        return member

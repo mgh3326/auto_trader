@@ -279,8 +279,9 @@ provider to fill it.
 The default-off `paper_execution` profile is one exact union under
 `PAPER_EXECUTION_ENABLED`: the unchanged six names in
 `PAPER_EXECUTION_TOOL_NAMES` plus the independent names in
-`PAPER_VALIDATION_TOOL_NAMES`. The broker registrar does not import validation;
-the two surfaces meet only in the profile registry composition branch.
+`PAPER_VALIDATION_TOOL_NAMES` and the operator-only
+`PAPER_COHORT_CONTROL_TOOL_NAMES`. The three registrars meet only in the
+profile registry composition branch.
 
 Validation caller identity is bound server-side to the authenticated profile
 token through `PAPER_VALIDATION_AUTHENTICATED_ACTOR_ID`; caller headers are not
@@ -299,8 +300,12 @@ authorization returns an exact-bound frozen contract; it does not submit an
 order. Promotion requires a separate explicit confirmation against the current
 experiment/cohort/strategy/config/policy/input hashes.
 
-Operational rollback disables `PAPER_EXECUTION_ENABLED`, physically removing both
-registrars. Existing audit rows are immutable and are never deleted for rollback.
+For an active ROB-849 cohort, use `paper_cohort_kill_switch` before disabling
+the profile. It commits an immutable terminal fence, recovery-links any
+prepared native order without POST, then performs cohort-owned cleanup. See
+[`docs/runbooks/paper-cohort-kill-switch.md`](../../docs/runbooks/paper-cohort-kill-switch.md).
+Disabling `PAPER_EXECUTION_ENABLED` physically removes all three registrars;
+existing audit/fence rows remain immutable.
 
 The `analysis_readonly` Codex/headless profile exposes
 `analysis_bundle_get` only when the gate is enabled. It never exposes
@@ -688,10 +693,17 @@ order mutation.
   - A found broker order, incomplete lookup, timeout, provider error, or local
     accepted-only Toss ledger row rejects the whole request without partial
     mutation. Timeout-to-`unverified` is never auto-voided.
-  - Toss order-list `clientOrderId` is optional: when a rung has no broker order
-    ID, any non-empty response that omits it is inconclusive. KIS US empty
-    history is also inconclusive because the shared history adapter cannot prove
-    every exchange inquiry completed. Both cases fail closed.
+  - For a Toss rung without a broker order ID, absence requires both zero
+    accepted-only `toss_live_order_ledger` rows and a complete OPEN+CLOSED scan
+    with no order matching the normalized symbol, side, quantity, and price.
+    Quantity and price use finite Decimal comparison rather than string equality.
+    The per-rung attempt window is inclusive from `created_at - 24h` through
+    `max(valid_until, updated_at) + 24h`; the broker scan covers the union of
+    those windows' KST dates. Provider errors, timeouts, malformed potential
+    matches, invalid pagination, and CLOSED page-cap exhaustion make the scan
+    incomplete and fail closed instead of proving absence. KIS and Upbit
+    operator-void behavior is unchanged, including inconclusive KIS US empty
+    history when the shared adapter cannot prove every exchange inquiry finished.
   - After a successful void, the recorded Telegram approval message is edited
     without an inline keyboard so stale approval buttons no longer remain live.
 
@@ -1993,7 +2005,7 @@ The `MCP_PROFILE` env var selects which tool subset is registered at startup.
 | Analysis readonly | `analysis_readonly` | Codex/headless read/analysis allowlist only: `get_operating_briefing`, `route_request`, `get_trading_policy`, selected quote/fundamental/analysis tools, `suggest_order_account`, `get_holdings`, `toss_get_positions`, and explicitly labeled analysis persistence. No order/cancel/modify/reconcile/preview/settings/watch/admin/manual-holdings mutation tools are registered. |
 | Account read | `account_read` | TradingCodex account adapter allowlist only: existing KIS/Toss account reads plus `kiwoom_mock_get_positions`, `kiwoom_mock_get_orderable_cash`, and `kiwoom_mock_get_order_history`. Kiwoom and all other mutations remain physically absent. |
 | TradingCodex execution | `tradingcodex_execution` | Reviewed TradingCodex BrokerAdapter allowlist: existing account/advisory/learning/execution tools plus the seven mock-pinned typed `kiwoom_mock_*` tools. Requires a dedicated auth token and required approval-hash modes; no Kiwoom live or generic unscoped Kiwoom order surface is registered. |
-| Canonical paper execution | `paper_execution` | ROB-845 experiment façade only: capabilities plus typed preview/submit/cancel/get-order/reconcile. Default-off, auth-required, Binance Spot Demo and Alpaca Crypto Paper only; no generic, native, or live tools. |
+| Canonical paper execution | `paper_execution` | ROB-845 façade + ROB-848 validation + ROB-849 operator kill switch. Default-off and auth-required; no generic, venue-native, or live tools. |
 
 ### Profile: `paper_execution` (ROB-845)
 
@@ -2016,6 +2028,7 @@ Exact tool allowlist:
 - `paper_execution_cancel_order`
 - `paper_execution_get_order`
 - `paper_execution_reconcile`
+- `paper_cohort_kill_switch` (server-bound operator/system identity only)
 
 The request DTO contains the claimed experiment/run/cohort/strategy identity,
 canonical snapshot evidence, and order intent. It does not accept caller-owned

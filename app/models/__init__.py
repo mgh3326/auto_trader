@@ -47,7 +47,23 @@ from .market_report import MarketReport
 from .market_valuation_snapshot import MarketValuationSnapshot
 from .naver_research_detail_cache import NaverResearchDetailCache
 from .news import NewsAnalysisResult, NewsArticle, NewsIngestionRun, Sentiment
-from .order_proposals import OrderProposal, OrderProposalRung
+from .order_proposals import (
+    OrderProposal,
+    OrderProposalApprovalBatch,
+    OrderProposalApprovalBatchMember,
+    OrderProposalRung,
+)
+from .paper_cohort import (
+    CanonicalMarketSnapshot,
+    PaperCohortDecision,
+    PaperCohortRunClaim,
+    PaperCohortTargetReservation,
+    PaperCohortTerminalFence,
+    PaperCohortVenueIntent,
+    PaperRunOrderLink,
+    PaperValidationCohort,
+    PaperValidationCohortAssignment,
+)
 from .paper_trading import PaperAccount, PaperPendingOrder, PaperPosition, PaperTrade
 from .paper_validation import (
     PaperValidationPostmortemReview,
@@ -199,6 +215,8 @@ __all__ = [
     "NewsIngestionRun",
     "Sentiment",
     "OrderProposal",
+    "OrderProposalApprovalBatch",
+    "OrderProposalApprovalBatchMember",
     "OrderProposalRung",
     "BrokerType",
     "MarketType",
@@ -221,6 +239,15 @@ __all__ = [
     "PendingSnapshot",
     "PaperAccount",
     "PaperPendingOrder",
+    "PaperValidationCohort",
+    "PaperValidationCohortAssignment",
+    "CanonicalMarketSnapshot",
+    "PaperCohortDecision",
+    "PaperCohortVenueIntent",
+    "PaperCohortRunClaim",
+    "PaperCohortTargetReservation",
+    "PaperCohortTerminalFence",
+    "PaperRunOrderLink",
     "PaperPosition",
     "PaperTrade",
     "PaperValidationPostmortemReview",

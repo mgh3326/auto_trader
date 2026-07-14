@@ -133,6 +133,45 @@ def test_values_differ_detects_changed_fill_price() -> None:
     assert _values_differ(row, changed) is True
 
 
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_has_fill_for_order_requires_exact_durable_scope(db_session) -> None:
+    fill = _fill(broker_order_id="ROB868-DONE-GATE", source="websocket")
+    repo = ExecutionLedgerRepository(db_session)
+    await repo.upsert_fill(fill)
+    await db_session.commit()
+
+    try:
+        assert await repo.has_fill_for_order(
+            broker="upbit",
+            account_mode="live",
+            venue="upbit_krw",
+            broker_order_id="ROB868-DONE-GATE",
+        )
+        assert not await repo.has_fill_for_order(
+            broker="upbit",
+            account_mode="live",
+            venue="upbit_krw",
+            broker_order_id="ROB868-MISSING",
+        )
+        for wrong_scope in (
+            {"broker": "kis", "account_mode": "live", "venue": "upbit_krw"},
+            {"broker": "upbit", "account_mode": "mock", "venue": "upbit_krw"},
+            {"broker": "upbit", "account_mode": "live", "venue": "upbit_usdt"},
+        ):
+            assert not await repo.has_fill_for_order(
+                **wrong_scope,
+                broker_order_id="ROB868-DONE-GATE",
+            )
+    finally:
+        await db_session.execute(
+            delete(ExecutionLedger).where(
+                ExecutionLedger.broker_order_id == "ROB868-DONE-GATE"
+            )
+        )
+        await db_session.commit()
+
+
 # --- Issue 4 regression: wider unique key (account_mode + venue) ---
 
 

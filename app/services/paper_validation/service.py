@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.paper_validation import (
@@ -28,6 +28,7 @@ from app.services.paper_validation.contracts import (
     ValidationIdentity,
     ValidationState,
 )
+from app.services.paper_validation.locking import lock_validation_streams
 from app.services.paper_validation.state_machine import (
     decide_transition,
     is_order_authorizable,
@@ -96,10 +97,7 @@ class PaperValidationService:
         return frozen, policy
 
     async def _lock_validation(self, validation_id: str) -> None:
-        await self._session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-            {"key": validation_id},
-        )
+        await lock_validation_streams(self._session, (validation_id,))
 
     async def _latest(
         self, validation_id: str

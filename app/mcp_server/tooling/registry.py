@@ -150,6 +150,9 @@ from app.mcp_server.tooling.paper_account_registration import (
 from app.mcp_server.tooling.paper_analytics_registration import (
     register_paper_analytics_tools,
 )
+from app.mcp_server.tooling.paper_cohort_control_registration import (
+    register_paper_cohort_control_tools,
+)
 from app.mcp_server.tooling.paper_execution_registration import (
     register_paper_execution_tools,
 )
@@ -244,6 +247,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         if settings.PAPER_EXECUTION_ENABLED:
             register_paper_execution_tools(mcp)
             register_paper_validation_tools(mcp)
+            register_paper_cohort_control_tools(mcp)
         return
 
     # Always: side-effect-free research + read-only tools

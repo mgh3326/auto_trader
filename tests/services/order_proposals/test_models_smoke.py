@@ -1,5 +1,6 @@
 import pytest
 
+from app.models import order_proposals as models
 from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.services.order_proposals.state_machine import RUNG_STATES
 
@@ -34,6 +35,48 @@ def test_order_proposal_has_action_columns():
     assert "action IS NULL" in str(check.sqltext)
     for action in ("place", "replace", "cancel"):
         assert f"'{action}'" in str(check.sqltext)
+
+
+@pytest.mark.unit
+def test_approval_batch_models_are_durable_and_bound_to_proposals():
+    batch = models.OrderProposalApprovalBatch.__table__
+    member = models.OrderProposalApprovalBatchMember.__table__
+
+    assert batch.schema == member.schema == "review"
+    assert batch.name == "order_proposal_approval_batches"
+    assert member.name == "order_proposal_approval_batch_members"
+    assert {
+        "batch_id",
+        "chat_id",
+        "window_started_at",
+        "window_closes_at",
+        "expires_at",
+        "approval_nonce",
+        "approval_nonce_used_at",
+        "approved_by_telegram_user_id",
+        "approved_at",
+        "summary_message_id",
+        "summary_dispatch_state",
+        "summary_dispatch_lease_until",
+    } <= set(batch.columns.keys())
+    assert {
+        "batch_pk",
+        "proposal_pk",
+        "approval_nonce_snapshot",
+        "approval_message_id",
+        "result",
+        "result_detail",
+        "processed_at",
+        "added_at",
+    } <= set(member.columns.keys())
+
+    unique_names = {
+        constraint.name
+        for constraint in member.constraints
+        if constraint.__class__.__name__ == "UniqueConstraint"
+    }
+    assert "uq_order_proposal_batch_member" in unique_names
+    assert "uq_order_proposal_batch_member_nonce" in unique_names
 
 
 @pytest.mark.unit
