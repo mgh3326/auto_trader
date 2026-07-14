@@ -42,6 +42,19 @@ ALLOWED_PACKAGE_PATHS: frozenset[str] = frozenset(
 # must live inside ``ALLOWED_PACKAGE_PATHS`` and must not be added here.
 ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
     {
+        # ROB-849 — canonical cohort orchestration stores the exact venue/source
+        # literals and consumes the one existing public REST client. None of
+        # these files defines a parallel Binance HTTP/WS client or signed path.
+        "app/jobs/paper_cohort.py",
+        "app/models/paper_cohort.py",
+        "app/services/paper_cohort/cohort_service.py",
+        "app/services/paper_cohort/contracts.py",
+        "app/services/paper_cohort/market_snapshot.py",
+        "app/services/paper_cohort/native_links.py",
+        "app/services/paper_cohort/provenance.py",
+        "app/services/paper_cohort/runner.py",
+        "app/services/paper_cohort/signals.py",
+        "app/services/paper_cohort/venue_quotes.py",
         "app/mcp_server/tooling/fundamentals_handlers.py",
         "app/mcp_server/tooling/fundamentals_sources_binance.py",
         "app/mcp_server/tooling/fundamentals_sources_naver.py",

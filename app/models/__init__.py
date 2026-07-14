@@ -53,6 +53,17 @@ from .order_proposals import (
     OrderProposalApprovalBatchMember,
     OrderProposalRung,
 )
+from .paper_cohort import (
+    CanonicalMarketSnapshot,
+    PaperCohortDecision,
+    PaperCohortRunClaim,
+    PaperCohortTargetReservation,
+    PaperCohortTerminalFence,
+    PaperCohortVenueIntent,
+    PaperRunOrderLink,
+    PaperValidationCohort,
+    PaperValidationCohortAssignment,
+)
 from .paper_trading import PaperAccount, PaperPendingOrder, PaperPosition, PaperTrade
 from .paper_validation import (
     PaperValidationPostmortemReview,
@@ -224,6 +235,15 @@ __all__ = [
     "PendingSnapshot",
     "PaperAccount",
     "PaperPendingOrder",
+    "PaperValidationCohort",
+    "PaperValidationCohortAssignment",
+    "CanonicalMarketSnapshot",
+    "PaperCohortDecision",
+    "PaperCohortVenueIntent",
+    "PaperCohortRunClaim",
+    "PaperCohortTargetReservation",
+    "PaperCohortTerminalFence",
+    "PaperRunOrderLink",
     "PaperPosition",
     "PaperTrade",
     "PaperValidationPostmortemReview",
