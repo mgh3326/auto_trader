@@ -63,6 +63,9 @@ def _load_main_module(
     tradingcodex_execution: bool = False,
     paper_execution: bool = False,
     paper_execution_enabled: bool = False,
+    kiwoom: bool = False,
+    unrelated_profile: bool = False,
+    kiwoom_mock_us_enabled: bool = False,
 ) -> tuple[ModuleType, _FakeFastMCP, MagicMock, object, object]:
     main_path = Path(__file__).resolve().parents[1] / "app" / "mcp_server" / "main.py"
 
@@ -98,6 +101,7 @@ def _load_main_module(
             kiwoom_mock_app_secret=None,
             kiwoom_mock_account_no=None,
             kiwoom_mock_base_url="https://mockapi.kiwoom.com",
+            kiwoom_mock_us_enabled=kiwoom_mock_us_enabled,
             PAPER_EXECUTION_ENABLED=paper_execution_enabled,
         )
 
@@ -142,19 +146,28 @@ def _load_main_module(
     account_read_profile = _FakeProfileMember("account_read")
     tradingcodex_execution_profile = _FakeProfileMember("tradingcodex_execution")
     paper_execution_profile = _FakeProfileMember("paper_execution")
+    default_profile = _FakeProfileMember("default")
+    kiwoom_profile = _FakeProfileMember("kiwoom")
+    unrelated_profile_member = _FakeProfileMember("crypto")
     if paper_execution:
         resolved_profile = paper_execution_profile
     elif tradingcodex_execution:
         resolved_profile = tradingcodex_execution_profile
     elif account_read:
         resolved_profile = account_read_profile
+    elif kiwoom:
+        resolved_profile = kiwoom_profile
+    elif unrelated_profile:
+        resolved_profile = unrelated_profile_member
     else:
-        resolved_profile = "profile"
+        resolved_profile = default_profile
     fake_profiles = ModuleType("app.mcp_server.profiles")
     fake_profiles.__dict__["McpProfile"] = SimpleNamespace(
         ACCOUNT_READ=account_read_profile,
         TRADINGCODEX_EXECUTION=tradingcodex_execution_profile,
         PAPER_EXECUTION=paper_execution_profile,
+        DEFAULT=default_profile,
+        KIWOOM=kiwoom_profile,
     )
     fake_profiles.__dict__["resolve_mcp_profile"] = MagicMock(
         return_value=resolved_profile
@@ -395,6 +408,71 @@ class TestMcpServerMain:
         module, _, _, _, _ = _load_main_module(monkeypatch, account_read=True)
 
         module.main()
+
+    @pytest.mark.parametrize("transport", ["streamable-http", "sse"])
+    def test_kiwoom_network_profile_requires_auth_at_import(
+        self, monkeypatch: pytest.MonkeyPatch, transport: str
+    ) -> None:
+        monkeypatch.setenv("MCP_TYPE", transport)
+        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+
+        with pytest.raises(
+            RuntimeError,
+            match="MCP_PROFILE=kiwoom requires non-empty MCP_AUTH_TOKEN",
+        ):
+            _load_main_module(monkeypatch, kiwoom=True)
+
+        assert _FakeFastMCP.init_count == 0
+
+    def test_default_network_profile_with_us_mutation_gate_requires_auth(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MCP_TYPE", "streamable-http")
+        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+
+        with pytest.raises(
+            RuntimeError,
+            match="Kiwoom US mutation exposure requires non-empty MCP_AUTH_TOKEN",
+        ):
+            _load_main_module(monkeypatch, kiwoom_mock_us_enabled=True)
+
+        assert _FakeFastMCP.init_count == 0
+
+    def test_kiwoom_network_profile_accepts_auth_token(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MCP_TYPE", "sse")
+        module, _, _, _, _ = _load_main_module(
+            monkeypatch,
+            auth_token="kiwoom-token",
+            kiwoom=True,
+        )
+        assert module._mcp_profile.value == "kiwoom"
+
+    def test_kiwoom_stdio_local_path_may_run_without_auth(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MCP_TYPE", "stdio")
+        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+        module, _, _, _, _ = _load_main_module(monkeypatch, kiwoom=True)
+        assert module._mcp_profile.value == "kiwoom"
+
+    def test_default_gate_off_and_unrelated_network_profiles_remain_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MCP_TYPE", "streamable-http")
+        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+        default_module, _, _, _, _ = _load_main_module(
+            monkeypatch, kiwoom_mock_us_enabled=False
+        )
+        assert default_module._mcp_profile.value == "default"
+
+        unrelated_module, _, _, _, _ = _load_main_module(
+            monkeypatch,
+            unrelated_profile=True,
+            kiwoom_mock_us_enabled=True,
+        )
+        assert unrelated_module._mcp_profile.value == "crypto"
 
     def test_tradingcodex_execution_profile_requires_auth_token(
         self,

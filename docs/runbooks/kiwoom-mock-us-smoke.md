@@ -7,6 +7,11 @@
 ROB-867. Operator-safe smoke for the Kiwoom **mock-investment** (모의투자)
 **US-equity** order lifecycle: submit → order history → cancel → reconcile.
 
+ROB-872 hardened this workflow entirely with fake transports. It did not run a
+confirmed smoke or verify any mutation capability; all mutation/order-type
+evidence below remains pending or unverified until ROB-873 records a dated
+market-hours exercise.
+
 The US namespace is completely independent from the KR `kiwoom_mock` smoke
 ([`kiwoom-mock-smoke.md`](kiwoom-mock-smoke.md)). It uses a separate app key,
 app secret, and account number, and never reads or falls back to
@@ -128,9 +133,12 @@ uv run python -m scripts.kiwoom_mock_us_smoke --mode probe \
 
 Exit codes:
 - `0` — smoke OK (or stopped cleanly after dry-run when `--confirm` omitted)
-- `2` — anomaly: an order was/may have been opened and could not be confirmed
-  cancelled, or its id could not be parsed. **Manual cleanup required** — see the
-  emitted `cleanup_required` / `anomaly` step and the reconciliation output.
+- `2` — stopped or anomalous: the request was proven `not_submitted`, target
+  evidence is absent/unknown, bounded pagination fails, cleanup times out, a
+  fill or position delta appears, or an accepted order is untrackable. Manual
+  cleanup/unwind is required only when a redacted `cleanup_required` event is
+  emitted; use `final_reconciliation` when available. Do not retry a place
+  reported as `accepted_untracked` or `acceptance_uncertain`.
 
 `full` mode without `--confirm` stops after the dry-run and emits a `stop` step.
 
@@ -160,7 +168,9 @@ probe:
 - Calls the low-level `KiwoomUsOrderClient` directly (NOT the MCP surface) so
   unverified codes can be characterized without weakening the MCP allowlist.
 - Records each attempted code and the exact broker result.
-- Immediately cancels every accepted order.
+- Captures a bounded, paginated positions baseline before each submit.
+- Immediately cancels every accepted order with a valid 1-18 digit ID, then
+  uses the same bounded cleanup proof as full mode.
 - Requires `--probe-side sell --confirm-existing-position` for sell-only types.
 - Documented candidates: buy `26,27,30`; sell `33,34,35`. STOP types `34/35`
   also require `--stop-price`.
@@ -172,16 +182,48 @@ separate reviewed change.
 
 1. `kiwoom_mock_us_preview_order` (DB exchange resolution + exact request body).
 2. `kiwoom_mock_us_place_order(dry_run=True)`.
-3. `kiwoom_mock_us_place_order(dry_run=False, confirm=True)` → capture the order no (guide documents nine digits; acceptance is bounded-digits until the live shape is confirmed — the smoke emits an `order_id_evidence` step with the observed length).
-4. `kiwoom_mock_us_get_order_history(scope="open")` confirms the pending/accepted order.
-5. `kiwoom_mock_us_cancel_order(dry_run=False, confirm=True)` — in a finally-block.
-6. Final `kiwoom_mock_us_get_order_history(scope="open")` +
-   `kiwoom_mock_us_get_positions` reconciliation.
+3. Capture the paginated `kiwoom_mock_us_get_positions` baseline.
+4. `kiwoom_mock_us_place_order(dry_run=False, confirm=True)` → require strict
+   broker success and exactly one non-conflicting canonical 1-18 digit order ID
+   across documented ID fields. Missing, invalid, or conflicting ID evidence is
+   `accepted_untracked`. A typed pre-dispatch failure is `not_submitted` and
+   requires no broker reconciliation. Leading zeroes are retained.
+5. Walk bounded `scope="open"` and `scope="today"` pages and require the exact
+   normalized target ID. Repeated tokens, malformed continuation, and page-cap
+   exhaustion fail closed.
+6. If `--new-price` is supplied, require one unambiguous broker-issued modify
+   order ID and retain both the original and replacement IDs as one lifecycle.
+   A successful modify with missing, malformed, or conflicting ID evidence is
+   reconciliation-required and must not be retried automatically. A
+   `not_submitted` modify leaves lineage complete and cleanup targets only the
+   original order.
+7. `kiwoom_mock_us_cancel_order(dry_run=False, confirm=True)` — in a finally-block,
+   targeting the latest known lifecycle ID.
+8. Poll one bounded open/today-history and positions snapshot per attempt until
+   **every** known lifecycle ID is terminal and the baseline position delta is
+   zero. `final_reconciliation.order_states` reports the per-ID proof.
+
+The schema-aware classifier reports `open`, `partial`, `filled`,
+`cancel_pending`, `cancelled`, `rejected`, or `unknown`. Only a terminal
+`cancelled`/`rejected` target with no position delta is clean for this smoke.
+Immediate/partial fills, unknown/malformed evidence, position changes, and poll
+timeouts all exit 2. Provider exceptions expose only their exception type and
+are normalized into the same redacted cleanup evidence. The seven registered
+US mock tools share one mock-host-pinned client and OAuth token cache so bounded
+pagination and cleanup polling do not request a new token for every page. The
+shared client also serializes dispatches per `api-id` at least one second apart,
+as required by Kiwoom's [mock-account per-TR limit](https://openapi.kiwoom.com/intro?dummyVal=0),
+without serializing unrelated TRs. Probe preflight and mutations reuse that same
+client. This is an in-process boundary: never run this smoke concurrently with
+another smoke or MCP process using the same mock US account. Full mode skips
+modify after any unsafe post-place state; probe mode stops before submitting
+another order type after its first unsafe baseline or lifecycle outcome.
 
 ## Cleanup / verification after smoke
 
 - Re-run with `--mode preflight` is not enough — inspect the final
-  `final_open_orders` / `final_positions` output.
+  `final_reconciliation` state and the paginated open/today history plus
+  positions in MCP or the broker UI.
 - If any order remains open, record its order number and cancel it (re-run cancel
   via the MCP tool or the broker UI). Do **not** report the smoke as clean while
   an order is open.
@@ -194,11 +236,11 @@ If `full` mode exits with code 2 (`cleanup_required`), cancel the stranded order
 
 ```bash
 # Via MCP tool (MCP_PROFILE=kiwoom session):
-#   kiwoom_mock_us_cancel_order(order_id="<9 digit order no>", symbol="AAPL",
+#   kiwoom_mock_us_cancel_order(order_id="<1-18 digit order id>", symbol="AAPL",
 #                              dry_run=False, confirm=True)
 
-# Or re-run the CLI preflight to confirm the order is gone:
-uv run python -m scripts.kiwoom_mock_us_smoke --mode preflight
+# Then inspect both paginated scope="open" and scope="today" history and
+# positions; a cancel return_code alone is not cleanup proof.
 ```
 
 ## Per-TR evidence table
@@ -254,7 +296,7 @@ broker evidence.
 | place confirmed | AAPL | NASD | limit | confirm | `00001112…` | return_code=0 | — |
 | order history (open) | AAPL | NASD | — | — | `00001112…` | pending | — |
 | cancel confirmed | AAPL | NASD | — | confirm | `00001112…` | return_code=0 | closed |
-| final reconcile | — | — | — | — | — | 0 open orders | clean |
+| final reconcile | AAPL | NASD | — | — | `00001112…` | target cancelled/rejected; baseline position delta 0 | clean |
 
 Omit all secret values. If `cancel`/account queries return a non-zero
 `return_code`, record the `return_msg` as **unsupported evidence** and a

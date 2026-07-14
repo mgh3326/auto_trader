@@ -17,7 +17,7 @@ _SYMBOL_RE = re.compile(r"^[A-Z0-9.]{1,12}$")
 # unverified against the live mock until the first confirmed mutation smoke.
 # Cancel/modify must never strand an accepted order over a width mismatch, so
 # input acceptance is bounded-digits rather than exactly nine.
-_ORDER_ID_RE = re.compile(r"^\d{1,18}$")
+_ORDER_ID_RE = re.compile(r"^[0-9]{1,18}$")
 DOCUMENTED_ORDER_ID_LENGTH = 9
 
 

@@ -1,6 +1,9 @@
+import pytest
+
 from app.mcp_server.tooling.orders_kiwoom_shared import (
     derive_broker_success,
     finalize_broker_response,
+    finalize_place_broker_response,
 )
 
 
@@ -10,6 +13,14 @@ def test_success_requires_explicit_zero_return_code() -> None:
     assert derive_broker_success({}) is False
     assert derive_broker_success({"return_code": None}) is False
     assert derive_broker_success({"return_code": 20}) is False
+
+
+@pytest.mark.parametrize(
+    "return_code",
+    [False, 0.0, " 0 ", "", "zero", [], {}],
+)
+def test_success_rejects_non_contract_return_codes(return_code: object) -> None:
+    assert derive_broker_success({"return_code": return_code}) is False
 
 
 def test_rc9000_is_classified_without_losing_raw_evidence() -> None:
@@ -32,3 +43,52 @@ def test_caller_supplied_success_cannot_override_broker_derivation() -> None:
         {"return_code": 20, "return_msg": "rejected"},
     )
     assert response["success"] is False
+
+
+@pytest.mark.parametrize(
+    "broker_response",
+    [
+        {},
+        {"return_code": False},
+        {"return_code": 0.0},
+        {"return_code": " 0 "},
+        {"return_code": "zero"},
+        {"return_code": "9" * 5000},
+    ],
+)
+def test_place_malformed_broker_result_is_uncertain_and_not_retryable(
+    broker_response: dict[str, object],
+) -> None:
+    response = finalize_place_broker_response({"source": "kiwoom"}, broker_response)
+
+    assert response["success"] is False
+    assert response["status"] == "acceptance_uncertain"
+    assert response["reconcile_required"] is True
+    assert response["retry_allowed"] is False
+
+
+@pytest.mark.parametrize("return_code", [20, -1, "20", "-1"])
+def test_place_explicit_nonzero_broker_code_is_rejected(
+    return_code: int | str,
+) -> None:
+    response = finalize_place_broker_response(
+        {"source": "kiwoom"},
+        {"return_code": return_code, "return_msg": "rejected"},
+    )
+
+    assert response["success"] is False
+    assert response["status"] == "rejected"
+    assert response["reconcile_required"] is False
+
+
+def test_place_conflicting_valid_order_ids_are_accepted_untracked() -> None:
+    response = finalize_place_broker_response(
+        {"source": "kiwoom"},
+        {"return_code": 0, "ord_no": "000000282", "order_no": "000000283"},
+    )
+
+    assert response["success"] is False
+    assert response["status"] == "accepted_untracked"
+    assert response["reconcile_required"] is True
+    assert response["retry_allowed"] is False
+    assert "order_id" not in response

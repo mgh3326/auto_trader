@@ -48,9 +48,12 @@ from app.mcp_server.tooling import register_all_tools  # noqa: E402
 
 _auth_token = _env("MCP_AUTH_TOKEN", "")
 _mcp_profile = resolve_mcp_profile(_env("MCP_PROFILE"))
+_mcp_type = _env("MCP_TYPE", "streamable-http")
 
 
-def _validate_profile_auth_token(profile: McpProfile, token: str | None) -> None:
+def _validate_profile_auth_token(
+    profile: McpProfile, token: str | None, mcp_type: str
+) -> None:
     token_required_profiles = {
         McpProfile.ACCOUNT_READ,
         McpProfile.TRADINGCODEX_EXECUTION,
@@ -59,6 +62,20 @@ def _validate_profile_auth_token(profile: McpProfile, token: str | None) -> None
     if profile in token_required_profiles and not (token or "").strip():
         raise RuntimeError(
             f"MCP_PROFILE={profile.value} requires non-empty MCP_AUTH_TOKEN"
+        )
+    if mcp_type not in {"streamable-http", "sse"} or (token or "").strip():
+        return
+    if profile is McpProfile.KIWOOM:
+        raise RuntimeError(
+            "MCP_PROFILE=kiwoom requires non-empty MCP_AUTH_TOKEN "
+            "for network transports"
+        )
+    if profile is McpProfile.DEFAULT and bool(
+        getattr(settings, "kiwoom_mock_us_enabled", False)
+    ):
+        raise RuntimeError(
+            "Kiwoom US mutation exposure requires non-empty MCP_AUTH_TOKEN "
+            "for network transports"
         )
 
 
@@ -103,7 +120,7 @@ def _validate_profile_runtime_settings(profile: McpProfile) -> None:
             )
 
 
-_validate_profile_auth_token(_mcp_profile, _auth_token)
+_validate_profile_auth_token(_mcp_profile, _auth_token, _mcp_type)
 _validate_profile_runtime_settings(_mcp_profile)
 auth_provider = build_auth_provider(_auth_token)
 mcp = FastMCP(
@@ -181,6 +198,7 @@ def main() -> None:
     )
 
     try:
+        _validate_profile_auth_token(_mcp_profile, _auth_token, mcp_type)
         _validate_caller_agent_id_fallback(mcp_type)
 
         if mcp_type == "stdio":

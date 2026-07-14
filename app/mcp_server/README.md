@@ -1979,6 +1979,13 @@ Environment variables:
 - `MCP_USER_ID` : `1` (manual holdings 조회에 사용할 기본 사용자 ID)
 - `MCP_CALLER_AGENT_ID` : DEV/stdio only — MUST NOT be set in production HTTP deployments (re-opens caller spoofing vector)
 
+For `streamable-http` and `sse`, startup fails before FastMCP construction when
+`MCP_PROFILE=kiwoom` has no non-empty `MCP_AUTH_TOKEN`. The same fail-closed
+rule applies to the default profile when `KIWOOM_MOCK_US_ENABLED=true` exposes
+the Kiwoom US mutation tools. An explicitly selected local `stdio` development
+transport may remain tokenless; changing that process to a network transport
+re-runs the auth check and cannot bypass this boundary.
+
 Example:
 ```bash
 docker compose -f docker-compose.prod.yml up -d mcp
@@ -2367,6 +2374,31 @@ Every mutation defaults to `dry_run=true`. Broker I/O requires both
 `dry_run=false` and `confirm=true`. Mock host is fixed to
 `https://mockapi.kiwoom.com` (transport-layer fail-closed); the live host cannot
 be selected.
+
+A confirmed place or modify is `status="submitted"` only when the broker
+response has a strict success code (`return_code` is integer `0` or string
+`"0"`) and a single non-conflicting canonical 1-18 digit order ID across the
+documented ID fields. Missing, invalid, or conflicting ID evidence returns
+`success=false`, `status="accepted_untracked"`,
+`reconcile_required=true`, and `retry_allowed=false`, while retaining redacted
+broker evidence. Callers must reconcile broker history and must not retry the
+tracked mutation automatically. A well-formed, non-zero broker code is the distinct
+`status="rejected"` case. Missing or malformed acceptance evidence returns
+`status="acceptance_uncertain"`, `reconcile_required=true`, and
+`retry_allowed=false`; it must not be treated as an explicit rejection or
+retried automatically. An uncertain modify may have created an unknown
+replacement ID, so smoke cleanup remains failed until an operator reconciles
+broker history. Client/configuration, OAuth, or other failure proven to occur
+before HTTP dispatch is the distinct `status="not_submitted"`,
+`reconcile_required=false` outcome. Trusted
+local validation failures retain actionable messages; provider exception text
+is withheld. Read and cancel response shaping is otherwise unchanged. All seven tools
+registered in one MCP process share one mock-host-pinned client and its locked
+OAuth token cache; bounded pagination and cleanup polling therefore do not
+issue a token request per page. That shared client enforces Kiwoom's stricter
+mock-account limit of one dispatch per `api-id` per second while allowing
+different TRs to proceed independently. The limiter is process-local; operators
+must not run another MCP or smoke process against the same mock US account.
 
 #### Exchange mapping
 
