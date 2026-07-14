@@ -29,6 +29,7 @@ pytestmark = pytest.mark.integration
 
 REPO = Path(__file__).resolve().parents[3]
 MIGRATION = REPO / "alembic/versions/20260714_rob849_paper_cohort.py"
+ROB870_MIGRATION = REPO / "alembic/versions/20260714_rob870_approval_batches.py"
 
 
 def _hash(value: str) -> str:
@@ -54,10 +55,12 @@ def _cohort() -> PaperValidationCohort:
     )
 
 
-def test_migration_descends_from_rob848_and_is_the_single_head() -> None:
+def test_migration_descends_from_merged_rob870_and_is_the_single_head() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
+    rob870_source = ROB870_MIGRATION.read_text(encoding="utf-8")
     assert 'revision = "20260714_rob849_paper_cohort"' in source
-    assert 'down_revision = "20260713_rob848_paper_validation"' in source
+    assert 'down_revision = "20260714_rob870_approval_batches"' in source
+    assert 'down_revision = "20260713_rob848_paper_validation"' in rob870_source
 
     config = Config(str(REPO / "alembic.ini"))
     config.set_main_option("script_location", str(REPO / "alembic"))
