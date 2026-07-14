@@ -110,8 +110,7 @@ async def _insert_action_row(
 # ---------------------------------------------------------------------------
 # Migration module metadata
 # ---------------------------------------------------------------------------
-@pytest.mark.asyncio
-async def test_migration_revision_metadata():
+def test_migration_revision_metadata():
     """The migration module has correct revision chain."""
     source = _MIGRATION_PATH.read_text()
     tree = ast.parse(source)
@@ -178,6 +177,7 @@ def test_offline_downgrade_locks_tables_parent_first():
     ) in sql
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_migration_downgrade_upgrade_round_trip():
     """The real PostgreSQL DDL can round-trip and restore a valid shadow ledger."""
@@ -247,6 +247,7 @@ async def test_migration_downgrade_upgrade_round_trip():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_downgrade_rejects_missing_control_row():
     """Downgrade is allowed only with an existing exact shadow authority."""
@@ -267,6 +268,7 @@ async def test_downgrade_rejects_missing_control_row():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_downgrade_rejects_canonical_mode():
     """Canonical identities are authoritative and may only roll forward."""
@@ -288,6 +290,7 @@ async def test_downgrade_rejects_canonical_mode():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_downgrade_rejects_non_migration_action():
     """A version-1 canonical write is still protected by provenance."""
@@ -318,6 +321,7 @@ async def test_downgrade_rejects_non_migration_action():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_downgrade_rejects_version_greater_than_one():
     """Even migration-provenance rows become non-discardable after version 1."""
@@ -347,6 +351,7 @@ async def test_downgrade_rejects_version_greater_than_one():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_downgrade_rejects_creation_key_history():
     """A caller-created idempotency key proves the row is not pure backfill."""
@@ -379,6 +384,7 @@ async def test_downgrade_rejects_creation_key_history():
 # ---------------------------------------------------------------------------
 # Constraint and index verification
 # ---------------------------------------------------------------------------
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_action_table_check_constraints(db_session):
     """All design-specified CHECK constraints exist on the action table."""
@@ -402,6 +408,7 @@ async def test_action_table_check_constraints(db_session):
     assert expected <= names, f"missing: {expected - names}"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_deferrable_position_uniqueness(db_session):
     """The (retrospective_id, position) uniqueness is deferrable initially deferred."""
@@ -421,6 +428,7 @@ async def test_deferrable_position_uniqueness(db_session):
     assert position_found, "no deferrable position unique constraint found"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_indexes_exist(db_session):
     """All design-specified indexes have the expected keys and predicates."""
@@ -480,6 +488,7 @@ async def test_indexes_exist(db_session):
     )
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_parent_delete_cascades_to_action_rows():
     """Deleting a retrospective removes its shadow children atomically."""
@@ -546,6 +555,7 @@ async def test_parent_delete_cascades_to_action_rows():
         "expired-evidence-non-object",
     ],
 )
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_action_check_constraints_reject_invalid_rows(case):
     """Every lifecycle CHECK rejects a representative invalid row."""
@@ -590,6 +600,7 @@ async def test_action_check_constraints_reject_invalid_rows(case):
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_creation_key_is_unique_per_parent():
     """Creation retries deduplicate within one parent but not across parents."""
@@ -662,6 +673,7 @@ async def test_creation_key_is_unique_per_parent():
 # ---------------------------------------------------------------------------
 # Preflight edge cases
 # ---------------------------------------------------------------------------
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_preflight_rejects_non_array_next_actions():
     """A non-array next_actions value fails preflight."""
@@ -689,6 +701,7 @@ async def test_preflight_rejects_non_array_next_actions():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_preflight_rejects_invalid_due_date():
     """A syntactically ISO but impossible due_kst_date fails preflight."""
@@ -716,6 +729,7 @@ async def test_preflight_rejects_invalid_due_date():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_preflight_rejects_unknown_status():
     """An unknown status value fails preflight."""
@@ -743,6 +757,7 @@ async def test_preflight_rejects_unknown_status():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_preflight_rejects_blank_action():
     """A blank action fails preflight."""
@@ -770,6 +785,7 @@ async def test_preflight_rejects_blank_action():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_preflight_rejects_non_object_element():
     """Every malformed element reports its retrospective and zero-based ordinal."""
@@ -797,6 +813,7 @@ async def test_preflight_rejects_non_object_element():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_preflight_rejects_non_string_action():
     """Action text must not be coerced from another JSON type."""
@@ -865,6 +882,7 @@ async def _backfill_for(conn, retro_id: int):
     )
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_null_like_next_actions_produce_zero_rows():
     """SQL NULL, JSON null, and [] each backfill as zero actions."""
@@ -908,6 +926,7 @@ async def test_null_like_next_actions_produce_zero_rows():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_backfill_maps_fields_ordinals_and_parent_timestamps():
     """A past due date stays active and every mapped field retains its source."""
@@ -1017,6 +1036,7 @@ async def test_backfill_maps_fields_ordinals_and_parent_timestamps():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_missing_status_backfills_to_open():
     """An element with no status key gets status='open' in backfill."""
@@ -1045,6 +1065,7 @@ async def test_missing_status_backfills_to_open():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_blank_status_backfills_to_open():
     """An element with empty-string status gets status='open' in backfill."""
@@ -1073,6 +1094,7 @@ async def test_blank_status_backfills_to_open():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_existing_status_preserved():
     """Existing open/in_progress/done statuses are preserved."""
@@ -1102,6 +1124,7 @@ async def test_existing_status_preserved():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_legacy_payload_preserves_unknown_keys():
     """The entire original JSONB element is preserved in legacy_payload."""
@@ -1143,6 +1166,7 @@ async def test_legacy_payload_preserves_unknown_keys():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_backfill_provenance_actor_and_source():
     """Backfilled rows have actor=migration:rob-878 and source=migration."""
@@ -1173,6 +1197,7 @@ async def test_backfill_provenance_actor_and_source():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_done_status_gets_resolved_at_and_evidence():
     """Historical done rows get approximate resolved_at and evidence envelope."""
@@ -1205,6 +1230,7 @@ async def test_done_status_gets_resolved_at_and_evidence():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_parity_rejects_backfilled_field_mismatch():
     """Parity checks field values and ordinal, not only aggregate row counts."""
@@ -1249,6 +1275,7 @@ async def test_parity_rejects_backfilled_field_mismatch():
 # ---------------------------------------------------------------------------
 # Write-fence behavior
 # ---------------------------------------------------------------------------
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_shadow_mode_permits_parent_json_write(db_session):
     """In shadow mode, direct writes to next_actions are permitted."""
@@ -1279,6 +1306,7 @@ async def test_shadow_mode_permits_parent_json_write(db_session):
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_canonical_mode_rejects_parent_json_write():
     """In canonical mode, direct writes to next_actions without the GUC marker fail."""
@@ -1312,6 +1340,7 @@ async def test_canonical_mode_rejects_parent_json_write():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_canonical_mode_permits_write_with_guc_marker():
     """In canonical mode, writes with the projection-writer GUC marker succeed."""
@@ -1351,6 +1380,7 @@ async def test_canonical_mode_permits_write_with_guc_marker():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_canonical_mode_rejects_parent_insert_with_actions():
     """Old writers cannot create a populated parent after canonical cutover."""
@@ -1384,6 +1414,7 @@ async def test_canonical_mode_rejects_parent_insert_with_actions():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_canonical_mode_permits_update_when_actions_unchanged():
     """The fence blocks projection drift, not unrelated parent maintenance."""
@@ -1423,6 +1454,7 @@ async def test_canonical_mode_permits_update_when_actions_unchanged():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_canonical_mode_rejects_wrong_projection_marker():
     """Only the exact v1 compatibility marker can bypass the fence."""
@@ -1465,6 +1497,7 @@ async def test_canonical_mode_rejects_wrong_projection_marker():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_missing_control_row_fails_parent_json_write_closed():
     """Absent database authority must never silently behave as shadow mode."""
@@ -1507,6 +1540,7 @@ async def test_missing_control_row_fails_parent_json_write_closed():
 # ---------------------------------------------------------------------------
 # Parent JSONB immutability
 # ---------------------------------------------------------------------------
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_parent_json_immutable_after_backfill():
     """Parent next_actions JSONB is byte-for-byte unchanged after backfill."""
@@ -1530,7 +1564,11 @@ async def test_parent_json_immutable_after_backfill():
                     )
                 )
             ).scalar_one()
-            await _backfill_for(conn, 990007)
+            await conn.run_sync(
+                lambda sync_conn: _run_migration_step(
+                    sync_conn, _MIGRATION._run_backfill
+                )
+            )
             after = (
                 await conn.execute(
                     text(

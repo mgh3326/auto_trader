@@ -40,6 +40,9 @@ later children. Pre-merge review hardened the baseline as follows:
 - downgrade locks parent → control → actions and requires exact `shadow` mode;
 - production Alembic defaults and ORM/bootstrap UUID defaults are rendered and
   tested against real PostgreSQL DDL.
+- DB-backed contracts are explicitly marked `integration`, while metadata and
+  offline DDL rendering stay in the unit selection; parent immutability runs
+  the real migration backfill helper rather than a test-only SQL copy.
 
 ---
 
@@ -168,8 +171,7 @@ import pytest
 from sqlalchemy import text
 
 
-@pytest.mark.asyncio
-async def test_trade_retrospective_action_table_registered_on_metadata():
+def test_trade_retrospective_action_table_registered_on_metadata():
     """Both new tables must be registered on Base.metadata for create_all."""
     from app.models.base import Base
 
@@ -178,6 +180,7 @@ async def test_trade_retrospective_action_table_registered_on_metadata():
     assert "review.trade_retrospective_action_control" in table_names
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_trade_retrospective_action_columns_exist(db_session):
     """The action table has all required columns with correct types."""
@@ -216,6 +219,7 @@ async def test_trade_retrospective_action_columns_exist(db_session):
     assert cols["id"].column_default == "gen_random_uuid()"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_control_table_singleton_structure(db_session):
     """The control table enforces singleton id=1 with mode check."""
@@ -238,6 +242,7 @@ async def test_control_table_singleton_structure(db_session):
     assert cols["mode"].is_nullable == "NO"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_control_row_exists_in_shadow_mode(db_session):
     """Exactly one control row exists with mode='shadow' after bootstrap."""
@@ -464,6 +469,7 @@ git commit -m "feat(ROB-878): add TradeRetrospectiveAction + Control ORM models"
 Add to `tests/test_rob878_shadow_ledger_model.py`:
 
 ```python
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_write_fence_trigger_exists_on_parent(db_session):
     """The write-fence trigger function and trigger exist on the parent table."""
@@ -478,6 +484,7 @@ async def test_write_fence_trigger_exists_on_parent(db_session):
     assert "trg_trade_retrospective_next_actions_fence" in trigger_names
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_write_fence_function_exists(db_session):
     """The trigger function exists and is callable."""
@@ -636,8 +643,7 @@ _MIGRATION = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_MIGRATION)
 
 
-@pytest.mark.asyncio
-async def test_migration_revision_metadata():
+def test_migration_revision_metadata():
     """The migration module has correct revision chain."""
     tree = ast.parse(_MIGRATION_PATH.read_text())
     assignments = {
@@ -675,6 +681,7 @@ def test_offline_upgrade_renders_valid_server_defaults():
     assert "DEFAULT '''" not in sql
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_action_table_check_constraints(db_session):
     """All design-specified CHECK constraints exist on the action table."""
@@ -698,6 +705,7 @@ async def test_action_table_check_constraints(db_session):
     assert expected <= names, f"missing: {expected - names}"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_deferrable_position_uniqueness(db_session):
     """The (retrospective_id, position) uniqueness is deferrable initially deferred."""
@@ -714,6 +722,7 @@ async def test_deferrable_position_uniqueness(db_session):
             assert row.condeferred
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_indexes_exist(db_session):
     """All design-specified indexes exist."""
@@ -1398,6 +1407,7 @@ def _run_migration_step(sync_conn, step):
         _MIGRATION.op.execute = original_execute
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_preflight_rejects_non_array_next_actions():
     """A non-array next_actions value fails preflight."""
@@ -1423,6 +1433,7 @@ async def test_preflight_rejects_non_array_next_actions():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_preflight_rejects_invalid_due_date():
     """Exact syntax is insufficient: impossible calendar dates must fail."""
@@ -1449,6 +1460,7 @@ async def test_preflight_rejects_invalid_due_date():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_preflight_rejects_non_string_action():
     """Action text must never be coerced from a JSON scalar."""
@@ -1474,6 +1486,7 @@ async def test_preflight_rejects_non_string_action():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_null_like_next_actions_produce_zero_rows():
     """SQL NULL, JSON null, and [] each backfill as zero actions."""
@@ -1509,6 +1522,7 @@ async def test_null_like_next_actions_produce_zero_rows():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_missing_status_backfills_to_open():
     """An element with no status key gets status='open' in backfill."""
@@ -1549,6 +1563,7 @@ async def test_missing_status_backfills_to_open():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_legacy_payload_preserves_unknown_keys():
     """The entire original JSONB element is preserved in legacy_payload."""
@@ -1593,6 +1608,7 @@ async def test_legacy_payload_preserves_unknown_keys():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_parity_rejects_backfilled_field_mismatch():
     """Parity checks field values and ordinal, not only aggregate row counts."""
@@ -1629,6 +1645,7 @@ async def test_parity_rejects_backfilled_field_mismatch():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_shadow_mode_permits_parent_json_write(db_session):
     """In shadow mode, direct writes to next_actions are permitted."""
@@ -1656,6 +1673,7 @@ async def test_shadow_mode_permits_parent_json_write(db_session):
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_canonical_mode_rejects_parent_json_write():
     """In canonical mode, direct writes to next_actions without the GUC marker fail."""
@@ -1686,6 +1704,7 @@ async def test_canonical_mode_rejects_parent_json_write():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_canonical_mode_permits_write_with_guc_marker():
     """In canonical mode, writes with the projection-writer GUC marker succeed."""
@@ -1719,6 +1738,7 @@ async def test_canonical_mode_permits_write_with_guc_marker():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_missing_control_row_fails_parent_json_write_closed():
     """Absent database authority must never silently behave as shadow mode."""
@@ -1747,6 +1767,7 @@ async def test_missing_control_row_fails_parent_json_write_closed():
             await trans.rollback()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_parent_json_immutable_after_backfill():
     """Parent next_actions JSONB is byte-for-byte unchanged after backfill."""
@@ -1766,21 +1787,11 @@ async def test_parent_json_immutable_after_backfill():
                 "SELECT next_actions FROM review.trade_retrospectives WHERE id = 990007"
             ))).scalar_one()
 
-            # Simulate backfill (read-only on parent)
-            await conn.execute(text(
-                "INSERT INTO review.trade_retrospective_actions "
-                "(id, retrospective_id, position, action, status, version, "
-                " status_actor, status_source, legacy_payload) "
-                "SELECT gen_random_uuid(), t.id, 0, "
-                " btrim(elem.value->>'action'), elem.value->>'status', "
-                " 1, 'migration:rob-878', 'migration', elem.value "
-                "FROM review.trade_retrospectives t "
-                "CROSS JOIN LATERAL jsonb_array_elements(CASE "
-                "WHEN jsonb_typeof(t.next_actions) = 'array' "
-                "THEN t.next_actions ELSE '[]'::jsonb END) "
-                "WITH ORDINALITY AS elem(value, ordinality) "
-                "WHERE t.id = 990007"
-            ))
+            await conn.run_sync(
+                lambda sync_conn: _run_migration_step(
+                    sync_conn, _MIGRATION._run_backfill
+                )
+            )
 
             after = (await conn.execute(text(
                 "SELECT next_actions FROM review.trade_retrospectives WHERE id = 990007"

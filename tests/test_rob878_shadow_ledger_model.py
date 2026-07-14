@@ -8,8 +8,7 @@ import pytest
 from sqlalchemy import text
 
 
-@pytest.mark.asyncio
-async def test_trade_retrospective_action_table_registered_on_metadata():
+def test_trade_retrospective_action_table_registered_on_metadata():
     """Both new tables must be registered on Base.metadata for create_all."""
     from app.models.base import Base
 
@@ -18,6 +17,7 @@ async def test_trade_retrospective_action_table_registered_on_metadata():
     assert "review.trade_retrospective_action_control" in table_names
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_trade_retrospective_action_columns_exist(db_session):
     """The action table has all required columns with correct types."""
@@ -70,6 +70,7 @@ async def test_trade_retrospective_action_columns_exist(db_session):
     assert cols["id"].column_default == "gen_random_uuid()"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_control_table_singleton_structure(db_session):
     """The control table enforces singleton id=1 with mode check."""
@@ -92,6 +93,7 @@ async def test_control_table_singleton_structure(db_session):
     assert cols["mode"].is_nullable == "NO"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_control_row_exists_in_shadow_mode(db_session):
     """Exactly one control row exists with mode='shadow' after bootstrap."""
@@ -106,6 +108,7 @@ async def test_control_row_exists_in_shadow_mode(db_session):
     assert rows[0].mode == "shadow"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_write_fence_trigger_exists_on_parent(db_session):
     """The write-fence trigger function and trigger exist on the parent table."""
@@ -120,6 +123,7 @@ async def test_write_fence_trigger_exists_on_parent(db_session):
     assert "trg_trade_retrospective_next_actions_fence" in trigger_names
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_write_fence_function_exists(db_session):
     """The trigger function exists and is callable."""
