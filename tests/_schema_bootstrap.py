@@ -34,7 +34,10 @@ from sqlalchemy import text
 # replaces only a mismatched definition before CREATE IF NOT EXISTS.
 # v11 (ROB-866): review.toss_manual_activity_alerts (new ORM table) — create_all
 # builds it; bump forces a persistent local DB to re-bootstrap once.
-SCHEMA_BOOTSTRAP_VERSION = 14
+# v15 (ROB-878): review.trade_retrospective_actions (new ORM table via
+# create_all) + review.trade_retrospective_action_control (singleton) +
+# write-fence trigger function + shadow control row mirrored below.
+SCHEMA_BOOTSTRAP_VERSION = 15
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -884,6 +887,46 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "('planned','previewed','validated','submitted','filled','anomaly')",
     ROB844_ACK_INDEX_REFRESH_DDL,
     ROB844_ACK_INDEX_CREATE_DDL,
+    # ---- ROB-878: retrospective action write-fence trigger + singleton ----
+    # Shadow mode permits all legacy writes; canonical mode rejects direct
+    # next_actions changes unless the GUC projection-writer marker is set.
+    "CREATE OR REPLACE FUNCTION "
+    "review.guard_trade_retrospective_next_actions() "
+    "RETURNS trigger AS $$ DECLARE ctrl_mode TEXT; writer_marker TEXT; "
+    "BEGIN "
+    "SELECT mode INTO ctrl_mode "
+    "FROM review.trade_retrospective_action_control WHERE id = 1; "
+    "IF ctrl_mode IS NULL OR ctrl_mode = 'shadow' THEN "
+    "RETURN NEW; "
+    "END IF; "
+    "writer_marker := current_setting("
+    "'app.retrospective_action_projection_writer', true); "
+    "IF writer_marker IS NULL OR writer_marker <> 'v1' THEN "
+    "IF TG_OP = 'INSERT' THEN "
+    "IF NEW.next_actions IS NOT NULL THEN "
+    "RAISE EXCEPTION "
+    "'canonical mode: direct next_actions insert rejected; "
+    "use the action repository' USING ERRCODE = 'restrict_violation'; "
+    "END IF; "
+    "ELSE "
+    "IF NEW.next_actions IS DISTINCT FROM OLD.next_actions THEN "
+    "RAISE EXCEPTION "
+    "'canonical mode: direct next_actions update rejected; "
+    "use the action repository' USING ERRCODE = 'restrict_violation'; "
+    "END IF; "
+    "END IF; "
+    "END IF; "
+    "RETURN NEW; "
+    "END; $$ LANGUAGE plpgsql",
+    "DROP TRIGGER IF EXISTS trg_trade_retrospective_next_actions_fence "
+    "ON review.trade_retrospectives",
+    "CREATE TRIGGER trg_trade_retrospective_next_actions_fence "
+    "BEFORE INSERT OR UPDATE ON review.trade_retrospectives "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "review.guard_trade_retrospective_next_actions()",
+    "INSERT INTO review.trade_retrospective_action_control (id, mode) "
+    "VALUES (1, 'shadow') "
+    "ON CONFLICT (id) DO NOTHING",
 )
 
 

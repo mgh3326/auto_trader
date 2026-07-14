@@ -8,12 +8,14 @@ from decimal import Decimal
 
 from sqlalchemy import (
     TIMESTAMP,
+    VARCHAR,
     BigInteger,
     Boolean,
     CheckConstraint,
     Date,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -1146,6 +1148,156 @@ class TradeRetrospective(Base):
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+# ---------------------------------------------------------------------------
+# review.trade_retrospective_actions — canonical action lifecycle (ROB-878)
+# ---------------------------------------------------------------------------
+class TradeRetrospectiveAction(Base):
+    """ROB-878 — canonical retrospective action with stable identity and lifecycle.
+
+    Shadow mode: rows are backfilled from parent JSONB but not exposed to any
+    reader. Canonical mode: all reads/writes move here; parent JSONB becomes a
+    compatibility projection.
+    """
+
+    __tablename__ = "trade_retrospective_actions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["retrospective_id"],
+            ["review.trade_retrospectives.id"],
+            ondelete="CASCADE",
+            name="fk_trade_retrospective_actions_retrospective",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        UniqueConstraint(
+            "retrospective_id",
+            "position",
+            name="uq_trade_retrospective_actions_position",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        CheckConstraint(
+            "status IN ('open','in_progress','done','obsolete','expired')",
+            name="status",
+        ),
+        CheckConstraint(
+            "status_source IN ('migration','retrospective_save','web','mcp','triage','reconciler')",
+            name="status_source",
+        ),
+        CheckConstraint("version >= 1", name="version"),
+        CheckConstraint("position >= 0", name="position_col"),
+        CheckConstraint(
+            "(status IN ('done','obsolete','expired') AND resolved_at IS NOT NULL) "
+            "OR (status IN ('open','in_progress') AND resolved_at IS NULL)",
+            name="resolved_terminal",
+        ),
+        CheckConstraint(
+            "(status NOT IN ('obsolete','expired')) "
+            "OR (status_reason IS NOT NULL AND btrim(status_reason) <> '' "
+            "AND length(status_reason) <= 2000)",
+            name="reason_required",
+        ),
+        CheckConstraint(
+            "(status <> 'expired') "
+            "OR (status_evidence IS NOT NULL "
+            "AND jsonb_typeof(status_evidence) = 'object')",
+            name="evidence_required",
+        ),
+        Index(
+            "ix_trade_retrospective_actions_parent_position",
+            "retrospective_id",
+            "position",
+            "id",
+        ),
+        Index(
+            "ix_trade_retrospective_actions_due_active",
+            "due_kst_date",
+            "id",
+            postgresql_where=text("status IN ('open', 'in_progress')"),
+        ),
+        Index(
+            "uq_trade_retrospective_actions_creation_key",
+            "retrospective_id",
+            "creation_key",
+            unique=True,
+            postgresql_where=text("creation_key IS NOT NULL"),
+        ),
+        Index(
+            "ix_trade_retrospective_actions_issue_id",
+            "issue_id",
+            postgresql_where=text("issue_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_trade_retrospective_actions_status_updated",
+            "status",
+            "updated_at",
+            "id",
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    retrospective_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    creation_key: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    owner: Mapped[str | None] = mapped_column(Text)
+    issue_id: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'open'")
+    )
+    due_kst_date: Mapped[date | None] = mapped_column(Date)
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("1")
+    )
+    status_changed_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    status_actor: Mapped[str] = mapped_column(VARCHAR(128), nullable=False)
+    status_source: Mapped[str] = mapped_column(Text, nullable=False)
+    status_reason: Mapped[str | None] = mapped_column(Text)
+    status_evidence: Mapped[dict | None] = mapped_column(JSONB)
+    legacy_payload: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class TradeRetrospectiveActionControl(Base):
+    """ROB-878 — singleton lifecycle control row (shadow/canonical mode)."""
+
+    __tablename__ = "trade_retrospective_action_control"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="singleton"),
+        CheckConstraint(
+            "mode IN ('shadow','canonical')", name="mode"
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    mode: Mapped[str] = mapped_column(Text, nullable=False)
+    cutover_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    cutover_action_count: Mapped[int | None] = mapped_column(Integer)
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         server_default=func.now(),
