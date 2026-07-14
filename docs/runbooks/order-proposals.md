@@ -40,7 +40,9 @@ proposal execution and ROB-858 Toss loss-cut/reconcile convergence:
 - **ROB-870** — adds a durable Telegram `전체 승인` summary for eligible
   manual proposals. It preserves every proposal's individual buttons, nonce,
   audit, fresh revalidation, and result message; a batch is only a single-use
-  trigger over those existing approval paths.
+  trigger over those existing approval paths. See the
+  [ROB-870 design](../superpowers/specs/2026-07-14-rob-870-telegram-batch-approval-design.md)
+  and [implementation plan](../superpowers/plans/2026-07-14-rob-870-telegram-batch-approval.md).
 
 There is still **no**
 `order_proposal_approve` / `order_proposal_submit` MCP tool in any slice —
