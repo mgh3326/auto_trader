@@ -887,7 +887,9 @@ async def test_void_unverified_with_absent_broker_evidence_records_audit(db_sess
         assert [rung.rung_index for rung in kwargs["rungs"]] == [0]
         return {
             0: OperatorVoidEvidence(
-                "absent", "toss GET /orders OPEN + CLOSED 2026-07-11..2026-07-13"
+                "absent",
+                "toss GET /orders OPEN + CLOSED "
+                "scan_kst=2026-07-11..2026-07-15 combination_matches=0",
             )
         }
 
@@ -901,10 +903,13 @@ async def test_void_unverified_with_absent_broker_evidence_records_audit(db_sess
 
     assert [row.state for row in rows] == ["voided_local_stale"]
     assert rungs[0].state == "voided_local_stale"
-    assert "operator cleanup" in refreshed.void_reason
-    assert "outcome=absent" in refreshed.void_reason
-    assert "toss_live_order_ledger rows=0" in refreshed.void_reason
-    assert "GET /orders OPEN + CLOSED" in refreshed.void_reason
+    for audit_reason in (refreshed.void_reason, rungs[0].void_reason):
+        assert "operator cleanup" in audit_reason
+        assert "outcome=absent" in audit_reason
+        assert "GET /orders OPEN + CLOSED" in audit_reason
+        assert "scan_kst=2026-07-11..2026-07-15" in audit_reason
+        assert "combination_matches=0" in audit_reason
+        assert "toss_live_order_ledger rows=0" in audit_reason
     assert rungs[0].void_reason == refreshed.void_reason
 
 

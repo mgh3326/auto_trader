@@ -688,10 +688,17 @@ order mutation.
   - A found broker order, incomplete lookup, timeout, provider error, or local
     accepted-only Toss ledger row rejects the whole request without partial
     mutation. Timeout-to-`unverified` is never auto-voided.
-  - Toss order-list `clientOrderId` is optional: when a rung has no broker order
-    ID, any non-empty response that omits it is inconclusive. KIS US empty
-    history is also inconclusive because the shared history adapter cannot prove
-    every exchange inquiry completed. Both cases fail closed.
+  - For a Toss rung without a broker order ID, absence requires both zero
+    accepted-only `toss_live_order_ledger` rows and a complete OPEN+CLOSED scan
+    with no order matching the normalized symbol, side, quantity, and price.
+    Quantity and price use finite Decimal comparison rather than string equality.
+    The per-rung attempt window is inclusive from `created_at - 24h` through
+    `max(valid_until, updated_at) + 24h`; the broker scan covers the union of
+    those windows' KST dates. Provider errors, timeouts, malformed potential
+    matches, invalid pagination, and CLOSED page-cap exhaustion make the scan
+    incomplete and fail closed instead of proving absence. KIS and Upbit
+    operator-void behavior is unchanged, including inconclusive KIS US empty
+    history when the shared adapter cannot prove every exchange inquiry finished.
   - After a successful void, the recorded Telegram approval message is edited
     without an inline keyboard so stale approval buttons no longer remain live.
 
