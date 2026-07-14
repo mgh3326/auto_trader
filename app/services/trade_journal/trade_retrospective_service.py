@@ -35,6 +35,10 @@ from app.schemas.trade_retrospective import (
     NextAction,
 )
 from app.services.brokers.kis.mock_scalping_exec.ledger_state import real_order_filter
+from app.services.trade_journal.retrospective_action_repository import (
+    RetrospectiveActionRepository,
+    get_control_mode,
+)
 
 # Sentinel: distinguishes "caller did not provide this field" (preserve on
 # upsert) from "caller explicitly set None" (clear the field).
@@ -293,6 +297,7 @@ async def save_retrospective(
     next_actions: Any = _UNSET,
     guardrail_fired: Any = _UNSET,
     policy_version: Any = _UNSET,
+    actor: str = "internal:save_retrospective",
 ) -> tuple[str, TradeRetrospective]:
     if account_mode not in _VALID_ACCOUNT_MODES:
         raise RetrospectiveValidationError(f"invalid account_mode: {account_mode}")
@@ -431,6 +436,15 @@ async def save_retrospective(
         "fx_pnl_accuracy": fx_pnl_accuracy,
     }
 
+    # ROB-880: In canonical mode the write-fence trigger rejects direct
+    # next_actions writes, so the payload excludes it and the repository
+    # reconciles children + writes the projection with the GUC marker.
+    try:
+        ctrl_mode = await get_control_mode(db)
+    except Exception:
+        ctrl_mode = "shadow"
+    _is_canonical = ctrl_mode == "canonical"
+
     # ROB-647 — only include provided postmortem fields so an idempotent
     # re-save that omits them does not clobber prior values (partial-update).
     if trigger_type is not _UNSET:
@@ -441,7 +455,7 @@ async def save_retrospective(
         payload["intended_vs_happened"] = (
             None if intended_vs_happened_value is _UNSET else intended_vs_happened_value
         )
-    if next_actions is not _UNSET:
+    if next_actions is not _UNSET and not _is_canonical:
         payload["next_actions"] = (
             None if next_actions_value is _UNSET else next_actions_value
         )
@@ -451,7 +465,17 @@ async def save_retrospective(
         payload["policy_version"] = policy_version
 
     repo = TradeRetrospectiveRepository(db)
-    return await repo.upsert(payload)
+    status, retro = await repo.upsert(payload)
+
+    if _is_canonical and next_actions is not _UNSET and next_actions is not None:
+        action_repo = RetrospectiveActionRepository(db)
+        await action_repo.reconcile_actions(
+            retro.id,
+            next_actions_value if next_actions_value is not _UNSET else [],
+            actor=actor,
+        )
+
+    return status, retro
 
 
 def _kst_day_start(date_str: str) -> datetime:
@@ -570,11 +594,19 @@ async def get_open_next_actions(
 ) -> dict[str, Any]:
     """Flatten incomplete next_actions across recent retrospectives.
 
-    Bounded scan (``limit`` most-recent rows) — NOT full history; the
-    ``scan_limit`` echo makes that explicit to callers. ``statuses=None``
-    means "not done" (open/in_progress/unset all surface); a set narrows to
-    exact status values.
+    In shadow mode: bounded scan of parent JSONB.
+    In canonical mode: queries the child ledger directly (no scan limit needed).
     """
+    try:
+        ctrl_mode = await get_control_mode(db)
+    except Exception:
+        ctrl_mode = "shadow"
+
+    if ctrl_mode == "canonical":
+        return await _get_open_next_actions_canonical(
+            db, market=market, symbol=symbol, statuses=statuses, limit=limit
+        )
+
     filters: list = []
     if market is not None:
         filters.append(TradeRetrospective.market == market)
@@ -646,6 +678,86 @@ async def get_open_next_actions(
                 }
             )
     return {"items": items, "count": len(items), "scan_limit": limit}
+
+
+async def _get_open_next_actions_canonical(
+    db: AsyncSession,
+    *,
+    market: str | None = None,
+    symbol: str | None = None,
+    statuses: frozenset[str] | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Canonical-mode implementation of get_open_next_actions.
+
+    Reads from the child ledger and formats results in the legacy response
+    shape, with action_id and version added additively.
+    """
+    repo = RetrospectiveActionRepository(db)
+    result = await repo.query_actions(
+        statuses=statuses,
+        market=market,
+        symbol=symbol,
+        limit=limit,
+        offset=0,
+    )
+    items: list[dict[str, Any]] = []
+    for item in result["items"]:
+        items.append(
+            {
+                "action": item["action"],
+                "owner": item.get("owner"),
+                "issue_id": item.get("issue_id"),
+                "status": item.get("status"),
+                "due_kst_date": item.get("due_kst_date"),
+                "symbol": item.get("symbol"),
+                "market": item.get("market"),
+                "retro_id": item.get("retrospective_id"),
+                "correlation_id": item.get("correlation_id"),
+                "trigger_type": item.get("trigger_type"),
+                "realized_pnl": item.get("realized_pnl"),
+                "created_at": item.get("created_at"),
+                "action_id": item.get("action_id"),
+                "version": item.get("version"),
+            }
+        )
+    return {"items": items, "count": len(items), "scan_limit": limit}
+
+
+async def get_canonical_actions(
+    db: AsyncSession,
+    *,
+    statuses: frozenset[str] | None = None,
+    market: str | None = None,
+    symbol: str | None = None,
+    symbol_search: str | None = None,
+    owner: str | None = None,
+    issue_id: str | None = None,
+    overdue_only: bool = False,
+    trigger_type: str | None = None,
+    outcome_filter: str | None = None,
+    kst_date_from: str | None = None,
+    kst_date_to: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Canonical action query with pagination, filters, and overdue-first ordering."""
+    repo = RetrospectiveActionRepository(db)
+    return await repo.query_actions(
+        statuses=statuses,
+        market=market,
+        symbol=symbol,
+        symbol_search=symbol_search,
+        owner=owner,
+        issue_id=issue_id,
+        overdue_only=overdue_only,
+        trigger_type=trigger_type,
+        outcome_filter=outcome_filter,
+        kst_date_from=kst_date_from,
+        kst_date_to=kst_date_to,
+        limit=limit,
+        offset=offset,
+    )
 
 
 def _is_win(r: TradeRetrospective) -> bool:

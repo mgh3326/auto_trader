@@ -20,6 +20,8 @@ from app.core.symbol import to_db_symbol
 from app.models.trading import User
 from app.routers.dependencies import get_authenticated_user
 from app.schemas.invest_retrospectives import (
+    CanonicalActionRow,
+    CanonicalActionsResponse,
     NextActionRow,
     NextActionsResponse,
     RetrospectiveRow,
@@ -228,4 +230,69 @@ async def list_open_next_actions(
         count=result["count"],
         scan_limit=result["scan_limit"],
         items=[NextActionRow(**i) for i in result["items"]],
+    )
+
+
+@router.get("/actions")
+async def list_canonical_actions(
+    _user: Annotated[User, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    status: Annotated[str | None, Query()] = None,
+    market: Annotated[Market, Query()] = "all",
+    symbol: Annotated[str | None, Query()] = None,
+    q: Annotated[str | None, Query(max_length=32)] = None,
+    owner: Annotated[str | None, Query()] = None,
+    issue_id: Annotated[str | None, Query()] = None,
+    overdue_only: Annotated[bool, Query()] = False,
+    trigger_type: Annotated[str | None, Query()] = None,
+    outcome_filter: Annotated[str | None, Query()] = None,
+    kst_date_from: Annotated[str | None, Query()] = None,
+    kst_date_to: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> CanonicalActionsResponse:
+    """Canonical paginated action list with overdue-first ordering.
+
+    Omitted status defaults to open,in_progress (active only).
+    Terminal history requires an explicit status filter.
+    """
+    if trigger_type is not None and trigger_type not in VALID_TRIGGER_TYPES:
+        raise HTTPException(
+            status_code=422, detail=f"invalid trigger_type: {trigger_type}"
+        )
+    if outcome_filter is not None and outcome_filter not in VALID_OUTCOME_FILTERS:
+        raise HTTPException(
+            status_code=422, detail=f"invalid outcome_filter: {outcome_filter}"
+        )
+    date_from = _parse_kst_date("kst_date_from", kst_date_from)
+    date_to = _parse_kst_date("kst_date_to", kst_date_to)
+    db_symbol = _normalize_symbol(symbol, market)
+
+    statuses = (
+        frozenset(s.strip() for s in status.split(",") if s.strip()) if status else None
+    )
+
+    result = await retro_svc.get_canonical_actions(
+        db,
+        statuses=statuses,
+        market=None if market == "all" else market,
+        symbol=db_symbol,
+        symbol_search=q,
+        owner=owner,
+        issue_id=issue_id,
+        overdue_only=overdue_only,
+        trigger_type=trigger_type,
+        outcome_filter=outcome_filter,
+        kst_date_from=date_from,
+        kst_date_to=date_to,
+        limit=limit,
+        offset=offset,
+    )
+    return CanonicalActionsResponse(
+        total=result["total"],
+        count=result["count"],
+        limit=result["limit"],
+        offset=result["offset"],
+        as_of=result["as_of"],
+        items=[CanonicalActionRow(**item) for item in result["items"]],
     )
