@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from app.core.config import settings
 from app.models.paper_cohort import (
     PaperCohortDecision,
+    PaperCohortRunClaim,
     PaperCohortVenueIntent,
     PaperRunOrderLink,
 )
@@ -20,7 +21,7 @@ from app.services.brokers.paper.contracts import (
     PaperOperationResult,
     PaperOperationStatus,
 )
-from app.services.paper_cohort.contracts import RunMode
+from app.services.paper_cohort.contracts import PaperCohortError, RunMode
 from app.services.paper_cohort.native_links import NativeOrderIdentity
 from app.services.paper_cohort.provenance import PaperCohortProvenanceVerifier
 from app.services.paper_cohort.runner import CohortRunInvocation, PaperCohortRunner
@@ -153,6 +154,36 @@ async def test_crash_after_submit_recovers_native_truth_without_second_post(
     await db_session.rollback()
     assert sum(adapter.broker_posts for adapter in adapters.values()) == 1
     assert native.calls == []
+    submitted_venue = next(
+        venue for venue, adapter in adapters.items() if adapter.broker_posts == 1
+    )
+    submitted_result = next(iter(adapters[submitted_venue].results.values()))
+    submitted_intent = await db_session.scalar(
+        select(PaperCohortVenueIntent)
+        .join(
+            PaperCohortDecision,
+            PaperCohortDecision.decision_id == PaperCohortVenueIntent.decision_id,
+        )
+        .where(
+            PaperCohortVenueIntent.run_id == invocation.run_id,
+            PaperCohortVenueIntent.venue == submitted_venue.value,
+            PaperCohortDecision.symbol == "BTCUSDT",
+        )
+    )
+    assert submitted_intent is not None
+    assert submitted_result.native_client_order_id is not None
+    assert submitted_result.native_order_id is not None
+    native.prepared[submitted_intent.intent_id] = NativeOrderIdentity(
+        venue=submitted_venue.value,
+        ledger_kind=(
+            "binance_demo_order_ledger"
+            if submitted_venue is Broker.BINANCE
+            else "alpaca_paper_order_ledger"
+        ),
+        ledger_row_id=int(stable_hash(f"active-native-{nonce}")[:12], 16),
+        client_order_id=submitted_result.native_client_order_id,
+        broker_order_id=submitted_result.native_order_id,
+    )
     clock.now += timedelta(minutes=6)
 
     second = PaperCohortRunner(
@@ -171,9 +202,9 @@ async def test_crash_after_submit_recovers_native_truth_without_second_post(
 
     assert result.intent_count == 4
     assert sum(adapter.broker_posts for adapter in adapters.values()) == 4
-    assert sum(adapter.replay_count for adapter in adapters.values()) == 1
+    assert sum(adapter.replay_count for adapter in adapters.values()) == 0
     assert capture.calls == 1
-    assert len(native.calls) == 4
+    assert len(native.calls) == 3
     assert (
         await db_session.scalar(
             select(func.count())
@@ -294,18 +325,18 @@ async def test_recovery_only_links_native_truth_after_abort_and_kill_switch(
     monkeypatch.setattr(settings, "PAPER_COHORT_ENABLED", False)
     monkeypatch.setattr(settings, "PAPER_EXECUTION_ENABLED", False)
 
-    recovered = await PaperCohortRunner(
-        db_session,
-        capture=capture,
-        quote_provider=FakeQuotes(db_session),
-        verifier=verifier,
-        application_factory=app_factory,
-        native_resolver=native,
-        clock=lambda: CAPTURED_AT,
-        enablement=lambda _mode: True,
-    ).recover(invocation)
+    with pytest.raises(PaperCohortError, match="recovery_incomplete"):
+        await PaperCohortRunner(
+            db_session,
+            capture=capture,
+            quote_provider=FakeQuotes(db_session),
+            verifier=verifier,
+            application_factory=app_factory,
+            native_resolver=native,
+            clock=lambda: CAPTURED_AT,
+            enablement=lambda _mode: True,
+        ).recover(invocation)
 
-    assert recovered.intent_count == 4
     assert sum(adapter.broker_posts for adapter in adapters.values()) == 1
     assert sum(adapter.replay_count for adapter in adapters.values()) == 0
     assert capture.calls == 1
@@ -317,3 +348,11 @@ async def test_recovery_only_links_native_truth_after_abort_and_kill_switch(
         )
         == 1
     )
+    claim = await db_session.scalar(
+        select(PaperCohortRunClaim).where(
+            PaperCohortRunClaim.run_id == invocation.run_id
+        )
+    )
+    assert claim is not None
+    assert claim.completed_at is None
+    assert claim.result_payload is None

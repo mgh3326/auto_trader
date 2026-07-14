@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -8,9 +9,14 @@ import pytest
 from app.core.config import Settings, settings
 from app.core.scheduler import sched
 from app.core.taskiq_broker import broker, retry_schedule_source
+from app.jobs import paper_cohort as paper_cohort_job
 from app.jobs.paper_cohort import run_active_paper_cohorts
 from app.services.paper_cohort.contracts import PaperCohortError, RunMode
-from app.services.paper_cohort.runner import CohortRunInvocation, PaperCohortRunner
+from app.services.paper_cohort.runner import (
+    CohortRunInvocation,
+    CohortRunResult,
+    PaperCohortRunner,
+)
 from app.tasks import TASKIQ_TASK_MODULES, paper_cohort_tasks
 
 pytestmark = pytest.mark.unit
@@ -165,3 +171,67 @@ async def test_disabled_job_only_audits_recoverable_claims(monkeypatch) -> None:
 
     assert result == {"status": "disabled", "cohorts": []}
     recoverable.assert_awaited_once_with(session)
+
+
+@pytest.mark.asyncio
+async def test_job_resumes_active_prepared_claim_instead_of_terminal_recovery(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "PAPER_COHORT_ENABLED", True)
+    monkeypatch.setattr(settings, "PAPER_EXECUTION_ENABLED", True)
+    monkeypatch.setattr(
+        settings, "PAPER_VALIDATION_AUTHENTICATED_ACTOR_ID", "paper-cohort-runner"
+    )
+    invocation = CohortRunInvocation(
+        cohort_id="cohort-active-retry",
+        run_id="run-active-retry",
+        round_decision_id="round-active-retry",
+        mode=RunMode.PAPER_ACTIVE,
+    )
+    monkeypatch.setattr(
+        paper_cohort_job,
+        "_recoverable_invocations",
+        AsyncMock(return_value=[invocation]),
+    )
+    monkeypatch.setattr(
+        paper_cohort_job,
+        "_runtime_mode",
+        AsyncMock(return_value=RunMode.PAPER_ACTIVE),
+    )
+    session = AsyncMock()
+    session.scalar.return_value = SimpleNamespace(stop_at=None)
+    session.scalars.return_value = SimpleNamespace(all=lambda: [])
+
+    @asynccontextmanager
+    async def session_factory():
+        yield session
+
+    calls: list[str] = []
+
+    class FakeRunner:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+
+        async def run(self, received):
+            assert received == invocation
+            calls.append("run")
+            return CohortRunResult(
+                cohort_id=invocation.cohort_id,
+                run_id=invocation.run_id,
+                round_decision_id=invocation.round_decision_id,
+                snapshot_id="snapshot-active-retry",
+                snapshot_hash="a" * 64,
+                decision_count=2,
+                intent_count=4,
+            )
+
+        async def recover(self, received):
+            del received
+            calls.append("recover")
+            raise AssertionError("active claim must use normal resume")
+
+    monkeypatch.setattr(paper_cohort_job, "PaperCohortRunner", FakeRunner)
+    result = await run_active_paper_cohorts(session_factory=session_factory)
+
+    assert calls == ["run"]
+    assert result["cohorts"][0]["status"] == "resumed"  # type: ignore[index]

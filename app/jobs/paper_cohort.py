@@ -142,6 +142,23 @@ async def run_active_paper_cohorts(
     for invocation in recoverable:
         async with session_factory() as session:
             try:
+                cohort = await session.scalar(
+                    select(PaperValidationCohort).where(
+                        PaperValidationCohort.cohort_id == invocation.cohort_id
+                    )
+                )
+                current_mode = await _runtime_mode(session, invocation.cohort_id)
+                fresh_resume_allowed = bool(
+                    settings.PAPER_COHORT_ENABLED
+                    and actor_id
+                    and cohort is not None
+                    and (cohort.stop_at is None or cohort.stop_at > now)
+                    and current_mode is invocation.mode
+                    and (
+                        invocation.mode is RunMode.SHADOW
+                        or settings.PAPER_EXECUTION_ENABLED
+                    )
+                )
                 validation = PaperValidationService(
                     session,
                     actor_role_provider=_ConfiguredActorRoleProvider(),
@@ -155,17 +172,22 @@ async def run_active_paper_cohorts(
                     clock=lambda: now,
                 )
                 unused = _RecoveryOnlyBoundary()
-                result = await PaperCohortRunner(
+                runner = PaperCohortRunner(
                     session,
                     capture=unused,
                     quote_provider=unused,
                     verifier=verifier,
                     clock=lambda: now,
-                ).recover(invocation)
+                )
+                result = (
+                    await runner.run(invocation)
+                    if fresh_resume_allowed
+                    else await runner.recover(invocation)
+                )
                 outcomes.append(
                     {
                         "cohort_id": invocation.cohort_id,
-                        "status": "recovered",
+                        "status": ("resumed" if fresh_resume_allowed else "recovered"),
                         **result.model_dump(mode="json"),
                     }
                 )

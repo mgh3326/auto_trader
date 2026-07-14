@@ -640,6 +640,7 @@ class PaperCohortRunner:
                     if self._application_factory is None
                     else self._application_factory(self._verifier)
                 )
+            unresolved_intents = 0
             for (intent, _signal, _evidence), request in zip(
                 active_intents, requests, strict=True
             ):
@@ -676,6 +677,7 @@ class PaperCohortRunner:
                         raise
                     native = None
                 if native is None and recovery_only:
+                    unresolved_intents += 1
                     continue
                 if native is None:
                     assert application is not None
@@ -712,6 +714,12 @@ class PaperCohortRunner:
                     )
                 )
             await self._session.flush()
+            if recovery_only and unresolved_intents:
+                # Persist any recovered thin links, but leave the durable claim
+                # incomplete.  A terminal/disabled recovery may never silently
+                # convert unsubmitted intents into a completed run.
+                await self._session.commit()
+                raise PaperCohortError("recovery_incomplete")
         completed_at = self._clock()
         completion = await self._session.execute(
             update(PaperCohortRunClaim)
