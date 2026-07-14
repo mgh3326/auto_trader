@@ -174,3 +174,99 @@ class OrderProposalRung(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+
+class OrderProposalApprovalBatch(Base):
+    __tablename__ = "order_proposal_approval_batches"
+    __table_args__ = (
+        UniqueConstraint(
+            "batch_id", name="uq_order_proposal_approval_batches_batch_id"
+        ),
+        CheckConstraint(
+            "summary_dispatch_state IN ('idle','sending','sent')",
+            name="order_proposal_approval_batches_summary_state",
+        ),
+        Index(
+            "ix_order_proposal_approval_batches_chat_window",
+            "chat_id",
+            "window_closes_at",
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False
+    )
+    chat_id: Mapped[str] = mapped_column(Text, nullable=False)
+    window_started_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    window_closes_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    approval_nonce: Mapped[str] = mapped_column(Text, nullable=False)
+    approval_nonce_used_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+    approved_by_telegram_user_id: Mapped[str | None] = mapped_column(Text)
+    approved_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    summary_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    summary_dispatch_state: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="idle"
+    )
+    summary_dispatch_lease_until: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class OrderProposalApprovalBatchMember(Base):
+    __tablename__ = "order_proposal_approval_batch_members"
+    __table_args__ = (
+        UniqueConstraint(
+            "batch_pk", "proposal_pk", name="uq_order_proposal_batch_member"
+        ),
+        UniqueConstraint(
+            "proposal_pk",
+            "approval_nonce_snapshot",
+            name="uq_order_proposal_batch_member_nonce",
+        ),
+        Index("ix_order_proposal_batch_members_batch_pk", "batch_pk"),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    batch_pk: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "review.order_proposal_approval_batches.id", ondelete="CASCADE"
+        ),
+        nullable=False,
+    )
+    proposal_pk: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("review.order_proposals.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    approval_nonce_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
+    approval_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    result: Mapped[str | None] = mapped_column(Text)
+    result_detail: Mapped[dict | None] = mapped_column(JSONB)
+    processed_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+    added_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )

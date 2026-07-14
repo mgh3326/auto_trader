@@ -34,7 +34,9 @@ from sqlalchemy import text
 # replaces only a mismatched definition before CREATE IF NOT EXISTS.
 # v11 (ROB-866): review.toss_manual_activity_alerts (new ORM table) — create_all
 # builds it; bump forces a persistent local DB to re-bootstrap once.
-SCHEMA_BOOTSTRAP_VERSION = 14
+# v15 (ROB-870): review.order_proposal_approval_batches and membership rows are
+# new ORM tables; persistent local DBs need one create_all re-bootstrap.
+SCHEMA_BOOTSTRAP_VERSION = 15
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
