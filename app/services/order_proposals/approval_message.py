@@ -11,9 +11,9 @@ from typing import Any
 
 from app.core.timezone import KST
 
-_ALLOWED_ACTIONS = frozenset({"op", "dn", "lc", "vc"})
+_ALLOWED_ACTIONS = frozenset({"op", "dn", "lc", "vc", "ba"})
 _CALLBACK_PATTERN = re.compile(
-    r"^(?P<action>op|dn|lc|vc):(?P<proposal_short>[0-9a-f]{8}):"
+    r"^(?P<action>op|dn|lc|vc|ba):(?P<proposal_short>[0-9a-f]{8}):"
     r"(?P<nonce>[A-Za-z0-9_-]+)$"
 )
 _MAX_CALLBACK_BYTES = 64
@@ -34,7 +34,7 @@ def build_callback_data(
 ) -> str:
     """Build compact Telegram callback data for an approval action."""
     if action not in _ALLOWED_ACTIONS:
-        raise ValueError("action must be one of: op, dn, lc, vc")
+        raise ValueError("action must be one of: op, dn, lc, vc, ba")
     if not isinstance(proposal_id, uuid.UUID):
         raise ValueError("proposal_id must be a UUID")
     if not isinstance(nonce, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", nonce):
@@ -44,6 +44,11 @@ def build_callback_data(
     if len(data.encode("utf-8")) > _MAX_CALLBACK_BYTES:
         raise ValueError("callback data must not exceed 64 bytes")
     return data
+
+
+def build_batch_callback_data(*, batch_id: uuid.UUID, nonce: str) -> str:
+    """Build compact callback data for a batch-only approval trigger."""
+    return build_callback_data(action="ba", proposal_id=batch_id, nonce=nonce)
 
 
 def parse_callback_data(data: str) -> tuple[str, str, str]:
@@ -113,6 +118,138 @@ def build_buying_power_shortfall_text(detail: Mapping[str, Any]) -> str | None:
         f"부족 {_format_shortfall_money(shortfall, currency=currency)} "
         "— 입금 후 재승인"
     )
+
+
+def build_batch_approval_message(
+    *,
+    batch: Any,
+    proposals: Sequence[tuple[Any, Sequence[Any]]],
+) -> tuple[str, dict]:
+    """Render a pending manual-approval batch without exposing raw nonces."""
+    if len(proposals) < 2:
+        raise ValueError("batch summary requires at least two proposals")
+    batch_id = getattr(batch, "batch_id", None)
+    nonce = getattr(batch, "approval_nonce", None)
+    if not isinstance(batch_id, uuid.UUID) or not nonce:
+        raise ValueError("batch_id and approval_nonce are required")
+
+    totals: dict[str, Decimal] = {}
+    account_totals: dict[tuple[str, str], Decimal] = {}
+    lines = [
+        "*일괄 승인 대기*",
+        f"- 제안: {len(proposals)}건",
+        "",
+        "*주문 목록*",
+    ]
+    for group, rungs in proposals:
+        symbol = str(getattr(group, "symbol", None) or "미기재")
+        side = str(getattr(group, "side", None) or "미기재")
+        market = str(getattr(group, "market", None) or "")
+        currency = _currency_for_market(market=market, symbol=symbol) or "기타"
+        account_label = _batch_account_label(group)
+        rung_parts: list[str] = []
+        proposal_total = Decimal("0")
+        has_notional = False
+        for rung in sorted(rungs, key=lambda item: getattr(item, "rung_index", 0)):
+            quantity = _safe_decimal(getattr(rung, "quantity", None))
+            price = _safe_decimal(getattr(rung, "limit_price", None))
+            explicit = _safe_decimal(getattr(rung, "notional", None))
+            notional = (
+                explicit
+                if explicit is not None
+                else (
+                    quantity * price
+                    if quantity is not None and price is not None
+                    else None
+                )
+            )
+            if notional is not None:
+                proposal_total += notional
+                has_notional = True
+            rung_parts.append(
+                f"#{int(getattr(rung, 'rung_index', 0)) + 1} "
+                f"{_format_decimal(getattr(rung, 'quantity', None))} × "
+                f"{_format_money(getattr(rung, 'limit_price', None), currency=currency, none_label='시장가')}"
+            )
+        lines.append(
+            f"- `{_escape_inline_code(symbol)}` "
+            f"`{_escape_inline_code(side)}` · "
+            f"{_escape_markdown(account_label)} · " + "; ".join(rung_parts)
+        )
+        if has_notional:
+            totals[currency] = totals.get(currency, Decimal("0")) + proposal_total
+            account_key = (account_label, currency)
+            account_totals[account_key] = (
+                account_totals.get(account_key, Decimal("0")) + proposal_total
+            )
+
+    lines.extend(["", "*금액 요약*"])
+    for currency, amount in sorted(totals.items()):
+        lines.append(f"- 합계: {_format_money(amount, currency=currency)}")
+    for (account_label, currency), amount in sorted(account_totals.items()):
+        lines.append(
+            f"- {_escape_markdown(account_label)}: "
+            f"{_format_money(amount, currency=currency)}"
+        )
+    lines.extend(
+        [
+            "",
+            f"- 승인 기한: {_format_datetime(getattr(batch, 'expires_at', None), approximate=False)}",
+        ]
+    )
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "전체 승인",
+                    "callback_data": build_batch_callback_data(
+                        batch_id=batch_id, nonce=str(nonce)
+                    ),
+                }
+            ]
+        ]
+    }
+    return "\n".join(lines), keyboard
+
+
+def build_batch_result_message(
+    *,
+    proposals: Sequence[tuple[Any, Sequence[Any]]],
+    results: Sequence[Mapping[str, Any]],
+) -> str:
+    """Render terminal batch results grouped by operator-relevant status."""
+    symbols = {
+        str(getattr(group, "proposal_id", "")): str(
+            getattr(group, "symbol", None) or "미기재"
+        )
+        for group, _rungs in proposals
+    }
+    headings = (
+        ("approved", "승인 완료"),
+        ("needs_reconfirm", "재확인 필요"),
+        ("skipped", "제외/건너뜀"),
+        ("failed", "실패"),
+    )
+    grouped: dict[str, list[str]] = {status: [] for status, _label in headings}
+    for result in results:
+        status = str(result.get("status") or "failed")
+        if status not in grouped:
+            status = "failed"
+        proposal_id = str(result.get("proposal_id") or "")
+        symbol = symbols.get(proposal_id, proposal_id[:8] or "미기재")
+        reason = " ".join(str(result.get("reason") or "").split())
+        if len(reason) > 160:
+            reason = reason[:159] + "…"
+        suffix = f" — {_escape_markdown(reason)}" if reason else ""
+        grouped[status].append(f"- `{_escape_inline_code(symbol)}`{suffix}")
+
+    lines = ["*일괄 승인 결과*"]
+    for status, label in headings:
+        if grouped[status]:
+            lines.extend(["", f"*{label}*", *grouped[status]])
+    if len(lines) == 1:
+        lines.extend(["", "- 처리 결과 없음"])
+    return "\n".join(lines)
 
 
 def build_approval_message(
@@ -425,6 +562,24 @@ def _currency_for_market(*, market: str, symbol: str) -> str | None:
     if market == "equity_us":
         return "USD"
     return None
+
+
+def _batch_account_label(group: Any) -> str:
+    account_mode = str(getattr(group, "account_mode", None) or "미기재")
+    broker_account_id = str(getattr(group, "broker_account_id", None) or "")
+    if not broker_account_id:
+        return account_mode
+    return f"{account_mode} ···{broker_account_id[-4:]}"
+
+
+def _safe_decimal(value: object) -> Decimal | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    return parsed if parsed.is_finite() else None
 
 
 def _supported_currency(value: object) -> str | None:
