@@ -190,17 +190,24 @@ separate reviewed change.
 5. Walk bounded `scope="open"` and `scope="today"` pages and require the exact
    normalized target ID. Repeated tokens, malformed continuation, and page-cap
    exhaustion fail closed.
-6. `kiwoom_mock_us_cancel_order(dry_run=False, confirm=True)` — in a finally-block.
-7. Poll bounded open/today history plus positions until target terminality and
-   zero baseline delta are both proven.
+6. If `--new-price` is supplied, require one unambiguous broker-issued modify
+   order ID and retain both the original and replacement IDs as one lifecycle.
+   A successful modify with missing, malformed, or conflicting ID evidence is
+   reconciliation-required and must not be retried automatically.
+7. `kiwoom_mock_us_cancel_order(dry_run=False, confirm=True)` — in a finally-block,
+   targeting the latest known lifecycle ID.
+8. Poll one bounded open/today-history and positions snapshot per attempt until
+   **every** known lifecycle ID is terminal and the baseline position delta is
+   zero. `final_reconciliation.order_states` reports the per-ID proof.
 
 The schema-aware classifier reports `open`, `partial`, `filled`,
 `cancel_pending`, `cancelled`, `rejected`, or `unknown`. Only a terminal
 `cancelled`/`rejected` target with no position delta is clean for this smoke.
 Immediate/partial fills, unknown/malformed evidence, position changes, and poll
-timeouts all exit 2. Full mode skips modify after any unsafe post-place state;
-probe mode stops before submitting another order type after its first unsafe
-outcome.
+timeouts all exit 2. Broker read exceptions are normalized into the same
+redacted cleanup evidence. Full mode skips modify after any unsafe post-place
+state; probe mode stops before submitting another order type after its first
+unsafe baseline or lifecycle outcome.
 
 ## Cleanup / verification after smoke
 

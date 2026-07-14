@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from argparse import Namespace
 from decimal import Decimal
 from typing import Any
@@ -277,6 +278,139 @@ async def test_probe_cleanup_failure_returns_nonzero(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_probe_read_exception_returns_structured_cleanup_required(
+    monkeypatch, capsys
+) -> None:
+    cancel_attempted = False
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeOrders:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def place_buy_order(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return {"return_code": 0, "ord_no": "000000282"}
+
+        async def cancel_order(self, **kwargs: Any) -> dict[str, Any]:
+            nonlocal cancel_attempted
+            del kwargs
+            cancel_attempted = True
+            return {"return_code": 0, "ord_no": "000000283"}
+
+    class FakeAccount:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def get_positions(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return _page([])
+
+        async def get_open_orders(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            raise TimeoutError("provider-secret-must-not-leak")
+
+        async def get_today_orders(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return _page([])
+
+    monkeypatch.setattr(smoke, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(smoke, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(smoke, "KiwoomUsOrderClient", FakeOrders)
+    monkeypatch.setattr(smoke, "KiwoomUsAccountClient", FakeAccount)
+    args = Namespace(
+        confirm_probes=True,
+        confirm_existing_position=False,
+        probe_order_types="26",
+        probe_side="buy",
+        symbol="NVDA",
+        quantity=1,
+        price=1.0,
+        stop_price=None,
+    )
+
+    assert await smoke.run_probe(args) == 2
+    output = capsys.readouterr().out
+    events = [json.loads(line) for line in output.splitlines()]
+    assert cancel_attempted is True
+    assert any(event["step"] == "cleanup_required" for event in events)
+    assert any(event["step"] == "probe_final_reconciliation" for event in events)
+    assert "provider-secret-must-not-leak" not in output
+
+
+@pytest.mark.asyncio
+async def test_probe_baseline_failure_stops_before_all_mutations(
+    monkeypatch, capsys
+) -> None:
+    place_calls = 0
+    position_calls = 0
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeOrders:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def place_buy_order(self, **kwargs: Any) -> dict[str, Any]:
+            nonlocal place_calls
+            del kwargs
+            place_calls += 1
+            return {"return_code": 20, "return_msg": "rejected"}
+
+    class FakeAccount:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def get_positions(self, **kwargs: Any) -> dict[str, Any]:
+            nonlocal position_calls
+            del kwargs
+            position_calls += 1
+            if position_calls == 1:
+                return {
+                    "return_code": 20,
+                    "result_list": [],
+                    "continuation": {"cont_yn": "N", "next_key": ""},
+                }
+            return _page([])
+
+    monkeypatch.setattr(smoke, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(smoke, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(smoke, "KiwoomUsOrderClient", FakeOrders)
+    monkeypatch.setattr(smoke, "KiwoomUsAccountClient", FakeAccount)
+    args = Namespace(
+        confirm_probes=True,
+        confirm_existing_position=False,
+        probe_order_types="26,27",
+        probe_side="buy",
+        symbol="NVDA",
+        quantity=1,
+        price=1.0,
+        stop_price=None,
+    )
+
+    assert await smoke.run_probe(args) == 2
+    assert place_calls == 0
+    assert position_calls == 1
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert not any(event["step"] == "probe_order_type" for event in events)
+
+
+@pytest.mark.asyncio
 async def test_probe_uncertain_acceptance_returns_nonzero(monkeypatch) -> None:
     place_calls = 0
 
@@ -379,6 +513,35 @@ def test_extract_order_id_accepts_bounded_digits_only() -> None:
     assert smoke.extract_order_id({"ord_no": 282}) is None
     assert smoke.extract_order_id({"ord_no": "1" * 19}) is None
     assert smoke.extract_order_id({"ord_no": ""}) is None
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"return_code": 0, "ord_no": "000000284"}, "000000284"),
+        (
+            {
+                "order_id": "000000282",
+                "broker_response": {"return_code": 0, "ord_no": "000000284"},
+            },
+            "000000284",
+        ),
+        ({"return_code": 0}, None),
+        ({"return_code": 0, "ord_no": "not-an-id"}, None),
+        (
+            {
+                "return_code": 0,
+                "ord_no": "000000284",
+                "order_no": "000000285",
+            },
+            None,
+        ),
+    ],
+)
+def test_modify_order_id_must_be_single_unambiguous_broker_evidence(
+    payload: dict[str, Any], expected: str | None
+) -> None:
+    assert smoke._extract_unique_mutation_order_id(payload) == expected
 
 
 def test_reconcile_compare_preserves_leading_zeroes() -> None:
@@ -664,6 +827,55 @@ async def test_cancel_pending_timeout_uses_injected_sleep() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cleanup_proof_requires_all_related_order_ids_terminal() -> None:
+    original_order_id = "000000111"
+    replacement_order_id = "000000222"
+
+    async def history_reader(**kwargs: Any) -> dict[str, Any]:
+        if kwargs["scope"] == "open":
+            return _page([])
+        return _page(
+            [
+                {
+                    "ord_no": "000000333",
+                    "orig_ord_no": original_order_id,
+                    "ord_cntr_tp": "12",
+                    "cntr_qty": "0",
+                    "ord_remnq": "0",
+                },
+                {
+                    "ord_no": "000000444",
+                    "orig_ord_no": replacement_order_id,
+                    "ord_cntr_tp": "12",
+                    "cntr_qty": "0",
+                    "ord_remnq": "0",
+                },
+            ]
+        )
+
+    async def positions_reader(**kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        return _page([])
+
+    proof = await smoke._prove_cleanup(
+        history_reader,
+        positions_reader,
+        symbol="NVDA",
+        order_id=original_order_id,
+        related_order_ids=(replacement_order_id,),
+        baseline={},
+        timeout=0,
+        poll_interval=0,
+    )
+
+    assert proof.ok is True
+    assert proof.order_states == {
+        original_order_id: "cancelled",
+        replacement_order_id: "cancelled",
+    }
+
+
+@pytest.mark.asyncio
 async def test_full_is_limit_only_before_tool_calls(monkeypatch) -> None:
     calls = {"tools": 0}
 
@@ -909,6 +1121,118 @@ async def test_full_cancel_pending_state_skips_modify(monkeypatch) -> None:
 
     assert await smoke.run_full(args) == 0
     assert calls == ["cancel"]
+
+
+@pytest.mark.asyncio
+async def test_full_modify_proves_original_and_replacement_terminality(
+    monkeypatch, capsys
+) -> None:
+    original_order_id = "000000111"
+    replacement_order_id = "000000222"
+    cancelled_ids: list[str] = []
+
+    def wrapped(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "success": True,
+            "return_code": 0,
+            "broker_response": _page(rows),
+        }
+
+    async def preview(**kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        return {"success": True}
+
+    async def place(**kwargs: Any) -> dict[str, Any]:
+        if kwargs["dry_run"]:
+            return {"success": True}
+        return {"success": True, "return_code": 0, "ord_no": original_order_id}
+
+    async def modify(**kwargs: Any) -> dict[str, Any]:
+        assert kwargs["order_id"] == original_order_id
+        return {
+            "success": True,
+            "return_code": 0,
+            "ord_no": replacement_order_id,
+        }
+
+    async def cancel(**kwargs: Any) -> dict[str, Any]:
+        cancelled_ids.append(kwargs["order_id"])
+        return {"success": True, "return_code": 0, "ord_no": "000000333"}
+
+    async def history(**kwargs: Any) -> dict[str, Any]:
+        if kwargs["scope"] == "open":
+            return wrapped(
+                [
+                    {
+                        "ord_no": original_order_id,
+                        "ord_qty": "1",
+                        "cntr_qty": "0",
+                        "ord_remnq": "1",
+                    }
+                ]
+            )
+        if replacement_order_id in cancelled_ids:
+            return wrapped(
+                [
+                    {
+                        "ord_no": "000000333",
+                        "orig_ord_no": replacement_order_id,
+                        "ord_cntr_tp": "12",
+                        "ord_qty": "1",
+                        "cntr_qty": "0",
+                        "ord_remnq": "0",
+                    }
+                ]
+            )
+        return wrapped([])
+
+    async def positions(**kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        return wrapped([])
+
+    monkeypatch.setattr(
+        smoke,
+        "_tools",
+        lambda: {
+            "kiwoom_mock_us_preview_order": preview,
+            "kiwoom_mock_us_place_order": place,
+            "kiwoom_mock_us_get_order_history": history,
+            "kiwoom_mock_us_get_positions": positions,
+            "kiwoom_mock_us_modify_order": modify,
+            "kiwoom_mock_us_cancel_order": cancel,
+        },
+    )
+    args = smoke.build_parser().parse_args(
+        [
+            "--mode",
+            "full",
+            "--symbol",
+            "NVDA",
+            "--quantity",
+            "1",
+            "--price",
+            "1.00",
+            "--new-price",
+            "0.90",
+            "--confirm",
+        ]
+    )
+
+    assert await smoke.run_full(args, cleanup_timeout=0, poll_interval=0) == 2
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    reconciliation = next(
+        event for event in events if event["step"] == "final_reconciliation"
+    )
+    assert cancelled_ids == [replacement_order_id]
+    assert reconciliation["order_states"] == {
+        original_order_id: "open",
+        replacement_order_id: "cancelled",
+    }
+    assert any(
+        event["step"] == "cleanup_required"
+        and original_order_id in event.get("unresolved_order_ids", [])
+        for event in events
+    )
 
 
 @pytest.mark.asyncio

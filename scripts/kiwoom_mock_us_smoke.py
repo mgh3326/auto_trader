@@ -48,6 +48,7 @@ class CleanupProof:
     state: str
     reason: str
     position_delta: dict[str, dict[str, str]]
+    order_states: dict[str, str]
 
 
 class _Recorder:
@@ -96,6 +97,27 @@ def extract_order_id(payload: dict[str, Any]) -> str | None:
     if isinstance(broker_response, dict):
         return extract_order_id(broker_response)
     return None
+
+
+def _extract_unique_mutation_order_id(payload: dict[str, Any]) -> str | None:
+    """Return one unambiguous broker-issued ID, excluding request echoes."""
+
+    broker_payload = payload.get("broker_response")
+    evidence = broker_payload if isinstance(broker_payload, dict) else payload
+    order_ids: set[str] = set()
+    for key in ("ord_no", "order_no"):
+        if key not in evidence:
+            continue
+        raw = evidence.get(key)
+        if not isinstance(raw, str):
+            return None
+        value = raw.strip()
+        if not _ORDER_ID_RE.fullmatch(value):
+            return None
+        order_ids.add(value)
+    if len(order_ids) != 1:
+        return None
+    return next(iter(order_ids))
 
 
 def parse_probe_codes(raw: str | None) -> tuple[str, ...]:
@@ -166,10 +188,17 @@ async def _collect_pages(
     next_key: str | None = None
     seen_tokens: set[str] = set()
     for page_number in range(1, page_cap + 1):
-        response = await reader(
-            cont_yn="Y" if next_key is not None else None,
-            next_key=next_key,
-        )
+        try:
+            response = await reader(
+                cont_yn="Y" if next_key is not None else None,
+                next_key=next_key,
+            )
+        except SmokeRejected:
+            raise
+        except Exception as exc:  # noqa: BLE001 - normalize provider read failures
+            raise SmokeRejected(
+                f"broker page query failed: {type(exc).__name__}"
+            ) from exc
         payload = _broker_payload(response)
         if not derive_broker_success(payload):
             raise SmokeRejected("broker page query did not strictly succeed")
@@ -293,6 +322,7 @@ async def _prove_cleanup(
     symbol: str,
     order_id: str,
     baseline: dict[str, Decimal],
+    related_order_ids: tuple[str, ...] = (),
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     timeout: float = _CLEANUP_TIMEOUT,
@@ -300,8 +330,10 @@ async def _prove_cleanup(
     page_cap: int = _PAGE_CAP,
 ) -> CleanupProof:
     del symbol  # The injected readers are already scoped to the requested symbol.
+    tracked_order_ids = tuple(dict.fromkeys((order_id, *related_order_ids)))
     started = clock()
     last_state = "unknown"
+    last_order_states = dict.fromkeys(tracked_order_ids, "unknown")
     while True:
         try:
             open_rows = await _collect_pages(
@@ -314,21 +346,50 @@ async def _prove_cleanup(
             )
             current = await _position_snapshot(positions_reader, page_cap=page_cap)
         except SmokeRejected as exc:
-            return CleanupProof(False, "unknown", str(exc), {})
+            return CleanupProof(False, "unknown", str(exc), {}, last_order_states)
 
-        last_state = _classify_target(open_rows, today_rows, order_id)
+        last_order_states = {
+            tracked_id: _classify_target(open_rows, today_rows, tracked_id)
+            for tracked_id in tracked_order_ids
+        }
+        unique_states = set(last_order_states.values())
+        last_state = next(iter(unique_states)) if len(unique_states) == 1 else "mixed"
         delta = _position_delta(baseline, current)
         if delta:
-            return CleanupProof(False, last_state, "unexpected position delta", delta)
-        if last_state in {"partial", "filled"}:
-            return CleanupProof(False, last_state, "unexpected fill evidence", {})
-        if last_state == "unknown":
-            return CleanupProof(False, last_state, "unknown target order state", {})
-        if last_state in {"cancelled", "rejected"}:
-            return CleanupProof(True, last_state, "cleanup proven", {})
+            return CleanupProof(
+                False,
+                last_state,
+                "unexpected position delta",
+                delta,
+                last_order_states,
+            )
+        if unique_states & {"partial", "filled"}:
+            return CleanupProof(
+                False,
+                last_state,
+                "unexpected fill evidence",
+                {},
+                last_order_states,
+            )
+        if "unknown" in unique_states:
+            return CleanupProof(
+                False,
+                last_state,
+                "unknown target order state",
+                {},
+                last_order_states,
+            )
+        if unique_states <= {"cancelled", "rejected"}:
+            return CleanupProof(
+                True, last_state, "cleanup proven", {}, last_order_states
+            )
         if clock() - started >= timeout:
             return CleanupProof(
-                False, last_state, "cleanup reconciliation timed out", {}
+                False,
+                last_state,
+                "cleanup reconciliation timed out",
+                {},
+                last_order_states,
             )
         await sleep(poll_interval)
 
@@ -481,6 +542,7 @@ async def run_full(
         }
     )
 
+    lifecycle_order_ids = [order_id]
     exit_code = 0
     try:
         try:
@@ -523,8 +585,22 @@ async def run_full(
             _emit({"step": "modify_confirmed", **modified})
             if not _response_succeeded(modified):
                 exit_code = 2
-            elif modified_id := extract_order_id(modified):
+            elif modified_id := _extract_unique_mutation_order_id(modified):
+                if modified_id not in lifecycle_order_ids:
+                    lifecycle_order_ids.append(modified_id)
                 order_id = modified_id
+            else:
+                exit_code = 2
+                _emit(
+                    {
+                        "step": "cleanup_required",
+                        "order_id": order_id,
+                        "reason": (
+                            "modify succeeded without one unambiguous broker-issued "
+                            "order id; do not retry; reconcile in broker UI"
+                        ),
+                    }
+                )
     finally:
         try:
             cancelled = await tools["kiwoom_mock_us_cancel_order"](
@@ -557,7 +633,8 @@ async def run_full(
         history_reader,
         positions_reader,
         symbol=args.symbol,
-        order_id=order_id,
+        order_id=lifecycle_order_ids[0],
+        related_order_ids=tuple(lifecycle_order_ids[1:]),
         baseline=baseline,
         clock=clock,
         sleep=sleep,
@@ -569,6 +646,7 @@ async def run_full(
             "step": "final_reconciliation",
             "ok": proof.ok,
             "state": proof.state,
+            "order_states": proof.order_states,
             "reason": proof.reason,
             "position_delta": proof.position_delta,
         }
@@ -579,6 +657,11 @@ async def run_full(
             {
                 "step": "cleanup_required",
                 "order_id": order_id,
+                "unresolved_order_ids": [
+                    tracked_id
+                    for tracked_id, state in proof.order_states.items()
+                    if state not in {"cancelled", "rejected"}
+                ],
                 "reason": (
                     f"{proof.reason}; inspect broker history/positions and manually "
                     "cancel or unwind without retrying the place"
@@ -677,7 +760,7 @@ async def run_probe(
                     "reason": str(exc),
                 }
             )
-            continue
+            return exit_code
         price, stop_price = _probe_price_args(code, args)
         try:
             try:
@@ -824,6 +907,7 @@ async def run_probe(
                         "order_id": order_id,
                         "ok": proof.ok,
                         "state": proof.state,
+                        "order_states": proof.order_states,
                         "reason": proof.reason,
                         "position_delta": proof.position_delta,
                     }

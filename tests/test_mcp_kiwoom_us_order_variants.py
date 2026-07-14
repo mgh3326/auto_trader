@@ -178,7 +178,7 @@ async def test_confirmed_limit_resolves_exchange_and_calls_broker(monkeypatch) -
         {"return_code": 0, "ord_no": "1" * 19},
     ],
 )
-async def test_confirmed_place_without_trackable_order_id_is_uncertain(
+async def test_confirmed_place_without_trackable_order_id_is_accepted_untracked(
     monkeypatch, raw: dict[str, Any]
 ) -> None:
     from app.mcp_server.tooling import orders_kiwoom_us_variants as module
