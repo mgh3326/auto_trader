@@ -2364,7 +2364,8 @@ be selected.
 
 A confirmed place is `status="submitted"` only when the broker response has a
 strict success code (`return_code` is integer `0` or string `"0"`) and a
-trackable 1-18 digit order ID. Broker success without such an ID returns
+single non-conflicting canonical 1-18 digit order ID across the documented ID
+fields. Missing, invalid, or conflicting ID evidence returns
 `success=false`, `status="accepted_untracked"`,
 `reconcile_required=true`, and `retry_allowed=false`, while retaining redacted
 broker evidence. Callers must reconcile broker history and must not retry the

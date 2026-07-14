@@ -37,8 +37,9 @@ cleanup/unwind guidance.
 
 The shared Kiwoom response layer remains backward compatible for read,
 modify, and cancel. Place adds an operation-specific finalizer: strict broker
-success plus a valid order ID yields `submitted`; strict success without a
-trackable ID yields `accepted_untracked`, `reconcile_required=true`, and
+success plus exactly one non-conflicting canonical ID across documented fields
+yields `submitted`; strict success with missing, invalid, or conflicting ID
+evidence yields `accepted_untracked`, `reconcile_required=true`, and
 `success=false`; a missing/malformed response or place exception yields
 `acceptance_uncertain`; explicit broker failure remains `rejected`. Raw broker
 evidence is retained through existing redaction and uncertain acceptance is

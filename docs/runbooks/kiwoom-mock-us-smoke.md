@@ -136,8 +136,9 @@ Exit codes:
 - `2` — anomaly: target evidence is absent/unknown, bounded pagination fails,
   cleanup times out, a fill or position delta appears, or an accepted order is
   untrackable. **Manual cleanup/unwind required** — see the redacted
-  `cleanup_required` and `final_reconciliation` output. Do not retry a place
-  reported as `accepted_untracked` or `acceptance_uncertain`.
+  `cleanup_required` output and `final_reconciliation` when available, then
+  reconcile in the broker UI. Do not retry a place reported as
+  `accepted_untracked` or `acceptance_uncertain`.
 
 `full` mode without `--confirm` stops after the dry-run and emits a `stop` step.
 
@@ -183,8 +184,9 @@ separate reviewed change.
 2. `kiwoom_mock_us_place_order(dry_run=True)`.
 3. Capture the paginated `kiwoom_mock_us_get_positions` baseline.
 4. `kiwoom_mock_us_place_order(dry_run=False, confirm=True)` → require strict
-   broker success and a 1-18 digit order ID. Leading zeroes are retained; only
-   documented order-ID fields participate in matching.
+   broker success and exactly one non-conflicting canonical 1-18 digit order ID
+   across documented ID fields. Missing, invalid, or conflicting ID evidence is
+   `accepted_untracked`. Leading zeroes are retained.
 5. Walk bounded `scope="open"` and `scope="today"` pages and require the exact
    normalized target ID. Repeated tokens, malformed continuation, and page-cap
    exhaustion fail closed.

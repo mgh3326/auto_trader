@@ -4,7 +4,7 @@
 
 ### Fixed (ROB-872 — Kiwoom mock US post-merge safety hardening; migration 0)
 - **Full and probe smoke lifecycles now prove cleanup from broker evidence.** Bounded open/today-order and position pagination, exact 1–18 ASCII-digit order-ID matching with leading zeroes preserved, baseline position deltas, and bounded cancel polling fail closed on missing, conflicting, filled, unknown, or timed-out evidence.
-- **Kiwoom place acceptance is strict and non-retryable when untrackable.** Only a strict broker success code plus a valid broker order ID yields `submitted`; accepted responses without a valid ID return `accepted_untracked` with reconciliation required, while explicit rejection remains distinct.
+- **Kiwoom place acceptance is strict and non-retryable when untrackable.** Only a strict broker success code plus exactly one non-conflicting canonical ID across documented fields yields `submitted`; missing, invalid, or conflicting ID evidence returns `accepted_untracked` with reconciliation required, while explicit rejection remains distinct.
 - **Network MCP mutation exposure now requires authentication.** Kiwoom profiles and default-profile Kiwoom US mutation gates reject unauthenticated HTTP/SSE startup while preserving the explicit local stdio development path. No mutation capability is promoted as verified; live/mock broker confirmation remains pending follow-up evidence.
 
 ### Added (ROB-867 — Kiwoom mock US lifecycle; migration 0)
