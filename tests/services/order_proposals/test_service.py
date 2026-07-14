@@ -1355,6 +1355,49 @@ async def test_fill_evidence_books_by_correlation_id(db_session):
 
 
 @pytest.mark.asyncio
+async def test_fill_evidence_prefers_exact_broker_order_over_reused_correlation(
+    db_session,
+):
+    service, older_group = await _create_single_rung(db_session)
+    _, target_group = await _create_single_rung(db_session)
+    now = datetime(2026, 7, 14, 9, 6, tzinfo=UTC)
+    correlation_id = f"reused-correlation-{target_group.proposal_id}"
+    older_broker_order_id = f"older-{older_group.proposal_id}"
+    target_broker_order_id = f"target-{target_group.proposal_id}"
+
+    for group, broker_order_id in (
+        (older_group, older_broker_order_id),
+        (target_group, target_broker_order_id),
+    ):
+        await _drive_to_submitting(service, group.proposal_id)
+        await service.record_resting(
+            group.proposal_id,
+            0,
+            broker_order_id=broker_order_id,
+            correlation_id=correlation_id,
+            idempotency_key=f"idem-{group.proposal_id}",
+            approval_hash_digest=f"digest-{group.proposal_id}",
+            now=now,
+        )
+    await db_session.commit()
+
+    booked = await service.record_fill_evidence(
+        correlation_id=correlation_id,
+        broker_order_id=target_broker_order_id,
+        filled_qty=Decimal("0.5"),
+        terminal_state="partially_filled",
+        now=now + timedelta(seconds=1),
+    )
+    older_rung = (await service.get_proposal(older_group.proposal_id))[1][0]
+    target_rung = (await service.get_proposal(target_group.proposal_id))[1][0]
+
+    assert booked is not None
+    assert booked.id == target_rung.id
+    assert older_rung.state == "resting"
+    assert target_rung.state == "partially_filled"
+
+
+@pytest.mark.asyncio
 async def test_fill_evidence_books_upbit_rung_by_identifier(db_session):
     service, group = await _create_single_rung(
         db_session,

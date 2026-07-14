@@ -135,9 +135,9 @@ class OrderProposalRepository:
         no longer transition — see OrderProposalsService.record_fill_evidence.
         """
         evidence = (
-            (OrderProposalRung.correlation_id, correlation_id),
             (OrderProposalRung.broker_order_id, broker_order_id),
             (OrderProposalRung.idempotency_key, idempotency_key),
+            (OrderProposalRung.correlation_id, correlation_id),
         )
         for column, value in evidence:
             if value is None:
