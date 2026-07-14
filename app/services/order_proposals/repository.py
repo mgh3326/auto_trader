@@ -219,6 +219,7 @@ class OrderProposalRepository:
                 OrderProposalApprovalBatch.chat_id == chat_id,
                 OrderProposalApprovalBatch.approval_nonce_used_at.is_(None),
                 OrderProposalApprovalBatch.window_closes_at > now,
+                OrderProposalApprovalBatch.expires_at > now,
             )
             .order_by(OrderProposalApprovalBatch.id.desc())
             .limit(1)

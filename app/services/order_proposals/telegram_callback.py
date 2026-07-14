@@ -103,6 +103,11 @@ _RESULT_LABELS: dict[str, str] = {
     "cancelled": "취소 확인",
 }
 
+_BATCH_SUCCESS_RESULTS = frozenset(
+    {"submitted_acked", "submitted_resting", "cancelled"}
+)
+_BATCH_SKIP_RESULTS = frozenset({"guard_blocked", "approval_required"})
+
 
 def _outcome_error_summary(outcome: RungOutcome, *, limit: int = 240) -> str | None:
     error = str((outcome.detail or {}).get("error") or "").strip()
@@ -201,6 +206,28 @@ def _build_result_summary(outcomes: list[RungOutcome]) -> str:
             label = f"{label} — {reason}"
         lines.append(f"- #{outcome.rung_index + 1}: {label}")
     return "\n".join(lines)
+
+
+def _classify_batch_approval_result(
+    approval_result: dict[str, Any],
+) -> tuple[str, str | None]:
+    """Map the reused single-approval result without hiding rung failures."""
+    if not approval_result.get("handled"):
+        return "skipped", str(approval_result.get("reason") or "approval_skipped")
+    if approval_result.get("reason") == "needs_reconfirm":
+        return "needs_reconfirm", None
+
+    outcomes = [str(value) for value in approval_result.get("results") or []]
+    if outcomes and all(value in _BATCH_SUCCESS_RESULTS for value in outcomes):
+        return "approved", None
+    if outcomes and all(value in _BATCH_SKIP_RESULTS for value in outcomes):
+        return "skipped", ",".join(dict.fromkeys(outcomes))
+    if outcomes:
+        non_success = [
+            value for value in outcomes if value not in _BATCH_SUCCESS_RESULTS
+        ]
+        return "failed", ",".join(dict.fromkeys(non_success or outcomes))
+    return "skipped", "no_rung_outcomes"
 
 
 def _build_extra_reconfirm_block(reconfirm_outcomes: list[RungOutcome]) -> str:
@@ -546,6 +573,14 @@ async def _handle_batch_approve(
             )
         except OrderProposalError as exc:
             await session.commit()
+            if str(exc) == "approval_batch_expired" and message_id is not None:
+                await _safe_edit_message(
+                    notifier,
+                    chat_id,
+                    message_id,
+                    "⌛ 일괄 승인 만료",
+                    reply_markup={"inline_keyboard": []},
+                )
             return {"handled": False, "reason": str(exc)}
 
         # Commit the single-use batch trigger before touching any member. A
@@ -583,18 +618,11 @@ async def _handle_batch_approve(
                         telegram_user_id=telegram_user_id,
                         revalidate_fn=revalidate_fn,
                     )
-                    if approval_result.get("handled"):
-                        reason = str(approval_result.get("reason") or "approved")
-                        member_result["status"] = (
-                            "needs_reconfirm"
-                            if reason == "needs_reconfirm"
-                            else "approved"
-                        )
-                    else:
-                        reason = str(
-                            approval_result.get("reason") or "approval_skipped"
-                        )
-                        member_result.update(status="skipped", reason=reason)
+                    status, reason = _classify_batch_approval_result(approval_result)
+                    member_result["status"] = status
+                    if reason is not None:
+                        member_result["reason"] = reason
+                    if not approval_result.get("handled"):
                         member_message = (
                             f"⚠️ 일괄 승인 제외 — {_escape_markdown(reason)}"
                         )
@@ -611,16 +639,23 @@ async def _handle_batch_approve(
 
             # Record the member outcome before any batch-owned Telegram edit.
             # `_handle_approve` already commits its own broker/proposal work.
-            await member_service.record_approval_batch_member_result(
-                member.member_id,
-                result=str(member_result["status"]),
-                detail={
-                    "proposal_id": member_result["proposal_id"],
-                    "reason": member_result.get("reason", ""),
-                },
-                now=now,
-            )
-            await member_session.commit()
+            try:
+                await member_service.record_approval_batch_member_result(
+                    member.member_id,
+                    result=str(member_result["status"]),
+                    detail={
+                        "proposal_id": member_result["proposal_id"],
+                        "reason": member_result.get("reason", ""),
+                    },
+                    now=now,
+                )
+                await member_session.commit()
+            except Exception:  # noqa: BLE001 - observation must not stop the batch
+                logger.exception(
+                    "order_proposals batch member result audit failed",
+                    extra={"proposal_id": str(member.proposal_id)},
+                )
+                await member_session.rollback()
 
         if member_message is not None:
             await _safe_edit_message(

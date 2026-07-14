@@ -500,6 +500,25 @@ gate and caps broadly in the same operational step.
 
 ### Manual batch approval (ROB-870)
 
+The production DB source of truth for the 2026-07-13 US session is: raw 19
+groups/20 rungs, minus 3/3 superseded by ROB-869, leaving 16/17 valid. The
+ROB-871 counterfactual classifies 3/3 as automatic candidates, so the manual
+remainder is 13 groups/14 rungs:
+
+| Exclusive manual reason | Groups | Rungs | Operational interpretation |
+|---|---:|---:|---|
+| Per-order cap above the $150 US canary seed | 9 | 9 | Temporary rollout policy; expected to shrink as the reviewed cap rises. |
+| Resting distance below 3% | 3 | 3 | Structurally human-gated at the current resting policy. |
+| Action type (`replace` / `cancel`) | 0 | 0 | Structurally human-gated even though this session had no such rows. |
+| Other: multi-rung all-or-human fallback | 1 | 2 | Structurally human-gated until atomic ladder execution exists. |
+| **Total manual remainder** | **13** | **14** | |
+
+Excluding the temporary cap leaves a structural floor of 4 groups/5 rungs in
+this session. The implementation value is based on that structural manual work
+(immediate/non-resting proposals, replace/cancel, multi-rung all-or-human) and
+on gate-off periods where all valid proposals fall back to human approval, not
+on treating the conservative $150 canary cap as permanent demand.
+
 ROB-870 has no separate activation flag. When the existing proposal Telegram
 surface is enabled, every successfully delivered, eligible manual approval
 message is registered into a batch for that destination chat. The first member

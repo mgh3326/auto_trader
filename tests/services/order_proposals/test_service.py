@@ -2159,6 +2159,46 @@ async def test_approval_batch_registration_respects_chat_and_fixed_window(db_ses
 
 
 @pytest.mark.asyncio
+async def test_approval_batch_registration_does_not_join_expired_open_window(
+    db_session,
+):
+    now = datetime.now(UTC)
+    chat_id = f"batch-{uuid.uuid4().hex}"
+    expiring = await _create_batch_candidate(
+        db_session,
+        symbol="AAPL",
+        nonce="expired-window-member-1",
+        valid_until=now + timedelta(minutes=2),
+    )
+    later = await _create_batch_candidate(
+        db_session,
+        symbol="MSFT",
+        nonce="expired-window-member-2",
+        valid_until=now + timedelta(hours=1),
+    )
+    service = OrderProposalsService(db_session)
+
+    first_registration = await service.register_approval_batch_member(
+        expiring.proposal_id,
+        chat_id=chat_id,
+        approval_message_id=1001,
+        now=now,
+    )
+    later_registration = await service.register_approval_batch_member(
+        later.proposal_id,
+        chat_id=chat_id,
+        approval_message_id=1002,
+        now=now + timedelta(minutes=3),
+    )
+
+    assert first_registration is not None
+    assert later_registration is not None
+    assert later_registration.batch.batch_id != first_registration.batch.batch_id
+    assert later_registration.member_count == 1
+    assert later_registration.summary_action == "none"
+
+
+@pytest.mark.asyncio
 async def test_approval_batch_registration_excludes_manual_safety_classes(db_session):
     now = datetime(2026, 7, 14, 1, 0, tzinfo=UTC)
     chat_id = f"batch-{uuid.uuid4().hex}"
@@ -2191,6 +2231,115 @@ async def test_approval_batch_registration_excludes_manual_safety_classes(db_ses
             now=now,
         )
         assert registration is None
+
+
+@pytest.mark.asyncio
+async def test_approval_batch_registration_excludes_transient_ineligible_members(
+    db_session,
+):
+    now = datetime(2026, 7, 14, 1, 0, tzinfo=UTC)
+    chat_id = f"batch-{uuid.uuid4().hex}"
+    missing_nonce = await _create_batch_candidate(
+        db_session, symbol="MISS", nonce="excluded-missing"
+    )
+    used_nonce = await _create_batch_candidate(
+        db_session, symbol="USED", nonce="excluded-used"
+    )
+    no_pending = await _create_batch_candidate(
+        db_session, symbol="NOPEND", nonce="excluded-no-pending"
+    )
+    expired = await _create_batch_candidate(
+        db_session, symbol="EXPIRE", nonce="excluded-expired"
+    )
+    missing_nonce.approval_nonce = None
+    used_nonce.approval_nonce_used_at = now
+    expired.valid_until = now
+    await db_session.commit()
+    service = OrderProposalsService(db_session)
+    await service.transition_rung(no_pending.proposal_id, 0, new_state="revalidating")
+
+    for index, group in enumerate(
+        (missing_nonce, used_nonce, no_pending, expired), start=1
+    ):
+        registration = await service.register_approval_batch_member(
+            group.proposal_id,
+            chat_id=chat_id,
+            approval_message_id=1100 + index,
+            now=now,
+        )
+        assert registration is None
+
+
+@pytest.mark.asyncio
+async def test_approval_batch_registration_keeps_fresh_nonce_out_of_same_batch(
+    db_session,
+):
+    now = datetime(2026, 7, 14, 1, 0, tzinfo=UTC)
+    chat_id = f"batch-{uuid.uuid4().hex}"
+    group = await _create_batch_candidate(
+        db_session, symbol="AAPL", nonce="membership-cycle-1"
+    )
+    service = OrderProposalsService(db_session)
+    first = await service.register_approval_batch_member(
+        group.proposal_id,
+        chat_id=chat_id,
+        approval_message_id=1201,
+        now=now,
+    )
+    await db_session.commit()
+    await service.set_approval_nonce(group.proposal_id, "membership-cycle-2")
+    await db_session.commit()
+
+    second = await service.register_approval_batch_member(
+        group.proposal_id,
+        chat_id=chat_id,
+        approval_message_id=1202,
+        now=now + timedelta(minutes=1),
+    )
+
+    assert first is not None
+    assert second is None
+
+
+@pytest.mark.asyncio
+async def test_approval_batch_nonce_rejects_wrong_chat_nonce_and_too_small(
+    db_session,
+):
+    now = datetime(2026, 7, 14, 1, 0, tzinfo=UTC)
+    chat_id = f"batch-{uuid.uuid4().hex}"
+    group = await _create_batch_candidate(
+        db_session, symbol="AAPL", nonce="validation-member"
+    )
+    service = OrderProposalsService(db_session)
+    registration = await service.register_approval_batch_member(
+        group.proposal_id,
+        chat_id=chat_id,
+        approval_message_id=1301,
+        now=now,
+    )
+    await db_session.commit()
+    assert registration is not None
+    batch_id = registration.batch.batch_id
+    batch_nonce = registration.batch.approval_nonce
+
+    for expected, supplied_chat, supplied_nonce in (
+        (
+            "approval_batch_chat_mismatch",
+            "wrong-chat",
+            batch_nonce,
+        ),
+        ("approval_batch_nonce_mismatch", chat_id, "wrong-nonce"),
+        ("approval_batch_too_small", chat_id, batch_nonce),
+    ):
+        with pytest.raises(OrderProposalError, match=expected):
+            await service.consume_approval_batch_nonce(
+                batch_id,
+                supplied_nonce,
+                chat_id=supplied_chat,
+                telegram_user_id="777",
+                now=now + timedelta(minutes=1),
+            )
+        await db_session.rollback()
 
 
 @pytest.mark.asyncio
@@ -2275,7 +2424,7 @@ async def test_approval_batch_nonce_expires_without_consuming_members(db_session
             registration.batch.approval_nonce,
             chat_id=chat_id,
             telegram_user_id="777",
-            now=now + timedelta(minutes=12),
+            now=registration.batch.expires_at,
         )
     await db_session.rollback()
     first_after, _ = await service.get_proposal(first_id)

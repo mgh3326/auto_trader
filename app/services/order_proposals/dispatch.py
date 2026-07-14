@@ -8,11 +8,10 @@ and committed, and (b) calls the Telegram notifier, which
 ``OrderProposalsService``/``OrderProposalRepository`` never do (they only
 flush -- see ``service.py``'s module docstring).
 
-Commit-before-notify is not a live risk here the way it is in
-``telegram_callback.py`` (there is no notify call *after* this function's
-mutating work), but the nonce mint + ``source_asof`` merge are still
-committed explicitly before returning, matching that module's established
-discipline rather than relying on implicit ``async with`` behavior.
+The initial individual message necessarily precedes persistence of its Telegram
+message ID. For the derived batch summary, however, membership and the summary
+claim are committed before the summary is sent or edited, so an operator never
+sees a batch button whose second member exists only in an uncommitted session.
 """
 
 from __future__ import annotations
@@ -24,6 +23,8 @@ from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
@@ -67,6 +68,7 @@ def _generate_nonce() -> str:
 
 async def _register_and_publish_batch_summary(
     *,
+    session: AsyncSession,
     service: OrderProposalsService,
     proposal_id: uuid.UUID,
     message_id: int,
@@ -87,6 +89,9 @@ async def _register_and_publish_batch_summary(
         registration.batch.batch_id
     )
     text, keyboard = build_batch_approval_message(batch=batch, proposals=proposals)
+    # Make the frozen membership and summary-delivery claim visible before
+    # publishing a button that depends on both rows.
+    await session.commit()
     if registration.summary_action == "send":
         try:
             summary_id = await notifier.send_approval_message(
@@ -156,6 +161,7 @@ async def send_proposal_for_approval(
                 proposal_id, message_id=message_id, chat_id=chat_id, now=now
             )
             await _register_and_publish_batch_summary(
+                session=session,
                 service=service,
                 proposal_id=proposal_id,
                 message_id=message_id,

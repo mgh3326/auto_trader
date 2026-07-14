@@ -1067,6 +1067,10 @@ class OrderProposalsService:
                 summary_dispatch_state="idle",
             )
 
+        existing_members = await self._repo.list_approval_batch_members(batch.id)
+        if any(member.proposal_pk == group.id for member in existing_members):
+            return None
+
         await self._repo.insert_approval_batch_member(
             batch_pk=batch.id,
             proposal_pk=group.id,
@@ -1147,7 +1151,7 @@ class OrderProposalsService:
             raise OrderProposalError("approval_batch_nonce_mismatch")
         if batch.approval_nonce_used_at is not None:
             raise OrderProposalError("approval_batch_nonce_replay")
-        if now > batch.expires_at:
+        if now >= batch.expires_at:
             raise OrderProposalError("approval_batch_expired")
         members = await self._repo.list_approval_batch_members(batch.id)
         if len(members) < 2:

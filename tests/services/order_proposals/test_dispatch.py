@@ -7,7 +7,9 @@ from decimal import Decimal
 
 import pytest
 
+from app.core.db import AsyncSessionLocal
 from app.services.order_proposals import OrderProposalsService
+from app.services.order_proposals.approval_message import parse_callback_data
 from app.services.order_proposals.dispatch import (
     dispatch_proposal,
     send_proposal_for_approval,
@@ -39,6 +41,26 @@ class _FakeNotifier:
 class _RaisingNotifier:
     async def send_approval_message(self, text, inline_keyboard, *, chat_id):
         raise RuntimeError("telegram down")
+
+
+class _CommittedBatchNotifier(_FakeNotifier):
+    def __init__(self) -> None:
+        super().__init__(message_id=6500)
+        self.visible_member_counts: list[int] = []
+
+    async def send_approval_message(self, text, inline_keyboard, *, chat_id):
+        button = inline_keyboard["inline_keyboard"][0][0]
+        if button["text"] == "전체 승인":
+            _action, batch_short, _nonce = parse_callback_data(button["callback_data"])
+            async with AsyncSessionLocal() as session:
+                service = OrderProposalsService(session)
+                batch_id = await service.resolve_approval_batch_id_prefix(batch_short)
+                assert batch_id is not None
+                _batch, proposals = await service.get_approval_batch_display(batch_id)
+                self.visible_member_counts.append(len(proposals))
+        return await super().send_approval_message(
+            text, inline_keyboard, chat_id=chat_id
+        )
 
 
 def _session_factory(db_session):
@@ -161,6 +183,37 @@ async def test_manual_dispatch_sends_and_updates_same_chat_batch_summary(
     assert notifier.edited_messages
     assert notifier.edited_messages[-1][1] == 6002
     assert "제안: 3건" in notifier.edited_messages[-1][2]
+
+
+@pytest.mark.asyncio
+async def test_batch_summary_is_sent_only_after_membership_commit(
+    monkeypatch, db_session
+):
+    from app.core.config import settings
+
+    batch_chat_id = f"batch-{uuid.uuid4().hex}"
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", batch_chat_id
+    )
+    first = await _seed_proposal(db_session)
+    second = await _seed_proposal(db_session)
+    notifier = _CommittedBatchNotifier()
+    now = datetime(2026, 7, 14, 1, 0, tzinfo=UTC)
+
+    await send_proposal_for_approval(
+        first.proposal_id,
+        notifier=notifier,
+        now=now,
+        service_factory=_session_factory(db_session),
+    )
+    await send_proposal_for_approval(
+        second.proposal_id,
+        notifier=notifier,
+        now=now.replace(minute=1),
+        service_factory=_session_factory(db_session),
+    )
+
+    assert notifier.visible_member_counts == [2]
 
 
 @pytest.mark.asyncio

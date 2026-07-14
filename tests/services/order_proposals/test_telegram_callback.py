@@ -283,6 +283,29 @@ async def test_batch_approve_consumes_each_member_nonce_and_rejects_replay(
 
 
 @pytest.mark.asyncio
+async def test_expired_batch_callback_removes_summary_button(monkeypatch, db_session):
+    chat_id, _now, _groups, batch, data = await _seed_approval_batch(
+        db_session, monkeypatch
+    )
+    notifier = _FakeNotifier()
+
+    result = await handle_callback_update(
+        _make_update(data=data, chat_id=chat_id),
+        now=batch.expires_at,
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=_fake_noop_revalidate,
+    )
+
+    assert result == {"handled": False, "reason": "approval_batch_expired"}
+    assert notifier.edited[-1][1:] == (
+        555,
+        "⌛ 일괄 승인 만료",
+        {"inline_keyboard": []},
+    )
+
+
+@pytest.mark.asyncio
 async def test_batch_approve_continues_after_one_member_raises(monkeypatch, db_session):
     chat_id, now, groups, _batch, data = await _seed_approval_batch(
         db_session, monkeypatch, member_count=3
@@ -316,11 +339,56 @@ async def test_batch_approve_continues_after_one_member_raises(monkeypatch, db_s
 
 
 @pytest.mark.asyncio
-async def test_batch_click_rechecks_loss_cut_terminal_auto_and_superseded_exclusions(
+async def test_batch_approve_continues_after_member_result_audit_failure(
     monkeypatch, db_session
 ):
     chat_id, now, groups, _batch, data = await _seed_approval_batch(
-        db_session, monkeypatch, member_count=5
+        db_session, monkeypatch, member_count=3
+    )
+    group_ids = [group.proposal_id for group in groups]
+    notifier = _FakeNotifier()
+    revalidated: list[uuid.UUID] = []
+    audit_calls = 0
+    original_record = OrderProposalsService.record_approval_batch_member_result
+
+    async def flaky_record(self, member_id, **kwargs):
+        nonlocal audit_calls
+        audit_calls += 1
+        if audit_calls == 2:
+            raise RuntimeError("member result audit unavailable")
+        return await original_record(self, member_id, **kwargs)
+
+    monkeypatch.setattr(
+        OrderProposalsService, "record_approval_batch_member_result", flaky_record
+    )
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        revalidated.append(proposal_id)
+        return [RungOutcome(0, "submitted_resting", {})]
+
+    result = await handle_callback_update(
+        _make_update(data=data, chat_id=chat_id),
+        now=now + timedelta(minutes=1),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+
+    assert result["handled"] is True
+    assert revalidated == group_ids
+    assert [item["status"] for item in result["results"]] == [
+        "approved",
+        "approved",
+        "approved",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_batch_click_rechecks_loss_terminal_auto_superseded_and_used_nonce(
+    monkeypatch, db_session
+):
+    chat_id, now, groups, _batch, data = await _seed_approval_batch(
+        db_session, monkeypatch, member_count=6
     )
     groups[0].exit_intent = "loss_cut"
     groups[1].lifecycle_state = "terminal"
@@ -329,6 +397,7 @@ async def test_batch_click_rechecks_loss_cut_terminal_auto_and_superseded_exclus
         "auto_approved": {"approved_at": now.isoformat()},
     }
     groups[3].lifecycle_state = "superseded"
+    groups[4].approval_nonce_used_at = now
     await db_session.commit()
     notifier = _FakeNotifier()
     calls: list[uuid.UUID] = []
@@ -345,8 +414,9 @@ async def test_batch_click_rechecks_loss_cut_terminal_auto_and_superseded_exclus
         revalidate_fn=fake_revalidate,
     )
 
-    assert calls == [groups[4].proposal_id]
+    assert calls == [groups[5].proposal_id]
     assert [item["status"] for item in result["results"]] == [
+        "skipped",
         "skipped",
         "skipped",
         "skipped",
@@ -405,6 +475,47 @@ async def test_batch_approve_keeps_rob861_reconfirm_member_independently_actiona
     summary = next(text for _chat, mid, text, _markup in notifier.edited if mid == 555)
     assert "재확인 필요" in summary
     assert "승인 완료" in summary
+
+
+@pytest.mark.asyncio
+async def test_batch_approve_classifies_rung_outcomes_without_false_success(
+    monkeypatch, db_session
+):
+    chat_id, now, groups, _batch, data = await _seed_approval_batch(
+        db_session, monkeypatch, member_count=4
+    )
+    group_ids = [group.proposal_id for group in groups]
+    notifier = _FakeNotifier()
+    outcomes = {
+        group_ids[0]: "guard_blocked",
+        group_ids[1]: "unverified",
+        group_ids[2]: "error",
+        group_ids[3]: "submitted_resting",
+    }
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        return [RungOutcome(0, outcomes[proposal_id], {})]
+
+    result = await handle_callback_update(
+        _make_update(data=data, chat_id=chat_id),
+        now=now + timedelta(minutes=1),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+
+    assert [item["status"] for item in result["results"]] == [
+        "skipped",
+        "failed",
+        "failed",
+        "approved",
+    ]
+    assert [item.get("reason") for item in result["results"]] == [
+        "guard_blocked",
+        "unverified",
+        "error",
+        None,
+    ]
 
 
 def test_result_summary_includes_bounded_escaped_guard_reason():
