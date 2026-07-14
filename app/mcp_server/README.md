@@ -2391,9 +2391,10 @@ replacement ID, so smoke cleanup remains failed until an operator reconciles
 broker history. Read and cancel response shaping is unchanged. All seven tools
 registered in one MCP process share one mock-host-pinned client and its locked
 OAuth token cache; bounded pagination and cleanup polling therefore do not
-issue a token request per page. The US mock transport enforces Kiwoom's stricter
+issue a token request per page. That shared client enforces Kiwoom's stricter
 mock-account limit of one dispatch per `api-id` per second while allowing
-different TRs to proceed independently.
+different TRs to proceed independently. The limiter is process-local; operators
+must not run another MCP or smoke process against the same mock US account.
 
 #### Exchange mapping
 

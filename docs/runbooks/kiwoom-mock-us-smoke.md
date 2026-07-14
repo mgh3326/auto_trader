@@ -208,11 +208,13 @@ timeouts all exit 2. Provider exceptions expose only their exception type and
 are normalized into the same redacted cleanup evidence. The seven registered
 US mock tools share one mock-host-pinned client and OAuth token cache so bounded
 pagination and cleanup polling do not request a new token for every page. The
-transport also serializes dispatches per `api-id` at least one second apart, as
-required by Kiwoom's [mock-account per-TR limit](https://openapi.kiwoom.com/intro?dummyVal=0),
-without serializing unrelated TRs. Full mode skips modify after any unsafe
-post-place state; probe mode stops before submitting another order type after
-its first unsafe baseline or lifecycle outcome.
+shared client also serializes dispatches per `api-id` at least one second apart,
+as required by Kiwoom's [mock-account per-TR limit](https://openapi.kiwoom.com/intro?dummyVal=0),
+without serializing unrelated TRs. Probe preflight and mutations reuse that same
+client. This is an in-process boundary: never run this smoke concurrently with
+another smoke or MCP process using the same mock US account. Full mode skips
+modify after any unsafe post-place state; probe mode stops before submitting
+another order type after its first unsafe baseline or lifecycle outcome.
 
 ## Cleanup / verification after smoke
 

@@ -50,9 +50,12 @@ terminal cannot produce a successful final reconciliation by itself.
 The seven registered tools lazily share one mock-host-pinned client per MCP
 registration. Its locked OAuth cache prevents bounded page walks and cleanup
 polling from issuing a token request for every tool invocation. A transport
-dispatch hook serializes each US mock `api-id` at one-second intervals, covering
-continuation pages, cleanup polls, repeated probe types, and concurrent MCP
-calls without unnecessarily serializing different TRs.
+dispatch hook serializes each US mock `api-id` at one-second intervals within
+that client, covering continuation pages, cleanup polls, repeated probe types,
+and concurrent MCP calls without unnecessarily serializing different TRs.
+Probe preflight and probe execution explicitly reuse one client. Cross-process
+account coordination remains an operator boundary; concurrent smoke/MCP
+processes for the same mock US account are prohibited.
 
 MCP startup reads `MCP_TYPE` before import-time auth validation. Network
 transports (`streamable-http` and `sse`) require a non-empty token when the

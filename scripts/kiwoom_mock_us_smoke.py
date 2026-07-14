@@ -10,7 +10,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Literal, overload
 
 from app.core.config import validate_kiwoom_mock_us_config
 from app.mcp_server.tooling import orders_kiwoom_us_variants as us_variants
@@ -397,7 +397,21 @@ async def _prove_cleanup(
         await sleep(poll_interval)
 
 
-async def run_preflight() -> dict[str, Any]:
+@overload
+async def run_preflight(
+    *, include_client: Literal[False] = False
+) -> dict[str, Any]: ...
+
+
+@overload
+async def run_preflight(
+    *, include_client: Literal[True]
+) -> tuple[dict[str, Any], KiwoomMockUsClient | None]: ...
+
+
+async def run_preflight(
+    *, include_client: bool = False
+) -> dict[str, Any] | tuple[dict[str, Any], KiwoomMockUsClient | None]:
     missing = validate_kiwoom_mock_us_config()
     result: dict[str, Any] = {
         "step": "preflight",
@@ -405,8 +419,9 @@ async def run_preflight() -> dict[str, Any]:
         "missing_env_keys": missing,
     }
     if missing:
-        return result
+        return (result, None) if include_client else result
 
+    client: KiwoomMockUsClient | None = None
     try:
         client = KiwoomMockUsClient.from_app_settings()
         account = KiwoomUsAccountClient(client)
@@ -425,7 +440,7 @@ async def run_preflight() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - operator evidence, fail closed
         result["ok"] = False
         result["error"] = type(exc).__name__
-    return result
+    return (result, client) if include_client else result
 
 
 async def run_preview(args: argparse.Namespace) -> dict[str, Any]:
@@ -717,6 +732,7 @@ def _probe_price_args(
 async def run_probe(
     args: argparse.Namespace,
     *,
+    client: KiwoomMockUsClient | None = None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     cleanup_timeout: float = _CLEANUP_TIMEOUT,
@@ -746,9 +762,9 @@ async def run_probe(
             stex_tp = constants.US_EXCHANGE_TO_STEX[exchange]
         except KeyError as exc:
             raise SmokeRejected(f"unsupported exchange={exchange!r}") from exc
-        client = KiwoomMockUsClient.from_app_settings()
-        orders = KiwoomUsOrderClient(client)
-        account = KiwoomUsAccountClient(client)
+        probe_client = client or KiwoomMockUsClient.from_app_settings()
+        orders = KiwoomUsOrderClient(probe_client)
+        account = KiwoomUsAccountClient(probe_client)
     except SmokeRejected:
         raise
     except Exception as exc:  # noqa: BLE001 - redact setup/provider details
@@ -997,11 +1013,11 @@ async def _amain(args: argparse.Namespace) -> int:
             raise SmokeRejected("probe mode requires --symbol and --quantity")
         if not args.probe_order_types:
             raise SmokeRejected("probe mode requires --probe-order-types")
-        preflight = await run_preflight()
+        preflight, probe_client = await run_preflight(include_client=True)
         _emit(preflight)
-        if not preflight.get("ok"):
+        if not preflight.get("ok") or probe_client is None:
             return 2
-        return await run_probe(args)
+        return await run_probe(args, client=probe_client)
     if not args.symbol or not args.quantity or args.quantity <= 0:
         raise SmokeRejected("symbol and positive quantity are required")
     if args.trde_tp == "00" and args.price is None:

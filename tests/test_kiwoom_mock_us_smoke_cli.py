@@ -1720,13 +1720,18 @@ def test_main_normalizes_smoke_rejection_to_structured_exit_two(
 @pytest.mark.asyncio
 async def test_probe_mode_runs_preflight_before_probes(monkeypatch) -> None:
     order: list[str] = []
+    shared_client = object()
 
-    async def fake_preflight() -> dict[str, Any]:
+    async def fake_preflight(
+        *, include_client: bool = False
+    ) -> tuple[dict[str, Any], object]:
+        assert include_client is True
         order.append("preflight")
-        return {"ok": False}
+        return {"ok": True}, shared_client
 
-    async def fake_probe(args) -> int:
+    async def fake_probe(args, *, client: Any = None) -> int:
         del args
+        assert client is shared_client
         order.append("probe")
         return 0
 
@@ -1745,5 +1750,5 @@ async def test_probe_mode_runs_preflight_before_probes(monkeypatch) -> None:
             "--confirm-probes",
         ]
     )
-    assert await smoke._amain(args) == 2
-    assert order == ["preflight"]
+    assert await smoke._amain(args) == 0
+    assert order == ["preflight", "probe"]
