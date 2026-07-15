@@ -2225,6 +2225,29 @@ Kiwoom safety boundaries are unchanged on both restricted profiles:
   cannot use those provider-only aliases for mutations.
 - No `kiwoom_live_*`, generic `kiwoom_*`, or live-host routing is registered.
 
+#### Kiwoom mock order preflight (ROB-893)
+
+`kiwoom_mock_preview_order` and `kiwoom_mock_place_order` share the same
+fail-closed preflight. A confirmed place runs it again immediately before the
+broker POST and returns the checks and estimated evidence from that final
+snapshot. Preview and dry-run paths never call the order mutation client.
+
+The preflight requires a fresh KR quote, a KRX-valid `get_tick_size_kr` price,
+and an order price within 30% of the quote (the 30% boundary is inclusive).
+Sell orders use the kt00018 `rmnd_qty` position evidence; buys use the kt00010
+`ord_alowa` result for the requested symbol, side, and price. Account evidence
+is accepted only with canonical broker success (`0` or `"0"`); missing,
+malformed, boolean, floating-point, or nonzero return codes fail closed.
+
+Responses expose `preflight_checks`, `estimated_evidence`, and
+`preflight_warnings`. No reviewed Kiwoom cost profile is configured, so fee and
+tax are explicitly `null` with `status="unavailable"` and
+`review_required=true`; the preflight never invents a rate. Sell P&L based on
+the candidate order price is labelled `estimated_gross_pnl`, while net P&L is
+also unavailable. Successful preflights surface `estimated_costs_unavailable`;
+a gross-before-cost loss additionally emits `estimated_loss_sell` without
+universally blocking the sell. Broker payloads remain recursively redacted.
+
 #### Kiwoom mock stable read envelopes (ROB-824)
 
 `kiwoom_mock_get_positions` adds a normalized `positions` list whose rows have
@@ -2244,7 +2267,7 @@ ten-digit broker fixtures both occur in this repository.
 
 All three account reads add fixed `provenance` for broker `kiwoom`, environment
 `mock`, account mode `kiwoom_mock`, host `mockapi.kiwoom.com`, and their expected
-API ID. Cash uses kt00010 when `symbol` is provided and kt00018 otherwise, and
+API ID. Cash uses kt00010 when `symbol` is provided and kt00001 otherwise, and
 validates raw provenance before deriving broker success or returning cash.
 Only a canonical integer `0` or exact string `"0"` broker return code is
 successful. Missing, malformed, boolean, or floating-point return codes fail

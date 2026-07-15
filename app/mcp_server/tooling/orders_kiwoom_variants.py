@@ -39,6 +39,10 @@ from app.services.brokers.kiwoom.normalization import (
     redact_broker_response,
     validate_mock_response_provenance,
 )
+from app.services.brokers.kiwoom.order_preflight import (
+    PreflightResult,
+    run_order_preflight,
+)
 from app.services.brokers.kiwoom.validation import normalize_krx_symbol
 
 if TYPE_CHECKING:
@@ -230,6 +234,67 @@ def _finalize_normalized_read_response(
 # Implementation seams (overridable via monkeypatch in tests).
 
 
+async def _fetch_kr_quote_for_preflight(symbol: str) -> tuple[int | None, str]:
+    try:
+        from app.mcp_server.tooling.market_data_quotes import _get_quote_impl
+
+        quote = await _get_quote_impl(symbol, "kr")
+        raw_price = quote.get("price")
+        freshness = str(quote.get("price_freshness") or "unavailable")
+        if raw_price is not None:
+            return int(raw_price), freshness
+        return None, freshness
+    except Exception:
+        return None, "unavailable"
+
+
+async def _run_preflight_for_kiwoom_mock(
+    symbol: str,
+    side: str,
+    quantity: int,
+    price: int,
+) -> PreflightResult:
+    quote_price, quote_freshness = await _fetch_kr_quote_for_preflight(symbol)
+    client = KiwoomMockClient.from_app_settings()
+    account_client = KiwoomDomesticAccountClient(cast(Any, client))
+    return await run_order_preflight(
+        account_client=account_client,
+        symbol=symbol,
+        side=side,
+        quantity=quantity,
+        price=price,
+        quote_price=quote_price,
+        quote_freshness=quote_freshness,
+    )
+
+
+def _preflight_to_response(
+    result: PreflightResult,
+    *,
+    symbol: str,
+    side: str,
+    quantity: int,
+    price: int,
+    preview: bool,
+) -> dict[str, Any]:
+    response: dict[str, Any] = {
+        "success": result.ok,
+        "source": "kiwoom",
+        "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
+        "symbol": symbol,
+        "side": side,
+        "quantity": quantity,
+        "price": price,
+    }
+    if preview:
+        response["preview"] = True
+    if not result.ok:
+        response["error"] = result.error_code
+        response["error_detail"] = result.error_detail
+    response.update(result.to_response_extras())
+    return response
+
+
 async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
     symbol = str(kwargs.get("symbol") or "").strip()
     side = kwargs.get("side")
@@ -252,14 +317,62 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
         "price": price,
         "exchange": str(exchange).strip().upper(),
     }
-    if dry_run:
-        return {"success": True, **base_response}
     if side not in {"buy", "sell"}:
         return {
             "success": False,
             **base_response,
             "error": f"kiwoom_mock_place_order supports side='buy' or 'sell'; got {side!r}.",
         }
+
+    preflight = await _run_preflight_for_kiwoom_mock(
+        symbol=symbol, side=side, quantity=quantity, price=price
+    )
+    if not preflight.ok:
+        response = _preflight_to_response(
+            preflight,
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            price=price,
+            preview=dry_run,
+        )
+        response["dry_run"] = dry_run
+        response["exchange"] = str(exchange).strip().upper()
+        return response
+
+    if dry_run:
+        response = _preflight_to_response(
+            preflight,
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            price=price,
+            preview=True,
+        )
+        response["dry_run"] = True
+        response["exchange"] = str(exchange).strip().upper()
+        return response
+
+    recheck = await _run_preflight_for_kiwoom_mock(
+        symbol=symbol, side=side, quantity=quantity, price=price
+    )
+    if not recheck.ok:
+        response = _preflight_to_response(
+            recheck,
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            price=price,
+            preview=False,
+        )
+        response["dry_run"] = False
+        response["exchange"] = str(exchange).strip().upper()
+        return response
+
+    # Preserve the evidence from the mutation-boundary recheck. This is the
+    # authoritative preflight snapshot for a confirmed POST, not the earlier
+    # check that may already be stale by the time the broker is called.
+    base_response.update(recheck.to_response_extras())
 
     try:
         client = KiwoomMockClient.from_app_settings()
@@ -278,7 +391,7 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
                 price=price,
                 exchange=exchange,
             )
-    except Exception as exc:  # noqa: BLE001 - MCP tools should fail closed with JSON
+    except Exception as exc:  # noqa: BLE001 - MCP tools fail closed with JSON
         return {
             "success": False,
             **base_response,
@@ -289,15 +402,22 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
 
 
 async def _kiwoom_mock_preview_impl(**kwargs: Any) -> dict[str, Any]:
-    return {
-        "success": True,
-        "preview": True,
-        "symbol": kwargs.get("symbol"),
-        "side": kwargs.get("side"),
-        "quantity": kwargs.get("quantity"),
-        "price": kwargs.get("price"),
-        "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
-    }
+    symbol = str(kwargs.get("symbol") or "").strip()
+    side = kwargs.get("side")
+    quantity = int(kwargs.get("quantity"))
+    price = int(kwargs.get("price"))
+
+    preflight = await _run_preflight_for_kiwoom_mock(
+        symbol=symbol, side=side, quantity=quantity, price=price
+    )
+    return _preflight_to_response(
+        preflight,
+        symbol=symbol,
+        side=side,
+        quantity=quantity,
+        price=price,
+        preview=True,
+    )
 
 
 async def _kiwoom_mock_cancel_impl(**kwargs: Any) -> dict[str, Any]:
