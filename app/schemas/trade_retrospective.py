@@ -11,7 +11,9 @@ through them and raises ``RetrospectiveValidationError`` on any violation.
 
 from __future__ import annotations
 
+from datetime import date, datetime
 from typing import Any
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -45,7 +47,9 @@ VALID_ROOT_CAUSE_CLASSES: frozenset[str] = frozenset(
     }
 )
 
-_VALID_NEXT_ACTION_STATUS: frozenset[str] = frozenset({"open", "in_progress", "done"})
+VALID_NEXT_ACTION_STATUSES: frozenset[str] = frozenset(
+    {"open", "in_progress", "done", "obsolete", "expired"}
+)
 
 
 class Deviation(BaseModel):
@@ -99,13 +103,32 @@ class NextAction(BaseModel):
     creation is the caller/session's job; the repo never adds a Linear API client.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    # Historical next_action objects may carry extension keys. Canonical reads
+    # must preserve those keys so a fetched parent payload can be submitted
+    # unchanged. Canonical audit fields are accepted below but excluded from
+    # writes because they are repository-owned.
+    model_config = ConfigDict(extra="allow")
 
+    action_id: UUID | None = None
+    version: int | None = Field(default=None, ge=1)
     action: str
     owner: str | None = None
     issue_id: str | None = None
     status: str | None = None
-    due_kst_date: str | None = None
+    due_kst_date: date | None = None
+    force_new: bool = False
+    creation_key: UUID | None = None
+    position: int | None = Field(default=None, ge=0, exclude=True)
+    overdue: bool | None = Field(default=None, exclude=True)
+    terminal_status: str | None = Field(default=None, exclude=True)
+    status_changed_at: datetime | None = Field(default=None, exclude=True)
+    resolved_at: datetime | None = Field(default=None, exclude=True)
+    status_actor: str | None = Field(default=None, exclude=True)
+    status_source: str | None = Field(default=None, exclude=True)
+    status_reason: str | None = Field(default=None, exclude=True)
+    status_evidence: dict[str, Any] | None = Field(default=None, exclude=True)
+    created_at: datetime | None = Field(default=None, exclude=True)
+    updated_at: datetime | None = Field(default=None, exclude=True)
 
     @field_validator("action")
     @classmethod
@@ -120,8 +143,23 @@ class NextAction(BaseModel):
     def _status_allowed(cls, v: str | None) -> str | None:
         if v is None:
             return None
-        if v not in _VALID_NEXT_ACTION_STATUS:
+        if v not in VALID_NEXT_ACTION_STATUSES:
             raise ValueError(
-                f"invalid status: {v} (allowed: {sorted(_VALID_NEXT_ACTION_STATUS)})"
+                f"invalid status: {v} (allowed: {sorted(VALID_NEXT_ACTION_STATUSES)})"
             )
         return v
+
+    @model_validator(mode="after")
+    def _creation_controls_are_consistent(self) -> NextAction:
+        if self.action_id is not None:
+            if self.force_new:
+                raise ValueError("action_id cannot be combined with force_new")
+            # A persisted creation_key is echoed with action_id in canonical
+            # projections so a full parent payload can be safely round-tripped.
+            return self
+        if self.force_new and self.creation_key is None:
+            raise ValueError("creation_key is required when force_new is true")
+        # A shadow projection persists the stable key but strips the transient
+        # force_new intent. Allow that payload to round-trip; canonical
+        # reconciliation still requires force_new for key-only create requests.
+        return self

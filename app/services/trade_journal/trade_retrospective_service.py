@@ -13,9 +13,9 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.symbol import to_db_symbol
 from app.core.timezone import now_kst
@@ -35,6 +35,29 @@ from app.schemas.trade_retrospective import (
     NextAction,
 )
 from app.services.brokers.kis.mock_scalping_exec.ledger_state import real_order_filter
+from app.services.trade_journal.retrospective_action_repository import (
+    ActionControlError,
+    RetrospectiveActionRepository,
+    get_control_mode,
+)
+from app.services.trade_journal.retrospective_query_filters import (
+    VALID_OUTCOME_FILTERS,
+)
+from app.services.trade_journal.retrospective_query_filters import (
+    kst_day_end as _kst_day_end,
+)
+from app.services.trade_journal.retrospective_query_filters import (
+    kst_day_start as _kst_day_start,
+)
+from app.services.trade_journal.retrospective_query_filters import (
+    sql_is_decided as _sql_is_decided,
+)
+from app.services.trade_journal.retrospective_query_filters import (
+    sql_is_loss as _sql_is_loss,
+)
+from app.services.trade_journal.retrospective_query_filters import (
+    sql_is_win as _sql_is_win,
+)
 
 # Sentinel: distinguishes "caller did not provide this field" (preserve on
 # upsert) from "caller explicitly set None" (clear the field).
@@ -94,7 +117,9 @@ def _coerce_next_actions(raw: Any) -> list[dict[str, Any]]:
             raise RetrospectiveValidationError(
                 f"invalid next_actions[{i}]: {exc.errors(include_url=False)}"
             ) from exc
-        out.append(model.model_dump(exclude_none=True))
+        out.append(
+            model.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+        )
     return out
 
 
@@ -137,7 +162,9 @@ def _avg(values: list) -> float | None:
     return float(sum(nums) / len(nums))
 
 
-def serialize_retrospective(r: TradeRetrospective) -> dict[str, Any]:
+def serialize_retrospective(
+    r: TradeRetrospective, *, next_actions_override: Any = _UNSET
+) -> dict[str, Any]:
     return {
         "id": r.id,
         "correlation_id": r.correlation_id,
@@ -185,7 +212,9 @@ def serialize_retrospective(r: TradeRetrospective) -> dict[str, Any]:
         "trigger_type": r.trigger_type,
         "root_cause_class": r.root_cause_class,
         "intended_vs_happened": r.intended_vs_happened,
-        "next_actions": r.next_actions,
+        "next_actions": (
+            r.next_actions if next_actions_override is _UNSET else next_actions_override
+        ),
         "guardrail_fired": r.guardrail_fired,
         "policy_version": r.policy_version,
         "created_at": r.created_at.isoformat() if r.created_at else None,
@@ -200,30 +229,70 @@ class TradeRetrospectiveRepository:
         self.db = db
 
     async def get_by_correlation_id(
-        self, correlation_id: str, account_mode: str | None = None
+        self,
+        correlation_id: str,
+        account_mode: str | None = None,
+        *,
+        for_update: bool = False,
     ) -> TradeRetrospective | None:
         stmt = select(TradeRetrospective).where(
             TradeRetrospective.correlation_id == correlation_id
         )
         if account_mode is not None:
             stmt = stmt.where(TradeRetrospective.account_mode == account_mode)
+        if for_update:
+            stmt = stmt.with_for_update()
         result = await self.db.execute(stmt.limit(1))
         return result.scalar_one_or_none()
 
-    async def upsert(self, payload: dict[str, Any]) -> tuple[str, TradeRetrospective]:
+    async def upsert(
+        self,
+        payload: dict[str, Any],
+        *,
+        create_defaults: dict[str, Any] | None = None,
+    ) -> tuple[str, TradeRetrospective]:
         cid = payload.get("correlation_id")
         account_mode = payload.get("account_mode")
         if cid is not None:
-            existing = await self.get_by_correlation_id(cid, account_mode)
+            existing = await self.get_by_correlation_id(
+                cid, account_mode, for_update=True
+            )
             if existing is not None:
                 for key, value in payload.items():
                     setattr(existing, key, value)
                 await self.db.flush()
                 return "updated", existing
-        row = TradeRetrospective(**payload)
-        self.db.add(row)
-        await self.db.flush()
+        create_payload = dict(create_defaults or {})
+        create_payload.update(payload)
+        row = TradeRetrospective(**create_payload)
+        try:
+            async with self.db.begin_nested():
+                self.db.add(row)
+                await self.db.flush()
+        except IntegrityError as exc:
+            constraint = _integrity_constraint_name(exc)
+            if "uq_trade_retrospectives_correlation_account" not in constraint:
+                raise
+            if cid is None:
+                raise
+            existing = await self.get_by_correlation_id(
+                cid, account_mode, for_update=True
+            )
+            if existing is None:
+                raise
+            for key, value in payload.items():
+                setattr(existing, key, value)
+            await self.db.flush()
+            return "updated", existing
         return "created", row
+
+
+def _integrity_constraint_name(exc: IntegrityError) -> str:
+    orig = getattr(exc, "orig", None)
+    name = getattr(orig, "constraint_name", None)
+    if name:
+        return str(name)
+    return str(orig or exc)
 
 
 async def _load_trade_journal(
@@ -261,38 +330,39 @@ async def save_retrospective(
     instrument_type: str,
     account_mode: str,
     outcome: str,
-    side: str | None = None,
-    market: str | None = None,
-    strategy_key: str | None = None,
+    side: Any = _UNSET,
+    market: Any = _UNSET,
+    strategy_key: Any = _UNSET,
     correlation_id: str | None = None,
-    journal_id: int | None = None,
-    report_uuid: str | None = None,
-    report_item_uuid: str | None = None,
-    plan_price: float | None = None,
-    fill_price: float | None = None,
-    realized_pnl: float | None = None,
-    realized_pnl_currency: str | None = None,
-    pnl_pct: float | None = None,
-    rationale: str | None = None,
-    result_summary: str | None = None,
-    lesson: str | None = None,
-    next_strategy: str | None = None,
-    evidence_snapshot: dict | None = None,
-    created_by_profile: str | None = None,
-    buy_fx_rate: float | None = None,
-    sell_fx_rate: float | None = None,
-    fx_pnl_krw: float | None = None,
-    security_pnl_usd: float | None = None,
-    security_pnl_krw: float | None = None,
-    total_pnl_krw: float | None = None,
-    fx_rate_source: str | None = None,
-    fx_pnl_accuracy: str | None = None,
+    journal_id: Any = _UNSET,
+    report_uuid: Any = _UNSET,
+    report_item_uuid: Any = _UNSET,
+    plan_price: Any = _UNSET,
+    fill_price: Any = _UNSET,
+    realized_pnl: Any = _UNSET,
+    realized_pnl_currency: Any = _UNSET,
+    pnl_pct: Any = _UNSET,
+    rationale: Any = _UNSET,
+    result_summary: Any = _UNSET,
+    lesson: Any = _UNSET,
+    next_strategy: Any = _UNSET,
+    evidence_snapshot: Any = _UNSET,
+    created_by_profile: Any = _UNSET,
+    buy_fx_rate: Any = _UNSET,
+    sell_fx_rate: Any = _UNSET,
+    fx_pnl_krw: Any = _UNSET,
+    security_pnl_usd: Any = _UNSET,
+    security_pnl_krw: Any = _UNSET,
+    total_pnl_krw: Any = _UNSET,
+    fx_rate_source: Any = _UNSET,
+    fx_pnl_accuracy: Any = _UNSET,
     trigger_type: Any = _UNSET,
     root_cause_class: Any = _UNSET,
     intended_vs_happened: Any = _UNSET,
     next_actions: Any = _UNSET,
     guardrail_fired: Any = _UNSET,
     policy_version: Any = _UNSET,
+    actor: str = "internal:save_retrospective",
 ) -> tuple[str, TradeRetrospective]:
     if account_mode not in _VALID_ACCOUNT_MODES:
         raise RetrospectiveValidationError(f"invalid account_mode: {account_mode}")
@@ -301,11 +371,12 @@ async def save_retrospective(
             f"invalid outcome: {outcome} "
             f"(allowed: {', '.join(sorted(_VALID_OUTCOMES))})"
         )
-    if side is not None and side not in ("buy", "sell"):
+    if side is not _UNSET and side is not None and side not in ("buy", "sell"):
         raise RetrospectiveValidationError(f"invalid side: {side}")
-    if realized_pnl_currency is not None and realized_pnl_currency not in (
-        "KRW",
-        "USD",
+    if (
+        realized_pnl_currency is not _UNSET
+        and realized_pnl_currency is not None
+        and realized_pnl_currency not in ("KRW", "USD")
     ):
         raise RetrospectiveValidationError(
             f"invalid realized_pnl_currency: {realized_pnl_currency}"
@@ -349,87 +420,158 @@ async def save_retrospective(
     # should be available.
     fill_evidence_available = account_mode != "kiwoom_mock"
     if not fill_evidence_available and (
-        realized_pnl is not None or fill_price is not None
+        (realized_pnl is not _UNSET and realized_pnl is not None)
+        or (fill_price is not _UNSET and fill_price is not None)
     ):
         raise RetrospectiveValidationError(
             f"{account_mode} cannot read fills (ROB-460); "
             "realized_pnl/fill_price not allowed"
         )
 
+    create_defaults: dict[str, Any] = {}
     journal_row = (
         await _load_trade_journal(db, journal_id)
-        if journal_id is not None and fill_evidence_available
+        if journal_id is not _UNSET
+        and journal_id is not None
+        and fill_evidence_available
         else None
     )
 
-    realized_pnl_value = _to_decimal(realized_pnl)
-    realized_pnl_source: str | None = None
-    if realized_pnl_value is not None:
-        realized_pnl_source = "caller_supplied"
-    elif journal_id is not None and fill_evidence_available:
-        derived = _realized_pnl_from_journal(journal_row, side)
+    realized_pnl_value: Any = _UNSET
+    realized_pnl_source: Any = _UNSET
+    derived_realized_pnl: Decimal | None = None
+    if realized_pnl is not _UNSET:
+        realized_pnl_value = _to_decimal(realized_pnl)
+        realized_pnl_source = (
+            "caller_supplied" if realized_pnl_value is not None else None
+        )
+    elif (
+        journal_id is not _UNSET and journal_id is not None and fill_evidence_available
+    ):
+        derived = _realized_pnl_from_journal(
+            journal_row, None if side is _UNSET else side
+        )
         if derived is not None:
-            realized_pnl_value = derived
-            realized_pnl_source = "derived_from_journal"
+            derived_realized_pnl = derived
+            create_defaults["realized_pnl"] = derived
+            create_defaults["realized_pnl_source"] = "derived_from_journal"
 
     if journal_row is not None:
-        if buy_fx_rate is None and journal_row.buy_fx_rate is not None:
-            buy_fx_rate = float(journal_row.buy_fx_rate)
-        if sell_fx_rate is None and journal_row.sell_fx_rate is not None:
-            sell_fx_rate = float(journal_row.sell_fx_rate)
-        if fx_pnl_krw is None and journal_row.fx_pnl_krw is not None:
-            fx_pnl_krw = float(journal_row.fx_pnl_krw)
-        if security_pnl_usd is None and journal_row.security_pnl_usd is not None:
-            security_pnl_usd = float(journal_row.security_pnl_usd)
-        if security_pnl_krw is None and journal_row.security_pnl_krw is not None:
-            security_pnl_krw = float(journal_row.security_pnl_krw)
-        if total_pnl_krw is None and journal_row.total_pnl_krw is not None:
-            total_pnl_krw = float(journal_row.total_pnl_krw)
-        fx_rate_source = fx_rate_source or journal_row.fx_rate_source
-        fx_pnl_accuracy = fx_pnl_accuracy or journal_row.fx_pnl_accuracy
+        if buy_fx_rate is _UNSET and journal_row.buy_fx_rate is not None:
+            create_defaults["buy_fx_rate"] = journal_row.buy_fx_rate
+        if sell_fx_rate is _UNSET and journal_row.sell_fx_rate is not None:
+            create_defaults["sell_fx_rate"] = journal_row.sell_fx_rate
+        if fx_pnl_krw is _UNSET and journal_row.fx_pnl_krw is not None:
+            create_defaults["fx_pnl_krw"] = journal_row.fx_pnl_krw
+        if security_pnl_usd is _UNSET and journal_row.security_pnl_usd is not None:
+            create_defaults["security_pnl_usd"] = journal_row.security_pnl_usd
+        if security_pnl_krw is _UNSET and journal_row.security_pnl_krw is not None:
+            create_defaults["security_pnl_krw"] = journal_row.security_pnl_krw
+        if total_pnl_krw is _UNSET and journal_row.total_pnl_krw is not None:
+            create_defaults["total_pnl_krw"] = journal_row.total_pnl_krw
+        if fx_rate_source is _UNSET and journal_row.fx_rate_source is not None:
+            create_defaults["fx_rate_source"] = journal_row.fx_rate_source
+        if fx_pnl_accuracy is _UNSET and journal_row.fx_pnl_accuracy is not None:
+            create_defaults["fx_pnl_accuracy"] = journal_row.fx_pnl_accuracy
 
-    if realized_pnl_value is not None and realized_pnl_currency is None:
+    if (
+        realized_pnl_value is not _UNSET
+        and realized_pnl_value is not None
+        and (realized_pnl_currency is _UNSET or realized_pnl_currency is None)
+    ):
         realized_pnl_currency = _infer_currency(instrument_type)
         if realized_pnl_currency is None:
             raise RetrospectiveValidationError(
                 "realized_pnl requires realized_pnl_currency "
                 f"(could not infer from instrument_type={instrument_type})"
             )
+    elif derived_realized_pnl is not None and (
+        realized_pnl_currency is _UNSET or realized_pnl_currency is None
+    ):
+        inferred_currency = _infer_currency(instrument_type)
+        if inferred_currency is None:
+            raise RetrospectiveValidationError(
+                "derived realized_pnl requires realized_pnl_currency "
+                f"(could not infer from instrument_type={instrument_type})"
+            )
+        create_defaults["realized_pnl_currency"] = inferred_currency
 
     payload: dict[str, Any] = {
         "symbol": _normalize_symbol(symbol, instrument_type),
         "instrument_type": instrument_type,
         "account_mode": account_mode,
         "outcome": outcome,
+        "correlation_id": correlation_id,
+        "fill_evidence_available": fill_evidence_available,
+    }
+    raw_optional_payload = {
         "side": side,
         "market": market,
         "strategy_key": strategy_key,
-        "correlation_id": correlation_id,
         "journal_id": journal_id,
         "report_uuid": report_uuid,
         "report_item_uuid": report_item_uuid,
-        "plan_price": _to_decimal(plan_price),
-        "fill_price": _to_decimal(fill_price),
         "realized_pnl": realized_pnl_value,
         "realized_pnl_currency": realized_pnl_currency,
         "realized_pnl_source": realized_pnl_source,
-        "pnl_pct": _to_decimal(pnl_pct),
-        "fill_evidence_available": fill_evidence_available,
         "rationale": rationale,
         "result_summary": result_summary,
         "lesson": lesson,
         "next_strategy": next_strategy,
         "evidence_snapshot": evidence_snapshot,
         "created_by_profile": created_by_profile,
-        "buy_fx_rate": _to_decimal(buy_fx_rate),
-        "sell_fx_rate": _to_decimal(sell_fx_rate),
-        "fx_pnl_krw": _to_decimal(fx_pnl_krw),
-        "security_pnl_usd": _to_decimal(security_pnl_usd),
-        "security_pnl_krw": _to_decimal(security_pnl_krw),
-        "total_pnl_krw": _to_decimal(total_pnl_krw),
         "fx_rate_source": fx_rate_source,
         "fx_pnl_accuracy": fx_pnl_accuracy,
     }
+    payload.update(
+        {
+            key: value
+            for key, value in raw_optional_payload.items()
+            if value is not _UNSET
+        }
+    )
+    decimal_optional_payload = {
+        "plan_price": plan_price,
+        "fill_price": fill_price,
+        "pnl_pct": pnl_pct,
+        "buy_fx_rate": buy_fx_rate,
+        "sell_fx_rate": sell_fx_rate,
+        "fx_pnl_krw": fx_pnl_krw,
+        "security_pnl_usd": security_pnl_usd,
+        "security_pnl_krw": security_pnl_krw,
+        "total_pnl_krw": total_pnl_krw,
+    }
+    payload.update(
+        {
+            key: _to_decimal(value)
+            for key, value in decimal_optional_payload.items()
+            if value is not _UNSET
+        }
+    )
+
+    # ROB-880: In canonical mode the write-fence trigger rejects direct
+    # next_actions writes, so the payload excludes it and the repository
+    # reconciles children + writes the projection with the GUC marker.
+    ctrl_mode = await get_control_mode(db)
+    _is_canonical = ctrl_mode == "canonical"
+
+    if next_actions_value is not _UNSET and not _is_canonical:
+        shadow_actions: list[dict[str, Any]] = []
+        for index, action_item in enumerate(next_actions_value):
+            if action_item.get("status") in {"obsolete", "expired"}:
+                raise RetrospectiveValidationError(
+                    f"next_actions[{index}] status is canonical-only in shadow mode"
+                )
+            if "action_id" in action_item or "version" in action_item:
+                raise RetrospectiveValidationError(
+                    f"next_actions[{index}] canonical identity is invalid in shadow mode"
+                )
+            stored_item = dict(action_item)
+            # force_new is request intent. Keep only the stable creation_key in
+            # the shadow JSON so cutover can preserve retry idempotency.
+            stored_item.pop("force_new", None)
+            shadow_actions.append(stored_item)
+        next_actions_value = shadow_actions
 
     # ROB-647 — only include provided postmortem fields so an idempotent
     # re-save that omits them does not clobber prior values (partial-update).
@@ -441,7 +583,7 @@ async def save_retrospective(
         payload["intended_vs_happened"] = (
             None if intended_vs_happened_value is _UNSET else intended_vs_happened_value
         )
-    if next_actions is not _UNSET:
+    if next_actions is not _UNSET and not _is_canonical:
         payload["next_actions"] = (
             None if next_actions_value is _UNSET else next_actions_value
         )
@@ -451,17 +593,18 @@ async def save_retrospective(
         payload["policy_version"] = policy_version
 
     repo = TradeRetrospectiveRepository(db)
-    return await repo.upsert(payload)
+    status, retro = await repo.upsert(payload, create_defaults=create_defaults)
 
+    if _is_canonical and next_actions is not _UNSET and next_actions is not None:
+        action_repo = RetrospectiveActionRepository(db)
+        await action_repo.reconcile_actions(
+            retro.id,
+            next_actions_value if next_actions_value is not _UNSET else [],
+            actor=actor,
+            control_mode=ctrl_mode,
+        )
 
-def _kst_day_start(date_str: str) -> datetime:
-    d = datetime.strptime(date_str, "%Y-%m-%d").date()
-    return datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=_KST)
-
-
-def _kst_day_end(date_str: str) -> datetime:
-    d = datetime.strptime(date_str, "%Y-%m-%d").date()
-    return datetime(d.year, d.month, d.day, 23, 59, 59, 999999, tzinfo=_KST)
+    return status, retro
 
 
 def _kst_date_str(dt: datetime) -> str:
@@ -541,11 +684,18 @@ async def get_retrospectives(
         .offset(offset)
     )
     rows = (await db.execute(stmt)).scalars().all()
+    actions_by_parent = await RetrospectiveActionRepository(db).read_actions_many(rows)
     by_outcome: dict[str, int] = {}
     for r in rows:
         by_outcome[r.outcome] = by_outcome.get(r.outcome, 0) + 1
     return {
-        "entries": [serialize_retrospective(r) for r in rows],
+        "entries": [
+            serialize_retrospective(
+                r,
+                next_actions_override=actions_by_parent[r.id],
+            )
+            for r in rows
+        ],
         "summary": {"count": len(rows), "by_outcome": by_outcome, "total": int(total)},
     }
 
@@ -570,11 +720,16 @@ async def get_open_next_actions(
 ) -> dict[str, Any]:
     """Flatten incomplete next_actions across recent retrospectives.
 
-    Bounded scan (``limit`` most-recent rows) — NOT full history; the
-    ``scan_limit`` echo makes that explicit to callers. ``statuses=None``
-    means "not done" (open/in_progress/unset all surface); a set narrows to
-    exact status values.
+    In shadow mode: bounded scan of parent JSONB.
+    In canonical mode: queries the child ledger directly (no scan limit needed).
     """
+    ctrl_mode = await get_control_mode(db)
+
+    if ctrl_mode == "canonical":
+        return await _get_open_next_actions_canonical(
+            db, market=market, symbol=symbol, statuses=statuses, limit=limit
+        )
+
     filters: list = []
     if market is not None:
         filters.append(TradeRetrospective.market == market)
@@ -648,6 +803,110 @@ async def get_open_next_actions(
     return {"items": items, "count": len(items), "scan_limit": limit}
 
 
+async def _get_open_next_actions_canonical(
+    db: AsyncSession,
+    *,
+    market: str | None = None,
+    symbol: str | None = None,
+    statuses: frozenset[str] | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Canonical-mode implementation of get_open_next_actions.
+
+    Reads from the child ledger and formats results in the legacy response
+    shape, with action_id and version added additively.
+    """
+    repo = RetrospectiveActionRepository(db)
+    canonical_statuses = statuses
+    if statuses is not None and "done" in statuses:
+        canonical_statuses = (statuses - {"done"}) | {
+            "done",
+            "obsolete",
+            "expired",
+        }
+    result = await repo.query_actions(
+        statuses=canonical_statuses,
+        market=market,
+        symbol=symbol,
+        limit=None,
+        offset=0,
+    )
+    items: list[dict[str, Any]] = []
+    for item in result["items"]:
+        canonical_status = item.get("status")
+        legacy_status = (
+            "done" if canonical_status in {"obsolete", "expired"} else canonical_status
+        )
+        items.append(
+            {
+                "action": item["action"],
+                "owner": item.get("owner"),
+                "issue_id": item.get("issue_id"),
+                "status": legacy_status,
+                "terminal_status": (
+                    canonical_status
+                    if canonical_status in {"obsolete", "expired"}
+                    else None
+                ),
+                "due_kst_date": item.get("due_kst_date"),
+                "symbol": item.get("symbol"),
+                "market": item.get("market"),
+                "retro_id": item.get("retrospective_id"),
+                "correlation_id": item.get("correlation_id"),
+                "trigger_type": item.get("trigger_type"),
+                "realized_pnl": item.get("realized_pnl"),
+                "created_at": item.get("created_at"),
+                "action_id": item.get("action_id"),
+                "version": item.get("version"),
+                "overdue": item.get("overdue", False),
+            }
+        )
+    return {"items": items, "count": len(items), "scan_limit": 0}
+
+
+async def get_canonical_actions(
+    db: AsyncSession,
+    *,
+    statuses: frozenset[str] | None = None,
+    market: str | None = None,
+    symbol: str | None = None,
+    symbol_search: str | None = None,
+    owner: str | None = None,
+    issue_id: str | None = None,
+    overdue_only: bool = False,
+    trigger_type: str | None = None,
+    outcome_filter: str | None = None,
+    kst_date_from: str | None = None,
+    kst_date_to: str | None = None,
+    due_before: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Canonical action query with pagination, filters, and overdue-first ordering."""
+    mode = await get_control_mode(db)
+    if mode != "canonical":
+        raise ActionControlError(
+            f"canonical action reader is unavailable while mode is {mode}"
+        )
+    repo = RetrospectiveActionRepository(db)
+    return await repo.query_actions(
+        statuses=statuses,
+        market=market,
+        symbol=symbol,
+        symbol_search=symbol_search,
+        owner=owner,
+        issue_id=issue_id,
+        overdue_only=overdue_only,
+        trigger_type=trigger_type,
+        outcome_filter=outcome_filter,
+        kst_date_from=kst_date_from,
+        kst_date_to=kst_date_to,
+        due_before=due_before,
+        limit=limit,
+        offset=offset,
+    )
+
+
 def _is_win(r: TradeRetrospective) -> bool:
     if r.realized_pnl is not None:
         return r.realized_pnl > 0
@@ -656,58 +915,6 @@ def _is_win(r: TradeRetrospective) -> bool:
 
 def _is_decided(r: TradeRetrospective) -> bool:
     return r.realized_pnl is not None or r.pnl_pct is not None
-
-
-# ROB-691 — SQL-side mirrors of `_is_win`/`_is_decided` above, used by
-# get_retrospectives' `outcome_filter` query param. MUST be kept in lock-step
-# with the Python predicates (same tie=0-is-a-loss rule, same pnl_pct
-# fallback-only-when-realized_pnl-is-NULL semantics); see the parallel
-# equivalence test in tests/test_trade_retrospective_aggregate.py
-# (test_outcome_filter_matches_python_predicate) that guards against drift.
-VALID_OUTCOME_FILTERS: frozenset[str] = frozenset({"win", "loss", "decided"})
-
-
-def _sql_is_decided() -> ColumnElement[bool]:
-    """SQL predicate mirroring `_is_decided` — keep in lock-step."""
-    return or_(
-        TradeRetrospective.realized_pnl.isnot(None),
-        TradeRetrospective.pnl_pct.isnot(None),
-    )
-
-
-def _sql_is_win() -> ColumnElement[bool]:
-    """SQL predicate mirroring `_is_win` — keep in lock-step.
-
-    `_is_win`: if realized_pnl is not None -> realized_pnl > 0 (strict; a tie
-    at 0 is NOT a win); else -> pnl_pct is not None and pnl_pct > 0.
-    """
-    return or_(
-        TradeRetrospective.realized_pnl > 0,
-        and_(
-            TradeRetrospective.realized_pnl.is_(None),
-            TradeRetrospective.pnl_pct > 0,
-        ),
-    )
-
-
-def _sql_is_loss() -> ColumnElement[bool]:
-    """SQL predicate = decided AND NOT win, spelled out explicitly (rather
-    than `and_(_sql_is_decided(), not_(_sql_is_win()))`) to avoid SQL's
-    three-valued NULL logic silently mis-classifying NULL columns as "unknown"
-    instead of following the Python if/else short-circuit. Keep in lock-step
-    with `_is_win`/`_is_decided`.
-    """
-    return or_(
-        and_(
-            TradeRetrospective.realized_pnl.isnot(None),
-            TradeRetrospective.realized_pnl <= 0,
-        ),
-        and_(
-            TradeRetrospective.realized_pnl.is_(None),
-            TradeRetrospective.pnl_pct.isnot(None),
-            TradeRetrospective.pnl_pct <= 0,
-        ),
-    )
 
 
 def _prefix_like(raw: str) -> str:

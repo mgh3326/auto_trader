@@ -23,6 +23,8 @@ from sqlalchemy.exc import IntegrityError
 from app.core.db import engine
 from app.models.base import Base
 
+pytestmark = pytest.mark.usefixtures("retrospective_action_control_lock")
+
 _MIGRATION_PATH = (
     Path(__file__).resolve().parent.parent
     / "alembic"

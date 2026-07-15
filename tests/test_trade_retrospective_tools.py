@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import now_kst
@@ -47,6 +47,115 @@ async def test_save_success_envelope():
     assert res["success"] is True
     assert res["action"] == "created"
     assert res["data"]["strategy_key"] == "A"
+
+
+@pytest.mark.asyncio
+async def test_save_hydration_failure_rolls_back(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A failed response hydration must not leave a committed save behind."""
+    from app.services.trade_journal.retrospective_action_repository import (
+        RetrospectiveActionRepository,
+    )
+
+    correlation_id = "mcp-hydration-rollback"
+
+    async def _fail_hydration(*_args, **_kwargs):
+        raise RuntimeError("hydrate failed")
+
+    monkeypatch.setattr(
+        RetrospectiveActionRepository,
+        "read_actions",
+        _fail_hydration,
+    )
+
+    res = await save_trade_retrospective(
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        correlation_id=correlation_id,
+    )
+
+    assert res["success"] is False
+    assert "hydrate failed" in res["error"]
+    persisted = (
+        await db_session.execute(
+            select(TradeRetrospective.id).where(
+                TradeRetrospective.correlation_id == correlation_id
+            )
+        )
+    ).scalar_one_or_none()
+    assert persisted is None
+
+
+@pytest.mark.asyncio
+async def test_mcp_retry_omits_unsupplied_optional_fields():
+    first = await save_trade_retrospective(
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        correlation_id="mcp-presence-retry",
+        market="kr",
+        lesson="preserve through MCP",
+    )
+    assert first["success"] is True
+
+    second = await save_trade_retrospective(
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        correlation_id="mcp-presence-retry",
+    )
+
+    assert second["success"] is True
+    assert second["data"]["market"] == "kr"
+    assert second["data"]["lesson"] == "preserve through MCP"
+
+
+@pytest.mark.asyncio
+async def test_mcp_retry_preserves_explicit_null_for_nullable_clear():
+    from app.mcp_server.caller_identity import caller_argument_names_var
+
+    first = await save_trade_retrospective(
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        correlation_id="mcp-explicit-null",
+        lesson="clear through MCP",
+    )
+    assert first["success"] is True
+
+    token = caller_argument_names_var.set(
+        frozenset(
+            {
+                "symbol",
+                "instrument_type",
+                "account_mode",
+                "outcome",
+                "correlation_id",
+                "lesson",
+            }
+        )
+    )
+    try:
+        second = await save_trade_retrospective(
+            symbol="005930",
+            instrument_type="equity_kr",
+            account_mode="kis_mock",
+            outcome="filled",
+            correlation_id="mcp-explicit-null",
+            lesson=None,
+        )
+    finally:
+        caller_argument_names_var.reset(token)
+
+    assert second["success"] is True
+    assert second["data"]["lesson"] is None
 
 
 @pytest.mark.asyncio
