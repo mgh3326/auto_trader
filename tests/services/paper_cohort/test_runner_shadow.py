@@ -64,13 +64,16 @@ class FakeCapture:
 @dataclass
 class FakeQuotes:
     session: AsyncSession
+    run_id: str
     calls: list[tuple[str, str]] = field(default_factory=list)
     decision_counts_at_call: list[int] = field(default_factory=list)
 
     async def get_quote(self, venue: str, symbol: str) -> VenueQuote:
         self.calls.append((venue, symbol))
         count = await self.session.scalar(
-            select(func.count()).select_from(PaperCohortDecision)
+            select(func.count())
+            .select_from(PaperCohortDecision)
+            .where(PaperCohortDecision.run_id == self.run_id)
         )
         self.decision_counts_at_call.append(int(count or 0))
         execution_symbol = (
@@ -116,8 +119,14 @@ async def _active_cohort(db_session: AsyncSession, nonce: str) -> str:
     return activation.cohort_id
 
 
-async def _count(db_session: AsyncSession, model: type) -> int:
-    value = await db_session.scalar(select(func.count()).select_from(model))
+async def _count_for_run(
+    db_session: AsyncSession,
+    model: type,
+    run_id: str,
+) -> int:
+    value = await db_session.scalar(
+        select(func.count()).select_from(model).where(model.run_id == run_id)
+    )
     return int(value or 0)
 
 
@@ -127,19 +136,11 @@ async def test_shadow_persists_signal_before_quotes_and_never_mutates_brokers(
 ) -> None:
     nonce = uuid4().hex
     cohort_id = await _active_cohort(db_session, nonce)
+    run_id = f"run-{nonce}"
     capture = FakeCapture()
-    quotes = FakeQuotes(db_session)
+    quotes = FakeQuotes(db_session, run_id)
     application_calls: list[str] = []
     native_calls: list[str] = []
-    baseline = {
-        model: await _count(db_session, model)
-        for model in (
-            CanonicalMarketSnapshot,
-            PaperCohortDecision,
-            PaperCohortVenueIntent,
-            PaperRunOrderLink,
-        )
-    }
     runner = PaperCohortRunner(
         db_session,
         capture=capture,
@@ -153,7 +154,7 @@ async def test_shadow_persists_signal_before_quotes_and_never_mutates_brokers(
     result = await runner.run(
         CohortRunInvocation(
             cohort_id=cohort_id,
-            run_id=f"run-{nonce}",
+            run_id=run_id,
             round_decision_id=f"round-{nonce}",
             mode=RunMode.SHADOW,
         )
@@ -166,19 +167,10 @@ async def test_shadow_persists_signal_before_quotes_and_never_mutates_brokers(
     assert all(count >= 2 for count in quotes.decision_counts_at_call)
     assert application_calls == []
     assert native_calls == []
-    assert (
-        await _count(db_session, CanonicalMarketSnapshot)
-        == baseline[CanonicalMarketSnapshot] + 1
-    )
-    assert (
-        await _count(db_session, PaperCohortDecision)
-        == baseline[PaperCohortDecision] + 2
-    )
-    assert (
-        await _count(db_session, PaperCohortVenueIntent)
-        == baseline[PaperCohortVenueIntent] + 4
-    )
-    assert await _count(db_session, PaperRunOrderLink) == baseline[PaperRunOrderLink]
+    assert await _count_for_run(db_session, CanonicalMarketSnapshot, run_id) == 1
+    assert await _count_for_run(db_session, PaperCohortDecision, run_id) == 2
+    assert await _count_for_run(db_session, PaperCohortVenueIntent, run_id) == 4
+    assert await _count_for_run(db_session, PaperRunOrderLink, run_id) == 0
     intents = (
         await db_session.scalars(
             select(PaperCohortVenueIntent)
@@ -209,19 +201,11 @@ async def test_capture_failure_leaves_no_snapshot_signal_quote_or_mutation(
 ) -> None:
     nonce = uuid4().hex
     cohort_id = await _active_cohort(db_session, nonce)
+    run_id = f"run-{nonce}"
     capture = FakeCapture(fail=True)
-    quotes = FakeQuotes(db_session)
+    quotes = FakeQuotes(db_session, run_id)
     application_calls: list[str] = []
     native_calls: list[str] = []
-    baseline = {
-        model: await _count(db_session, model)
-        for model in (
-            CanonicalMarketSnapshot,
-            PaperCohortDecision,
-            PaperCohortVenueIntent,
-            PaperRunOrderLink,
-        )
-    }
     runner = PaperCohortRunner(
         db_session,
         capture=capture,
@@ -236,7 +220,7 @@ async def test_capture_failure_leaves_no_snapshot_signal_quote_or_mutation(
         await runner.run(
             CohortRunInvocation(
                 cohort_id=cohort_id,
-                run_id=f"run-{nonce}",
+                run_id=run_id,
                 round_decision_id=f"round-{nonce}",
                 mode=RunMode.SHADOW,
             )
@@ -245,18 +229,10 @@ async def test_capture_failure_leaves_no_snapshot_signal_quote_or_mutation(
     assert quotes.calls == []
     assert application_calls == []
     assert native_calls == []
-    assert (
-        await _count(db_session, CanonicalMarketSnapshot)
-        == baseline[CanonicalMarketSnapshot]
-    )
-    assert (
-        await _count(db_session, PaperCohortDecision) == baseline[PaperCohortDecision]
-    )
-    assert (
-        await _count(db_session, PaperCohortVenueIntent)
-        == baseline[PaperCohortVenueIntent]
-    )
-    assert await _count(db_session, PaperRunOrderLink) == baseline[PaperRunOrderLink]
+    assert await _count_for_run(db_session, CanonicalMarketSnapshot, run_id) == 0
+    assert await _count_for_run(db_session, PaperCohortDecision, run_id) == 0
+    assert await _count_for_run(db_session, PaperCohortVenueIntent, run_id) == 0
+    assert await _count_for_run(db_session, PaperRunOrderLink, run_id) == 0
 
 
 @pytest.mark.asyncio
@@ -281,7 +257,8 @@ async def test_direct_runner_before_activation_fails_before_capture_or_quote(
     await PaperCohortService(db_session).activate(activation)
     await db_session.commit()
     capture = FakeCapture()
-    quotes = FakeQuotes(db_session)
+    run_id = f"future-run-{nonce}"
+    quotes = FakeQuotes(db_session, run_id)
 
     with pytest.raises(PaperCohortError) as exc_info:
         await PaperCohortRunner(
@@ -292,7 +269,7 @@ async def test_direct_runner_before_activation_fails_before_capture_or_quote(
         ).run(
             CohortRunInvocation(
                 cohort_id=activation.cohort_id,
-                run_id=f"future-run-{nonce}",
+                run_id=run_id,
                 round_decision_id=f"future-round-{nonce}",
                 mode=RunMode.SHADOW,
             )
@@ -305,7 +282,7 @@ async def test_direct_runner_before_activation_fails_before_capture_or_quote(
         await db_session.scalar(
             select(func.count())
             .select_from(PaperCohortRunClaim)
-            .where(PaperCohortRunClaim.run_id == f"future-run-{nonce}")
+            .where(PaperCohortRunClaim.run_id == run_id)
         )
         == 0
     )
@@ -325,8 +302,8 @@ async def test_stale_or_future_venue_quote_fails_before_intent_persistence(
 ) -> None:
     nonce = uuid4().hex
     cohort_id = await _active_cohort(db_session, nonce)
-    quotes = TimestampedFakeQuotes(db_session, fetched_at=fetched_at)
-    baseline = await _count(db_session, PaperCohortVenueIntent)
+    run_id = f"quote-run-{nonce}"
+    quotes = TimestampedFakeQuotes(db_session, run_id, fetched_at=fetched_at)
 
     with pytest.raises(PaperCohortError) as exc_info:
         await PaperCohortRunner(
@@ -337,11 +314,11 @@ async def test_stale_or_future_venue_quote_fails_before_intent_persistence(
         ).run(
             CohortRunInvocation(
                 cohort_id=cohort_id,
-                run_id=f"quote-run-{nonce}",
+                run_id=run_id,
                 round_decision_id=f"quote-round-{nonce}",
                 mode=RunMode.SHADOW,
             )
         )
 
     assert exc_info.value.reason_code == "venue_quote_provider_error"
-    assert await _count(db_session, PaperCohortVenueIntent) == baseline
+    assert await _count_for_run(db_session, PaperCohortVenueIntent, run_id) == 0
