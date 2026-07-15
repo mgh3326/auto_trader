@@ -7,6 +7,7 @@ and never commits — callers own the transaction (see global-constraints.md).
 from __future__ import annotations
 
 import inspect
+import logging
 import secrets
 import uuid
 from collections.abc import Awaitable, Callable
@@ -45,6 +46,8 @@ from app.services.trade_journal.trade_retrospective_service import (
     get_retrospective_by_id,
 )
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class RungInput:
@@ -68,6 +71,21 @@ class BatchRegistration:
     batch: OrderProposalApprovalBatch
     member_count: int
     summary_action: Literal["none", "send", "edit"]
+
+
+@dataclass(frozen=True)
+class ExpirySweepResult:
+    """One group ``sweep_expired`` transitioned to ``expired`` (ROB-897).
+
+    ``chat_id``/``message_id`` mirror what ``order_proposal_void`` reads from
+    ``source_asof`` -- they are ``None`` when the proposal was never dispatched
+    to Telegram (e.g. auto-approved or created before ``ORDER_PROPOSALS_TELEGRAM_ENABLED``).
+    """
+
+    proposal_id: uuid.UUID
+    symbol: str
+    chat_id: str | None
+    message_id: int | None
 
 
 # (account_mode, market) combinations the submit path
@@ -1600,6 +1618,91 @@ class OrderProposalsService:
                 swept.append(proposal_id)
                 swept_set.add(proposal_id)
         return swept
+
+    async def list_expiry_candidates(
+        self, *, now: datetime
+    ) -> list[tuple[OrderProposal, list[OrderProposalRung]]]:
+        """Read-only preview of groups ``sweep_expired`` would act on (ROB-897).
+
+        Used by the ``dry_run=True`` MCP tool path and by the sweep's own
+        skipped-count accounting -- never mutates.
+        """
+        self._require_timezone_aware(now)
+        candidate_ids = await self._repo.list_expiry_candidates(now=now)
+        results: list[tuple[OrderProposal, list[OrderProposalRung]]] = []
+        for proposal_id in candidate_ids:
+            group = await self._repo.get_group_by_proposal_id(proposal_id)
+            if group is None:
+                continue
+            results.append((group, await self._repo.list_rungs(group.id)))
+        return results
+
+    async def sweep_expired(self, *, now: datetime) -> list[ExpirySweepResult]:
+        """Batch-expire every non-terminal group whose ``valid_until`` has passed.
+
+        ROB-897 cause (1) structural fix: ``expire_if_needed`` only ran from the
+        Telegram approval callback, so a proposal nobody tapped stayed
+        ``proposed``/``needs_reconfirm`` indefinitely once its deadline passed.
+        This runs the same per-rung transition ``expire_if_needed`` does, but
+        for every due group and with different failure semantics: a group with
+        any rung outside ``_VOIDABLE_RUNG_STATES`` (e.g. ``submitting``,
+        ``resting``, ``filled``) is *skipped*, not raised on -- a
+        partially-submitted or filled proposal past its window must not be
+        force-expired, and one bad group must not abort the whole sweep.
+        """
+        self._require_timezone_aware(now)
+        candidate_ids = await self._repo.list_expiry_candidates(now=now)
+        results: list[ExpirySweepResult] = []
+        for proposal_id in candidate_ids:
+            group = await self._repo.get_group_by_proposal_id(
+                proposal_id, for_update=True
+            )
+            if group is None:
+                continue
+            # Re-check under the row lock: a concurrent mutation (approval,
+            # void, resubmit) may have moved valid_until or lifecycle_state
+            # since the candidate scan above.
+            if group.valid_until is None or group.valid_until > now:
+                continue
+            if group.lifecycle_state in _APPROVAL_TERMINAL_GROUP_STATES:
+                continue
+
+            rungs = await self._repo.list_rungs(group.id)
+            non_voidable_rung = next(
+                (rung for rung in rungs if rung.state not in _VOIDABLE_RUNG_STATES),
+                None,
+            )
+            if non_voidable_rung is not None:
+                logger.info(
+                    "sweep_expired: skipping proposal_id=%s (rung %s in "
+                    "non-voidable state %r past valid_until; not force-expired)",
+                    proposal_id,
+                    non_voidable_rung.rung_index,
+                    non_voidable_rung.state,
+                )
+                continue
+
+            expired_rungs = []
+            for rung in rungs:
+                sm.assert_rung_transition(rung.state, "expired")
+                expired_rungs.append(
+                    await self._repo.update_rung(rung, state="expired", updated_at=now)
+                )
+            await self._repo.update_group(
+                group,
+                lifecycle_state=self._recompute_group_state(expired_rungs),
+                approval_nonce=None,
+            )
+            source_asof = group.source_asof or {}
+            results.append(
+                ExpirySweepResult(
+                    proposal_id=proposal_id,
+                    symbol=group.symbol,
+                    chat_id=source_asof.get("approval_chat_id"),
+                    message_id=source_asof.get("approval_message_id"),
+                )
+            )
+        return results
 
     @staticmethod
     def _require_timezone_aware(value: datetime) -> None:

@@ -582,6 +582,23 @@ async def _kiwoom_mock_orderable_cash_impl(**kwargs: Any) -> dict[str, Any]:
     if symbol is not None:
         extra["symbol"] = symbol
 
+    # ROB-891 — Official kt00010 symbol path requires stk_cd, trde_tp, uv.
+    # Reject missing or invalid side/price before any dispatch.
+    if symbol is not None and (
+        side not in ("buy", "sell") or type(price) is not int or price <= 0
+    ):
+        return _stable_read_failure(
+            result_key="cash",
+            result_value=None,
+            api_id=api_id,
+            error="kiwoom_mock_symbol_path_requires_side_and_price",
+            error_detail=(
+                "kt00010 symbol path requires side='buy'|'sell' "
+                f"and a positive int price; got side={side!r}, price={price!r}"
+            ),
+            extra=extra,
+        )
+
     try:
         client = KiwoomMockClient.from_app_settings()
         account_client = KiwoomDomesticAccountClient(cast(Any, client))

@@ -165,6 +165,36 @@ class OrderProposalRepository:
                 return row[0], row[1]
         return None
 
+    # Mirrors service.py's ``_APPROVAL_TERMINAL_GROUP_STATES`` (kept local to
+    # avoid the repository importing from the service module it is imported
+    # by -- see the module docstring's "INTERNAL ONLY" note). A group in one of
+    # these lifecycle_states has already resolved (or been resolved manually)
+    # and must not be re-swept just because ``valid_until`` also passed.
+    _EXPIRY_TERMINAL_GROUP_STATES = frozenset(
+        {"terminal", "rejected", "expired", "voided", "superseded"}
+    )
+
+    async def list_expiry_candidates(self, *, now: datetime) -> list[uuid.UUID]:
+        """Return proposal_ids for non-terminal groups whose valid_until passed.
+
+        ROB-897 cause (1): ``expire_if_needed`` only ever ran from the Telegram
+        approval callback, so a proposal nobody tapped stayed
+        ``proposed``/``needs_reconfirm`` forever past its deadline. This is the
+        candidate finder for the batch sweeper (``OrderProposalsService.sweep_expired``).
+        """
+        stmt = (
+            select(OrderProposal.proposal_id)
+            .where(
+                OrderProposal.valid_until.is_not(None),
+                OrderProposal.valid_until <= now,
+                OrderProposal.lifecycle_state.not_in(
+                    self._EXPIRY_TERMINAL_GROUP_STATES
+                ),
+            )
+            .order_by(OrderProposal.id)
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
+
     async def list_local_stale_candidates(
         self,
     ) -> list[tuple[uuid.UUID, OrderProposalRung]]:
