@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -218,6 +219,8 @@ async def _seed_proposal(
     quantity: str,
     limit_price: str | None,
     broker_account_id: str | None,
+    valid_until: datetime | None = None,
+    now: datetime | None = None,
 ):
     return await OrderProposalsService(db_session).create_proposal(
         symbol="005930",
@@ -227,6 +230,8 @@ async def _seed_proposal(
         order_type="limit" if limit_price is not None else "market",
         proposer="test",
         broker_account_id=broker_account_id,
+        valid_until=valid_until,
+        now=now,
         rungs=[
             RungInput(
                 0,
@@ -284,6 +289,7 @@ async def test_pending_requirement_sums_only_same_account_pending_limit_buys(
         account_mode="toss_live",
         broker_account_id="account-a",
         currency="KRW",
+        now=datetime.now(UTC),
     )
 
     assert required == Decimal("700000")
@@ -313,6 +319,7 @@ async def test_create_advisory_reports_exact_pending_shortfall(db_session):
         account_mode="toss_live",
         broker_account_id="account-a",
         currency="KRW",
+        now=datetime.now(UTC),
         buying_power_reader=reader,
     )
 
@@ -337,6 +344,7 @@ async def test_create_advisory_is_unavailable_when_reader_fails(db_session):
         account_mode="toss_live",
         broker_account_id="account-unavailable",
         currency="KRW",
+        now=datetime.now(UTC),
         buying_power_reader=reader,
     )
 
@@ -349,3 +357,136 @@ async def test_create_advisory_is_unavailable_when_reader_fails(db_session):
         "skipped_market_rungs": 0,
         "warning": None,
     }
+
+
+# ROB-897 cause (2): pending_buy_requirement/build_create_advisory must ignore
+# groups whose valid_until has already passed (no sweeper marks them expired
+# yet), otherwise stale proposals inflate pending_required and produce a
+# false "부족(shortfall)" warning for new, individually-affordable buy rungs.
+
+
+@pytest.mark.asyncio
+async def test_pending_requirement_excludes_past_valid_until_group(db_session):
+    creation_now = datetime.now(UTC)
+    stale_valid_until = creation_now + timedelta(seconds=1)
+    await _seed_proposal(
+        db_session,
+        side="buy",
+        quantity="3",
+        limit_price="100000",
+        broker_account_id="account-a",
+        valid_until=stale_valid_until,
+        now=creation_now,
+    )
+
+    query_now = creation_now + timedelta(minutes=5)  # past stale_valid_until
+
+    required, skipped = await pending_buy_requirement(
+        db_session,
+        account_mode="toss_live",
+        broker_account_id="account-a",
+        currency="KRW",
+        now=query_now,
+    )
+
+    assert required == Decimal("0")
+    assert skipped == 0
+
+
+@pytest.mark.asyncio
+async def test_pending_requirement_sums_future_and_null_valid_until_groups(
+    db_session,
+):
+    creation_now = datetime.now(UTC)
+
+    # Still-live group with an explicit future expiry.
+    future_valid_until = creation_now + timedelta(days=1)
+    await _seed_proposal(
+        db_session,
+        side="buy",
+        quantity="2",
+        limit_price="100000",
+        broker_account_id="account-a",
+        valid_until=future_valid_until,
+        now=creation_now,
+    )
+
+    # No-expiry group (valid_until IS NULL) never expires, so must still count.
+    no_expiry_group = await _seed_proposal(
+        db_session,
+        side="buy",
+        quantity="1",
+        limit_price="100000",
+        broker_account_id="account-a",
+        valid_until=future_valid_until,
+        now=creation_now,
+    )
+    no_expiry_group.valid_until = None
+    await db_session.flush()
+
+    query_now = creation_now + timedelta(minutes=5)
+
+    required, skipped = await pending_buy_requirement(
+        db_session,
+        account_mode="toss_live",
+        broker_account_id="account-a",
+        currency="KRW",
+        now=query_now,
+    )
+
+    assert required == Decimal("300000")
+    assert skipped == 0
+
+
+@pytest.mark.asyncio
+async def test_create_advisory_no_false_shortfall_from_stale_expired_group(
+    db_session,
+):
+    """Modeled on the ROB-897 numbers: a stale, past-expiry rung must not push
+    an otherwise-affordable live rung into a reported shortfall."""
+    creation_now = datetime.now(UTC)
+
+    # Stale group: valid_until already passed by the time the advisory query
+    # runs. Its 500,000 notional previously inflated pending_required past
+    # available cash.
+    stale_valid_until = creation_now + timedelta(seconds=1)
+    await _seed_proposal(
+        db_session,
+        side="buy",
+        quantity="5",
+        limit_price="100000",
+        broker_account_id="account-a",
+        valid_until=stale_valid_until,
+        now=creation_now,
+    )
+
+    # Live, individually-affordable group (259,700 notional).
+    live_valid_until = creation_now + timedelta(days=1)
+    await _seed_proposal(
+        db_session,
+        side="buy",
+        quantity="2597",
+        limit_price="100",
+        broker_account_id="account-a",
+        valid_until=live_valid_until,
+        now=creation_now,
+    )
+
+    query_now = creation_now + timedelta(minutes=5)
+
+    async def reader(**kwargs):
+        return Decimal("285471")
+
+    advisory = await build_create_advisory(
+        db_session,
+        account_mode="toss_live",
+        broker_account_id="account-a",
+        currency="KRW",
+        now=query_now,
+        buying_power_reader=reader,
+    )
+
+    assert advisory["status"] == "sufficient"
+    assert advisory["pending_required"] == "259700"
+    assert advisory["shortfall"] == "0"
+    assert advisory["warning"] is None

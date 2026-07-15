@@ -47,6 +47,7 @@ ORDER_PROPOSAL_TOOL_NAMES: set[str] = {
     "order_proposal_get",
     "order_proposal_list",
     "order_proposal_void",
+    "order_proposal_expire_sweep",
 }
 
 _MARKET_ALIASES = {"kr": "equity_kr", "us": "equity_us"}
@@ -152,6 +153,38 @@ async def _edit_voided_approval_message(
     except Exception:  # noqa: BLE001 - DB void is already committed
         logger.exception(
             "order_proposal_void: telegram message edit failed for message_id=%s",
+            message_id,
+        )
+
+
+async def _edit_expired_approval_message(
+    *, chat_id: Any, message_id: Any, symbol: str
+) -> None:
+    """Mirror ``_edit_voided_approval_message`` for sweep-expired proposals.
+
+    The DB expiry is already committed by the time this runs (called after
+    ``sweep_expired``'s session commits) -- a Telegram failure here must never
+    surface as a sweep failure, only be logged (ROB-897).
+    """
+    if chat_id is None or message_id is None:
+        return
+    try:
+        edited = await _get_trade_notifier().edit_message(
+            str(chat_id),
+            int(message_id),
+            f"⏰ 제안 만료됨\n종목: {_escape_telegram_markdown(symbol)}",
+            reply_markup={"inline_keyboard": []},
+        )
+        if edited is False:
+            logger.error(
+                "order_proposal_expire_sweep: telegram message edit returned "
+                "false for message_id=%s",
+                message_id,
+            )
+    except Exception:  # noqa: BLE001 - DB expiry is already committed
+        logger.exception(
+            "order_proposal_expire_sweep: telegram message edit failed for "
+            "message_id=%s",
             message_id,
         )
 
@@ -317,6 +350,7 @@ async def order_proposal_create(
                         account_mode=account_mode,
                         broker_account_id=broker_account_id,
                         currency=currency_for_market(market),
+                        now=now_kst(),
                         buying_power_reader=default_buying_power_reader,
                     )
                 result["buying_power_advisory"] = [advisory]
@@ -440,6 +474,72 @@ async def order_proposal_void(proposal_id: str, reason: str) -> dict[str, Any]:
         return {"success": False, "error": str(exc)}
 
 
+async def run_order_proposal_expire_sweep(*, now: datetime) -> dict[str, Any]:
+    """Execute the DB expiry sweep and clean up its Telegram messages.
+
+    Shared by ``order_proposal_expire_sweep(dry_run=False)`` and the TaskIQ
+    task (``app/tasks/order_proposal_expiry_tasks.py``) -- mirrors the
+    toss_manual_activity pattern of a single non-MCP entry point both call.
+    """
+    async with AsyncSessionLocal() as session:
+        service = OrderProposalsService(session)
+        candidates_before = await service.list_expiry_candidates(now=now)
+        swept = await service.sweep_expired(now=now)
+        await session.commit()
+    for result in swept:
+        await _edit_expired_approval_message(
+            chat_id=result.chat_id,
+            message_id=result.message_id,
+            symbol=result.symbol,
+        )
+    return {
+        "success": True,
+        "swept_count": len(swept),
+        "swept_proposal_ids": [str(result.proposal_id) for result in swept],
+        "skipped_count": len(candidates_before) - len(swept),
+    }
+
+
+async def order_proposal_expire_sweep(dry_run: bool = True) -> dict[str, Any]:
+    """List (dry_run=True) or execute (dry_run=False) the valid_until expiry sweep.
+
+    Structural fix for ROB-897 cause (1): ``expire_if_needed`` previously only
+    ran from the Telegram approval callback, so proposals nobody tapped stayed
+    ``proposed``/``needs_reconfirm`` forever after ``valid_until`` passed. This
+    is the manual operator lever -- run with dry_run=True first to review what
+    would expire; recurring automation is a separate, later decision (see
+    ``app/tasks/order_proposal_expiry_tasks.py``). NOT a broker mutation.
+    """
+    try:
+        now = now_kst()
+        if dry_run:
+            async with AsyncSessionLocal() as session:
+                service = OrderProposalsService(session)
+                candidates = await service.list_expiry_candidates(now=now)
+                return {
+                    "success": True,
+                    "dry_run": True,
+                    "count": len(candidates),
+                    "candidates": [
+                        {
+                            "proposal_id": str(group.proposal_id),
+                            "symbol": group.symbol,
+                            "lifecycle_state": group.lifecycle_state,
+                            "valid_until": group.valid_until.isoformat()
+                            if group.valid_until
+                            else None,
+                            "rung_states": [rung.state for rung in rungs],
+                        }
+                        for group, rungs in candidates
+                    ],
+                }
+
+        result = await run_order_proposal_expire_sweep(now=now)
+        return {**result, "dry_run": False}
+    except (ValueError, OrderProposalError) as exc:
+        return {"success": False, "error": str(exc)}
+
+
 def register_order_proposal_tools(mcp: FastMCP) -> None:
     """Register the order_proposals read/create/void MCP tools.
 
@@ -477,13 +577,25 @@ def register_order_proposal_tools(mcp: FastMCP) -> None:
             "inconclusive broker evidence fails closed. NOT a broker mutation."
         ),
     )(order_proposal_void)
+    _ = mcp.tool(
+        name="order_proposal_expire_sweep",
+        description=(
+            "List (dry_run=True, default) or expire (dry_run=False) all "
+            "non-terminal proposals whose valid_until has passed. A group with "
+            "any rung outside the voidable states (e.g. submitting/resting/"
+            "filled) is skipped, not force-expired. NOT a broker mutation; "
+            "cleans up the Telegram approval message for each expired group."
+        ),
+    )(order_proposal_expire_sweep)
 
 
 __all__ = [
     "ORDER_PROPOSAL_TOOL_NAMES",
     "order_proposal_create",
+    "order_proposal_expire_sweep",
     "order_proposal_get",
     "order_proposal_list",
     "order_proposal_void",
     "register_order_proposal_tools",
+    "run_order_proposal_expire_sweep",
 ]

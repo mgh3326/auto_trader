@@ -17,7 +17,7 @@ from app.services.order_proposals.errors import (
     OrderProposalInvalidStateTransition,
     OrderProposalNotFound,
 )
-from app.services.order_proposals.service import RungInput
+from app.services.order_proposals.service import ExpirySweepResult, RungInput
 
 
 def _target_snapshot_payload(**overrides):
@@ -2431,3 +2431,168 @@ async def test_approval_batch_nonce_expires_without_consuming_members(db_session
     second_after, _ = await service.get_proposal(second_id)
     assert first_after.approval_nonce_used_at is None
     assert second_after.approval_nonce_used_at is None
+
+
+# -- ROB-897 cause (1): batch expiry sweep ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sweep_expired_transitions_past_deadline_group_to_expired(db_session):
+    service, group = await _create_single_rung(db_session, symbol="EXP_PAST")
+    await service.set_approval_nonce(group.proposal_id, "nonce-exp")
+    await service.transition_rung(group.proposal_id, 0, new_state="revalidating")
+    await service.mark_needs_reconfirm(
+        group.proposal_id, 0, now=datetime(2026, 7, 13, 9, 0, tzinfo=UTC)
+    )
+    group.valid_until = datetime(2026, 7, 14, 0, 0, tzinfo=UTC)
+    await db_session.commit()
+
+    now = datetime(2026, 7, 15, 9, 0, tzinfo=UTC)
+    swept = await service.sweep_expired(now=now)
+
+    # Shared test DB accumulates committed past-valid_until groups from sibling
+    # tests, and sweep_expired is a global maintenance sweep, so assert on THIS
+    # test's seeded group by membership rather than exact list equality.
+    assert group.proposal_id in {r.proposal_id for r in swept}
+    refreshed, rungs = await service.get_proposal(group.proposal_id)
+    assert refreshed.lifecycle_state == "expired"
+    assert refreshed.approval_nonce is None
+    assert [r.state for r in rungs] == ["expired"]
+
+
+@pytest.mark.asyncio
+async def test_sweep_expired_ignores_future_and_null_valid_until(db_session):
+    service, future_group = await _create_single_rung(db_session, symbol="EXP_FUTURE")
+    future_group.valid_until = datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
+    _, null_group = await _create_single_rung(db_session, symbol="EXP_NULL")
+    null_group.valid_until = None
+    await db_session.commit()
+
+    now = datetime(2026, 7, 15, 9, 0, tzinfo=UTC)
+    swept = await service.sweep_expired(now=now)
+
+    swept_ids = {r.proposal_id for r in swept}
+    assert future_group.proposal_id not in swept_ids
+    assert null_group.proposal_id not in swept_ids
+    future_after, future_rungs = await service.get_proposal(future_group.proposal_id)
+    assert future_after.lifecycle_state == "proposed"
+    assert [r.state for r in future_rungs] == ["pending_approval"]
+
+
+@pytest.mark.asyncio
+async def test_sweep_expired_does_not_reprocess_terminal_group(db_session):
+    service, group = await _create_single_rung(db_session, symbol="EXP_TERMINAL")
+    group.valid_until = datetime(2026, 7, 14, 0, 0, tzinfo=UTC)
+    await db_session.commit()
+    earlier = datetime(2026, 7, 14, 1, 0, tzinfo=UTC)
+    assert await service.expire_if_needed(group.proposal_id, now=earlier)
+    await db_session.commit()
+
+    now = datetime(2026, 7, 15, 9, 0, tzinfo=UTC)
+    swept = await service.sweep_expired(now=now)
+
+    assert group.proposal_id not in {r.proposal_id for r in swept}
+    refreshed, rungs = await service.get_proposal(group.proposal_id)
+    assert refreshed.lifecycle_state == "expired"
+    assert [r.state for r in rungs] == ["expired"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("non_voidable_state", ["submitting", "resting", "filled"])
+async def test_sweep_expired_skips_group_with_non_voidable_rung_and_continues(
+    db_session, non_voidable_state
+):
+    service, blocked = await _create_single_rung(db_session, symbol="EXP_BLOCKED")
+    if non_voidable_state == "submitting":
+        await _drive_to_submitting(service, blocked.proposal_id)
+    elif non_voidable_state == "resting":
+        await _drive_to_submitting(service, blocked.proposal_id)
+        await service.record_resting(
+            blocked.proposal_id,
+            0,
+            broker_order_id="B-resting",
+            correlation_id="corr-resting",
+            idempotency_key="idem-resting",
+            approval_hash_digest="hash-resting",
+            now=datetime(2026, 7, 13, 9, 0, tzinfo=UTC),
+        )
+    else:  # filled
+        await _drive_to_submitting(service, blocked.proposal_id)
+        await service.record_ack(
+            blocked.proposal_id,
+            0,
+            broker_order_id="B-filled",
+            correlation_id="corr-filled",
+            idempotency_key="idem-filled",
+            approval_hash_digest="hash-filled",
+            now=datetime(2026, 7, 13, 9, 0, tzinfo=UTC),
+        )
+        await service.record_fill_evidence(
+            broker_order_id="B-filled",
+            filled_qty=Decimal("1"),
+            terminal_state="filled",
+            now=datetime(2026, 7, 13, 9, 5, tzinfo=UTC),
+        )
+    blocked.valid_until = datetime(2026, 7, 14, 0, 0, tzinfo=UTC)
+
+    _, healthy = await _create_single_rung(db_session, symbol="EXP_HEALTHY")
+    healthy.valid_until = datetime(2026, 7, 14, 0, 0, tzinfo=UTC)
+    await db_session.commit()
+
+    now = datetime(2026, 7, 15, 9, 0, tzinfo=UTC)
+    swept = await service.sweep_expired(now=now)
+
+    swept_ids = {r.proposal_id for r in swept}
+    assert blocked.proposal_id not in swept_ids
+    assert healthy.proposal_id in swept_ids
+    blocked_after, blocked_rungs = await service.get_proposal(blocked.proposal_id)
+    assert blocked_after.lifecycle_state != "expired"
+    assert blocked_rungs[0].state == non_voidable_state
+    healthy_after, healthy_rungs = await service.get_proposal(healthy.proposal_id)
+    assert healthy_after.lifecycle_state == "expired"
+    assert [r.state for r in healthy_rungs] == ["expired"]
+
+
+@pytest.mark.asyncio
+async def test_sweep_expired_returns_chat_and_message_id_for_telegram_cleanup(
+    db_session,
+):
+    service, group = await _create_single_rung(db_session, symbol="EXP_TG")
+    now_dispatch = datetime(2026, 7, 13, 9, 0, tzinfo=UTC)
+    await service.record_approval_dispatch(
+        group.proposal_id, message_id=4242, chat_id="chat-897", now=now_dispatch
+    )
+    group.valid_until = datetime(2026, 7, 14, 0, 0, tzinfo=UTC)
+    await db_session.commit()
+
+    now = datetime(2026, 7, 15, 9, 0, tzinfo=UTC)
+    swept = await service.sweep_expired(now=now)
+
+    # Global sweep in a shared DB: assert THIS group's result is present, not
+    # that it is the only one swept.
+    assert (
+        ExpirySweepResult(
+            proposal_id=group.proposal_id,
+            symbol="EXP_TG",
+            chat_id="chat-897",
+            message_id=4242,
+        )
+        in swept
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_expiry_candidates_is_read_only_preview(db_session):
+    service, group = await _create_single_rung(db_session, symbol="EXP_PREVIEW")
+    group.valid_until = datetime(2026, 7, 14, 0, 0, tzinfo=UTC)
+    await db_session.commit()
+
+    now = datetime(2026, 7, 15, 9, 0, tzinfo=UTC)
+    candidates = await service.list_expiry_candidates(now=now)
+
+    # Membership, not equality: the shared DB holds many other committed
+    # past-valid_until groups. The preview must be read-only for our group.
+    assert group.proposal_id in {g.proposal_id for g, _ in candidates}
+    unchanged, rungs = await service.get_proposal(group.proposal_id)
+    assert unchanged.lifecycle_state == "proposed"
+    assert [r.state for r in rungs] == ["pending_approval"]
