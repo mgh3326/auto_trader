@@ -75,8 +75,14 @@ _TOKEN_FORMAT_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
     re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9._-]+\.[A-Za-z0-9._-]+\b"),
 )
+_ACCOUNT_GROUPED_SEPARATORS = r"[-/ \u2010-\u2015\u2212]"
 _ACCOUNT_FORMAT_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"\b\d{2,6}(?:-\d{1,6}){1,4}\b"),
+    # Redact grouped account-like forms with a 4-digit terminal group while
+    # preserving ordinary dates/timestamps such as 2026-07-15 and
+    # 2026-07-15T23:00:00+09:00.
+    re.compile(
+        rf"\b\d{{2,6}}(?:{_ACCOUNT_GROUPED_SEPARATORS}\d{{1,6}}){{1,3}}{_ACCOUNT_GROUPED_SEPARATORS}\d{{4}}\b"
+    ),
     re.compile(
         r"(?:계좌(?:번호)?|계좌\s*no|account(?:\s*_?no)?|acct(?:\s*_?no)?)\s*[:=]?\s*\S+",
         re.IGNORECASE,
@@ -93,6 +99,46 @@ _MOCK_PROVENANCE_REQUIRED: dict[str, str] = {
     "account_mode": "kiwoom_mock",
     "host": _MOCK_HOSTNAME,
 }
+_TRUSTED_CONTRACT_OUTPUT_KEYS: frozenset[str] = frozenset(
+    {
+        "step",
+        "stage",
+        "tool",
+        "expected_api_id",
+        "actual_api_id",
+        "api_id_match",
+        "kst_time",
+        "deploy_sha",
+        "contract_fields",
+        "return_code",
+        "return_code_is_zero",
+        "return_msg",
+        "evidence_kind",
+        "provenance",
+        "provenance_mock",
+        "success",
+        "pass",
+        "fail_reason",
+        "fail_reasons",
+        "error_type",
+        "error_code",
+        "error_detail",
+        "request_body",
+        "response_array",
+        "response_field",
+        "broker",
+        "environment",
+        "account_mode",
+        "host",
+        "api_id",
+        "qry_tp",
+        "dmst_stex_tp",
+        "stk_cd",
+        "trde_tp",
+        "uv",
+        "stk_bond_tp",
+    }
+)
 
 
 class SmokeRejected(RuntimeError):
@@ -323,6 +369,7 @@ def _configured_sensitive_values() -> frozenset[str]:
         "kiwoom_mock_app_key",
         "kiwoom_mock_app_secret",
         "kiwoom_mock_account_no",
+        "kiwoom_mock_access_token",
     ):
         val = str(getattr(settings, attr, "") or "").strip()
         if val and len(val) >= 4:
@@ -366,7 +413,12 @@ def _sanitize_untrusted(value: Any) -> Any:
             if key_str == "return_code":
                 sanitized[key_str] = _sanitize_return_code(val)
             else:
-                sanitized[key_str] = _sanitize_untrusted(val)
+                sanitized_key = (
+                    key_str
+                    if key_str in _TRUSTED_CONTRACT_OUTPUT_KEYS
+                    else _sanitize_free_form_text(key_str)
+                )
+                sanitized[sanitized_key] = _sanitize_untrusted(val)
         return sanitized
     if isinstance(value, (list, tuple, set, frozenset)):
         return [_sanitize_untrusted(item) for item in value]
@@ -491,38 +543,34 @@ async def _run_contract_step(
     try:
         payload = await tools[tool_name](**call_args)
     except Exception as exc:
-        step = _sanitize_untrusted(
-            {
-                "step": "contract_step",
-                "stage": evidence_kind,
-                "tool": tool_name,
-                "expected_api_id": expected_api_id,
-                "kst_time": kst_time,
-                "deploy_sha": deploy_sha,
-                "contract_fields": contract_fields,
-                "pass": False,
-                "fail_reason": "exception",
-                "error_type": type(exc).__name__,
-                "error_detail": str(exc),
-            }
-        )
+        step = {
+            "step": "contract_step",
+            "stage": evidence_kind,
+            "tool": tool_name,
+            "expected_api_id": expected_api_id,
+            "kst_time": kst_time,
+            "deploy_sha": deploy_sha,
+            "contract_fields": contract_fields,
+            "pass": False,
+            "fail_reason": "exception",
+            "error_type": type(exc).__name__,
+            "error_detail": _sanitize_free_form_text(exc),
+        }
         _emit(step)
         return step
 
     if not isinstance(payload, dict):
-        step = _sanitize_untrusted(
-            {
-                "step": "contract_step",
-                "stage": evidence_kind,
-                "tool": tool_name,
-                "expected_api_id": expected_api_id,
-                "kst_time": kst_time,
-                "deploy_sha": deploy_sha,
-                "contract_fields": contract_fields,
-                "pass": False,
-                "fail_reason": "malformed_response",
-            }
-        )
+        step = {
+            "step": "contract_step",
+            "stage": evidence_kind,
+            "tool": tool_name,
+            "expected_api_id": expected_api_id,
+            "kst_time": kst_time,
+            "deploy_sha": deploy_sha,
+            "contract_fields": contract_fields,
+            "pass": False,
+            "fail_reason": "malformed_response",
+        }
         _emit(step)
         return step
 
@@ -586,7 +634,6 @@ async def _run_contract_step(
     if error_detail:
         step["error_detail"] = _sanitize_free_form_text(error_detail)
 
-    step = _sanitize_untrusted(step)
     _emit(step)
     return step
 

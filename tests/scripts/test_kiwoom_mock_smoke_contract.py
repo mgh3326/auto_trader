@@ -36,6 +36,11 @@ SENTINEL_ACCT = "88012345678"
 SENTINEL_JWT = "eyJhbGciOiJIUzI1NiJ9.eyJhY2N0IjoiMTIzNC01Ni03ODkwIn0.signature"
 SENTINEL_HYPHENATED_ACCT = "1234-56-7890"
 SENTINEL_KR_ACCOUNT = f"계좌번호 {SENTINEL_HYPHENATED_ACCT}"
+SENTINEL_EN_DASH_ACCT = "1234–56–7890"
+SENTINEL_NB_HYPHEN_ACCT = "1234‑56‑7890"
+SENTINEL_SPACE_ACCT = "1234 56 7890"
+SENTINEL_SLASH_ACCT = "1234/56/7890"
+SENTINEL_OPAQUE_ACCESS_TOKEN = "opaque-value-ZqLmPx"
 
 
 def _sensitive_samples() -> tuple[str, ...]:
@@ -46,6 +51,11 @@ def _sensitive_samples() -> tuple[str, ...]:
         SENTINEL_JWT,
         SENTINEL_HYPHENATED_ACCT,
         SENTINEL_KR_ACCOUNT,
+        SENTINEL_EN_DASH_ACCT,
+        SENTINEL_NB_HYPHEN_ACCT,
+        SENTINEL_SPACE_ACCT,
+        SENTINEL_SLASH_ACCT,
+        SENTINEL_OPAQUE_ACCESS_TOKEN,
         "Authorization: Bearer",
         "access_token=",
     )
@@ -129,6 +139,7 @@ def contract_env(monkeypatch: pytest.MonkeyPatch) -> None:
         smoke.settings, "kiwoom_mock_app_secret", "test-app-secret-ghijkl"
     )
     monkeypatch.setattr(smoke.settings, "kiwoom_mock_account_no", SENTINEL_ACCT)
+    monkeypatch.setattr(smoke.settings, "kiwoom_mock_access_token", None)
 
 
 def _setup_broker(
@@ -802,6 +813,97 @@ async def test_run_contract_step_redacts_digit_only_sensitive_return_code(
     _assert_sensitive_values_absent(lines)
 
 
+@pytest.mark.asyncio
+async def test_run_contract_step_redacts_configured_opaque_access_token(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        smoke.settings, "kiwoom_mock_access_token", SENTINEL_OPAQUE_ACCESS_TOKEN
+    )
+
+    async def hostile_tool(**_kw: Any) -> dict[str, Any]:
+        return {
+            "success": False,
+            "error": SENTINEL_OPAQUE_ACCESS_TOKEN,
+            "provenance": {
+                "broker": "kiwoom",
+                "environment": "mock",
+                "account_mode": "kiwoom_mock",
+                "host": "mockapi.kiwoom.com",
+                "api_id": kw_constants.ACCOUNT_BALANCE_API_ID,
+            },
+            "broker_response": {
+                "return_code": 20,
+                "return_msg": SENTINEL_OPAQUE_ACCESS_TOKEN,
+            },
+        }
+
+    step = await smoke._run_contract_step(
+        tools={"kiwoom_mock_get_positions": hostile_tool},
+        tool_name="kiwoom_mock_get_positions",
+        expected_api_id=kw_constants.ACCOUNT_BALANCE_API_ID,
+        evidence_kind="positions",
+        deploy_sha="deadbee",
+        contract_fields={"request_body": {"qry_tp": "1"}},
+    )
+    lines = _parse_stdout(capsys)
+
+    assert step["return_msg"] == "[SANITIZED]"
+    assert step["error_code"] == "[SANITIZED]"
+    _assert_sensitive_values_absent(step)
+    _assert_sensitive_values_absent(lines)
+
+
+@pytest.mark.asyncio
+async def test_run_contract_step_preserves_trusted_timestamp_and_deploy_sha(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixed_kst_time = "2026-07-15T23:00:00+09:00"
+    digit_heavy_sha = "20260715"
+    monkeypatch.setattr(smoke, "_kst_now_iso", lambda: fixed_kst_time)
+    monkeypatch.setattr(
+        smoke.settings, "kiwoom_mock_access_token", SENTINEL_OPAQUE_ACCESS_TOKEN
+    )
+
+    async def hostile_tool(**_kw: Any) -> dict[str, Any]:
+        return {
+            "success": False,
+            "error": SENTINEL_OPAQUE_ACCESS_TOKEN,
+            "error_detail": SENTINEL_SPACE_ACCT,
+            "provenance": {
+                "broker": "kiwoom",
+                "environment": "mock",
+                "account_mode": "kiwoom_mock",
+                "host": "mockapi.kiwoom.com",
+                "api_id": kw_constants.ACCOUNT_BALANCE_API_ID,
+            },
+            "broker_response": {
+                "return_code": 20,
+                "return_msg": SENTINEL_NB_HYPHEN_ACCT,
+            },
+        }
+
+    step = await smoke._run_contract_step(
+        tools={"kiwoom_mock_get_positions": hostile_tool},
+        tool_name="kiwoom_mock_get_positions",
+        expected_api_id=kw_constants.ACCOUNT_BALANCE_API_ID,
+        evidence_kind="positions",
+        deploy_sha=digit_heavy_sha,
+        contract_fields={"request_body": {"qry_tp": "1"}},
+    )
+    lines = _parse_stdout(capsys)
+
+    assert step["kst_time"] == fixed_kst_time
+    assert step["deploy_sha"] == digit_heavy_sha
+    assert lines[0]["kst_time"] == fixed_kst_time
+    assert lines[0]["deploy_sha"] == digit_heavy_sha
+    assert step["return_msg"] == "[SANITIZED]"
+    assert step["error_code"] == "[SANITIZED]"
+    assert step["error_detail"] == "[SANITIZED]"
+
+
 def test_sanitize_redacts_digit_runs() -> None:
     assert smoke._sanitize_return_msg("ok") == "ok"
     assert smoke._sanitize_return_msg("error 12345678") == "[SANITIZED]"
@@ -813,12 +915,40 @@ def test_sanitize_redacts_digit_runs() -> None:
     [
         SENTINEL_KR_ACCOUNT,
         SENTINEL_HYPHENATED_ACCT,
+        SENTINEL_EN_DASH_ACCT,
+        SENTINEL_NB_HYPHEN_ACCT,
+        SENTINEL_SPACE_ACCT,
+        SENTINEL_SLASH_ACCT,
         f"jwt={SENTINEL_JWT}",
         f"token={SENTINEL_TOKEN}",
     ],
 )
 def test_sanitize_redacts_account_and_token_like_values(text: str) -> None:
     assert smoke._sanitize_return_msg(text) == "[SANITIZED]"
+
+
+def test_sanitize_untrusted_redacts_nested_sensitive_keys_and_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        smoke.settings, "kiwoom_mock_access_token", SENTINEL_OPAQUE_ACCESS_TOKEN
+    )
+    sanitized = smoke._sanitize_untrusted(
+        {
+            "safe": [
+                {
+                    SENTINEL_OPAQUE_ACCESS_TOKEN: "visible",
+                    "nested": {
+                        SENTINEL_EN_DASH_ACCT: SENTINEL_NB_HYPHEN_ACCT,
+                        SENTINEL_SPACE_ACCT: SENTINEL_SLASH_ACCT,
+                    },
+                }
+            ]
+        }
+    )
+
+    assert "safe" in sanitized
+    _assert_sensitive_values_absent(sanitized)
 
 
 def test_sanitize_redacts_configured_values(
