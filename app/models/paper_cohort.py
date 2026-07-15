@@ -127,6 +127,14 @@ class PaperValidationCohortAssignment(Base):
             "validation_id",
             name="uq_paper_cohort_assignment_validation",
         ),
+        UniqueConstraint(
+            "cohort_id",
+            "assignment_id",
+            "validation_id",
+            "config_hash",
+            "experiment_hash",
+            name="uq_paper_cohort_assignment_evaluation_identity",
+        ),
         CheckConstraint(
             "(role = 'champion' AND ordinal = 0) OR "
             "(role = 'challenger' AND ordinal IN (1, 2))",

@@ -64,6 +64,12 @@ from .paper_cohort import (
     PaperValidationCohort,
     PaperValidationCohortAssignment,
 )
+from .paper_evaluation import (
+    EvaluationConfig,
+    EvaluationEpoch,
+    EvaluationScorecard,
+    EvaluationVerdict,
+)
 from .paper_trading import PaperAccount, PaperPendingOrder, PaperPosition, PaperTrade
 from .paper_validation import (
     PaperValidationPostmortemReview,
@@ -250,6 +256,10 @@ __all__ = [
     "PaperRunOrderLink",
     "PaperPosition",
     "PaperTrade",
+    "EvaluationConfig",
+    "EvaluationEpoch",
+    "EvaluationScorecard",
+    "EvaluationVerdict",
     "PaperValidationPostmortemReview",
     "PaperValidationStateTransition",
     "StrategyHypothesisDraft",

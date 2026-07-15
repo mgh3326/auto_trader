@@ -703,6 +703,37 @@ async def investment_reports_cleanup_lock(db_session):
 
 
 @pytest_asyncio.fixture
+async def retrospective_action_control_lock():
+    """Serialize tests that mutate the global retrospective-action authority.
+
+    The ROB-878/880 migration and cutover contracts intentionally change the
+    singleton control row and, in a few cases, rebuild its tables.  Xdist
+    workers share one PostgreSQL database, so those tests must not observe one
+    another's temporary canonical mode or DDL state.
+    """
+    from sqlalchemy import text
+
+    from app.core.db import engine
+
+    # Distinct from the production cutover lock (878_880_001), which the
+    # cutover contract tests must still be able to acquire while holding this
+    # outer test-isolation lock.
+    retrospective_action_control_test_lock_id = 878_880_999
+    async with engine.connect() as guard:
+        await guard.execute(
+            text("SELECT pg_advisory_lock(CAST(:lock_id AS bigint))"),
+            {"lock_id": retrospective_action_control_test_lock_id},
+        )
+        try:
+            yield
+        finally:
+            await guard.execute(
+                text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
+                {"lock_id": retrospective_action_control_test_lock_id},
+            )
+
+
+@pytest_asyncio.fixture
 async def user(db_session):
     """Create a test user."""
     from uuid import uuid4

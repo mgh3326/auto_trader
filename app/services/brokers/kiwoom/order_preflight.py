@@ -96,7 +96,8 @@ async def run_order_preflight(
         return _fail(
             PREFLIGHT_TICK_INVALID,
             f"Price {price} is not a valid KRX tick multiple (tick={tick})",
-            checks + [PreflightCheck("tick_valid", False, f"price%tick={price % tick}")],
+            checks
+            + [PreflightCheck("tick_valid", False, f"price%tick={price % tick}")],
         )
     checks.append(PreflightCheck("tick_valid", True, f"tick={tick}"))
 
@@ -165,7 +166,12 @@ async def _check_sellable(
         return _fail(
             PREFLIGHT_SELLABLE_EXCEEDED,
             f"Requested {quantity} exceeds sellable {sellable} for {symbol}",
-            checks + [PreflightCheck("sellable", False, f"requested={quantity}, sellable={sellable}")],
+            checks
+            + [
+                PreflightCheck(
+                    "sellable", False, f"requested={quantity}, sellable={sellable}"
+                )
+            ],
             estimated=estimated,
         )
     checks.append(PreflightCheck("sellable", True, f"sellable={sellable}"))
@@ -218,7 +224,12 @@ async def _check_buy_cash(
         return _fail(
             PREFLIGHT_CASH_INSUFFICIENT,
             f"Order amount {order_amount} exceeds orderable cash {orderable_cash}",
-            checks + [PreflightCheck("cash", False, f"order={order_amount}, cash={orderable_cash}")],
+            checks
+            + [
+                PreflightCheck(
+                    "cash", False, f"order={order_amount}, cash={orderable_cash}"
+                )
+            ],
             estimated=estimated,
         )
     checks.append(PreflightCheck("cash", True, f"cash={orderable_cash}"))

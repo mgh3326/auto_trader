@@ -20,6 +20,8 @@ from app.core.symbol import to_db_symbol
 from app.models.trading import User
 from app.routers.dependencies import get_authenticated_user
 from app.schemas.invest_retrospectives import (
+    CanonicalActionRow,
+    CanonicalActionsResponse,
     NextActionRow,
     NextActionsResponse,
     RetrospectiveRow,
@@ -29,10 +31,14 @@ from app.schemas.invest_retrospectives import (
     ScoreboardTotals,
 )
 from app.schemas.trade_retrospective import (
+    VALID_NEXT_ACTION_STATUSES,
     VALID_ROOT_CAUSE_CLASSES,
     VALID_TRIGGER_TYPES,
 )
 from app.services.trade_journal import trade_retrospective_service as retro_svc
+from app.services.trade_journal.retrospective_action_repository import (
+    ActionControlError,
+)
 from app.services.trade_journal.trade_retrospective_service import (
     VALID_OUTCOME_FILTERS,
 )
@@ -61,12 +67,49 @@ def _parse_kst_date(label: str, value: str | None) -> str | None:
     if value is None:
         return None
     try:
-        datetime.strptime(value, "%Y-%m-%d")
+        parsed = datetime.strptime(value, "%Y-%m-%d")
     except ValueError as exc:
         raise HTTPException(
             status_code=422, detail=f"invalid {label}: {value} (expected YYYY-MM-DD)"
         ) from exc
+    if parsed.date().isoformat() != value:
+        raise HTTPException(
+            status_code=422, detail=f"invalid {label}: {value} (expected YYYY-MM-DD)"
+        )
     return value
+
+
+def _parse_action_statuses(value: str | None) -> frozenset[str] | None:
+    if value is None:
+        return None
+    statuses = frozenset(part.strip() for part in value.split(",") if part.strip())
+    invalid = statuses - VALID_NEXT_ACTION_STATUSES
+    if not statuses or invalid:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"invalid status: {value} "
+                f"(allowed: {sorted(VALID_NEXT_ACTION_STATUSES)})"
+            ),
+        )
+    return statuses
+
+
+def _parse_legacy_action_statuses(value: str | None) -> frozenset[str] | None:
+    """Translate the legacy alias vocabulary to canonical lifecycle states."""
+    if value is None:
+        return None
+    legacy_allowed = frozenset({"open", "in_progress", "done"})
+    requested = frozenset(part.strip() for part in value.split(",") if part.strip())
+    invalid = requested - legacy_allowed
+    if not requested or invalid:
+        raise HTTPException(
+            status_code=422,
+            detail=f"invalid status: {value} (allowed: {sorted(legacy_allowed)})",
+        )
+    if "done" in requested:
+        return (requested - {"done"}) | {"done", "obsolete", "expired"}
+    return requested
 
 
 @router.get("")
@@ -103,20 +146,23 @@ async def list_retrospectives(
     date_from = _parse_kst_date("kst_date_from", kst_date_from)
     date_to = _parse_kst_date("kst_date_to", kst_date_to)
     db_symbol = _normalize_symbol(symbol, market)
-    result = await retro_svc.get_retrospectives(
-        db,
-        market=None if market == "all" else market,
-        trigger_type=trigger_type,
-        root_cause_class=root_cause_class,
-        symbol=db_symbol,
-        outcome_filter=outcome_filter,
-        symbol_search=q,
-        kst_date_from=date_from,
-        kst_date_to=date_to,
-        days=days,
-        limit=limit,
-        offset=offset,
-    )
+    try:
+        result = await retro_svc.get_retrospectives(
+            db,
+            market=None if market == "all" else market,
+            trigger_type=trigger_type,
+            root_cause_class=root_cause_class,
+            symbol=db_symbol,
+            outcome_filter=outcome_filter,
+            symbol_search=q,
+            kst_date_from=date_from,
+            kst_date_to=date_to,
+            days=days,
+            limit=limit,
+            offset=offset,
+        )
+    except ActionControlError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     summary = result["summary"]
     return RetrospectivesResponse(
         market=market,
@@ -212,20 +258,90 @@ async def list_open_next_actions(
     symbol: Annotated[str | None, Query()] = None,
     status: Annotated[str | None, Query()] = None,
 ) -> NextActionsResponse:
-    statuses = (
-        frozenset(s.strip() for s in status.split(",") if s.strip()) if status else None
-    )
+    statuses = _parse_legacy_action_statuses(status)
     db_symbol = _normalize_symbol(symbol, market)
-    result = await retro_svc.get_open_next_actions(
-        db,
-        market=None if market == "all" else market,
-        symbol=db_symbol,
-        statuses=statuses,
-    )
+    try:
+        result = await retro_svc.get_open_next_actions(
+            db,
+            market=None if market == "all" else market,
+            symbol=db_symbol,
+            statuses=statuses,
+        )
+    except ActionControlError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return NextActionsResponse(
         market=market,
         symbol=db_symbol,
         count=result["count"],
         scan_limit=result["scan_limit"],
         items=[NextActionRow(**i) for i in result["items"]],
+    )
+
+
+@router.get("/actions")
+async def list_canonical_actions(
+    _user: Annotated[User, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    status: Annotated[str | None, Query()] = None,
+    market: Annotated[Market, Query()] = "all",
+    symbol: Annotated[str | None, Query()] = None,
+    q: Annotated[str | None, Query(max_length=32)] = None,
+    owner: Annotated[str | None, Query()] = None,
+    issue_id: Annotated[str | None, Query()] = None,
+    overdue_only: Annotated[bool, Query()] = False,
+    trigger_type: Annotated[str | None, Query()] = None,
+    outcome_filter: Annotated[str | None, Query()] = None,
+    kst_date_from: Annotated[str | None, Query()] = None,
+    kst_date_to: Annotated[str | None, Query()] = None,
+    due_before: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> CanonicalActionsResponse:
+    """Canonical paginated action list with overdue-first ordering.
+
+    Omitted status defaults to open,in_progress (active only).
+    Terminal history requires an explicit status filter.
+    """
+    if trigger_type is not None and trigger_type not in VALID_TRIGGER_TYPES:
+        raise HTTPException(
+            status_code=422, detail=f"invalid trigger_type: {trigger_type}"
+        )
+    if outcome_filter is not None and outcome_filter not in VALID_OUTCOME_FILTERS:
+        raise HTTPException(
+            status_code=422, detail=f"invalid outcome_filter: {outcome_filter}"
+        )
+    date_from = _parse_kst_date("kst_date_from", kst_date_from)
+    date_to = _parse_kst_date("kst_date_to", kst_date_to)
+    due_before_date = _parse_kst_date("due_before", due_before)
+    db_symbol = _normalize_symbol(symbol, market)
+
+    statuses = _parse_action_statuses(status)
+
+    try:
+        result = await retro_svc.get_canonical_actions(
+            db,
+            statuses=statuses,
+            market=None if market == "all" else market,
+            symbol=db_symbol,
+            symbol_search=q,
+            owner=owner,
+            issue_id=issue_id,
+            overdue_only=overdue_only,
+            trigger_type=trigger_type,
+            outcome_filter=outcome_filter,
+            kst_date_from=date_from,
+            kst_date_to=date_to,
+            due_before=due_before_date,
+            limit=limit,
+            offset=offset,
+        )
+    except ActionControlError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return CanonicalActionsResponse(
+        total=result["total"],
+        count=result["count"],
+        limit=result["limit"],
+        offset=result["offset"],
+        as_of=result["as_of"],
+        items=[CanonicalActionRow(**item) for item in result["items"]],
     )

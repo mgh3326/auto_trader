@@ -214,6 +214,57 @@ async def test_invalid_state_transition_planned_to_filled(
         await demo_ledger_service.record_filled(client_order_id=cid, now=now)
 
 
+@pytest.mark.asyncio
+async def test_native_fill_actuals_are_write_once_across_lifecycle(
+    demo_ledger_service: BinanceDemoLedgerService,
+    crypto_instrument_btc_id: int,
+) -> None:
+    cid = await _make_row(
+        demo_ledger_service,
+        instrument_id=crypto_instrument_btc_id,
+        client_order_id="demo-test-fill-actuals-write-once",
+    )
+    now = dt.datetime(2026, 5, 22, 12, 0, 1, tzinfo=dt.UTC)
+    await demo_ledger_service.record_previewed(client_order_id=cid, now=now)
+    await demo_ledger_service.record_validated(client_order_id=cid, now=now)
+    await demo_ledger_service.record_submitted(
+        client_order_id=cid,
+        broker_order_id="write-once-ack",
+        now=now,
+    )
+    actuals = {
+        "filled_qty": "0.001",
+        "filled_avg_price": "50000",
+        "fee_usdt": "0.05",
+    }
+    await demo_ledger_service.record_filled(
+        client_order_id=cid,
+        now=now,
+        extra_metadata_merge=actuals,
+    )
+
+    with pytest.raises(BinanceDemoInvalidStateTransition, match="immutable fill"):
+        await demo_ledger_service.record_closed(
+            client_order_id=cid,
+            now=now,
+            extra_metadata_merge={"fee_usdt": "0"},
+        )
+    row = await demo_ledger_service.get_by_client_order_id(cid)
+    assert row is not None
+    assert row.lifecycle_state == "filled"
+    assert {key: row.extra_metadata[key] for key in actuals} == actuals
+
+    await demo_ledger_service.record_closed(
+        client_order_id=cid,
+        now=now,
+        extra_metadata_merge=actuals,
+    )
+    row = await demo_ledger_service.get_by_client_order_id(cid)
+    assert row is not None
+    assert row.lifecycle_state == "closed"
+    assert {key: row.extra_metadata[key] for key in actuals} == actuals
+
+
 # ---------------------------------------------------------------------------
 # AST import-boundary guard
 # ---------------------------------------------------------------------------

@@ -49,7 +49,11 @@ from sqlalchemy import text
 # control-row fence in persistent test databases.
 # v23 (ROB-878 review): align status_source with the bounded VARCHAR(32)
 # design contract in persistent test databases.
-SCHEMA_BOOTSTRAP_VERSION = 23
+# v24 (ROB-850): paper-evaluation immutable triggers
+# (research.reject_evaluation_mutation) for the four new evaluation tables.
+# The ORM tables are built by create_all; the trigger functions are non-ORM DDL
+# mirrored here.
+SCHEMA_BOOTSTRAP_VERSION = 24
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -266,6 +270,13 @@ _PAPER_COHORT_AUDIT_TABLES = (
     "paper_cohort_terminal_fences",
 )
 
+_PAPER_EVALUATION_AUDIT_TABLES = (
+    "evaluation_configs",
+    "evaluation_epochs",
+    "evaluation_scorecards",
+    "evaluation_verdicts",
+)
+
 _PAPER_COHORT_REBUILD_ORDER = (
     "paper_cohort_target_reservations",
     "paper_cohort_terminal_fences",
@@ -323,6 +334,68 @@ async def _rebuild_legacy_paper_cohort_schema(conn) -> None:
         return
     for table in _PAPER_COHORT_REBUILD_ORDER:
         await conn.execute(text(f"DROP TABLE IF EXISTS research.{table} CASCADE"))
+
+
+async def _rebuild_legacy_paper_evaluation_schema(conn) -> None:
+    """Recreate the unshipped ROB-850 tables when their identity shape is stale."""
+    verdict_exists = await conn.scalar(
+        text("SELECT to_regclass('research.evaluation_verdicts') IS NOT NULL")
+    )
+    if not verdict_exists:
+        return
+    present = {
+        (row.table_name, row.column_name)
+        for row in (
+            await conn.execute(
+                text(
+                    "SELECT table_name, column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'research' AND "
+                    "(table_name, column_name) IN "
+                    "(('evaluation_epochs','assignment_id'),"
+                    "('evaluation_epochs','validation_id'),"
+                    "('evaluation_scorecards','evaluation_id'),"
+                    "('evaluation_verdicts','evaluation_id'))"
+                )
+            )
+        )
+    }
+    expected = {
+        ("evaluation_epochs", "assignment_id"),
+        ("evaluation_epochs", "validation_id"),
+        ("evaluation_scorecards", "evaluation_id"),
+        ("evaluation_verdicts", "evaluation_id"),
+    }
+    required_constraints = await conn.scalar(
+        text(
+            "SELECT count(DISTINCT conname) FROM pg_constraint WHERE conname IN ("
+            "'fk_evaluation_epoch_assignment_identity',"
+            "'uq_evaluation_epoch_id',"
+            "'uq_evaluation_verdict_full_identity',"
+            "'fk_evaluation_scorecard_verdict_identity')"
+        )
+    )
+    if expected <= present and required_constraints == 4:
+        return
+    for table in reversed(_PAPER_EVALUATION_AUDIT_TABLES):
+        await conn.execute(text(f"DROP TABLE IF EXISTS research.{table} CASCADE"))
+
+
+async def _ensure_evaluation_assignment_identity_index(conn) -> None:
+    if await conn.scalar(
+        text(
+            "SELECT to_regclass("
+            "'research.paper_validation_cohort_assignments') IS NOT NULL"
+        )
+    ):
+        await conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_paper_cohort_assignment_evaluation_identity "
+                "ON research.paper_validation_cohort_assignments "
+                "(cohort_id, assignment_id, validation_id, config_hash, "
+                "experiment_hash)"
+            )
+        )
 
 
 _PAPER_COHORT_TRIGGER_DDL: tuple[str, ...] = (
@@ -386,8 +459,62 @@ _PAPER_COHORT_TRIGGER_DDL: tuple[str, ...] = (
     "research.validate_paper_cohort_composition()",
 )
 
+_PAPER_EVALUATION_TRIGGER_DDL: tuple[str, ...] = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS "
+    "uq_paper_cohort_assignment_evaluation_identity "
+    "ON research.paper_validation_cohort_assignments "
+    "(cohort_id, assignment_id, validation_id, config_hash, experiment_hash)",
+    "CREATE INDEX IF NOT EXISTS ix_evaluation_epoch_assignment_started "
+    "ON research.evaluation_epochs (cohort_id, assignment_id, started_at)",
+    "CREATE OR REPLACE FUNCTION research.reject_evaluation_mutation() "
+    "RETURNS trigger AS $$ BEGIN RAISE EXCEPTION "
+    "'research.% is append-only/immutable; % rejected', TG_TABLE_NAME, TG_OP "
+    "USING ERRCODE = 'restrict_violation'; END; $$ LANGUAGE plpgsql",
+    "CREATE OR REPLACE FUNCTION research.validate_evaluation_completeness() "
+    "RETURNS trigger AS $$ DECLARE target_id text; scorecard_count integer; "
+    "view_count integer; verdict_count integer; BEGIN target_id := NEW.evaluation_id; "
+    "SELECT count(*), count(DISTINCT view_name) INTO scorecard_count, view_count "
+    "FROM research.evaluation_scorecards WHERE evaluation_id = target_id; "
+    "IF scorecard_count <> 3 OR view_count <> 3 OR NOT EXISTS (SELECT 1 FROM "
+    "research.evaluation_scorecards WHERE evaluation_id = target_id GROUP BY "
+    "evaluation_id HAVING array_agg(view_name ORDER BY view_name) = "
+    "ARRAY['alpaca_broker','binance_broker','canonical_shadow']::varchar[]) THEN "
+    "RAISE EXCEPTION 'evaluation % requires exactly three scorecards', target_id "
+    "USING ERRCODE = 'integrity_constraint_violation'; END IF; "
+    "SELECT count(*) INTO verdict_count FROM research.evaluation_verdicts "
+    "WHERE evaluation_id = target_id; IF verdict_count <> 1 THEN RAISE EXCEPTION "
+    "'evaluation % requires exactly one verdict', target_id USING ERRCODE = "
+    "'integrity_constraint_violation'; END IF; RETURN NEW; END; $$ LANGUAGE plpgsql",
+    *tuple(
+        statement
+        for table in ("evaluation_scorecards", "evaluation_verdicts")
+        for statement in (
+            f"DROP TRIGGER IF EXISTS trg_rob850_{table}_complete ON research.{table}",
+            f"CREATE CONSTRAINT TRIGGER trg_rob850_{table}_complete AFTER INSERT ON "
+            f"research.{table} DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE "
+            "FUNCTION research.validate_evaluation_completeness()",
+        )
+    ),
+    *tuple(
+        statement
+        for table in _PAPER_EVALUATION_AUDIT_TABLES
+        for statement in (
+            f"DROP TRIGGER IF EXISTS trg_rob850_{table}_immutable ON research.{table}",
+            f"CREATE TRIGGER trg_rob850_{table}_immutable BEFORE UPDATE OR "
+            f"DELETE ON research.{table} FOR EACH ROW EXECUTE FUNCTION "
+            "research.reject_evaluation_mutation()",
+            f"DROP TRIGGER IF EXISTS trg_rob850_{table}_truncate_immutable ON "
+            f"research.{table}",
+            f"CREATE TRIGGER trg_rob850_{table}_truncate_immutable BEFORE "
+            f"TRUNCATE ON research.{table} FOR EACH STATEMENT EXECUTE FUNCTION "
+            "research.reject_evaluation_mutation()",
+        )
+    ),
+)
+
 _DDL_STATEMENTS: tuple[str, ...] = (
     *_PAPER_COHORT_TRIGGER_DDL,
+    *_PAPER_EVALUATION_TRIGGER_DDL,
     # ---- market_events / us_symbol_universe ----
     "ALTER TABLE market_events ADD COLUMN IF NOT EXISTS currency TEXT",
     "ALTER TABLE us_symbol_universe ADD COLUMN IF NOT EXISTS is_common_stock BOOLEAN",
@@ -1269,6 +1396,8 @@ async def apply_test_schema(conn) -> None:
         )
 
     await _rebuild_legacy_paper_cohort_schema(conn)
+    await _rebuild_legacy_paper_evaluation_schema(conn)
+    await _ensure_evaluation_assignment_identity_index(conn)
     await conn.run_sync(Base.metadata.create_all)
 
     # --- conditional "only when genuinely missing" probes (per-table catalog

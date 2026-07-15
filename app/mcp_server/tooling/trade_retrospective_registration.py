@@ -41,8 +41,10 @@ def register_trade_retrospective_tools(mcp: Any) -> None:
             "expired, thesis_change, policy_violation, stale_evidence, "
             "guardrail_block, stop_loss}. When trigger_type is set, a non-empty next_actions "
             "list is required in the same call (each next_action needs a non-empty "
-            "action; optional owner/issue_id/status/due_kst_date, status in "
-            "{open, in_progress, done})."
+            "action; optional owner/issue_id/status/due_kst_date). New actions may start "
+            "only as open or in_progress. Echo action_id and version when retrying an "
+            "existing canonical action. To intentionally create a distinct occurrence, "
+            "pass force_new=true with a stable creation_key for idempotent retries."
         ),
     )(save_trade_retrospective)
     _ = mcp.tool(

@@ -53,9 +53,7 @@ class _FakeAccountClient:
 def _positions_payload(rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     return {
         "return_code": 0,
-        "acnt_evlt_remn_indv_tot": rows
-        if rows is not None
-        else [],
+        "acnt_evlt_remn_indv_tot": rows if rows is not None else [],
     }
 
 
@@ -116,9 +114,7 @@ async def test_preflight_quote_stale_fails_closed():
 @pytest.mark.asyncio
 async def test_preflight_tick_validation_accepts_valid_krx_ticks(price, expected_tick):
     client = _FakeAccountClient(
-        balance_payload=_positions_payload(
-            [_position("005930", 10, 70000)]
-        )
+        balance_payload=_positions_payload([_position("005930", 10, 70000)])
     )
     result = await run_order_preflight(
         account_client=client,
@@ -447,8 +443,7 @@ async def test_preflight_to_response_extras_shape():
     assert "preflight_checks" in extras
     assert "estimated_evidence" in extras
     assert all(
-        "name" in c and "ok" in c and "detail" in c
-        for c in extras["preflight_checks"]
+        "name" in c and "ok" in c and "detail" in c for c in extras["preflight_checks"]
     )
 
 
