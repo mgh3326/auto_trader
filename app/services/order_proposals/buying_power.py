@@ -8,14 +8,21 @@ import uuid
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import validate_toss_api_config
 from app.models.order_proposals import OrderProposal, OrderProposalRung
+
+
+def _require_timezone_aware(value: datetime) -> None:
+    """Mirror OrderProposalsService._require_timezone_aware's tz-aware guard."""
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("datetime must be timezone-aware")
 
 
 @dataclass(frozen=True)
@@ -238,8 +245,17 @@ async def pending_buy_requirement(
     account_mode: str,
     broker_account_id: str | None,
     currency: str,
+    now: datetime,
 ) -> tuple[Decimal, int]:
-    """Sum pending limit-buy notionals for one broker account and currency."""
+    """Sum pending limit-buy notionals for one broker account and currency.
+
+    Only groups that are still live are counted: ``valid_until IS NULL`` (no
+    expiry) or ``valid_until > now``. Proposals whose ``valid_until`` has
+    already passed should have been swept to ``expired`` (no sweeper exists
+    yet — tracked separately), so this predicate excludes them here to avoid
+    inflating ``pending_required`` with stale groups.
+    """
+    _require_timezone_aware(now)
     markets = _markets_for_currency(currency)
     if not markets:
         return Decimal("0"), 0
@@ -254,6 +270,10 @@ async def pending_buy_requirement(
             OrderProposal.action == "place",
             OrderProposalRung.state == "pending_approval",
             OrderProposalRung.side == "buy",
+            or_(
+                OrderProposal.valid_until.is_(None),
+                OrderProposal.valid_until > now,
+            ),
         )
     )
     rungs = list((await session.execute(stmt)).scalars().all())
@@ -273,6 +293,7 @@ async def build_create_advisory(
     account_mode: str,
     broker_account_id: str | None,
     currency: str,
+    now: datetime,
     buying_power_reader: BuyingPowerReader = default_buying_power_reader,
 ) -> dict[str, Any]:
     required, skipped = await pending_buy_requirement(
@@ -280,6 +301,7 @@ async def build_create_advisory(
         account_mode=account_mode,
         broker_account_id=broker_account_id,
         currency=currency,
+        now=now,
     )
     try:
         buying_power = await buying_power_reader(

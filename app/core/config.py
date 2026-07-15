@@ -814,6 +814,12 @@ class Settings(BaseSettings):
     ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR: str = ""
     ORDER_PROPOSALS_SUBMIT_AGENT_ID: str = ""
 
+    # ROB-897: gate for the scheduleless order_proposal valid_until expiry sweep
+    # TaskIQ task. Default off -- the sweep runs manually first (dry_run MCP tool
+    # `order_proposal_expire_sweep`); recurrence is a separate decision after
+    # manual reps, mirroring `toss_manual_activity_sweep_enabled` (ROB-866).
+    order_proposal_expire_sweep_enabled: bool = False
+
     @property
     def order_proposals_telegram_chat_allowlist(self) -> list[str]:
         return [
