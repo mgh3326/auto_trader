@@ -693,4 +693,119 @@ def test_tools_registered_and_names_exported():
         "order_proposal_get",
         "order_proposal_list",
         "order_proposal_void",
+        "order_proposal_expire_sweep",
     }
+
+
+# -- ROB-897 cause (1): order_proposal_expire_sweep MCP tool ----------------
+
+
+@pytest.mark.asyncio
+async def test_expire_sweep_dry_run_lists_candidates_without_mutating(monkeypatch):
+    created = await opt.order_proposal_create(**_create_kwargs(symbol="EXPSWEEP1"))
+    proposal_id = uuid.UUID(created["proposal_id"])
+    past = datetime(2026, 7, 14, 0, 0, tzinfo=UTC)
+    async with AsyncSessionLocal() as session:
+        service = OrderProposalsService(session)
+        group, _ = await service.get_proposal(proposal_id)
+        group.valid_until = past
+        await session.commit()
+
+    monkeypatch.setattr(opt, "now_kst", lambda: datetime(2026, 7, 15, 9, 0, tzinfo=UTC))
+
+    result = await opt.order_proposal_expire_sweep(dry_run=True)
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    matching = [c for c in result["candidates"] if c["proposal_id"] == str(proposal_id)]
+    assert len(matching) == 1
+    assert matching[0]["symbol"] == "EXPSWEEP1"
+    assert matching[0]["rung_states"] == ["pending_approval"]
+
+    got = await opt.order_proposal_get(str(proposal_id))
+    assert got["proposal"]["lifecycle_state"] == "proposed"
+    assert got["rungs"][0]["state"] == "pending_approval"
+
+
+@pytest.mark.asyncio
+async def test_expire_sweep_confirm_expires_and_edits_telegram_message(monkeypatch):
+    created = await opt.order_proposal_create(**_create_kwargs(symbol="EXPSWEEP2"))
+    proposal_id = uuid.UUID(created["proposal_id"])
+    chat = _unique_chat()
+    past = datetime(2026, 7, 14, 0, 0, tzinfo=UTC)
+    async with AsyncSessionLocal() as session:
+        service = OrderProposalsService(session)
+        await service.record_approval_dispatch(
+            proposal_id,
+            message_id=7777,
+            chat_id=chat,
+            now=datetime(2026, 7, 13, 9, 0, tzinfo=UTC),
+        )
+        group, _ = await service.get_proposal(proposal_id)
+        group.valid_until = past
+        await session.commit()
+
+    notifier = _FakeNotifier()
+    monkeypatch.setattr(opt, "_get_trade_notifier", lambda: notifier)
+    monkeypatch.setattr(opt, "now_kst", lambda: datetime(2026, 7, 15, 9, 0, tzinfo=UTC))
+
+    result = await opt.order_proposal_expire_sweep(dry_run=False)
+
+    assert result["success"] is True
+    assert result["dry_run"] is False
+    assert str(proposal_id) in result["swept_proposal_ids"]
+    assert result["swept_count"] >= 1
+
+    got = await opt.order_proposal_get(str(proposal_id))
+    assert got["proposal"]["lifecycle_state"] == "expired"
+    assert got["rungs"][0]["state"] == "expired"
+    # Global sweep edits every due proposal's Telegram message; the unique chat
+    # (_unique_chat) keeps this tuple collision-free, so assert membership.
+    assert (
+        chat,
+        7777,
+        "⏰ 제안 만료됨\n종목: EXPSWEEP2",
+        {"inline_keyboard": []},
+    ) in notifier.edited
+
+
+@pytest.mark.asyncio
+async def test_expire_sweep_confirm_skips_non_voidable_and_does_not_edit_telegram(
+    monkeypatch,
+):
+    created = await opt.order_proposal_create(**_create_kwargs(symbol="EXPSWEEP3"))
+    proposal_id = uuid.UUID(created["proposal_id"])
+    chat = _unique_chat()
+    async with AsyncSessionLocal() as session:
+        service = OrderProposalsService(session)
+        await service.record_approval_dispatch(
+            proposal_id,
+            message_id=8888,
+            chat_id=chat,
+            now=datetime(2026, 7, 13, 9, 0, tzinfo=UTC),
+        )
+        for state in ("revalidating", "approved", "submitting"):
+            await service.transition_rung(proposal_id, 0, new_state=state)
+        group, _ = await service.get_proposal(proposal_id)
+        group.valid_until = datetime(2026, 7, 14, 0, 0, tzinfo=UTC)
+        await session.commit()
+
+    notifier = _FakeNotifier()
+    monkeypatch.setattr(opt, "_get_trade_notifier", lambda: notifier)
+    monkeypatch.setattr(opt, "now_kst", lambda: datetime(2026, 7, 15, 9, 0, tzinfo=UTC))
+
+    result = await opt.order_proposal_expire_sweep(dry_run=False)
+
+    assert result["success"] is True
+    assert str(proposal_id) not in result["swept_proposal_ids"]
+    assert result["skipped_count"] >= 1
+    # A global sweep legitimately edits other tests' due proposals, so assert a
+    # TARGETED negative: this test's seeded chat/message_id was never edited.
+    assert all(edited[1] != 8888 for edited in notifier.edited)
+    assert all(edited[0] != chat for edited in notifier.edited)
+    got = await opt.order_proposal_get(str(proposal_id))
+    assert got["rungs"][0]["state"] == "submitting"
+
+
+def test_expire_sweep_registered_in_tool_names():
+    assert "order_proposal_expire_sweep" in opt.ORDER_PROPOSAL_TOOL_NAMES
