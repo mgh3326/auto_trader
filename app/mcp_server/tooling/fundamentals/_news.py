@@ -111,6 +111,30 @@ def _infer_holdings_news_market(symbol: str) -> str:
     return "us"
 
 
+def _safe_float(value: Any) -> float:
+    """Best-effort float; unknown/None/garbage -> 0.0 (sorts last, never raises)."""
+    try:
+        if value is None:
+            return 0.0
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _holding_priority_key(entry: dict[str, Any]) -> tuple[float, int, str]:
+    """ROB-889: sort key for holdings-mode candidates before the 30-cap.
+
+    Orders by cost-basis weight (``quantity * avg_buy_price``) descending so the
+    biggest exposures' catalysts survive, with ``order_routable`` breaking ties
+    (actionable holdings first) and ``symbol`` as a final deterministic tiebreak.
+    Replaces the old arbitrary alphabetical (account, market, symbol) order that
+    let front-of-alphabet ETFs crowd out watched names. Cost-basis is used (not
+    live market value) so the sweep stays a cheap no-price read."""
+    weight = _safe_float(entry.get("_weight"))
+    routable_rank = 0 if entry.get("_order_routable") else 1
+    return (-weight, routable_rank, str(entry.get("symbol") or ""))
+
+
 async def _resolve_holdings_news_candidates(
     symbols: list[str] | None,
 ) -> tuple[list[dict[str, Any]], str | None]:
@@ -142,7 +166,10 @@ async def _resolve_holdings_news_candidates(
     # Holdings mode. Lazy import keeps the portfolio_holdings dependency (and its
     # broker clients) out of the plain fundamentals import path and avoids any
     # import cycle — mirrors _collect_portfolio_positions' own lazy imports.
-    from app.mcp_server.tooling.portfolio_holdings import _collect_portfolio_positions
+    from app.mcp_server.tooling.portfolio_holdings import (
+        _account_order_routable,
+        _collect_portfolio_positions,
+    )
 
     try:
         positions, errors, _, _ = await _collect_portfolio_positions(
@@ -168,10 +195,25 @@ async def _resolve_holdings_news_candidates(
         if key in seen:
             continue
         seen.add(key)
+        # ROB-889: carry cost-basis weight + routability so the cap keeps the
+        # biggest/actionable positions (not the alphabetical front). include_
+        # current_price=False nulls live value, but quantity/avg_buy_price
+        # survive — a free cost-basis proxy needing no extra price fetch.
         candidates.append(
-            {"symbol": symbol, "market": market, "name": position.get("name")}
+            {
+                "symbol": symbol,
+                "market": market,
+                "name": position.get("name"),
+                "_weight": _safe_float(position.get("quantity"))
+                * _safe_float(position.get("avg_buy_price")),
+                "_order_routable": _account_order_routable(
+                    source=position.get("source"),
+                    broker=position.get("broker"),
+                ),
+            }
         )
 
+    candidates.sort(key=_holding_priority_key)
     return candidates, degraded_reason
 
 
@@ -197,8 +239,9 @@ async def _get_holdings_news_impl(
 
     if len(candidates) > HOLDINGS_NEWS_MAX_SYMBOLS:
         degraded_reasons.append(
-            f"resolved {len(candidates)} symbols; capped to "
-            f"{HOLDINGS_NEWS_MAX_SYMBOLS} — pass a narrower symbols list to widen"
+            f"resolved {len(candidates)} symbols; swept the top "
+            f"{HOLDINGS_NEWS_MAX_SYMBOLS} by holding size (routable first) — "
+            f"pass a narrower symbols list to sweep specific names"
         )
         candidates = candidates[:HOLDINGS_NEWS_MAX_SYMBOLS]
 
