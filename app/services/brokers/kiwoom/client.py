@@ -29,7 +29,24 @@ class KiwoomEndpointError(RuntimeError):
 
 
 class KiwoomPreDispatchError(RuntimeError):
-    """Raised when a request fails before HTTP dispatch can begin."""
+    """Raised when a request fails before HTTP dispatch can begin.
+
+    Carries only redacted diagnostics safe for caller-facing responses.
+    The chained ``__cause__`` is retained for INTERNAL tracebacks only;
+    response builders must read exclusively the structured fields below and
+    MUST NOT use ``str(exc)`` or ``exc.__cause__``.
+    """
+
+    def __init__(self, *, stage: str, api_id: str, cause_type: str) -> None:
+        self.stage = stage
+        self.api_id = api_id
+        self.cause_type = cause_type
+        self.dispatch_started: bool = False
+        self.status: str = "not_submitted"
+        super().__init__(
+            f"Kiwoom request failed before dispatch "
+            f"(stage={stage}, api_id={api_id}, cause_type={cause_type})"
+        )
 
 
 def _validate_relative_path(path: str) -> None:
@@ -136,10 +153,13 @@ class KiwoomMockClient:
             raise ValueError(
                 "Kiwoom mock request resolved to non-mock host; refusing to send."
             )
+        stage = "token_resolution"
         dispatch_started = False
         try:
             token = await self._resolve_token()
+            stage = "pre_dispatch_hook"
             await self._before_api_dispatch(api_id)
+            stage = "request_build"
             headers = {
                 constants.HEADER_AUTHORIZATION: f"Bearer {token}",
                 constants.HEADER_API_ID: api_id,
@@ -156,6 +176,7 @@ class KiwoomMockClient:
                 timeout=self._timeout,
             ) as client:
                 request = client.build_request("POST", path, headers=headers, json=body)
+                stage = "host_validation"
                 if request.url.host != httpx.URL(constants.MOCK_BASE_URL).host:
                     raise ValueError(
                         "Kiwoom mock request resolved to non-mock host "
@@ -166,7 +187,7 @@ class KiwoomMockClient:
         except Exception as exc:
             if not dispatch_started:
                 raise KiwoomPreDispatchError(
-                    f"Kiwoom request failed before HTTP dispatch: {type(exc).__name__}"
+                    stage=stage, api_id=api_id, cause_type=type(exc).__name__
                 ) from exc
             raise
         response.raise_for_status()

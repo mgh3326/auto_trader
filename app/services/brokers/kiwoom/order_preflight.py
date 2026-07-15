@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.mcp_server.tick_size import get_tick_size_kr
+from app.services.brokers.kiwoom.client import KiwoomPreDispatchError
 from app.services.brokers.kiwoom.normalization import (
     KiwoomMockEvidenceError,
     normalize_orderable_cash,
@@ -200,6 +201,12 @@ async def _check_sellable(
         validate_mock_response_provenance(balance_response)
         _validate_successful_broker_response(balance_response)
         positions = normalize_positions(balance_response)
+    except KiwoomPreDispatchError:
+        # Pre-dispatch failure (token/hook/request-build/host-validation): the
+        # request provably never reached the broker. Propagate the structured
+        # diagnostics (stage/api_id/cause_type/dispatch_started/status) so the
+        # caller can surface them — do NOT swallow into a generic read failure.
+        raise
     except KiwoomMockEvidenceError as exc:
         code = (
             PREFLIGHT_PROVENANCE_CONFLICT
@@ -273,6 +280,8 @@ async def _check_buy_cash(
         validate_mock_response_provenance(cash_response)
         _validate_successful_broker_response(cash_response)
         orderable_cash = normalize_orderable_cash(cash_response)
+    except KiwoomPreDispatchError:
+        raise
     except KiwoomMockEvidenceError as exc:
         code = (
             PREFLIGHT_PROVENANCE_CONFLICT

@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from app.services.brokers.kiwoom.client import KiwoomPreDispatchError
 from app.services.brokers.kiwoom.order_preflight import (
     PREFLIGHT_CASH_INSUFFICIENT,
     PREFLIGHT_CASH_READ_FAILED,
@@ -465,6 +466,33 @@ async def test_preflight_position_transport_failure_fails_closed():
 
 
 @pytest.mark.asyncio
+async def test_preflight_sell_reraises_pre_dispatch_error():
+    client = _FakeAccountClient(
+        balance_error=KiwoomPreDispatchError(
+            stage="request_build",
+            api_id="kt00018",
+            cause_type="ValueError",
+        )
+    )
+
+    with pytest.raises(KiwoomPreDispatchError) as exc_info:
+        await run_order_preflight(
+            account_client=client,
+            symbol="005930",
+            side="sell",
+            quantity=1,
+            price=70000,
+            quote_price=70000,
+            quote_freshness="fresh",
+        )
+
+    assert exc_info.value.stage == "request_build"
+    assert exc_info.value.api_id == "kt00018"
+    assert client.balance_calls == 1
+    assert client.cash_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_preflight_cash_transport_failure_fails_closed():
     client = _FakeAccountClient(cash_error=RuntimeError("broker timeout"))
     result = await run_order_preflight(
@@ -478,6 +506,33 @@ async def test_preflight_cash_transport_failure_fails_closed():
     )
     assert result.ok is False
     assert result.error_code == PREFLIGHT_CASH_READ_FAILED
+
+
+@pytest.mark.asyncio
+async def test_preflight_buy_reraises_pre_dispatch_error():
+    client = _FakeAccountClient(
+        cash_error=KiwoomPreDispatchError(
+            stage="host_validation",
+            api_id="kt00010",
+            cause_type="ValueError",
+        )
+    )
+
+    with pytest.raises(KiwoomPreDispatchError) as exc_info:
+        await run_order_preflight(
+            account_client=client,
+            symbol="005930",
+            side="buy",
+            quantity=1,
+            price=70000,
+            quote_price=70000,
+            quote_freshness="fresh",
+        )
+
+    assert exc_info.value.stage == "host_validation"
+    assert exc_info.value.api_id == "kt00010"
+    assert client.balance_calls == 0
+    assert client.cash_calls == 1
 
 
 @pytest.mark.asyncio
@@ -664,3 +719,44 @@ async def test_preflight_zero_sellable_with_nonzero_quantity_blocks():
     assert result.ok is False
     assert result.error_code == PREFLIGHT_SELLABLE_EXCEEDED
     assert result.estimated_evidence["sellable_quantity"] == 0
+
+
+# ---------------------------------------------------------------------------
+# ROB-893 v2: KiwoomAuthClient concurrent refresh dedup
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_auth_refresh_dedupes_to_single_mint():
+    """Three concurrent get_token() calls share one token-mint HTTP (asyncio.Lock)."""
+    import datetime as dt
+
+    import httpx
+
+    from app.services.brokers.kiwoom import constants
+    from app.services.brokers.kiwoom.auth import KiwoomAuthClient
+
+    expires = (dt.datetime.now(dt.UTC) + dt.timedelta(days=1)).strftime("%Y%m%d%H%M%S")
+    mint_count = 0
+
+    def handler(request):  # noqa: ARG001
+        nonlocal mint_count
+        mint_count += 1
+        return httpx.Response(
+            200,
+            json={"return_code": 0, "token": "tok-1", "expires_dt": expires},
+        )
+
+    auth = KiwoomAuthClient(
+        base_url=constants.MOCK_BASE_URL,
+        app_key="k",
+        app_secret="s",
+        transport=httpx.MockTransport(handler),
+    )
+
+    import asyncio
+
+    tokens = await asyncio.gather(auth.get_token(), auth.get_token(), auth.get_token())
+
+    assert mint_count == 1, "concurrent refresh must dedupe to a single mint"
+    assert all(t == "tok-1" for t in tokens)

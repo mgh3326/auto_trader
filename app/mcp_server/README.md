@@ -2228,9 +2228,12 @@ Kiwoom safety boundaries are unchanged on both restricted profiles:
 #### Kiwoom mock order preflight (ROB-893)
 
 `kiwoom_mock_preview_order` and `kiwoom_mock_place_order` share the same
-fail-closed preflight. A confirmed place runs it again immediately before the
-broker POST and returns the checks and estimated evidence from that final
-snapshot. Preview and dry-run paths never call the order mutation client.
+fail-closed preflight. A confirmed place builds **one** request-scoped
+`KiwoomMockClient` and reuses it across the **single** preflight (run
+immediately before the broker POST) and the POST itself, so preflight and
+dispatch share one auth client and mint at most one cold-cache token. Preview
+and dry-run paths run the preflight once and never call the order mutation
+client.
 
 The preflight requires a fresh KR quote, a KRX-valid `get_tick_size_kr` price,
 and an order price within 30% of the quote (the 30% boundary is inclusive).
@@ -2247,6 +2250,20 @@ the candidate order price is labelled `estimated_gross_pnl`, while net P&L is
 also unavailable. Successful preflights surface `estimated_costs_unavailable`;
 a gross-before-cost loss additionally emits `estimated_loss_sell` without
 universally blocking the sell. Broker payloads remain recursively redacted.
+
+A failure that provably occurs before HTTP dispatch (token resolution,
+pre-dispatch hook, request build, or host validation) raises a structured
+`KiwoomPreDispatchError` carrying redacted fields only — `stage`, `api_id`
+(the TR code), and `cause_type` (the exception class name); the chained
+`__cause__` is retained for internal tracebacks only and never surfaces in the
+response. Both the preflight account-evidence read and the order POST propagate
+this error, and the confirmed-place / preview responses render it as
+`status="not_submitted"`, `dispatch_started=false`, and
+`reconcile_required=false` (the request provably never reached the broker, so
+no order HTTP dispatch occurs and no reconciliation is needed). A generic
+post-dispatch failure (the request may already have been transmitted) is the
+distinct `status="acceptance_uncertain"`, `reconcile_required=true`,
+`retry_allowed=false` outcome.
 
 #### Kiwoom mock stable read envelopes (ROB-824)
 
