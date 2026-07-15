@@ -170,6 +170,47 @@ class _FakeSpotClient:
         return _Balance(self._free)
 
 
+class _FakePollingSpotClient(_FakeSpotClient):
+    """Open submit is partial; read-side order truth later proves full fill."""
+
+    async def submit_order(
+        self,
+        *,
+        symbol,
+        side,
+        order_type,
+        qty,
+        client_order_id=None,
+        price=None,
+        time_in_force=None,
+        confirm=False,
+    ):
+        self.submits.append({"side": side, "qty": qty, "confirm": confirm})
+        if side == "BUY":
+            self._free = self._free_after_buy
+            return _Order(
+                "PARTIALLY_FILLED",
+                client_order_id,
+                executed_qty=Decimal("1"),
+                fee_usdt=Decimal("0.00136"),
+            )
+        self._free = Decimal("0")
+        return _Order("FILLED", client_order_id, executed_qty=qty)
+
+    async def get_order_status(self, *, symbol, client_order_id):
+        return {
+            "clientOrderId": client_order_id,
+            "symbol": symbol,
+            "side": "BUY",
+            "type": "MARKET",
+            "status": "FILLED",
+            "orderId": 123456,
+            "origQty": "7.3",
+            "executedQty": "7.3",
+            "cummulativeQuoteQty": "9.928",
+        }
+
+
 class _FakeFuturesClient:
     """Futures: optional NEW-then-FILLED poll; reduceOnly close to flat."""
 
@@ -297,6 +338,41 @@ async def test_spot_happy_path_reconciles_flat(db_session) -> None:
         assert row.extra_metadata["filled_qty"] == "7.3"
         assert row.extra_metadata["filled_avg_price"] == "1.36"
         assert row.extra_metadata["fee_usdt"] == "0.004964"
+
+
+@pytest.mark.asyncio
+async def test_spot_polled_fill_never_mixes_stale_submit_actuals(db_session) -> None:
+    client = _FakePollingSpotClient(free_after_buy=Decimal("7.3"))
+    executor = DemoScalpingExecutor(
+        product="spot",
+        client=client,
+        session=db_session,
+        reference=_FakeReference(_SPOT_REF),
+        now=_NOW,
+        poll_delay_seconds=0.0,
+        limits=_limits_for("EXESPOTPOLLEDUSDT"),
+    )
+    result = await executor.execute(
+        _intent("spot", "EXESPOTPOLLEDUSDT"),
+        confirm=True,
+        market=_FRESH_MARKET,
+    )
+    assert result.status == "reconciled"
+    assert client.submits[1]["qty"] == Decimal("7.3")
+    rows = list(
+        (
+            await db_session.scalars(
+                select(BinanceDemoOrderLedger)
+                .join(CryptoInstrument)
+                .where(CryptoInstrument.venue_symbol == "EXESPOTPOLLEDUSDT")
+                .order_by(BinanceDemoOrderLedger.id)
+            )
+        ).all()
+    )
+    open_metadata = rows[0].extra_metadata
+    assert open_metadata["filled_qty"] == "7.3"
+    assert open_metadata["filled_avg_price"] == "1.36"
+    assert "fee_usdt" not in open_metadata
 
 
 @pytest.mark.asyncio
