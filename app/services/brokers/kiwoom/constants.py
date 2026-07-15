@@ -38,8 +38,9 @@ ACCOUNT_BALANCE_API_ID = "kt00018"
 
 # ROB-891 — kt00010 (주문가능금액) trde_tp (주문구분) values for order-specific
 # orderable-cash queries. Maps side → Kiwoom trade-type code.
-TRADE_TYPE_BUY = "1"  # 매수
-TRADE_TYPE_SELL = "2"  # 매도
+# Official contract: 매도(sell) = "1", 매수(buy) = "2".
+TRADE_TYPE_SELL = "1"  # 매도
+TRADE_TYPE_BUY = "2"  # 매수
 
 # Chart API IDs (scaffolded, deferred — NOT routed from get_ohlcv)
 CHART_MINUTE_API_ID = "ka10080"
@@ -63,6 +64,7 @@ TOKEN_REFRESH_LEEWAY_SECONDS = 30  # refresh slightly before expires_dt
 # (이 세션 creds 없음). 전건실패(필수입력 파라미터 누락, return_code 2)를 호출
 # 성립으로 회복하는 것이 1차 목표이며, 값의 scope 정확성은 smoke가 검증한다.
 ACCOUNT_BALANCE_QRY_TP_DEFAULT = "1"  # kt00018 조회구분
+ACCOUNT_DEPOSIT_QRY_TP_DEFAULT = "2"  # ROB-891 — kt00001 일반조회 (orderable cash)
 ACCOUNT_ORDER_STK_BOND_TP_DEFAULT = "0"  # kt00009 주식채권구분(전체)
 
 # ROB-460 — Kiwoom REST account-cash reads also require dmst_stex_tp (국내거래소구분).
@@ -70,9 +72,10 @@ ACCOUNT_ORDER_STK_BOND_TP_DEFAULT = "0"  # kt00009 주식채권구분(전체)
 # (필수입력 파라미터=dmst_stex_tp). Unlike the qry_tp/stk_bond_tp convention-defaults,
 # this value is PROVEN: every order endpoint (kt10000-kt10003) submits
 # dmst_stex_tp=MOCK_EXCHANGE_KRX successfully. Mock is KRX-only (NXT/SOR rejected on
-# the order path), so KRX is the only valid selection. Applied to the account-cash
-# reads behind the two reported tools (kt00018 잔고, kt00010 주문가능금액); order-history
-# reads (kt00009/kt00007) are left untouched — not proven to need it (smoke-validated).
+# the order path), so KRX is the only valid selection. Applied to kt00018 balance
+# reads. ROB-891: kt00001 and kt00010 official docs do NOT include dmst_stex_tp, so
+# it is no longer sent on those endpoints. Order-history reads (kt00009/kt00007)
+# remain untouched — not proven to need it (smoke-validated).
 ACCOUNT_DMST_STEX_TP_DEFAULT = MOCK_EXCHANGE_KRX  # "KRX" — 국내거래소구분
 
 # ---------------------------------------------------------------------------
