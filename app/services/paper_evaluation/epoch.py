@@ -10,7 +10,7 @@ Prior epochs remain separately queryable and are NEVER spliced.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.services.paper_evaluation.contracts import (
@@ -88,9 +88,9 @@ def create_epoch_identity(
 def compute_calendar_days(start: datetime, end: datetime) -> int:
     """Full calendar days between two timezone-aware datetimes.
 
-    A full calendar day means the entire 00:00:00 to 23:59:59.999999 period
-    elapsed. Both inputs must be timezone-aware. Floors both to their local
-    date and returns ``(end_date - start_date).days``.
+    A full day is an actually elapsed 24-hour period after normalizing both
+    endpoints to UTC. Local date boundaries and mixed offsets cannot advance
+    eligibility early.
 
     Examples:
         2026-01-01T12:00 → 2026-01-02T12:00  = 1 full calendar day
@@ -98,14 +98,16 @@ def compute_calendar_days(start: datetime, end: datetime) -> int:
         2026-01-01T12:00 → 2026-01-07T12:00  = 6 full calendar days
     """
     if not _is_aware(start):
-        raise EvaluationConfigError(
-            "invalid_epoch", "start must be timezone-aware"
-        )
+        raise EvaluationConfigError("invalid_epoch", "start must be timezone-aware")
     if not _is_aware(end):
+        raise EvaluationConfigError("invalid_epoch", "end must be timezone-aware")
+    start_utc = start.astimezone(UTC)
+    end_utc = end.astimezone(UTC)
+    if end_utc < start_utc:
         raise EvaluationConfigError(
-            "invalid_epoch", "end must be timezone-aware"
+            "invalid_evaluation_window", "evaluation end precedes start"
         )
-    return (end.date() - start.date()).days
+    return (end_utc - start_utc).days
 
 
 def is_epoch_active(epoch: EpochIdentity, *, now: datetime) -> bool:

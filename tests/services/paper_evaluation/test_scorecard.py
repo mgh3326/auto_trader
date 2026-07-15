@@ -139,7 +139,9 @@ def make_view_metrics(
     )
 
 
-def make_three_views(**overrides_per_view: dict[str, object]) -> dict[ViewName, ViewMetrics]:
+def make_three_views(
+    **overrides_per_view: dict[str, object],
+) -> dict[ViewName, ViewMetrics]:
     """Build a full set of three valid ViewMetrics.
 
     ``overrides_per_view`` may contain per-view keyword overrides keyed by
@@ -477,7 +479,9 @@ def test_generate_evidence_ids_changes_when_metrics_change() -> None:
     )
     assert original_shadow != new_shadow
     # Aggregate ID changes
-    original_agg = next(eid for eid in original if eid.startswith("verdict::aggregate::"))
+    original_agg = next(
+        eid for eid in original if eid.startswith("verdict::aggregate::")
+    )
     new_agg = next(eid for eid in new_ids if eid.startswith("verdict::aggregate::"))
     assert original_agg != new_agg
 
@@ -550,8 +554,8 @@ def test_conjunctive_verdict_all_passing_is_promotion_eligible() -> None:
     }
 
 
-def test_conjunctive_verdict_no_gates_still_evaluates() -> None:
-    """Both gates optional — absence does not block verdict."""
+def test_conjunctive_verdict_missing_gates_blocks_promotion() -> None:
+    """Promotion is fail-closed when authoritative gate evidence is absent."""
     views = make_three_views()
     verdict = compute_conjunctive_verdict(
         view_metrics=views,
@@ -562,9 +566,10 @@ def test_conjunctive_verdict_no_gates_still_evaluates() -> None:
         experiment_hash=_EXPERIMENT_HASH,
         cohort_hash=_COHORT_HASH,
     )
-    assert verdict.status is VerdictStatus.PROMOTION_ELIGIBLE
-    assert verdict.shadow_gate is None
-    assert verdict.paper_gate is None
+    assert verdict.status is VerdictStatus.GATE_BLOCKED
+    assert verdict.reason_code == "missing_gate_evidence"
+    assert verdict.shadow_gate.passed is False
+    assert verdict.paper_gate.passed is False
 
 
 # ---------------------------------------------------------------------------
@@ -612,11 +617,18 @@ def test_conjunctive_verdict_observation_count_below_min_observations() -> None:
     # fail_close doesn't already trip. We need fill_count alone < min_obs.
     # Since fail_close only trips on missing > 0, this exercises the
     # observation-count rule directly.
-    views = make_three_views(
-        alpaca_broker={"fill_count": 50, "missing_observation_count": 0},
-    )
     # Lower min_fills so the fill-count rule doesn't trip first
     config = make_evaluation_config(min_fills=1, min_observations=100)
+    config_hash = config.config_hash()
+    views = make_three_views(
+        binance_broker={"config_hash": config_hash},
+        alpaca_broker={
+            "fill_count": 50,
+            "missing_observation_count": 0,
+            "config_hash": config_hash,
+        },
+        canonical_shadow={"config_hash": config_hash},
+    )
     verdict = compute_conjunctive_verdict(
         view_metrics=views,
         config=config,
@@ -629,7 +641,9 @@ def test_conjunctive_verdict_observation_count_below_min_observations() -> None:
     assert verdict.status is VerdictStatus.INSUFFICIENT_EVIDENCE
 
 
-def test_conjunctive_verdict_insufficient_evidence_takes_precedence_over_gates() -> None:
+def test_conjunctive_verdict_insufficient_evidence_takes_precedence_over_gates() -> (
+    None
+):
     """Even with a failed gate, insufficient evidence wins."""
     views = make_three_views(
         canonical_shadow={"missing_observation_count": 5},
@@ -1041,8 +1055,8 @@ def test_no_usdt_usd_conversion_is_performed() -> None:
     verdict = compute_conjunctive_verdict(
         view_metrics=views,
         config=make_evaluation_config(),
-        shadow_gate=None,
-        paper_gate=None,
+        shadow_gate=make_passed_shadow_gate(),
+        paper_gate=make_passed_paper_gate(),
         epoch_id=_EPOCH_ID,
         experiment_hash=_EXPERIMENT_HASH,
         cohort_hash=_COHORT_HASH,
@@ -1051,8 +1065,12 @@ def test_no_usdt_usd_conversion_is_performed() -> None:
     assert verdict.view_metrics[ViewName.BINANCE_BROKER].currency is ViewCurrency.USDT
     assert verdict.view_metrics[ViewName.ALPACA_BROKER].currency is ViewCurrency.USD
     # Both views' native amounts remain unchanged
-    assert verdict.view_metrics[ViewName.BINANCE_BROKER].nominal_net_pnl == Decimal("1000")
-    assert verdict.view_metrics[ViewName.ALPACA_BROKER].nominal_net_pnl == Decimal("1000")
+    assert verdict.view_metrics[ViewName.BINANCE_BROKER].nominal_net_pnl == Decimal(
+        "1000"
+    )
+    assert verdict.view_metrics[ViewName.ALPACA_BROKER].nominal_net_pnl == Decimal(
+        "1000"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1101,8 +1119,8 @@ def test_conjunctive_verdict_propagates_identity_fields() -> None:
     verdict = compute_conjunctive_verdict(
         view_metrics=views,
         config=config,
-        shadow_gate=None,
-        paper_gate=None,
+        shadow_gate=make_passed_shadow_gate(),
+        paper_gate=make_passed_paper_gate(),
         epoch_id=_EPOCH_ID,
         experiment_hash=_EXPERIMENT_HASH,
         cohort_hash=_COHORT_HASH,
@@ -1133,10 +1151,7 @@ def test_conjunctive_verdict_evidence_id_aggregate_hash_matches_canonical() -> N
     views = make_three_views()
     ids = generate_evidence_ids(views)
     aggregate_id = next(eid for eid in ids if eid.startswith("verdict::aggregate::"))
-    payload = {
-        name.value: m.model_dump(mode="python")
-        for name, m in views.items()
-    }
+    payload = {name.value: m.model_dump(mode="python") for name, m in views.items()}
     expected_digest = canonical_sha256(payload)[:16]
     assert aggregate_id == f"verdict::aggregate::{expected_digest}"
 
@@ -1162,8 +1177,8 @@ def test_conjunctive_verdict_rejects_currency_mismatch_via_model_copy() -> None:
     verdict = compute_conjunctive_verdict(
         view_metrics=views,
         config=make_evaluation_config(),
-        shadow_gate=None,
-        paper_gate=None,
+        shadow_gate=make_passed_shadow_gate(),
+        paper_gate=make_passed_paper_gate(),
         epoch_id=_EPOCH_ID,
         experiment_hash=_EXPERIMENT_HASH,
         cohort_hash=_COHORT_HASH,
@@ -1262,7 +1277,10 @@ def test_benchmark_computation_composes_with_view_metrics() -> None:
             "cash_benchmark_delta_pct": net_return_pct - cash_bench,
             "btc_eth_benchmark_return_pct": btc_eth_bench,
             "btc_eth_benchmark_delta_pct": net_return_pct - btc_eth_bench,
+            "config_hash": config.config_hash(),
         },
+        alpaca_broker={"config_hash": config.config_hash()},
+        canonical_shadow={"config_hash": config.config_hash()},
     )
     verdict = compute_conjunctive_verdict(
         view_metrics=views,

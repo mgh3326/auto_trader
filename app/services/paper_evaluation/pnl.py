@@ -16,7 +16,7 @@ No USDT/USD conversion is performed. No cross-view nominal P&L total is emitted.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol
@@ -30,9 +30,9 @@ from app.services.paper_evaluation.contracts import (
     ViewName,
     ViewSource,
 )
+from app.services.paper_evaluation.epoch import compute_calendar_days
 
 if TYPE_CHECKING:
-
     from app.models.binance_demo_order_ledger import BinanceDemoOrderLedger
     from app.models.paper_cohort import CanonicalMarketSnapshot
     from app.models.review import AlpacaPaperOrderLedger
@@ -81,6 +81,29 @@ _HUNDRED = Decimal("100")
 _MIN_SHARPE_SAMPLES = 3
 
 
+def _benchmark_return_pct(
+    marks: Mapping[str, tuple[Decimal, Decimal]],
+    weights: Mapping[str, Decimal],
+) -> Decimal:
+    """Compute a frozen-weight first-mark to last-mark return."""
+    total = _ZERO
+    for symbol, weight in weights.items():
+        try:
+            start, end = marks[symbol]
+        except KeyError as exc:
+            raise EvaluationConfigError(
+                "insufficient_evidence", f"missing benchmark marks for {symbol}"
+            ) from exc
+        start = _validate_finite(start, f"{symbol} benchmark start")
+        end = _validate_finite(end, f"{symbol} benchmark end")
+        if start <= 0 or end <= 0:
+            raise EvaluationConfigError(
+                "insufficient_evidence", f"non-positive benchmark mark for {symbol}"
+            )
+        total += weight * ((end / start) - _ONE) * _HUNDRED
+    return total
+
+
 # ---------------------------------------------------------------------------
 # Validation helpers
 # ---------------------------------------------------------------------------
@@ -114,9 +137,7 @@ def _to_decimal_safe(raw: Any, context: str) -> Decimal:
     Raises ``EvaluationConfigError("non_finite_value")`` on failure.
     """
     if raw is None:
-        raise EvaluationConfigError(
-            "non_finite_value", f"{context}: value is None"
-        )
+        raise EvaluationConfigError("non_finite_value", f"{context}: value is None")
     try:
         result = Decimal(str(raw))
     except Exception:
@@ -194,9 +215,7 @@ def _compute_sharpe(
     return excess_return / annualized_std
 
 
-def _compute_exposure(
-    positions: Sequence[Decimal], equity: Decimal
-) -> Decimal:
+def _compute_exposure(positions: Sequence[Decimal], equity: Decimal) -> Decimal:
     """Compute average absolute position notional / equity, clamped to [0, 1]."""
     if equity <= _ZERO or len(positions) == 0:
         return _ZERO
@@ -327,6 +346,8 @@ class PaperEvaluationPnL:
         ledger: _BinanceLedgerReader,
         *,
         since: datetime,
+        evaluated_at: datetime | None = None,
+        benchmark_marks: Mapping[str, tuple[Decimal, Decimal]] | None = None,
     ) -> ViewMetrics:
         """Compute View 1: Binance broker P&L (native USDT).
 
@@ -394,6 +415,22 @@ class PaperEvaluationPnL:
 
         cash_bench = _ZERO
         btc_eth_bench = _ZERO
+        if evaluated_at is not None:
+            days = compute_calendar_days(since, evaluated_at)
+            cash_bench = (
+                self._config.annualization.risk_free_rate_pct
+                * Decimal(days)
+                / Decimal("365")
+            )
+        if benchmark_marks is not None:
+            symbols = mapping.benchmark_symbols
+            btc_eth_bench = _benchmark_return_pct(
+                benchmark_marks,
+                {
+                    symbols[0]: self._config.benchmark_weights.btc_weight,
+                    symbols[1]: self._config.benchmark_weights.eth_weight,
+                },
+            )
         cash_delta, btc_eth_delta = _compute_benchmark_deltas(
             net_return_pct, cash_bench, btc_eth_bench
         )
@@ -431,6 +468,9 @@ class PaperEvaluationPnL:
         ledger: _AlpacaLedgerReader,
         *,
         correlation_ids: Sequence[str],
+        evaluated_at: datetime | None = None,
+        native_marks: Mapping[str, Decimal] | None = None,
+        benchmark_marks: Mapping[str, tuple[Decimal, Decimal]] | None = None,
     ) -> ViewMetrics:
         """Compute View 2: Alpaca broker P&L (native USD).
 
@@ -452,17 +492,20 @@ class PaperEvaluationPnL:
 
         buy_executions: list[AlpacaPaperOrderLedger] = []
         sell_executions: list[AlpacaPaperOrderLedger] = []
+        execution_rows: list[AlpacaPaperOrderLedger] = []
         fee_rows: list[AlpacaPaperOrderLedger] = []
         missing_observation_count = 0
         partial_fill_count = 0
         turnover = _ZERO
-        position_notionals: list[Decimal] = []
 
         for corr_id in correlation_ids:
             rows = await ledger.list_by_correlation_id(corr_id)
             for row in rows:
                 if row.record_kind != _RECORD_KIND_EXECUTION:
-                    if row.record_kind == "reconcile" and row.lifecycle_state == "final_reconciled":
+                    if (
+                        row.record_kind == "reconcile"
+                        and row.lifecycle_state == "final_reconciled"
+                    ):
                         fee_rows.append(row)
                     continue
                 if row.lifecycle_state not in _EXECUTED_LIFECYCLE_STATES:
@@ -489,13 +532,18 @@ class PaperEvaluationPnL:
                     missing_observation_count += 1
                     continue
 
-                if not filled_qty.is_finite() or not filled_price.is_finite():
+                if (
+                    not filled_qty.is_finite()
+                    or not filled_price.is_finite()
+                    or filled_qty <= 0
+                    or filled_price <= 0
+                ):
                     missing_observation_count += 1
                     continue
 
                 notional = filled_qty * filled_price
                 turnover += abs(notional)
-                position_notionals.append(notional)
+                execution_rows.append(row)
 
                 side_lower = (row.side or "").lower()
                 if side_lower == "buy":
@@ -508,11 +556,37 @@ class PaperEvaluationPnL:
                     if _is_partial_fill(partial_meta):
                         partial_fill_count += 1
 
-        nominal_net_pnl = self._compute_alpaca_roundtrip_pnl(
-            buy_executions, sell_executions
-        )
-
+        mapping = self._config.views[ViewName.ALPACA_BROKER]
+        initial_equity = self._epoch.initial_equity[ViewName.ALPACA_BROKER]
+        cash = initial_equity
+        inventory: dict[str, Decimal] = {}
+        last_fill_price: dict[str, Decimal] = {}
         fees_total = _ZERO
+        executions = execution_rows
+        for row in executions:
+            symbol = row.execution_symbol
+            qty = _to_decimal_safe(row.filled_qty, f"alpaca row {row.id} qty")
+            price = _to_decimal_safe(row.filled_avg_price, f"alpaca row {row.id} price")
+            fee = _ZERO
+            if row.fee_amount is not None:
+                fee = _to_decimal_safe(row.fee_amount, f"alpaca row {row.id} fee")
+                if fee < 0 or (row.fee_currency or "USD") != "USD":
+                    raise EvaluationConfigError(
+                        "currency_mismatch", "Alpaca fees must be non-negative USD"
+                    )
+            last_fill_price[symbol] = price
+            current_qty = inventory.get(symbol, _ZERO)
+            if row.side.lower() == "buy":
+                cash -= qty * price + fee
+                inventory[symbol] = current_qty + qty
+            else:
+                if qty > current_qty:
+                    missing_observation_count += 1
+                    continue
+                cash += qty * price - fee
+                inventory[symbol] = current_qty - qty
+            fees_total += fee
+
         for fee_row in fee_rows:
             fee_amount = getattr(fee_row, "fee_amount", None)
             if fee_amount is not None:
@@ -520,20 +594,34 @@ class PaperEvaluationPnL:
                     fee = Decimal(str(fee_amount))
                     if fee.is_finite():
                         fees_total += fee
+                        cash -= fee
                 except Exception:
                     missing_observation_count += 1
 
-        mapping = self._config.views[ViewName.ALPACA_BROKER]
-        initial_equity = self._epoch.initial_equity[ViewName.ALPACA_BROKER]
-        ending_equity = initial_equity + nominal_net_pnl
+        ending_equity = cash
+        open_notionals: list[Decimal] = []
+        for symbol, qty in inventory.items():
+            if qty == 0:
+                continue
+            mark = None if native_marks is None else native_marks.get(symbol)
+            if mark is None:
+                missing_observation_count += 1
+                mark = last_fill_price[symbol]
+            mark = _validate_finite(mark, f"Alpaca native USD mark {symbol}")
+            if mark <= 0:
+                raise EvaluationConfigError(
+                    "insufficient_evidence", f"invalid Alpaca mark for {symbol}"
+                )
+            notional = qty * mark
+            ending_equity += notional
+            open_notionals.append(abs(notional))
+        nominal_net_pnl = ending_equity - initial_equity
         net_return_pct = self._safe_return_pct(ending_equity, initial_equity)
 
-        pnl_samples = self._extract_alpaca_pnl_samples(
-            buy_executions, sell_executions
-        )
+        pnl_samples = [nominal_net_pnl] if executions else []
         equity_curve = _build_equity_curve(initial_equity, pnl_samples)
         max_dd = _compute_max_drawdown_pct(equity_curve)
-        exposure = _compute_exposure(position_notionals, initial_equity)
+        exposure = _compute_exposure(open_notionals, initial_equity)
 
         per_trade_returns = self._pnl_to_returns(pnl_samples, initial_equity)
         sharpe = _compute_sharpe(
@@ -544,6 +632,22 @@ class PaperEvaluationPnL:
 
         cash_bench = _ZERO
         btc_eth_bench = _ZERO
+        if evaluated_at is not None:
+            days = compute_calendar_days(self._epoch.started_at, evaluated_at)
+            cash_bench = (
+                self._config.annualization.risk_free_rate_pct
+                * Decimal(days)
+                / Decimal("365")
+            )
+        if benchmark_marks is not None:
+            symbols = mapping.benchmark_symbols
+            btc_eth_bench = _benchmark_return_pct(
+                benchmark_marks,
+                {
+                    symbols[0]: self._config.benchmark_weights.btc_weight,
+                    symbols[1]: self._config.benchmark_weights.eth_weight,
+                },
+            )
         cash_delta, btc_eth_delta = _compute_benchmark_deltas(
             net_return_pct, cash_bench, btc_eth_bench
         )
@@ -581,10 +685,11 @@ class PaperEvaluationPnL:
     async def compute_shadow_view(
         self,
         snapshot_reader: _SnapshotReader,
-        target_weights: dict[str, Decimal],
+        target_weights: Mapping[str, Decimal],
         *,
         cohort_id: str,
         since: datetime,
+        evaluated_at: datetime | None = None,
     ) -> ViewMetrics:
         """Compute View 3: Canonical shadow P&L (native USDT).
 
@@ -596,98 +701,140 @@ class PaperEvaluationPnL:
         )
 
         fcp = self._config.fill_cost_policy
-        pnl_samples: list[Decimal] = []
-        turnover = _ZERO
+        parsed: list[tuple[str, dict[str, Decimal], dict[str, Decimal]]] = []
+        seen_hashes: set[str] = set()
         missing_observation_count = 0
-        position_notionals: list[Decimal] = []
-        consumed_hashes: list[str] = []
-        fees_total = _ZERO
-
         for snap in snapshots:
-            payload = snap.payload
-            content_hash = snap.content_hash
-
-            if not isinstance(payload, dict):
-                missing_observation_count += 1
-                continue
-
-            symbols_data = payload.get("symbols")
-            if not isinstance(symbols_data, (list, tuple)) or len(symbols_data) < 1:
-                missing_observation_count += 1
-                continue
-
-            snapshot_pnl = _ZERO
-            snapshot_notional = _ZERO
-
-            for sym_data in symbols_data:
-                if not isinstance(sym_data, dict):
-                    continue
-                symbol = sym_data.get("symbol")
-                if symbol is None:
-                    continue
-
-                candles = sym_data.get("candles")
-                if not isinstance(candles, (list, tuple)) or len(candles) == 0:
-                    missing_observation_count += 1
-                    continue
-
-                last_candle = candles[-1]
-                if not isinstance(last_candle, dict):
-                    missing_observation_count += 1
-                    continue
-
-                close_raw = last_candle.get("close")
-                if close_raw is None:
-                    missing_observation_count += 1
-                    continue
-
-                try:
-                    canonical_close = Decimal(str(close_raw))
-                except Exception:
-                    missing_observation_count += 1
-                    continue
-
-                if not canonical_close.is_finite() or canonical_close <= _ZERO:
-                    missing_observation_count += 1
-                    continue
-
-                weight = target_weights.get(symbol, _ZERO)
-                if weight <= _ZERO:
-                    continue
-
-                initial_equity_shadow = self._epoch.initial_equity[
-                    ViewName.CANONICAL_SHADOW
-                ]
-                target_notional = initial_equity_shadow * weight
-                snapshot_notional += abs(target_notional)
-
-                fill_price = self._apply_slippage(
-                    canonical_close, fcp.slippage_bps, is_buy=True
+            if snap.content_hash in seen_hashes:
+                raise EvaluationConfigError(
+                    "invalid_evidence", "duplicate canonical snapshot hash"
                 )
-                slippage_cost = abs(fill_price - canonical_close) * weight
-                fee = target_notional * fcp.fee_rate_bps / Decimal("10000")
-                spread_cost = target_notional * fcp.spread_bps / Decimal("10000")
+            seen_hashes.add(snap.content_hash)
+            payload = snap.payload
+            symbols_data = payload.get("symbols") if isinstance(payload, dict) else None
+            if not isinstance(symbols_data, (list, tuple)) or not symbols_data:
+                missing_observation_count += 1
+                continue
+            closes: dict[str, Decimal] = {}
+            opens: dict[str, Decimal] = {}
+            malformed = False
+            for sym_data in symbols_data:
+                if not isinstance(sym_data, dict) or not isinstance(
+                    sym_data.get("symbol"), str
+                ):
+                    malformed = True
+                    continue
+                candles = sym_data.get("candles")
+                if not isinstance(candles, (list, tuple)) or not candles:
+                    malformed = True
+                    continue
+                candle = candles[-1]
+                if not isinstance(candle, dict):
+                    malformed = True
+                    continue
+                try:
+                    close = _to_decimal_safe(
+                        candle.get("close"), f"{sym_data['symbol']} close"
+                    )
+                    open_price = _to_decimal_safe(
+                        candle.get("open"), f"{sym_data['symbol']} open"
+                    )
+                except EvaluationConfigError:
+                    malformed = True
+                    continue
+                if close <= 0 or open_price <= 0:
+                    malformed = True
+                    continue
+                closes[sym_data["symbol"]] = close
+                opens[sym_data["symbol"]] = open_price
+            if malformed or any(symbol not in closes for symbol in target_weights):
+                missing_observation_count += 1
+                continue
+            parsed.append((snap.content_hash, closes, opens))
 
-                fees_total += fee
-                snapshot_pnl += -(fee + spread_cost + slippage_cost)
-
-            if snapshot_notional > _ZERO:
-                turnover += snapshot_notional
-                position_notionals.append(snapshot_notional)
-
-            pnl_samples.append(snapshot_pnl)
-            consumed_hashes.append(content_hash)
-
-        nominal_net_pnl = sum(pnl_samples, start=_ZERO)
         mapping = self._config.views[ViewName.CANONICAL_SHADOW]
         initial_equity = self._epoch.initial_equity[ViewName.CANONICAL_SHADOW]
-        ending_equity = initial_equity + nominal_net_pnl
+        cash = initial_equity
+        positions = dict.fromkeys(target_weights, _ZERO)
+        equity_curve = [initial_equity]
+        position_notionals: list[Decimal] = []
+        consumed_hashes: list[str] = []
+        turnover = _ZERO
+        fees_total = _ZERO
+        fill_count = 0
+        partial_fill_count = 0
+
+        for index, (content_hash, closes, _opens) in enumerate(parsed):
+            equity = cash + sum(
+                positions[symbol] * closes[symbol] for symbol in positions
+            )
+            deltas: dict[str, Decimal] = {}
+            for symbol, weight in target_weights.items():
+                weight = _validate_finite(weight, f"target weight {symbol}")
+                if weight < 0:
+                    raise EvaluationConfigError(
+                        "invalid_evidence", f"negative target weight for {symbol}"
+                    )
+                deltas[symbol] = equity * weight / closes[symbol] - positions[symbol]
+
+            has_delta = any(delta != 0 for delta in deltas.values())
+            fill_prices = closes
+            valuation_prices = closes
+            if (
+                has_delta
+                and self._config.mark_fill_timing.fill_timing == "next_bar_open"
+            ):
+                if index + 1 >= len(parsed):
+                    missing_observation_count += 1
+                    consumed_hashes.append(content_hash)
+                    equity_curve.append(equity)
+                    continue
+                _, valuation_prices, next_opens = parsed[index + 1]
+                fill_prices = next_opens
+
+            if has_delta:
+                ratio = _ONE
+                if fcp.partial_fill_policy.value == "accept_partial_with_evidence":
+                    ratio = fcp.partial_fill_ratio
+                    partial_fill_count += 1
+                total_bps = fcp.fee_rate_bps + fcp.spread_bps + fcp.slippage_bps
+                for symbol, requested_delta in deltas.items():
+                    delta = requested_delta * ratio
+                    if delta == 0:
+                        continue
+                    fill_price = fill_prices[symbol]
+                    executed_notional = abs(delta) * fill_price
+                    cost = executed_notional * total_bps / Decimal("10000")
+                    fee = executed_notional * fcp.fee_rate_bps / Decimal("10000")
+                    cash -= delta * fill_price + cost
+                    positions[symbol] += delta
+                    turnover += executed_notional
+                    fees_total += fee
+                fill_count += 1
+
+            ending_at_observation = cash + sum(
+                positions[symbol] * valuation_prices[symbol] for symbol in positions
+            )
+            equity_curve.append(ending_at_observation)
+            position_notionals.append(
+                sum(
+                    abs(positions[symbol] * valuation_prices[symbol])
+                    for symbol in positions
+                )
+            )
+            consumed_hashes.append(content_hash)
+
+        ending_equity = equity_curve[-1]
+        nominal_net_pnl = ending_equity - initial_equity
         net_return_pct = self._safe_return_pct(ending_equity, initial_equity)
 
-        equity_curve = _build_equity_curve(initial_equity, pnl_samples)
         max_dd = _compute_max_drawdown_pct(equity_curve)
         exposure = _compute_exposure(position_notionals, initial_equity)
 
+        pnl_samples = [
+            equity_curve[index] - equity_curve[index - 1]
+            for index in range(1, len(equity_curve))
+        ]
         per_trade_returns = self._pnl_to_returns(pnl_samples, initial_equity)
         sharpe = _compute_sharpe(
             per_trade_returns,
@@ -696,13 +843,28 @@ class PaperEvaluationPnL:
         )
 
         cash_bench = _ZERO
+        if evaluated_at is not None:
+            cash_bench = (
+                self._config.annualization.risk_free_rate_pct
+                * Decimal(compute_calendar_days(since, evaluated_at))
+                / Decimal("365")
+            )
         btc_eth_bench = _ZERO
+        if len(parsed) >= 2:
+            symbols = mapping.benchmark_symbols
+            btc_eth_bench = _benchmark_return_pct(
+                {
+                    symbol: (parsed[0][1][symbol], parsed[-1][1][symbol])
+                    for symbol in symbols
+                },
+                {
+                    symbols[0]: self._config.benchmark_weights.btc_weight,
+                    symbols[1]: self._config.benchmark_weights.eth_weight,
+                },
+            )
         cash_delta, btc_eth_delta = _compute_benchmark_deltas(
             net_return_pct, cash_bench, btc_eth_bench
         )
-
-        fill_count = len(pnl_samples)
-        partial_fill_count = 0
 
         return ViewMetrics(
             view_name=ViewName.CANONICAL_SHADOW,
@@ -797,7 +959,11 @@ class PaperEvaluationPnL:
         Buys: price * (1 + slippage_bps/10000)
         Sells: price * (1 - slippage_bps/10000)
         """
-        factor = _ONE + slippage_bps / Decimal("10000") if is_buy else _ONE - slippage_bps / Decimal("10000")
+        factor = (
+            _ONE + slippage_bps / Decimal("10000")
+            if is_buy
+            else _ONE - slippage_bps / Decimal("10000")
+        )
         return price * factor
 
     def _compute_alpaca_roundtrip_pnl(
@@ -905,9 +1071,7 @@ class PaperEvaluationPnL:
                 avg_buy_price = buy_total_notional / buy_total_qty
                 avg_sell_price = sell_total_notional / sell_total_qty
                 matched_qty = min(buy_total_qty, sell_total_qty)
-                samples.append(
-                    (avg_sell_price - avg_buy_price) * matched_qty
-                )
+                samples.append((avg_sell_price - avg_buy_price) * matched_qty)
             elif buy_total_qty > _ZERO:
                 samples.append(-buy_total_notional)
             elif sell_total_qty > _ZERO:

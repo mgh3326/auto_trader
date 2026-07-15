@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -59,9 +59,7 @@ def make_epoch(
 
 def test_account_reset_always_creates_new_epoch() -> None:
     epoch = make_epoch()
-    assert should_create_new_epoch(
-        epoch, reset_reason=EpochResetReason.ACCOUNT_RESET
-    )
+    assert should_create_new_epoch(epoch, reset_reason=EpochResetReason.ACCOUNT_RESET)
 
 
 def test_api_key_recreation_always_creates_new_epoch() -> None:
@@ -159,10 +157,10 @@ def test_compute_calendar_days_same_day_is_zero() -> None:
     assert compute_calendar_days(start, end) == 0
 
 
-def test_compute_calendar_days_cross_midnight_is_one() -> None:
+def test_compute_calendar_days_cross_midnight_without_24h_is_zero() -> None:
     start = datetime(2026, 1, 1, 23, 59, tzinfo=UTC)
     end = datetime(2026, 1, 2, 0, 1, tzinfo=UTC)
-    assert compute_calendar_days(start, end) == 1
+    assert compute_calendar_days(start, end) == 0
 
 
 def test_compute_calendar_days_six_days() -> None:
@@ -187,6 +185,25 @@ def test_compute_calendar_days_60_days() -> None:
     start = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     end = start + timedelta(days=60)
     assert compute_calendar_days(start, end) == 60
+
+
+def test_compute_calendar_days_uses_full_elapsed_24_hour_periods() -> None:
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    end = start + timedelta(days=6, hours=23, minutes=59)
+    assert compute_calendar_days(start, end) == 6
+
+
+def test_compute_calendar_days_same_instant_mixed_offsets_is_zero() -> None:
+    start = datetime(2026, 1, 2, 0, 30, tzinfo=timezone(timedelta(hours=9)))
+    end = datetime(2026, 1, 1, 15, 30, tzinfo=UTC)
+    assert compute_calendar_days(start, end) == 0
+
+
+def test_compute_calendar_days_rejects_reversed_interval() -> None:
+    start = datetime(2026, 1, 2, tzinfo=UTC)
+    with pytest.raises(EvaluationConfigError) as exc:
+        compute_calendar_days(start, start - timedelta(seconds=1))
+    assert exc.value.reason_code == "invalid_evaluation_window"
 
 
 def test_compute_calendar_days_rejects_naive_start() -> None:

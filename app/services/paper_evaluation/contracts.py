@@ -14,6 +14,7 @@ Policy is finalised (see ROB-850 Linear comment 2026-07-12):
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -217,12 +218,8 @@ class PromotionThresholds(_Frozen):
 class BenchmarkWeights(_Frozen):
     """BTC/ETH equal-weight benchmark definition."""
 
-    btc_weight: Decimal = Field(
-        default=Decimal("0.5"), gt=0, lt=1, allow_inf_nan=False
-    )
-    eth_weight: Decimal = Field(
-        default=Decimal("0.5"), gt=0, lt=1, allow_inf_nan=False
-    )
+    btc_weight: Decimal = Field(default=Decimal("0.5"), gt=0, lt=1, allow_inf_nan=False)
+    eth_weight: Decimal = Field(default=Decimal("0.5"), gt=0, lt=1, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def weights_sum_to_one(self) -> BenchmarkWeights:
@@ -251,6 +248,35 @@ _V1_VIEW_NAMES = frozenset(
         ViewName.CANONICAL_SHADOW,
     }
 )
+_V1_VIEW_ORDER = (
+    ViewName.BINANCE_BROKER,
+    ViewName.ALPACA_BROKER,
+    ViewName.CANONICAL_SHADOW,
+)
+
+
+class _FrozenDict(dict[ViewName, object]):
+    """JSON-serializable dict whose mutation surface is disabled."""
+
+    @staticmethod
+    def _immutable(*_args: object, **_kwargs: object) -> None:
+        raise TypeError("evaluation mappings are immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+    __ior__ = _immutable
+
+
+def _freeze_view_mapping(
+    mapping: Mapping[ViewName, object],
+) -> Mapping[ViewName, object]:
+    """Return a deterministic, read-only mapping in canonical view order."""
+    return _FrozenDict({name: mapping[name] for name in _V1_VIEW_ORDER})
 
 
 class EvaluationConfig(_Frozen):
@@ -266,13 +292,13 @@ class EvaluationConfig(_Frozen):
     formula_version: Literal["v1"] = "v1"
 
     # view → currency/source/symbol mapping (dict → order-independent hash)
-    views: dict[ViewName, ViewMapping]
+    views: Mapping[ViewName, ViewMapping]
 
     # shadow currency
     shadow_currency: Literal[ViewCurrency.USDT] = ViewCurrency.USDT
 
     # initial-equity per view (native currency)
-    initial_equity: dict[ViewName, PositiveDecimal]
+    initial_equity: Mapping[ViewName, PositiveDecimal]
 
     # canonical snapshot source/schema
     canonical_snapshot_source: Literal["binance_public_spot"]
@@ -310,9 +336,7 @@ class EvaluationConfig(_Frozen):
     mdd_target_pct: PositiveDecimal
 
     # currency conversion policy — explicit "none"
-    currency_conversion_policy: CurrencyConversionPolicy = (
-        CurrencyConversionPolicy.NONE
-    )
+    currency_conversion_policy: CurrencyConversionPolicy = CurrencyConversionPolicy.NONE
 
     @model_validator(mode="after")
     def validate_views_and_equity(self) -> EvaluationConfig:
@@ -337,6 +361,10 @@ class EvaluationConfig(_Frozen):
                 "mdd_target_mismatch",
                 "mdd_target_pct must equal promotion_thresholds.max_drawdown_target_pct",
             )
+        object.__setattr__(self, "views", _freeze_view_mapping(self.views))
+        object.__setattr__(
+            self, "initial_equity", _freeze_view_mapping(self.initial_equity)
+        )
         return self
 
     # ------------------------------------------------------------------
@@ -358,8 +386,7 @@ class EvaluationConfig(_Frozen):
             },
             "shadow_currency": self.shadow_currency.value,
             "initial_equity": {
-                name.value: str(equity)
-                for name, equity in self.initial_equity.items()
+                name.value: str(equity) for name, equity in self.initial_equity.items()
             },
             "canonical_snapshot_source": self.canonical_snapshot_source,
             "canonical_snapshot_schema": self.canonical_snapshot_schema,
@@ -372,9 +399,7 @@ class EvaluationConfig(_Frozen):
             "paper_promotion_days": self.paper_promotion_days,
             "calendar_day_semantics": self.calendar_day_semantics.value,
             "minimum_evidence": self.minimum_evidence.model_dump(mode="python"),
-            "promotion_thresholds": self.promotion_thresholds.model_dump(
-                mode="python"
-            ),
+            "promotion_thresholds": self.promotion_thresholds.model_dump(mode="python"),
             "mdd_target_pct": str(self.mdd_target_pct),
             "currency_conversion_policy": self.currency_conversion_policy.value,
         }
@@ -399,7 +424,7 @@ class EpochIdentity(_Frozen):
     epoch_id: Identifier128
     cohort_id: Identifier128
     config_hash: Sha256
-    initial_equity: dict[ViewName, PositiveDecimal]
+    initial_equity: Mapping[ViewName, PositiveDecimal]
     started_at: datetime
     reset_reason: EpochResetReason | None = None
     prior_epoch_id: Identifier128 | None = None
@@ -419,6 +444,9 @@ class EpochIdentity(_Frozen):
             raise EvaluationConfigError(
                 "invalid_epoch", "initial_equity must cover exactly three views"
             )
+        object.__setattr__(
+            self, "initial_equity", _freeze_view_mapping(self.initial_equity)
+        )
         return self
 
 
@@ -567,7 +595,7 @@ class ScorecardVerdict(_Frozen):
     cohort_hash: Sha256
 
     # per-view metrics (never aggregated nominally)
-    view_metrics: dict[ViewName, ViewMetrics]
+    view_metrics: Mapping[ViewName, ViewMetrics]
 
     # aggregate extrema (normalised only)
     min_net_return_pct: Decimal = Field(allow_inf_nan=False)
@@ -575,8 +603,8 @@ class ScorecardVerdict(_Frozen):
     min_benchmark_delta_pct: Decimal = Field(allow_inf_nan=False)
 
     # gate evidence
-    shadow_gate: GateVerdict | None = None
-    paper_gate: GateVerdict | None = None
+    shadow_gate: GateVerdict
+    paper_gate: GateVerdict
 
     # evidence IDs for ROB-848 PromotionEligibilityEvidence
     evidence_ids: tuple[NonBlank, ...] = Field(min_length=1)
@@ -590,7 +618,28 @@ class ScorecardVerdict(_Frozen):
             raise EvaluationConfigError(
                 "invalid_verdict", "exactly three views required"
             )
-        # verify no cross-view nominal total field exists
+        for name, metrics in self.view_metrics.items():
+            if metrics.view_name != name:
+                raise EvaluationConfigError(
+                    "invalid_verdict", f"view key {name} mismatches nested metric"
+                )
+            for field in (
+                "epoch_id",
+                "config_hash",
+                "experiment_hash",
+                "cohort_hash",
+            ):
+                if getattr(metrics, field) != getattr(self, field):
+                    raise EvaluationConfigError(
+                        "invalid_verdict", f"nested metric {name} {field} mismatch"
+                    )
+        if self.shadow_gate.gate_type is not GateType.SHADOW_SOAK:
+            raise EvaluationConfigError("invalid_verdict", "shadow_gate type mismatch")
+        if self.paper_gate.gate_type is not GateType.PAPER_PROMOTION:
+            raise EvaluationConfigError("invalid_verdict", "paper_gate type mismatch")
+        object.__setattr__(
+            self, "view_metrics", _freeze_view_mapping(self.view_metrics)
+        )
         return self
 
     @model_validator(mode="after")

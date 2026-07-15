@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -80,6 +80,7 @@ def _make_service(
     slippage_bps: Decimal = Decimal("3"),
     risk_free_rate_pct: Decimal = Decimal("2"),
     partial_fill_policy: PartialFillPolicy = PartialFillPolicy.REJECT_PARTIAL,
+    fill_timing: str = "canonical_close",
 ) -> PaperEvaluationPnL:
     config = make_evaluation_config(
         initial_equity_usdt=initial_equity_usdt,
@@ -89,6 +90,7 @@ def _make_service(
         slippage_bps=slippage_bps,
         risk_free_rate_pct=risk_free_rate_pct,
         partial_fill_policy=partial_fill_policy,
+        fill_timing=fill_timing,
     )
     epoch = _make_epoch(
         initial_equity_usdt=initial_equity_usdt,
@@ -169,7 +171,10 @@ class FakeAlpacaLedgerReader:
     ) -> FakeAlpacaRow | None:
         for rows in self.rows_by_correlation.values():
             for row in rows:
-                if row.client_order_id == client_order_id and row.record_kind == "execution":
+                if (
+                    row.client_order_id == client_order_id
+                    and row.record_kind == "execution"
+                ):
                     return row
         return None
 
@@ -566,8 +571,12 @@ class TestBinanceView:
         service = _make_service()
         ledger = FakeBinanceLedgerReader(
             rows=[
-                _make_binance_row(realized_pnl="100", notional="1000", fee="5", row_id=1),
-                _make_binance_row(realized_pnl="200", notional="2000", fee="10", row_id=2),
+                _make_binance_row(
+                    realized_pnl="100", notional="1000", fee="5", row_id=1
+                ),
+                _make_binance_row(
+                    realized_pnl="200", notional="2000", fee="10", row_id=2
+                ),
             ]
         )
         metrics = await service.compute_binance_view(ledger, since=SINCE)
@@ -579,7 +588,9 @@ class TestBinanceView:
         ledger = FakeBinanceLedgerReader(
             rows=[
                 # 1000 notional * 10bps / 10000 = 1 USDT fee
-                _make_binance_row(realized_pnl="100", notional="1000", fee=None, row_id=1),
+                _make_binance_row(
+                    realized_pnl="100", notional="1000", fee=None, row_id=1
+                ),
             ]
         )
         metrics = await service.compute_binance_view(ledger, since=SINCE)
@@ -680,6 +691,65 @@ class TestAlpacaView:
         assert metrics.nominal_net_pnl == Decimal("1000")
 
     @pytest.mark.asyncio
+    async def test_partial_inventory_is_marked_not_treated_as_full_loss(self) -> None:
+        service = _make_service(
+            fee_rate_bps=Decimal("0"),
+            spread_bps=Decimal("0"),
+            slippage_bps=Decimal("0"),
+        )
+        ledger = FakeAlpacaLedgerReader(
+            rows_by_correlation={
+                "corr_1": [
+                    _make_alpaca_execution_row(
+                        side="buy", filled_qty="2", filled_price="100", row_id=1
+                    ),
+                    _make_alpaca_execution_row(
+                        side="sell", filled_qty="1", filled_price="110", row_id=2
+                    ),
+                ]
+            }
+        )
+        metrics = await service.compute_alpaca_view(
+            ledger,
+            correlation_ids=["corr_1"],
+            evaluated_at=SINCE,
+            native_marks={"BTC/USD": Decimal("105")},
+            benchmark_marks={
+                "BTC/USD": (Decimal("100"), Decimal("105")),
+                "ETH/USD": (Decimal("100"), Decimal("100")),
+            },
+        )
+        assert metrics.nominal_net_pnl == Decimal("15")
+
+    @pytest.mark.asyncio
+    async def test_open_buy_at_unchanged_mark_is_not_a_loss(self) -> None:
+        service = _make_service(
+            fee_rate_bps=Decimal("0"),
+            spread_bps=Decimal("0"),
+            slippage_bps=Decimal("0"),
+        )
+        ledger = FakeAlpacaLedgerReader(
+            rows_by_correlation={
+                "corr_1": [
+                    _make_alpaca_execution_row(
+                        side="buy", filled_qty="1", filled_price="100", row_id=1
+                    )
+                ]
+            }
+        )
+        metrics = await service.compute_alpaca_view(
+            ledger,
+            correlation_ids=["corr_1"],
+            evaluated_at=SINCE,
+            native_marks={"BTC/USD": Decimal("100")},
+            benchmark_marks={
+                "BTC/USD": (Decimal("100"), Decimal("100")),
+                "ETH/USD": (Decimal("100"), Decimal("100")),
+            },
+        )
+        assert metrics.nominal_net_pnl == Decimal("0")
+
+    @pytest.mark.asyncio
     async def test_ending_equity_invariant(self) -> None:
         service = _make_service()
         ledger = FakeAlpacaLedgerReader(
@@ -728,9 +798,7 @@ class TestAlpacaView:
         service = _make_service()
         bad_row = _make_alpaca_execution_row(row_id=1)
         bad_row.currency = "KRW"
-        ledger = FakeAlpacaLedgerReader(
-            rows_by_correlation={"corr_1": [bad_row]}
-        )
+        ledger = FakeAlpacaLedgerReader(rows_by_correlation={"corr_1": [bad_row]})
         with pytest.raises(EvaluationConfigError) as exc_info:
             await service.compute_alpaca_view(ledger, correlation_ids=["corr_1"])
         assert exc_info.value.reason_code == "currency_mismatch"
@@ -740,9 +808,7 @@ class TestAlpacaView:
         service = _make_service()
         row = _make_alpaca_execution_row(row_id=1)
         row.filled_qty = None
-        ledger = FakeAlpacaLedgerReader(
-            rows_by_correlation={"corr_1": [row]}
-        )
+        ledger = FakeAlpacaLedgerReader(rows_by_correlation={"corr_1": [row]})
         metrics = await service.compute_alpaca_view(ledger, correlation_ids=["corr_1"])
         assert metrics.missing_observation_count == 1
 
@@ -751,9 +817,7 @@ class TestAlpacaView:
         service = _make_service()
         row = _make_alpaca_execution_row(row_id=1)
         row.filled_avg_price = None
-        ledger = FakeAlpacaLedgerReader(
-            rows_by_correlation={"corr_1": [row]}
-        )
+        ledger = FakeAlpacaLedgerReader(rows_by_correlation={"corr_1": [row]})
         metrics = await service.compute_alpaca_view(ledger, correlation_ids=["corr_1"])
         assert metrics.missing_observation_count == 1
 
@@ -808,22 +872,36 @@ class TestAlpacaView:
             rows_by_correlation={
                 "corr_1": [
                     _make_alpaca_execution_row(
-                        side="buy", filled_qty="1", filled_price="50000",
-                        row_id=1, corr_id="corr_1",
+                        side="buy",
+                        filled_qty="1",
+                        filled_price="50000",
+                        row_id=1,
+                        corr_id="corr_1",
                     ),
                     _make_alpaca_execution_row(
-                        side="sell", filled_qty="1", filled_price="51000",
-                        row_id=2, corr_id="corr_1",
+                        side="sell",
+                        filled_qty="1",
+                        filled_price="51000",
+                        row_id=2,
+                        corr_id="corr_1",
                     ),
                 ],
                 "corr_2": [
                     _make_alpaca_execution_row(
-                        side="buy", filled_qty="2", filled_price="3000",
-                        row_id=3, corr_id="corr_2", symbol="ETH/USD",
+                        side="buy",
+                        filled_qty="2",
+                        filled_price="3000",
+                        row_id=3,
+                        corr_id="corr_2",
+                        symbol="ETH/USD",
                     ),
                     _make_alpaca_execution_row(
-                        side="sell", filled_qty="2", filled_price="3100",
-                        row_id=4, corr_id="corr_2", symbol="ETH/USD",
+                        side="sell",
+                        filled_qty="2",
+                        filled_price="3100",
+                        row_id=4,
+                        corr_id="corr_2",
+                        symbol="ETH/USD",
                     ),
                 ],
             }
@@ -841,7 +919,9 @@ class TestAlpacaView:
             rows_by_correlation={
                 "corr_1": [
                     _make_alpaca_execution_row(
-                        side="buy", row_id=1, is_partial=True,
+                        side="buy",
+                        row_id=1,
+                        is_partial=True,
                     ),
                 ]
             }
@@ -881,6 +961,52 @@ class TestShadowView:
         assert metrics.fill_count == 1
         assert len(metrics.canonical_snapshot_hashes) == 1
         assert metrics.canonical_snapshot_hashes[0] == _STABLE_HASH_A
+
+    @pytest.mark.asyncio
+    async def test_rising_prices_produce_mark_to_market_profit(self) -> None:
+        service = _make_service(
+            fee_rate_bps=Decimal("0"),
+            spread_bps=Decimal("0"),
+            slippage_bps=Decimal("0"),
+            fill_timing="canonical_close",
+        )
+        reader = FakeSnapshotReader(
+            snapshots=[
+                FakeMarketSnapshot(
+                    id=1,
+                    content_hash=_STABLE_HASH_A,
+                    payload=_make_snapshot_payload(btc_close="100", eth_close="100"),
+                ),
+                FakeMarketSnapshot(
+                    id=2,
+                    content_hash=_STABLE_HASH_B,
+                    payload=_make_snapshot_payload(btc_close="110", eth_close="110"),
+                ),
+            ]
+        )
+        metrics = await service.compute_shadow_view(
+            reader,
+            {"BTCUSDT": Decimal("0.5"), "ETHUSDT": Decimal("0.5")},
+            cohort_id="cohort_test_001",
+            since=SINCE,
+        )
+        assert metrics.nominal_net_pnl == Decimal("1000")
+        assert metrics.fill_count == 1
+
+    @pytest.mark.asyncio
+    async def test_zero_target_snapshot_is_observation_not_fill(self) -> None:
+        service = _make_service()
+        reader = FakeSnapshotReader(
+            snapshots=[FakeMarketSnapshot(payload=_make_snapshot_payload())]
+        )
+        metrics = await service.compute_shadow_view(
+            reader,
+            {"BTCUSDT": Decimal("0"), "ETHUSDT": Decimal("0")},
+            cohort_id="cohort_test_001",
+            since=SINCE,
+        )
+        assert metrics.fill_count == 0
+        assert metrics.missing_observation_count == 0
 
     @pytest.mark.asyncio
     async def test_ending_equity_invariant(self) -> None:
@@ -1098,7 +1224,9 @@ class TestCurrencySeparation:
         alpaca_ledger = FakeAlpacaLedgerReader(rows_by_correlation={})
         snapshot_reader = FakeSnapshotReader(snapshots=[])
 
-        binance_metrics = await service.compute_binance_view(binance_ledger, since=SINCE)
+        binance_metrics = await service.compute_binance_view(
+            binance_ledger, since=SINCE
+        )
         alpaca_metrics = await service.compute_alpaca_view(
             alpaca_ledger, correlation_ids=[]
         )
@@ -1126,7 +1254,9 @@ class TestCurrencySeparation:
             }
         )
 
-        binance_metrics = await service.compute_binance_view(binance_ledger, since=SINCE)
+        binance_metrics = await service.compute_binance_view(
+            binance_ledger, since=SINCE
+        )
         alpaca_metrics = await service.compute_alpaca_view(
             alpaca_ledger, correlation_ids=["c1"]
         )
@@ -1217,10 +1347,20 @@ class TestBenchmarks:
         )
         import asyncio
 
-        metrics = asyncio.run(service.compute_binance_view(ledger, since=SINCE))
-        # Strategy return is 5%, cash benchmark is 0 (no elapsed periods)
-        assert metrics.cash_benchmark_return_pct == Decimal("0")
-        assert metrics.cash_benchmark_delta_pct == metrics.net_return_pct
+        metrics = asyncio.run(
+            service.compute_binance_view(
+                ledger,
+                since=SINCE,
+                evaluated_at=SINCE + timedelta(days=365),
+                benchmark_marks={
+                    "BTCUSDT": (Decimal("100"), Decimal("110")),
+                    "ETHUSDT": (Decimal("100"), Decimal("120")),
+                },
+            )
+        )
+        assert metrics.cash_benchmark_return_pct == Decimal("2")
+        assert metrics.btc_eth_benchmark_return_pct == Decimal("15")
+        assert metrics.cash_benchmark_delta_pct == metrics.net_return_pct - Decimal("2")
 
 
 # ---------------------------------------------------------------------------
@@ -1236,11 +1376,19 @@ class TestReadOnlySafety:
         reader = FakeBinanceLedgerReader(rows=[])
         await service.compute_binance_view(reader, since=SINCE)
         for forbidden in (
-            "record_planned", "record_previewed", "record_validated",
-            "record_submitted", "record_filled", "record_closed",
-            "record_cancelled", "record_reconciled", "record_anomaly",
-            "reserve_root_planned", "resolve_or_create_instrument",
-            "_transition", "update_state",
+            "record_planned",
+            "record_previewed",
+            "record_validated",
+            "record_submitted",
+            "record_filled",
+            "record_closed",
+            "record_cancelled",
+            "record_reconciled",
+            "record_anomaly",
+            "reserve_root_planned",
+            "resolve_or_create_instrument",
+            "_transition",
+            "update_state",
         ):
             assert not hasattr(reader, forbidden), (
                 f"{forbidden} must not exist on a read-only reader"
@@ -1253,9 +1401,15 @@ class TestReadOnlySafety:
         reader = FakeAlpacaLedgerReader(rows_by_correlation={})
         await service.compute_alpaca_view(reader, correlation_ids=["c1"])
         for forbidden in (
-            "record_plan", "record_preview", "record_validation_attempt",
-            "record_submit", "claim_submit", "reserve_sell_and_claim",
-            "record_submit_failure", "_transition", "update_state",
+            "record_plan",
+            "record_preview",
+            "record_validation_attempt",
+            "record_submit",
+            "claim_submit",
+            "reserve_sell_and_claim",
+            "record_submit_failure",
+            "_transition",
+            "update_state",
         ):
             assert not hasattr(reader, forbidden), (
                 f"{forbidden} must not exist on a read-only reader"

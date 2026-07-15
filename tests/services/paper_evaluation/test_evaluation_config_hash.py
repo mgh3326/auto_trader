@@ -72,9 +72,7 @@ def test_different_key_insertion_order_same_hash() -> None:
         ViewName.ALPACA_BROKER: base.initial_equity[ViewName.ALPACA_BROKER],
         ViewName.BINANCE_BROKER: base.initial_equity[ViewName.BINANCE_BROKER],
     }
-    reordered = base.model_copy(
-        update={"views": views_v1, "initial_equity": equity_v1}
-    )
+    reordered = base.model_copy(update={"views": views_v1, "initial_equity": equity_v1})
     assert compute_config_hash(base) == compute_config_hash(reordered)
 
 
@@ -164,9 +162,7 @@ def test_periods_per_year_change_changes_hash() -> None:
 
 
 def test_partial_fill_policy_change_changes_hash() -> None:
-    base = make_evaluation_config(
-        partial_fill_policy=PartialFillPolicy.REJECT_PARTIAL
-    )
+    base = make_evaluation_config(partial_fill_policy=PartialFillPolicy.REJECT_PARTIAL)
     mutated = make_evaluation_config(
         partial_fill_policy=PartialFillPolicy.ACCEPT_PARTIAL_WITH_EVIDENCE,
         partial_fill_ratio=Decimal("0.5"),
@@ -239,6 +235,22 @@ def test_mdd_target_mismatch_with_thresholds_rejected() -> None:
     )
     with pytest.raises(EvaluationConfigError):
         EvaluationConfig(**dumped)
+
+
+def test_config_mappings_are_deeply_immutable() -> None:
+    config = make_evaluation_config()
+    with pytest.raises(TypeError):
+        config.views[ViewName.BINANCE_BROKER] = config.views[ViewName.ALPACA_BROKER]  # type: ignore[index]
+    with pytest.raises(TypeError):
+        config.initial_equity[ViewName.BINANCE_BROKER] = Decimal("1")  # type: ignore[index]
+
+
+def test_config_json_roundtrip_preserves_hash_and_immutability() -> None:
+    config = make_evaluation_config()
+    restored = EvaluationConfig.model_validate_json(config.model_dump_json())
+    assert restored.config_hash() == config.config_hash()
+    with pytest.raises(TypeError):
+        restored.views[ViewName.BINANCE_BROKER] = restored.views[ViewName.ALPACA_BROKER]  # type: ignore[index]
 
 
 # ---------------------------------------------------------------------------

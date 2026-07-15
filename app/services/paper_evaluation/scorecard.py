@@ -29,6 +29,7 @@ from app.services.paper_evaluation.contracts import (
     BenchmarkWeights,
     EvaluationConfig,
     EvaluationConfigError,
+    GateType,
     GateVerdict,
     MissingDataPolicy,
     ScorecardVerdict,
@@ -327,16 +328,24 @@ def _determine_status(
                 ),
             )
 
-    # 2. Shadow gate.
-    if shadow_gate is not None and not shadow_gate.passed:
+    # 2. Both authoritative transition-derived gates are mandatory.
+    if shadow_gate is None or paper_gate is None:
+        return (
+            VerdictStatus.GATE_BLOCKED,
+            "missing_gate_evidence",
+            "authoritative shadow and paper gate evidence are required",
+        )
+
+    # 3. Shadow gate.
+    if not shadow_gate.passed:
         return (
             VerdictStatus.GATE_BLOCKED,
             "shadow_gate_blocked",
             f"shadow gate not passed: {shadow_gate.reason_text}",
         )
 
-    # 3. Paper gate.
-    if paper_gate is not None and not paper_gate.passed:
+    # 4. Paper gate.
+    if not paper_gate.passed:
         return (
             VerdictStatus.GATE_BLOCKED,
             "paper_gate_blocked",
@@ -447,6 +456,25 @@ def compute_conjunctive_verdict(
     )
 
     evidence_ids = generate_evidence_ids(view_metrics)
+
+    if shadow_gate is None:
+        shadow_gate = GateVerdict(
+            gate_type=GateType.SHADOW_SOAK,
+            calendar_days_observed=0,
+            required_days=config.shadow_soak_days,
+            passed=False,
+            reason_code="missing_shadow_transition",
+            reason_text="authoritative shadow_soak transition is missing",
+        )
+    if paper_gate is None:
+        paper_gate = GateVerdict(
+            gate_type=GateType.PAPER_PROMOTION,
+            calendar_days_observed=0,
+            required_days=config.paper_promotion_days,
+            passed=False,
+            reason_code="missing_paper_transition",
+            reason_text="authoritative paper_active transition is missing",
+        )
 
     return ScorecardVerdict(
         status=status,
