@@ -25,6 +25,31 @@ def test_summary_copies_nxt_fields_from_quote():
 
 
 @pytest.mark.unit
+def test_summary_copies_self_describing_premarket_fields_from_quote():
+    """ROB-888: the compact analyze_stock_batch summary must carry
+    krx_prev_close / change_pct / session_state so the operator can cross-check
+    the premarket gap from the MCP response alone (no CDP naver)."""
+    analysis = {
+        "market_type": "equity_kr",
+        "source": "kis",
+        "quote": {
+            "price": 2082500.0,
+            "price_source": "nxt_mid",
+            "session": "nxt_premarket",
+            "session_state": "premarket",
+            "krx_prev_close": 1913000.0,
+            "change_pct": 8.86,
+        },
+    }
+    summary = _summarize_analysis_result("000660", analysis)
+    assert summary["current_price"] == 2082500.0
+    assert summary["price_source"] == "nxt_mid"
+    assert summary["session_state"] == "premarket"
+    assert summary["krx_prev_close"] == 1913000.0
+    assert summary["change_pct"] == 8.86
+
+
+@pytest.mark.unit
 def test_summary_us_has_no_nxt_fields():
     analysis = {
         "market_type": "equity_us",

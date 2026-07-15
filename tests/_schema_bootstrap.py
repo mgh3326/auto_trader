@@ -42,11 +42,18 @@ from sqlalchemy import text
 # v19 (ROB-849 review): treat every PostgreSQL whitespace class as blank.
 # v20 (ROB-849 + ROB-870): include the approval-batch ORM tables merged after
 # the cohort branch and force one combined create_all/bootstrap pass.
-# v21 (ROB-850): paper-evaluation immutable triggers
+# v21 (ROB-878): review.trade_retrospective_actions (new ORM table via
+# create_all) + review.trade_retrospective_action_control (singleton) +
+# write-fence trigger function + shadow control row mirrored below.
+# v22 (ROB-878 review): mirror the action UUID database default and fail-closed
+# control-row fence in persistent test databases.
+# v23 (ROB-878 review): align status_source with the bounded VARCHAR(32)
+# design contract in persistent test databases.
+# v24 (ROB-850): paper-evaluation immutable triggers
 # (research.reject_evaluation_mutation) for the four new evaluation tables.
 # The ORM tables are built by create_all; the trigger functions are non-ORM DDL
 # mirrored here.
-SCHEMA_BOOTSTRAP_VERSION = 21
+SCHEMA_BOOTSTRAP_VERSION = 24
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -1059,6 +1066,58 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "('planned','previewed','validated','submitted','filled','anomaly')",
     ROB844_ACK_INDEX_REFRESH_DDL,
     ROB844_ACK_INDEX_CREATE_DDL,
+    # ---- ROB-878: retrospective action write-fence trigger + singleton ----
+    "ALTER TABLE review.trade_retrospective_actions "
+    "ALTER COLUMN id SET DEFAULT gen_random_uuid()",
+    "ALTER TABLE review.trade_retrospective_actions "
+    "ALTER COLUMN status_source TYPE VARCHAR(32)",
+    # Shadow mode permits all legacy writes; canonical mode rejects direct
+    # next_actions changes unless the GUC projection-writer marker is set.
+    "CREATE OR REPLACE FUNCTION "
+    "review.guard_trade_retrospective_next_actions() "
+    "RETURNS trigger AS $$ DECLARE ctrl_mode TEXT; writer_marker TEXT; "
+    "BEGIN "
+    "SELECT mode INTO ctrl_mode "
+    "FROM review.trade_retrospective_action_control WHERE id = 1; "
+    "IF ctrl_mode IS NULL THEN "
+    "RAISE EXCEPTION "
+    "'retrospective action control row is missing; writes fail closed' "
+    "USING ERRCODE = 'restrict_violation'; "
+    "ELSIF ctrl_mode = 'shadow' THEN "
+    "RETURN NEW; "
+    "ELSIF ctrl_mode <> 'canonical' THEN "
+    "RAISE EXCEPTION "
+    "'retrospective action control mode \"%\" is invalid; writes fail closed', "
+    "ctrl_mode USING ERRCODE = 'restrict_violation'; "
+    "END IF; "
+    "writer_marker := current_setting("
+    "'app.retrospective_action_projection_writer', true); "
+    "IF writer_marker IS NULL OR writer_marker <> 'v1' THEN "
+    "IF TG_OP = 'INSERT' THEN "
+    "IF NEW.next_actions IS NOT NULL THEN "
+    "RAISE EXCEPTION "
+    "'canonical mode: direct next_actions insert rejected; "
+    "use the action repository' USING ERRCODE = 'restrict_violation'; "
+    "END IF; "
+    "ELSE "
+    "IF NEW.next_actions IS DISTINCT FROM OLD.next_actions THEN "
+    "RAISE EXCEPTION "
+    "'canonical mode: direct next_actions update rejected; "
+    "use the action repository' USING ERRCODE = 'restrict_violation'; "
+    "END IF; "
+    "END IF; "
+    "END IF; "
+    "RETURN NEW; "
+    "END; $$ LANGUAGE plpgsql",
+    "DROP TRIGGER IF EXISTS trg_trade_retrospective_next_actions_fence "
+    "ON review.trade_retrospectives",
+    "CREATE TRIGGER trg_trade_retrospective_next_actions_fence "
+    "BEFORE INSERT OR UPDATE ON review.trade_retrospectives "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "review.guard_trade_retrospective_next_actions()",
+    "INSERT INTO review.trade_retrospective_action_control (id, mode) "
+    "VALUES (1, 'shadow') "
+    "ON CONFLICT (id) DO NOTHING",
 )
 
 

@@ -190,6 +190,143 @@ async def test_caps_symbols_at_max_with_degraded(monkeypatch) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_holdings_mode_sorts_by_priority_before_cap(monkeypatch) -> None:
+    """ROB-889: holdings-mode candidates are ordered by cost-basis weight (desc)
+    with order_routable as the tiebreaker — not the arbitrary alphabetical
+    (account, market, symbol) order that let ETFs crowd out big positions."""
+
+    async def fake_collect(**kwargs):
+        return (
+            [
+                # alphabetically first, tiny position -> must NOT lead anymore
+                {
+                    "symbol": "000010",
+                    "market": "kr",
+                    "name": "Tiny ETF",
+                    "source": "kis",
+                    "broker": "kis",
+                    "quantity": 1,
+                    "avg_buy_price": 1000,  # weight 1_000
+                },
+                # alphabetically last, biggest conviction -> must lead
+                {
+                    "symbol": "999990",
+                    "market": "kr",
+                    "name": "Big conviction",
+                    "source": "kis",
+                    "broker": "kis",
+                    "quantity": 100,
+                    "avg_buy_price": 1000,  # weight 100_000
+                },
+                # mid weight, routable
+                {
+                    "symbol": "500000",
+                    "market": "kr",
+                    "name": "Mid",
+                    "source": "kis",
+                    "broker": "kis",
+                    "quantity": 10,
+                    "avg_buy_price": 1000,  # weight 10_000
+                },
+            ],
+            [],
+            None,
+            None,
+        )
+
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_portfolio_positions", fake_collect
+    )
+
+    async def fake_fetch(
+        symbol, market, instrument_type=None, *, limit=20, timeout_s=5.0
+    ):
+        return _ok_result(symbol, market)
+
+    _patch_fetch(monkeypatch, fake_fetch)
+
+    out = await _news._get_holdings_news_impl(symbols=None, limit_per_symbol=5)
+
+    # weight desc: 999990 (100k) > 500000 (10k) > 000010 (1k)
+    assert out["symbols_resolved"] == ["999990", "500000", "000010"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_holdings_cap_keeps_high_priority_over_front_etfs(monkeypatch) -> None:
+    """ROB-889: a big watched name placed LAST in the raw holdings order must
+    survive the 30-cap; a tiny front ETF is the one dropped. (Pre-fix the head
+    slice kept the front and dropped the watched name.)"""
+    etfs = [
+        {
+            "symbol": f"{i:06d}",
+            "market": "kr",
+            "name": f"ETF {i}",
+            "source": "kis",
+            "broker": "kis",
+            "quantity": 1,
+            "avg_buy_price": 1000,  # weight 1_000 each
+        }
+        for i in range(1, 31)  # 000001..000030 — 30 tiny ETFs, front of the list
+    ]
+    watched = {
+        "symbol": "999999",
+        "market": "kr",
+        "name": "Watched big",
+        "source": "kis",
+        "broker": "kis",
+        "quantity": 1000,
+        "avg_buy_price": 1000,  # weight 1_000_000 — last in list
+    }
+
+    async def fake_collect(**kwargs):
+        return (etfs + [watched], [], None, None)
+
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_portfolio_positions", fake_collect
+    )
+
+    async def fake_fetch(
+        symbol, market, instrument_type=None, *, limit=20, timeout_s=5.0
+    ):
+        return _ok_result(symbol, market)
+
+    _patch_fetch(monkeypatch, fake_fetch)
+
+    out = await _news._get_holdings_news_impl(symbols=None, limit_per_symbol=5)
+
+    resolved = out["symbols_resolved"]
+    assert len(resolved) == _news.HOLDINGS_NEWS_MAX_SYMBOLS
+    # the big watched name survived and now leads
+    assert resolved[0] == "999999"
+    assert "999999" in resolved
+    # exactly one tiny ETF got dropped (the lowest-priority by symbol tiebreak)
+    assert "000030" not in resolved
+    assert "degraded_reason" in out
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_explicit_symbols_mode_preserves_request_order(monkeypatch) -> None:
+    """ROB-889: priority sort applies ONLY to holdings mode. An explicit symbols
+    list is the caller's own priority order and must be preserved verbatim."""
+
+    async def fake_fetch(
+        symbol, market, instrument_type=None, *, limit=20, timeout_s=5.0
+    ):
+        return _ok_result(symbol, market)
+
+    _patch_fetch(monkeypatch, fake_fetch)
+
+    out = await _news._get_holdings_news_impl(
+        symbols=["999990", "000010", "500000"], limit_per_symbol=5
+    )
+
+    assert out["symbols_resolved"] == ["999990", "000010", "500000"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_per_symbol_failure_is_fail_soft(monkeypatch) -> None:
     async def fake_fetch(
         symbol, market, instrument_type=None, *, limit=20, timeout_s=5.0

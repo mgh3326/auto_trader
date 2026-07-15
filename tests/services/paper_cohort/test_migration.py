@@ -64,7 +64,13 @@ def test_migration_descends_from_merged_rob870_and_maintains_single_head() -> No
 
     config = Config(str(REPO / "alembic.ini"))
     config.set_main_option("script_location", str(REPO / "alembic"))
-    assert len(ScriptDirectory.from_config(config).get_heads()) == 1
+    script = ScriptDirectory.from_config(config)
+    heads = script.get_heads()
+    assert len(heads) == 1
+    lineage = {
+        revision.revision for revision in script.iterate_revisions(heads[0], "base")
+    }
+    assert "20260714_rob849_paper_cohort" in lineage
 
 
 def test_migration_defines_composition_and_immutable_triggers() -> None:
@@ -117,6 +123,15 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                     text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
                 )
             await connection.run_sync(Base.metadata.create_all)
+            # Base metadata represents the current application head. Rebuild
+            # the ROB-849 boundary so later migrations are exercised instead
+            # of colliding with tables that create_all already materialized.
+            await connection.execute(
+                text("DROP TABLE review.trade_retrospective_action_control")
+            )
+            await connection.execute(
+                text("DROP TABLE review.trade_retrospective_actions")
+            )
 
         env = {**os.environ, "DATABASE_URL": target_url_text}
 
@@ -142,7 +157,11 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             assert completed.returncode == 0, completed.stdout + completed.stderr
         current = await asyncio.to_thread(alembic, "current")
         assert current.returncode == 0, current.stdout + current.stderr
-        assert "20260714_rob850_paper_evaluation (head)" in current.stdout
+        config = Config(str(REPO / "alembic.ini"))
+        config.set_main_option("script_location", str(REPO / "alembic"))
+        expected_head = ScriptDirectory.from_config(config).get_current_head()
+        assert expected_head is not None
+        assert f"{expected_head} (head)" in current.stdout
 
         async with engine.connect() as connection:
             triggers = await connection.scalar(

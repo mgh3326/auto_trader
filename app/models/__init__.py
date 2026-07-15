@@ -106,6 +106,8 @@ from .review import (
     PendingSnapshot,
     TossLiveOrderLedger,
     Trade,
+    TradeRetrospectiveAction,
+    TradeRetrospectiveActionControl,
     TradeReview,
     TradeSnapshot,
 )
@@ -236,6 +238,8 @@ __all__ = [
     "TossLiveOrderLedger",
     "TradeSnapshot",
     "TradeReview",
+    "TradeRetrospectiveAction",
+    "TradeRetrospectiveActionControl",
     "TradeJournal",
     "JournalStatus",
     "PendingSnapshot",

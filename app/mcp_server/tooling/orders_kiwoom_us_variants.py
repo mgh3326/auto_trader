@@ -9,8 +9,10 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from app.core.config import validate_kiwoom_mock_us_config
 from app.mcp_server.tooling.orders_kiwoom_shared import (
     finalize_broker_response,
+    finalize_place_broker_response,
 )
 from app.services.brokers.kiwoom import constants
+from app.services.brokers.kiwoom.client import KiwoomPreDispatchError
 from app.services.brokers.kiwoom.normalization import (
     KiwoomMockEvidenceError,
     build_mock_provenance,
@@ -23,6 +25,7 @@ from app.services.brokers.kiwoom.us_account import (
 from app.services.brokers.kiwoom.us_client import KiwoomMockUsClient
 from app.services.brokers.kiwoom.us_orders import (
     KiwoomUsOrderClient,
+    KiwoomUsOrderRejected,
     build_us_place_order_body,
     validate_us_order_id,
 )
@@ -49,6 +52,10 @@ KIWOOM_MOCK_US_MUTATION_TOOL_NAMES = {
 KIWOOM_MOCK_US_TOOL_NAMES = (
     KIWOOM_MOCK_US_READ_TOOL_NAMES | KIWOOM_MOCK_US_MUTATION_TOOL_NAMES
 )
+
+
+class _TrustedValidationError(ValueError):
+    """Locally generated, operator-actionable validation failure."""
 
 
 def _mock_us_config_error() -> dict[str, Any] | None:
@@ -114,7 +121,7 @@ async def _resolve_stex(symbol: str) -> str:
     try:
         return constants.US_EXCHANGE_TO_STEX[exchange]
     except KeyError as exc:
-        raise ValueError(
+        raise _TrustedValidationError(
             f"Kiwoom US mock rejects unsupported exchange={exchange!r}"
         ) from exc
 
@@ -124,12 +131,37 @@ def _exception_response(operation: str, exc: Exception) -> dict[str, Any]:
         "success": False,
         "source": "kiwoom",
         "account_mode": ACCOUNT_MODE_KIWOOM_MOCK_US,
-        "error": (f"kiwoom_mock_us_{operation} failed: {type(exc).__name__}: {exc}"),
+        # Exception text is provider-controlled and can contain request details
+        # that key-based broker-response redaction cannot inspect.
+        "error": f"kiwoom_mock_us_{operation} failed: {type(exc).__name__}",
+    }
+
+
+def _validation_response(operation: str, exc: Exception) -> dict[str, Any]:
+    return {
+        "success": False,
+        "source": "kiwoom",
+        "account_mode": ACCOUNT_MODE_KIWOOM_MOCK_US,
+        "error": str(exc),
+        "error_code": f"{operation}_validation_failed",
+    }
+
+
+def _not_submitted_response(operation: str, exc: Exception) -> dict[str, Any]:
+    return {
+        **_exception_response(operation, exc),
+        "status": "not_submitted",
+        "reconcile_required": False,
+        "retry_allowed": False,
     }
 
 
 def _finalize_us(
-    base: dict[str, Any], broker_response: dict[str, Any], *, api_id: str
+    base: dict[str, Any],
+    broker_response: dict[str, Any],
+    *,
+    api_id: str,
+    tracked_order: bool = False,
 ) -> dict[str, Any]:
     """Anti-spoof provenance check + broker-evidence success + mock stamp."""
 
@@ -138,14 +170,26 @@ def _finalize_us(
             broker_response, allowed_account_modes=_US_ALLOWED_PROVENANCE_MODES
         )
     except KiwoomMockEvidenceError as exc:
-        return {
+        response: dict[str, Any] = {
             "success": False,
             "source": "kiwoom",
             "account_mode": ACCOUNT_MODE_KIWOOM_MOCK_US,
             "error_code": exc.code,
             "error": str(exc),
         }
-    response = finalize_broker_response(base, broker_response)
+        if tracked_order:
+            response.update(
+                {
+                    "status": "acceptance_uncertain",
+                    "reconcile_required": True,
+                    "retry_allowed": False,
+                }
+            )
+        return response
+    finalizer = (
+        finalize_place_broker_response if tracked_order else finalize_broker_response
+    )
+    response = finalizer(base, broker_response)
     response["provenance"] = build_mock_provenance(
         api_id, account_mode=ACCOUNT_MODE_KIWOOM_MOCK_US
     )
@@ -153,6 +197,17 @@ def _finalize_us(
 
 
 def register(mcp: FastMCP) -> None:
+    # All seven tools registered in one MCP process share the transport's
+    # concurrency-safe OAuth cache.  Creating a client per pagination/poll call
+    # would request a fresh token each time and could strand cleanup mid-flight.
+    shared_client: KiwoomMockUsClient | None = None
+
+    def get_client() -> KiwoomMockUsClient:
+        nonlocal shared_client
+        if shared_client is None:
+            shared_client = KiwoomMockUsClient.from_app_settings()
+        return shared_client
+
     @mcp.tool(
         name="kiwoom_mock_us_preview_order",
         description="Preview a Kiwoom US mock order; MCP supports trde_tp 00/03.",
@@ -183,6 +238,8 @@ def register(mcp: FastMCP) -> None:
                 trde_tp=trde_tp,
                 price=price,
             )
+        except (KiwoomUsOrderRejected, _TrustedValidationError) as exc:
+            return _validation_response("preview_order", exc)
         except Exception as exc:  # noqa: BLE001 - stable MCP error envelope
             return _exception_response("preview_order", exc)
         requested_notional = (
@@ -239,21 +296,31 @@ def register(mcp: FastMCP) -> None:
                 ),
             }
         try:
-            client = KiwoomMockUsClient.from_app_settings()
+            client = get_client()
             orders = KiwoomUsOrderClient(cast(Any, client))
-            kwargs = {
-                "symbol": symbol,
-                "stex_tp": preview_result["stex_tp"],
-                "quantity": quantity,
-                "trde_tp": trde_tp,
-                "price": price,
-            }
+        except Exception as exc:  # noqa: BLE001 - no broker dispatch occurred
+            return _not_submitted_response("place_order", exc)
+        kwargs = {
+            "symbol": symbol,
+            "stex_tp": preview_result["stex_tp"],
+            "quantity": quantity,
+            "trde_tp": trde_tp,
+            "price": price,
+        }
+        try:
             if side == "buy":
                 raw = await orders.place_buy_order(**kwargs)
             else:
                 raw = await orders.place_sell_order(**kwargs)
+        except KiwoomPreDispatchError as exc:
+            return _not_submitted_response("place_order", exc)
         except Exception as exc:  # noqa: BLE001 - stable MCP error envelope
-            return _exception_response("place_order", exc)
+            return {
+                **_exception_response("place_order", exc),
+                "status": "acceptance_uncertain",
+                "reconcile_required": True,
+                "retry_allowed": False,
+            }
         return _finalize_us(
             {
                 "source": "kiwoom",
@@ -273,6 +340,7 @@ def register(mcp: FastMCP) -> None:
                 if side == "buy"
                 else constants.US_ORDER_SELL_API_ID
             ),
+            tracked_order=True,
         )
 
     @mcp.tool(
@@ -290,9 +358,16 @@ def register(mcp: FastMCP) -> None:
             return guard
         try:
             validate_us_order_id(order_id)
-            if not math.isfinite(new_price) or new_price <= 0:
-                raise ValueError("new_price must be a finite value > 0")
+        except KiwoomUsOrderRejected as exc:
+            return _validation_response("modify_order", exc)
+        if not math.isfinite(new_price) or new_price <= 0:
+            return _validation_response(
+                "modify_order", ValueError("new_price must be a finite value > 0")
+            )
+        try:
             stex_tp = await _resolve_stex(symbol)
+        except _TrustedValidationError as exc:
+            return _validation_response("modify_order", exc)
         except Exception as exc:  # noqa: BLE001 - stable MCP error envelope
             return _exception_response("modify_order", exc)
         base = {
@@ -316,16 +391,32 @@ def register(mcp: FastMCP) -> None:
                 ),
             }
         try:
-            client = KiwoomMockUsClient.from_app_settings()
-            raw = await KiwoomUsOrderClient(cast(Any, client)).modify_order(
+            client = get_client()
+            orders = KiwoomUsOrderClient(cast(Any, client))
+        except Exception as exc:  # noqa: BLE001 - no broker dispatch occurred
+            return _not_submitted_response("modify_order", exc)
+        try:
+            raw = await orders.modify_order(
                 original_order_no=order_id,
                 symbol=symbol,
                 stex_tp=stex_tp,
                 new_price=new_price,
             )
+        except KiwoomPreDispatchError as exc:
+            return _not_submitted_response("modify_order", exc)
         except Exception as exc:  # noqa: BLE001 - stable MCP error envelope
-            return _exception_response("modify_order", exc)
-        return _finalize_us(base, raw, api_id=constants.US_ORDER_MODIFY_API_ID)
+            return {
+                **_exception_response("modify_order", exc),
+                "status": "acceptance_uncertain",
+                "reconcile_required": True,
+                "retry_allowed": False,
+            }
+        return _finalize_us(
+            base,
+            raw,
+            api_id=constants.US_ORDER_MODIFY_API_ID,
+            tracked_order=True,
+        )
 
     @mcp.tool(
         name="kiwoom_mock_us_cancel_order",
@@ -342,6 +433,8 @@ def register(mcp: FastMCP) -> None:
         try:
             validate_us_order_id(order_id)
             stex_tp = await _resolve_stex(symbol)
+        except (KiwoomUsOrderRejected, _TrustedValidationError) as exc:
+            return _validation_response("cancel_order", exc)
         except Exception as exc:  # noqa: BLE001 - stable MCP error envelope
             return _exception_response("cancel_order", exc)
         base = {
@@ -364,7 +457,7 @@ def register(mcp: FastMCP) -> None:
                 ),
             }
         try:
-            client = KiwoomMockUsClient.from_app_settings()
+            client = get_client()
             raw = await KiwoomUsOrderClient(cast(Any, client)).cancel_order(
                 original_order_no=order_id,
                 symbol=symbol,
@@ -388,12 +481,12 @@ def register(mcp: FastMCP) -> None:
         if guard := _mock_us_config_error():
             return guard
         if scope not in {"open", "today"}:
-            return _exception_response(
+            return _validation_response(
                 "get_order_history", ValueError("scope must be 'open' or 'today'")
             )
         try:
             stex_tp = await _resolve_stex(symbol) if symbol else None
-            client = KiwoomMockUsClient.from_app_settings()
+            client = get_client()
             account = KiwoomUsAccountClient(cast(Any, client))
             method = (
                 account.get_open_orders if scope == "open" else account.get_today_orders
@@ -434,7 +527,7 @@ def register(mcp: FastMCP) -> None:
             return guard
         try:
             stex_tp = await _resolve_stex(symbol) if symbol else None
-            client = KiwoomMockUsClient.from_app_settings()
+            client = get_client()
             raw = await KiwoomUsAccountClient(cast(Any, client)).get_positions(
                 stex_tp=stex_tp,
                 symbol=symbol,
@@ -460,7 +553,7 @@ def register(mcp: FastMCP) -> None:
         if guard := _mock_us_config_error():
             return guard
         try:
-            client = KiwoomMockUsClient.from_app_settings()
+            client = get_client()
             raw = await KiwoomUsAccountClient(cast(Any, client)).get_us_deposit_detail()
         except Exception as exc:  # noqa: BLE001 - stable MCP error envelope
             return _exception_response("get_orderable_cash", exc)

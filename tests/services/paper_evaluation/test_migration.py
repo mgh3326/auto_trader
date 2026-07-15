@@ -41,10 +41,10 @@ def _hash(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def test_migration_descends_from_rob849_and_is_the_single_head() -> None:
+def test_migration_descends_from_latest_main_head_and_is_the_single_head() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
     assert 'revision = "20260714_rob850_paper_evaluation"' in source
-    assert 'down_revision = "20260714_rob849_paper_cohort"' in source
+    assert 'down_revision = "20260714_rob878_shadow"' in source
 
     config = Config(str(REPO / "alembic.ini"))
     config.set_main_option("script_location", str(REPO / "alembic"))
@@ -123,9 +123,9 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
 
         commands = (
             ("stamp", "20260714_rob850_paper_evaluation"),
-            ("downgrade", "20260714_rob849_paper_cohort"),
+            ("downgrade", "20260714_rob878_shadow"),
             ("upgrade", "head"),
-            ("downgrade", "20260714_rob849_paper_cohort"),
+            ("downgrade", "20260714_rob878_shadow"),
             ("upgrade", "head"),
         )
         for command in commands:

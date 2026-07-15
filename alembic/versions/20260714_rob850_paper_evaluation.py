@@ -1,7 +1,7 @@
 """ROB-850 immutable paper-evaluation tables.
 
 Revision ID: 20260714_rob850_paper_evaluation
-Revises: 20260714_rob849_paper_cohort
+Revises: 20260714_rob878_shadow
 Create Date: 2026-07-14
 """
 
@@ -15,7 +15,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision = "20260714_rob850_paper_evaluation"
-down_revision = "20260714_rob849_paper_cohort"
+down_revision = "20260714_rob878_shadow"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

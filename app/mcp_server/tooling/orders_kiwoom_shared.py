@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.services.brokers.kiwoom import constants
 from app.services.brokers.kiwoom.normalization import redact_broker_response
+from app.services.brokers.kiwoom.us_orders import validate_us_order_id
 
 _PASSTHROUGH_KEYS = (
     "return_code",
@@ -14,6 +16,8 @@ _PASSTHROUGH_KEYS = (
     "ord_no",
     "order_no",
 )
+_ORDER_ID_KEYS = ("ord_no", "order_no")
+_RETURN_CODE_RE = re.compile(r"^-?[0-9]{1,18}$")
 
 
 def derive_broker_success(broker_response: dict[str, Any]) -> bool:
@@ -21,6 +25,15 @@ def derive_broker_success(broker_response: dict[str, Any]) -> bool:
     if type(value) is int:  # bool is an int subclass and must fail closed.
         return value == constants.SUCCESS_RETURN_CODE
     return isinstance(value, str) and value == str(constants.SUCCESS_RETURN_CODE)
+
+
+def _is_explicit_broker_rejection(broker_response: dict[str, Any]) -> bool:
+    value = broker_response.get("return_code")
+    if type(value) is int:
+        return value != constants.SUCCESS_RETURN_CODE
+    if not isinstance(value, str) or not _RETURN_CODE_RE.fullmatch(value):
+        return False
+    return int(value) != constants.SUCCESS_RETURN_CODE
 
 
 def classify_capability_unsupported(
@@ -54,4 +67,60 @@ def finalize_broker_response(
             response[key] = redacted_broker_response[key]
     if error_code := classify_capability_unsupported(broker_response):
         response["error_code"] = error_code
+    return response
+
+
+def finalize_place_broker_response(
+    base: dict[str, Any], broker_response: dict[str, Any]
+) -> dict[str, Any]:
+    """Distinguish rejected, submitted, and accepted-but-untrackable places."""
+
+    response = finalize_broker_response(base, broker_response)
+    if not derive_broker_success(broker_response):
+        if _is_explicit_broker_rejection(broker_response):
+            response.update({"status": "rejected", "reconcile_required": False})
+        else:
+            response.update(
+                {
+                    "status": "acceptance_uncertain",
+                    "reconcile_required": True,
+                    "retry_allowed": False,
+                }
+            )
+        return response
+
+    order_ids: set[str] = set()
+    invalid_order_id_evidence = False
+    for key in _ORDER_ID_KEYS:
+        if key not in broker_response:
+            continue
+        raw_order_id = broker_response.get(key)
+        if not isinstance(raw_order_id, str):
+            invalid_order_id_evidence = True
+            continue
+        try:
+            order_ids.add(validate_us_order_id(raw_order_id))
+        except ValueError:
+            invalid_order_id_evidence = True
+            continue
+    if invalid_order_id_evidence or len(order_ids) != 1:
+        response.update(
+            {
+                "success": False,
+                "status": "accepted_untracked",
+                "reconcile_required": True,
+                "retry_allowed": False,
+            }
+        )
+        return response
+
+    order_id = next(iter(order_ids))
+    response.update(
+        {
+            "success": True,
+            "status": "submitted",
+            "reconcile_required": False,
+            "order_id": order_id,
+        }
+    )
     return response
