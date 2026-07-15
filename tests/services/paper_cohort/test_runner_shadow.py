@@ -64,17 +64,18 @@ class FakeCapture:
 @dataclass
 class FakeQuotes:
     session: AsyncSession
-    run_id: str
+    run_id: str | None = None
     calls: list[tuple[str, str]] = field(default_factory=list)
     decision_counts_at_call: list[int] = field(default_factory=list)
 
     async def get_quote(self, venue: str, symbol: str) -> VenueQuote:
         self.calls.append((venue, symbol))
-        count = await self.session.scalar(
-            select(func.count())
-            .select_from(PaperCohortDecision)
-            .where(PaperCohortDecision.run_id == self.run_id)
-        )
+        decision_count = select(func.count()).select_from(PaperCohortDecision)
+        if self.run_id is not None:
+            decision_count = decision_count.where(
+                PaperCohortDecision.run_id == self.run_id
+            )
+        count = await self.session.scalar(decision_count)
         self.decision_counts_at_call.append(int(count or 0))
         execution_symbol = (
             symbol
