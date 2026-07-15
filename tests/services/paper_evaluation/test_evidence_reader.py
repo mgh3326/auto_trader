@@ -21,6 +21,7 @@ from app.services.paper_evaluation.contracts import EvaluationConfigError
 from app.services.paper_evaluation.evidence import (
     AuthoritativeEvidenceReader,
     _alpaca_filled_at,
+    _binance_fill_values,
     _quote_mark,
     _recompute_signal,
     _snapshot_matches_row,
@@ -38,6 +39,36 @@ def test_alpaca_fill_timestamp_accepts_nested_native_timestamp() -> None:
     assert _alpaca_filled_at(
         {"order": {"filled_at": "2026-01-01T00:00:00Z"}}
     ) == datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def test_binance_fill_requires_native_actuals_without_requested_value_fallback() -> (
+    None
+):
+    row = type(
+        "LedgerRow",
+        (),
+        {
+            "id": 1,
+            "qty": Decimal("2"),
+            "price": Decimal("100"),
+            "extra_metadata": {},
+        },
+    )()
+    with pytest.raises(EvaluationConfigError) as exc:
+        _binance_fill_values(row)
+    assert exc.value.reason_code == "missing_evidence"
+
+    row.extra_metadata = {
+        "filled_qty": "1",
+        "filled_avg_price": "110",
+        "fee_usdt": "0.11",
+    }
+    assert _binance_fill_values(row) == (
+        Decimal("1"),
+        Decimal("110"),
+        Decimal("0.11"),
+        True,
+    )
 
 
 def test_alpaca_mark_uses_native_usd_symbol_without_usdt_peg() -> None:

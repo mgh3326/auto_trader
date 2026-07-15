@@ -145,6 +145,27 @@ def _nonnegative_decimal(value: object | None, context: str) -> Decimal:
     return result
 
 
+def _binance_fill_values(
+    row: BinanceDemoOrderLedger,
+) -> tuple[Decimal, Decimal, Decimal, bool]:
+    """Read only native actuals persisted at the immutable ``filled`` edge.
+
+    Planned quantity/price and a synthetic zero fee are not fill evidence.
+    Missing native economics therefore fail closed instead of changing P&L.
+    """
+    metadata = row.extra_metadata or {}
+    required = ("filled_qty", "filled_avg_price", "fee_usdt")
+    if any(key not in metadata for key in required):
+        _fail("missing_evidence", f"Binance row {row.id} lacks native fill actuals")
+    quantity = _positive_decimal(metadata["filled_qty"], "filled quantity")
+    price = _positive_decimal(metadata["filled_avg_price"], "fill price")
+    fee = _nonnegative_decimal(metadata["fee_usdt"], "fill fee")
+    requested_quantity = _positive_decimal(row.qty, "requested quantity")
+    if quantity > requested_quantity:
+        _fail("malformed_evidence", "filled quantity exceeds requested quantity")
+    return quantity, price, fee, quantity < requested_quantity
+
+
 def _alpaca_filled_at(payload: object) -> datetime | None:
     """Find a broker-provided fill timestamp without lifecycle-time fallback."""
     if isinstance(payload, dict):
@@ -796,13 +817,7 @@ class AuthoritativeEvidenceReader:
                     or row.lifecycle_state not in {"filled", "closed", "reconciled"}
                 ):
                     _fail("cross_wired_evidence", "linked Binance row mismatch")
-                metadata = row.extra_metadata or {}
-                qty = metadata.get("filled_qty", row.qty)
-                price = metadata.get(
-                    "filled_avg_price", metadata.get("fill_price", row.price)
-                )
-                fee = metadata.get("fee_usdt")
-                partial = bool(metadata.get("is_partial_fill", False))
+                qty, price, fee, partial = _binance_fill_values(row)
                 side = row.side.lower()
             else:
                 if (

@@ -396,6 +396,39 @@ class DemoScalpingExecutor:
             return None
         return spot_avg_fill_price(cummulative_quote_qty=cq, executed_qty=eq)
 
+    def _native_fill_metadata(
+        self,
+        fill: Any,
+        *,
+        requested_qty: Decimal,
+        fill_price: Decimal | None = None,
+    ) -> dict[str, Any]:
+        """Return only proven native fill economics safe for durable evidence.
+
+        Missing fields stay missing so ROB-850 evaluation fails closed. In
+        particular this never substitutes planned quantity/price or an
+        estimated zero/configured fee.
+        """
+        executed_qty = getattr(fill, "executed_qty", None)
+        avg_price = (
+            fill_price if fill_price is not None else self._extract_fill_price(fill)
+        )
+        metadata: dict[str, Any] = {}
+        if (
+            isinstance(executed_qty, Decimal)
+            and executed_qty.is_finite()
+            and executed_qty > 0
+            and executed_qty <= requested_qty
+        ):
+            metadata["filled_qty"] = str(executed_qty)
+            metadata["is_partial_fill"] = executed_qty < requested_qty
+        if isinstance(avg_price, Decimal) and avg_price.is_finite() and avg_price > 0:
+            metadata["filled_avg_price"] = str(avg_price)
+        fee_usdt = getattr(fill, "fee_usdt", None)
+        if isinstance(fee_usdt, Decimal) and fee_usdt.is_finite() and fee_usdt >= 0:
+            metadata["fee_usdt"] = str(fee_usdt)
+        return metadata
+
     def _round_trip_realized_pnl_usdt(
         self, intent: OrderIntent, ref: Any, qty: Decimal
     ) -> Decimal | None:
@@ -956,7 +989,6 @@ class DemoScalpingExecutor:
                 intent.symbol, open_cid, submit.status
             )
             if proven:
-                await self.ledger.record_filled(client_order_id=open_cid, now=self.now)
                 # ROB-315 0b: capture the entry fill price from whichever
                 # evidence proved the fill — the polled get_order avg price when
                 # the submit was NEW, else the FILLED submit's own avg price.
@@ -964,6 +996,15 @@ class DemoScalpingExecutor:
                     polled_price
                     if polled_price is not None
                     else self._extract_fill_price(submit)
+                )
+                await self.ledger.record_filled(
+                    client_order_id=open_cid,
+                    now=self.now,
+                    extra_metadata_merge=self._native_fill_metadata(
+                        submit,
+                        requested_qty=qty,
+                        fill_price=self._open_fill_price,
+                    ),
                 )
             else:
                 position = await self.client.get_position(symbol=intent.symbol)
@@ -1036,11 +1077,19 @@ class DemoScalpingExecutor:
                 sized_qty=qty,
                 sized_notional_usdt=notional,
             )
-        await self.ledger.record_filled(client_order_id=open_cid, now=self.now)
         self._open_fill_price = (
             polled_price
             if polled_price is not None
             else self._extract_fill_price(submit)
+        )
+        await self.ledger.record_filled(
+            client_order_id=open_cid,
+            now=self.now,
+            extra_metadata_merge=self._native_fill_metadata(
+                submit,
+                requested_qty=qty,
+                fill_price=self._open_fill_price,
+            ),
         )
         executed_qty = getattr(submit, "executed_qty", None)
         self._spot_open_executed_qty = (
@@ -1511,7 +1560,14 @@ class DemoScalpingExecutor:
                 },
             )
             if csubmit.status == "FILLED":
-                await self.ledger.record_filled(client_order_id=close_cid, now=self.now)
+                await self.ledger.record_filled(
+                    client_order_id=close_cid,
+                    now=self.now,
+                    extra_metadata_merge=self._native_fill_metadata(
+                        csubmit,
+                        requested_qty=close.qty,
+                    ),
+                )
                 close_filled = True
             self._close_fill_price = self._extract_fill_price(csubmit)
 
@@ -1654,12 +1710,20 @@ class DemoScalpingExecutor:
                 intent.symbol, close_cid, csubmit.status
             )
             if cproven:
-                await self.ledger.record_filled(client_order_id=close_cid, now=self.now)
-                close_filled = True
                 # ROB-315 0b: prefer the polled get_order avg price when the
                 # close submit was NEW; never leave it at a reference fallback.
                 if cpolled_price is not None:
                     self._close_fill_price = cpolled_price
+                await self.ledger.record_filled(
+                    client_order_id=close_cid,
+                    now=self.now,
+                    extra_metadata_merge=self._native_fill_metadata(
+                        csubmit,
+                        requested_qty=close_qty,
+                        fill_price=self._close_fill_price,
+                    ),
+                )
+                close_filled = True
             else:
                 post = await self.client.get_position(symbol=intent.symbol)
                 if post.is_flat:

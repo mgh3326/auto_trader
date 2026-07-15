@@ -84,7 +84,15 @@ class _FakeReference:
 
 
 class _Order:
-    def __init__(self, status, coid, broker_id=None, executed_qty=Decimal("7.3")):
+    def __init__(
+        self,
+        status,
+        coid,
+        broker_id=None,
+        executed_qty=Decimal("7.3"),
+        avg_price=Decimal("1.36"),
+        fee_usdt=Decimal("0.004964"),
+    ):
         self.status = status
         self.client_order_id = coid
         # ROB-844: distinct orders get distinct broker ids (Binance never
@@ -93,6 +101,9 @@ class _Order:
         # (product, venue_host, broker_order_id) ack-uniqueness index.
         self.broker_order_id = broker_id if broker_id is not None else f"bk-{coid}"
         self.executed_qty = executed_qty
+        self.cummulative_quote_qty = executed_qty * avg_price
+        self.avg_price = avg_price
+        self.fee_usdt = fee_usdt
 
 
 class _OpenOrders:
@@ -271,6 +282,21 @@ async def test_spot_happy_path_reconciles_flat(db_session) -> None:
     sides = [s["side"] for s in client.submits]
     assert sides == ["BUY", "SELL"]
     assert all(s["confirm"] for s in client.submits)
+    rows = list(
+        (
+            await db_session.scalars(
+                select(BinanceDemoOrderLedger)
+                .join(CryptoInstrument)
+                .where(CryptoInstrument.venue_symbol == "EXESPOTAUSDT")
+                .order_by(BinanceDemoOrderLedger.id)
+            )
+        ).all()
+    )
+    assert len(rows) == 2
+    for row in rows:
+        assert row.extra_metadata["filled_qty"] == "7.3"
+        assert row.extra_metadata["filled_avg_price"] == "1.36"
+        assert row.extra_metadata["fee_usdt"] == "0.004964"
 
 
 @pytest.mark.asyncio
