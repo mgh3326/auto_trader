@@ -55,6 +55,44 @@ async def test_get_orderable_amount_includes_dmst_stex_tp():
 
 
 @pytest.mark.asyncio
+async def test_get_orderable_amount_with_side_price_sends_trde_tp_and_uv():
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+    await acct.get_orderable_amount(symbol="005930", side="buy", price=70000)
+    call = fake.calls[-1]
+    assert call["body"]["trde_tp"] == constants.TRADE_TYPE_BUY
+    assert call["body"]["uv"] == "70000"
+
+
+@pytest.mark.asyncio
+async def test_get_orderable_amount_with_sell_side_sends_correct_trde_tp():
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+    await acct.get_orderable_amount(symbol="005930", side="sell", price=70000)
+    assert fake.calls[-1]["body"]["trde_tp"] == constants.TRADE_TYPE_SELL
+
+
+@pytest.mark.asyncio
+async def test_get_orderable_amount_without_side_price_omits_trde_tp_and_uv():
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+    await acct.get_orderable_amount(symbol="005930")
+    body = fake.calls[-1]["body"]
+    assert "trde_tp" not in body
+    assert "uv" not in body
+
+
+@pytest.mark.asyncio
+async def test_get_deposit_uses_kt00001_with_dmst_stex_tp():
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+    await acct.get_deposit()
+    call = fake.calls[-1]
+    assert call["api_id"] == constants.ACCOUNT_DEPOSIT_API_ID
+    assert call["body"]["dmst_stex_tp"] == constants.ACCOUNT_DMST_STEX_TP_DEFAULT
+
+
+@pytest.mark.asyncio
 async def test_get_balance_uses_kt00018_with_qry_tp_and_dmst_stex_tp():
     fake = FakeClient()
     acct = KiwoomDomesticAccountClient(fake)

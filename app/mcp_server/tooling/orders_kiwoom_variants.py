@@ -32,6 +32,8 @@ from app.services.brokers.kiwoom.domestic_orders import KiwoomDomesticOrderClien
 from app.services.brokers.kiwoom.normalization import (
     KiwoomMockEvidenceError,
     build_mock_provenance,
+    normalize_deposit,
+    normalize_orderable_cash,
     normalize_orders,
     normalize_positions,
     redact_broker_response,
@@ -222,32 +224,6 @@ def _finalize_normalized_read_response(
         response["error"] = exc.code
         response["error_detail"] = str(exc)
     return response
-
-
-# Candidate Kiwoom cash fields, most specific first. Unknown shapes stay
-# unparsed (cash=None) rather than being faked (ROB-319 operator default).
-_ORDERABLE_CASH_KEYS = (
-    "ord_psbl_cash",
-    "ord_alowa",
-    "100stk_ord_alow_amt",
-    "ord_psbl_amt",
-    "entr",
-)
-
-
-def _extract_orderable_cash(broker_response: dict[str, Any]) -> int:
-    for key in _ORDERABLE_CASH_KEYS:
-        if key in broker_response and broker_response[key] not in (None, ""):
-            try:
-                cash = int(str(broker_response[key]).replace(",", "").strip())
-            except (TypeError, ValueError) as exc:
-                raise KiwoomMockEvidenceError(
-                    f"Kiwoom cash field {key} is not an integer"
-                ) from exc
-            if cash < 0:
-                raise KiwoomMockEvidenceError(f"Kiwoom cash field {key} is negative")
-            return cash
-    raise KiwoomMockEvidenceError("Kiwoom response has no recognized cash field")
 
 
 # ---------------------------------------------------------------------------
@@ -466,27 +442,39 @@ async def _kiwoom_mock_positions_impl(**kwargs: Any) -> dict[str, Any]:
 async def _kiwoom_mock_orderable_cash_impl(**kwargs: Any) -> dict[str, Any]:
     symbol_raw = kwargs.get("symbol")
     symbol = None if symbol_raw is None else normalize_krx_symbol(symbol_raw)
+    side = kwargs.get("side")
+    price = kwargs.get("price")
     cont_yn = kwargs.get("cont_yn")
     next_key = kwargs.get("next_key")
-    base_source = "orderable_amount" if symbol is not None else "balance"
-    api_id = (
-        constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID
-        if symbol is not None
-        else constants.ACCOUNT_BALANCE_API_ID
-    )
-    extra = {
+
+    if symbol is not None:
+        base_source = "orderable_amount"
+        api_id = constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID
+        normalizer = normalize_orderable_cash
+    else:
+        base_source = "deposit"
+        api_id = constants.ACCOUNT_DEPOSIT_API_ID
+        normalizer = normalize_deposit
+
+    extra: dict[str, Any] = {
         "cash_source": f"{base_source}_unavailable",
-        **({"symbol": symbol} if symbol is not None else {}),
     }
+    if symbol is not None:
+        extra["symbol"] = symbol
+
     try:
         client = KiwoomMockClient.from_app_settings()
         account_client = KiwoomDomesticAccountClient(cast(Any, client))
         if symbol is not None:
             broker_response = await account_client.get_orderable_amount(
-                symbol=symbol, cont_yn=cont_yn, next_key=next_key
+                symbol=symbol,
+                side=side,
+                price=price,
+                cont_yn=cont_yn,
+                next_key=next_key,
             )
         else:
-            broker_response = await account_client.get_balance(
+            broker_response = await account_client.get_deposit(
                 cont_yn=cont_yn, next_key=next_key
             )
     except Exception as exc:  # noqa: BLE001 - MCP tools fail closed with JSON
@@ -525,7 +513,7 @@ async def _kiwoom_mock_orderable_cash_impl(**kwargs: Any) -> dict[str, Any]:
         return response
 
     try:
-        cash = _extract_orderable_cash(broker_response)
+        cash = normalizer(broker_response)
     except KiwoomMockEvidenceError as exc:
         return _stable_read_failure(
             result_key="cash",
@@ -765,13 +753,16 @@ def register(mcp: FastMCP) -> None:
     )
     async def kiwoom_mock_get_orderable_cash(
         symbol: str | None = None,
+        side: Literal["buy", "sell"] | None = None,
+        price: int | None = None,
     ) -> dict[str, Any]:
         if (guard := _mock_config_error()) is not None:
-            api_id = (
-                constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID
-                if symbol is not None
-                else constants.ACCOUNT_BALANCE_API_ID
-            )
+            if symbol is not None:
+                api_id = constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID
+                cash_source = "orderable_amount_unavailable"
+            else:
+                api_id = constants.ACCOUNT_DEPOSIT_API_ID
+                cash_source = "deposit_unavailable"
             return _stable_read_failure(
                 result_key="cash",
                 result_value=None,
@@ -779,11 +770,7 @@ def register(mcp: FastMCP) -> None:
                 error="kiwoom_mock_config_invalid",
                 error_detail=str(guard["error"]),
                 extra={
-                    "cash_source": (
-                        "orderable_amount_unavailable"
-                        if symbol is not None
-                        else "balance_unavailable"
-                    ),
+                    "cash_source": cash_source,
                     **({"symbol": symbol} if symbol is not None else {}),
                 },
             )
@@ -802,4 +789,6 @@ def register(mcp: FastMCP) -> None:
                         "symbol": symbol,
                     },
                 )
-        return await _kiwoom_mock_orderable_cash_impl(symbol=symbol)
+        return await _kiwoom_mock_orderable_cash_impl(
+            symbol=symbol, side=side, price=price
+        )

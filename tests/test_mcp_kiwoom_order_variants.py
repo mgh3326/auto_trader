@@ -923,7 +923,7 @@ async def test_registered_symbol_tools_forward_trimmed_canonical_symbol(monkeypa
 
 
 def _patch_fake_kiwoom_account_client(monkeypatch, mod, payloads):
-    """payloads keyed by method name: 'orderable_amount' | 'balance' | 'order_status'."""
+    """payloads keyed by method name: 'orderable_amount' | 'balance' | 'deposit' | 'order_status'."""
 
     calls: list[dict[str, Any]] = []
 
@@ -939,15 +939,19 @@ def _patch_fake_kiwoom_account_client(monkeypatch, mod, payloads):
 
         async def get_orderable_amount(self, **kwargs):
             calls.append({"method": "orderable_amount", **kwargs})
-            return payloads["orderable_amount"]
+            return payloads.get("orderable_amount", {"return_code": 0})
+
+        async def get_deposit(self, **kwargs):
+            calls.append({"method": "deposit", **kwargs})
+            return payloads.get("deposit", {"return_code": 0})
 
         async def get_balance(self, **kwargs):
             calls.append({"method": "balance", **kwargs})
-            return payloads["balance"]
+            return payloads.get("balance", {"return_code": 0})
 
         async def get_order_status(self, **kwargs):
             calls.append({"method": "order_status", **kwargs})
-            return payloads["order_status"]
+            return payloads.get("order_status", {"return_code": 0})
 
     monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
     monkeypatch.setattr(mod, "KiwoomMockClient", FakeKiwoomMockClient, raising=False)
@@ -968,7 +972,7 @@ async def test_orderable_cash_with_symbol_calls_orderable_amount(monkeypatch):
             "orderable_amount": {
                 "return_code": 0,
                 "return_msg": "정상",
-                "ord_psbl_cash": "1500000",
+                "ord_alowa": "1500000",
             },
             "balance": {"return_code": 0},
             "order_status": {"return_code": 0},
@@ -982,18 +986,45 @@ async def test_orderable_cash_with_symbol_calls_orderable_amount(monkeypatch):
     assert response["success"] is True
     assert response["source"] == "kiwoom"
     assert response["account_mode"] == "kiwoom_mock"
-    assert response["broker_response"]["ord_psbl_cash"] == "1500000"
+    assert response["broker_response"]["ord_alowa"] == "1500000"
     assert response["cash"] == 1500000
     assert response["cash_source"] == "orderable_amount"
     assert response["symbol"] == "005930"
     assert response["provenance"]["api_id"] == "kt00010"
     assert response["provenance"]["host"] == "mockapi.kiwoom.com"
-    # balance must NOT have been called
-    assert all(c.get("method") != "balance" for c in calls)
+    # balance/deposit must NOT have been called
+    assert all(c.get("method") not in ("balance", "deposit") for c in calls)
 
 
 @pytest.mark.asyncio
-async def test_orderable_cash_without_symbol_calls_balance(monkeypatch):
+async def test_orderable_cash_with_symbol_side_price_sends_trde_tp_and_uv(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    calls = _patch_fake_kiwoom_account_client(
+        monkeypatch,
+        mod,
+        payloads={
+            "orderable_amount": {
+                "return_code": 0,
+                "ord_alowa": "1500000",
+            },
+        },
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    await mcp.tools["kiwoom_mock_get_orderable_cash"](
+        symbol="005930", side="buy", price=70000
+    )
+
+    orderable_calls = [c for c in calls if c.get("method") == "orderable_amount"]
+    assert len(orderable_calls) == 1
+    assert orderable_calls[0]["side"] == "buy"
+    assert orderable_calls[0]["price"] == 70000
+
+
+@pytest.mark.asyncio
+async def test_orderable_cash_without_symbol_calls_deposit(monkeypatch):
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
 
     calls = _patch_fake_kiwoom_account_client(
@@ -1001,7 +1032,8 @@ async def test_orderable_cash_without_symbol_calls_balance(monkeypatch):
         mod,
         payloads={
             "orderable_amount": {"return_code": 0},
-            "balance": {"return_code": 0, "return_msg": "정상", "entr": "987654"},
+            "deposit": {"return_code": 0, "return_msg": "정상", "ord_alow_amt": "987654"},
+            "balance": {"return_code": 0},
             "order_status": {"return_code": 0},
         },
     )
@@ -1011,13 +1043,13 @@ async def test_orderable_cash_without_symbol_calls_balance(monkeypatch):
     response = await mcp.tools["kiwoom_mock_get_orderable_cash"]()
 
     assert response["success"] is True
-    assert response["broker_response"]["entr"] == "987654"
+    assert response["broker_response"]["ord_alow_amt"] == "987654"
     assert response["cash"] == 987654
-    assert response["cash_source"] == "balance"
-    assert response["provenance"]["api_id"] == "kt00018"
+    assert response["cash_source"] == "deposit"
+    assert response["provenance"]["api_id"] == "kt00001"
     assert response["provenance"]["host"] == "mockapi.kiwoom.com"
-    assert any(c.get("method") == "balance" for c in calls)
-    assert all(c.get("method") != "orderable_amount" for c in calls)
+    assert any(c.get("method") == "deposit" for c in calls)
+    assert all(c.get("method") not in ("orderable_amount", "balance") for c in calls)
 
 
 @pytest.mark.asyncio
@@ -1034,37 +1066,37 @@ async def test_orderable_cash_without_symbol_calls_balance(monkeypatch):
         (
             "005930",
             "orderable_amount",
-            {"return_code": 0, "ord_psbl_cash": "not-a-number"},
+            {"return_code": 0, "ord_alowa": "not-a-number"},
             "kt00010",
             "orderable_amount_unavailable",
         ),
         (
             "005930",
             "orderable_amount",
-            {"return_code": 0, "ord_psbl_cash": "-1"},
+            {"return_code": 0, "ord_alowa": "-1"},
             "kt00010",
             "orderable_amount_unavailable",
         ),
         (
             None,
-            "balance",
+            "deposit",
             {"return_code": 0, "some_unknown_field": "x"},
-            "kt00018",
-            "balance_unavailable",
+            "kt00001",
+            "deposit_unavailable",
         ),
         (
             None,
-            "balance",
-            {"return_code": 0, "entr": "not-a-number"},
-            "kt00018",
-            "balance_unavailable",
+            "deposit",
+            {"return_code": 0, "ord_alow_amt": "not-a-number"},
+            "kt00001",
+            "deposit_unavailable",
         ),
         (
             None,
-            "balance",
-            {"return_code": 0, "entr": "-1"},
-            "kt00018",
-            "balance_unavailable",
+            "deposit",
+            {"return_code": 0, "ord_alow_amt": "-1"},
+            "kt00001",
+            "deposit_unavailable",
         ),
     ],
 )
@@ -1074,8 +1106,9 @@ async def test_orderable_cash_unavailable_evidence_fails_closed(
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
 
     payloads = {
-        "orderable_amount": {"return_code": 0, "ord_psbl_cash": "1500000"},
-        "balance": {"return_code": 0, "entr": "987654"},
+        "orderable_amount": {"return_code": 0, "ord_alowa": "1500000"},
+        "deposit": {"return_code": 0, "ord_alow_amt": "987654"},
+        "balance": {"return_code": 0},
         "order_status": {"return_code": 0},
     }
     payloads[payload_key] = payload
@@ -1110,9 +1143,9 @@ async def test_orderable_cash_unavailable_evidence_fails_closed(
             False,
         ),
         ("005930", "orderable_amount", "kt00010", "orderable_amount_unavailable", 0.5),
-        (None, "balance", "kt00018", "balance_unavailable", 40),
-        (None, "balance", "kt00018", "balance_unavailable", False),
-        (None, "balance", "kt00018", "balance_unavailable", 0.5),
+        (None, "deposit", "kt00001", "deposit_unavailable", 40),
+        (None, "deposit", "kt00001", "deposit_unavailable", False),
+        (None, "deposit", "kt00001", "deposit_unavailable", 0.5),
     ],
 )
 async def test_orderable_cash_broker_rejection_has_stable_failure_source(
@@ -1121,8 +1154,9 @@ async def test_orderable_cash_broker_rejection_has_stable_failure_source(
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
 
     payloads = {
-        "orderable_amount": {"return_code": 0, "ord_psbl_cash": "1500000"},
-        "balance": {"return_code": 0, "entr": "987654"},
+        "orderable_amount": {"return_code": 0, "ord_alowa": "1500000"},
+        "deposit": {"return_code": 0, "ord_alow_amt": "987654"},
+        "balance": {"return_code": 0},
         "order_status": {"return_code": 0},
     }
     payloads[payload_key] = {
@@ -1143,7 +1177,14 @@ async def test_orderable_cash_broker_rejection_has_stable_failure_source(
 
 
 @pytest.mark.asyncio
-async def test_orderable_cash_broker_error_is_fail_closed(monkeypatch):
+@pytest.mark.parametrize(
+    ("symbol", "api_id"),
+    [
+        ("005930", "kt00010"),
+        (None, "kt00001"),
+    ],
+)
+async def test_orderable_cash_broker_error_is_fail_closed(monkeypatch, symbol, api_id):
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
 
     class FakeKiwoomMockClient:
@@ -1158,6 +1199,9 @@ async def test_orderable_cash_broker_error_is_fail_closed(monkeypatch):
         async def get_orderable_amount(self, **kwargs):  # noqa: ARG002
             raise RuntimeError("boom")
 
+        async def get_deposit(self, **kwargs):  # noqa: ARG002
+            raise RuntimeError("boom")
+
         async def get_balance(self, **kwargs):  # noqa: ARG002
             raise RuntimeError("boom")
 
@@ -1169,14 +1213,14 @@ async def test_orderable_cash_broker_error_is_fail_closed(monkeypatch):
     mcp = DummyMCP()
     _register(mcp)
 
-    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](symbol="005930")
+    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](symbol=symbol)
 
     assert response["success"] is False
     assert response["error"] == "kiwoom_mock_transport_error"
     assert "RuntimeError" in response["error_detail"]
     assert response["account_mode"] == "kiwoom_mock"
     assert response["cash"] is None
-    assert response["provenance"]["api_id"] == "kt00010"
+    assert response["provenance"]["api_id"] == api_id
 
 
 @pytest.mark.asyncio
@@ -1399,7 +1443,7 @@ def _assert_stable_read_failure(
     ("symbol", "payload_key", "api_id"),
     [
         ("005930", "orderable_amount", "kt00010"),
-        (None, "balance", "kt00018"),
+        (None, "deposit", "kt00001"),
     ],
 )
 async def test_orderable_cash_both_branches_fail_closed_on_live_provenance(
@@ -1408,8 +1452,9 @@ async def test_orderable_cash_both_branches_fail_closed_on_live_provenance(
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
 
     payloads = {
-        "orderable_amount": {"return_code": 0, "ord_psbl_cash": "1500000"},
-        "balance": {"return_code": 0, "entr": "987654"},
+        "orderable_amount": {"return_code": 0, "ord_alowa": "1500000"},
+        "deposit": {"return_code": 0, "ord_alow_amt": "987654"},
+        "balance": {"return_code": 0},
         "order_status": {"return_code": 0},
     }
     payloads[payload_key]["provenance"] = {"environment": "live"}
@@ -1584,7 +1629,7 @@ async def test_registered_reads_config_failure_has_stable_envelope(
     ("symbol", "api_id", "cash_source"),
     [
         ("005930", "kt00010", "orderable_amount_unavailable"),
-        (None, "kt00018", "balance_unavailable"),
+        (None, "kt00001", "deposit_unavailable"),
     ],
 )
 async def test_registered_cash_config_failure_has_stable_source(
