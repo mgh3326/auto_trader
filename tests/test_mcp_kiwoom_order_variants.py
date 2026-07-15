@@ -1032,7 +1032,11 @@ async def test_orderable_cash_without_symbol_calls_deposit(monkeypatch):
         mod,
         payloads={
             "orderable_amount": {"return_code": 0},
-            "deposit": {"return_code": 0, "return_msg": "정상", "ord_alow_amt": "987654"},
+            "deposit": {
+                "return_code": 0,
+                "return_msg": "정상",
+                "ord_alow_amt": "987654",
+            },
             "balance": {"return_code": 0},
             "order_status": {"return_code": 0},
         },

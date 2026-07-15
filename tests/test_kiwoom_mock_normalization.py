@@ -93,9 +93,7 @@ def test_normalize_deposit_rejects_prsm_dpst_aset_amt_only() -> None:
     ],
 )
 def test_normalize_orderable_cash_parses_ord_alowa(raw: str, expected: int) -> None:
-    assert (
-        normalize_orderable_cash({"return_code": 0, "ord_alowa": raw}) == expected
-    )
+    assert normalize_orderable_cash({"return_code": 0, "ord_alowa": raw}) == expected
 
 
 @pytest.mark.parametrize(
