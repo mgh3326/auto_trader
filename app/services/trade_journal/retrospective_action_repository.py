@@ -591,6 +591,18 @@ class RetrospectiveActionRepository:
 
     # -- Projection ---------------------------------------------------------
 
+    async def rebuild_projection(self, retrospective_id: int) -> None:
+        """Public projection-rebuild entry point for sibling action writers.
+
+        ROB-881's transition service reuses this so projection logic is not
+        duplicated across action-writing boundaries. The caller MUST already
+        hold the parent row lock and all of that parent's child row locks
+        (parent ``FOR UPDATE`` then children ``ORDER BY id FOR UPDATE``),
+        exactly like :meth:`reconcile_actions`. The rebuild happens in the
+        caller's transaction; commit/rollback ownership stays with the caller.
+        """
+        await self._rebuild_projection(retrospective_id)
+
     async def _rebuild_projection(self, retrospective_id: int) -> None:
         """Rebuild parent JSONB projection from canonical children.
 
