@@ -62,3 +62,17 @@ def test_description_enumerates_outcome_values():
         "cancelled",
     ):
         assert value in desc, f"outcome value {value!r} missing from description"
+
+
+def test_description_states_canonical_next_action_creation_statuses():
+    desc = _register().lower()
+
+    assert "new actions may start only as open or in_progress" in desc
+
+
+def test_description_states_canonical_next_action_retry_identity_contract():
+    desc = _register().lower()
+
+    assert "action_id and version" in desc
+    assert "force_new=true with a stable creation_key" in desc
+    assert "idempotent retries" in desc

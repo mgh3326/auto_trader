@@ -10,6 +10,7 @@ import pytest
 from app.core.config import settings
 from app.mcp_server import caller_identity_middleware
 from app.mcp_server.caller_identity import (
+    caller_argument_names_var,
     caller_agent_id_var,
     caller_source_var,
 )
@@ -51,6 +52,28 @@ def _clear_fallback_env(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.unit
 @pytest.mark.asyncio
 class TestCallerIdentityMiddleware:
+    async def test_raw_argument_names_preserve_explicit_null(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _raise_no_http() -> None:
+            raise RuntimeError("no HTTP request in context")
+
+        monkeypatch.setattr(
+            caller_identity_middleware, "get_http_request", _raise_no_http
+        )
+        context = Mock()
+        context.message.arguments = {"symbol": "005930", "lesson": None}
+        observed: dict[str, Any] = {}
+
+        async def _capture(_ctx: Any) -> str:
+            observed["argument_names"] = caller_argument_names_var.get()
+            return "ok"
+
+        await CallerIdentityMiddleware().on_call_tool(context, _capture)
+
+        assert observed["argument_names"] == frozenset({"symbol", "lesson"})
+        assert caller_argument_names_var.get() is None
+
     async def test_http_header_resolves_caller_identity(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

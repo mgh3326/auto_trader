@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import timedelta
 from typing import Any, cast
 
@@ -11,6 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
+from app.mcp_server.caller_identity import get_caller_argument_names
+from app.mcp_server.profiles import resolve_mcp_profile
+from app.services.trade_journal.retrospective_action_repository import (
+    RetrospectiveActionRepository,
+)
 from app.services.trade_journal.trade_retrospective_service import (
     RetrospectiveValidationError,
     build_retrospective_aggregate,
@@ -21,6 +27,16 @@ from app.services.trade_journal.trade_retrospective_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _mcp_argument_was_provided(name: str, value: Any) -> bool:
+    """Preserve omitted-vs-explicit-null at the FastMCP function boundary."""
+    argument_names = get_caller_argument_names()
+    if argument_names is None:
+        # Direct Python callers have no middleware context; retain the existing
+        # convention that None means omitted for those callers.
+        return value is not None
+    return name in argument_names
 
 
 def _session_factory() -> async_sessionmaker[AsyncSession]:
@@ -77,60 +93,75 @@ async def save_trade_retrospective(
     # an idempotent re-save that omits them preserves prior values (the service
     # distinguishes omitted from explicit-None via a sentinel).
     postmortem: dict[str, Any] = {}
-    if trigger_type is not None:
+    if _mcp_argument_was_provided("trigger_type", trigger_type):
         postmortem["trigger_type"] = trigger_type
-    if root_cause_class is not None:
+    if _mcp_argument_was_provided("root_cause_class", root_cause_class):
         postmortem["root_cause_class"] = root_cause_class
-    if intended_vs_happened is not None:
+    if _mcp_argument_was_provided("intended_vs_happened", intended_vs_happened):
         postmortem["intended_vs_happened"] = intended_vs_happened
-    if next_actions is not None:
+    if _mcp_argument_was_provided("next_actions", next_actions):
         postmortem["next_actions"] = next_actions
-    if guardrail_fired is not None:
+    if _mcp_argument_was_provided("guardrail_fired", guardrail_fired):
         postmortem["guardrail_fired"] = guardrail_fired
-    if policy_version is not None:
+    if _mcp_argument_was_provided("policy_version", policy_version):
         postmortem["policy_version"] = policy_version
+    save_kwargs: dict[str, Any] = {
+        "symbol": symbol,
+        "instrument_type": instrument_type,
+        "account_mode": account_mode,
+        "outcome": outcome,
+        "actor": f"mcp:{resolve_mcp_profile(os.getenv('MCP_PROFILE')).value}",
+    }
+    optional_values = {
+        "side": side,
+        "market": market,
+        "strategy_key": strategy_key,
+        "correlation_id": correlation_id,
+        "journal_id": journal_id,
+        "report_uuid": report_uuid,
+        "report_item_uuid": report_item_uuid,
+        "plan_price": plan_price,
+        "fill_price": fill_price,
+        "realized_pnl": realized_pnl,
+        "realized_pnl_currency": realized_pnl_currency,
+        "pnl_pct": pnl_pct,
+        "rationale": rationale,
+        "result_summary": result_summary,
+        "lesson": lesson,
+        "next_strategy": next_strategy,
+        "evidence_snapshot": evidence_snapshot,
+        "created_by_profile": created_by_profile,
+        "buy_fx_rate": buy_fx_rate,
+        "sell_fx_rate": sell_fx_rate,
+        "fx_pnl_krw": fx_pnl_krw,
+        "security_pnl_usd": security_pnl_usd,
+        "security_pnl_krw": security_pnl_krw,
+        "total_pnl_krw": total_pnl_krw,
+        "fx_rate_source": fx_rate_source,
+        "fx_pnl_accuracy": fx_pnl_accuracy,
+    }
+    save_kwargs.update(
+        {
+            key: value
+            for key, value in optional_values.items()
+            if _mcp_argument_was_provided(key, value)
+        }
+    )
+    save_kwargs.update(postmortem)
     try:
         async with _session_factory()() as db:
-            action, row = await save_retrospective(
-                db,
-                symbol=symbol,
-                instrument_type=instrument_type,
-                account_mode=account_mode,
-                outcome=outcome,
-                side=side,
-                market=market,
-                strategy_key=strategy_key,
-                correlation_id=correlation_id,
-                journal_id=journal_id,
-                report_uuid=report_uuid,
-                report_item_uuid=report_item_uuid,
-                plan_price=plan_price,
-                fill_price=fill_price,
-                realized_pnl=realized_pnl,
-                realized_pnl_currency=realized_pnl_currency,
-                pnl_pct=pnl_pct,
-                rationale=rationale,
-                result_summary=result_summary,
-                lesson=lesson,
-                next_strategy=next_strategy,
-                evidence_snapshot=evidence_snapshot,
-                created_by_profile=created_by_profile,
-                buy_fx_rate=buy_fx_rate,
-                sell_fx_rate=sell_fx_rate,
-                fx_pnl_krw=fx_pnl_krw,
-                security_pnl_usd=security_pnl_usd,
-                security_pnl_krw=security_pnl_krw,
-                total_pnl_krw=total_pnl_krw,
-                fx_rate_source=fx_rate_source,
-                fx_pnl_accuracy=fx_pnl_accuracy,
-                **postmortem,
-            )
+            action, row = await save_retrospective(db, **save_kwargs)
             await db.commit()
             await db.refresh(row)
+            next_actions_data = await RetrospectiveActionRepository(db).read_actions(
+                row.id
+            )
             return {
                 "success": True,
                 "action": action,
-                "data": serialize_retrospective(row),
+                "data": serialize_retrospective(
+                    row, next_actions_override=next_actions_data
+                ),
             }
     except RetrospectiveValidationError as exc:
         return {"success": False, "error": str(exc)}

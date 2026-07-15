@@ -36,7 +36,8 @@ Rollback / roll-forward procedure:
 
 Exit codes:
     0 — cutover succeeded (or idempotent no-op with --if-shadow)
-    1 — cutover failed (parity error, control error, or DB error)
+    10 — safe pre-commit failure; mode remains shadow and rollback is safe
+    20 — committed or commit-unknown failure; mutation-disable + roll-forward
     2 — invalid arguments
 """
 
@@ -53,15 +54,32 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from app.core.db import engine
 from app.services.trade_journal.retrospective_action_repository import (
     ActionControlError,
+    CutoverLockError,
     CutoverParityError,
     run_cutover,
 )
 
+EXIT_OK = 0
+EXIT_SAFE_PRECOMMIT = 10
+EXIT_COMMITTED_OR_UNKNOWN = 20
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    return argparse.ArgumentParser(
+        description="Canonical cutover for retrospective action ledger (ROB-878).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Recovery and exit states:
+  exit 10  Safe rollback. The transaction did not commit and mode remains shadow.
+  exit 20  Commit succeeded or its outcome is unknown. Disable retrospective
+           action mutation, roll-forward the new release, and do not downgrade
+           the schema.
+""",
+    )
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Canonical cutover for retrospective action ledger (ROB-878).",
-    )
+    parser = _build_parser()
     parser.add_argument(
         "--if-shadow",
         action="store_true",
@@ -89,6 +107,8 @@ async def _health_check(conn: AsyncConnection) -> dict[str, Any]:
         return {"healthy": False, "reason": "control row missing"}
     if ctrl.mode != "canonical":
         return {"healthy": False, "reason": f"mode is {ctrl.mode}, not canonical"}
+    if ctrl.cutover_at is None or ctrl.cutover_action_count is None:
+        return {"healthy": False, "reason": "canonical cutover metadata is missing"}
 
     # Quick count parity
     count_result = await conn.execute(
@@ -114,12 +134,61 @@ async def _health_check(conn: AsyncConnection) -> dict[str, Any]:
             "reason": f"count mismatch: parent={counts.parent_count}, "
             f"child={counts.child_count}",
         }
+    parity_result = await conn.execute(
+        text(
+            """
+            WITH parent_actions AS (
+                SELECT
+                    t.id AS retrospective_id,
+                    (elem.ordinality - 1)::integer AS position,
+                    elem.value AS payload
+                FROM review.trade_retrospectives t
+                CROSS JOIN LATERAL jsonb_array_elements(
+                    CASE
+                        WHEN jsonb_typeof(t.next_actions) = 'array'
+                            THEN t.next_actions
+                        ELSE '[]'::jsonb
+                    END
+                ) WITH ORDINALITY AS elem(value, ordinality)
+            )
+            SELECT COALESCE(p.retrospective_id, a.retrospective_id) AS retrospective_id,
+                   COALESCE(p.position, a.position) AS position
+            FROM parent_actions p
+            FULL JOIN review.trade_retrospective_actions a
+              ON a.retrospective_id = p.retrospective_id
+             AND a.position = p.position
+            WHERE p.retrospective_id IS NULL
+               OR a.id IS NULL
+               OR btrim(p.payload->>'action') IS DISTINCT FROM a.action
+               OR (p.payload->>'owner') IS DISTINCT FROM a.owner
+               OR (p.payload->>'issue_id') IS DISTINCT FROM a.issue_id
+               OR CASE
+                    WHEN btrim(COALESCE(p.payload->>'status', '')) = '' THEN 'open'
+                    ELSE p.payload->>'status'
+                  END IS DISTINCT FROM CASE
+                    WHEN a.status IN ('obsolete', 'expired') THEN 'done'
+                    ELSE a.status
+                  END
+               OR NULLIF(btrim(COALESCE(p.payload->>'due_kst_date', '')), '')
+                    IS DISTINCT FROM a.due_kst_date::text
+            LIMIT 1
+            """
+        )
+    )
+    mismatch = parity_result.fetchone()
+    if mismatch is not None:
+        return {
+            "healthy": False,
+            "reason": "field/ordinal mismatch: retrospective "
+            f"{mismatch.retrospective_id} action[{mismatch.position}]",
+        }
 
     return {
         "healthy": True,
         "mode": ctrl.mode,
         "cutover_at": ctrl.cutover_at.isoformat() if ctrl.cutover_at else None,
-        "action_count": ctrl.cutover_action_count,
+        "action_count": counts.child_count,
+        "cutover_action_count": ctrl.cutover_action_count,
     }
 
 
@@ -132,13 +201,21 @@ async def _async_main(if_shadow: bool) -> int:
             "Mode remains shadow. The deploy may safely roll back.",
             file=sys.stderr,
         )
-        return 1
+        return EXIT_SAFE_PRECOMMIT
+    except CutoverLockError as exc:
+        print(f"CUTOVER FAILED (lock): {exc}", file=sys.stderr)
+        print("Mode remains shadow. The deploy may safely roll back.", file=sys.stderr)
+        return EXIT_SAFE_PRECOMMIT
     except ActionControlError as exc:
         print(f"CUTOVER FAILED (control): {exc}", file=sys.stderr)
-        return 1
+        print(
+            "Recovery state is uncertain. Disable mutation and inspect the control row.",
+            file=sys.stderr,
+        )
+        return EXIT_COMMITTED_OR_UNKNOWN
     except Exception as exc:
         print(f"CUTOVER FAILED (unexpected): {exc}", file=sys.stderr)
-        return 1
+        return EXIT_COMMITTED_OR_UNKNOWN
 
     idempotent = result.get("idempotent", False)
     if idempotent:
@@ -147,10 +224,7 @@ async def _async_main(if_shadow: bool) -> int:
             f"action_count={result['action_count']}"
         )
     else:
-        print(
-            f"Cutover: shadow → canonical. "
-            f"action_count={result['action_count']}"
-        )
+        print(f"Cutover: shadow → canonical. action_count={result['action_count']}")
 
     # Post-cutover health check
     try:
@@ -165,11 +239,16 @@ async def _async_main(if_shadow: bool) -> int:
                 "Do NOT use schema downgrade.",
                 file=sys.stderr,
             )
-            return 1
+            return EXIT_COMMITTED_OR_UNKNOWN
     except Exception as exc:
-        print(f"Health check error (non-fatal): {exc}", file=sys.stderr)
+        print(f"Health check error: {exc}", file=sys.stderr)
+        print(
+            "Recovery: mutation-disable + roll-forward. Do NOT use schema downgrade.",
+            file=sys.stderr,
+        )
+        return EXIT_COMMITTED_OR_UNKNOWN
 
-    return 0
+    return EXIT_OK
 
 
 def main(argv: list[str] | None = None) -> int:

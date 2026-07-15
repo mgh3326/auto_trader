@@ -87,6 +87,9 @@ def test_next_action_status_constrained():
     assert m.issue_id == "ROB-999"
 
 
-def test_next_action_rejects_unknown_key():
-    with pytest.raises(ValidationError):
-        NextAction.model_validate({"action": "do", "bogus": True})
+def test_next_action_preserves_legacy_extension_key():
+    model = NextAction.model_validate(
+        {"action": "do", "legacy_context": {"source": "pre-cutover"}}
+    )
+
+    assert model.model_dump()["legacy_context"] == {"source": "pre-cutover"}

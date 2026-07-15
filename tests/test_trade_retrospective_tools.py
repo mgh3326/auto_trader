@@ -50,6 +50,74 @@ async def test_save_success_envelope():
 
 
 @pytest.mark.asyncio
+async def test_mcp_retry_omits_unsupplied_optional_fields():
+    first = await save_trade_retrospective(
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        correlation_id="mcp-presence-retry",
+        market="kr",
+        lesson="preserve through MCP",
+    )
+    assert first["success"] is True
+
+    second = await save_trade_retrospective(
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        correlation_id="mcp-presence-retry",
+    )
+
+    assert second["success"] is True
+    assert second["data"]["market"] == "kr"
+    assert second["data"]["lesson"] == "preserve through MCP"
+
+
+@pytest.mark.asyncio
+async def test_mcp_retry_preserves_explicit_null_for_nullable_clear():
+    from app.mcp_server.caller_identity import caller_argument_names_var
+
+    first = await save_trade_retrospective(
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        correlation_id="mcp-explicit-null",
+        lesson="clear through MCP",
+    )
+    assert first["success"] is True
+
+    token = caller_argument_names_var.set(
+        frozenset(
+            {
+                "symbol",
+                "instrument_type",
+                "account_mode",
+                "outcome",
+                "correlation_id",
+                "lesson",
+            }
+        )
+    )
+    try:
+        second = await save_trade_retrospective(
+            symbol="005930",
+            instrument_type="equity_kr",
+            account_mode="kis_mock",
+            outcome="filled",
+            correlation_id="mcp-explicit-null",
+            lesson=None,
+        )
+    finally:
+        caller_argument_names_var.reset(token)
+
+    assert second["success"] is True
+    assert second["data"]["lesson"] is None
+
+
+@pytest.mark.asyncio
 async def test_save_validation_error_enumerates_outcomes():
     res = await save_trade_retrospective(
         symbol="005930",

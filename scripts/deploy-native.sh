@@ -87,6 +87,8 @@ SWITCHED=0
 # whether it also needs to roll back the api/mcp half (color state, color
 # symlinks, color launchd jobs, HAProxy cfg).
 BLUEGREEN_COMMITTED=0
+RETROSPECTIVE_ACTION_CUTOVER_ATTEMPTED=0
+RETROSPECTIVE_ACTION_SAFE_PRECOMMIT_EXIT=10
 API_PRE_COLOR=""
 MCP_PRE_COLOR=""
 BLUE_PRE_TARGET=""
@@ -322,9 +324,31 @@ run_healthcheck() {
   return 1
 }
 
+run_retrospective_action_cutover() {
+  local rc
+
+  RETROSPECTIVE_ACTION_CUTOVER_ATTEMPTED=1
+  set +e
+  ENV_FILE="$SHARED_ENV" uv run python scripts/retrospective_action_cutover.py --if-shadow
+  rc=$?
+  set -e
+
+  if (( rc == RETROSPECTIVE_ACTION_SAFE_PRECOMMIT_EXIT )); then
+    # The CLI guarantees no canonical commit for this exit state, so the
+    # normal deploy rollback path remains safe and needs no roll-forward warning.
+    RETROSPECTIVE_ACTION_CUTOVER_ATTEMPTED=0
+  fi
+  return "$rc"
+}
+
 rollback() {
   local exit_code=$?
   echo "Deploy failed with exit code $exit_code" >&2
+
+  if (( RETROSPECTIVE_ACTION_CUTOVER_ATTEMPTED == 1 )); then
+    echo "WARNING: retrospective action cutover was attempted; the database may already be canonical." >&2
+    echo "Disable retrospective action mutation, roll forward, and do not schema-downgrade." >&2
+  fi
 
   # ROB-259 review: when deploy_bluegreen_flow committed but a later step
   # (restart_single_active_services, run_healthcheck) failed, the api/mcp
@@ -449,7 +473,7 @@ run_healthcheck
 # restarted, and healthcheck passed. --if-shadow makes it idempotent.
 if (( BLUEGREEN_COMMITTED == 1 )); then
   log "Running retrospective action canonical cutover (--if-shadow)"
-  uv run python scripts/retrospective_action_cutover.py --if-shadow
+  run_retrospective_action_cutover
 else
   log "Skipping retrospective action cutover (BLUEGREEN_COMMITTED != 1)"
 fi

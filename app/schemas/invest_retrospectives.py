@@ -118,6 +118,8 @@ class NextActionRow(BaseModel):
     created_at: str | None = None
     action_id: str | None = None
     version: int | None = None
+    overdue: bool = False
+    terminal_status: str | None = None
 
 
 class NextActionsResponse(BaseModel):
@@ -145,6 +147,7 @@ class CanonicalActionRow(BaseModel):
     resolved_at: str | None = None
     status_actor: str | None = None
     status_source: str | None = None
+    status_reason: str | None = None
     retrospective_id: int
     correlation_id: str | None = None
     symbol: str | None = None
