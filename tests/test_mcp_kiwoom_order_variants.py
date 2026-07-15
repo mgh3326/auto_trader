@@ -1918,7 +1918,9 @@ async def test_place_order_dry_run_returns_stable_failure_without_post(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_place_order_confirmed_runs_single_preflight_right_before_post(monkeypatch):
+async def test_place_order_confirmed_runs_single_preflight_right_before_post(
+    monkeypatch,
+):
     """ROB-893 v2: confirmed place runs preflight EXACTLY ONCE.
 
     The single preflight is the mutation-boundary check, run immediately before
@@ -2191,9 +2193,7 @@ async def test_preview_and_place_normalize_with_same_error_code(monkeypatch):
         )
 
     monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
-    monkeypatch.setattr(
-        mod, "_new_kiwoom_mock_client", lambda: FakeKiwoomMockClient()
-    )
+    monkeypatch.setattr(mod, "_new_kiwoom_mock_client", lambda: FakeKiwoomMockClient())
     monkeypatch.setattr(
         mod, "_run_preflight_for_kiwoom_mock", failing_preflight, raising=False
     )
@@ -2342,6 +2342,7 @@ def _patch_lifecycle_fakes(
         return FakeKiwoomMockClient()
 
     if preflight_fn is None:
+
         async def default_preflight(**_kwargs):
             return PreflightResult(ok=True, error_code=PREFLIGHT_OK, checks=[])
 
@@ -2412,9 +2413,7 @@ async def test_confirmed_place_cold_cache_token_issued_once():
     )
     from app.services.brokers.kiwoom.domestic_orders import KiwoomDomesticOrderClient
 
-    expires = (dt.datetime.now(dt.UTC) + dt.timedelta(days=1)).strftime(
-        "%Y%m%d%H%M%S"
-    )
+    expires = (dt.datetime.now(dt.UTC) + dt.timedelta(days=1)).strftime("%Y%m%d%H%M%S")
     mint_count = 0
 
     def oauth_handler(request):  # noqa: ARG001
@@ -2428,9 +2427,7 @@ async def test_confirmed_place_cold_cache_token_issued_once():
     def tr_handler(request):
         api_id = request.headers.get(constants.HEADER_API_ID, "")
         if api_id == constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID:
-            return httpx.Response(
-                200, json={"return_code": 0, "ord_alowa": "1000000"}
-            )
+            return httpx.Response(200, json={"return_code": 0, "ord_alowa": "1000000"})
         return httpx.Response(
             200,
             json={"return_code": 0, "return_msg": "정상", "ord_no": "0000111222"},
@@ -2448,9 +2445,7 @@ async def test_confirmed_place_cold_cache_token_issued_once():
     account_client = KiwoomDomesticAccountClient(client)
     order_client = KiwoomDomesticOrderClient(client)
 
-    await account_client.get_orderable_amount(
-        symbol="005930", side="buy", price=70000
-    )
+    await account_client.get_orderable_amount(symbol="005930", side="buy", price=70000)
     await order_client.place_buy_order(
         symbol="005930", quantity=1, price=70000, exchange="KRX"
     )
@@ -2609,13 +2604,114 @@ async def test_post_dispatch_unknown_failure_requires_reconcile(monkeypatch):
     assert response["reconcile_required"] is True
     assert response["retry_allowed"] is False
     assert "RuntimeError" in response["error"]
-    assert "boom" not in response["error"], (
-        "raw exception message must not surface"
-    )
+    assert "boom" not in response["error"], "raw exception message must not surface"
     assert len(counters["order_calls"]) == 1
 
 
 # === E. Structured stage classification + redaction ===
+
+
+def _patch_real_confirmed_sell_client(monkeypatch, mod, *, stage: str | None = None):
+    import datetime as dt
+
+    import httpx
+
+    from app.services.brokers.kiwoom import constants
+    from app.services.brokers.kiwoom.client import KiwoomMockClient
+
+    order_transport_calls = {"count": 0, "api_ids": []}
+    token_mint_calls = {"count": 0}
+
+    def broker_handler(request: httpx.Request) -> httpx.Response:
+        order_transport_calls["count"] += 1
+        api_id = request.headers.get(constants.HEADER_API_ID, "")
+        order_transport_calls["api_ids"].append(api_id)
+        if api_id == constants.ACCOUNT_BALANCE_API_ID:
+            return httpx.Response(
+                200,
+                json={
+                    "return_code": 0,
+                    "acnt_evlt_remn_indv_tot": [
+                        {
+                            "stk_cd": "005930",
+                            "rmnd_qty": "10",
+                            "pur_pric": "70000",
+                        }
+                    ],
+                },
+            )
+        if api_id == constants.ORDER_SELL_API_ID:
+            return httpx.Response(
+                200,
+                json={"return_code": 0, "return_msg": "정상", "ord_no": "777000111"},
+            )
+        raise AssertionError(f"unexpected api_id={api_id!r}")
+
+    expires = (dt.datetime.now(dt.UTC) + dt.timedelta(days=1)).strftime("%Y%m%d%H%M%S")
+
+    def oauth_handler(_request: httpx.Request) -> httpx.Response:
+        token_mint_calls["count"] += 1
+        if stage == "token_resolution":
+            raise RuntimeError(
+                "token=super-secret-token authorization=Bearer leaked-token"
+            )
+        return httpx.Response(
+            200,
+            json={"return_code": 0, "token": "tok-1", "expires_dt": expires},
+        )
+
+    client = KiwoomMockClient(
+        base_url=constants.MOCK_BASE_URL,
+        app_key="k",
+        app_secret="s",
+        account_no="12345678",
+    )
+    client._transport = httpx.MockTransport(broker_handler)
+    client._auth._transport = httpx.MockTransport(oauth_handler)
+
+    if stage == "pre_dispatch_hook":
+
+        async def fail_before_dispatch(_api_id: str) -> None:
+            raise RuntimeError(
+                "app_secret=hidden-secret account_no=12345678 body=raw-request-body"
+            )
+
+        client._before_api_dispatch = fail_before_dispatch  # type: ignore[method-assign]
+    elif stage == "request_build":
+        original_build_request = httpx.AsyncClient.build_request
+
+        def fail_build_request(self, method, url, **kwargs):
+            if "/api/dostk/" not in str(url):
+                return original_build_request(self, method, url, **kwargs)
+            del self, method, url, kwargs
+            raise ValueError("body=raw-request-body token=super-secret-token")
+
+        monkeypatch.setattr(httpx.AsyncClient, "build_request", fail_build_request)
+    elif stage == "host_validation":
+        original_build_request = httpx.AsyncClient.build_request
+
+        def wrong_host_build_request(self, method, url, **kwargs):
+            if "/api/dostk/" not in str(url):
+                return original_build_request(self, method, url, **kwargs)
+            del self, url
+            return httpx.Request(
+                method,
+                "https://api.kiwoom.com/api/dostk/acnt",
+                headers=kwargs.get("headers"),
+                json=kwargs.get("json"),
+            )
+
+        monkeypatch.setattr(
+            httpx.AsyncClient, "build_request", wrong_host_build_request
+        )
+
+    async def fake_quote(_symbol: str) -> tuple[int | None, str]:
+        return 70000, "fresh"
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    monkeypatch.setattr(mod, "_fetch_kr_quote_for_preflight", fake_quote)
+    monkeypatch.setattr(mod, "_new_kiwoom_mock_client", lambda: client)
+    return order_transport_calls, token_mint_calls
 
 
 @pytest.mark.asyncio
@@ -2689,6 +2785,115 @@ async def test_pre_dispatch_error_redacts_secrets():
 
 
 # === F. Regression guards ===
+
+
+@pytest.mark.asyncio
+async def test_confirmed_sell_runs_real_balance_preflight_before_post(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+    from app.services.brokers.kiwoom import constants
+
+    order_transport_calls, token_mint_calls = _patch_real_confirmed_sell_client(
+        monkeypatch, mod
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_place_order"](
+        symbol="005930",
+        side="sell",
+        quantity=5,
+        price=70000,
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert response["success"] is True
+    assert response["dry_run"] is False
+    assert response["estimated_evidence"]["sellable_quantity"] == 10
+    assert order_transport_calls["api_ids"] == [
+        constants.ACCOUNT_BALANCE_API_ID,
+        constants.ORDER_SELL_API_ID,
+    ]
+    assert order_transport_calls["count"] == 2
+    assert token_mint_calls["count"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stage",
+    ["token_resolution", "pre_dispatch_hook", "request_build", "host_validation"],
+)
+async def test_confirmed_sell_pre_dispatch_failures_preserve_structured_diagnostics(
+    monkeypatch, stage
+):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+    from app.services.brokers.kiwoom import constants
+
+    order_transport_calls, token_mint_calls = _patch_real_confirmed_sell_client(
+        monkeypatch, mod, stage=stage
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_place_order"](
+        symbol="005930",
+        side="sell",
+        quantity=1,
+        price=70000,
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert response["success"] is False
+    assert response["status"] == "not_submitted"
+    assert response["dispatch_started"] is False
+    assert response["reconcile_required"] is False
+    assert response["stage"] == stage
+    assert response["api_id"] == constants.ACCOUNT_BALANCE_API_ID
+    assert response["cause_type"] in {"RuntimeError", "ValueError"}
+    assert order_transport_calls["count"] == 0
+    assert token_mint_calls["count"] <= 1
+    dumped = str(response)
+    for secret in [
+        "super-secret-token",
+        "leaked-token",
+        "hidden-secret",
+        "12345678",
+        "raw-request-body",
+        "Bearer",
+        "authorization",
+        "app_secret",
+        "body=",
+    ]:
+        assert secret not in dumped
+
+
+@pytest.mark.asyncio
+async def test_preview_pre_dispatch_failure_preserves_structured_diagnostics(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+    from app.services.brokers.kiwoom import constants
+
+    order_transport_calls, token_mint_calls = _patch_real_confirmed_sell_client(
+        monkeypatch, mod, stage="pre_dispatch_hook"
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_preview_order"](
+        symbol="005930", side="sell", quantity=1, price=70000
+    )
+
+    assert response["success"] is False
+    assert response["preview"] is True
+    assert response["status"] == "not_submitted"
+    assert response["dispatch_started"] is False
+    assert response["reconcile_required"] is False
+    assert response["stage"] == "pre_dispatch_hook"
+    assert response["api_id"] == constants.ACCOUNT_BALANCE_API_ID
+    assert order_transport_calls["count"] == 0
+    assert token_mint_calls["count"] == 1
 
 
 @pytest.mark.asyncio

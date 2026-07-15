@@ -268,7 +268,9 @@ async def _run_preflight_for_kiwoom_mock(
 ) -> PreflightResult:
     quote_price, quote_freshness = await _fetch_kr_quote_for_preflight(symbol)
     if account_client is None:
-        account_client = KiwoomDomesticAccountClient(cast(Any, _new_kiwoom_mock_client()))
+        account_client = KiwoomDomesticAccountClient(
+            cast(Any, _new_kiwoom_mock_client())
+        )
     return await run_order_preflight(
         account_client=account_client,
         symbol=symbol,
@@ -389,6 +391,8 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
             price=price,
             account_client=account_client,
         )
+    except KiwoomPreDispatchError as exc:
+        return _not_submitted_response(base_response, exc)
     except Exception as exc:  # noqa: BLE001 - preflight must fail closed
         return {
             "success": False,
@@ -455,9 +459,21 @@ async def _kiwoom_mock_preview_impl(**kwargs: Any) -> dict[str, Any]:
     quantity = int(kwargs.get("quantity"))
     price = int(kwargs.get("price"))
 
-    preflight = await _run_preflight_for_kiwoom_mock(
-        symbol=symbol, side=side, quantity=quantity, price=price
-    )
+    base_response = {
+        "source": "kiwoom",
+        "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
+        "symbol": symbol,
+        "side": side,
+        "quantity": quantity,
+        "price": price,
+        "preview": True,
+    }
+    try:
+        preflight = await _run_preflight_for_kiwoom_mock(
+            symbol=symbol, side=side, quantity=quantity, price=price
+        )
+    except KiwoomPreDispatchError as exc:
+        return _not_submitted_response(base_response, exc)
     return _preflight_to_response(
         preflight,
         symbol=symbol,
