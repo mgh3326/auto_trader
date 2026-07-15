@@ -8,6 +8,8 @@ from app.services.brokers.kiwoom.normalization import (
     REDACTED_VALUE,
     KiwoomMockEvidenceError,
     build_mock_provenance,
+    normalize_deposit,
+    normalize_orderable_cash,
     normalize_orders,
     normalize_positions,
     redact_broker_response,
@@ -39,6 +41,86 @@ def test_normalize_kt00018_positions_uses_official_fields() -> None:
 
 def test_normalize_kt00018_empty_positions_is_stable_empty_list() -> None:
     assert normalize_positions({"return_code": 0, "acnt_evlt_remn_indv_tot": []}) == []
+
+
+# ---------------------------------------------------------------------------
+# ROB-891 — kt00001 deposit (ord_alow_amt) and kt00010 orderable (ord_alowa)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("50000000", 50_000_000),
+        ("0", 0),
+        ("+000000050000000", 50_000_000),
+        ("50,000,000", 50_000_000),
+        ("+000,000,050,000,000", 50_000_000),
+    ],
+)
+def test_normalize_deposit_parses_ord_alow_amt(raw: str, expected: int) -> None:
+    assert normalize_deposit({"return_code": 0, "ord_alow_amt": raw}) == expected
+
+
+@pytest.mark.parametrize(
+    ("payload", "match"),
+    [
+        ({"return_code": 0}, "missing required cash field"),
+        ({"return_code": 0, "ord_alow_amt": None}, "missing required cash field"),
+        ({"return_code": 0, "ord_alow_amt": ""}, "missing required cash field"),
+        ({"return_code": 0, "ord_alow_amt": "not-a-number"}, "not an integer"),
+        ({"return_code": 0, "ord_alow_amt": "-1"}, "negative"),
+    ],
+)
+def test_normalize_deposit_rejects_invalid_evidence(payload: dict, match: str) -> None:
+    with pytest.raises(KiwoomMockEvidenceError, match=match):
+        normalize_deposit(payload)
+
+
+def test_normalize_deposit_rejects_prsm_dpst_aset_amt_only() -> None:
+    payload = {"return_code": 0, "prsm_dpst_aset_amt": "999999999"}
+    with pytest.raises(KiwoomMockEvidenceError, match="missing required cash field"):
+        normalize_deposit(payload)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("1500000", 1_500_000),
+        ("0", 0),
+        ("+000000001500000", 1_500_000),
+        ("1,500,000", 1_500_000),
+    ],
+)
+def test_normalize_orderable_cash_parses_ord_alowa(raw: str, expected: int) -> None:
+    assert normalize_orderable_cash({"return_code": 0, "ord_alowa": raw}) == expected
+
+
+@pytest.mark.parametrize(
+    ("payload", "match"),
+    [
+        ({"return_code": 0}, "missing required cash field"),
+        ({"return_code": 0, "ord_alowa": None}, "missing required cash field"),
+        ({"return_code": 0, "ord_alowa": ""}, "missing required cash field"),
+        ({"return_code": 0, "ord_alowa": "abc"}, "not an integer"),
+        ({"return_code": 0, "ord_alowa": "-5"}, "negative"),
+    ],
+)
+def test_normalize_orderable_cash_rejects_invalid_evidence(
+    payload: dict, match: str
+) -> None:
+    with pytest.raises(KiwoomMockEvidenceError, match=match):
+        normalize_orderable_cash(payload)
+
+
+def test_normalize_orderable_cash_rejects_cross_endpoint_fields() -> None:
+    payload = {
+        "return_code": 0,
+        "ord_psbl_cash": "1500000",
+        "entr": "987654",
+    }
+    with pytest.raises(KiwoomMockEvidenceError, match="missing required cash field"):
+        normalize_orderable_cash(payload)
 
 
 def test_normalize_kt00009_orders_derives_stable_status_and_quantities() -> None:

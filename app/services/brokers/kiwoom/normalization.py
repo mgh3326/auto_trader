@@ -137,6 +137,38 @@ def _normalize_kr_symbol(row: Mapping[str, Any]) -> str:
         raise KiwoomMockEvidenceError("Kiwoom row has invalid KRX symbol") from exc
 
 
+def _required_non_negative_cash(payload: Mapping[str, Any], key: str) -> int:
+    raw = payload.get(key)
+    if raw is None:
+        raise KiwoomMockEvidenceError(
+            f"Kiwoom response missing required cash field {key}"
+        )
+    text = str(raw).strip()
+    if not text:
+        raise KiwoomMockEvidenceError(
+            f"Kiwoom response missing required cash field {key}"
+        )
+    try:
+        value = int(text.replace(",", ""))
+    except ValueError as exc:
+        raise KiwoomMockEvidenceError(
+            f"Kiwoom cash field {key} is not an integer"
+        ) from exc
+    if value < 0:
+        raise KiwoomMockEvidenceError(f"Kiwoom cash field {key} is negative")
+    return value
+
+
+def normalize_deposit(payload: dict[str, Any]) -> int:
+    """Parse kt00001 deposit detail — ord_alow_amt only (ROB-891)."""
+    return _required_non_negative_cash(payload, "ord_alow_amt")
+
+
+def normalize_orderable_cash(payload: dict[str, Any]) -> int:
+    """Parse kt00010 orderable amount — ord_alowa only (ROB-891)."""
+    return _required_non_negative_cash(payload, "ord_alowa")
+
+
 def normalize_positions(payload: dict[str, Any]) -> list[dict[str, Any]]:
     positions: list[dict[str, Any]] = []
     for row in _required_rows(payload, "acnt_evlt_remn_indv_tot"):
@@ -301,6 +333,8 @@ __all__ = [
     "REDACTED_VALUE",
     "KiwoomMockEvidenceError",
     "build_mock_provenance",
+    "normalize_deposit",
+    "normalize_orderable_cash",
     "normalize_orders",
     "normalize_positions",
     "redact_broker_response",

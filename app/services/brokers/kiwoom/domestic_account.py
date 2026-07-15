@@ -38,18 +38,39 @@ class KiwoomDomesticAccountClient:
         self,
         *,
         symbol: str,
+        side: str | None = None,
+        price: int | None = None,
+        cont_yn: str | None = None,
+        next_key: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "dmst_stex_tp": constants.ACCOUNT_DMST_STEX_TP_DEFAULT,
+            "stk_cd": normalize_krx_symbol(symbol),
+        }
+        if side is not None and price is not None:
+            body["trde_tp"] = (
+                constants.TRADE_TYPE_BUY if side == "buy" else constants.TRADE_TYPE_SELL
+            )
+            body["uv"] = str(price)
+        return await self._client.post_api(
+            api_id=constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID,
+            path=ACCOUNT_PATH,
+            body=body,
+            cont_yn=cont_yn,
+            next_key=next_key,
+        )
+
+    async def get_deposit(
+        self,
+        *,
         cont_yn: str | None = None,
         next_key: str | None = None,
     ) -> dict[str, Any]:
         return await self._client.post_api(
-            api_id=constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID,
+            api_id=constants.ACCOUNT_DEPOSIT_API_ID,
             path=ACCOUNT_PATH,
-            # ROB-460 — kt00010 (get_orderable_cash symbol path) requires
-            # dmst_stex_tp (국내거래소구분), like its sibling kt00018; value "KRX" is
-            # proven by the order endpoints. Mock is KRX-only.
             body={
                 "dmst_stex_tp": constants.ACCOUNT_DMST_STEX_TP_DEFAULT,
-                "stk_cd": normalize_krx_symbol(symbol),
             },
             cont_yn=cont_yn,
             next_key=next_key,

@@ -33,7 +33,13 @@ ORDER_CANCEL_API_ID = "kt10003"
 ACCOUNT_ORDER_DETAIL_API_ID = "kt00007"
 ACCOUNT_ORDER_STATUS_API_ID = "kt00009"
 ACCOUNT_ORDERABLE_AMOUNT_API_ID = "kt00010"
+ACCOUNT_DEPOSIT_API_ID = "kt00001"  # ROB-891 — 예수금상세현황 (account-level cash)
 ACCOUNT_BALANCE_API_ID = "kt00018"
+
+# ROB-891 — kt00010 (주문가능금액) trde_tp (주문구분) values for order-specific
+# orderable-cash queries. Maps side → Kiwoom trade-type code.
+TRADE_TYPE_BUY = "1"  # 매수
+TRADE_TYPE_SELL = "2"  # 매도
 
 # Chart API IDs (scaffolded, deferred — NOT routed from get_ohlcv)
 CHART_MINUTE_API_ID = "ka10080"

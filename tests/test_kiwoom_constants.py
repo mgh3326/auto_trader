@@ -30,6 +30,7 @@ def test_account_api_ids():
     assert k.ACCOUNT_ORDER_DETAIL_API_ID == "kt00007"
     assert k.ACCOUNT_ORDER_STATUS_API_ID == "kt00009"
     assert k.ACCOUNT_ORDERABLE_AMOUNT_API_ID == "kt00010"
+    assert k.ACCOUNT_DEPOSIT_API_ID == "kt00001"
     assert k.ACCOUNT_BALANCE_API_ID == "kt00018"
 
 
