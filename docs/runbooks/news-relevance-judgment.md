@@ -67,6 +67,37 @@ get_news(KR)가 수집·저장한 기사의 종목 관련성 판정을 **외부 
    - 판정 후 `get_news(symbol)` 호출 → `excluded_count` 증가 + 해당 기사 미노출
      + confirmed 기사의 `relevance` 블록에 판정 필드 채워짐 확인.
 
+## 판정 plumbing 헬퍼 (ROB-889)
+
+수동 판정 루프(§Job 절차)를 반복·안전하게 만드는 default-disabled CLI.
+**LLM 미포함** — pending fetch / 페이로드 검증 / ingest POST의 HTTP glue만 담당한다.
+판정 자체는 세션(Claude/Hermes)이 수행(ROB-501 LLM boundary 준수).
+
+```bash
+# 1. pending 조회 (read-only, 토큰 필요)
+uv run python -m scripts.news_relevance_judge_smoke --mode fetch \
+    --market kr --limit 50 --host https://<host> > pending.json
+
+# 2. <세션이 pending.json을 판정해 judgments.json 작성>
+
+# 3. 로컬 검증 (네트워크/토큰 불필요 — 서버 422를 미리 잡음)
+uv run python -m scripts.news_relevance_judge_smoke --mode validate \
+    --file judgments.json
+#    → {"status":"valid","judgments":N,"would_exclude":X,"would_confirm":Y}
+#    would_exclude 은 서버 파생 규칙(unrelated|low)의 로컬 미리보기다.
+
+# 4. 제출 (DB mutation → --confirm 필수; 없으면 dry_run 미리보기)
+uv run python -m scripts.news_relevance_judge_smoke --mode submit \
+    --file judgments.json --host https://<host> --confirm
+```
+
+- 토큰은 `NEWS_RELEVANCE_INGEST_TOKEN` env 에서 읽고 **절대 출력하지 않는다**(키 유무만 보고).
+  헤더 이름은 `NEWS_RELEVANCE_INGEST_TOKEN_HEADER`(기본 `X-News-Relevance-Ingest-Token`).
+- host 기본값은 `NEWS_RELEVANCE_SMOKE_HOST` 또는 `http://localhost:8000`.
+- `submit`은 `--confirm` 없으면 검증+미리보기만 하고 아무것도 보내지 않는다(fail-safe).
+- 판정 JSON은 서버와 동일한 pydantic 계약(`NewsRelevanceIngestRequest`)으로 검증한다 —
+  enum/shape 위반은 POST 전에 걸린다. `status`는 서버가 파생하므로 절대 보내지 않는다.
+
 ## TaskIQ 비동기 판정 worker (ROB-506)
 
 `get_news`(KR)가 새 pending link를 만들면 `news_relevance.judge_pending`
