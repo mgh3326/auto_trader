@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from datetime import timedelta
 from typing import Any, cast
 
@@ -13,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 from app.mcp_server.caller_identity import get_caller_argument_names
+from app.mcp_server.env_utils import _env
 from app.mcp_server.profiles import resolve_mcp_profile
 from app.services.trade_journal.retrospective_action_repository import (
     RetrospectiveActionRepository,
@@ -110,7 +110,7 @@ async def save_trade_retrospective(
         "instrument_type": instrument_type,
         "account_mode": account_mode,
         "outcome": outcome,
-        "actor": f"mcp:{resolve_mcp_profile(os.getenv('MCP_PROFILE')).value}",
+        "actor": f"mcp:{resolve_mcp_profile(_env('MCP_PROFILE')).value}",
     }
     optional_values = {
         "side": side,
@@ -151,17 +151,19 @@ async def save_trade_retrospective(
     try:
         async with _session_factory()() as db:
             action, row = await save_retrospective(db, **save_kwargs)
-            await db.commit()
             await db.refresh(row)
             next_actions_data = await RetrospectiveActionRepository(db).read_actions(
                 row.id
             )
+            data = serialize_retrospective(
+                row,
+                next_actions_override=next_actions_data,
+            )
+            await db.commit()
             return {
                 "success": True,
                 "action": action,
-                "data": serialize_retrospective(
-                    row, next_actions_override=next_actions_data
-                ),
+                "data": data,
             }
     except RetrospectiveValidationError as exc:
         return {"success": False, "error": str(exc)}

@@ -228,16 +228,27 @@ class RetrospectiveActionRepository:
         retrospective_id: int,
         actions: list[dict[str, Any]] | None,
         actor: str,
+        *,
+        control_mode: str | None = None,
     ) -> None:
         """Reconcile incoming actions against canonical children.
 
         If ``actions`` is None, no reconciliation is performed (field-presence
         semantics: omitted next_actions means "don't touch children").
+        A caller that already validated the control mode may pass that snapshot
+        so one save operation cannot make routing decisions from two reads.
         """
         if actions is None:
             return
 
-        mode = await self.get_control_mode()
+        mode = (
+            control_mode if control_mode is not None else await self.get_control_mode()
+        )
+        if mode not in ("shadow", "canonical"):
+            raise ActionControlError(
+                f'retrospective action control mode "{mode}" is invalid; '
+                "writes fail closed"
+            )
         if mode != "canonical":
             # In shadow mode, reconcile is a no-op — the legacy writer
             # already wrote next_actions to parent JSONB.

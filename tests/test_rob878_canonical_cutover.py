@@ -2623,6 +2623,50 @@ async def test_canonical_mode_save_uses_repository(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_canonical_save_reuses_validated_control_mode(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Save and reconciliation must use one validated control-mode snapshot."""
+    from app.services.trade_journal import trade_retrospective_service as svc
+    from app.services.trade_journal.retrospective_action_repository import (
+        RetrospectiveActionRepository,
+    )
+
+    await _set_canonical_mode(db_session)
+
+    async def _unexpected_mode_reread(_repo):
+        raise AssertionError("reconciliation re-read the control mode")
+
+    monkeypatch.setattr(
+        RetrospectiveActionRepository,
+        "get_control_mode",
+        _unexpected_mode_reread,
+    )
+
+    _, retro = await svc.save_retrospective(
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        correlation_id="canonical-single-mode-read",
+        next_actions=[{"action": "single mode read"}],
+    )
+
+    count = (
+        await db_session.execute(
+            text(
+                "SELECT count(*) FROM review.trade_retrospective_actions "
+                "WHERE retrospective_id = :rid"
+            ),
+            {"rid": retro.id},
+        )
+    ).scalar_one()
+    assert count == 1
+
+
+@pytest.mark.asyncio
 async def test_canonical_action_retry_preserves_omitted_parent_fields(
     db_session: AsyncSession,
 ):

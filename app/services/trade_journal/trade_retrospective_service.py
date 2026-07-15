@@ -601,6 +601,7 @@ async def save_retrospective(
             retro.id,
             next_actions_value if next_actions_value is not _UNSET else [],
             actor=actor,
+            control_mode=ctrl_mode,
         )
 
     return status, retro
