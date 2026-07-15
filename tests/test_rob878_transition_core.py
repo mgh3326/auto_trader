@@ -244,6 +244,33 @@ async def test_active_same_state_requires_current_version(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reason", "evidence"),
+    [("x" * 2001, None), (None, _evidence())],
+)
+async def test_active_same_state_still_validates_audit_payload(
+    db_session: AsyncSession,
+    reason: str | None,
+    evidence: dict[str, object] | None,
+) -> None:
+    from app.services.trade_journal.retrospective_action_transition import (
+        transition_retrospective_action,
+    )
+
+    _, action_id = await _seed_action(db_session, status="open", version=3)
+    with pytest.raises(ActionTransitionInvalid):
+        await transition_retrospective_action(
+            db_session,
+            action_id=action_id,
+            target_status="open",
+            expected_version=3,
+            actor=TransitionActor.web(1),
+            reason=reason,
+            evidence=evidence,
+        )
+
+
+@pytest.mark.asyncio
 async def test_real_transition_increments_version_exactly_once(
     db_session: AsyncSession,
 ) -> None:
@@ -301,6 +328,16 @@ async def test_same_terminal_stale_retry_returns_stored_audit(
         evidence=_evidence(source=" postmortem review "),
     )
     assert result.idempotent and not result.changed
+    assert result.action == {
+        "action_id": str(action_id),
+        "status": "expired",
+        "version": 6,
+        "status_changed_at": immutable[5].isoformat(),
+        "resolved_at": immutable[4].isoformat(),
+        "status_actor": immutable[0],
+        "status_source": immutable[1],
+        "status_reason": immutable[2],
+    }
     after = await _load_action(db_session, action_id)
     assert after.version == 6
     assert (
@@ -447,6 +484,9 @@ async def test_past_due_date_alone_never_expires_action(
     [
         _evidence(extra="forbidden"),
         _evidence(observed_at="2026-07-15T12:00:00"),
+        _evidence(observed_at="20260715T120000+09:00"),
+        _evidence(observed_at="2026-07-15 12:00:00+09:00"),
+        _evidence(observed_at="2026-W29-3T12:00:00+09:00"),
         _evidence(source=" "),
         _evidence(reference=""),
         _evidence(summary="x" * (EVIDENCE_STRING_MAX_LENGTH + 1)),
@@ -474,8 +514,38 @@ def test_operator_attestation_accepts_exact_boundary_and_offset() -> None:
 
 
 def test_operator_attestation_rejects_key_over_64_characters() -> None:
-    with pytest.raises(ActionTransitionInvalid):
+    with pytest.raises(ActionTransitionInvalid, match="key exceeds"):
         validate_operator_attestation(_evidence(**{"k" * 65: "value"}))
+
+
+def test_operator_attestation_errors_do_not_echo_untrusted_keys_or_values() -> None:
+    secret_key = "password_supersecret_material"
+    secret_value = "credential-value-must-not-appear"
+    evidence: dict[object, object] = _evidence()
+    evidence[secret_key] = secret_value
+    evidence[1] = "mixed-key"
+    with pytest.raises(ActionTransitionInvalid) as exc_info:
+        validate_operator_attestation(evidence)
+    message = str(exc_info.value)
+    assert secret_key not in message
+    assert secret_value not in message
+
+
+@pytest.mark.parametrize(
+    ("source", "value"),
+    [
+        ("web", "reconciler:job"),
+        ("triage", "mcp:profile"),
+        ("mcp", "user:1"),
+        ("reconciler", "user:1"),
+        ("web", "user:"),
+    ],
+)
+def test_transition_actor_rejects_source_value_mismatch(
+    source: str, value: str
+) -> None:
+    with pytest.raises(ActionTransitionInvalid):
+        TransitionActor(source=source, value=value)
 
 
 def test_evidence_depth_boundary_is_five() -> None:
@@ -992,9 +1062,10 @@ async def test_transition_has_no_external_side_effects(
     )
 
     notifier = AsyncMock()
+    getter = AsyncMock(return_value=notifier)
     monkeypatch.setattr(
         "app.monitoring.trade_notifier.get_trade_notifier",
-        AsyncMock(return_value=notifier),
+        getter,
     )
     _, action_id = await _seed_action(db_session)
     await transition_retrospective_action(
@@ -1006,4 +1077,5 @@ async def test_transition_has_no_external_side_effects(
         reason=None,
         evidence=None,
     )
-    notifier.assert_not_called()
+    getter.assert_not_called()
+    assert notifier.mock_calls == []

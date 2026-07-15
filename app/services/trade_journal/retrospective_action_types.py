@@ -23,6 +23,7 @@ Contracts enforced here (see ROB-878 design ``State Machine`` /
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -80,6 +81,17 @@ _OPERATOR_ATTESTATION_KEYS: tuple[str, ...] = (
     "summary",
 )
 
+_ACTOR_PREFIXES = {
+    "web": "user:",
+    "triage": "user:",
+    "mcp": "mcp:",
+    "reconciler": "reconciler:",
+}
+
+_RFC3339_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
+)
+
 
 # ---------------------------------------------------------------------------
 # Transition actor (caller-attested identity, never caller-controlled string)
@@ -106,6 +118,13 @@ class TransitionActor:
             )
         if not self.value or not self.value.strip():
             raise ActionTransitionInvalid("transition actor value must be non-empty")
+        normalized = self.value.strip()
+        prefix = _ACTOR_PREFIXES[self.source]
+        if not normalized.startswith(prefix) or not normalized[len(prefix) :].strip():
+            raise ActionTransitionInvalid(
+                "transition actor value does not match its source"
+            )
+        object.__setattr__(self, "value", normalized)
 
     # -- Factory constructors (preferred over hand-built values) ------------
 
@@ -272,32 +291,38 @@ def validate_operator_attestation(evidence: Any) -> dict[str, Any]:
             "operator_attestation evidence must be a JSON object"
         )
 
+    depth = _max_depth(evidence)
+    if depth > EVIDENCE_MAX_DEPTH:
+        raise ActionTransitionInvalid(
+            f"operator_attestation evidence nesting depth {depth} exceeds limit "
+            f"{EVIDENCE_MAX_DEPTH}"
+        )
+    _enforce_string_bounds(evidence)
+    if _scan_for_secrets(evidence) is not None:
+        raise ActionTransitionInvalid(
+            "operator_attestation evidence rejects a secret-like key"
+        )
+
     keys = set(evidence.keys())
     expected = set(_OPERATOR_ATTESTATION_KEYS)
     extra = keys - expected
     if extra:
-        # Report the shape, never a value — extras may be a credential.
         raise ActionTransitionInvalid(
-            f"operator_attestation evidence rejects unknown keys: {sorted(extra)}"
+            "operator_attestation evidence rejects unknown keys"
         )
     missing = expected - keys
     if missing:
         raise ActionTransitionInvalid(
-            f"operator_attestation evidence is missing required keys: {sorted(missing)}"
+            "operator_attestation evidence is missing required keys"
         )
 
     schema_version = evidence["schema_version"]
     if schema_version != 1:
-        raise ActionTransitionInvalid(
-            f"unsupported operator_attestation schema_version: {schema_version!r}"
-        )
+        raise ActionTransitionInvalid("operator_attestation schema_version must be 1")
 
     kind = evidence["kind"]
     if kind != "operator_attestation":
-        raise ActionTransitionInvalid(
-            f"operator_attestation evidence kind must be 'operator_attestation', "
-            f"got {kind!r}"
-        )
+        raise ActionTransitionInvalid("operator_attestation evidence kind is invalid")
 
     source = evidence["source"]
     reference = evidence["reference"]
@@ -321,13 +346,20 @@ def validate_operator_attestation(evidence: Any) -> dict[str, Any]:
         raise ActionTransitionInvalid(
             "operator_attestation observed_at must be non-blank"
         )
+    if _RFC3339_PATTERN.fullmatch(observed_at_str) is None:
+        raise ActionTransitionInvalid(
+            "operator_attestation observed_at must be RFC3339"
+        )
     try:
-        observed_at = datetime.fromisoformat(observed_at_str)
+        observed_at = datetime.fromisoformat(
+            observed_at_str[:-1] + "+00:00"
+            if observed_at_str.endswith("Z")
+            else observed_at_str
+        )
     except ValueError as exc:
         raise ActionTransitionInvalid(
             "operator_attestation observed_at must be RFC3339"
         ) from exc
-    # Reject naive timestamps — an offset (or ``Z``) is mandatory.
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise ActionTransitionInvalid(
             "operator_attestation observed_at must include a timezone offset"
@@ -342,22 +374,9 @@ def validate_operator_attestation(evidence: Any) -> dict[str, Any]:
         "summary": summary.strip(),
     }
 
-    # Structural bounds (depth, key length, string length, secret scan).
-    depth = _max_depth(canonical)
-    if depth > EVIDENCE_MAX_DEPTH:
-        raise ActionTransitionInvalid(
-            f"operator_attestation evidence nesting depth {depth} exceeds limit "
-            f"{EVIDENCE_MAX_DEPTH}"
-        )
-    _enforce_string_bounds(canonical)
-    secret = _scan_for_secrets(canonical)
-    if secret is not None:
-        raise ActionTransitionInvalid(
-            "operator_attestation evidence rejects secret-like key "
-            f"(fragment={secret!r})"
-        )
-
-    encoded = json.dumps(canonical, ensure_ascii=False).encode("utf-8")
+    encoded = json.dumps(
+        canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
     if len(encoded) > EVIDENCE_MAX_BYTES:
         raise ActionTransitionInvalid(
             f"operator_attestation evidence exceeds {EVIDENCE_MAX_BYTES} bytes"
@@ -370,7 +389,11 @@ def _enforce_string_bounds(value: Any) -> None:
     """Recursively enforce key/string length limits, raising on violation."""
     if isinstance(value, Mapping):
         for key, child in value.items():
-            if isinstance(key, str) and len(key) > EVIDENCE_KEY_MAX_LENGTH:
+            if not isinstance(key, str):
+                raise ActionTransitionInvalid(
+                    "operator_attestation evidence keys must be strings"
+                )
+            if len(key) > EVIDENCE_KEY_MAX_LENGTH:
                 raise ActionTransitionInvalid(
                     f"operator_attestation evidence key exceeds "
                     f"{EVIDENCE_KEY_MAX_LENGTH} characters"

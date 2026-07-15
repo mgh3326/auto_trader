@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timezone import now_kst
 from app.models.review import TradeRetrospective, TradeRetrospectiveAction
 from app.services.trade_journal.retrospective_action_repository import (
     ActionControlError,
@@ -213,6 +214,12 @@ async def transition_retrospective_action(
         raise _conflict(action, "expected_version does not match current version")
 
     if target_status == action.status:
+        _validate_transition_payload(
+            target_status=target_status,
+            actor=actor,
+            reason=reason,
+            evidence=evidence,
+        )
         return ActionTransitionResult(
             changed=False,
             idempotent=True,
@@ -226,7 +233,7 @@ async def transition_retrospective_action(
         reason=reason,
         evidence=evidence,
     )
-    changed_at = datetime.now(UTC)
+    changed_at = now_kst()
     resolved_at = changed_at if target_status in TERMINAL_STATUSES else None
     next_version = action.version + 1
 
