@@ -84,7 +84,15 @@ class _FakeReference:
 
 
 class _Order:
-    def __init__(self, status, coid, broker_id=None, executed_qty=Decimal("7.3")):
+    def __init__(
+        self,
+        status,
+        coid,
+        broker_id=None,
+        executed_qty=Decimal("7.3"),
+        avg_price=Decimal("1.36"),
+        fee_usdt=Decimal("0.004964"),
+    ):
         self.status = status
         self.client_order_id = coid
         # ROB-844: distinct orders get distinct broker ids (Binance never
@@ -93,6 +101,9 @@ class _Order:
         # (product, venue_host, broker_order_id) ack-uniqueness index.
         self.broker_order_id = broker_id if broker_id is not None else f"bk-{coid}"
         self.executed_qty = executed_qty
+        self.cummulative_quote_qty = executed_qty * avg_price
+        self.avg_price = avg_price
+        self.fee_usdt = fee_usdt
 
 
 class _OpenOrders:
@@ -157,6 +168,47 @@ class _FakeSpotClient:
 
     async def get_asset_balance(self, *, asset):
         return _Balance(self._free)
+
+
+class _FakePollingSpotClient(_FakeSpotClient):
+    """Open submit is partial; read-side order truth later proves full fill."""
+
+    async def submit_order(
+        self,
+        *,
+        symbol,
+        side,
+        order_type,
+        qty,
+        client_order_id=None,
+        price=None,
+        time_in_force=None,
+        confirm=False,
+    ):
+        self.submits.append({"side": side, "qty": qty, "confirm": confirm})
+        if side == "BUY":
+            self._free = self._free_after_buy
+            return _Order(
+                "PARTIALLY_FILLED",
+                client_order_id,
+                executed_qty=Decimal("1"),
+                fee_usdt=Decimal("0.00136"),
+            )
+        self._free = Decimal("0")
+        return _Order("FILLED", client_order_id, executed_qty=qty)
+
+    async def get_order_status(self, *, symbol, client_order_id):
+        return {
+            "clientOrderId": client_order_id,
+            "symbol": symbol,
+            "side": "BUY",
+            "type": "MARKET",
+            "status": "FILLED",
+            "orderId": 123456,
+            "origQty": "7.3",
+            "executedQty": "7.3",
+            "cummulativeQuoteQty": "9.928",
+        }
 
 
 class _FakeFuturesClient:
@@ -271,6 +323,56 @@ async def test_spot_happy_path_reconciles_flat(db_session) -> None:
     sides = [s["side"] for s in client.submits]
     assert sides == ["BUY", "SELL"]
     assert all(s["confirm"] for s in client.submits)
+    rows = list(
+        (
+            await db_session.scalars(
+                select(BinanceDemoOrderLedger)
+                .join(CryptoInstrument)
+                .where(CryptoInstrument.venue_symbol == "EXESPOTAUSDT")
+                .order_by(BinanceDemoOrderLedger.id)
+            )
+        ).all()
+    )
+    assert len(rows) == 2
+    for row in rows:
+        assert row.extra_metadata["filled_qty"] == "7.3"
+        assert row.extra_metadata["filled_avg_price"] == "1.36"
+        assert row.extra_metadata["fee_usdt"] == "0.004964"
+
+
+@pytest.mark.asyncio
+async def test_spot_polled_fill_never_mixes_stale_submit_actuals(db_session) -> None:
+    client = _FakePollingSpotClient(free_after_buy=Decimal("7.3"))
+    executor = DemoScalpingExecutor(
+        product="spot",
+        client=client,
+        session=db_session,
+        reference=_FakeReference(_SPOT_REF),
+        now=_NOW,
+        poll_delay_seconds=0.0,
+        limits=_limits_for("EXESPOTPOLLEDUSDT"),
+    )
+    result = await executor.execute(
+        _intent("spot", "EXESPOTPOLLEDUSDT"),
+        confirm=True,
+        market=_FRESH_MARKET,
+    )
+    assert result.status == "reconciled"
+    assert client.submits[1]["qty"] == Decimal("7.3")
+    rows = list(
+        (
+            await db_session.scalars(
+                select(BinanceDemoOrderLedger)
+                .join(CryptoInstrument)
+                .where(CryptoInstrument.venue_symbol == "EXESPOTPOLLEDUSDT")
+                .order_by(BinanceDemoOrderLedger.id)
+            )
+        ).all()
+    )
+    open_metadata = rows[0].extra_metadata
+    assert open_metadata["filled_qty"] == "7.3"
+    assert open_metadata["filled_avg_price"] == "1.36"
+    assert "fee_usdt" not in open_metadata
 
 
 @pytest.mark.asyncio

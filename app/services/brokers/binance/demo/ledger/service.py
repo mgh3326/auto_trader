@@ -48,6 +48,9 @@ from app.services.brokers.binance.demo.ledger.repository import (
 )
 
 _ALLOWED_PRODUCTS = frozenset({"spot", "usdm_futures"})
+_IMMUTABLE_FILL_METADATA_KEYS = frozenset(
+    {"filled_qty", "filled_avg_price", "fee_usdt"}
+)
 
 # Locked transition table — single source of truth for legal moves.
 _ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
@@ -75,6 +78,40 @@ class BinanceDemoLedgerService:
         self._repo = BinanceDemoLedgerRepository(session)
         self._owner_session = session
         self._reservation_session_factory = reservation_session_factory
+
+    @staticmethod
+    def _reject_premature_fill_metadata(
+        metadata: dict[str, Any] | None,
+    ) -> None:
+        if metadata and _IMMUTABLE_FILL_METADATA_KEYS.intersection(metadata):
+            raise BinanceDemoInvalidStateTransition(
+                "immutable fill actuals may only be written at the filled transition"
+            )
+
+    @staticmethod
+    def _validate_fill_metadata_merge(
+        row: BinanceDemoOrderLedger,
+        *,
+        new_state: str,
+        metadata: dict[str, Any] | None,
+    ) -> None:
+        if not metadata:
+            return
+        incoming_keys = _IMMUTABLE_FILL_METADATA_KEYS.intersection(metadata)
+        if not incoming_keys:
+            return
+        existing = row.extra_metadata or {}
+        for key in incoming_keys:
+            if new_state == "filled":
+                if key in existing and existing[key] != metadata[key]:
+                    raise BinanceDemoInvalidStateTransition(
+                        f"immutable fill actual {key!r} conflicts with existing value"
+                    )
+                continue
+            if key not in existing or existing[key] != metadata[key]:
+                raise BinanceDemoInvalidStateTransition(
+                    f"immutable fill actual {key!r} cannot be changed or backfilled"
+                )
 
     def _get_reservation_session_factory(
         self,
@@ -205,6 +242,7 @@ class BinanceDemoLedgerService:
             raise BinanceDemoInvalidProduct(
                 f"product={product!r} not in {sorted(_ALLOWED_PRODUCTS)}"
             )
+        self._reject_premature_fill_metadata(extra_metadata)
         return await self._repo.insert_planned(
             instrument_id=instrument_id,
             product=product,
@@ -261,6 +299,7 @@ class BinanceDemoLedgerService:
             raise BinanceDemoInvalidProduct(
                 f"product={product!r} not in {sorted(_ALLOWED_PRODUCTS)}"
             )
+        self._reject_premature_fill_metadata(extra_metadata)
         factory = self._get_reservation_session_factory()
         async with factory() as reservation_session:
             async with reservation_session.begin():
@@ -308,6 +347,11 @@ class BinanceDemoLedgerService:
                 f"{row.lifecycle_state!r} → {new_state!r} not allowed "
                 f"(allowed from {row.lifecycle_state!r}: {sorted(allowed)})"
             )
+        self._validate_fill_metadata_merge(
+            row,
+            new_state=new_state,
+            metadata=extra_metadata_merge,
+        )
         return await self._repo.update_state(
             row,
             new_state=new_state,

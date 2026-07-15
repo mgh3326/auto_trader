@@ -55,7 +55,7 @@ def _cohort() -> PaperValidationCohort:
     )
 
 
-def test_migration_descends_from_merged_rob870_and_is_the_single_head() -> None:
+def test_migration_descends_from_merged_rob870_and_maintains_single_head() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
     rob870_source = ROB870_MIGRATION.read_text(encoding="utf-8")
     assert 'revision = "20260714_rob849_paper_cohort"' in source
@@ -127,6 +127,13 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             # Base metadata represents the current application head. Rebuild
             # the ROB-849 boundary so later migrations are exercised instead
             # of colliding with tables that create_all already materialized.
+            for table in (
+                "evaluation_scorecards",
+                "evaluation_verdicts",
+                "evaluation_epochs",
+                "evaluation_configs",
+            ):
+                await connection.execute(text(f"DROP TABLE research.{table}"))
             await connection.execute(
                 text("DROP TABLE review.trade_retrospective_action_control")
             )
