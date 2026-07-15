@@ -1121,10 +1121,17 @@ async def _validate_cutover_input(conn: AsyncConnection) -> None:
             if not isinstance(action, str) or not action.strip():
                 raise CutoverParityError(f"{prefix}: blank action")
 
-            if "force_new" in item:
-                raise CutoverParityError(
-                    f"{prefix}: force_new is transport-only and must not be persisted"
-                )
+            for reserved_field in (
+                "force_new",
+                "terminal_status",
+                "action_id",
+                "version",
+            ):
+                if reserved_field in item:
+                    raise CutoverParityError(
+                        f"{prefix}: {reserved_field} is canonical/transport-only "
+                        "and must not be persisted in shadow mode"
+                    )
 
             raw_creation_key = item.get("creation_key")
             if "creation_key" in item:

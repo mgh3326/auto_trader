@@ -10,8 +10,8 @@ import pytest
 from app.core.config import settings
 from app.mcp_server import caller_identity_middleware
 from app.mcp_server.caller_identity import (
-    caller_argument_names_var,
     caller_agent_id_var,
+    caller_argument_names_var,
     caller_source_var,
 )
 from app.mcp_server.caller_identity_middleware import (

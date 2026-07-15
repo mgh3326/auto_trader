@@ -642,8 +642,19 @@ async def test_shadow_save_rejects_canonical_only_action_state(
 
 
 @pytest.mark.asyncio
-async def test_cutover_rejects_persisted_transport_only_force_new(
+@pytest.mark.parametrize(
+    ("reserved_field", "reserved_value"),
+    [
+        ("force_new", True),
+        ("terminal_status", "obsolete"),
+        ("action_id", str(uuid.uuid4())),
+        ("version", 1),
+    ],
+)
+async def test_cutover_rejects_persisted_canonical_transport_fields(
     db_session: AsyncSession,
+    reserved_field: str,
+    reserved_value: Any,
 ):
     from app.services.trade_journal.retrospective_action_repository import (
         CutoverParityError,
@@ -656,15 +667,15 @@ async def test_cutover_rejects_persisted_transport_only_force_new(
         next_actions=[
             {
                 "action": "poisoned transport intent",
-                "force_new": True,
-                "creation_key": str(uuid.uuid4()),
+                "status": "done",
+                reserved_field: reserved_value,
             }
         ],
     )
 
     async with engine.connect() as conn:
         transaction = await conn.begin()
-        with pytest.raises(CutoverParityError, match="force_new"):
+        with pytest.raises(CutoverParityError, match=reserved_field):
             await run_cutover(conn, if_shadow=True)
         await transaction.rollback()
 
@@ -992,6 +1003,47 @@ async def test_post_cutover_health_detects_equal_count_field_drift(
         text(
             "UPDATE review.trade_retrospective_actions SET action = 'drifted' "
             "WHERE retrospective_id = 2009"
+        )
+    )
+    await db_session.commit()
+
+    async with engine.connect() as conn:
+        health = await _health_check(conn)
+
+    assert health["healthy"] is False
+    assert "field/ordinal" in health["reason"]
+
+
+@pytest.mark.asyncio
+async def test_post_cutover_health_validates_terminal_status_projection(
+    db_session: AsyncSession,
+):
+    from app.services.trade_journal.retrospective_action_repository import run_cutover
+    from scripts.retrospective_action_cutover import _health_check
+
+    await _insert_retrospective(
+        db_session,
+        retro_id=2014,
+        next_actions=[{"action": "terminal projection", "status": "open"}],
+    )
+    async with engine.begin() as conn:
+        await run_cutover(conn, if_shadow=True)
+
+    await db_session.execute(
+        text(
+            "UPDATE review.trade_retrospective_actions "
+            "SET status = 'obsolete', resolved_at = now(), "
+            "status_reason = 'superseded' WHERE retrospective_id = 2014"
+        )
+    )
+    await db_session.execute(
+        text("SET LOCAL app.retrospective_action_projection_writer = 'v1'")
+    )
+    await db_session.execute(
+        text(
+            "UPDATE review.trade_retrospectives "
+            'SET next_actions = \'[{"action":"terminal projection",'
+            '"status":"done"}]\'::jsonb WHERE id = 2014'
         )
     )
     await db_session.commit()

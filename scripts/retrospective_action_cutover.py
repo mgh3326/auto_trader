@@ -169,6 +169,15 @@ async def _health_check(conn: AsyncConnection) -> dict[str, Any]:
                     WHEN a.status IN ('obsolete', 'expired') THEN 'done'
                     ELSE a.status
                   END
+               OR (p.payload->>'terminal_status') IS DISTINCT FROM CASE
+                    WHEN a.status IN ('obsolete', 'expired') THEN a.status
+                    ELSE NULL
+                  END
+               OR CASE
+                    WHEN p.payload ? 'creation_key'
+                        THEN (p.payload->>'creation_key')::uuid
+                    ELSE NULL
+                  END IS DISTINCT FROM a.creation_key
                OR NULLIF(btrim(COALESCE(p.payload->>'due_kst_date', '')), '')
                     IS DISTINCT FROM a.due_kst_date::text
             LIMIT 1
