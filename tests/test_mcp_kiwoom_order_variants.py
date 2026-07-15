@@ -243,6 +243,7 @@ async def test_place_order_confirmed_calls_kiwoom_mock_order_client(
             side: broker_response,
         },
     )
+    _patch_preflight_success(monkeypatch, mod)
     mcp = DummyMCP()
     _register(mcp)
 
@@ -786,6 +787,7 @@ async def test_preview_order_allows_positive_amounts(monkeypatch):
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
 
     monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    _patch_preflight_success(monkeypatch, mod)
     mcp = DummyMCP()
     _register(mcp)
 
@@ -959,6 +961,25 @@ def _patch_fake_kiwoom_account_client(monkeypatch, mod, payloads):
         mod, "KiwoomDomesticAccountClient", FakeAccountClient, raising=False
     )
     return calls
+
+
+def _patch_preflight_success(monkeypatch, mod) -> None:
+    from app.services.brokers.kiwoom.order_preflight import (
+        PREFLIGHT_OK,
+        PreflightResult,
+    )
+
+    async def fake_preflight(**kwargs):  # noqa: ARG001
+        return PreflightResult(
+            ok=True,
+            error_code=PREFLIGHT_OK,
+            checks=[],
+            estimated_evidence={"type": "estimated"},
+        )
+
+    monkeypatch.setattr(
+        mod, "_run_preflight_for_kiwoom_mock", fake_preflight, raising=False
+    )
 
 
 @pytest.mark.asyncio
@@ -1770,3 +1791,346 @@ async def test_registered_order_history_rejects_malformed_official_order_id(
         api_id="kt00009",
         error="kiwoom_mock_evidence_invalid",
     )
+
+
+# ---------------------------------------------------------------------------
+# ROB-893 — preview/place shared preflight parity + mutation-boundary tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_preview_failure_returns_stable_error_code(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+    from app.services.brokers.kiwoom.order_preflight import (
+        PREFLIGHT_SELLABLE_EXCEEDED,
+        PreflightCheck,
+        PreflightResult,
+    )
+
+    async def failing_preflight(**_kwargs):
+        return PreflightResult(
+            ok=False,
+            error_code=PREFLIGHT_SELLABLE_EXCEEDED,
+            error_detail="Requested 10 exceeds sellable 5 for 005930",
+            checks=[PreflightCheck("sellable", False, "requested=10, sellable=5")],
+        )
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    monkeypatch.setattr(
+        mod, "_run_preflight_for_kiwoom_mock", failing_preflight, raising=False
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_preview_order"](
+        symbol="005930",
+        side="sell",
+        quantity=10,
+        price=70000,
+    )
+
+    assert response["success"] is False
+    assert response["preview"] is True
+    assert response["error"] == PREFLIGHT_SELLABLE_EXCEEDED
+    assert "sellable" in response["error_detail"]
+    assert response["preflight_checks"][0]["name"] == "sellable"
+    assert response["preflight_checks"][0]["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_place_order_dry_run_returns_stable_failure_without_post(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+    from app.services.brokers.kiwoom.order_preflight import (
+        PREFLIGHT_CASH_INSUFFICIENT,
+        PreflightResult,
+    )
+
+    order_calls: list[str] = []
+
+    class FakeKiwoomMockClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FailingAccountClient:
+        def __init__(self, _client):
+            pass
+
+        async def get_balance(self, **_kwargs):
+            return {"return_code": 0}
+
+        async def get_orderable_amount(self, **_kwargs):
+            return {"return_code": 0}
+
+        async def get_deposit(self, **_kwargs):
+            return {"return_code": 0}
+
+    class FailingOrderClient:
+        def __init__(self, _client):
+            pass
+
+        async def place_buy_order(self, **_kwargs):
+            order_calls.append("buy")
+            return {"return_code": 0}
+
+        async def place_sell_order(self, **_kwargs):
+            order_calls.append("sell")
+            return {"return_code": 0}
+
+    async def failing_preflight(**_kwargs):
+        return PreflightResult(
+            ok=False,
+            error_code=PREFLIGHT_CASH_INSUFFICIENT,
+            error_detail="insufficient cash",
+            checks=[],
+        )
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    monkeypatch.setattr(mod, "KiwoomMockClient", FakeKiwoomMockClient, raising=False)
+    monkeypatch.setattr(
+        mod, "KiwoomDomesticAccountClient", FailingAccountClient, raising=False
+    )
+    monkeypatch.setattr(
+        mod, "KiwoomDomesticOrderClient", FailingOrderClient, raising=False
+    )
+    monkeypatch.setattr(
+        mod, "_run_preflight_for_kiwoom_mock", failing_preflight, raising=False
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_place_order"](
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=70000,
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert response["success"] is False
+    assert response["error"] == PREFLIGHT_CASH_INSUFFICIENT
+    assert order_calls == [], "broker POST must not happen after preflight failure"
+
+
+@pytest.mark.asyncio
+async def test_place_order_confirmed_reruns_preflight_right_before_post(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+    from app.services.brokers.kiwoom.order_preflight import (
+        PREFLIGHT_OK,
+        PreflightResult,
+    )
+
+    preflight_call_count = 0
+
+    async def counting_preflight(**_kwargs):
+        nonlocal preflight_call_count
+        preflight_call_count += 1
+        return PreflightResult(ok=True, error_code=PREFLIGHT_OK, checks=[])
+
+    class FakeKiwoomMockClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class SuccessOrderClient:
+        def __init__(self, _client):
+            pass
+
+        async def place_buy_order(self, **_kwargs):
+            return {"return_code": 0, "return_msg": "정상", "ord_no": "0000111222"}
+
+        async def place_sell_order(self, **_kwargs):
+            return {"return_code": 0, "return_msg": "정상", "ord_no": "0000333444"}
+
+    class SuccessAccountClient:
+        def __init__(self, _client):
+            pass
+
+        async def get_balance(self, **_kwargs):
+            return {"return_code": 0}
+
+        async def get_orderable_amount(self, **_kwargs):
+            return {"return_code": 0}
+
+        async def get_deposit(self, **_kwargs):
+            return {"return_code": 0}
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    monkeypatch.setattr(mod, "KiwoomMockClient", FakeKiwoomMockClient, raising=False)
+    monkeypatch.setattr(
+        mod, "KiwoomDomesticAccountClient", SuccessAccountClient, raising=False
+    )
+    monkeypatch.setattr(
+        mod, "KiwoomDomesticOrderClient", SuccessOrderClient, raising=False
+    )
+    monkeypatch.setattr(
+        mod, "_run_preflight_for_kiwoom_mock", counting_preflight, raising=False
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_place_order"](
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=70000,
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert response["success"] is True
+    assert preflight_call_count == 2, (
+        "confirmed place must run preflight twice (once before, once right before POST)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_preview_dry_run_zero_mutation(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+    from app.services.brokers.kiwoom.order_preflight import (
+        PREFLIGHT_OK,
+        PreflightResult,
+    )
+
+    order_calls: list[str] = []
+    account_calls: list[str] = []
+
+    class FakeKiwoomMockClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class TrackingAccountClient:
+        def __init__(self, _client):
+            pass
+
+        async def get_balance(self, **_kwargs):
+            account_calls.append("balance")
+            return {"return_code": 0, "acnt_evlt_remn_indv_tot": []}
+
+        async def get_orderable_amount(self, **_kwargs):
+            account_calls.append("orderable_amount")
+            return {"return_code": 0, "ord_alowa": "1000000"}
+
+        async def get_deposit(self, **_kwargs):
+            account_calls.append("deposit")
+            return {"return_code": 0, "ord_alow_amt": "1000000"}
+
+    class TrackingOrderClient:
+        def __init__(self, _client):
+            pass
+
+        async def place_buy_order(self, **_kwargs):
+            order_calls.append("buy")
+            return {"return_code": 0}
+
+        async def place_sell_order(self, **_kwargs):
+            order_calls.append("sell")
+            return {"return_code": 0}
+
+    async def success_preflight(**_kwargs):
+        return PreflightResult(ok=True, error_code=PREFLIGHT_OK, checks=[])
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    monkeypatch.setattr(mod, "KiwoomMockClient", FakeKiwoomMockClient, raising=False)
+    monkeypatch.setattr(
+        mod, "KiwoomDomesticAccountClient", TrackingAccountClient, raising=False
+    )
+    monkeypatch.setattr(
+        mod, "KiwoomDomesticOrderClient", TrackingOrderClient, raising=False
+    )
+    monkeypatch.setattr(
+        mod, "_run_preflight_for_kiwoom_mock", success_preflight, raising=False
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    preview_response = await mcp.tools["kiwoom_mock_preview_order"](
+        symbol="005930", side="buy", quantity=1, price=70000
+    )
+    dry_response = await mcp.tools["kiwoom_mock_place_order"](
+        symbol="005930", side="buy", quantity=1, price=70000, dry_run=True
+    )
+
+    assert preview_response["success"] is True
+    assert preview_response["preview"] is True
+    assert dry_response["success"] is True
+    assert order_calls == [], "preview/dry_run must not POST to broker"
+
+
+@pytest.mark.asyncio
+async def test_preview_and_place_normalize_with_same_error_code(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+    from app.services.brokers.kiwoom.order_preflight import (
+        PREFLIGHT_SELLABLE_EXCEEDED,
+        PreflightResult,
+    )
+
+    async def failing_preflight(**_kwargs):
+        return PreflightResult(
+            ok=False,
+            error_code=PREFLIGHT_SELLABLE_EXCEEDED,
+            error_detail="Requested 10 exceeds sellable 5 for 005930",
+            checks=[],
+        )
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    monkeypatch.setattr(
+        mod, "_run_preflight_for_kiwoom_mock", failing_preflight, raising=False
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    preview = await mcp.tools["kiwoom_mock_preview_order"](
+        symbol="005930", side="sell", quantity=10, price=70000
+    )
+    place = await mcp.tools["kiwoom_mock_place_order"](
+        symbol="005930", side="sell", quantity=10, price=70000
+    )
+
+    assert preview["error"] == PREFLIGHT_SELLABLE_EXCEEDED
+    assert place["error"] == PREFLIGHT_SELLABLE_EXCEEDED
+    assert preview["error_detail"] == place["error_detail"]
+
+
+@pytest.mark.asyncio
+async def test_loss_sell_not_blocked_in_mcp_layer(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+    from app.services.brokers.kiwoom.order_preflight import (
+        PREFLIGHT_OK,
+        PreflightCheck,
+        PreflightResult,
+    )
+
+    async def loss_sell_preflight(**_kwargs):
+        return PreflightResult(
+            ok=True,
+            error_code=PREFLIGHT_OK,
+            checks=[
+                PreflightCheck("quote_freshness", True),
+                PreflightCheck("tick_valid", True),
+                PreflightCheck("sellable", True, "sellable=10"),
+            ],
+            estimated_evidence={
+                "type": "estimated",
+                "loss_sell": True,
+                "estimated_pnl": -150000,
+                "estimated_pnl_pct": -21.43,
+            },
+        )
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    monkeypatch.setattr(
+        mod, "_run_preflight_for_kiwoom_mock", loss_sell_preflight, raising=False
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_preview_order"](
+        symbol="005930", side="sell", quantity=5, price=70000
+    )
+
+    assert response["success"] is True
+    assert response["estimated_evidence"]["loss_sell"] is True
+    assert response["estimated_evidence"]["estimated_pnl"] == -150000
