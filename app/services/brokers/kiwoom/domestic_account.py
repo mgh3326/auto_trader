@@ -51,7 +51,7 @@ class KiwoomDomesticAccountClient:
             raise ValueError(
                 f"kt00010 symbol path requires side='buy'|'sell'; got {side!r}"
             )
-        if price is None or not isinstance(price, int) or price <= 0:
+        if price is None or type(price) is not int or price <= 0:
             raise ValueError(
                 f"kt00010 symbol path requires a positive int price; got {price!r}"
             )

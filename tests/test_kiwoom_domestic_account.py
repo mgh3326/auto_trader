@@ -82,24 +82,58 @@ async def test_get_orderable_amount_rejects_missing_or_invalid_side_before_dispa
     fake = FakeClient()
     acct = KiwoomDomesticAccountClient(fake)
     with pytest.raises(ValueError, match="side"):
-        await acct.get_orderable_amount(
-            symbol="005930", side=side, price=70000
-        )
+        await acct.get_orderable_amount(symbol="005930", side=side, price=70000)
     assert fake.calls == []
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("price", [None, 0, -100])
+@pytest.mark.parametrize(
+    "price",
+    [
+        None,
+        0,
+        -100,
+        # ROB-891 — bool is an int subclass; isinstance(price, int) wrongly
+        # accepted True and dispatched uv="True". type(price) is int rejects
+        # both bools before any HTTP dispatch.
+        True,
+        False,
+        1.5,
+        70000.0,
+        "70000",
+    ],
+)
 async def test_get_orderable_amount_rejects_missing_or_invalid_price_before_dispatch(
     price,
 ):
     fake = FakeClient()
     acct = KiwoomDomesticAccountClient(fake)
     with pytest.raises(ValueError, match="price"):
-        await acct.get_orderable_amount(
-            symbol="005930", side="buy", price=price
-        )
+        await acct.get_orderable_amount(symbol="005930", side="buy", price=price)
     assert fake.calls == []
+
+
+@pytest.mark.asyncio
+async def test_get_orderable_amount_bool_price_never_dispatched_as_uv_string():
+    # ROB-891 regression — price=True previously dispatched uv="True" because
+    # isinstance(True, int) is True. Fail-closed at the service boundary.
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+    with pytest.raises(ValueError, match="price"):
+        await acct.get_orderable_amount(symbol="005930", side="buy", price=True)
+    assert fake.calls == []
+    assert all("uv" not in c.get("body", {}) for c in fake.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("price", [1, 70000, 1000000])
+async def test_get_orderable_amount_positive_int_path_preserved(price):
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+    await acct.get_orderable_amount(symbol="005930", side="buy", price=price)
+    call = fake.calls[-1]
+    assert call["body"]["uv"] == str(price)
+    assert len(fake.calls) == 1
 
 
 @pytest.mark.asyncio

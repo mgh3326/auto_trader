@@ -585,9 +585,7 @@ async def _kiwoom_mock_orderable_cash_impl(**kwargs: Any) -> dict[str, Any]:
     # ROB-891 — Official kt00010 symbol path requires stk_cd, trde_tp, uv.
     # Reject missing or invalid side/price before any dispatch.
     if symbol is not None and (
-        side not in ("buy", "sell")
-        or not isinstance(price, int)
-        or price <= 0
+        side not in ("buy", "sell") or type(price) is not int or price <= 0
     ):
         return _stable_read_failure(
             result_key="cash",

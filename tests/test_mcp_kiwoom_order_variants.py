@@ -1053,6 +1053,14 @@ async def test_orderable_cash_with_symbol_side_price_sends_trde_tp_and_uv(monkey
         (None, 70000),
         ("buy", None),
         (None, None),
+        # ROB-891 — bool is an int subclass; isinstance(price, int) wrongly
+        # accepted True and dispatched uv="True". type(price) is int rejects
+        # bools/floats/strings before any broker dispatch.
+        ("buy", True),
+        ("buy", False),
+        ("buy", 1.5),
+        ("buy", 70000.0),
+        ("buy", "70000"),
     ],
 )
 async def test_orderable_cash_symbol_path_rejects_missing_side_or_price(
@@ -1080,6 +1088,32 @@ async def test_orderable_cash_symbol_path_rejects_missing_side_or_price(
     assert response["cash"] is None
     assert response["provenance"]["api_id"] == "kt00010"
     assert all(c.get("method") != "orderable_amount" for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_orderable_cash_bool_price_never_dispatched(monkeypatch):
+    # ROB-891 regression — price=True previously dispatched uv="True" because
+    # isinstance(True, int) is True. Fail-closed at the MCP boundary with zero
+    # broker dispatch.
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    calls = _patch_fake_kiwoom_account_client(
+        monkeypatch,
+        mod,
+        payloads={
+            "orderable_amount": {"return_code": 0, "ord_alowa": "1500000"},
+        },
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](
+        symbol="005930", side="buy", price=True
+    )
+
+    assert response["success"] is False
+    assert response["cash"] is None
+    assert calls == []
 
 
 @pytest.mark.asyncio
