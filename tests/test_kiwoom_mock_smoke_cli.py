@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from scripts import kiwoom_mock_smoke as smoke
@@ -60,6 +62,31 @@ async def test_preflight_ok_when_config_complete(monkeypatch):
     assert result["missing_env_keys"] == []
 
 
+@pytest.mark.asyncio
+async def test_amain_preflight_stdout_preserves_missing_key_names(monkeypatch, capsys):
+    monkeypatch.setattr(
+        smoke,
+        "validate_kiwoom_mock_config",
+        lambda: ["KIWOOM_MOCK_APP_KEY", "KIWOOM_MOCK_APP_SECRET"],
+    )
+    args = smoke.build_parser().parse_args(["--mode", "preflight"])
+
+    rc = await smoke._amain(args)
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+
+    assert rc == 0
+    assert lines == [
+        {
+            "step": "preflight",
+            "ok": False,
+            "missing_env_keys": [
+                "KIWOOM_MOCK_APP_KEY",
+                "KIWOOM_MOCK_APP_SECRET",
+            ],
+        }
+    ]
+
+
 def test_extract_order_id_prefers_ord_no():
     assert smoke.extract_order_id({"ord_no": "0000111222"}) == "0000111222"
     assert smoke.extract_order_id({"order_no": "0000333444"}) == "0000333444"
@@ -105,3 +132,62 @@ async def test_full_aborts_when_dry_run_fails_before_confirmed_place(monkeypatch
     # Only the dry-run place was attempted; no confirmed broker mutation.
     assert len(place_calls) == 1
     assert place_calls[0]["dry_run"] is True
+
+
+@pytest.mark.asyncio
+async def test_full_cleanup_required_preserves_long_order_id(monkeypatch, capsys):
+    order_id = "12345678901234567890"
+    configured_secret = "secret-value-that-must-not-leak"
+    configured_token = "token-value-that-must-not-leak"
+    configured_account = "99001122334"
+
+    async def fake_preview(**kwargs):
+        return {"success": True, "preview": True}
+
+    async def fake_place(**kwargs):
+        if kwargs.get("dry_run", True):
+            return {"success": True}
+        return {"success": True, "ord_no": order_id}
+
+    async def fake_history(**_kwargs):
+        return {"success": True, "orders": []}
+
+    async def fake_cancel(**_kwargs):
+        return {"success": False, "error": "cancel_failed"}
+
+    async def fake_positions(**_kwargs):
+        return {"success": True, "positions": []}
+
+    fake_tools = {
+        "kiwoom_mock_preview_order": fake_preview,
+        "kiwoom_mock_place_order": fake_place,
+        "kiwoom_mock_get_order_history": fake_history,
+        "kiwoom_mock_cancel_order": fake_cancel,
+        "kiwoom_mock_get_positions": fake_positions,
+    }
+    monkeypatch.setattr(smoke, "_tools", lambda: fake_tools)
+    monkeypatch.setattr(smoke.settings, "kiwoom_mock_app_key", configured_secret)
+    monkeypatch.setattr(smoke.settings, "kiwoom_mock_app_secret", configured_secret)
+    monkeypatch.setattr(smoke.settings, "kiwoom_mock_account_no", configured_account)
+
+    args = smoke.build_parser().parse_args(
+        [
+            "--mode",
+            "full",
+            "--symbol",
+            "005930",
+            "--price",
+            "50000",
+            "--quantity",
+            "1",
+            "--confirm",
+        ]
+    )
+    rc = await smoke.run_full(args)
+    output = capsys.readouterr().out
+
+    assert rc == 2
+    assert order_id in output
+    assert configured_secret not in output
+    assert configured_token not in output
+    assert configured_account not in output

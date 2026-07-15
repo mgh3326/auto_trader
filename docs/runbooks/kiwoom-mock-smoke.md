@@ -32,12 +32,16 @@ these boundaries:
 - **ROB-460 — account-cash reads의 `dmst_stex_tp`:** 2026-06-09 live에서
   `kiwoom_mock_get_positions`/`get_orderable_cash`가 `return_code 2`
   (필수입력 파라미터=`dmst_stex_tp`, 국내거래소구분)로 재실패했다. account-cash
-  reads **kt00018(잔고) + kt00010(주문가능, with-symbol)** 의 요청 본문에
-  `dmst_stex_tp="KRX"`를 채운다. 이 값은 order 엔드포인트(kt10000-kt10003)에서 이미
-  검증된 값(추측 아님)이며 mock은 KRX 전용이다. **경계 결정:** order-history reads
+  reads 중 **kt00018(잔고)** 의 요청 본문에만 `dmst_stex_tp="KRX"`를 채운다.
+  이 값은 order 엔드포인트(kt10000-kt10003)에서 이미 검증된 값(추측 아님)이며
+  mock은 KRX 전용이다. **경계 결정:** kt00010(주문가능, with-symbol)은
+  `stk_cd`/`trde_tp`/`uv`만 보내고 `dmst_stex_tp`를 보내지 않는다. order-history reads
   **kt00009/kt00007**는 의도적으로 미변경 — 이미 ROB-418로 복구됐고 `dmst_stex_tp`
   필요가 입증되지 않았다(작동 중인 엔드포인트에 추측 파라미터를 더해 회귀시키지 않음).
   아래 smoke 체크리스트로 4개 read 도구를 한 번에 검증하여 잔여 누락을 선제 포착한다.
+- **ROB-899 — confirmed place preflight/dispatch client reuse:** confirmed place는
+  preflight와 broker POST가 하나의 request-scoped `KiwoomMockClient`를 재사용하며,
+  pre-dispatch 실패는 구조화된 redacted error로만 surface된다.
 - **`dry_run=False` requires `confirm=True`** on every order-mutating tool.
 - **No live anything.** No KIS live, Kiwoom live, Alpaca live, or real-money
   calls. No scheduler / recurring automation.
@@ -112,22 +116,138 @@ stays deferred). To pick a conservative buy limit well below market that will
 9. Final `kiwoom_mock_get_order_history` + `kiwoom_mock_get_positions`
    reconciliation.
 
-## Account-read 필수 파라미터 검증 (ROB-418 / ROB-460)
+## Account-read 파라미터 검증 (ROB-418 / ROB-460 / ROB-891)
 
 각 fix 후, 4개 read 도구를 **한 번에** 호출해 `return_code 2`
 (필수입력 파라미터 누락)가 없는지 전수 확인한다 — 부분 수정으로 인한 재실패를 막는다.
 
-| 도구 | broker API | 필수 파라미터 (현재 채움) | 기대 |
+> **ROB-891 교정:** no-symbol `get_orderable_cash`는 kt00018(잔고)이 아니라
+> **kt00001(예수금상세현황)** 을 사용한다. kt00018의 `prsm_dpst_aset_amt`는
+> 추정예탁자산으로 보유증권 평가액을 포함하므로 주문가능현금의 근거가 될 수 없다.
+
+### 공식 TR 계약 (Kiwoom REST docs 기준)
+
+| 도구 | broker API | 공식 request body | 응답 필드 | 기대 |
+|---|---|---|---|---|
+| `kiwoom_mock_get_positions` | kt00018 | `qry_tp=1`, `dmst_stex_tp=KRX` | `acnt_evlt_remn_indv_tot` | `return_code 0` |
+| `kiwoom_mock_get_orderable_cash` (no symbol) | **kt00001** | `qry_tp=2` | `ord_alow_amt` | `return_code 0` |
+| `kiwoom_mock_get_orderable_cash` (with symbol) | kt00010 | `stk_cd`, `trde_tp`, `uv` | `ord_alowa` | `return_code 0` |
+| `kiwoom_mock_get_order_history` | kt00009 | `stk_bond_tp=0` | `acnt_ord_cntr_prst_array` | `return_code 0` |
+
+> **주의:** kt00001은 `qry_tp=2`만 요구하며 **`dmst_stex_tp`를 보내지 않는다**.
+> kt00010은 `stk_cd`/`trde_tp`/`uv`만 요구하며 **`dmst_stex_tp`를 보내지 않는다**.
+
+### TR 역할 구분
+
+| TR | 역할 | 공식 body | 응답 필드 |
 |---|---|---|---|
-| `kiwoom_mock_get_positions` | kt00018 | `qry_tp`, `dmst_stex_tp` | `return_code 0` |
-| `kiwoom_mock_get_orderable_cash` (no symbol) | kt00018 | `qry_tp`, `dmst_stex_tp` | `return_code 0` |
-| `kiwoom_mock_get_orderable_cash` (with symbol) | kt00010 | `dmst_stex_tp`, `stk_cd` | `return_code 0` |
-| `kiwoom_mock_get_order_history` | kt00009 | `stk_bond_tp` | `return_code 0` |
+| kt00018 | 잔고/포지션 (sellable 포함) | `qry_tp=1`, `dmst_stex_tp=KRX` | `acnt_evlt_remn_indv_tot` |
+| kt00001 | no-symbol 예수금/주문가능현금 | `qry_tp=2` | `ord_alow_amt` |
+| kt00010 | symbol/side/price 주문가능금액 | `stk_cd`, `trde_tp`, `uv` | `ord_alowa` |
+| kt00009 | 주문 이력 | `stk_bond_tp=0` | `acnt_ord_cntr_prst_array` |
 
 - 어떤 도구든 `필수입력 파라미터=<name>`(`return_code 2`)가 나오면 그 `<name>`을
   기록하고 해당 broker API 본문에 추가하는 follow-up을 연다(추측 금지, 증명된 누락만).
 - 특히 kt00009/kt00007은 ROB-460에서 의도적으로 `dmst_stex_tp` 미추가 — 이 smoke가
   실제로 그 파라미터를 요구하는지 확정한다.
+
+
+## Phase A — Contract sweep (read-only, ROB-898)
+
+`--mode contract`는 4개 account-read TR을 **read-only**로 순차 호출하여 배포 후
+계약 무결성을 검증한다. Phase B(주문 mutation)와 완전히 분리된다.
+
+### CLI
+
+```bash
+uv run python -m scripts.kiwoom_mock_smoke --mode contract
+```
+
+### Exit codes (contract mode)
+
+| Code | 의미 |
+|---|---|
+| `0` | 모든 TR `return_code 0`, api_id 일치, provenance mock 확인 |
+| `2` | 하나 이상 단계 실패 (non-zero RC, transport error, malformed) |
+| `4` | config 누락 (KIWOOM_MOCK_ENABLED 등) |
+
+### 출력 형식
+
+각 단계는 JSON 한 줄로 출력된다:
+
+```json
+{
+  "step": "contract_step",
+  "stage": "positions",
+  "tool": "kiwoom_mock_get_positions",
+  "expected_api_id": "kt00018",
+  "actual_api_id": "kt00018",
+  "api_id_match": true,
+  "kst_time": "2026-07-15T21:30:00+09:00",
+  "deploy_sha": "14005d3",
+  "return_code": 0,
+  "return_msg": "정상",
+  "evidence_kind": "positions",
+  "provenance": {
+    "broker": "kiwoom",
+    "environment": "mock",
+    "account_mode": "kiwoom_mock",
+    "host": "mockapi.kiwoom.com"
+  },
+  "success": true,
+  "pass": true
+}
+```
+
+**출력 금지**: token, secret, Authorization header, account number, credential 원문,
+전체 raw request/response. `return_msg` 뿐 아니라 `return_code`, `error_code`,
+`error_detail`, provenance의 free-form field, exception text 등 모든 비신뢰 문자열은
+재귀적으로 redaction되어 `[SANITIZED]`로 치환된다.
+
+### 안전장치
+
+- **Read-only**: mutation tool(place/modify/cancel)은 guard로 교체되어 호출 시
+  `SmokeRejected` 발생. `mutations_performed: 0`이 summary에 항상 포함.
+- **Mutation 불가**: `--confirm` 플래그와 무관하게 contract mode는 주문을 수행하지 않는다.
+- **Live host fail-closed**: `kiwoom_mock_base_url`이 `api.kiwoom.com`이면 즉시 종료(exit 2).
+- **Mock 환경 증명**: `validate_kiwoom_mock_config()` + host 검증 통과해야만 sweep 시작.
+- **순차 실행**: 동일 TR pacing 계약 준수, 순차 실행.
+- **오류 후 재시도 금지**: 한 단계가 실패해도 다음 단계로 진행하되, 어떤 보상/재시도도 수행하지 않는다.
+- **return_code=20 (capability refusal)** 은 절대 success로 변환하지 않는다.
+- **Non-zero return_code**는 모두 failure로 처리한다.
+
+### 배포 SHA 확인 절차
+
+1. sweep 출력의 `deploy_sha` 필드를 확인한다.
+2. `git rev-parse --short HEAD`로 실제 배포 SHA와 비교한다.
+3. SHA가 다르면 sweep 결과가 해당 배포의 증거가 아니다 — 재배포 후 재실행.
+4. ROB-891/ROB-899 PR이 merge된 커밋 이후의 SHA인지 확인한다.
+
+### Stop conditions
+
+sweep 실행 중 다음 중 하나라도 발생하면 해당 단계를 fail로 기록하고 다음 단계로 진행한다:
+
+| 조건 | 처리 |
+|---|---|
+| `return_code=20` | fail, 절대 success로 완화하지 않음 |
+| `return_code=2` (필수 파라미터 누락) | fail, 누락된 파라미터 이름을 기록 |
+| transport 오류 | fail, `error_type` 필드에 예외 타입 기록 |
+| malformed 응답 | fail, `fail_reason: "malformed_response"` |
+| non-zero return_code | fail |
+
+### Rollback / escalation
+
+1. sweep summary의 `failed_stages`를 확인한다.
+2. 실패한 TR과 해당 이슈(ROB-891: kt00001/kt00010, ROB-418: kt00018/kt00009)를
+   연결한다.
+3. 실패가 ROB-891/ROB-893 fix의 regression이면 해당 이슈를 reopen한다.
+4. 새로운 파라미터 누락이면 follow-up 이슈를 생성한다 (추측 금지).
+5. sweep 결과와 `deploy_sha`를 PR이나 인시던트 기록에 첨부한다.
+
+## Phase B — Order mutation smoke (`full` mode)
+
+Phase A contract sweep이 전부 pass한 후에만 Phase B 주문 mutation을 실행한다.
+Phase B는 기존 `--mode full` 절차를 따른다 (위 "Smoke sequence" 참조).
 
 ## Cleanup / verification after smoke
 
@@ -158,10 +278,9 @@ follow-up — never fake success.
 
 ## API-contract note
 
-The Kiwoom mock request body field names and the orderable-cash candidate keys
-(`_ORDERABLE_CASH_KEYS` in `orders_kiwoom_variants.py`) are mirrored from the
-Kiwoom REST docs and validated by unit tests with fakes. The real mock API is
-first exercised by this smoke. If a field name is wrong, the tool degrades to an
-explicit `kiwoom_mock_evidence_invalid` failure with `cash: null` and
+The Kiwoom mock request body field names are mirrored from the Kiwoom REST docs.
+The contract sweep (`--mode contract`) is the first real validation against the
+mock API. If a field name is wrong, the tool degrades to an explicit
+`kiwoom_mock_evidence_invalid` failure with `cash: null` and
 `cash_source: "*_unavailable"` rather than faking success — capture that as a
 follow-up and adjust the field mapping.

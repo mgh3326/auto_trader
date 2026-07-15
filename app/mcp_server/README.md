@@ -2505,7 +2505,7 @@ orderable quantity, or a success claim based on the deposit value.
 | Account mode | `kiwoom_mock` | `kiwoom_mock_us` |
 | Tick | KRX price-banded table | decimal USD (no tick table) |
 | Order history TR | `kt00009`/`kt00007` | `ust21050`/`ust21510` |
-| Orderable cash | `kt00010`/`kt00018` | `ust21160` deposit (ust31490 unsupported) |
+| Orderable cash | `kt00010`/`kt00001` | `ust21160` deposit (ust31490 unsupported) |
 
 Operator smoke runbook: [`docs/runbooks/kiwoom-mock-us-smoke.md`](../../docs/runbooks/kiwoom-mock-us-smoke.md)
 Smoke CLI: `scripts/kiwoom_mock_us_smoke.py` (preflight / preview / full / probe modes)
