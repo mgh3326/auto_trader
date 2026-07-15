@@ -311,6 +311,8 @@ def _sanitize_return_code(rc: Any) -> str | int | None:
         return None
     rc_str = str(rc).strip()
     if rc_str.isdigit():
+        if rc_str in _configured_sensitive_values() or len(rc_str) >= 6:
+            return "[SANITIZED]"
         return int(rc_str)
     return _sanitize_free_form_text(rc_str) if rc_str else None
 
@@ -358,7 +360,14 @@ def _sanitize_untrusted(value: Any) -> Any:
     if isinstance(value, str):
         return _sanitize_free_form_text(value)
     if isinstance(value, Mapping):
-        return {str(key): _sanitize_untrusted(val) for key, val in value.items()}
+        sanitized: dict[str, Any] = {}
+        for key, val in value.items():
+            key_str = str(key)
+            if key_str == "return_code":
+                sanitized[key_str] = _sanitize_return_code(val)
+            else:
+                sanitized[key_str] = _sanitize_untrusted(val)
+        return sanitized
     if isinstance(value, (list, tuple, set, frozenset)):
         return [_sanitize_untrusted(item) for item in value]
     return _sanitize_free_form_text(value)
@@ -380,25 +389,28 @@ def _verify_mock_host() -> str | None:
         parsed = urlparse(base_url)
     except Exception:
         return "mock_base_url_malformed"
-    if parsed.scheme != "https":
-        return "mock_base_url_scheme_invalid"
-    if parsed.username or parsed.password:
-        return "mock_base_url_userinfo_disallowed"
-    hostname = parsed.hostname or ""
-    if not hostname:
-        return "mock_base_url_host_missing"
-    if hostname.lower() == _LIVE_HOSTNAME:
-        return "mock_base_url_live_host_disallowed"
-    if hostname != _MOCK_HOSTNAME:
-        return "mock_base_url_host_invalid"
-    if parsed.port is not None:
-        return "mock_base_url_port_disallowed"
-    if parsed.path:
-        return "mock_base_url_path_disallowed"
-    if parsed.query:
-        return "mock_base_url_query_disallowed"
-    if parsed.fragment:
-        return "mock_base_url_fragment_disallowed"
+    try:
+        if parsed.scheme != "https":
+            return "mock_base_url_scheme_invalid"
+        if parsed.username or parsed.password:
+            return "mock_base_url_userinfo_disallowed"
+        hostname = parsed.hostname or ""
+        if not hostname:
+            return "mock_base_url_host_missing"
+        if hostname.lower() == _LIVE_HOSTNAME:
+            return "mock_base_url_live_host_disallowed"
+        if hostname != _MOCK_HOSTNAME:
+            return "mock_base_url_host_invalid"
+        if parsed.port is not None:
+            return "mock_base_url_port_disallowed"
+        if parsed.path:
+            return "mock_base_url_path_disallowed"
+        if parsed.query:
+            return "mock_base_url_query_disallowed"
+        if parsed.fragment:
+            return "mock_base_url_fragment_disallowed"
+    except ValueError:
+        return "mock_base_url_malformed"
     return "mock_base_url_noncanonical"
 
 

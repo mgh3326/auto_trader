@@ -395,6 +395,9 @@ async def test_live_provenance_rejected(
     [
         ("http://mockapi.kiwoom.com", "mock_base_url_scheme_invalid"),
         ("https://mockapi.kiwoom.com:443", "mock_base_url_port_disallowed"),
+        ("https://mockapi.kiwoom.com:abc", "mock_base_url_malformed"),
+        ("https://mockapi.kiwoom.com:99999", "mock_base_url_malformed"),
+        ("https://mockapi.kiwoom.com:[abc]", "mock_base_url_malformed"),
         ("https://mockapi.kiwoom.com/", "mock_base_url_path_disallowed"),
         ("https://mockapi.kiwoom.com/path", "mock_base_url_path_disallowed"),
         (
@@ -451,6 +454,9 @@ async def test_live_host_blocked_exit2(
     [
         f"https://mockapi.kiwoom.com?account={SENTINEL_HYPHENATED_ACCT}",
         f"https://user:{SENTINEL_SECRET}@mockapi.kiwoom.com",
+        "https://mockapi.kiwoom.com:abc",
+        "https://mockapi.kiwoom.com:99999",
+        "https://mockapi.kiwoom.com:[abc]",
     ],
 )
 async def test_noncanonical_host_fails_before_client_creation_without_leaking_url(
@@ -753,6 +759,49 @@ async def test_run_contract_step_redacts_exception_fields(
     _assert_sensitive_values_absent(lines)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw_rc", [SENTINEL_ACCT, int(SENTINEL_ACCT)])
+async def test_run_contract_step_redacts_digit_only_sensitive_return_code(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    raw_rc: Any,
+) -> None:
+    monkeypatch.setattr(smoke.settings, "kiwoom_mock_app_key", "")
+    monkeypatch.setattr(smoke.settings, "kiwoom_mock_app_secret", SENTINEL_ACCT)
+    monkeypatch.setattr(smoke.settings, "kiwoom_mock_account_no", "")
+
+    async def hostile_tool(**_kw: Any) -> dict[str, Any]:
+        return {
+            "success": True,
+            "provenance": {
+                "broker": "kiwoom",
+                "environment": "mock",
+                "account_mode": "kiwoom_mock",
+                "host": "mockapi.kiwoom.com",
+                "api_id": kw_constants.ACCOUNT_BALANCE_API_ID,
+            },
+            "broker_response": {
+                "return_code": raw_rc,
+                "return_msg": "정상",
+            },
+        }
+
+    step = await smoke._run_contract_step(
+        tools={"kiwoom_mock_get_positions": hostile_tool},
+        tool_name="kiwoom_mock_get_positions",
+        expected_api_id=kw_constants.ACCOUNT_BALANCE_API_ID,
+        evidence_kind="positions",
+        deploy_sha="deadbee",
+        contract_fields={"request_body": {"qry_tp": "1"}},
+    )
+    lines = _parse_stdout(capsys)
+
+    assert step["pass"] is False
+    assert step["return_code"] == "[SANITIZED]"
+    _assert_sensitive_values_absent(step)
+    _assert_sensitive_values_absent(lines)
+
+
 def test_sanitize_redacts_digit_runs() -> None:
     assert smoke._sanitize_return_msg("ok") == "ok"
     assert smoke._sanitize_return_msg("error 12345678") == "[SANITIZED]"
@@ -779,6 +828,32 @@ def test_sanitize_redacts_configured_values(
     monkeypatch.setattr(smoke.settings, "kiwoom_mock_app_secret", "")
     monkeypatch.setattr(smoke.settings, "kiwoom_mock_account_no", "12345678")
     assert smoke._sanitize_return_msg("data MY_SECRET_KEY_123 here") == "[SANITIZED]"
+
+
+@pytest.mark.parametrize("raw_rc", [SENTINEL_ACCT, int(SENTINEL_ACCT)])
+def test_sanitize_return_code_redacts_configured_digit_only_values(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_rc: Any,
+) -> None:
+    monkeypatch.setattr(smoke.settings, "kiwoom_mock_app_key", "")
+    monkeypatch.setattr(smoke.settings, "kiwoom_mock_app_secret", SENTINEL_ACCT)
+    monkeypatch.setattr(smoke.settings, "kiwoom_mock_account_no", "")
+
+    assert smoke._sanitize_return_code(raw_rc) == "[SANITIZED]"
+
+
+@pytest.mark.parametrize("raw_rc", [SENTINEL_ACCT, int(SENTINEL_ACCT)])
+def test_sanitize_untrusted_redacts_return_code_digit_only_values(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_rc: Any,
+) -> None:
+    monkeypatch.setattr(smoke.settings, "kiwoom_mock_app_key", "")
+    monkeypatch.setattr(smoke.settings, "kiwoom_mock_app_secret", SENTINEL_ACCT)
+    monkeypatch.setattr(smoke.settings, "kiwoom_mock_account_no", "")
+
+    assert smoke._sanitize_untrusted({"return_code": raw_rc}) == {
+        "return_code": "[SANITIZED]"
+    }
 
 
 def test_is_return_code_zero_strict() -> None:
