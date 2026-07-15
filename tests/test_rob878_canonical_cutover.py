@@ -647,7 +647,7 @@ async def test_shadow_save_rejects_canonical_only_action_state(
     [
         ("force_new", True),
         ("terminal_status", "obsolete"),
-        ("action_id", str(uuid.uuid4())),
+        ("action_id", "00000000-0000-0000-0000-000000000880"),
         ("version", 1),
     ],
 )
