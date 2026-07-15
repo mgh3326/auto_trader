@@ -37,9 +37,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 from app.core.config import settings, validate_kiwoom_mock_config
 from app.mcp_server.tick_size import get_tick_size_kr
@@ -48,12 +50,6 @@ from app.services.brokers.kiwoom import constants as kw_constants
 
 KRX = "KRX"
 
-# ---------------------------------------------------------------------------
-# ROB-898 — Contract sweep constants
-# ---------------------------------------------------------------------------
-
-#: MCP tool names that perform broker mutations. The contract sweep must never
-#: call any of these — the sweep is strictly read-only.
 _CONTRACT_MUTATION_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "kiwoom_mock_place_order",
@@ -62,28 +58,7 @@ _CONTRACT_MUTATION_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
-#: Kiwoom return_code that signals mock capability refusal. Must never be
-#: treated as success (ROB-898 safety rule).
-_CAPABILITY_REFUSAL_RETURN_CODE = "20"
-
-#: KST timezone for timestamp emission.
 _KST = timezone(timedelta(hours=9))
-
-#: Sensitive substrings that must never appear in emitted output.
-_SENSITIVE_VALUE_PATTERNS: tuple[str, ...] = (
-    "authorization",
-    "bearer",
-    "token",
-    "secret",
-    "password",
-    "app_key",
-    "app_secret",
-    "api_key",
-    "api_secret",
-    "account_no",
-    "account_number",
-    "acct_no",
-)
 
 
 class SmokeRejected(RuntimeError):
@@ -268,6 +243,18 @@ async def run_full(args: argparse.Namespace) -> int:
 # ROB-898 — Read-only contract sweep (Phase A)
 # ---------------------------------------------------------------------------
 
+_MOCK_HOSTNAME = "mockapi.kiwoom.com"
+_LIVE_HOSTNAME = "api.kiwoom.com"
+_PACING_SECONDS = 0.1
+_SENSITIVE_DIGIT_RUN = re.compile(r"\d{6,}")
+
+_MOCK_PROVENANCE_REQUIRED: dict[str, str] = {
+    "broker": "kiwoom",
+    "environment": "mock",
+    "account_mode": "kiwoom_mock",
+    "host": _MOCK_HOSTNAME,
+}
+
 
 def _kst_now_iso() -> str:
     return datetime.now(_KST).isoformat(timespec="seconds")
@@ -287,6 +274,16 @@ def _get_deploy_sha() -> str:
         return "unknown"
 
 
+def _is_return_code_zero(raw_rc: Any) -> bool:
+    if isinstance(raw_rc, bool):
+        return False
+    if isinstance(raw_rc, int):
+        return raw_rc == 0
+    if raw_rc is None:
+        return False
+    return str(raw_rc).strip() == "0"
+
+
 def _sanitize_return_code(rc: Any) -> str | int | None:
     if rc is None:
         return None
@@ -296,14 +293,30 @@ def _sanitize_return_code(rc: Any) -> str | int | None:
     return rc_str[:20] if rc_str else None
 
 
+def _configured_sensitive_values() -> frozenset[str]:
+    values: set[str] = set()
+    for attr in (
+        "kiwoom_mock_app_key",
+        "kiwoom_mock_app_secret",
+        "kiwoom_mock_account_no",
+    ):
+        val = str(getattr(settings, attr, "") or "").strip()
+        if val and len(val) >= 4:
+            values.add(val)
+    return frozenset(values)
+
+
 def _sanitize_return_msg(msg: Any) -> str:
     if msg is None:
         return ""
     text = str(msg).strip()
-    lower = text.lower()
-    for pattern in _SENSITIVE_VALUE_PATTERNS:
-        if pattern in lower:
+    if not text:
+        return ""
+    for val in _configured_sensitive_values():
+        if val in text:
             return "[SANITIZED]"
+    if _SENSITIVE_DIGIT_RUN.search(text):
+        return "[SANITIZED]"
     return text[:200]
 
 
@@ -311,11 +324,41 @@ def _verify_mock_host() -> str | None:
     base_url = str(getattr(settings, "kiwoom_mock_base_url", "") or "")
     if not base_url:
         return "kiwoom_mock_base_url is empty"
-    if kw_constants.LIVE_BASE_URL in base_url:
+    try:
+        parsed = urlparse(base_url)
+    except Exception:
+        return "malformed URL"
+    if parsed.username or parsed.password:
+        return "userinfo in URL"
+    hostname = (parsed.hostname or "").lower()
+    if not hostname:
+        return "no hostname"
+    if hostname == _LIVE_HOSTNAME:
         return "live host detected"
-    if kw_constants.MOCK_BASE_URL not in base_url:
-        return "unrecognized host"
+    if hostname != _MOCK_HOSTNAME:
+        return f"unrecognized host: {hostname}"
     return None
+
+
+def _verify_provenance_mock(provenance: Any) -> bool:
+    if not isinstance(provenance, dict):
+        return False
+    return all(
+        provenance.get(key) == expected
+        for key, expected in _MOCK_PROVENANCE_REQUIRED.items()
+    )
+
+
+def _sanitize_provenance(provenance: Any) -> dict[str, Any]:
+    if not isinstance(provenance, dict):
+        return {}
+    return {
+        "broker": provenance.get("broker"),
+        "environment": provenance.get("environment"),
+        "account_mode": provenance.get("account_mode"),
+        "host": provenance.get("host"),
+        "api_id": str(provenance.get("api_id", "")),
+    }
 
 
 def _make_mutation_guard(tool_name: str) -> Any:
@@ -344,6 +387,7 @@ async def _run_contract_step(
     expected_api_id: str,
     evidence_kind: str,
     deploy_sha: str,
+    contract_fields: dict[str, Any],
     tool_args: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     kst_time = _kst_now_iso()
@@ -359,6 +403,7 @@ async def _run_contract_step(
             "expected_api_id": expected_api_id,
             "kst_time": kst_time,
             "deploy_sha": deploy_sha,
+            "contract_fields": contract_fields,
             "pass": False,
             "fail_reason": "exception",
             "error_type": type(exc).__name__,
@@ -374,27 +419,34 @@ async def _run_contract_step(
             "expected_api_id": expected_api_id,
             "kst_time": kst_time,
             "deploy_sha": deploy_sha,
+            "contract_fields": contract_fields,
             "pass": False,
             "fail_reason": "malformed_response",
         }
         _emit(step)
         return step
 
-    provenance = payload.get("provenance") or {}
-    actual_api_id = str(provenance.get("api_id", ""))
-    broker_response = payload.get("broker_response") or {}
+    provenance_raw = payload.get("provenance")
+    provenance = _sanitize_provenance(provenance_raw)
+    actual_api_id = provenance.get("api_id", "")
+    broker_response = payload.get("broker_response")
+    if not isinstance(broker_response, dict):
+        broker_response = {}
     raw_rc = broker_response.get("return_code")
     rc_sanitized = _sanitize_return_code(raw_rc)
     msg_sanitized = _sanitize_return_msg(broker_response.get("return_msg"))
+    rc_is_zero = _is_return_code_zero(raw_rc)
+    provenance_mock = _verify_provenance_mock(provenance_raw)
     tool_success = bool(payload.get("success"))
 
-    # Capability refusal (return_code=20) is NEVER success.
-    if str(raw_rc).strip() == _CAPABILITY_REFUSAL_RETURN_CODE:
-        tool_success = False
+    step_pass = (
+        tool_success
+        and rc_is_zero
+        and provenance_mock
+        and actual_api_id == expected_api_id
+    )
 
-    step_pass = tool_success and actual_api_id == expected_api_id
-
-    step = {
+    step: dict[str, Any] = {
         "step": "contract_step",
         "stage": evidence_kind,
         "tool": tool_name,
@@ -403,19 +455,27 @@ async def _run_contract_step(
         "api_id_match": actual_api_id == expected_api_id,
         "kst_time": kst_time,
         "deploy_sha": deploy_sha,
+        "contract_fields": contract_fields,
         "return_code": rc_sanitized,
+        "return_code_is_zero": rc_is_zero,
         "return_msg": msg_sanitized,
         "evidence_kind": evidence_kind,
-        "provenance": {
-            "broker": provenance.get("broker"),
-            "environment": provenance.get("environment"),
-            "account_mode": provenance.get("account_mode"),
-            "host": provenance.get("host"),
-            "api_id": actual_api_id,
-        },
+        "provenance": provenance,
+        "provenance_mock": provenance_mock,
         "success": tool_success,
         "pass": step_pass,
     }
+    if not step_pass:
+        reasons: list[str] = []
+        if not tool_success:
+            reasons.append("success_false")
+        if not rc_is_zero:
+            reasons.append(f"return_code={rc_sanitized}")
+        if not provenance_mock:
+            reasons.append("provenance_not_mock")
+        if actual_api_id != expected_api_id:
+            reasons.append("api_id_mismatch")
+        step["fail_reasons"] = reasons
     error_code = payload.get("error")
     if error_code:
         step["error_code"] = str(error_code)[:100]
@@ -434,6 +494,10 @@ _CONTRACT_STEPS_SPEC: list[dict[str, Any]] = [
         "expected_api_id": kw_constants.ACCOUNT_BALANCE_API_ID,
         "evidence_kind": "positions",
         "tool_args": {},
+        "contract_fields": {
+            "request_body": {"qry_tp": "1", "dmst_stex_tp": "KRX"},
+            "response_array": "acnt_evlt_remn_indv_tot",
+        },
     },
     {
         "stage": "deposit",
@@ -441,6 +505,10 @@ _CONTRACT_STEPS_SPEC: list[dict[str, Any]] = [
         "expected_api_id": kw_constants.ACCOUNT_DEPOSIT_API_ID,
         "evidence_kind": "deposit",
         "tool_args": {},
+        "contract_fields": {
+            "request_body": {"qry_tp": "2"},
+            "response_field": "ord_alow_amt",
+        },
     },
     {
         "stage": "orderable_amount",
@@ -448,6 +516,10 @@ _CONTRACT_STEPS_SPEC: list[dict[str, Any]] = [
         "expected_api_id": kw_constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID,
         "evidence_kind": "orderable_amount",
         "tool_args": {"symbol": "005930", "side": "buy", "price": 50000},
+        "contract_fields": {
+            "request_body": {"stk_cd": "<symbol>", "trde_tp": "1|2", "uv": "<price>"},
+            "response_field": "ord_alowa",
+        },
     },
     {
         "stage": "order_history",
@@ -455,11 +527,19 @@ _CONTRACT_STEPS_SPEC: list[dict[str, Any]] = [
         "expected_api_id": kw_constants.ACCOUNT_ORDER_STATUS_API_ID,
         "evidence_kind": "order_history",
         "tool_args": {},
+        "contract_fields": {
+            "request_body": {"stk_bond_tp": "0"},
+            "response_array": "acnt_ord_cntr_prst_array",
+        },
     },
 ]
 
 
-async def run_contract_sweep(args: argparse.Namespace) -> int:
+async def run_contract_sweep(
+    args: argparse.Namespace,
+    *,
+    pacing_fn: Any = None,
+) -> int:
     missing = validate_kiwoom_mock_config()
     if missing:
         _emit(
@@ -484,6 +564,19 @@ async def run_contract_sweep(args: argparse.Namespace) -> int:
         )
         return 2
 
+    from app.services.brokers.kiwoom.client import KiwoomMockClient
+
+    sweep_client = KiwoomMockClient.from_app_settings()
+    original_from_settings = KiwoomMockClient.from_app_settings
+    from_settings_calls = 1
+
+    def _reusing_from_settings(cls: type) -> KiwoomMockClient:
+        nonlocal from_settings_calls
+        from_settings_calls += 1
+        return sweep_client
+
+    KiwoomMockClient.from_app_settings = classmethod(_reusing_from_settings)
+
     deploy_sha = _get_deploy_sha()
     _emit(
         {
@@ -493,22 +586,31 @@ async def run_contract_sweep(args: argparse.Namespace) -> int:
             "mode": "read_only_contract_sweep",
             "mutations_allowed": False,
             "steps_planned": len(_CONTRACT_STEPS_SPEC),
+            "client_instances_created": 1,
         }
     )
 
+    sleep_fn = pacing_fn or asyncio.sleep
     tools = _read_only_tools(_tools())
 
     results: list[dict[str, Any]] = []
-    for spec in _CONTRACT_STEPS_SPEC:
+    pacing_calls = 0
+    for i, spec in enumerate(_CONTRACT_STEPS_SPEC):
+        if i > 0:
+            await sleep_fn(_PACING_SECONDS)
+            pacing_calls += 1
         result = await _run_contract_step(
             tools=tools,
             tool_name=spec["tool"],
             expected_api_id=spec["expected_api_id"],
             evidence_kind=spec["evidence_kind"],
             deploy_sha=deploy_sha,
+            contract_fields=spec.get("contract_fields", {}),
             tool_args=spec.get("tool_args"),
         )
         results.append(result)
+
+    KiwoomMockClient.from_app_settings = original_from_settings
 
     passed_count = sum(1 for r in results if r.get("pass"))
     failed_count = len(results) - passed_count
@@ -526,6 +628,9 @@ async def run_contract_sweep(args: argparse.Namespace) -> int:
                 r.get("stage", "?") for r in results if not r.get("pass")
             ],
             "mutations_performed": 0,
+            "client_instances_created": 1,
+            "from_app_settings_calls": from_settings_calls,
+            "pacing_calls": pacing_calls,
         }
     )
 

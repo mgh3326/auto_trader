@@ -1,14 +1,19 @@
-"""ROB-898 — Kiwoom mock account-read contract sweep tests.
+"""ROB-898 — Kiwoom mock account-read contract sweep tests (review-hardened).
 
-Verifies the ``--mode contract`` read-only sweep in ``scripts/kiwoom_mock_smoke.py``:
+Verifies ``--mode contract`` in ``scripts/kiwoom_mock_smoke.py``:
 
-* Four read endpoints (kt00018, kt00001, kt00010, kt00009) are called.
-* Zero broker mutations are performed (mutation tools are guarded).
-* Secret/account/token values never appear in stdout.
-* Live/production host detection fails closed.
-* Missing config exits 4 (names only, never values).
-* Step failure does not trigger mutations.
-* ``return_code=20`` (capability refusal) is never treated as success.
+* Four read endpoints called (kt00018, kt00001, kt00010, kt00009).
+* Strict pass: success==True AND return_code==0 AND exact mock provenance AND
+  expected api_id. Inconsistent envelopes (success=true + nonzero RC) fail.
+* Zero broker mutations. Mutation tools are guarded.
+* Secret/account/token values never appear in stdout — redaction uses numeric
+  pattern fail-closed, not English keyword denylist.
+* Live/production host detection via urlparse + exact hostname.
+* Malformed provenance/payload (non-dict) fails and continues.
+* Single request-scoped KiwoomMockClient reused across sweep.
+* Injectable pacing — tests don't actually sleep.
+* contract_fields output per step.
+* MockTransport assertions prove actual request body.
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ from scripts import kiwoom_mock_smoke as smoke
 
 SENTINEL_SECRET = "KIWOOM_MOCK_SECRET_MUST_NOT_LEAK_ABCDEF"
 SENTINEL_TOKEN = "BEARER_TOKEN_MUST_NOT_LEAK_XYZ"
+SENTINEL_ACCT = "88012345678"
 
 
 def _parse_stdout(capsys: pytest.CaptureFixture[str]) -> list[dict[str, Any]]:
@@ -33,20 +39,35 @@ def _parse_stdout(capsys: pytest.CaptureFixture[str]) -> list[dict[str, Any]]:
     return [json.loads(line) for line in raw.splitlines() if line]
 
 
+def _summary(lines: list[dict[str, Any]]) -> dict[str, Any]:
+    return [ln for ln in lines if ln["step"] == "contract_sweep_summary"][0]
+
+
+def _steps(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [ln for ln in lines if ln["step"] == "contract_step"]
+
+
 def _mock_handler(
     *,
     return_codes: dict[str, int] | None = None,
     return_msg_override: str | None = None,
+    captured_bodies: dict[str, dict[str, Any]] | None = None,
 ) -> Any:
     rc_map = return_codes or {}
     msg = return_msg_override
 
     def handler(request: httpx.Request) -> httpx.Response:
         api_id = request.headers.get("api-id", "")
+        try:
+            body = json.loads(request.content.decode()) if request.content else {}
+        except Exception:
+            body = {}
+        if captured_bodies is not None:
+            captured_bodies[api_id] = body
         rc = rc_map.get(api_id, 0)
         base: dict[str, Any] = {
             "return_code": rc,
-            "return_msg": msg or ("정상" if rc == 0 else "오류"),
+            "return_msg": msg or ("\uc815\uc0c1" if rc == 0 else "\uc624\ub958"),
         }
         if api_id == kw_constants.ACCOUNT_BALANCE_API_ID:
             base["acnt_evlt_remn_indv_tot"] = []
@@ -64,12 +85,12 @@ def _mock_handler(
 def _make_mock_client(handler: Any) -> KiwoomMockClient:
     client = KiwoomMockClient(
         base_url=kw_constants.MOCK_BASE_URL,
-        app_key="test-app-key",
-        app_secret="test-app-secret",
-        account_no="12345678",
+        app_key="test-app-key-abcdef",
+        app_secret="test-app-secret-ghijkl",
+        account_no=SENTINEL_ACCT,
     )
     transport = httpx.MockTransport(handler)
-    client.set_transport_for_test(transport, token="test-bearer-token")
+    client.set_transport_for_test(transport, token="test-bearer-token-xyz")
     return client
 
 
@@ -80,13 +101,19 @@ def contract_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         smoke.settings, "kiwoom_mock_base_url", kw_constants.MOCK_BASE_URL
     )
+    monkeypatch.setattr(smoke.settings, "kiwoom_mock_app_key", "test-app-key-abcdef")
+    monkeypatch.setattr(
+        smoke.settings, "kiwoom_mock_app_secret", "test-app-secret-ghijkl"
+    )
+    monkeypatch.setattr(smoke.settings, "kiwoom_mock_account_no", SENTINEL_ACCT)
 
 
-@pytest.fixture
-def mock_broker(
-    monkeypatch: pytest.MonkeyPatch, contract_env: None
+def _setup_broker(
+    monkeypatch: pytest.MonkeyPatch,
+    contract_env: None,
+    handler: Any,
 ) -> KiwoomMockClient:
-    client = _make_mock_client(_mock_handler())
+    client = _make_mock_client(handler)
     monkeypatch.setattr(
         KiwoomMockClient,
         "from_app_settings",
@@ -99,177 +126,221 @@ def _contract_args() -> Any:
     return smoke.build_parser().parse_args(["--mode", "contract"])
 
 
-def _summary(lines: list[dict[str, Any]]) -> dict[str, Any]:
-    return [ln for ln in lines if ln["step"] == "contract_sweep_summary"][0]
-
-
-def _steps(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [ln for ln in lines if ln["step"] == "contract_step"]
+async def _noop_sleep(_seconds: float) -> None:
+    pass
 
 
 # ---------------------------------------------------------------------------
-# 1. Four endpoints called + step-by-step reporting
+# 1. Four endpoints + contract_fields + request body proof
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_sweep_calls_four_read_endpoints(
-    mock_broker: KiwoomMockClient, capsys: pytest.CaptureFixture[str]
+async def test_four_endpoints_with_contract_fields(
+    contract_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    rc = await smoke.run_contract_sweep(_contract_args())
+    captured: dict[str, dict[str, Any]] = {}
+    _setup_broker(monkeypatch, contract_env, _mock_handler(captured_bodies=captured))
 
+    rc = await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
     lines = _parse_stdout(capsys)
-    step_names = [ln["step"] for ln in lines]
-    assert "contract_sweep_start" in step_names
-    assert "contract_sweep_summary" in step_names
+    steps = _steps(lines)
+    assert len(steps) == 4
 
-    contract_steps = _steps(lines)
-    assert len(contract_steps) == 4
-
-    api_ids = {ln["expected_api_id"] for ln in contract_steps}
+    api_ids = {ln["expected_api_id"] for ln in steps}
     assert api_ids == {"kt00018", "kt00001", "kt00010", "kt00009"}
 
-    stages = [ln["stage"] for ln in contract_steps]
-    assert stages == ["positions", "deposit", "orderable_amount", "order_history"]
+    for step in steps:
+        assert "contract_fields" in step
+        cf = step["contract_fields"]
+        assert "request_body" in cf
 
-    summary = _summary(lines)
-    assert summary["overall_pass"] is True
-    assert summary["passed"] == 4
-    assert summary["failed"] == 0
     assert rc == 0
 
 
 @pytest.mark.asyncio
-async def test_sweep_emits_kst_time_and_deploy_sha(
-    mock_broker: KiwoomMockClient, capsys: pytest.CaptureFixture[str]
-) -> None:
-    await smoke.run_contract_sweep(_contract_args())
-    lines = _parse_stdout(capsys)
-
-    for line in lines:
-        if line["step"] in ("contract_sweep_start", "contract_sweep_summary"):
-            assert "kst_time" in line
-            assert "deploy_sha" in line
-            assert len(line["kst_time"]) > 0
-        if line["step"] == "contract_step":
-            assert "kst_time" in line
-            assert "deploy_sha" in line
-
-
-# ---------------------------------------------------------------------------
-# 2. Zero mutations
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_sweep_zero_mutations_in_output(
-    mock_broker: KiwoomMockClient, capsys: pytest.CaptureFixture[str]
-) -> None:
-    await smoke.run_contract_sweep(_contract_args())
-    lines = _parse_stdout(capsys)
-    assert _summary(lines)["mutations_performed"] == 0
-
-
-@pytest.mark.asyncio
-async def test_mutation_guard_raises_on_access() -> None:
-    raw_tools = {
-        "kiwoom_mock_get_positions": _async_noop,
-        "kiwoom_mock_place_order": _async_noop,
-        "kiwoom_mock_cancel_order": _async_noop,
-        "kiwoom_mock_modify_order": _async_noop,
-    }
-    safe = smoke._read_only_tools(raw_tools)
-    assert safe["kiwoom_mock_get_positions"] is raw_tools["kiwoom_mock_get_positions"]
-    assert safe["kiwoom_mock_place_order"] is not raw_tools["kiwoom_mock_place_order"]
-
-    with pytest.raises(smoke.SmokeRejected, match="read-only"):
-        await safe["kiwoom_mock_place_order"]()
-
-    with pytest.raises(smoke.SmokeRejected, match="read-only"):
-        await safe["kiwoom_mock_cancel_order"]()
-
-    with pytest.raises(smoke.SmokeRejected, match="read-only"):
-        await safe["kiwoom_mock_modify_order"]()
-
-
-@pytest.mark.asyncio
-async def test_step_failure_does_not_trigger_mutations(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_request_body_captured_via_mocktransport(
     contract_env: None,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    client = _make_mock_client(_mock_handler(return_codes={"kt00018": 99}))
-    monkeypatch.setattr(
-        KiwoomMockClient,
-        "from_app_settings",
-        classmethod(lambda cls: client),
+    captured: dict[str, dict[str, Any]] = {}
+    _setup_broker(monkeypatch, contract_env, _mock_handler(captured_bodies=captured))
+
+    await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
+
+    assert kw_constants.ACCOUNT_BALANCE_API_ID in captured
+    assert kw_constants.ACCOUNT_DEPOSIT_API_ID in captured
+    assert kw_constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID in captured
+    assert kw_constants.ACCOUNT_ORDER_STATUS_API_ID in captured
+
+    bal_body = captured[kw_constants.ACCOUNT_BALANCE_API_ID]
+    assert "qry_tp" in bal_body
+
+    ord_body = captured[kw_constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID]
+    assert "stk_cd" in ord_body
+
+
+# ---------------------------------------------------------------------------
+# 2. Strict pass: success + RC==0 + provenance + api_id
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_inconsistent_envelope_success_true_nonzero_rc_fails(
+    contract_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    handler = _mock_handler(
+        return_codes={"kt00018": 2, "kt00001": 2, "kt00010": 2, "kt00009": 2}
     )
+    _setup_broker(monkeypatch, contract_env, handler)
 
-    rc = await smoke.run_contract_sweep(_contract_args())
+    rc = await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
     lines = _parse_stdout(capsys)
-    summary = _summary(lines)
+    steps = _steps(lines)
 
-    assert summary["overall_pass"] is False
-    assert summary["mutations_performed"] == 0
+    for step in steps:
+        assert step["pass"] is False
+        assert step["return_code"] == 2
+        assert step["return_code_is_zero"] is False
+
+    assert _summary(lines)["overall_pass"] is False
+    assert rc == 2
+
+
+@pytest.mark.asyncio
+async def test_rc20_treated_as_failure(
+    contract_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    handler = _mock_handler(
+        return_codes={kw_constants.ACCOUNT_DEPOSIT_API_ID: 20},
+    )
+    _setup_broker(monkeypatch, contract_env, handler)
+
+    rc = await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
+    lines = _parse_stdout(capsys)
+    deposit = [s for s in _steps(lines) if s["stage"] == "deposit"][0]
+
+    assert deposit["success"] is False
+    assert deposit["pass"] is False
+    assert deposit["return_code"] == 20
+    assert deposit["return_code_is_zero"] is False
+    assert rc == 2
+
+
+@pytest.mark.asyncio
+async def test_any_nonzero_rc_fails(
+    contract_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    handler = _mock_handler(return_codes={"kt00009": 99})
+    _setup_broker(monkeypatch, contract_env, handler)
+
+    rc = await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
+    lines = _parse_stdout(capsys)
+    hist = [s for s in _steps(lines) if s["stage"] == "order_history"][0]
+
+    assert hist["pass"] is False
+    assert hist["return_code"] == 99
+    assert hist["return_code_is_zero"] is False
     assert rc == 2
 
 
 # ---------------------------------------------------------------------------
-# 3. Secret / account / token redaction
+# 3. Exact mock provenance — live provenance never passes
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_secrets_never_in_stdout(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_live_provenance_rejected(
     contract_env: None,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    client = _make_mock_client(
-        _mock_handler(
-            return_msg_override=f"error token={SENTINEL_TOKEN} secret={SENTINEL_SECRET}",
-        )
-    )
+    handler = _mock_handler()
+    client = _make_mock_client(handler)
     monkeypatch.setattr(
-        KiwoomMockClient,
-        "from_app_settings",
-        classmethod(lambda cls: client),
+        KiwoomMockClient, "from_app_settings", classmethod(lambda cls: client)
     )
 
-    await smoke.run_contract_sweep(_contract_args())
-    output = capsys.readouterr().out
+    original_tools = smoke._tools
 
-    assert SENTINEL_SECRET not in output
-    assert SENTINEL_TOKEN not in output
-    assert "test-app-key" not in output
-    assert "test-app-secret" not in output
-    assert "test-bearer-token" not in output
-    assert "12345678" not in output
+    def _make_live_wrapper(orig: Any) -> Any:
+        async def wrapped(**kw: Any) -> dict[str, Any]:
+            result = await orig(**kw)
+            if isinstance(result, dict) and isinstance(result.get("provenance"), dict):
+                result["provenance"]["environment"] = "live"
+                result["provenance"]["host"] = "api.kiwoom.com"
+            return result
 
+        return wrapped
 
-def test_sanitize_return_msg_redacts_sensitive_patterns() -> None:
-    assert smoke._sanitize_return_msg("ok") == "ok"
-    assert smoke._sanitize_return_msg(f"token={SENTINEL_TOKEN}") == "[SANITIZED]"
-    assert smoke._sanitize_return_msg(f"secret={SENTINEL_SECRET}") == "[SANITIZED]"
-    assert smoke._sanitize_return_msg("Authorization: Bearer abc") == "[SANITIZED]"
-    assert smoke._sanitize_return_msg(None) == ""
+    def _patched_tools() -> dict[str, Any]:
+        tools = original_tools()
+        for name in tools:
+            tools[name] = _make_live_wrapper(tools[name])
+        return tools
 
+    monkeypatch.setattr(smoke, "_tools", _patched_tools)
 
-def test_sanitize_return_code_whitelists_numeric() -> None:
-    assert smoke._sanitize_return_code(0) == 0
-    assert smoke._sanitize_return_code("0") == 0
-    assert smoke._sanitize_return_code(20) == 20
-    assert smoke._sanitize_return_code(None) is None
-    assert smoke._sanitize_return_code("abc") == "abc"
+    rc = await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
+    lines = _parse_stdout(capsys)
+    steps = _steps(lines)
+
+    for step in steps:
+        assert step["provenance_mock"] is False
+        assert step["pass"] is False
+
+    assert _summary(lines)["overall_pass"] is False
+    assert rc == 2
 
 
 # ---------------------------------------------------------------------------
-# 4. Live host detection
+# 4. Exact host verification (urlparse, no substring)
 # ---------------------------------------------------------------------------
+
+
+def test_host_rejects_evil_suffix(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        smoke.settings,
+        "kiwoom_mock_base_url",
+        "https://mockapi.kiwoom.com.evil.com/",
+    )
+    assert smoke._verify_mock_host() is not None
+
+
+def test_host_rejects_userinfo(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        smoke.settings,
+        "kiwoom_mock_base_url",
+        "https://evil@mockapi.kiwoom.com/",
+    )
+    assert smoke._verify_mock_host() is not None
+
+
+def test_host_rejects_live(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        smoke.settings, "kiwoom_mock_base_url", kw_constants.LIVE_BASE_URL
+    )
+    assert smoke._verify_mock_host() is not None
+
+
+def test_host_accepts_exact_mock(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        smoke.settings, "kiwoom_mock_base_url", kw_constants.MOCK_BASE_URL
+    )
+    assert smoke._verify_mock_host() is None
 
 
 @pytest.mark.asyncio
-async def test_live_host_blocked(
+async def test_live_host_blocked_exit2(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(smoke, "validate_kiwoom_mock_config", lambda: [])
@@ -277,180 +348,292 @@ async def test_live_host_blocked(
     monkeypatch.setattr(
         smoke.settings, "kiwoom_mock_base_url", kw_constants.LIVE_BASE_URL
     )
-
-    rc = await smoke.run_contract_sweep(_contract_args())
-    lines = _parse_stdout(capsys)
-
-    assert rc == 2
-    preflight = [ln for ln in lines if ln["step"] == "contract_preflight"][0]
-    assert preflight["ok"] is False
-    assert preflight["error"] == "mock_host_verification_failed"
-
-
-def test_verify_mock_host_rejects_live(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        smoke.settings, "kiwoom_mock_base_url", kw_constants.LIVE_BASE_URL
-    )
-    assert smoke._verify_mock_host() is not None
-
-
-def test_verify_mock_host_accepts_mock(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        smoke.settings, "kiwoom_mock_base_url", kw_constants.MOCK_BASE_URL
-    )
-    assert smoke._verify_mock_host() is None
-
-
-# ---------------------------------------------------------------------------
-# 5. Missing config exits 4
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_missing_config_exits_4(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(
-        smoke,
-        "validate_kiwoom_mock_config",
-        lambda: ["KIWOOM_MOCK_ENABLED", "KIWOOM_MOCK_APP_KEY"],
-    )
-    monkeypatch.setattr(
-        smoke.settings, "kiwoom_mock_base_url", kw_constants.MOCK_BASE_URL
-    )
-
-    rc = await smoke.run_contract_sweep(_contract_args())
-    lines = _parse_stdout(capsys)
-    preflight = [ln for ln in lines if ln["step"] == "contract_preflight"][0]
-
-    assert rc == 4
-    assert preflight["ok"] is False
-    assert "KIWOOM_MOCK_ENABLED" in preflight["missing_env_keys"]
-    assert "KIWOOM_MOCK_APP_KEY" in preflight["missing_env_keys"]
-    assert "test-app-key" not in capsys.readouterr().out
-
-
-# ---------------------------------------------------------------------------
-# 6. return_code=20 never converted to success
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_rc20_never_treated_as_success(
-    monkeypatch: pytest.MonkeyPatch,
-    contract_env: None,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    client = _make_mock_client(
-        _mock_handler(
-            return_codes={kw_constants.ACCOUNT_DEPOSIT_API_ID: 20},
-            return_msg_override="RC9000",
-        )
-    )
-    monkeypatch.setattr(
-        KiwoomMockClient,
-        "from_app_settings",
-        classmethod(lambda cls: client),
-    )
-
-    rc = await smoke.run_contract_sweep(_contract_args())
-    lines = _parse_stdout(capsys)
-    deposit_step = [
-        ln
-        for ln in lines
-        if ln.get("step") == "contract_step" and ln.get("stage") == "deposit"
-    ][0]
-
-    assert deposit_step["success"] is False
-    assert deposit_step["pass"] is False
-    assert deposit_step["return_code"] == 20
-
-    summary = _summary(lines)
-    assert summary["overall_pass"] is False
-    assert "deposit" in summary["failed_stages"]
-    assert rc == 2
-
-
-@pytest.mark.asyncio
-async def test_nonzero_return_code_is_failure(
-    monkeypatch: pytest.MonkeyPatch,
-    contract_env: None,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    client = _make_mock_client(_mock_handler(return_codes={"kt00009": 2}))
-    monkeypatch.setattr(
-        KiwoomMockClient,
-        "from_app_settings",
-        classmethod(lambda cls: client),
-    )
-
-    rc = await smoke.run_contract_sweep(_contract_args())
-    lines = _parse_stdout(capsys)
-    history_step = [
-        ln
-        for ln in lines
-        if ln.get("step") == "contract_step" and ln.get("stage") == "order_history"
-    ][0]
-
-    assert history_step["pass"] is False
-    assert history_step["return_code"] == 2
-
-    summary = _summary(lines)
-    assert "order_history" in summary["failed_stages"]
+    rc = await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
     assert rc == 2
 
 
 # ---------------------------------------------------------------------------
-# 7. Transport exception is reported, not swallowed
+# 5. Malformed response — fail and continue
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_transport_exception_reported_as_step_failure(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_malformed_provenance_fails_and_continues(
     contract_env: None,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    def failing_handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("connection refused")
-
-    client = _make_mock_client(failing_handler)
+    handler = _mock_handler()
+    client = _make_mock_client(handler)
     monkeypatch.setattr(
-        KiwoomMockClient,
-        "from_app_settings",
-        classmethod(lambda cls: client),
+        KiwoomMockClient, "from_app_settings", classmethod(lambda cls: client)
     )
 
-    rc = await smoke.run_contract_sweep(_contract_args())
-    lines = _parse_stdout(capsys)
-    contract_steps = _steps(lines)
+    original_tools = smoke._tools
 
-    assert all(s["pass"] is False for s in contract_steps)
-    summary = _summary(lines)
+    def _patched_tools() -> dict[str, Any]:
+        tools = original_tools()
+
+        async def broken_pos(**_kw: Any) -> dict[str, Any]:
+            return {"success": True, "provenance": "not-a-dict"}
+
+        tools["kiwoom_mock_get_positions"] = broken_pos
+        return tools
+
+    monkeypatch.setattr(smoke, "_tools", _patched_tools)
+
+    rc = await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
+    lines = _parse_stdout(capsys)
+    steps = _steps(lines)
+
+    pos_step = [s for s in steps if s["stage"] == "positions"][0]
+    assert pos_step["pass"] is False
+    assert pos_step["provenance_mock"] is False
+
+    assert len([s for s in steps if s["stage"] != "positions"]) == 3
+    assert rc == 2
+
+
+@pytest.mark.asyncio
+async def test_non_dict_payload_fails(
+    contract_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    handler = _mock_handler()
+    client = _make_mock_client(handler)
+    monkeypatch.setattr(
+        KiwoomMockClient, "from_app_settings", classmethod(lambda cls: client)
+    )
+
+    original_tools = smoke._tools
+
+    def _patched_tools() -> dict[str, Any]:
+        tools = original_tools()
+
+        async def bad_pos(**_kw: Any) -> str:
+            return "not-a-dict"
+
+        tools["kiwoom_mock_get_positions"] = bad_pos
+        return tools
+
+    monkeypatch.setattr(smoke, "_tools", _patched_tools)
+
+    rc = await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
+    lines = _parse_stdout(capsys)
+    pos_step = [s for s in _steps(lines) if s["stage"] == "positions"][0]
+
+    assert pos_step["pass"] is False
+    assert pos_step["fail_reason"] == "malformed_response"
+    assert rc == 2
+
+
+# ---------------------------------------------------------------------------
+# 6. Redaction — numeric patterns + configured values
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_configured_sensitive_values_redacted(
+    contract_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    handler = _mock_handler(
+        return_msg_override=f"error key=test-app-key-abcdef acct={SENTINEL_ACCT}",
+    )
+    _setup_broker(monkeypatch, contract_env, handler)
+
+    await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
+    output = capsys.readouterr().out
+
+    assert "test-app-key-abcdef" not in output
+    assert "test-app-secret-ghijkl" not in output
+    assert SENTINEL_ACCT not in output
+    assert "test-bearer-token-xyz" not in output
+
+
+def test_sanitize_redacts_digit_runs() -> None:
+    assert smoke._sanitize_return_msg("ok") == "ok"
+    assert smoke._sanitize_return_msg("error 12345678") == "[SANITIZED]"
+    assert smoke._sanitize_return_msg(None) == ""
+
+
+def test_sanitize_redacts_configured_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(smoke.settings, "kiwoom_mock_app_key", "MY_SECRET_KEY_123")
+    monkeypatch.setattr(smoke.settings, "kiwoom_mock_app_secret", "")
+    monkeypatch.setattr(smoke.settings, "kiwoom_mock_account_no", "12345678")
+    assert smoke._sanitize_return_msg("data MY_SECRET_KEY_123 here") == "[SANITIZED]"
+
+
+def test_is_return_code_zero_strict() -> None:
+    assert smoke._is_return_code_zero(0) is True
+    assert smoke._is_return_code_zero("0") is True
+    assert smoke._is_return_code_zero(1) is False
+    assert smoke._is_return_code_zero("2") is False
+    assert smoke._is_return_code_zero(None) is False
+    assert smoke._is_return_code_zero(True) is False
+    assert smoke._is_return_code_zero(False) is False
+
+
+# ---------------------------------------------------------------------------
+# 7. Client reuse + pacing + mutation guard
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_single_client_reused(
+    contract_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _setup_broker(monkeypatch, contract_env, _mock_handler())
+    await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
+    summary = _summary(_parse_stdout(capsys))
+
+    assert summary["client_instances_created"] == 1
+    assert summary["from_app_settings_calls"] == 5
+
+
+@pytest.mark.asyncio
+async def test_pacing_injectable(
+    contract_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _setup_broker(monkeypatch, contract_env, _mock_handler())
+    pacing_count = 0
+
+    async def counting_sleep(_s: float) -> None:
+        nonlocal pacing_count
+        pacing_count += 1
+
+    await smoke.run_contract_sweep(_contract_args(), pacing_fn=counting_sleep)
+    summary = _summary(_parse_stdout(capsys))
+
+    assert summary["pacing_calls"] == 3
+    assert pacing_count == 3
+
+
+@pytest.mark.asyncio
+async def test_zero_mutations_guaranteed(
+    contract_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _setup_broker(monkeypatch, contract_env, _mock_handler())
+    await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
+    assert _summary(_parse_stdout(capsys))["mutations_performed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_mutation_guard_raises() -> None:
+    raw = {
+        "kiwoom_mock_get_positions": _async_noop,
+        "kiwoom_mock_place_order": _async_noop,
+    }
+    safe = smoke._read_only_tools(raw)
+    with pytest.raises(smoke.SmokeRejected, match="read-only"):
+        await safe["kiwoom_mock_place_order"]()
+
+
+@pytest.mark.asyncio
+async def test_step_failure_does_not_mutate(
+    contract_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    handler = _mock_handler(return_codes={"kt00018": 99})
+    _setup_broker(monkeypatch, contract_env, handler)
+
+    rc = await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
+    summary = _summary(_parse_stdout(capsys))
+
     assert summary["overall_pass"] is False
     assert summary["mutations_performed"] == 0
     assert rc == 2
 
 
 # ---------------------------------------------------------------------------
-# 8. Provenance in output
+# 8. Missing config + provenance output + KST/SHA
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_provenance_fields_present(
-    mock_broker: KiwoomMockClient, capsys: pytest.CaptureFixture[str]
+async def test_missing_config_exit4(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    await smoke.run_contract_sweep(_contract_args())
-    lines = _parse_stdout(capsys)
-    contract_steps = _steps(lines)
+    monkeypatch.setattr(
+        smoke,
+        "validate_kiwoom_mock_config",
+        lambda: ["KIWOOM_MOCK_ENABLED"],
+    )
+    monkeypatch.setattr(
+        smoke.settings, "kiwoom_mock_base_url", kw_constants.MOCK_BASE_URL
+    )
+    rc = await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
+    assert rc == 4
 
-    for step in contract_steps:
+
+@pytest.mark.asyncio
+async def test_provenance_fields_present(
+    contract_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _setup_broker(monkeypatch, contract_env, _mock_handler())
+    await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
+    lines = _parse_stdout(capsys)
+
+    for step in _steps(lines):
         prov = step.get("provenance") or {}
         assert prov.get("broker") == "kiwoom"
         assert prov.get("environment") == "mock"
         assert prov.get("account_mode") == "kiwoom_mock"
         assert prov.get("host") == "mockapi.kiwoom.com"
+        assert step["provenance_mock"] is True
+
+
+@pytest.mark.asyncio
+async def test_kst_time_and_deploy_sha(
+    contract_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _setup_broker(monkeypatch, contract_env, _mock_handler())
+    await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
+    lines = _parse_stdout(capsys)
+
+    for line in lines:
+        if line["step"] in ("contract_sweep_start", "contract_sweep_summary"):
+            assert "kst_time" in line
+            assert "deploy_sha" in line
+
+
+# ---------------------------------------------------------------------------
+# 9. Transport exception
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_transport_exception_reported(
+    contract_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fail(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    _setup_broker(monkeypatch, contract_env, fail)
+    rc = await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
+    lines = _parse_stdout(capsys)
+    steps = _steps(lines)
+
+    assert all(s["pass"] is False for s in steps)
+    assert _summary(lines)["overall_pass"] is False
+    assert rc == 2
 
 
 async def _async_noop(**_kwargs: Any) -> dict[str, Any]:

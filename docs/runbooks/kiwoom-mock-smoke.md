@@ -121,26 +121,33 @@ stays deferred). To pick a conservative buy limit well below market that will
 > **kt00001(예수금상세현황)** 을 사용한다. kt00018의 `prsm_dpst_aset_amt`는
 > 추정예탁자산으로 보유증권 평가액을 포함하므로 주문가능현금의 근거가 될 수 없다.
 
-| 도구 | broker API | 필수 파라미터 | 기대 |
-|---|---|---|---|
-| `kiwoom_mock_get_positions` | kt00018 | `qry_tp`, `dmst_stex_tp` | `return_code 0` |
-| `kiwoom_mock_get_orderable_cash` (no symbol) | **kt00001** | `dmst_stex_tp` | `return_code 0` |
-| `kiwoom_mock_get_orderable_cash` (with symbol) | kt00010 | `dmst_stex_tp`, `stk_cd` | `return_code 0` |
-| `kiwoom_mock_get_order_history` | kt00009 | `stk_bond_tp` | `return_code 0` |
+### 공식 TR 계약 (Kiwoom REST docs 기준)
+
+| 도구 | broker API | 공식 request body | 응답 필드 | 기대 |
+|---|---|---|---|---|
+| `kiwoom_mock_get_positions` | kt00018 | `qry_tp=1`, `dmst_stex_tp=KRX` | `acnt_evlt_remn_indv_tot` | `return_code 0` |
+| `kiwoom_mock_get_orderable_cash` (no symbol) | **kt00001** | `qry_tp=2` | `ord_alow_amt` | `return_code 0` |
+| `kiwoom_mock_get_orderable_cash` (with symbol) | kt00010 | `stk_cd`, `trde_tp`, `uv` | `ord_alowa` | `return_code 0` |
+| `kiwoom_mock_get_order_history` | kt00009 | `stk_bond_tp=0` | `acnt_ord_cntr_prst_array` | `return_code 0` |
+
+> **주의:** kt00001은 `qry_tp=2`만 요구하며 **`dmst_stex_tp`를 보내지 않는다**.
+> kt00010은 `stk_cd`/`trde_tp`/`uv`만 요구하며 **`dmst_stex_tp`를 보내지 않는다**.
+> 기존 런타임 코드가 `dmst_stex_tp`를 추가로 보내는 것은 ROB-891에서 교정 중이다.
 
 ### TR 역할 구분
 
-| TR | 역할 | 응답 필드 |
-|---|---|---|
-| kt00018 | 잔고/포지션 (sellable 포함) | `acnt_evlt_remn_indv_tot` |
-| kt00001 | no-symbol 예수금/주문가능현금 | `ord_alow_amt` |
-| kt00010 | symbol/side/price 주문가능금액 | `ord_alowa` |
-| kt00009 | 주문 이력 | `acnt_ord_cntr_prst_array` |
+| TR | 역할 | 공식 body | 응답 필드 |
+|---|---|---|---|
+| kt00018 | 잔고/포지션 (sellable 포함) | `qry_tp=1`, `dmst_stex_tp=KRX` | `acnt_evlt_remn_indv_tot` |
+| kt00001 | no-symbol 예수금/주문가능현금 | `qry_tp=2` | `ord_alow_amt` |
+| kt00010 | symbol/side/price 주문가능금액 | `stk_cd`, `trde_tp`, `uv` | `ord_alowa` |
+| kt00009 | 주문 이력 | `stk_bond_tp=0` | `acnt_ord_cntr_prst_array` |
 
 - 어떤 도구든 `필수입력 파라미터=<name>`(`return_code 2`)가 나오면 그 `<name>`을
   기록하고 해당 broker API 본문에 추가하는 follow-up을 연다(추측 금지, 증명된 누락만).
 - 특히 kt00009/kt00007은 ROB-460에서 의도적으로 `dmst_stex_tp` 미추가 — 이 smoke가
   실제로 그 파라미터를 요구하는지 확정한다.
+
 
 ## Phase A — Contract sweep (read-only, ROB-898)
 
@@ -266,10 +273,9 @@ follow-up — never fake success.
 
 ## API-contract note
 
-The Kiwoom mock request body field names and the orderable-cash candidate keys
-(`_ORDERABLE_CASH_KEYS` in `orders_kiwoom_variants.py`) are mirrored from the
-Kiwoom REST docs and validated by unit tests with fakes. The real mock API is
-first exercised by this smoke. If a field name is wrong, the tool degrades to an
-explicit `kiwoom_mock_evidence_invalid` failure with `cash: null` and
+The Kiwoom mock request body field names are mirrored from the Kiwoom REST docs.
+The contract sweep (`--mode contract`) is the first real validation against the
+mock API. If a field name is wrong, the tool degrades to an explicit
+`kiwoom_mock_evidence_invalid` failure with `cash: null` and
 `cash_source: "*_unavailable"` rather than faking success — capture that as a
 follow-up and adjust the field mapping.
