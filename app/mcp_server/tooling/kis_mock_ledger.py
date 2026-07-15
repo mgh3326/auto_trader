@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import re
 import uuid
 from collections.abc import Mapping
@@ -20,6 +21,7 @@ from app.jobs.kis_mock_reconciliation_job import run_kis_mock_reconciliation
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
 from app.models.review import KISMockOrderLedger
+from app.services.brokers.kis.live_order_expiry import kr_day_order_expiry
 from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
     LedgerWriteError,
 )
@@ -229,17 +231,69 @@ async def _list_kis_mock_shadow_pending_orders(
     return [_shadow_row_to_order(row) for row in rows]
 
 
+def _is_kr_day_order_expired_for_reservation(
+    row: dict[str, Any],
+    *,
+    now: datetime.datetime,
+) -> bool:
+    """ROB-890: conservative KR DAY expiry for shadow reservation only.
+
+    Returns True when the row's conservative expiry time has passed relative to
+    ``now``. Only ``equity_kr`` rows are evaluated; ``equity_us`` rows always
+    return False (KR session rules do not apply). Fail-closed: missing or
+    unparseable ``ordered_at`` returns False so the reservation is kept.
+    """
+    if row.get("instrument_type") != "equity_kr":
+        return False
+
+    ordered_at_str = row.get("ordered_at")
+    if not ordered_at_str:
+        return False
+
+    try:
+        accepted_at = datetime.datetime.fromisoformat(str(ordered_at_str))
+    except (ValueError, TypeError):
+        return False
+
+    expiry_iso, _reason = kr_day_order_expiry(
+        accepted_at=accepted_at,
+        side=row.get("side", ""),
+    )
+    if not expiry_iso:
+        return False
+
+    try:
+        expiry_dt = datetime.datetime.fromisoformat(expiry_iso)
+    except (ValueError, TypeError):
+        return False
+
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=9)))
+
+    return now >= expiry_dt
+
+
 async def _get_kis_mock_shadow_exposure(
     *,
     normalized_symbol: str | None = None,
     market_type: str | None = None,
     limit: int = 1000,
+    now: datetime.datetime | None = None,
 ) -> dict[str, Any]:
     """Summarize non-terminal KIS mock ledger exposure.
+
+    ROB-890: KR DAY orders whose conservative session expiry has passed are
+    excluded from ``buy_reserved_amount`` / ``sell_reserved_quantity`` so stale
+    shadow-pending rows stop permanently locking cash and sellable quantity.
+    Expired rows remain visible in ``orders`` for reconciliation; lifecycle
+    state is never mutated by this function.
 
     On DB/query failure, confidence becomes ``unknown`` so execution paths can
     fail closed rather than over-allocating cash or sellable quantity.
     """
+    if now is None:
+        now = now_kst()
+
     try:
         rows = await _list_kis_mock_shadow_pending_orders(
             normalized_symbol=normalized_symbol,
@@ -256,14 +310,24 @@ async def _get_kis_mock_shadow_exposure(
             "buy_reserved_amount": 0.0,
             "sell_reserved_quantity": 0.0,
             "orders": [],
+            "expired_reservation_count": 0,
         }
 
+    active_rows = [
+        row
+        for row in rows
+        if not _is_kr_day_order_expired_for_reservation(row, now=now)
+    ]
+    expired_count = len(rows) - len(active_rows)
+
     buy_reserved = sum(
-        _decimal_to_float(row.get("amount")) for row in rows if row.get("side") == "buy"
+        _decimal_to_float(row.get("amount"))
+        for row in active_rows
+        if row.get("side") == "buy"
     )
     sell_reserved = sum(
         _decimal_to_float(row.get("remaining_qty"))
-        for row in rows
+        for row in active_rows
         if row.get("side") == "sell"
     )
     return {
@@ -273,6 +337,7 @@ async def _get_kis_mock_shadow_exposure(
         "buy_reserved_amount": buy_reserved,
         "sell_reserved_quantity": sell_reserved,
         "orders": rows,
+        "expired_reservation_count": expired_count,
     }
 
 
