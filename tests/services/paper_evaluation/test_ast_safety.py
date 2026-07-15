@@ -75,6 +75,16 @@ FORBIDDEN_NAME_PATTERNS = (
     "peg_usdt_usd",
     "usdt_equals_usd",
 )
+FORBIDDEN_CALL_PREFIXES = (
+    "record_",
+    "claim_",
+    "reserve_",
+    "submit_",
+    "place_",
+    "cancel_",
+    "update_state",
+    "transition_",
+)
 
 
 def _imports(path: Path) -> set[str]:
@@ -109,7 +119,7 @@ def _function_names(path: Path) -> set[str]:
 
 
 def _all_py_files() -> list[Path]:
-    return sorted(PACKAGE.glob("*.py"))
+    return sorted(PACKAGE.rglob("*.py"))
 
 
 def test_no_forbidden_broker_or_validation_imports() -> None:
@@ -125,9 +135,24 @@ def test_no_forbidden_broker_write_or_promotion_calls() -> None:
     for path in _all_py_files():
         calls = _call_names(path)
         violations = calls & FORBIDDEN_CALL_NAMES
-        assert not violations, (
-            f"{path.name} calls forbidden methods: {violations}"
+        violations.update(
+            name
+            for name in calls
+            if any(name.startswith(prefix) for prefix in FORBIDDEN_CALL_PREFIXES)
         )
+        assert not violations, f"{path.name} calls forbidden methods: {violations}"
+
+
+def test_no_environment_or_live_credential_access() -> None:
+    for path in _all_py_files():
+        source = path.read_text(encoding="utf-8").lower()
+        for forbidden in (
+            "dotenv",
+            'open(".env',
+            "settings.api_key",
+            "live_credential",
+        ):
+            assert forbidden not in source, f"{path.name} accesses {forbidden}"
 
 
 def test_no_usdt_usd_conversion_functions() -> None:

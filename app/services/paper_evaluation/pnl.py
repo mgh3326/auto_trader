@@ -16,6 +16,7 @@ No USDT/USD conversion is performed. No cross-view nominal P&L total is emitted.
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
@@ -36,6 +37,12 @@ if TYPE_CHECKING:
     from app.models.binance_demo_order_ledger import BinanceDemoOrderLedger
     from app.models.paper_cohort import CanonicalMarketSnapshot
     from app.models.review import AlpacaPaperOrderLedger
+    from app.services.paper_evaluation.evidence import (
+        EvaluationWindow,
+        NativeFill,
+        NativeMark,
+        ShadowObservation,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -929,6 +936,244 @@ class PaperEvaluationPnL:
         btc_total = sum(btc_returns_pct, start=_ZERO)
         eth_total = sum(eth_returns_pct, start=_ZERO)
         return btc_total * bw.btc_weight + eth_total * bw.eth_weight
+
+    def compute_native_evidence_view(
+        self,
+        *,
+        view_name: ViewName,
+        fills: Sequence[NativeFill],
+        marks: Sequence[NativeMark],
+        window: EvaluationWindow,
+    ) -> ViewMetrics:
+        """Account for exact linked native fills and mark open inventory."""
+        if view_name not in {ViewName.BINANCE_BROKER, ViewName.ALPACA_BROKER}:
+            raise EvaluationConfigError("invalid_view_mapping")
+        mapping = self._config.views[view_name]
+        initial = self._epoch.initial_equity[view_name]
+        cash = initial
+        positions: dict[str, Decimal] = defaultdict(lambda: _ZERO)
+        turnover = fees = _ZERO
+        partial_count = 0
+        equity_curve = [initial]
+        latest_marks: dict[str, Decimal] = {}
+        by_symbol: dict[str, list[NativeMark]] = defaultdict(list)
+        for mark in marks:
+            if not window.start <= mark.marked_at <= window.end:
+                raise EvaluationConfigError("invalid_evaluation_window")
+            by_symbol[mark.symbol].append(mark)
+            latest_marks[mark.symbol] = mark.price
+        for fill in fills:
+            if not window.start <= fill.filled_at <= window.end:
+                raise EvaluationConfigError("invalid_evaluation_window")
+            notional = fill.quantity * fill.price
+            turnover += notional
+            fees += fill.fee
+            if fill.side == "buy":
+                cash -= notional + fill.fee
+                positions[fill.symbol] += fill.quantity
+            else:
+                if positions[fill.symbol] < fill.quantity:
+                    raise EvaluationConfigError(
+                        "insufficient_evidence", "sell exceeds linked inventory"
+                    )
+                cash += notional - fill.fee
+                positions[fill.symbol] -= fill.quantity
+            partial_count += int(fill.partial)
+            equity_curve.append(
+                cash
+                + sum(
+                    quantity * latest_marks.get(symbol, fill.price)
+                    for symbol, quantity in positions.items()
+                )
+            )
+        for symbol, quantity in positions.items():
+            if quantity and symbol not in latest_marks:
+                raise EvaluationConfigError(
+                    "insufficient_evidence", f"missing native mark for {symbol}"
+                )
+        ending = cash + sum(
+            quantity * latest_marks.get(symbol, _ZERO)
+            for symbol, quantity in positions.items()
+        )
+        equity_curve.append(ending)
+        net_return = self._safe_return_pct(ending, initial)
+        symbols = mapping.benchmark_symbols
+        benchmark = _benchmark_return_pct(
+            {
+                symbol: (
+                    by_symbol[symbol][0].price,
+                    by_symbol[symbol][-1].price,
+                )
+                for symbol in symbols
+                if by_symbol[symbol]
+            },
+            {
+                symbols[0]: self._config.benchmark_weights.btc_weight,
+                symbols[1]: self._config.benchmark_weights.eth_weight,
+            },
+        )
+        cash_benchmark = (
+            self._config.annualization.risk_free_rate_pct
+            * Decimal(compute_calendar_days(window.start, window.end))
+            / Decimal("365")
+        )
+        cash_delta, benchmark_delta = _compute_benchmark_deltas(
+            net_return, cash_benchmark, benchmark
+        )
+        notionals = [
+            quantity * latest_marks.get(symbol, _ZERO)
+            for symbol, quantity in positions.items()
+        ]
+        return ViewMetrics(
+            view_name=view_name,
+            currency=mapping.currency,
+            source=mapping.source,
+            symbol_mapping=mapping.symbols,
+            initial_equity=initial,
+            ending_equity=ending,
+            nominal_net_pnl=ending - initial,
+            fees=fees,
+            net_return_pct=net_return,
+            max_drawdown_pct=_compute_max_drawdown_pct(equity_curve),
+            turnover=turnover,
+            exposure=_compute_exposure(notionals, initial),
+            fill_count=len(fills),
+            partial_fill_count=partial_count,
+            missing_observation_count=0,
+            cash_benchmark_return_pct=cash_benchmark,
+            cash_benchmark_delta_pct=cash_delta,
+            btc_eth_benchmark_return_pct=benchmark,
+            btc_eth_benchmark_delta_pct=benchmark_delta,
+            experiment_hash=self._experiment_hash,
+            cohort_hash=self._cohort_hash,
+            epoch_id=self._epoch.epoch_id,
+            config_hash=self._epoch.config_hash,
+        )
+
+    def compute_shadow_evidence_view(
+        self,
+        *,
+        observations: Sequence[ShadowObservation],
+        window: EvaluationWindow,
+    ) -> ViewMetrics:
+        """Rebalance target deltas through time and mark positions each snapshot."""
+        mapping = self._config.views[ViewName.CANONICAL_SHADOW]
+        initial = self._epoch.initial_equity[ViewName.CANONICAL_SHADOW]
+        cash = initial
+        positions: dict[str, Decimal] = defaultdict(lambda: _ZERO)
+        fees = turnover = _ZERO
+        fill_count = partial_count = 0
+        curve = [initial]
+        consumed: list[str] = []
+        timing = self._config.mark_fill_timing.fill_timing
+        for index, observation in enumerate(observations):
+            if not window.start <= observation.observed_at < window.end:
+                raise EvaluationConfigError("invalid_evaluation_window")
+            closes = dict(observation.closes)
+            equity = cash + sum(
+                quantity * closes[symbol] for symbol, quantity in positions.items()
+            )
+            weights = dict(observation.target_weights)
+            deltas: dict[str, Decimal] = {}
+            for symbol in mapping.symbols:
+                target_qty = equity * weights.get(symbol, _ZERO) / closes[symbol]
+                deltas[symbol] = target_qty - positions[symbol]
+            if timing == "next_bar_open" and any(deltas.values()):
+                if index + 1 >= len(observations):
+                    raise EvaluationConfigError(
+                        "insufficient_evidence", "next canonical bar missing"
+                    )
+                fill_prices = dict(observations[index + 1].opens)
+            else:
+                fill_prices = closes
+            for symbol, requested_delta in deltas.items():
+                if requested_delta == 0:
+                    continue
+                ratio = _ONE
+                if (
+                    self._config.fill_cost_policy.partial_fill_policy.value
+                    == "accept_partial_with_evidence"
+                ):
+                    ratio = self._config.fill_cost_policy.partial_fill_ratio
+                delta = requested_delta * ratio
+                partial_count += int(ratio < _ONE)
+                fill_price = fill_prices[symbol]
+                notional = abs(delta) * fill_price
+                cost = (
+                    notional
+                    * (
+                        self._config.fill_cost_policy.fee_rate_bps
+                        + self._config.fill_cost_policy.spread_bps
+                        + self._config.fill_cost_policy.slippage_bps
+                    )
+                    / Decimal("10000")
+                )
+                cash -= delta * fill_price + cost
+                positions[symbol] += delta
+                fees += cost
+                turnover += notional
+                fill_count += 1
+            curve.append(
+                cash
+                + sum(
+                    quantity * closes[symbol] for symbol, quantity in positions.items()
+                )
+            )
+            consumed.append(observation.snapshot_hash)
+        if not observations:
+            raise EvaluationConfigError(
+                "insufficient_evidence", "shadow evidence missing"
+            )
+        final_closes = dict(observations[-1].closes)
+        ending = cash + sum(
+            quantity * final_closes[symbol] for symbol, quantity in positions.items()
+        )
+        net_return = self._safe_return_pct(ending, initial)
+        symbols = mapping.benchmark_symbols
+        first, last = dict(observations[0].closes), dict(observations[-1].closes)
+        benchmark = _benchmark_return_pct(
+            {symbol: (first[symbol], last[symbol]) for symbol in symbols},
+            {
+                symbols[0]: self._config.benchmark_weights.btc_weight,
+                symbols[1]: self._config.benchmark_weights.eth_weight,
+            },
+        )
+        cash_benchmark = (
+            self._config.annualization.risk_free_rate_pct
+            * Decimal(compute_calendar_days(window.start, window.end))
+            / Decimal("365")
+        )
+        cash_delta, benchmark_delta = _compute_benchmark_deltas(
+            net_return, cash_benchmark, benchmark
+        )
+        return ViewMetrics(
+            view_name=ViewName.CANONICAL_SHADOW,
+            currency=mapping.currency,
+            source=mapping.source,
+            symbol_mapping=mapping.symbols,
+            initial_equity=initial,
+            ending_equity=ending,
+            nominal_net_pnl=ending - initial,
+            fees=fees,
+            net_return_pct=net_return,
+            max_drawdown_pct=_compute_max_drawdown_pct(curve),
+            turnover=turnover,
+            exposure=_compute_exposure(
+                [positions[s] * final_closes[s] for s in mapping.symbols], initial
+            ),
+            fill_count=fill_count,
+            partial_fill_count=partial_count,
+            missing_observation_count=0,
+            cash_benchmark_return_pct=cash_benchmark,
+            cash_benchmark_delta_pct=cash_delta,
+            btc_eth_benchmark_return_pct=benchmark,
+            btc_eth_benchmark_delta_pct=benchmark_delta,
+            canonical_snapshot_hashes=tuple(consumed),
+            experiment_hash=self._experiment_hash,
+            cohort_hash=self._cohort_hash,
+            epoch_id=self._epoch.epoch_id,
+            config_hash=self._epoch.config_hash,
+        )
 
     # ------------------------------------------------------------------
     # Private helpers

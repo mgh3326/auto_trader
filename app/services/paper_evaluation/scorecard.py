@@ -335,7 +335,6 @@ def _determine_status(
             "missing_gate_evidence",
             "authoritative shadow and paper gate evidence are required",
         )
-
     # 3. Shadow gate.
     if not shadow_gate.passed:
         return (
@@ -350,6 +349,17 @@ def _determine_status(
             VerdictStatus.GATE_BLOCKED,
             "paper_gate_blocked",
             f"paper gate not passed: {paper_gate.reason_text}",
+        )
+
+    minimum_days = config.minimum_evidence.min_calendar_days
+    if (
+        shadow_gate.calendar_days_observed < minimum_days
+        or paper_gate.calendar_days_observed < minimum_days
+    ):
+        return (
+            VerdictStatus.INSUFFICIENT_EVIDENCE,
+            "insufficient_calendar_days",
+            f"each evaluation view requires at least {minimum_days} full days",
         )
 
     # 4 & 5. Benchmarks (cash and BTC/ETH).  delta <= 0 fails.

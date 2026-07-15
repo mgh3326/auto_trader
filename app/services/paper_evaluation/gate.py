@@ -125,8 +125,7 @@ def evaluate_insufficient_evidence(
             )
         if metrics.missing_observation_count > 0:
             reasons.append(
-                f"{view_name}: {metrics.missing_observation_count} "
-                "missing observations"
+                f"{view_name}: {metrics.missing_observation_count} missing observations"
             )
     if reasons:
         return (False, reasons)

@@ -422,8 +422,12 @@ class EpochIdentity(_Frozen):
     """
 
     epoch_id: Identifier128
+    assignment_id: Identifier128
+    validation_id: Identifier128
     cohort_id: Identifier128
     config_hash: Sha256
+    experiment_hash: Sha256
+    cohort_hash: Sha256
     initial_equity: Mapping[ViewName, PositiveDecimal]
     started_at: datetime
     reset_reason: EpochResetReason | None = None
@@ -447,6 +451,14 @@ class EpochIdentity(_Frozen):
         object.__setattr__(
             self, "initial_equity", _freeze_view_mapping(self.initial_equity)
         )
+        if (self.prior_epoch_id is None) != (self.reset_reason is None):
+            raise EvaluationConfigError(
+                "invalid_epoch", "prior_epoch_id and reset_reason must appear together"
+            )
+        if self.prior_epoch_id == self.epoch_id:
+            raise EvaluationConfigError(
+                "invalid_epoch", "epoch cannot reference itself"
+            )
         return self
 
 

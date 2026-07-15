@@ -43,8 +43,12 @@ def make_epoch(
 ) -> EpochIdentity:
     return create_epoch_identity(
         epoch_id=epoch_id,
+        assignment_id="assignment-1",
+        validation_id="validation-1",
         cohort_id=cohort_id,
         config_hash=config_hash,
+        experiment_hash=_HASH,
+        cohort_hash=_HASH,
         initial_equity=initial_equity if initial_equity is not None else dict(_EQUITY),
         started_at=started_at or datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
         reset_reason=reset_reason,
@@ -117,8 +121,12 @@ def test_create_epoch_identity_rejects_naive_datetime() -> None:
     with pytest.raises(EvaluationConfigError):
         create_epoch_identity(
             epoch_id="epoch-1",
+            assignment_id="assignment-1",
+            validation_id="validation-1",
             cohort_id="cohort-1",
             config_hash=_HASH,
+            experiment_hash=_HASH,
+            cohort_hash=_HASH,
             initial_equity=dict(_EQUITY),
             started_at=datetime(2026, 1, 1),  # naive
         )
@@ -132,8 +140,12 @@ def test_create_epoch_identity_rejects_wrong_view_count() -> None:
     with pytest.raises(EvaluationConfigError):
         create_epoch_identity(
             epoch_id="epoch-1",
+            assignment_id="assignment-1",
+            validation_id="validation-1",
             cohort_id="cohort-1",
             config_hash=_HASH,
+            experiment_hash=_HASH,
+            cohort_hash=_HASH,
             initial_equity=bad_equity,
             started_at=datetime(2026, 1, 1, tzinfo=UTC),
         )

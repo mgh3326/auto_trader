@@ -62,8 +62,12 @@ def should_create_new_epoch(
 def create_epoch_identity(
     *,
     epoch_id: str,
+    assignment_id: str,
+    validation_id: str,
     cohort_id: str,
     config_hash: str,
+    experiment_hash: str,
+    cohort_hash: str,
     initial_equity: dict[ViewName, Decimal],
     started_at: datetime,
     reset_reason: EpochResetReason | None = None,
@@ -76,8 +80,12 @@ def create_epoch_identity(
     """
     return EpochIdentity(
         epoch_id=epoch_id,
+        assignment_id=assignment_id,
+        validation_id=validation_id,
         cohort_id=cohort_id,
         config_hash=config_hash,
+        experiment_hash=experiment_hash,
+        cohort_hash=cohort_hash,
         initial_equity=initial_equity,
         started_at=started_at,
         reset_reason=reset_reason,

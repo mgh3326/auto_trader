@@ -61,8 +61,7 @@ def test_shadow_gate_boundary_six_days_23h59m59s_still_six() -> None:
     midnight = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
     verdict = evaluate_shadow_gate(
         shadow_started_at=midnight,
-        evaluated_at=midnight
-        + timedelta(days=6, hours=23, minutes=59, seconds=59),
+        evaluated_at=midnight + timedelta(days=6, hours=23, minutes=59, seconds=59),
     )
     assert verdict.passed is False
     assert verdict.calendar_days_observed == 6
@@ -229,16 +228,12 @@ def _all_views_sufficient_metrics() -> dict[ViewName, ViewMetrics]:
     return {
         ViewName.BINANCE_BROKER: _view_metrics(view_name=ViewName.BINANCE_BROKER),
         ViewName.ALPACA_BROKER: _view_metrics(view_name=ViewName.ALPACA_BROKER),
-        ViewName.CANONICAL_SHADOW: _view_metrics(
-            view_name=ViewName.CANONICAL_SHADOW
-        ),
+        ViewName.CANONICAL_SHADOW: _view_metrics(view_name=ViewName.CANONICAL_SHADOW),
     }
 
 
 def test_all_views_sufficient_returns_true_no_reasons() -> None:
-    minimum = MinimumEvidence(
-        min_observations=100, min_fills=10, min_calendar_days=7
-    )
+    minimum = MinimumEvidence(min_observations=100, min_fills=10, min_calendar_days=7)
     sufficient, reasons = evaluate_insufficient_evidence(
         view_metrics=_all_views_sufficient_metrics(),
         minimum_evidence=minimum,
@@ -255,9 +250,7 @@ def test_missing_observations_flagged() -> None:
             missing_observation_count=5,
         ),
     }
-    minimum = MinimumEvidence(
-        min_observations=100, min_fills=10, min_calendar_days=7
-    )
+    minimum = MinimumEvidence(min_observations=100, min_fills=10, min_calendar_days=7)
     sufficient, reasons = evaluate_insufficient_evidence(
         view_metrics=metrics, minimum_evidence=minimum
     )
@@ -272,9 +265,7 @@ def test_low_fill_count_flagged() -> None:
             fill_count=5,
         ),
     }
-    minimum = MinimumEvidence(
-        min_observations=100, min_fills=10, min_calendar_days=7
-    )
+    minimum = MinimumEvidence(min_observations=100, min_fills=10, min_calendar_days=7)
     sufficient, reasons = evaluate_insufficient_evidence(
         view_metrics=metrics, minimum_evidence=minimum
     )
@@ -293,9 +284,7 @@ def test_multiple_views_with_issues_flagged() -> None:
             missing_observation_count=3,
         ),
     }
-    minimum = MinimumEvidence(
-        min_observations=100, min_fills=10, min_calendar_days=7
-    )
+    minimum = MinimumEvidence(min_observations=100, min_fills=10, min_calendar_days=7)
     sufficient, reasons = evaluate_insufficient_evidence(
         view_metrics=metrics, minimum_evidence=minimum
     )
