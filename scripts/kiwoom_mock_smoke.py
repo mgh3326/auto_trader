@@ -36,9 +36,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import re
 import subprocess
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
@@ -59,6 +61,26 @@ _CONTRACT_MUTATION_TOOL_NAMES: frozenset[str] = frozenset(
 )
 
 _KST = timezone(timedelta(hours=9))
+
+_MOCK_HOSTNAME = "mockapi.kiwoom.com"
+_LIVE_HOSTNAME = "api.kiwoom.com"
+_PACING_SECONDS = 0.1
+_SENSITIVE_DIGIT_RUN = re.compile(r"\d{6,}")
+_TOKEN_FORMAT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"bearer\s+\S+", re.IGNORECASE),
+    re.compile(r"authorization\s*[:=]\s*\S+", re.IGNORECASE),
+    re.compile(r"access(?:[_ -]?token)?\s*[:=]\s*\S+", re.IGNORECASE),
+    re.compile(
+        r"\b[A-Z0-9._-]*(?:bearer|token|authorization)[A-Z0-9._-]*\b", re.IGNORECASE
+    ),
+)
+
+_MOCK_PROVENANCE_REQUIRED: dict[str, str] = {
+    "broker": "kiwoom",
+    "environment": "mock",
+    "account_mode": "kiwoom_mock",
+    "host": _MOCK_HOSTNAME,
+}
 
 
 class SmokeRejected(RuntimeError):
@@ -243,18 +265,6 @@ async def run_full(args: argparse.Namespace) -> int:
 # ROB-898 — Read-only contract sweep (Phase A)
 # ---------------------------------------------------------------------------
 
-_MOCK_HOSTNAME = "mockapi.kiwoom.com"
-_LIVE_HOSTNAME = "api.kiwoom.com"
-_PACING_SECONDS = 0.1
-_SENSITIVE_DIGIT_RUN = re.compile(r"\d{6,}")
-
-_MOCK_PROVENANCE_REQUIRED: dict[str, str] = {
-    "broker": "kiwoom",
-    "environment": "mock",
-    "account_mode": "kiwoom_mock",
-    "host": _MOCK_HOSTNAME,
-}
-
 
 def _kst_now_iso() -> str:
     return datetime.now(_KST).isoformat(timespec="seconds")
@@ -315,9 +325,16 @@ def _sanitize_return_msg(msg: Any) -> str:
     for val in _configured_sensitive_values():
         if val in text:
             return "[SANITIZED]"
+    for pattern in _TOKEN_FORMAT_PATTERNS:
+        if pattern.search(text):
+            return "[SANITIZED]"
     if _SENSITIVE_DIGIT_RUN.search(text):
         return "[SANITIZED]"
     return text[:200]
+
+
+def _is_strict_success_flag(value: Any) -> bool:
+    return value is True
 
 
 def _verify_mock_host() -> str | None:
@@ -381,6 +398,27 @@ def _read_only_tools(raw_tools: dict[str, Any]) -> dict[str, Any]:
     return safe
 
 
+@contextlib.contextmanager
+def _reused_kiwoom_mock_client() -> Iterator[tuple[int, Any]]:
+    from app.services.brokers.kiwoom.client import KiwoomMockClient
+
+    sweep_client = KiwoomMockClient.from_app_settings()
+    original_descriptor = KiwoomMockClient.__dict__["from_app_settings"]
+    from_settings_calls = 1
+
+    def _reusing_from_settings(cls: type[KiwoomMockClient]) -> KiwoomMockClient:
+        nonlocal from_settings_calls
+        del cls
+        from_settings_calls += 1
+        return sweep_client
+
+    KiwoomMockClient.from_app_settings = classmethod(_reusing_from_settings)
+    try:
+        yield from_settings_calls, lambda: from_settings_calls
+    finally:
+        KiwoomMockClient.from_app_settings = original_descriptor
+
+
 async def _run_contract_step(
     tools: dict[str, Any],
     tool_name: str,
@@ -437,7 +475,7 @@ async def _run_contract_step(
     msg_sanitized = _sanitize_return_msg(broker_response.get("return_msg"))
     rc_is_zero = _is_return_code_zero(raw_rc)
     provenance_mock = _verify_provenance_mock(provenance_raw)
-    tool_success = bool(payload.get("success"))
+    tool_success = _is_strict_success_flag(payload.get("success"))
 
     step_pass = (
         tool_success
@@ -564,75 +602,61 @@ async def run_contract_sweep(
         )
         return 2
 
-    from app.services.brokers.kiwoom.client import KiwoomMockClient
-
-    sweep_client = KiwoomMockClient.from_app_settings()
-    original_from_settings = KiwoomMockClient.from_app_settings
-    from_settings_calls = 1
-
-    def _reusing_from_settings(cls: type) -> KiwoomMockClient:
-        nonlocal from_settings_calls
-        from_settings_calls += 1
-        return sweep_client
-
-    KiwoomMockClient.from_app_settings = classmethod(_reusing_from_settings)
-
     deploy_sha = _get_deploy_sha()
-    _emit(
-        {
-            "step": "contract_sweep_start",
-            "kst_time": _kst_now_iso(),
-            "deploy_sha": deploy_sha,
-            "mode": "read_only_contract_sweep",
-            "mutations_allowed": False,
-            "steps_planned": len(_CONTRACT_STEPS_SPEC),
-            "client_instances_created": 1,
-        }
-    )
-
     sleep_fn = pacing_fn or asyncio.sleep
-    tools = _read_only_tools(_tools())
-
-    results: list[dict[str, Any]] = []
-    pacing_calls = 0
-    for i, spec in enumerate(_CONTRACT_STEPS_SPEC):
-        if i > 0:
-            await sleep_fn(_PACING_SECONDS)
-            pacing_calls += 1
-        result = await _run_contract_step(
-            tools=tools,
-            tool_name=spec["tool"],
-            expected_api_id=spec["expected_api_id"],
-            evidence_kind=spec["evidence_kind"],
-            deploy_sha=deploy_sha,
-            contract_fields=spec.get("contract_fields", {}),
-            tool_args=spec.get("tool_args"),
+    with _reused_kiwoom_mock_client() as (_client_count, get_call_count):
+        _emit(
+            {
+                "step": "contract_sweep_start",
+                "kst_time": _kst_now_iso(),
+                "deploy_sha": deploy_sha,
+                "mode": "read_only_contract_sweep",
+                "mutations_allowed": False,
+                "steps_planned": len(_CONTRACT_STEPS_SPEC),
+                "client_instances_created": 1,
+            }
         )
-        results.append(result)
 
-    KiwoomMockClient.from_app_settings = original_from_settings
+        tools = _read_only_tools(_tools())
 
-    passed_count = sum(1 for r in results if r.get("pass"))
-    failed_count = len(results) - passed_count
-    overall_pass = failed_count == 0
-    _emit(
-        {
-            "step": "contract_sweep_summary",
-            "kst_time": _kst_now_iso(),
-            "deploy_sha": deploy_sha,
-            "total_steps": len(results),
-            "passed": passed_count,
-            "failed": failed_count,
-            "overall_pass": overall_pass,
-            "failed_stages": [
-                r.get("stage", "?") for r in results if not r.get("pass")
-            ],
-            "mutations_performed": 0,
-            "client_instances_created": 1,
-            "from_app_settings_calls": from_settings_calls,
-            "pacing_calls": pacing_calls,
-        }
-    )
+        results: list[dict[str, Any]] = []
+        pacing_calls = 0
+        for i, spec in enumerate(_CONTRACT_STEPS_SPEC):
+            if i > 0:
+                await sleep_fn(_PACING_SECONDS)
+                pacing_calls += 1
+            result = await _run_contract_step(
+                tools=tools,
+                tool_name=spec["tool"],
+                expected_api_id=spec["expected_api_id"],
+                evidence_kind=spec["evidence_kind"],
+                deploy_sha=deploy_sha,
+                contract_fields=spec.get("contract_fields", {}),
+                tool_args=spec.get("tool_args"),
+            )
+            results.append(result)
+
+        passed_count = sum(1 for r in results if r.get("pass"))
+        failed_count = len(results) - passed_count
+        overall_pass = failed_count == 0
+        _emit(
+            {
+                "step": "contract_sweep_summary",
+                "kst_time": _kst_now_iso(),
+                "deploy_sha": deploy_sha,
+                "total_steps": len(results),
+                "passed": passed_count,
+                "failed": failed_count,
+                "overall_pass": overall_pass,
+                "failed_stages": [
+                    r.get("stage", "?") for r in results if not r.get("pass")
+                ],
+                "mutations_performed": 0,
+                "client_instances_created": 1,
+                "from_app_settings_calls": get_call_count(),
+                "pacing_calls": pacing_calls,
+            }
+        )
 
     return 0 if overall_pass else 2
 

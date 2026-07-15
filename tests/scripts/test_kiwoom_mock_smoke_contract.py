@@ -18,6 +18,7 @@ Verifies ``--mode contract`` in ``scripts/kiwoom_mock_smoke.py``:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -176,11 +177,21 @@ async def test_request_body_captured_via_mocktransport(
     assert kw_constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID in captured
     assert kw_constants.ACCOUNT_ORDER_STATUS_API_ID in captured
 
-    bal_body = captured[kw_constants.ACCOUNT_BALANCE_API_ID]
-    assert "qry_tp" in bal_body
-
-    ord_body = captured[kw_constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID]
-    assert "stk_cd" in ord_body
+    assert captured[kw_constants.ACCOUNT_BALANCE_API_ID] == {
+        "qry_tp": kw_constants.ACCOUNT_BALANCE_QRY_TP_DEFAULT,
+        "dmst_stex_tp": kw_constants.ACCOUNT_DMST_STEX_TP_DEFAULT,
+    }
+    assert captured[kw_constants.ACCOUNT_DEPOSIT_API_ID] == {
+        "qry_tp": kw_constants.ACCOUNT_DEPOSIT_QRY_TP_DEFAULT,
+    }
+    assert captured[kw_constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID] == {
+        "stk_cd": "005930",
+        "trde_tp": kw_constants.TRADE_TYPE_BUY,
+        "uv": "50000",
+    }
+    assert captured[kw_constants.ACCOUNT_ORDER_STATUS_API_ID] == {
+        "stk_bond_tp": kw_constants.ACCOUNT_ORDER_STK_BOND_TP_DEFAULT,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +261,56 @@ async def test_any_nonzero_rc_fails(
     assert hist["pass"] is False
     assert hist["return_code"] == 99
     assert hist["return_code_is_zero"] is False
+    assert rc == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_success", ["false", "true", 1, [], object()])
+async def test_success_must_be_exact_bool_true(
+    bad_success: Any,
+    contract_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    handler = _mock_handler()
+    client = _make_mock_client(handler)
+    monkeypatch.setattr(
+        KiwoomMockClient, "from_app_settings", classmethod(lambda cls: client)
+    )
+
+    original_tools = smoke._tools
+
+    def _patched_tools() -> dict[str, Any]:
+        tools = original_tools()
+
+        async def bad_pos(**_kw: Any) -> dict[str, Any]:
+            return {
+                "success": bad_success,
+                "provenance": {
+                    "broker": "kiwoom",
+                    "environment": "mock",
+                    "account_mode": "kiwoom_mock",
+                    "host": "mockapi.kiwoom.com",
+                    "api_id": kw_constants.ACCOUNT_BALANCE_API_ID,
+                },
+                "broker_response": {
+                    "return_code": 0,
+                    "return_msg": "정상",
+                },
+            }
+
+        tools["kiwoom_mock_get_positions"] = bad_pos
+        return tools
+
+    monkeypatch.setattr(smoke, "_tools", _patched_tools)
+
+    rc = await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
+    lines = _parse_stdout(capsys)
+    pos_step = [s for s in _steps(lines) if s["stage"] == "positions"][0]
+
+    assert pos_step["success"] is False
+    assert pos_step["pass"] is False
+    assert "success_false" in pos_step["fail_reasons"]
     assert rc == 2
 
 
@@ -453,6 +514,64 @@ async def test_configured_sensitive_values_redacted(
     assert "test-bearer-token-xyz" not in output
 
 
+@pytest.mark.asyncio
+async def test_token_like_values_redacted_from_return_msg_and_error_detail(
+    contract_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    handler = _mock_handler(
+        return_msg_override=(
+            f"Authorization: Bearer {SENTINEL_TOKEN} access_token={SENTINEL_TOKEN}"
+        ),
+    )
+    client = _make_mock_client(handler)
+    monkeypatch.setattr(
+        KiwoomMockClient, "from_app_settings", classmethod(lambda cls: client)
+    )
+
+    original_tools = smoke._tools
+
+    def _patched_tools() -> dict[str, Any]:
+        tools = original_tools()
+
+        async def leaking_history(**_kw: Any) -> dict[str, Any]:
+            return {
+                "success": False,
+                "error": "kiwoom_mock_transport_error",
+                "error_detail": (
+                    f"Bearer {SENTINEL_TOKEN} authorization={SENTINEL_TOKEN}"
+                ),
+                "provenance": {
+                    "broker": "kiwoom",
+                    "environment": "mock",
+                    "account_mode": "kiwoom_mock",
+                    "host": "mockapi.kiwoom.com",
+                    "api_id": kw_constants.ACCOUNT_ORDER_STATUS_API_ID,
+                },
+                "broker_response": {
+                    "return_code": 2,
+                    "return_msg": f"token={SENTINEL_TOKEN}",
+                },
+                "orders": [],
+            }
+
+        tools["kiwoom_mock_get_order_history"] = leaking_history
+        return tools
+
+    monkeypatch.setattr(smoke, "_tools", _patched_tools)
+
+    await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
+    lines = _parse_stdout(capsys)
+    output = json.dumps(lines, ensure_ascii=False)
+    history = [s for s in _steps(lines) if s["stage"] == "order_history"][0]
+
+    assert SENTINEL_TOKEN not in output
+    assert "Authorization: Bearer" not in output
+    assert history["return_msg"] == "[SANITIZED]"
+    assert history["error_detail"] == "[SANITIZED]"
+
+
 def test_sanitize_redacts_digit_runs() -> None:
     assert smoke._sanitize_return_msg("ok") == "ok"
     assert smoke._sanitize_return_msg("error 12345678") == "[SANITIZED]"
@@ -495,6 +614,69 @@ async def test_single_client_reused(
 
     assert summary["client_instances_created"] == 1
     assert summary["from_app_settings_calls"] == 5
+
+
+@pytest.mark.asyncio
+async def test_client_factory_descriptor_restored_after_success(
+    contract_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _setup_broker(monkeypatch, contract_env, _mock_handler())
+    original_descriptor = KiwoomMockClient.__dict__["from_app_settings"]
+
+    await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
+    _parse_stdout(capsys)
+
+    restored_descriptor = KiwoomMockClient.__dict__["from_app_settings"]
+    assert restored_descriptor is original_descriptor
+    assert isinstance(restored_descriptor, classmethod)
+    assert KiwoomMockClient.from_app_settings() is client
+
+
+@pytest.mark.asyncio
+async def test_client_factory_descriptor_restored_after_exception(
+    contract_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _setup_broker(monkeypatch, contract_env, _mock_handler())
+    original_descriptor = KiwoomMockClient.__dict__["from_app_settings"]
+
+    def _boom_emit(payload: dict[str, Any]) -> None:
+        if payload.get("step") == "contract_sweep_start":
+            raise RuntimeError("emit failed")
+
+    monkeypatch.setattr(smoke, "_emit", _boom_emit)
+
+    with pytest.raises(RuntimeError, match="emit failed"):
+        await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
+
+    assert capsys.readouterr().out == ""
+    restored_descriptor = KiwoomMockClient.__dict__["from_app_settings"]
+    assert restored_descriptor is original_descriptor
+    assert isinstance(restored_descriptor, classmethod)
+    assert KiwoomMockClient.from_app_settings() is client
+
+
+@pytest.mark.asyncio
+async def test_client_factory_descriptor_restored_after_cancellation(
+    contract_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _setup_broker(monkeypatch, contract_env, _mock_handler())
+    original_descriptor = KiwoomMockClient.__dict__["from_app_settings"]
+
+    async def cancelling_sleep(_seconds: float) -> None:
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await smoke.run_contract_sweep(_contract_args(), pacing_fn=cancelling_sleep)
+
+    restored_descriptor = KiwoomMockClient.__dict__["from_app_settings"]
+    assert restored_descriptor is original_descriptor
+    assert isinstance(restored_descriptor, classmethod)
+    assert KiwoomMockClient.from_app_settings() is client
 
 
 @pytest.mark.asyncio
