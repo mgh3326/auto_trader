@@ -17,6 +17,7 @@ PREFLIGHT_CASH_INSUFFICIENT = "preflight_cash_insufficient"
 PREFLIGHT_QUOTE_STALE = "preflight_quote_stale"
 PREFLIGHT_QUOTE_MISSING = "preflight_quote_missing"
 PREFLIGHT_TICK_INVALID = "preflight_tick_invalid"
+PREFLIGHT_PRICE_DISTANCE_EXCEEDED = "preflight_price_distance_exceeded"
 PREFLIGHT_EVIDENCE_INVALID = "preflight_evidence_invalid"
 PREFLIGHT_PROVENANCE_CONFLICT = "preflight_provenance_conflict"
 PREFLIGHT_POSITION_READ_FAILED = "preflight_position_read_failed"
@@ -39,6 +40,7 @@ class PreflightResult:
     error_detail: str | None = None
     checks: list[PreflightCheck] = field(default_factory=list)
     estimated_evidence: dict[str, Any] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
 
     def to_response_extras(self) -> dict[str, Any]:
         return {
@@ -46,6 +48,7 @@ class PreflightResult:
                 {"name": c.name, "ok": c.ok, "detail": c.detail} for c in self.checks
             ],
             "estimated_evidence": self.estimated_evidence,
+            "preflight_warnings": self.warnings,
         }
 
 
@@ -64,6 +67,19 @@ def _fail(
     )
 
 
+def _validate_successful_broker_response(payload: dict[str, Any]) -> None:
+    if "return_code" not in payload:
+        raise KiwoomMockEvidenceError("Kiwoom response missing return_code")
+    return_code = payload["return_code"]
+    if type(return_code) is int and return_code == 0:
+        return
+    if isinstance(return_code, str) and return_code == "0":
+        return
+    raise KiwoomMockEvidenceError(
+        f"Kiwoom response has invalid or unsuccessful return_code={return_code!r}"
+    )
+
+
 async def run_order_preflight(
     *,
     account_client: Any,
@@ -75,7 +91,18 @@ async def run_order_preflight(
     quote_freshness: str = "unavailable",
 ) -> PreflightResult:
     checks: list[PreflightCheck] = []
-    estimated: dict[str, Any] = {"type": "estimated"}
+    estimated: dict[str, Any] = {
+        "type": "estimated",
+        "estimated_costs": {
+            "fee": None,
+            "tax": None,
+            "currency": "KRW",
+            "status": "unavailable",
+            "source": None,
+            "review_required": True,
+            "reason": "kiwoom_mock_cost_profile_unavailable",
+        },
+    }
 
     if quote_price is None or quote_price <= 0:
         return _fail(
@@ -104,13 +131,40 @@ async def run_order_preflight(
     distance_pct = abs(price - quote_price) / quote_price * 100
     estimated["price_distance_pct"] = round(distance_pct, 2)
     estimated["quote_price"] = quote_price
+    if distance_pct > MAX_PRICE_DISTANCE_PCT:
+        return _fail(
+            PREFLIGHT_PRICE_DISTANCE_EXCEEDED,
+            (
+                f"Price {price} is {distance_pct:.2f}% from quote {quote_price}; "
+                f"maximum is {MAX_PRICE_DISTANCE_PCT:.2f}%"
+            ),
+            checks
+            + [
+                PreflightCheck(
+                    "price_distance",
+                    False,
+                    (
+                        f"distance_pct={distance_pct:.2f}, "
+                        f"max_pct={MAX_PRICE_DISTANCE_PCT:.2f}"
+                    ),
+                )
+            ],
+            estimated=estimated,
+        )
+    checks.append(
+        PreflightCheck(
+            "price_distance",
+            True,
+            (f"distance_pct={distance_pct:.2f}, max_pct={MAX_PRICE_DISTANCE_PCT:.2f}"),
+        )
+    )
 
     order_amount = price * quantity
     estimated["order_amount"] = order_amount
 
     if side == "sell":
         result = await _check_sellable(
-            account_client, symbol, quantity, checks, estimated
+            account_client, symbol, quantity, price, checks, estimated
         )
         if result is not None:
             return result
@@ -121,8 +175,15 @@ async def run_order_preflight(
         if result is not None:
             return result
 
+    warnings = ["estimated_costs_unavailable"]
+    if estimated.get("loss_sell"):
+        warnings.append("estimated_loss_sell")
     return PreflightResult(
-        ok=True, error_code=PREFLIGHT_OK, checks=checks, estimated_evidence=estimated
+        ok=True,
+        error_code=PREFLIGHT_OK,
+        checks=checks,
+        estimated_evidence=estimated,
+        warnings=warnings,
     )
 
 
@@ -130,12 +191,14 @@ async def _check_sellable(
     account_client: Any,
     symbol: str,
     quantity: int,
+    price: int,
     checks: list[PreflightCheck],
     estimated: dict[str, Any],
 ) -> PreflightResult | None:
     try:
         balance_response = await account_client.get_balance()
         validate_mock_response_provenance(balance_response)
+        _validate_successful_broker_response(balance_response)
         positions = normalize_positions(balance_response)
     except KiwoomMockEvidenceError as exc:
         code = (
@@ -177,15 +240,20 @@ async def _check_sellable(
     checks.append(PreflightCheck("sellable", True, f"sellable={sellable}"))
 
     if avg_price > 0 and sellable > 0:
-        pnl = (estimated.get("quote_price", 0) - avg_price) * quantity
+        pnl = (price - avg_price) * quantity
         pnl_pct = (
-            round((estimated.get("quote_price", 0) - avg_price) / avg_price * 100, 2)
-            if avg_price > 0
-            else 0.0
+            round((price - avg_price) / avg_price * 100, 2) if avg_price > 0 else 0.0
         )
-        estimated["estimated_pnl"] = pnl
-        estimated["estimated_pnl_pct"] = pnl_pct
+        estimated["estimated_gross_pnl"] = pnl
+        estimated["estimated_gross_pnl_pct"] = pnl_pct
+        estimated["estimated_net_pnl"] = None
+        estimated["estimated_net_pnl_pct"] = None
+        estimated["net_pnl_status"] = "unavailable"
+        estimated["net_pnl_review_required"] = True
         estimated["loss_sell"] = pnl < 0
+        estimated["loss_sell_basis"] = "gross_before_costs"
+        estimated["gross_pnl_basis"] = "order_price"
+        estimated["pnl_basis_price"] = price
 
     return None
 
@@ -203,6 +271,7 @@ async def _check_buy_cash(
             symbol=symbol, side="buy", price=price
         )
         validate_mock_response_provenance(cash_response)
+        _validate_successful_broker_response(cash_response)
         orderable_cash = normalize_orderable_cash(cash_response)
     except KiwoomMockEvidenceError as exc:
         code = (

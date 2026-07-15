@@ -12,6 +12,7 @@ from app.services.brokers.kiwoom.order_preflight import (
     PREFLIGHT_CASH_READ_FAILED,
     PREFLIGHT_EVIDENCE_INVALID,
     PREFLIGHT_POSITION_READ_FAILED,
+    PREFLIGHT_PRICE_DISTANCE_EXCEEDED,
     PREFLIGHT_PROVENANCE_CONFLICT,
     PREFLIGHT_QUOTE_MISSING,
     PREFLIGHT_QUOTE_STALE,
@@ -157,6 +158,52 @@ async def test_preflight_tick_validation_rejects_non_krx_ticks(invalid_price):
     assert client.cash_calls == 0
 
 
+@pytest.mark.parametrize("price", [40000, 100000])
+@pytest.mark.asyncio
+async def test_preflight_price_distance_exceeded_fails_closed(price):
+    client = _FakeAccountClient(
+        cash_payload={"return_code": 0, "ord_alowa": "100000000"}
+    )
+    result = await run_order_preflight(
+        account_client=client,
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=price,
+        quote_price=70000,
+        quote_freshness="fresh",
+    )
+
+    assert result.ok is False
+    assert result.error_code == PREFLIGHT_PRICE_DISTANCE_EXCEEDED
+    distance_check = next(c for c in result.checks if c.name == "price_distance")
+    assert distance_check.ok is False
+    assert result.estimated_evidence["price_distance_pct"] > 30.0
+    assert client.cash_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_preflight_price_distance_at_limit_passes():
+    client = _FakeAccountClient(
+        cash_payload={"return_code": 0, "ord_alowa": "100000000"}
+    )
+    result = await run_order_preflight(
+        account_client=client,
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=91000,
+        quote_price=70000,
+        quote_freshness="fresh",
+    )
+
+    assert result.ok is True
+    distance_check = next(c for c in result.checks if c.name == "price_distance")
+    assert distance_check.ok is True
+    assert result.estimated_evidence["price_distance_pct"] == 30.0
+    assert client.cash_calls == 1
+
+
 @pytest.mark.asyncio
 async def test_preflight_sellable_exceeded_fails_closed():
     client = _FakeAccountClient(
@@ -178,10 +225,14 @@ async def test_preflight_sellable_exceeded_fails_closed():
     assert "sellable=5" in sellable_check.detail
 
 
+@pytest.mark.parametrize("return_code", [0, "0"])
 @pytest.mark.asyncio
-async def test_preflight_sellable_exact_match_passes():
+async def test_preflight_sellable_exact_match_passes(return_code):
     client = _FakeAccountClient(
-        balance_payload=_positions_payload([_position("005930", 10, 70000)])
+        balance_payload={
+            **_positions_payload([_position("005930", 10, 70000)]),
+            "return_code": return_code,
+        }
     )
     result = await run_order_preflight(
         account_client=client,
@@ -238,11 +289,12 @@ async def test_preflight_cash_insufficient_fails_closed():
     assert result.estimated_evidence.get("orderable_cash") == 500000
 
 
+@pytest.mark.parametrize("return_code", [0, "0"])
 @pytest.mark.asyncio
-async def test_preflight_cash_sufficient_passes():
+async def test_preflight_cash_sufficient_passes(return_code):
     client = _FakeAccountClient(
         cash_payload={
-            "return_code": 0,
+            "return_code": return_code,
             "ord_alowa": "100000000",
         }
     )
@@ -260,6 +312,37 @@ async def test_preflight_cash_sufficient_passes():
 
 
 @pytest.mark.asyncio
+async def test_preflight_buy_marks_fee_and_tax_estimates_unavailable():
+    client = _FakeAccountClient(
+        cash_payload={"return_code": 0, "ord_alowa": "100000000"}
+    )
+
+    result = await run_order_preflight(
+        account_client=client,
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=70000,
+        quote_price=70000,
+        quote_freshness="fresh",
+    )
+
+    assert result.ok is True
+    assert result.estimated_evidence["estimated_costs"] == {
+        "fee": None,
+        "tax": None,
+        "currency": "KRW",
+        "status": "unavailable",
+        "source": None,
+        "review_required": True,
+        "reason": "kiwoom_mock_cost_profile_unavailable",
+    }
+    assert result.to_response_extras()["preflight_warnings"] == [
+        "estimated_costs_unavailable"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_preflight_cash_missing_field_fails_closed():
     client = _FakeAccountClient(
         cash_payload={"return_code": 0}  # no ord_alowa
@@ -273,6 +356,72 @@ async def test_preflight_cash_missing_field_fails_closed():
         quote_price=70000,
         quote_freshness="fresh",
     )
+    assert result.ok is False
+    assert result.error_code == PREFLIGHT_EVIDENCE_INVALID
+
+
+@pytest.mark.parametrize(
+    "return_code",
+    [
+        pytest.param("missing", id="missing"),
+        pytest.param(None, id="none"),
+        pytest.param(True, id="bool"),
+        pytest.param(0.0, id="float"),
+        pytest.param(1, id="nonzero-int"),
+        pytest.param("1", id="nonzero-string"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_preflight_cash_broker_failure_fails_closed(return_code):
+    payload: dict[str, Any] = {"ord_alowa": "100000000"}
+    if return_code != "missing":
+        payload["return_code"] = return_code
+    client = _FakeAccountClient(cash_payload=payload)
+
+    result = await run_order_preflight(
+        account_client=client,
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=70000,
+        quote_price=70000,
+        quote_freshness="fresh",
+    )
+
+    assert result.ok is False
+    assert result.error_code == PREFLIGHT_EVIDENCE_INVALID
+
+
+@pytest.mark.parametrize(
+    "return_code",
+    [
+        pytest.param("missing", id="missing"),
+        pytest.param(None, id="none"),
+        pytest.param(True, id="bool"),
+        pytest.param(0.0, id="float"),
+        pytest.param(1, id="nonzero-int"),
+        pytest.param("1", id="nonzero-string"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_preflight_position_broker_failure_fails_closed(return_code):
+    payload = _positions_payload([_position("005930", 10, 70000)])
+    if return_code == "missing":
+        payload.pop("return_code")
+    else:
+        payload["return_code"] = return_code
+    client = _FakeAccountClient(balance_payload=payload)
+
+    result = await run_order_preflight(
+        account_client=client,
+        symbol="005930",
+        side="sell",
+        quantity=1,
+        price=70000,
+        quote_price=70000,
+        quote_freshness="fresh",
+    )
+
     assert result.ok is False
     assert result.error_code == PREFLIGHT_EVIDENCE_INVALID
 
@@ -350,6 +499,59 @@ async def test_preflight_estimated_evidence_classified_separately():
     assert result.estimated_evidence["sellable_quantity"] == 10
     assert result.estimated_evidence["average_price"] == 80000
     assert result.estimated_evidence["loss_sell"] is True
+
+
+@pytest.mark.parametrize(
+    ("quote_price", "price", "expected_pnl", "expected_loss", "expected_warnings"),
+    [
+        (70000, 90000, 20000, False, ["estimated_costs_unavailable"]),
+        (
+            90000,
+            70000,
+            -20000,
+            True,
+            ["estimated_costs_unavailable", "estimated_loss_sell"],
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_preflight_sell_pnl_uses_candidate_order_price(
+    quote_price,
+    price,
+    expected_pnl,
+    expected_loss,
+    expected_warnings,
+):
+    client = _FakeAccountClient(
+        balance_payload=_positions_payload([_position("005930", 10, 80000)])
+    )
+
+    result = await run_order_preflight(
+        account_client=client,
+        symbol="005930",
+        side="sell",
+        quantity=2,
+        price=price,
+        quote_price=quote_price,
+        quote_freshness="fresh",
+    )
+
+    assert result.ok is True
+    assert result.estimated_evidence["estimated_gross_pnl"] == expected_pnl
+    assert result.estimated_evidence["estimated_gross_pnl_pct"] == (
+        12.5 if expected_pnl > 0 else -12.5
+    )
+    assert result.estimated_evidence["estimated_net_pnl"] is None
+    assert result.estimated_evidence["estimated_net_pnl_pct"] is None
+    assert result.estimated_evidence["net_pnl_status"] == "unavailable"
+    assert result.estimated_evidence["net_pnl_review_required"] is True
+    assert result.estimated_evidence["loss_sell"] is expected_loss
+    assert result.estimated_evidence["loss_sell_basis"] == "gross_before_costs"
+    assert result.estimated_evidence["gross_pnl_basis"] == "order_price"
+    assert result.estimated_evidence["pnl_basis_price"] == price
+    assert result.estimated_evidence["estimated_costs"]["fee"] is None
+    assert result.estimated_evidence["estimated_costs"]["tax"] is None
+    assert result.to_response_extras()["preflight_warnings"] == expected_warnings
 
 
 @pytest.mark.asyncio

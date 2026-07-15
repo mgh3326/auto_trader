@@ -1922,6 +1922,7 @@ async def test_place_order_confirmed_reruns_preflight_right_before_post(monkeypa
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
     from app.services.brokers.kiwoom.order_preflight import (
         PREFLIGHT_OK,
+        PreflightCheck,
         PreflightResult,
     )
 
@@ -1930,7 +1931,15 @@ async def test_place_order_confirmed_reruns_preflight_right_before_post(monkeypa
     async def counting_preflight(**_kwargs):
         nonlocal preflight_call_count
         preflight_call_count += 1
-        return PreflightResult(ok=True, error_code=PREFLIGHT_OK, checks=[])
+        return PreflightResult(
+            ok=True,
+            error_code=PREFLIGHT_OK,
+            checks=[PreflightCheck(f"preflight_call_{preflight_call_count}", True)],
+            estimated_evidence={
+                "type": "estimated",
+                "preflight_call": preflight_call_count,
+            },
+        )
 
     class FakeKiwoomMockClient:
         @classmethod
@@ -1987,6 +1996,80 @@ async def test_place_order_confirmed_reruns_preflight_right_before_post(monkeypa
     assert preflight_call_count == 2, (
         "confirmed place must run preflight twice (once before, once right before POST)"
     )
+    assert response["preflight_checks"] == [
+        {"name": "preflight_call_2", "ok": True, "detail": None}
+    ]
+    assert response["estimated_evidence"] == {
+        "type": "estimated",
+        "preflight_call": 2,
+    }
+
+
+@pytest.mark.asyncio
+async def test_place_order_confirmed_blocks_when_final_recheck_fails(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+    from app.services.brokers.kiwoom.order_preflight import (
+        PREFLIGHT_CASH_INSUFFICIENT,
+        PREFLIGHT_OK,
+        PreflightCheck,
+        PreflightResult,
+    )
+
+    order_calls = _patch_fake_kiwoom_order_client(
+        monkeypatch,
+        mod,
+        responses={
+            "buy": {"return_code": 0, "ord_no": "must-not-submit"},
+            "sell": {"return_code": 0, "ord_no": "must-not-submit"},
+        },
+    )
+    results = iter(
+        [
+            PreflightResult(
+                ok=True,
+                error_code=PREFLIGHT_OK,
+                checks=[PreflightCheck("initial", True)],
+                estimated_evidence={"snapshot": "initial"},
+            ),
+            PreflightResult(
+                ok=False,
+                error_code=PREFLIGHT_CASH_INSUFFICIENT,
+                error_detail="cash changed before broker POST",
+                checks=[PreflightCheck("final_recheck", False)],
+                estimated_evidence={"snapshot": "final"},
+            ),
+        ]
+    )
+    preflight_calls = 0
+
+    async def changing_preflight(**_kwargs):
+        nonlocal preflight_calls
+        preflight_calls += 1
+        return next(results)
+
+    monkeypatch.setattr(
+        mod, "_run_preflight_for_kiwoom_mock", changing_preflight, raising=False
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_place_order"](
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=70000,
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert preflight_calls == 2
+    assert response["success"] is False
+    assert response["error"] == PREFLIGHT_CASH_INSUFFICIENT
+    assert response["preflight_checks"] == [
+        {"name": "final_recheck", "ok": False, "detail": None}
+    ]
+    assert response["estimated_evidence"] == {"snapshot": "final"}
+    assert order_calls == []
 
 
 @pytest.mark.asyncio
@@ -2119,9 +2202,11 @@ async def test_loss_sell_not_blocked_in_mcp_layer(monkeypatch):
             estimated_evidence={
                 "type": "estimated",
                 "loss_sell": True,
-                "estimated_pnl": -150000,
-                "estimated_pnl_pct": -21.43,
+                "estimated_gross_pnl": -150000,
+                "estimated_gross_pnl_pct": -21.43,
+                "estimated_net_pnl": None,
             },
+            warnings=["estimated_costs_unavailable", "estimated_loss_sell"],
         )
 
     monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
@@ -2137,4 +2222,9 @@ async def test_loss_sell_not_blocked_in_mcp_layer(monkeypatch):
 
     assert response["success"] is True
     assert response["estimated_evidence"]["loss_sell"] is True
-    assert response["estimated_evidence"]["estimated_pnl"] == -150000
+    assert response["estimated_evidence"]["estimated_gross_pnl"] == -150000
+    assert response["estimated_evidence"]["estimated_net_pnl"] is None
+    assert response["preflight_warnings"] == [
+        "estimated_costs_unavailable",
+        "estimated_loss_sell",
+    ]

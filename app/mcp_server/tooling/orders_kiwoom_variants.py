@@ -369,6 +369,11 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
         response["exchange"] = str(exchange).strip().upper()
         return response
 
+    # Preserve the evidence from the mutation-boundary recheck. This is the
+    # authoritative preflight snapshot for a confirmed POST, not the earlier
+    # check that may already be stale by the time the broker is called.
+    base_response.update(recheck.to_response_extras())
+
     try:
         client = KiwoomMockClient.from_app_settings()
         order_client = KiwoomDomesticOrderClient(cast(Any, client))
