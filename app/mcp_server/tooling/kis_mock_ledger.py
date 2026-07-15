@@ -314,12 +314,16 @@ async def _get_kis_mock_shadow_exposure(
         }
 
     active_rows = [
-        row for row in rows if not _is_kr_day_order_expired_for_reservation(row, now=now)
+        row
+        for row in rows
+        if not _is_kr_day_order_expired_for_reservation(row, now=now)
     ]
     expired_count = len(rows) - len(active_rows)
 
     buy_reserved = sum(
-        _decimal_to_float(row.get("amount")) for row in active_rows if row.get("side") == "buy"
+        _decimal_to_float(row.get("amount"))
+        for row in active_rows
+        if row.get("side") == "buy"
     )
     sell_reserved = sum(
         _decimal_to_float(row.get("remaining_qty"))
