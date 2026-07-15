@@ -299,7 +299,9 @@ def _determine_status(
     # 1. Insufficient evidence — evaluated before any other rule.
     for name in sorted(view_metrics, key=lambda v: v.value):
         metrics = view_metrics[name]
-        observed_count = metrics.fill_count + metrics.missing_observation_count
+        observed_count = metrics.observation_count or (
+            metrics.fill_count + metrics.missing_observation_count
+        )
         if fail_close and metrics.missing_observation_count > 0:
             return (
                 VerdictStatus.INSUFFICIENT_EVIDENCE,

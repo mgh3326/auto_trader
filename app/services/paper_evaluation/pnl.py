@@ -955,13 +955,18 @@ class PaperEvaluationPnL:
         turnover = fees = _ZERO
         partial_count = 0
         equity_curve = [initial]
-        latest_marks: dict[str, Decimal] = {}
         by_symbol: dict[str, list[NativeMark]] = defaultdict(list)
         for mark in marks:
             if not window.start <= mark.marked_at <= window.end:
                 raise EvaluationConfigError("invalid_evaluation_window")
             by_symbol[mark.symbol].append(mark)
-            latest_marks[mark.symbol] = mark.price
+        for symbol in mapping.benchmark_symbols:
+            by_symbol[symbol].sort(key=lambda item: item.marked_at)
+            if not by_symbol[symbol] or by_symbol[symbol][-1].marked_at != window.end:
+                raise EvaluationConfigError(
+                    "insufficient_evidence",
+                    f"missing window-end native mark for {symbol}",
+                )
         for fill in fills:
             if not window.start <= fill.filled_at <= window.end:
                 raise EvaluationConfigError("invalid_evaluation_window")
@@ -979,13 +984,36 @@ class PaperEvaluationPnL:
                 cash += notional - fill.fee
                 positions[fill.symbol] -= fill.quantity
             partial_count += int(fill.partial)
+            asof_marks: dict[str, Decimal] = {}
+            for symbol, quantity in positions.items():
+                if not quantity:
+                    continue
+                candidates = [
+                    mark.price
+                    for mark in by_symbol[symbol]
+                    if mark.marked_at <= fill.filled_at
+                ]
+                if candidates:
+                    asof_marks[symbol] = candidates[-1]
+                elif symbol == fill.symbol:
+                    asof_marks[symbol] = fill.price
+                else:
+                    raise EvaluationConfigError(
+                        "insufficient_evidence",
+                        f"missing as-of native mark for {symbol}",
+                    )
             equity_curve.append(
                 cash
                 + sum(
-                    quantity * latest_marks.get(symbol, fill.price)
+                    quantity * asof_marks.get(symbol, _ZERO)
                     for symbol, quantity in positions.items()
                 )
             )
+        latest_marks = {
+            symbol: symbol_marks[-1].price
+            for symbol, symbol_marks in by_symbol.items()
+            if symbol_marks
+        }
         for symbol, quantity in positions.items():
             if quantity and symbol not in latest_marks:
                 raise EvaluationConfigError(
@@ -1038,6 +1066,7 @@ class PaperEvaluationPnL:
             turnover=turnover,
             exposure=_compute_exposure(notionals, initial),
             fill_count=len(fills),
+            observation_count=len(fills),
             partial_fill_count=partial_count,
             missing_observation_count=0,
             cash_benchmark_return_pct=cash_benchmark,
@@ -1083,9 +1112,18 @@ class PaperEvaluationPnL:
                     raise EvaluationConfigError(
                         "insufficient_evidence", "next canonical bar missing"
                     )
-                fill_prices = dict(observations[index + 1].opens)
+                next_observation = observations[index + 1]
+                gap = next_observation.candle_open_at - observation.candle_close_at
+                if gap.total_seconds() < 0 or gap.total_seconds() > 1:
+                    raise EvaluationConfigError(
+                        "insufficient_evidence",
+                        "next canonical candle is not contiguous",
+                    )
+                fill_prices = dict(next_observation.opens)
+                mark_prices = dict(next_observation.closes)
             else:
                 fill_prices = closes
+                mark_prices = closes
             for symbol, requested_delta in deltas.items():
                 if requested_delta == 0:
                     continue
@@ -1116,7 +1154,8 @@ class PaperEvaluationPnL:
             curve.append(
                 cash
                 + sum(
-                    quantity * closes[symbol] for symbol, quantity in positions.items()
+                    quantity * mark_prices[symbol]
+                    for symbol, quantity in positions.items()
                 )
             )
             consumed.append(observation.snapshot_hash)
@@ -1162,6 +1201,7 @@ class PaperEvaluationPnL:
                 [positions[s] * final_closes[s] for s in mapping.symbols], initial
             ),
             fill_count=fill_count,
+            observation_count=len(observations),
             partial_fill_count=partial_count,
             missing_observation_count=0,
             cash_benchmark_return_pct=cash_benchmark,

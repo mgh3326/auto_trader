@@ -77,6 +77,7 @@ class EvaluationEpoch(Base):
 
     __tablename__ = "evaluation_epochs"
     __table_args__ = (
+        UniqueConstraint("epoch_id", name="uq_evaluation_epoch_id"),
         UniqueConstraint(
             "cohort_id",
             "assignment_id",
@@ -106,6 +107,24 @@ class EvaluationEpoch(Base):
             ],
             ondelete="RESTRICT",
             name="fk_evaluation_epoch_assignment",
+        ),
+        ForeignKeyConstraint(
+            [
+                "cohort_id",
+                "assignment_id",
+                "validation_id",
+                "config_hash",
+                "experiment_hash",
+            ],
+            [
+                "research.paper_validation_cohort_assignments.cohort_id",
+                "research.paper_validation_cohort_assignments.assignment_id",
+                "research.paper_validation_cohort_assignments.validation_id",
+                "research.paper_validation_cohort_assignments.config_hash",
+                "research.paper_validation_cohort_assignments.experiment_hash",
+            ],
+            ondelete="RESTRICT",
+            name="fk_evaluation_epoch_assignment_identity",
         ),
         ForeignKeyConstraint(
             ["cohort_id", "cohort_hash"],
@@ -225,6 +244,28 @@ class EvaluationScorecard(Base):
             ondelete="RESTRICT",
             name="fk_evaluation_scorecard_epoch_identity",
         ),
+        ForeignKeyConstraint(
+            [
+                "evaluation_id",
+                "epoch_id",
+                "assignment_id",
+                "config_hash",
+                "experiment_hash",
+                "cohort_hash",
+            ],
+            [
+                "research.evaluation_verdicts.evaluation_id",
+                "research.evaluation_verdicts.epoch_id",
+                "research.evaluation_verdicts.assignment_id",
+                "research.evaluation_verdicts.config_hash",
+                "research.evaluation_verdicts.experiment_hash",
+                "research.evaluation_verdicts.cohort_hash",
+            ],
+            ondelete="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+            name="fk_evaluation_scorecard_verdict_identity",
+        ),
         CheckConstraint(
             f"evaluation_id ~ '{_SHA256}'",
             name=conv("ck_evaluation_scorecard_evaluation_id"),
@@ -280,6 +321,15 @@ class EvaluationVerdict(Base):
     __tablename__ = "evaluation_verdicts"
     __table_args__ = (
         UniqueConstraint("evaluation_id", name="uq_evaluation_verdict_evaluation"),
+        UniqueConstraint(
+            "evaluation_id",
+            "epoch_id",
+            "assignment_id",
+            "config_hash",
+            "experiment_hash",
+            "cohort_hash",
+            name="uq_evaluation_verdict_full_identity",
+        ),
         UniqueConstraint(
             "epoch_id",
             "idempotency_key",

@@ -154,6 +154,10 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         "app/services/brokers/paper/composition.py",
         "app/services/crypto_execution_mapping.py",
         "app/services/paper_approval_packet.py",
+        # ROB-850 reads the already-persisted demo ledger and native quote
+        # evidence for evaluation accounting. It has no HTTP, signing,
+        # credential, endpoint, websocket, or mutation behavior.
+        "app/services/paper_evaluation/evidence.py",
         # ROB-323 / ROB-325 — the operator Naver remote-debug audit's Chrome
         # CDP host allowlist. Contains NO Binance HTTP/WS/signed surface; it is
         # a strict 127.0.0.1:9222 allowlist and references "binance" only in a

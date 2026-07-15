@@ -365,10 +365,34 @@ async def _rebuild_legacy_paper_evaluation_schema(conn) -> None:
         ("evaluation_scorecards", "evaluation_id"),
         ("evaluation_verdicts", "evaluation_id"),
     }
-    if expected <= present:
+    identity_fk = await conn.scalar(
+        text(
+            "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = "
+            "'fk_evaluation_epoch_assignment_identity')"
+        )
+    )
+    if expected <= present and identity_fk:
         return
     for table in reversed(_PAPER_EVALUATION_AUDIT_TABLES):
         await conn.execute(text(f"DROP TABLE IF EXISTS research.{table} CASCADE"))
+
+
+async def _ensure_evaluation_assignment_identity_index(conn) -> None:
+    if await conn.scalar(
+        text(
+            "SELECT to_regclass("
+            "'research.paper_validation_cohort_assignments') IS NOT NULL"
+        )
+    ):
+        await conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_paper_cohort_assignment_evaluation_identity "
+                "ON research.paper_validation_cohort_assignments "
+                "(cohort_id, assignment_id, validation_id, config_hash, "
+                "experiment_hash)"
+            )
+        )
 
 
 _PAPER_COHORT_TRIGGER_DDL: tuple[str, ...] = (
@@ -433,15 +457,41 @@ _PAPER_COHORT_TRIGGER_DDL: tuple[str, ...] = (
 )
 
 _PAPER_EVALUATION_TRIGGER_DDL: tuple[str, ...] = (
-    "ALTER TABLE research.evaluation_epochs DROP CONSTRAINT IF EXISTS "
-    "fk_evaluation_epoch_assignment_identity",
-    "DROP INDEX IF EXISTS research.uq_paper_cohort_assignment_evaluation_identity",
+    "CREATE UNIQUE INDEX IF NOT EXISTS "
+    "uq_paper_cohort_assignment_evaluation_identity "
+    "ON research.paper_validation_cohort_assignments "
+    "(cohort_id, assignment_id, validation_id, config_hash, experiment_hash)",
     "CREATE INDEX IF NOT EXISTS ix_evaluation_epoch_assignment_started "
     "ON research.evaluation_epochs (cohort_id, assignment_id, started_at)",
     "CREATE OR REPLACE FUNCTION research.reject_evaluation_mutation() "
     "RETURNS trigger AS $$ BEGIN RAISE EXCEPTION "
     "'research.% is append-only/immutable; % rejected', TG_TABLE_NAME, TG_OP "
     "USING ERRCODE = 'restrict_violation'; END; $$ LANGUAGE plpgsql",
+    "CREATE OR REPLACE FUNCTION research.validate_evaluation_completeness() "
+    "RETURNS trigger AS $$ DECLARE target_id text; scorecard_count integer; "
+    "view_count integer; verdict_count integer; BEGIN target_id := NEW.evaluation_id; "
+    "SELECT count(*), count(DISTINCT view_name) INTO scorecard_count, view_count "
+    "FROM research.evaluation_scorecards WHERE evaluation_id = target_id; "
+    "IF scorecard_count <> 3 OR view_count <> 3 OR NOT EXISTS (SELECT 1 FROM "
+    "research.evaluation_scorecards WHERE evaluation_id = target_id GROUP BY "
+    "evaluation_id HAVING array_agg(view_name ORDER BY view_name) = "
+    "ARRAY['alpaca_broker','binance_broker','canonical_shadow']::varchar[]) THEN "
+    "RAISE EXCEPTION 'evaluation % requires exactly three scorecards', target_id "
+    "USING ERRCODE = 'integrity_constraint_violation'; END IF; "
+    "SELECT count(*) INTO verdict_count FROM research.evaluation_verdicts "
+    "WHERE evaluation_id = target_id; IF verdict_count <> 1 THEN RAISE EXCEPTION "
+    "'evaluation % requires exactly one verdict', target_id USING ERRCODE = "
+    "'integrity_constraint_violation'; END IF; RETURN NEW; END; $$ LANGUAGE plpgsql",
+    *tuple(
+        statement
+        for table in ("evaluation_scorecards", "evaluation_verdicts")
+        for statement in (
+            f"DROP TRIGGER IF EXISTS trg_rob850_{table}_complete ON research.{table}",
+            f"CREATE CONSTRAINT TRIGGER trg_rob850_{table}_complete AFTER INSERT ON "
+            f"research.{table} DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE "
+            "FUNCTION research.validate_evaluation_completeness()",
+        )
+    ),
     *tuple(
         statement
         for table in _PAPER_EVALUATION_AUDIT_TABLES
@@ -1344,6 +1394,7 @@ async def apply_test_schema(conn) -> None:
 
     await _rebuild_legacy_paper_cohort_schema(conn)
     await _rebuild_legacy_paper_evaluation_schema(conn)
+    await _ensure_evaluation_assignment_identity_index(conn)
     await conn.run_sync(Base.metadata.create_all)
 
     # --- conditional "only when genuinely missing" probes (per-table catalog

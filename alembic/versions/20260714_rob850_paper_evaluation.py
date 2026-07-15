@@ -67,6 +67,18 @@ def _create_immutable_triggers(table: str) -> None:
 
 def upgrade() -> None:
     op.execute("CREATE SCHEMA IF NOT EXISTS research")
+    op.create_unique_constraint(
+        "uq_paper_cohort_assignment_evaluation_identity",
+        "paper_validation_cohort_assignments",
+        [
+            "cohort_id",
+            "assignment_id",
+            "validation_id",
+            "config_hash",
+            "experiment_hash",
+        ],
+        schema="research",
+    )
     op.create_table(
         "evaluation_configs",
         sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
@@ -126,6 +138,24 @@ def upgrade() -> None:
             name="fk_evaluation_epoch_assignment",
         ),
         sa.ForeignKeyConstraint(
+            [
+                "cohort_id",
+                "assignment_id",
+                "validation_id",
+                "config_hash",
+                "experiment_hash",
+            ],
+            [
+                "research.paper_validation_cohort_assignments.cohort_id",
+                "research.paper_validation_cohort_assignments.assignment_id",
+                "research.paper_validation_cohort_assignments.validation_id",
+                "research.paper_validation_cohort_assignments.config_hash",
+                "research.paper_validation_cohort_assignments.experiment_hash",
+            ],
+            ondelete="RESTRICT",
+            name="fk_evaluation_epoch_assignment_identity",
+        ),
+        sa.ForeignKeyConstraint(
             ["cohort_id", "cohort_hash"],
             [
                 "research.paper_validation_cohorts.cohort_id",
@@ -156,6 +186,7 @@ def upgrade() -> None:
             "epoch_id",
             name="uq_evaluation_epoch_lineage",
         ),
+        sa.UniqueConstraint("epoch_id", name="uq_evaluation_epoch_id"),
         sa.UniqueConstraint(
             "epoch_id",
             "assignment_id",
@@ -313,6 +344,15 @@ def upgrade() -> None:
         ),
         sa.UniqueConstraint("evaluation_id", name="uq_evaluation_verdict_evaluation"),
         sa.UniqueConstraint(
+            "evaluation_id",
+            "epoch_id",
+            "assignment_id",
+            "config_hash",
+            "experiment_hash",
+            "cohort_hash",
+            name="uq_evaluation_verdict_full_identity",
+        ),
+        sa.UniqueConstraint(
             "epoch_id",
             "idempotency_key",
             name="uq_evaluation_verdict_idempotency",
@@ -344,6 +384,70 @@ def upgrade() -> None:
         ),
         schema="research",
     )
+    op.create_foreign_key(
+        "fk_evaluation_scorecard_verdict_identity",
+        "evaluation_scorecards",
+        "evaluation_verdicts",
+        [
+            "evaluation_id",
+            "epoch_id",
+            "assignment_id",
+            "config_hash",
+            "experiment_hash",
+            "cohort_hash",
+        ],
+        [
+            "evaluation_id",
+            "epoch_id",
+            "assignment_id",
+            "config_hash",
+            "experiment_hash",
+            "cohort_hash",
+        ],
+        source_schema="research",
+        referent_schema="research",
+        ondelete="RESTRICT",
+        deferrable=True,
+        initially="DEFERRED",
+    )
+    op.execute(
+        """
+        CREATE FUNCTION research.validate_evaluation_completeness()
+        RETURNS trigger AS $$
+        DECLARE target_id text; scorecard_count integer; verdict_count integer;
+        BEGIN
+            target_id := NEW.evaluation_id;
+            SELECT count(*), count(DISTINCT view_name)
+              INTO scorecard_count, verdict_count
+              FROM research.evaluation_scorecards
+             WHERE evaluation_id = target_id;
+            IF scorecard_count <> 3 OR verdict_count <> 3 OR NOT EXISTS (
+                SELECT 1 FROM research.evaluation_scorecards
+                 WHERE evaluation_id = target_id
+                 GROUP BY evaluation_id
+                HAVING array_agg(view_name ORDER BY view_name) =
+                    ARRAY['alpaca_broker','binance_broker','canonical_shadow']::varchar[]
+            ) THEN
+                RAISE EXCEPTION 'evaluation % requires exactly three scorecards',
+                    target_id USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+            SELECT count(*) INTO verdict_count
+              FROM research.evaluation_verdicts WHERE evaluation_id = target_id;
+            IF verdict_count <> 1 THEN
+                RAISE EXCEPTION 'evaluation % requires exactly one verdict',
+                    target_id USING ERRCODE = 'integrity_constraint_violation';
+            END IF;
+            RETURN NEW;
+        END; $$ LANGUAGE plpgsql
+        """
+    )
+    for table in ("evaluation_scorecards", "evaluation_verdicts"):
+        op.execute(
+            f"CREATE CONSTRAINT TRIGGER trg_rob850_{table}_complete "
+            f"AFTER INSERT ON research.{table} DEFERRABLE INITIALLY DEFERRED "
+            "FOR EACH ROW EXECUTE FUNCTION "
+            "research.validate_evaluation_completeness()"
+        )
     op.create_index(
         "ix_evaluation_verdict_epoch",
         "evaluation_verdicts",
@@ -357,6 +461,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute(
+        "DROP FUNCTION IF EXISTS research.validate_evaluation_completeness() CASCADE"
+    )
     for table in reversed(_AUDIT_TABLES):
         op.execute(
             f"DROP TRIGGER IF EXISTS trg_rob850_{table}_truncate_immutable "
@@ -367,17 +474,17 @@ def downgrade() -> None:
         )
     op.execute("DROP FUNCTION IF EXISTS research.reject_evaluation_mutation()")
     op.drop_index(
-        "ix_evaluation_verdict_epoch",
-        table_name="evaluation_verdicts",
-        schema="research",
-    )
-    op.drop_table("evaluation_verdicts", schema="research")
-    op.drop_index(
         "ix_evaluation_scorecard_epoch",
         table_name="evaluation_scorecards",
         schema="research",
     )
     op.drop_table("evaluation_scorecards", schema="research")
+    op.drop_index(
+        "ix_evaluation_verdict_epoch",
+        table_name="evaluation_verdicts",
+        schema="research",
+    )
+    op.drop_table("evaluation_verdicts", schema="research")
     op.drop_index(
         "ix_evaluation_epoch_assignment_started",
         table_name="evaluation_epochs",
@@ -386,3 +493,9 @@ def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS research.ix_evaluation_epoch_cohort_started")
     op.drop_table("evaluation_epochs", schema="research")
     op.drop_table("evaluation_configs", schema="research")
+    op.drop_constraint(
+        "uq_paper_cohort_assignment_evaluation_identity",
+        "paper_validation_cohort_assignments",
+        schema="research",
+        type_="unique",
+    )

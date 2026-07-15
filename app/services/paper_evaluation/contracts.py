@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -25,6 +26,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    field_serializer,
     field_validator,
     model_validator,
 )
@@ -255,28 +257,11 @@ _V1_VIEW_ORDER = (
 )
 
 
-class _FrozenDict(dict[ViewName, object]):
-    """JSON-serializable dict whose mutation surface is disabled."""
-
-    @staticmethod
-    def _immutable(*_args: object, **_kwargs: object) -> None:
-        raise TypeError("evaluation mappings are immutable")
-
-    __setitem__ = _immutable
-    __delitem__ = _immutable
-    clear = _immutable
-    pop = _immutable
-    popitem = _immutable
-    setdefault = _immutable
-    update = _immutable
-    __ior__ = _immutable
-
-
 def _freeze_view_mapping(
     mapping: Mapping[ViewName, object],
 ) -> Mapping[ViewName, object]:
     """Return a deterministic, read-only mapping in canonical view order."""
-    return _FrozenDict({name: mapping[name] for name in _V1_VIEW_ORDER})
+    return MappingProxyType({name: mapping[name] for name in _V1_VIEW_ORDER})
 
 
 class EvaluationConfig(_Frozen):
@@ -366,6 +351,12 @@ class EvaluationConfig(_Frozen):
             self, "initial_equity", _freeze_view_mapping(self.initial_equity)
         )
         return self
+
+    @field_serializer("views", "initial_equity")
+    def serialize_view_mappings(
+        self, value: Mapping[ViewName, object]
+    ) -> dict[ViewName, object]:
+        return dict(value.items())
 
     # ------------------------------------------------------------------
     # Canonical hash
@@ -461,6 +452,12 @@ class EpochIdentity(_Frozen):
             )
         return self
 
+    @field_serializer("initial_equity")
+    def serialize_initial_equity(
+        self, value: Mapping[ViewName, PositiveDecimal]
+    ) -> dict[ViewName, PositiveDecimal]:
+        return dict(value.items())
+
 
 # ---------------------------------------------------------------------------
 # ViewMetrics (computed, per view)
@@ -499,6 +496,7 @@ class ViewMetrics(_Frozen):
 
     # fill / observation counts
     fill_count: int = Field(ge=0)
+    observation_count: int = Field(default=0, ge=0)
     partial_fill_count: int = Field(ge=0)
     missing_observation_count: int = Field(ge=0)
 
@@ -653,6 +651,12 @@ class ScorecardVerdict(_Frozen):
             self, "view_metrics", _freeze_view_mapping(self.view_metrics)
         )
         return self
+
+    @field_serializer("view_metrics")
+    def serialize_view_metrics(
+        self, value: Mapping[ViewName, ViewMetrics]
+    ) -> dict[ViewName, ViewMetrics]:
+        return dict(value.items())
 
     @model_validator(mode="after")
     def validate_aggregate_extrema(self) -> ScorecardVerdict:

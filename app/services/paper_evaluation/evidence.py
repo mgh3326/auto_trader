@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.binance_demo_order_ledger import BinanceDemoOrderLedger
+from app.models.crypto_instruments import CryptoInstrument
 from app.models.paper_cohort import (
     CanonicalMarketSnapshot,
     PaperCohortDecision,
@@ -30,7 +31,13 @@ from app.models.paper_evaluation import EvaluationEpoch as EvaluationEpochRow
 from app.models.paper_validation import PaperValidationStateTransition
 from app.models.review import AlpacaPaperOrderLedger
 from app.services.paper_cohort.market_snapshot import CanonicalSnapshotPayload
-from app.services.paper_cohort.signals import CanonicalTargetSignal
+from app.services.paper_cohort.signals import (
+    CanonicalTargetSignal,
+    SignalComputationInput,
+    VenueQuote,
+    build_would_order_evidence,
+    compute_target_signal,
+)
 from app.services.paper_evaluation.contracts import (
     EpochIdentity,
     EvaluationConfig,
@@ -75,6 +82,8 @@ class ShadowObservation:
     snapshot_id: str
     snapshot_hash: str
     observed_at: datetime
+    candle_open_at: datetime
+    candle_close_at: datetime
     closes: tuple[tuple[str, Decimal], ...]
     opens: tuple[tuple[str, Decimal], ...]
     target_weights: tuple[tuple[str, Decimal], ...]
@@ -243,6 +252,7 @@ class AuthoritativeEvidenceReader:
                 EvaluationEpochRow.cohort_id == assignment.cohort_id,
                 EvaluationEpochRow.assignment_id == assignment.assignment_id,
                 EvaluationEpochRow.validation_id == assignment.validation_id,
+                EvaluationEpochRow.config_hash == assignment.config_hash,
                 EvaluationEpochRow.experiment_hash == assignment.experiment_hash,
                 EvaluationEpochRow.cohort_hash == cohort.cohort_hash,
             )
@@ -273,6 +283,8 @@ class AuthoritativeEvidenceReader:
             reset_reason=epoch_row.reset_reason,
             prior_epoch_id=epoch_row.prior_epoch_id,
         )
+        if _aware_utc(epoch.started_at, "epoch started_at") != paper_start:
+            _fail("epoch_transition_mismatch")
         if dict(epoch.initial_equity) != dict(config.initial_equity):
             _fail("initial_equity_mismatch")
 
@@ -288,6 +300,7 @@ class AuthoritativeEvidenceReader:
             alpaca_marks,
         ) = await self._load_native(
             assignment=assignment,
+            cohort=cohort,
             start=paper_start,
             end=evaluated_at,
         )
@@ -307,11 +320,33 @@ class AuthoritativeEvidenceReader:
                     "paper": [paper_start, evaluated_at],
                 },
                 "shadow": [
-                    [item.snapshot_id, item.snapshot_hash, item.signal_hashes]
+                    [
+                        item.snapshot_id,
+                        item.snapshot_hash,
+                        item.observed_at,
+                        item.candle_open_at,
+                        item.candle_close_at,
+                        item.closes,
+                        item.opens,
+                        item.target_weights,
+                        item.signal_hashes,
+                    ]
                     for item in shadow
                 ],
                 "fills": [
-                    [item.venue, item.native_row_id, item.filled_at]
+                    [
+                        item.venue,
+                        item.native_row_id,
+                        item.symbol,
+                        item.side,
+                        str(item.quantity),
+                        str(item.price),
+                        str(item.fee),
+                        item.partial,
+                        item.filled_at,
+                        item.client_order_id,
+                        item.broker_order_id,
+                    ]
                     for item in (*binance_fills, *alpaca_fills)
                 ],
                 "marks": [
@@ -374,6 +409,7 @@ class AuthoritativeEvidenceReader:
         self,
         *,
         assignment: PaperValidationCohortAssignment,
+        cohort: PaperValidationCohort,
         start: datetime,
         end: datetime,
     ) -> tuple[ShadowObservation, ...]:
@@ -435,14 +471,24 @@ class AuthoritativeEvidenceReader:
                     _fail("signal_hash_mismatch")
             closes: list[tuple[str, Decimal]] = []
             opens: list[tuple[str, Decimal]] = []
+            candle_window: tuple[datetime, datetime] | None = None
             for symbol_payload in payload.symbols:
                 candle = symbol_payload.candles[-1]
+                current_window = (
+                    _aware_utc(candle.open_time, "candle open"),
+                    _aware_utc(candle.close_time, "candle close"),
+                )
+                if candle_window is not None and current_window != candle_window:
+                    _fail("cross_wired_evidence", "shadow candle windows differ")
+                candle_window = current_window
                 closes.append(
                     (symbol_payload.symbol, _positive_decimal(candle.close, "close"))
                 )
                 opens.append(
                     (symbol_payload.symbol, _positive_decimal(candle.open, "open"))
                 )
+            if candle_window is None:
+                _fail("malformed_evidence", "shadow snapshot has no candles")
             observations.append(
                 ShadowObservation(
                     snapshot_id=snapshot.snapshot_id,
@@ -450,6 +496,8 @@ class AuthoritativeEvidenceReader:
                     observed_at=_aware_utc(
                         snapshot.capture_completed_at, "snapshot time"
                     ),
+                    candle_open_at=candle_window[0],
+                    candle_close_at=candle_window[1],
                     closes=tuple(sorted(closes)),
                     opens=tuple(sorted(opens)),
                     target_weights=tuple(
@@ -472,6 +520,7 @@ class AuthoritativeEvidenceReader:
         self,
         *,
         assignment: PaperValidationCohortAssignment,
+        cohort: PaperValidationCohort,
         start: datetime,
         end: datetime,
     ) -> tuple[
@@ -504,6 +553,8 @@ class AuthoritativeEvidenceReader:
                 .where(
                     PaperRunOrderLink.cohort_id == assignment.cohort_id,
                     PaperRunOrderLink.assignment_id == assignment.assignment_id,
+                    PaperRunOrderLink.created_at >= start,
+                    PaperRunOrderLink.created_at <= end,
                 )
             )
         ).all()
@@ -532,6 +583,82 @@ class AuthoritativeEvidenceReader:
             )
             if not all(exact):
                 _fail("cross_wired_evidence")
+            try:
+                snapshot_payload = CanonicalSnapshotPayload.model_validate(
+                    snapshot.payload
+                )
+                signal = CanonicalTargetSignal.model_validate(decision.signal_payload)
+                recomputed_signal = compute_target_signal(
+                    snapshot_payload,
+                    SignalComputationInput(
+                        cohort_id=cohort.cohort_id,
+                        assignment_id=assignment.assignment_id,
+                        experiment_id=assignment.experiment_id,
+                        strategy_version_id=assignment.strategy_version_id,
+                        strategy_hash=assignment.strategy_hash,
+                        config_hash=assignment.config_hash,
+                        policy_hash=assignment.policy_hash,
+                        symbol=decision.symbol,
+                        target_weight=Decimal(
+                            assignment.target_weights[decision.symbol]
+                        ),
+                        capital_notional_usd=cohort.capital_notional_usd,
+                    ),
+                )
+                quote_payload = intent.venue_quote_evidence
+
+                def optional_decimal(
+                    name: str, payload: dict[str, object] = quote_payload
+                ) -> Decimal | None:
+                    value = payload.get(name)
+                    return (
+                        None
+                        if value in (None, "not_applicable")
+                        else Decimal(str(value))
+                    )
+
+                quote = VenueQuote(
+                    venue=str(quote_payload["venue"]),  # type: ignore[arg-type]
+                    symbol=str(quote_payload["symbol"]),
+                    bid_price=Decimal(str(quote_payload["bid_price"])),
+                    ask_price=Decimal(str(quote_payload["ask_price"])),
+                    bid_qty=Decimal(str(quote_payload["bid_qty"])),
+                    ask_qty=Decimal(str(quote_payload["ask_qty"])),
+                    fetched_at=datetime.fromisoformat(
+                        str(quote_payload["fetched_at"]).replace("Z", "+00:00")
+                    ),
+                    qty_increment=optional_decimal("qty_increment"),
+                    min_qty=optional_decimal("min_qty"),
+                    min_notional=optional_decimal("min_notional"),
+                )
+                recomputed_would_order = build_would_order_evidence(
+                    recomputed_signal, quote
+                )
+            except (ArithmeticError, KeyError, TypeError, ValueError):
+                _fail("malformed_evidence")
+            if (
+                snapshot_payload.recomputed_content_hash() != snapshot.content_hash
+                or signal.recomputed_signal_hash() != decision.signal_hash
+                or signal.signal_hash != decision.signal_hash
+                or signal.assignment_id != assignment.assignment_id
+                or signal.cohort_id != assignment.cohort_id
+                or signal.config_hash != assignment.config_hash
+                or signal.experiment_id != assignment.experiment_id
+                or Decimal(signal.target_weight)
+                != Decimal(assignment.target_weights[signal.symbol])
+                or canonical_sha256(intent.request_payload) != intent.request_hash
+                or signal != recomputed_signal
+                or intent.venue_quote_evidence != recomputed_would_order.quote_evidence
+                or intent.would_order_evidence.get("reason_code")
+                != recomputed_would_order.reason_code
+                or intent.would_order_evidence.get("order")
+                != recomputed_would_order.order
+                or intent.request_payload.get("order") != recomputed_would_order.order
+                or snapshot_payload.snapshot_id != snapshot.snapshot_id
+                or snapshot_payload.run_id != snapshot.run_id
+                or snapshot_payload.round_decision_id != snapshot.round_decision_id
+            ):
+                _fail("lineage_hash_mismatch")
             key = (link.native_ledger_kind, link.native_ledger_row_id)
             if key in native_keys:
                 _fail("duplicate_evidence")
@@ -543,15 +670,26 @@ class AuthoritativeEvidenceReader:
                 row = await self._session.get(
                     BinanceDemoOrderLedger, link.native_ledger_row_id
                 )
+                instrument = (
+                    None
+                    if row is None
+                    else await self._session.get(CryptoInstrument, row.instrument_id)
+                )
                 if (
                     row is None
+                    or instrument is None
+                    or instrument.symbol != link.symbol
                     or row.client_order_id != link.client_order_id
                     or str(row.broker_order_id) != link.broker_order_id
+                    or row.lifecycle_state not in {"filled", "closed", "reconciled"}
                 ):
                     _fail("cross_wired_evidence", "linked Binance row mismatch")
                 filled_at = row.filled_at
                 metadata = row.extra_metadata or {}
-                qty, price = metadata.get("filled_qty", row.qty), row.price
+                qty = metadata.get("filled_qty", row.qty)
+                price = metadata.get(
+                    "filled_avg_price", metadata.get("fill_price", row.price)
+                )
                 fee = metadata.get("fee_usdt")
                 partial = bool(metadata.get("is_partial_fill", False))
                 side = row.side.lower()
@@ -563,6 +701,15 @@ class AuthoritativeEvidenceReader:
                     row is None
                     or row.client_order_id != link.client_order_id
                     or str(row.broker_order_id) != link.broker_order_id
+                    or row.execution_symbol != mark.symbol
+                    or row.record_kind != "execution"
+                    or row.lifecycle_state
+                    not in {
+                        "filled",
+                        "position_reconciled",
+                        "closed",
+                        "final_reconciled",
+                    }
                 ):
                     _fail("cross_wired_evidence", "linked Alpaca row mismatch")
                 filled_at = _alpaca_filled_at(row.raw_responses)
@@ -577,7 +724,7 @@ class AuthoritativeEvidenceReader:
                     and row.filled_qty is not None
                     and Decimal(str(row.filled_qty)) < Decimal(str(row.requested_qty))
                 )
-                if row.currency != "USD":
+                if row.currency != "USD" or row.fee_currency not in {None, "USD"}:
                     _fail("currency_mismatch")
             if filled_at is None:
                 _fail("missing_evidence", f"{link.venue} fill timestamp missing")

@@ -239,10 +239,20 @@ def test_mdd_target_mismatch_with_thresholds_rejected() -> None:
 
 def test_config_mappings_are_deeply_immutable() -> None:
     config = make_evaluation_config()
+    assert not isinstance(config.views, dict)
+    assert not isinstance(config.initial_equity, dict)
     with pytest.raises(TypeError):
         config.views[ViewName.BINANCE_BROKER] = config.views[ViewName.ALPACA_BROKER]  # type: ignore[index]
     with pytest.raises(TypeError):
         config.initial_equity[ViewName.BINANCE_BROKER] = Decimal("1")  # type: ignore[index]
+    with pytest.raises(TypeError):
+        dict.__setitem__(  # type: ignore[arg-type]
+            config.views,
+            ViewName.BINANCE_BROKER,
+            config.views[ViewName.ALPACA_BROKER],
+        )
+    with pytest.raises(AttributeError):
+        config.views._items = ()  # type: ignore[attr-defined]
 
 
 def test_config_json_roundtrip_preserves_hash_and_immutability() -> None:

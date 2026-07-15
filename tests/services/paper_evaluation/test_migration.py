@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import subprocess
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import asyncpg
@@ -18,6 +21,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.core.config import settings
+from app.core.db import AsyncSessionLocal
 from app.models.base import Base
 from app.models.paper_cohort import (
     PaperValidationCohort,
@@ -30,6 +34,9 @@ from app.models.paper_evaluation import (
     EvaluationVerdict,
 )
 from app.models.research_backtest import ResearchBacktestRun, ResearchStrategyExperiment
+from app.services.paper_evaluation.service import PaperEvaluationService, _request_hash
+from tests.services.paper_evaluation.conftest import make_evaluation_config
+from tests.services.paper_evaluation.test_integration import make_evidence
 
 pytestmark = pytest.mark.integration
 
@@ -68,6 +75,7 @@ def test_migration_defines_all_tables_and_key_constraints() -> None:
         "evaluation_scorecards",
         "evaluation_verdicts",
         "uq_evaluation_config_hash",
+        "uq_evaluation_epoch_id",
         "uq_evaluation_epoch_identity",
         "uq_evaluation_epoch_lineage",
         "uq_evaluation_epoch_start",
@@ -76,10 +84,12 @@ def test_migration_defines_all_tables_and_key_constraints() -> None:
         "uq_evaluation_verdict_idempotency",
         "fk_evaluation_epoch_cohort",
         "fk_evaluation_epoch_assignment",
+        "fk_evaluation_epoch_assignment_identity",
         "fk_evaluation_epoch_cohort_lineage",
         "fk_evaluation_epoch_prior_lineage",
         "fk_evaluation_epoch_config",
         "fk_evaluation_scorecard_epoch_identity",
+        "fk_evaluation_scorecard_verdict_identity",
         "fk_evaluation_verdict_epoch_identity",
         "ck_evaluation_scorecard_view_currency_consistency",
         "ck_evaluation_verdict_status",
@@ -166,8 +176,31 @@ async def test_evaluation_tables_update_delete_and_truncate_are_rejected(
     db_session: AsyncSession,
 ) -> None:
     nonce = uuid4().hex
+    unique_config = make_evaluation_config(
+        min_observations=int(nonce[:8], 16) + 1,
+        min_fills=1,
+        min_calendar_days=7,
+        fill_timing="canonical_close",
+    )
+    base_evidence = make_evidence()
+    evidence_template = replace(
+        base_evidence,
+        config=unique_config,
+        epoch=base_evidence.epoch.model_copy(
+            update={
+                "config_hash": unique_config.config_hash(),
+                "initial_equity": unique_config.initial_equity,
+            }
+        ),
+    )
+    config_hash = evidence_template.config.config_hash()
+    experiment_hash = _hash(f"{nonce}:experiment")
+    cohort_hash = _hash(nonce)
+    epoch_id = f"epoch-{nonce}"
+    assignment_id = f"assignment-{nonce}"
+    validation_id = f"validation-{nonce}"
     experiment = ResearchStrategyExperiment(
-        experiment_id=_hash(f"{nonce}:experiment"),
+        experiment_id=experiment_hash,
         strategy_key=f"strategy-{nonce}",
         strategy_version="strategy-v1",
         strategy_hash=_hash(f"{nonce}:strategy"),
@@ -176,7 +209,7 @@ async def test_evaluation_tables_update_delete_and_truncate_are_rejected(
         dataset_manifest_hash=_hash(f"{nonce}:dataset"),
         universe_hash=_hash(f"{nonce}:universe"),
         pit_hash=_hash(f"{nonce}:pit"),
-        frozen_config_hash=_hash(f"{nonce}:config"),
+        frozen_config_hash=config_hash,
         policy_hash=_hash(f"{nonce}:policy"),
         benchmark_hash=_hash(f"{nonce}:benchmark"),
         cost_hash=_hash(f"{nonce}:cost"),
@@ -205,7 +238,7 @@ async def test_evaluation_tables_update_delete_and_truncate_are_rejected(
 
     cohort = PaperValidationCohort(
         cohort_id=f"cohort-{nonce}",
-        cohort_hash=_hash(nonce),
+        cohort_hash=cohort_hash,
         venues=["binance", "alpaca"],
         symbols=["BTCUSDT", "ETHUSDT"],
         market="spot",
@@ -221,11 +254,11 @@ async def test_evaluation_tables_update_delete_and_truncate_are_rejected(
     db_session.add(cohort)
     db_session.add(
         PaperValidationCohortAssignment(
-            assignment_id=f"assignment-{nonce}",
+            assignment_id=assignment_id,
             cohort_id=cohort.cohort_id,
             ordinal=0,
             role="champion",
-            validation_id=f"validation-{nonce}",
+            validation_id=validation_id,
             validation_version=1,
             experiment_id=experiment.experiment_id,
             source_backtest_run_id=run.id,
@@ -241,29 +274,28 @@ async def test_evaluation_tables_update_delete_and_truncate_are_rejected(
     await db_session.flush()
 
     config = EvaluationConfig(
-        config_hash=experiment.frozen_config_hash,
+        config_hash=config_hash,
         schema_id="paper_evaluation_config.v1",
         formula_version="v1",
         currency_conversion_policy="none",
-        payload={"schema_id": "paper_evaluation_config.v1"},
+        payload=json.loads(evidence_template.config.model_dump_json()),
     )
     db_session.add(config)
     await db_session.flush()
 
     epoch = EvaluationEpoch(
-        epoch_id=f"epoch-{nonce}",
-        assignment_id=f"assignment-{nonce}",
-        validation_id=f"validation-{nonce}",
+        epoch_id=epoch_id,
+        assignment_id=assignment_id,
+        validation_id=validation_id,
         cohort_id=cohort.cohort_id,
         config_hash=config.config_hash,
         initial_equity={
-            "binance_broker": "10000",
-            "alpaca_broker": "10000",
-            "canonical_shadow": "10000",
+            name.value: str(amount)
+            for name, amount in evidence_template.config.initial_equity.items()
         },
-        started_at=datetime.now(UTC),
-        experiment_hash=experiment.experiment_id,
-        cohort_hash=cohort.cohort_hash,
+        started_at=evidence_template.paper_window.start,
+        experiment_hash=experiment_hash,
+        cohort_hash=cohort_hash,
     )
     db_session.add(epoch)
     await db_session.flush()
@@ -366,6 +398,132 @@ async def test_evaluation_tables_update_delete_and_truncate_are_rejected(
     scorecard_pk = scorecard.id
     verdict_pk = verdict.id
     await db_session.commit()
+
+    race_evidence = replace(
+        evidence_template,
+        epoch=evidence_template.epoch.model_copy(
+            update={
+                "epoch_id": epoch_id,
+                "assignment_id": assignment_id,
+                "validation_id": validation_id,
+                "cohort_id": cohort.cohort_id,
+                "config_hash": config_hash,
+                "experiment_hash": experiment_hash,
+                "cohort_hash": cohort_hash,
+            }
+        ),
+        manifest_hash=_hash(f"{nonce}:race-manifest"),
+    )
+    bootstrap = PaperEvaluationService(AsyncMock())  # type: ignore[arg-type]
+    bootstrap._find_existing = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    bootstrap._persist_evaluation = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda **kwargs: kwargs["verdict"]
+    )
+    bootstrap._evidence_reader = AsyncMock()
+    bootstrap._evidence_reader.load.return_value = race_evidence
+    local_verdict = await bootstrap.evaluate(
+        validation_id=validation_id,
+        idempotency_key=f"race-{nonce}",
+        evaluated_at=race_evidence.paper_window.end,
+    )
+    request_hash = _request_hash(race_evidence)
+    barrier = asyncio.Barrier(2)
+
+    async def contender(label: str):
+        async with AsyncSessionLocal() as session, session.begin():
+            unrelated_hash = _hash(f"{nonce}:unrelated:{label}")
+            session.add(
+                EvaluationConfig(
+                    config_hash=unrelated_hash,
+                    schema_id="paper_evaluation_config.v1",
+                    formula_version="v1",
+                    currency_conversion_policy="none",
+                    payload={"label": label},
+                )
+            )
+            await barrier.wait()
+            return await PaperEvaluationService(session)._persist_evaluation(
+                verdict=local_verdict.model_copy(
+                    update={"reason_text": f"persisted candidate {label}"}
+                ),
+                evidence=race_evidence,
+                idempotency_key=f"race-{nonce}",
+                request_hash=request_hash,
+            )
+
+    first_result, second_result = await asyncio.gather(
+        contender("first"), contender("second")
+    )
+    persisted_race = await db_session.scalar(
+        select(EvaluationVerdict).where(
+            EvaluationVerdict.epoch_id == epoch_id,
+            EvaluationVerdict.idempotency_key == f"race-{nonce}",
+        )
+    )
+    assert persisted_race is not None
+    assert (
+        first_result.reason_text
+        == second_result.reason_text
+        == persisted_race.verdict_payload["reason_text"]
+    )
+    assert (
+        await db_session.scalar(
+            select(func.count(EvaluationScorecard.id)).where(
+                EvaluationScorecard.evaluation_id == persisted_race.evaluation_id
+            )
+        )
+        == 3
+    )
+    assert (
+        await db_session.scalar(
+            select(func.count(EvaluationConfig.id)).where(
+                EvaluationConfig.config_hash.in_(
+                    (
+                        _hash(f"{nonce}:unrelated:first"),
+                        _hash(f"{nonce}:unrelated:second"),
+                    )
+                )
+            )
+        )
+        == 2
+    )
+
+    incomplete_id = _hash(f"{nonce}:incomplete")
+    async with AsyncSessionLocal() as incomplete_session:
+        for view_name, currency in (
+            ("binance_broker", "USDT"),
+            ("alpaca_broker", "USD"),
+        ):
+            incomplete_session.add(
+                EvaluationScorecard(
+                    evaluation_id=incomplete_id,
+                    epoch_id=epoch_id,
+                    assignment_id=assignment_id,
+                    config_hash=config_hash,
+                    view_name=view_name,
+                    currency=currency,
+                    experiment_hash=experiment_hash,
+                    cohort_hash=cohort_hash,
+                    metrics={},
+                )
+            )
+        incomplete_session.add(
+            EvaluationVerdict(
+                evaluation_id=incomplete_id,
+                epoch_id=epoch_id,
+                assignment_id=assignment_id,
+                config_hash=config_hash,
+                idempotency_key=f"incomplete-{nonce}",
+                request_hash=_hash(f"{nonce}:incomplete-request"),
+                verdict_status="insufficient_evidence",
+                verdict_payload={},
+                experiment_hash=experiment_hash,
+                cohort_hash=cohort_hash,
+            )
+        )
+        with pytest.raises(DBAPIError, match="exactly three scorecards"):
+            await incomplete_session.commit()
+        await incomplete_session.rollback()
 
     for suffix, prior_epoch_id in (
         ("self", f"epoch-{nonce}-self"),

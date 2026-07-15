@@ -17,6 +17,7 @@ from app.services.paper_evaluation.evidence import (
     NativeMark,
     ShadowObservation,
 )
+from app.services.paper_evaluation.pnl import PaperEvaluationPnL
 from app.services.paper_evaluation.service import (
     PaperEvaluationService,
     _request_hash,
@@ -99,6 +100,8 @@ def make_evidence(*, evaluated_at: datetime | None = None) -> EvaluationEvidence
             snapshot_id="snapshot-1",
             snapshot_hash=stable_hash("snapshot-1"),
             observed_at=shadow_start,
+            candle_open_at=shadow_start - timedelta(minutes=1),
+            candle_close_at=shadow_start,
             closes=(("BTCUSDT", Decimal("100")), ("ETHUSDT", Decimal("100"))),
             opens=(("BTCUSDT", Decimal("100")), ("ETHUSDT", Decimal("100"))),
             target_weights=(("BTCUSDT", Decimal("0.5")), ("ETHUSDT", Decimal("0.5"))),
@@ -108,6 +111,8 @@ def make_evidence(*, evaluated_at: datetime | None = None) -> EvaluationEvidence
             snapshot_id="snapshot-2",
             snapshot_hash=stable_hash("snapshot-2"),
             observed_at=paper_start - timedelta(minutes=1),
+            candle_open_at=paper_start - timedelta(minutes=2),
+            candle_close_at=paper_start - timedelta(minutes=1),
             closes=(("BTCUSDT", Decimal("110")), ("ETHUSDT", Decimal("110"))),
             opens=(("BTCUSDT", Decimal("110")), ("ETHUSDT", Decimal("110"))),
             target_weights=(("BTCUSDT", Decimal("0.5")), ("ETHUSDT", Decimal("0.5"))),
@@ -177,3 +182,29 @@ def test_request_hash_covers_time_identity_gates_config_and_manifest() -> None:
     assert _request_hash(first) != _request_hash(later)
     changed_manifest = replace(first, manifest_hash=stable_hash("other"))
     assert _request_hash(first) != _request_hash(changed_manifest)
+
+
+def test_zero_delta_shadow_observations_are_not_fills() -> None:
+    evidence = make_evidence()
+    observations = tuple(
+        replace(
+            item,
+            target_weights=(
+                ("BTCUSDT", Decimal("0")),
+                ("ETHUSDT", Decimal("0")),
+            ),
+        )
+        for item in evidence.shadow_observations
+    )
+    pnl = PaperEvaluationPnL(
+        evidence.config,
+        evidence.epoch,
+        experiment_hash=evidence.epoch.experiment_hash,
+        cohort_hash=evidence.epoch.cohort_hash,
+    )
+    metrics = pnl.compute_shadow_evidence_view(
+        observations=observations,
+        window=evidence.shadow_window,
+    )
+    assert metrics.fill_count == 0
+    assert metrics.observation_count == 2
