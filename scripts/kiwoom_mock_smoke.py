@@ -143,7 +143,7 @@ def _tools() -> dict[str, Any]:
 
 def _emit(payload: dict[str, Any]) -> None:
     # Mock-only payloads; no secrets ever flow through these responses.
-    print(json.dumps(_sanitize_untrusted(payload), ensure_ascii=False, default=str))
+    print(json.dumps(payload, ensure_ascii=False, default=str))
 
 
 async def run_preflight() -> dict[str, Any]:
