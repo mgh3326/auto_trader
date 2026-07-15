@@ -13,11 +13,13 @@ ROB-714 mints provenance keys at place-time.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timezone import now_kst
 from app.models.investment_reports import InvestmentReportItem
 from app.models.review import (
     KISLiveOrderLedger,
@@ -26,6 +28,7 @@ from app.models.review import (
     TossLiveOrderLedger,
     TradeForecast,
     TradeRetrospective,
+    TradeRetrospectiveAction,
 )
 from app.services.trade_journal.forecast_service import (
     _normalize_symbol_for_filter,
@@ -42,6 +45,14 @@ MAX_CLAIMS = 5
 _TRUNC = 220
 _SMOKE_TOKENS = ("smoke",)
 _MAX_TAGS = 3
+
+# ROB-884 — bounded open_actions budget
+MAX_OPEN_ACTIONS = 5
+ACTION_TEXT_LIMIT = 220
+OWNER_LIMIT = 80
+ISSUE_ID_LIMIT = 32
+OPEN_ACTIONS_BYTE_BUDGET = 3072
+_ACTIVE_ACTION_STATUSES = ("open", "in_progress")
 _R_KEYS = (
     "n",
     "expectancy_r",
@@ -72,6 +83,12 @@ def _truncate(text: str | None, limit: int = _TRUNC) -> str | None:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _truncate_field(value: str | None, limit: int) -> str | None:
+    if value is None:
+        return None
+    return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
 async def build_decision_context(
     db: AsyncSession,
     symbol: str,
@@ -92,8 +109,11 @@ async def build_decision_context(
     lessons, outcomes = await _retrospectives(db, norm, account_mode)
     fills = await _recent_fills(db, norm, account_mode)
     open_claims = await _open_claims(db, norm)
+    open_actions, open_actions_meta = await _open_actions(db, norm, account_mode)
 
-    if not (prior_decisions or lessons or outcomes or fills or open_claims):
+    if not (
+        prior_decisions or lessons or outcomes or fills or open_claims or open_actions
+    ):
         return None  # no signal — omit the field entirely
 
     brier_symbol = _fold_brier(
@@ -116,6 +136,8 @@ async def build_decision_context(
         "running_brier_symbol": brier_symbol,
         "running_brier_global": brier_global,
         "realized_r_by_tag": realized_r,
+        "open_actions": open_actions,
+        "open_actions_meta": open_actions_meta,
     }
     return ctx
 
@@ -207,14 +229,26 @@ def _is_mock_counterfactual_retrospective_clause():
     )
 
 
+def _visibility_predicate(account_mode: str | None):
+    """Shared retrospective visibility clause for lessons, outcomes, and actions.
+
+    - ``kis_mock``: exact ``account_mode == 'kis_mock'`` only.
+    - default (None or other): exclude mock-counterfactual cohort; non-counterfactual
+      ``kis_mock`` retrospectives remain visible.
+    """
+    if account_mode == "kis_mock":
+        return TradeRetrospective.account_mode == "kis_mock"
+    return ~_is_mock_counterfactual_retrospective_clause()
+
+
 async def _retrospectives(
     db: AsyncSession, symbol: str, account_mode: str | None = None
 ) -> tuple[list[str], list[dict[str, Any]]]:
-    stmt = select(TradeRetrospective).where(TradeRetrospective.symbol == symbol)
-    if account_mode == "kis_mock":
-        stmt = stmt.where(TradeRetrospective.account_mode == "kis_mock")
-    else:
-        stmt = stmt.where(~_is_mock_counterfactual_retrospective_clause())
+    stmt = (
+        select(TradeRetrospective)
+        .where(TradeRetrospective.symbol == symbol)
+        .where(_visibility_predicate(account_mode))
+    )
     rows = (
         (await db.execute(stmt.order_by(TradeRetrospective.created_at.desc())))
         .scalars()
@@ -360,3 +394,105 @@ async def _open_claims(db: AsyncSession, symbol: str) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+async def _open_actions(
+    db: AsyncSession, symbol: str, account_mode: str | None = None
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """ROB-884 — query bounded active retrospective actions for decision context.
+
+    Reads from the canonical child ledger (``TradeRetrospectiveAction``)
+    joined with the parent retrospective for visibility filtering. Returns
+    ``(items, meta)`` where every compact item has exactly:
+    ``action_id``, ``action``, ``status``, ``owner``, ``issue_id``,
+    ``due_kst_date``, ``overdue``.
+
+    Ordering: overdue → in_progress → due ASC NULLS LAST → updated_at DESC → id ASC.
+    Budget: max 5 items, action 220c / owner 80c / issue 32c, JSON ≤ 3072 B UTF-8.
+    """
+    today_kst = now_kst().date()
+
+    overdue_expr = and_(
+        TradeRetrospectiveAction.status.in_(_ACTIVE_ACTION_STATUSES),
+        TradeRetrospectiveAction.due_kst_date.isnot(None),
+        TradeRetrospectiveAction.due_kst_date < today_kst,
+    )
+
+    stmt = (
+        select(TradeRetrospectiveAction, TradeRetrospective)
+        .join(
+            TradeRetrospective,
+            TradeRetrospectiveAction.retrospective_id == TradeRetrospective.id,
+        )
+        .where(TradeRetrospective.symbol == symbol)
+        .where(TradeRetrospectiveAction.status.in_(_ACTIVE_ACTION_STATUSES))
+        .where(_visibility_predicate(account_mode))
+        .order_by(
+            case((overdue_expr, 0), else_=1),
+            case((TradeRetrospectiveAction.status == "in_progress", 0), else_=1),
+            TradeRetrospectiveAction.due_kst_date.asc().nullslast(),
+            TradeRetrospectiveAction.updated_at.desc(),
+            TradeRetrospectiveAction.id.asc(),
+        )
+    )
+
+    rows = (await db.execute(stmt)).all()
+
+    items: list[dict[str, Any]] = []
+    truncated = False
+
+    for action, retro in rows:
+        if _is_smoke(
+            retro.created_by_profile, retro.strategy_key, retro.correlation_id
+        ):
+            continue
+
+        orig_action = action.action or ""
+        orig_owner = action.owner or ""
+        orig_issue = action.issue_id or ""
+        if len(orig_action) > ACTION_TEXT_LIMIT:
+            truncated = True
+        if len(orig_owner) > OWNER_LIMIT:
+            truncated = True
+        if len(orig_issue) > ISSUE_ID_LIMIT:
+            truncated = True
+
+        is_overdue = (
+            action.status in _ACTIVE_ACTION_STATUSES
+            and action.due_kst_date is not None
+            and action.due_kst_date < today_kst
+        )
+
+        items.append(
+            {
+                "action_id": str(action.id),
+                "action": _truncate_field(action.action, ACTION_TEXT_LIMIT),
+                "status": action.status,
+                "owner": _truncate_field(action.owner, OWNER_LIMIT),
+                "issue_id": _truncate_field(action.issue_id, ISSUE_ID_LIMIT),
+                "due_kst_date": (
+                    action.due_kst_date.isoformat() if action.due_kst_date else None
+                ),
+                "overdue": is_overdue,
+            }
+        )
+
+    if len(items) > MAX_OPEN_ACTIONS:
+        items = items[:MAX_OPEN_ACTIONS]
+        truncated = True
+
+    while items:
+        payload = json.dumps(items, ensure_ascii=False).encode("utf-8")
+        if len(payload) <= OPEN_ACTIONS_BYTE_BUDGET:
+            break
+        items.pop()
+        truncated = True
+
+    meta = {
+        "authority": "historical_advisory",
+        "executable": False,
+        "count": len(items),
+        "truncated": truncated,
+    }
+
+    return items, meta
