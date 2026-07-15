@@ -64,7 +64,9 @@ describe("DaySection (ROB-185)", () => {
       />,
     );
     expect(within(screen.getByTestId("calendar-day-section")).getAllByTestId("calendar-event")).toHaveLength(2);
-    expect(screen.getByTestId("calendar-cluster")).toBeInTheDocument();
+    // ROB-186 replaced the aggregate ClusterRow with ClusterEventRows: a cluster
+    // whose count exceeds its topEvents renders the overflow indicator row.
+    expect(screen.getByTestId("calendar-cluster-overflow")).toBeInTheDocument();
   });
 
   test("applies data-selected='true' when selected, default 'false' otherwise", () => {
