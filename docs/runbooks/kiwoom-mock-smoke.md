@@ -32,12 +32,16 @@ these boundaries:
 - **ROB-460 — account-cash reads의 `dmst_stex_tp`:** 2026-06-09 live에서
   `kiwoom_mock_get_positions`/`get_orderable_cash`가 `return_code 2`
   (필수입력 파라미터=`dmst_stex_tp`, 국내거래소구분)로 재실패했다. account-cash
-  reads **kt00018(잔고) + kt00010(주문가능, with-symbol)** 의 요청 본문에
-  `dmst_stex_tp="KRX"`를 채운다. 이 값은 order 엔드포인트(kt10000-kt10003)에서 이미
-  검증된 값(추측 아님)이며 mock은 KRX 전용이다. **경계 결정:** order-history reads
+  reads 중 **kt00018(잔고)** 의 요청 본문에만 `dmst_stex_tp="KRX"`를 채운다.
+  이 값은 order 엔드포인트(kt10000-kt10003)에서 이미 검증된 값(추측 아님)이며
+  mock은 KRX 전용이다. **경계 결정:** kt00010(주문가능, with-symbol)은
+  `stk_cd`/`trde_tp`/`uv`만 보내고 `dmst_stex_tp`를 보내지 않는다. order-history reads
   **kt00009/kt00007**는 의도적으로 미변경 — 이미 ROB-418로 복구됐고 `dmst_stex_tp`
   필요가 입증되지 않았다(작동 중인 엔드포인트에 추측 파라미터를 더해 회귀시키지 않음).
   아래 smoke 체크리스트로 4개 read 도구를 한 번에 검증하여 잔여 누락을 선제 포착한다.
+- **ROB-899 — confirmed place preflight/dispatch client reuse:** confirmed place는
+  preflight와 broker POST가 하나의 request-scoped `KiwoomMockClient`를 재사용하며,
+  pre-dispatch 실패는 구조화된 redacted error로만 surface된다.
 - **`dry_run=False` requires `confirm=True`** on every order-mutating tool.
 - **No live anything.** No KIS live, Kiwoom live, Alpaca live, or real-money
   calls. No scheduler / recurring automation.
@@ -132,7 +136,6 @@ stays deferred). To pick a conservative buy limit well below market that will
 
 > **주의:** kt00001은 `qry_tp=2`만 요구하며 **`dmst_stex_tp`를 보내지 않는다**.
 > kt00010은 `stk_cd`/`trde_tp`/`uv`만 요구하며 **`dmst_stex_tp`를 보내지 않는다**.
-> 기존 런타임 코드가 `dmst_stex_tp`를 추가로 보내는 것은 ROB-891에서 교정 중이다.
 
 ### TR 역할 구분
 
@@ -197,7 +200,9 @@ uv run python -m scripts.kiwoom_mock_smoke --mode contract
 ```
 
 **출력 금지**: token, secret, Authorization header, account number, credential 원문,
-전체 raw request/response. `return_msg`에 민감 패턴이 감지되면 `[SANITIZED]`로 치환.
+전체 raw request/response. `return_msg` 뿐 아니라 `return_code`, `error_code`,
+`error_detail`, provenance의 free-form field, exception text 등 모든 비신뢰 문자열은
+재귀적으로 redaction되어 `[SANITIZED]`로 치환된다.
 
 ### 안전장치
 
@@ -216,7 +221,7 @@ uv run python -m scripts.kiwoom_mock_smoke --mode contract
 1. sweep 출력의 `deploy_sha` 필드를 확인한다.
 2. `git rev-parse --short HEAD`로 실제 배포 SHA와 비교한다.
 3. SHA가 다르면 sweep 결과가 해당 배포의 증거가 아니다 — 재배포 후 재실행.
-4. ROB-891/ROB-893 PR이 merge된 커밋 이후의 SHA인지 확인한다.
+4. ROB-891/ROB-899 PR이 merge된 커밋 이후의 SHA인지 확인한다.
 
 ### Stop conditions
 

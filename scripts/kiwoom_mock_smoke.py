@@ -40,7 +40,7 @@ import contextlib
 import json
 import re
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
@@ -72,6 +72,18 @@ _TOKEN_FORMAT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"access(?:[_ -]?token)?\s*[:=]\s*\S+", re.IGNORECASE),
     re.compile(
         r"\b[A-Z0-9._-]*(?:bearer|token|authorization)[A-Z0-9._-]*\b", re.IGNORECASE
+    ),
+    re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9._-]+\.[A-Za-z0-9._-]+\b"),
+)
+_ACCOUNT_FORMAT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b\d{2,6}(?:-\d{1,6}){1,4}\b"),
+    re.compile(
+        r"(?:계좌(?:번호)?|계좌\s*no|account(?:\s*_?no)?|acct(?:\s*_?no)?)\s*[:=]?\s*\S+",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b[A-Z0-9._-]*(?:secret|app[_ -]?key|app[_ -]?secret|account[_ -]?no|acct)[A-Z0-9._-]*\b",
+        re.IGNORECASE,
     ),
 )
 
@@ -131,7 +143,7 @@ def _tools() -> dict[str, Any]:
 
 def _emit(payload: dict[str, Any]) -> None:
     # Mock-only payloads; no secrets ever flow through these responses.
-    print(json.dumps(payload, ensure_ascii=False, default=str))
+    print(json.dumps(_sanitize_untrusted(payload), ensure_ascii=False, default=str))
 
 
 async def run_preflight() -> dict[str, Any]:
@@ -300,7 +312,7 @@ def _sanitize_return_code(rc: Any) -> str | int | None:
     rc_str = str(rc).strip()
     if rc_str.isdigit():
         return int(rc_str)
-    return rc_str[:20] if rc_str else None
+    return _sanitize_free_form_text(rc_str) if rc_str else None
 
 
 def _configured_sensitive_values() -> frozenset[str]:
@@ -316,10 +328,10 @@ def _configured_sensitive_values() -> frozenset[str]:
     return frozenset(values)
 
 
-def _sanitize_return_msg(msg: Any) -> str:
-    if msg is None:
+def _sanitize_free_form_text(value: Any) -> str:
+    if value is None:
         return ""
-    text = str(msg).strip()
+    text = str(value).strip()
     if not text:
         return ""
     for val in _configured_sensitive_values():
@@ -328,9 +340,28 @@ def _sanitize_return_msg(msg: Any) -> str:
     for pattern in _TOKEN_FORMAT_PATTERNS:
         if pattern.search(text):
             return "[SANITIZED]"
+    for pattern in _ACCOUNT_FORMAT_PATTERNS:
+        if pattern.search(text):
+            return "[SANITIZED]"
     if _SENSITIVE_DIGIT_RUN.search(text):
         return "[SANITIZED]"
     return text[:200]
+
+
+def _sanitize_return_msg(msg: Any) -> str:
+    return _sanitize_free_form_text(msg)
+
+
+def _sanitize_untrusted(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return _sanitize_free_form_text(value)
+    if isinstance(value, Mapping):
+        return {str(key): _sanitize_untrusted(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_sanitize_untrusted(item) for item in value]
+    return _sanitize_free_form_text(value)
 
 
 def _is_strict_success_flag(value: Any) -> bool:
@@ -340,21 +371,35 @@ def _is_strict_success_flag(value: Any) -> bool:
 def _verify_mock_host() -> str | None:
     base_url = str(getattr(settings, "kiwoom_mock_base_url", "") or "")
     if not base_url:
-        return "kiwoom_mock_base_url is empty"
+        return "mock_base_url_missing"
+    if base_url != base_url.strip():
+        return "mock_base_url_whitespace_disallowed"
+    if base_url == kw_constants.MOCK_BASE_URL:
+        return None
     try:
         parsed = urlparse(base_url)
     except Exception:
-        return "malformed URL"
+        return "mock_base_url_malformed"
+    if parsed.scheme != "https":
+        return "mock_base_url_scheme_invalid"
     if parsed.username or parsed.password:
-        return "userinfo in URL"
-    hostname = (parsed.hostname or "").lower()
+        return "mock_base_url_userinfo_disallowed"
+    hostname = parsed.hostname or ""
     if not hostname:
-        return "no hostname"
-    if hostname == _LIVE_HOSTNAME:
-        return "live host detected"
+        return "mock_base_url_host_missing"
+    if hostname.lower() == _LIVE_HOSTNAME:
+        return "mock_base_url_live_host_disallowed"
     if hostname != _MOCK_HOSTNAME:
-        return f"unrecognized host: {hostname}"
-    return None
+        return "mock_base_url_host_invalid"
+    if parsed.port is not None:
+        return "mock_base_url_port_disallowed"
+    if parsed.path:
+        return "mock_base_url_path_disallowed"
+    if parsed.query:
+        return "mock_base_url_query_disallowed"
+    if parsed.fragment:
+        return "mock_base_url_fragment_disallowed"
+    return "mock_base_url_noncanonical"
 
 
 def _verify_provenance_mock(provenance: Any) -> bool:
@@ -370,11 +415,11 @@ def _sanitize_provenance(provenance: Any) -> dict[str, Any]:
     if not isinstance(provenance, dict):
         return {}
     return {
-        "broker": provenance.get("broker"),
-        "environment": provenance.get("environment"),
-        "account_mode": provenance.get("account_mode"),
-        "host": provenance.get("host"),
-        "api_id": str(provenance.get("api_id", "")),
+        "broker": _sanitize_free_form_text(provenance.get("broker")),
+        "environment": _sanitize_free_form_text(provenance.get("environment")),
+        "account_mode": _sanitize_free_form_text(provenance.get("account_mode")),
+        "host": _sanitize_free_form_text(provenance.get("host")),
+        "api_id": _sanitize_free_form_text(provenance.get("api_id", "")),
     }
 
 
@@ -434,38 +479,46 @@ async def _run_contract_step(
     try:
         payload = await tools[tool_name](**call_args)
     except Exception as exc:
-        step: dict[str, Any] = {
-            "step": "contract_step",
-            "stage": evidence_kind,
-            "tool": tool_name,
-            "expected_api_id": expected_api_id,
-            "kst_time": kst_time,
-            "deploy_sha": deploy_sha,
-            "contract_fields": contract_fields,
-            "pass": False,
-            "fail_reason": "exception",
-            "error_type": type(exc).__name__,
-        }
+        step = _sanitize_untrusted(
+            {
+                "step": "contract_step",
+                "stage": evidence_kind,
+                "tool": tool_name,
+                "expected_api_id": expected_api_id,
+                "kst_time": kst_time,
+                "deploy_sha": deploy_sha,
+                "contract_fields": contract_fields,
+                "pass": False,
+                "fail_reason": "exception",
+                "error_type": type(exc).__name__,
+                "error_detail": str(exc),
+            }
+        )
         _emit(step)
         return step
 
     if not isinstance(payload, dict):
-        step = {
-            "step": "contract_step",
-            "stage": evidence_kind,
-            "tool": tool_name,
-            "expected_api_id": expected_api_id,
-            "kst_time": kst_time,
-            "deploy_sha": deploy_sha,
-            "contract_fields": contract_fields,
-            "pass": False,
-            "fail_reason": "malformed_response",
-        }
+        step = _sanitize_untrusted(
+            {
+                "step": "contract_step",
+                "stage": evidence_kind,
+                "tool": tool_name,
+                "expected_api_id": expected_api_id,
+                "kst_time": kst_time,
+                "deploy_sha": deploy_sha,
+                "contract_fields": contract_fields,
+                "pass": False,
+                "fail_reason": "malformed_response",
+            }
+        )
         _emit(step)
         return step
 
     provenance_raw = payload.get("provenance")
     provenance = _sanitize_provenance(provenance_raw)
+    actual_api_id_raw = (
+        provenance_raw.get("api_id", "") if isinstance(provenance_raw, dict) else ""
+    )
     actual_api_id = provenance.get("api_id", "")
     broker_response = payload.get("broker_response")
     if not isinstance(broker_response, dict):
@@ -481,7 +534,7 @@ async def _run_contract_step(
         tool_success
         and rc_is_zero
         and provenance_mock
-        and actual_api_id == expected_api_id
+        and actual_api_id_raw == expected_api_id
     )
 
     step: dict[str, Any] = {
@@ -490,7 +543,7 @@ async def _run_contract_step(
         "tool": tool_name,
         "expected_api_id": expected_api_id,
         "actual_api_id": actual_api_id,
-        "api_id_match": actual_api_id == expected_api_id,
+        "api_id_match": actual_api_id_raw == expected_api_id,
         "kst_time": kst_time,
         "deploy_sha": deploy_sha,
         "contract_fields": contract_fields,
@@ -508,19 +561,20 @@ async def _run_contract_step(
         if not tool_success:
             reasons.append("success_false")
         if not rc_is_zero:
-            reasons.append(f"return_code={rc_sanitized}")
+            reasons.append("return_code_nonzero")
         if not provenance_mock:
             reasons.append("provenance_not_mock")
-        if actual_api_id != expected_api_id:
+        if actual_api_id_raw != expected_api_id:
             reasons.append("api_id_mismatch")
         step["fail_reasons"] = reasons
     error_code = payload.get("error")
     if error_code:
-        step["error_code"] = str(error_code)[:100]
+        step["error_code"] = _sanitize_free_form_text(error_code)
     error_detail = payload.get("error_detail")
     if error_detail:
-        step["error_detail"] = _sanitize_return_msg(error_detail)
+        step["error_detail"] = _sanitize_free_form_text(error_detail)
 
+    step = _sanitize_untrusted(step)
     _emit(step)
     return step
 
@@ -597,6 +651,7 @@ async def run_contract_sweep(
                 "step": "contract_preflight",
                 "ok": False,
                 "error": "mock_host_verification_failed",
+                "reason": host_error,
                 "kst_time": _kst_now_iso(),
             }
         )

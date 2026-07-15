@@ -33,6 +33,28 @@ from scripts import kiwoom_mock_smoke as smoke
 SENTINEL_SECRET = "KIWOOM_MOCK_SECRET_MUST_NOT_LEAK_ABCDEF"
 SENTINEL_TOKEN = "BEARER_TOKEN_MUST_NOT_LEAK_XYZ"
 SENTINEL_ACCT = "88012345678"
+SENTINEL_JWT = "eyJhbGciOiJIUzI1NiJ9.eyJhY2N0IjoiMTIzNC01Ni03ODkwIn0.signature"
+SENTINEL_HYPHENATED_ACCT = "1234-56-7890"
+SENTINEL_KR_ACCOUNT = f"계좌번호 {SENTINEL_HYPHENATED_ACCT}"
+
+
+def _sensitive_samples() -> tuple[str, ...]:
+    return (
+        SENTINEL_SECRET,
+        SENTINEL_TOKEN,
+        SENTINEL_ACCT,
+        SENTINEL_JWT,
+        SENTINEL_HYPHENATED_ACCT,
+        SENTINEL_KR_ACCOUNT,
+        "Authorization: Bearer",
+        "access_token=",
+    )
+
+
+def _assert_sensitive_values_absent(value: Any) -> None:
+    rendered = json.dumps(value, ensure_ascii=False, default=str)
+    for sample in _sensitive_samples():
+        assert sample not in rendered
 
 
 def _parse_stdout(capsys: pytest.CaptureFixture[str]) -> list[dict[str, Any]]:
@@ -364,33 +386,43 @@ async def test_live_provenance_rejected(
 
 
 # ---------------------------------------------------------------------------
-# 4. Exact host verification (urlparse, no substring)
+# 4. Exact host verification (canonical URL only)
 # ---------------------------------------------------------------------------
 
 
-def test_host_rejects_evil_suffix(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        smoke.settings,
-        "kiwoom_mock_base_url",
-        "https://mockapi.kiwoom.com.evil.com/",
-    )
-    assert smoke._verify_mock_host() is not None
-
-
-def test_host_rejects_userinfo(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        smoke.settings,
-        "kiwoom_mock_base_url",
-        "https://evil@mockapi.kiwoom.com/",
-    )
-    assert smoke._verify_mock_host() is not None
-
-
-def test_host_rejects_live(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        smoke.settings, "kiwoom_mock_base_url", kw_constants.LIVE_BASE_URL
-    )
-    assert smoke._verify_mock_host() is not None
+@pytest.mark.parametrize(
+    ("base_url", "reason"),
+    [
+        ("http://mockapi.kiwoom.com", "mock_base_url_scheme_invalid"),
+        ("https://mockapi.kiwoom.com:443", "mock_base_url_port_disallowed"),
+        ("https://mockapi.kiwoom.com/", "mock_base_url_path_disallowed"),
+        ("https://mockapi.kiwoom.com/path", "mock_base_url_path_disallowed"),
+        (
+            f"https://mockapi.kiwoom.com?access_token={SENTINEL_TOKEN}",
+            "mock_base_url_query_disallowed",
+        ),
+        (
+            f"https://mockapi.kiwoom.com#{SENTINEL_SECRET}",
+            "mock_base_url_fragment_disallowed",
+        ),
+        (
+            f"https://user:{SENTINEL_SECRET}@mockapi.kiwoom.com",
+            "mock_base_url_userinfo_disallowed",
+        ),
+        (kw_constants.LIVE_BASE_URL, "mock_base_url_live_host_disallowed"),
+        ("HTTPS://mockapi.kiwoom.com", "mock_base_url_noncanonical"),
+        ("https://MOCKAPI.KIWOOM.COM", "mock_base_url_noncanonical"),
+        (" https://mockapi.kiwoom.com", "mock_base_url_whitespace_disallowed"),
+        ("https://mockapi.kiwoom.com ", "mock_base_url_whitespace_disallowed"),
+    ],
+)
+def test_host_rejects_noncanonical_variants(
+    monkeypatch: pytest.MonkeyPatch,
+    base_url: str,
+    reason: str,
+) -> None:
+    monkeypatch.setattr(smoke.settings, "kiwoom_mock_base_url", base_url)
+    assert smoke._verify_mock_host() == reason
 
 
 def test_host_accepts_exact_mock(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -411,6 +443,49 @@ async def test_live_host_blocked_exit2(
     )
     rc = await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
     assert rc == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        f"https://mockapi.kiwoom.com?account={SENTINEL_HYPHENATED_ACCT}",
+        f"https://user:{SENTINEL_SECRET}@mockapi.kiwoom.com",
+    ],
+)
+async def test_noncanonical_host_fails_before_client_creation_without_leaking_url(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    base_url: str,
+) -> None:
+    monkeypatch.setattr(smoke, "validate_kiwoom_mock_config", lambda: [])
+    monkeypatch.setattr(kvar, "validate_kiwoom_mock_config", lambda: [])
+    monkeypatch.setattr(smoke.settings, "kiwoom_mock_base_url", base_url)
+
+    called = False
+
+    def _boom(_cls: type[KiwoomMockClient]) -> KiwoomMockClient:
+        nonlocal called
+        called = True
+        raise AssertionError("client must not be constructed")
+
+    monkeypatch.setattr(KiwoomMockClient, "from_app_settings", classmethod(_boom))
+
+    rc = await smoke.run_contract_sweep(_contract_args(), pacing_fn=_noop_sleep)
+    lines = _parse_stdout(capsys)
+
+    assert rc == 2
+    assert called is False
+    assert lines == [
+        {
+            "step": "contract_preflight",
+            "ok": False,
+            "error": "mock_host_verification_failed",
+            "reason": lines[0]["reason"],
+            "kst_time": lines[0]["kst_time"],
+        }
+    ]
+    _assert_sensitive_values_absent(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -572,10 +647,129 @@ async def test_token_like_values_redacted_from_return_msg_and_error_detail(
     assert history["error_detail"] == "[SANITIZED]"
 
 
+@pytest.mark.asyncio
+async def test_run_contract_step_redacts_untrusted_success_fields(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def safe_tool(**_kw: Any) -> dict[str, Any]:
+        return {
+            "success": True,
+            "provenance": {
+                "broker": "kiwoom",
+                "environment": "mock",
+                "account_mode": "kiwoom_mock",
+                "host": "mockapi.kiwoom.com",
+                "api_id": kw_constants.ACCOUNT_BALANCE_API_ID,
+            },
+            "broker_response": {
+                "return_code": 0,
+                "return_msg": f"Authorization: Bearer {SENTINEL_JWT}",
+            },
+        }
+
+    step = await smoke._run_contract_step(
+        tools={"kiwoom_mock_get_positions": safe_tool},
+        tool_name="kiwoom_mock_get_positions",
+        expected_api_id=kw_constants.ACCOUNT_BALANCE_API_ID,
+        evidence_kind="positions",
+        deploy_sha="deadbee",
+        contract_fields={"request_body": {"qry_tp": "1"}},
+    )
+    lines = _parse_stdout(capsys)
+
+    assert step["pass"] is True
+    assert step["return_msg"] == "[SANITIZED]"
+    _assert_sensitive_values_absent(step)
+    _assert_sensitive_values_absent(lines)
+
+
+@pytest.mark.asyncio
+async def test_run_contract_step_redacts_untrusted_failure_fields(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def hostile_tool(**_kw: Any) -> dict[str, Any]:
+        return {
+            "success": True,
+            "error": f"error={SENTINEL_SECRET}",
+            "error_detail": f"{SENTINEL_KR_ACCOUNT} access_token={SENTINEL_TOKEN}",
+            "provenance": {
+                "broker": "kiwoom",
+                "environment": "mock",
+                "account_mode": "kiwoom_mock",
+                "host": "mockapi.kiwoom.com",
+                "api_id": f"api_id={SENTINEL_TOKEN}",
+            },
+            "broker_response": {
+                "return_code": f"return_code={SENTINEL_JWT}",
+                "return_msg": f"acct={SENTINEL_HYPHENATED_ACCT}",
+            },
+        }
+
+    step = await smoke._run_contract_step(
+        tools={"kiwoom_mock_get_positions": hostile_tool},
+        tool_name="kiwoom_mock_get_positions",
+        expected_api_id=kw_constants.ACCOUNT_BALANCE_API_ID,
+        evidence_kind="positions",
+        deploy_sha="deadbee",
+        contract_fields={"request_body": {"qry_tp": "1"}},
+    )
+    lines = _parse_stdout(capsys)
+
+    assert step["pass"] is False
+    assert step["actual_api_id"] == "[SANITIZED]"
+    assert step["return_code"] == "[SANITIZED]"
+    assert step["return_msg"] == "[SANITIZED]"
+    assert step["error_code"] == "[SANITIZED]"
+    assert step["error_detail"] == "[SANITIZED]"
+    assert step["fail_reasons"] == ["return_code_nonzero", "api_id_mismatch"]
+    _assert_sensitive_values_absent(step)
+    _assert_sensitive_values_absent(lines)
+
+
+@pytest.mark.asyncio
+async def test_run_contract_step_redacts_exception_fields(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def exploding_tool(**_kw: Any) -> dict[str, Any]:
+        raise RuntimeError(
+            f"Authorization: Bearer {SENTINEL_TOKEN} {SENTINEL_KR_ACCOUNT}"
+        )
+
+    step = await smoke._run_contract_step(
+        tools={"kiwoom_mock_get_positions": exploding_tool},
+        tool_name="kiwoom_mock_get_positions",
+        expected_api_id=kw_constants.ACCOUNT_BALANCE_API_ID,
+        evidence_kind="positions",
+        deploy_sha="deadbee",
+        contract_fields={"request_body": {"qry_tp": "1"}},
+    )
+    lines = _parse_stdout(capsys)
+
+    assert step["pass"] is False
+    assert step["fail_reason"] == "exception"
+    assert step["error_type"] == "RuntimeError"
+    assert step["error_detail"] == "[SANITIZED]"
+    _assert_sensitive_values_absent(step)
+    _assert_sensitive_values_absent(lines)
+
+
 def test_sanitize_redacts_digit_runs() -> None:
     assert smoke._sanitize_return_msg("ok") == "ok"
     assert smoke._sanitize_return_msg("error 12345678") == "[SANITIZED]"
     assert smoke._sanitize_return_msg(None) == ""
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        SENTINEL_KR_ACCOUNT,
+        SENTINEL_HYPHENATED_ACCT,
+        f"jwt={SENTINEL_JWT}",
+        f"token={SENTINEL_TOKEN}",
+    ],
+)
+def test_sanitize_redacts_account_and_token_like_values(text: str) -> None:
+    assert smoke._sanitize_return_msg(text) == "[SANITIZED]"
 
 
 def test_sanitize_redacts_configured_values(
