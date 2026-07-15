@@ -26,7 +26,7 @@ from app.mcp_server.tooling.orders_kiwoom_shared import (
     finalize_broker_response as _finalize_broker_response,
 )
 from app.services.brokers.kiwoom import constants
-from app.services.brokers.kiwoom.client import KiwoomMockClient
+from app.services.brokers.kiwoom.client import KiwoomMockClient, KiwoomPreDispatchError
 from app.services.brokers.kiwoom.domestic_account import KiwoomDomesticAccountClient
 from app.services.brokers.kiwoom.domestic_orders import KiwoomDomesticOrderClient
 from app.services.brokers.kiwoom.normalization import (
@@ -248,15 +248,27 @@ async def _fetch_kr_quote_for_preflight(symbol: str) -> tuple[int | None, str]:
         return None, "unavailable"
 
 
+def _new_kiwoom_mock_client() -> KiwoomMockClient:
+    """Request-scoped KiwoomMockClient factory.
+
+    Single chokepoint for client construction so tests can count/inject.
+    Each place/preview flow builds exactly one client and reuses it across
+    preflight + POST to share one auth client + one cold token.
+    """
+    return KiwoomMockClient.from_app_settings()
+
+
 async def _run_preflight_for_kiwoom_mock(
     symbol: str,
     side: str,
     quantity: int,
     price: int,
+    *,
+    account_client: Any | None = None,
 ) -> PreflightResult:
     quote_price, quote_freshness = await _fetch_kr_quote_for_preflight(symbol)
-    client = KiwoomMockClient.from_app_settings()
-    account_client = KiwoomDomesticAccountClient(cast(Any, client))
+    if account_client is None:
+        account_client = KiwoomDomesticAccountClient(cast(Any, _new_kiwoom_mock_client()))
     return await run_order_preflight(
         account_client=account_client,
         symbol=symbol,
@@ -295,6 +307,46 @@ def _preflight_to_response(
     return response
 
 
+def _not_submitted_response(
+    base: dict[str, Any], exc: KiwoomPreDispatchError
+) -> dict[str, Any]:
+    """Pre-dispatch failure: request provably never sent. No reconcile needed.
+
+    Reads ONLY the structured fields on exc — never str(exc) or exc.__cause__
+    (the redaction guarantee). token/secret/header/account/body/raw msg are
+    never surfaced.
+    """
+    return {
+        **base,
+        "success": False,
+        "error": f"kiwoom_mock_place_order failed: {exc.cause_type}",
+        "status": "not_submitted",
+        "dispatch_started": False,
+        "stage": exc.stage,
+        "api_id": exc.api_id,
+        "cause_type": exc.cause_type,
+        "reconcile_required": False,
+    }
+
+
+def _dispatch_unknown_response(base: dict[str, Any], exc: Exception) -> dict[str, Any]:
+    """Post-dispatch / unclassifiable failure: request MAY have been sent.
+
+    Conservative default (Oracle Q6): cannot prove the request wasn't
+    transmitted (send may have succeeded before response/parsing failed), so
+    reconciliation is REQUIRED. Only KiwoomPreDispatchError earns
+    reconcile_required=False.
+    """
+    return {
+        **base,
+        "success": False,
+        "error": f"kiwoom_mock_place_order failed: {type(exc).__name__}",
+        "status": "acceptance_uncertain",
+        "reconcile_required": True,
+        "retry_allowed": False,
+    }
+
+
 async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
     symbol = str(kwargs.get("symbol") or "").strip()
     side = kwargs.get("side")
@@ -324,9 +376,25 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
             "error": f"kiwoom_mock_place_order supports side='buy' or 'sell'; got {side!r}.",
         }
 
-    preflight = await _run_preflight_for_kiwoom_mock(
-        symbol=symbol, side=side, quantity=quantity, price=price
-    )
+    # ONE request-scoped client shared across preflight + POST (ROB-893 v2).
+    client = _new_kiwoom_mock_client()
+    account_client = KiwoomDomesticAccountClient(cast(Any, client))
+    order_client = KiwoomDomesticOrderClient(cast(Any, client))
+
+    try:
+        preflight = await _run_preflight_for_kiwoom_mock(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            price=price,
+            account_client=account_client,
+        )
+    except Exception as exc:  # noqa: BLE001 - preflight must fail closed
+        return {
+            "success": False,
+            **base_response,
+            "error": f"kiwoom_mock_place_order preflight failed: {type(exc).__name__}",
+        }
     if not preflight.ok:
         response = _preflight_to_response(
             preflight,
@@ -353,30 +421,12 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
         response["exchange"] = str(exchange).strip().upper()
         return response
 
-    recheck = await _run_preflight_for_kiwoom_mock(
-        symbol=symbol, side=side, quantity=quantity, price=price
-    )
-    if not recheck.ok:
-        response = _preflight_to_response(
-            recheck,
-            symbol=symbol,
-            side=side,
-            quantity=quantity,
-            price=price,
-            preview=False,
-        )
-        response["dry_run"] = False
-        response["exchange"] = str(exchange).strip().upper()
-        return response
-
-    # Preserve the evidence from the mutation-boundary recheck. This is the
-    # authoritative preflight snapshot for a confirmed POST, not the earlier
-    # check that may already be stale by the time the broker is called.
-    base_response.update(recheck.to_response_extras())
+    # Confirmed: the single preflight above IS the mutation-boundary check,
+    # run immediately before POST on the SAME client/auth/token. Attach its
+    # evidence as the authoritative snapshot.
+    base_response.update(preflight.to_response_extras())
 
     try:
-        client = KiwoomMockClient.from_app_settings()
-        order_client = KiwoomDomesticOrderClient(cast(Any, client))
         if side == "buy":
             broker_response = await order_client.place_buy_order(
                 symbol=symbol,
@@ -391,12 +441,10 @@ async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
                 price=price,
                 exchange=exchange,
             )
-    except Exception as exc:  # noqa: BLE001 - MCP tools fail closed with JSON
-        return {
-            "success": False,
-            **base_response,
-            "error": f"kiwoom_mock_place_order failed: {type(exc).__name__}: {exc}",
-        }
+    except KiwoomPreDispatchError as exc:
+        return _not_submitted_response(base_response, exc)
+    except Exception as exc:  # noqa: BLE001 - post-dispatch: may have been sent
+        return _dispatch_unknown_response(base_response, exc)
 
     return _finalize_broker_response(base_response, broker_response)
 

@@ -1918,7 +1918,13 @@ async def test_place_order_dry_run_returns_stable_failure_without_post(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_place_order_confirmed_reruns_preflight_right_before_post(monkeypatch):
+async def test_place_order_confirmed_runs_single_preflight_right_before_post(monkeypatch):
+    """ROB-893 v2: confirmed place runs preflight EXACTLY ONCE.
+
+    The single preflight is the mutation-boundary check, run immediately before
+    POST on the SAME shared client/auth/token. Exactly one client is constructed
+    (via ``_new_kiwoom_mock_client``) and reused across preflight + POST.
+    """
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
     from app.services.brokers.kiwoom.order_preflight import (
         PREFLIGHT_OK,
@@ -1927,6 +1933,7 @@ async def test_place_order_confirmed_reruns_preflight_right_before_post(monkeypa
     )
 
     preflight_call_count = 0
+    client_construction_count = 0
 
     async def counting_preflight(**_kwargs):
         nonlocal preflight_call_count
@@ -1942,9 +1949,7 @@ async def test_place_order_confirmed_reruns_preflight_right_before_post(monkeypa
         )
 
     class FakeKiwoomMockClient:
-        @classmethod
-        def from_app_settings(cls):
-            return cls()
+        pass
 
     class SuccessOrderClient:
         def __init__(self, _client):
@@ -1969,8 +1974,13 @@ async def test_place_order_confirmed_reruns_preflight_right_before_post(monkeypa
         async def get_deposit(self, **_kwargs):
             return {"return_code": 0}
 
+    def counting_client_factory():
+        nonlocal client_construction_count
+        client_construction_count += 1
+        return FakeKiwoomMockClient()
+
     monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
-    monkeypatch.setattr(mod, "KiwoomMockClient", FakeKiwoomMockClient, raising=False)
+    monkeypatch.setattr(mod, "_new_kiwoom_mock_client", counting_client_factory)
     monkeypatch.setattr(
         mod, "KiwoomDomesticAccountClient", SuccessAccountClient, raising=False
     )
@@ -1993,62 +2003,78 @@ async def test_place_order_confirmed_reruns_preflight_right_before_post(monkeypa
     )
 
     assert response["success"] is True
-    assert preflight_call_count == 2, (
-        "confirmed place must run preflight twice (once before, once right before POST)"
+    assert preflight_call_count == 1, (
+        "confirmed place must run preflight exactly once (the single "
+        "mutation-boundary check shared across preflight + POST)"
+    )
+    assert client_construction_count == 1, (
+        "confirmed place must construct exactly one client, shared across "
+        "preflight + POST"
     )
     assert response["preflight_checks"] == [
-        {"name": "preflight_call_2", "ok": True, "detail": None}
+        {"name": "preflight_call_1", "ok": True, "detail": None}
     ]
     assert response["estimated_evidence"] == {
         "type": "estimated",
-        "preflight_call": 2,
+        "preflight_call": 1,
     }
 
 
 @pytest.mark.asyncio
-async def test_place_order_confirmed_blocks_when_final_recheck_fails(monkeypatch):
+async def test_place_order_confirmed_blocks_when_preflight_fails(monkeypatch):
+    """ROB-893 v2: there is exactly ONE preflight; if it fails, POST count is 0.
+
+    The old 2-phase (initial ok then final recheck fail) was removed. The single
+    preflight is the sole mutation-boundary check; failing it fail-closes.
+    """
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
     from app.services.brokers.kiwoom.order_preflight import (
         PREFLIGHT_CASH_INSUFFICIENT,
-        PREFLIGHT_OK,
         PreflightCheck,
         PreflightResult,
     )
 
-    order_calls = _patch_fake_kiwoom_order_client(
-        monkeypatch,
-        mod,
-        responses={
-            "buy": {"return_code": 0, "ord_no": "must-not-submit"},
-            "sell": {"return_code": 0, "ord_no": "must-not-submit"},
-        },
-    )
-    results = iter(
-        [
-            PreflightResult(
-                ok=True,
-                error_code=PREFLIGHT_OK,
-                checks=[PreflightCheck("initial", True)],
-                estimated_evidence={"snapshot": "initial"},
-            ),
-            PreflightResult(
-                ok=False,
-                error_code=PREFLIGHT_CASH_INSUFFICIENT,
-                error_detail="cash changed before broker POST",
-                checks=[PreflightCheck("final_recheck", False)],
-                estimated_evidence={"snapshot": "final"},
-            ),
-        ]
-    )
+    order_calls: list[dict[str, Any]] = []
     preflight_calls = 0
+    client_construction_count = 0
 
-    async def changing_preflight(**_kwargs):
+    class FakeKiwoomMockClient:
+        pass
+
+    class FakeOrderClient:
+        def __init__(self, _client):
+            pass
+
+        async def place_buy_order(self, **kwargs):
+            order_calls.append({"method": "buy", **kwargs})
+            return {"return_code": 0, "ord_no": "must-not-submit"}
+
+        async def place_sell_order(self, **kwargs):
+            order_calls.append({"method": "sell", **kwargs})
+            return {"return_code": 0, "ord_no": "must-not-submit"}
+
+    async def failing_preflight(**_kwargs):
         nonlocal preflight_calls
         preflight_calls += 1
-        return next(results)
+        return PreflightResult(
+            ok=False,
+            error_code=PREFLIGHT_CASH_INSUFFICIENT,
+            error_detail="insufficient cash for confirmed POST",
+            checks=[PreflightCheck("cash", False)],
+        )
 
+    def counting_client_factory():
+        nonlocal client_construction_count
+        client_construction_count += 1
+        return FakeKiwoomMockClient()
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    monkeypatch.setattr(mod, "_new_kiwoom_mock_client", counting_client_factory)
     monkeypatch.setattr(
-        mod, "_run_preflight_for_kiwoom_mock", changing_preflight, raising=False
+        mod, "KiwoomDomesticOrderClient", FakeOrderClient, raising=False
+    )
+    monkeypatch.setattr(
+        mod, "_run_preflight_for_kiwoom_mock", failing_preflight, raising=False
     )
     mcp = DummyMCP()
     _register(mcp)
@@ -2062,14 +2088,13 @@ async def test_place_order_confirmed_blocks_when_final_recheck_fails(monkeypatch
         confirm=True,
     )
 
-    assert preflight_calls == 2
+    assert preflight_calls == 1
     assert response["success"] is False
     assert response["error"] == PREFLIGHT_CASH_INSUFFICIENT
-    assert response["preflight_checks"] == [
-        {"name": "final_recheck", "ok": False, "detail": None}
-    ]
-    assert response["estimated_evidence"] == {"snapshot": "final"}
-    assert order_calls == []
+    assert order_calls == [], "broker POST must not happen after preflight failure"
+    # Client is still constructed once (eager, to share across preflight + POST),
+    # even though preflight failed before POST.
+    assert client_construction_count == 1
 
 
 @pytest.mark.asyncio
@@ -2154,6 +2179,9 @@ async def test_preview_and_place_normalize_with_same_error_code(monkeypatch):
         PreflightResult,
     )
 
+    class FakeKiwoomMockClient:
+        pass
+
     async def failing_preflight(**_kwargs):
         return PreflightResult(
             ok=False,
@@ -2163,6 +2191,9 @@ async def test_preview_and_place_normalize_with_same_error_code(monkeypatch):
         )
 
     monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    monkeypatch.setattr(
+        mod, "_new_kiwoom_mock_client", lambda: FakeKiwoomMockClient()
+    )
     monkeypatch.setattr(
         mod, "_run_preflight_for_kiwoom_mock", failing_preflight, raising=False
     )
@@ -2228,3 +2259,528 @@ async def test_loss_sell_not_blocked_in_mcp_layer(monkeypatch):
         "estimated_costs_unavailable",
         "estimated_loss_sell",
     ]
+
+
+# ---------------------------------------------------------------------------
+# ROB-893 v2: request-scoped client reuse + structured pre-dispatch error
+#
+# Confirmed place must build ONE client, mint ONE cold token, run ONE preflight
+# (the mutation-boundary check), and POST once — all on the same client/auth.
+# KiwoomPreDispatchError carries redacted structured fields (stage/api_id/
+# cause_type); post-dispatch failures require reconciliation (Oracle Q6).
+# ---------------------------------------------------------------------------
+
+
+def _patch_lifecycle_fakes(
+    monkeypatch,
+    mod,
+    *,
+    preflight_fn=None,
+    order_buy_exc: Exception | None = None,
+    order_sell_exc: Exception | None = None,
+    order_buy_response: dict[str, Any] | None = None,
+    order_sell_response: dict[str, Any] | None = None,
+):
+    """Wire up the full place-lifecycle with counting fakes.
+
+    Returns a dict of counters: ``client_constructions``, ``preflight_calls``,
+    ``order_calls``.
+    """
+    from app.services.brokers.kiwoom.order_preflight import (
+        PREFLIGHT_OK,
+        PreflightResult,
+    )
+
+    counters = {
+        "client_constructions": 0,
+        "preflight_calls": 0,
+        "order_calls": [],
+    }
+
+    class FakeKiwoomMockClient:
+        pass
+
+    class FakeAccountClient:
+        def __init__(self, _client):
+            pass
+
+        async def get_balance(self, **_kwargs):
+            return {"return_code": 0}
+
+        async def get_orderable_amount(self, **_kwargs):
+            return {"return_code": 0, "ord_alowa": "1000000"}
+
+        async def get_deposit(self, **_kwargs):
+            return {"return_code": 0}
+
+    class FakeOrderClient:
+        def __init__(self, _client):
+            pass
+
+        async def place_buy_order(self, **kwargs):
+            counters["order_calls"].append({"method": "buy", **kwargs})
+            if order_buy_exc is not None:
+                raise order_buy_exc
+            return order_buy_response or {
+                "return_code": 0,
+                "return_msg": "정상",
+                "ord_no": "0000111222",
+            }
+
+        async def place_sell_order(self, **kwargs):
+            counters["order_calls"].append({"method": "sell", **kwargs})
+            if order_sell_exc is not None:
+                raise order_sell_exc
+            return order_sell_response or {
+                "return_code": 0,
+                "return_msg": "정상",
+                "ord_no": "0000333444",
+            }
+
+    def counting_client_factory():
+        counters["client_constructions"] += 1
+        return FakeKiwoomMockClient()
+
+    if preflight_fn is None:
+        async def default_preflight(**_kwargs):
+            return PreflightResult(ok=True, error_code=PREFLIGHT_OK, checks=[])
+
+        preflight_fn = default_preflight
+
+    async def counting_preflight(**kwargs):
+        counters["preflight_calls"] += 1
+        return await preflight_fn(**kwargs)
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    monkeypatch.setattr(mod, "_new_kiwoom_mock_client", counting_client_factory)
+    monkeypatch.setattr(
+        mod, "KiwoomDomesticAccountClient", FakeAccountClient, raising=False
+    )
+    monkeypatch.setattr(
+        mod, "KiwoomDomesticOrderClient", FakeOrderClient, raising=False
+    )
+    monkeypatch.setattr(
+        mod, "_run_preflight_for_kiwoom_mock", counting_preflight, raising=False
+    )
+    return counters
+
+
+# === A. Reproduction / client reuse (structural) ===
+
+
+@pytest.mark.asyncio
+async def test_confirmed_place_reuses_single_client_for_preflight_and_post(monkeypatch):
+    """Confirmed place: ONE client constructed, shared across preflight + POST."""
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    counters = _patch_lifecycle_fakes(monkeypatch, mod)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_place_order"](
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=70000,
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert response["success"] is True
+    assert counters["client_constructions"] == 1
+    assert counters["preflight_calls"] == 1
+    assert len(counters["order_calls"]) == 1
+    assert counters["order_calls"][0]["method"] == "buy"
+
+
+@pytest.mark.asyncio
+async def test_confirmed_place_cold_cache_token_issued_once():
+    """Behavioral (Oracle Q5): one cold-cache token mint across preflight + POST.
+
+    Uses a REAL KiwoomMockClient + KiwoomAuthClient with fake httpx transports.
+    Does NOT use ``set_transport_for_test`` (which sets ``_token_override`` and
+    bypasses auth) — we WANT auth to run so we can count token-mint HTTP calls.
+    """
+    import datetime as dt
+
+    import httpx
+
+    from app.services.brokers.kiwoom import constants
+    from app.services.brokers.kiwoom.client import KiwoomMockClient
+    from app.services.brokers.kiwoom.domestic_account import (
+        KiwoomDomesticAccountClient,
+    )
+    from app.services.brokers.kiwoom.domestic_orders import KiwoomDomesticOrderClient
+
+    expires = (dt.datetime.now(dt.UTC) + dt.timedelta(days=1)).strftime(
+        "%Y%m%d%H%M%S"
+    )
+    mint_count = 0
+
+    def oauth_handler(request):  # noqa: ARG001
+        nonlocal mint_count
+        mint_count += 1
+        return httpx.Response(
+            200,
+            json={"return_code": 0, "token": "tok-1", "expires_dt": expires},
+        )
+
+    def tr_handler(request):
+        api_id = request.headers.get(constants.HEADER_API_ID, "")
+        if api_id == constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID:
+            return httpx.Response(
+                200, json={"return_code": 0, "ord_alowa": "1000000"}
+            )
+        return httpx.Response(
+            200,
+            json={"return_code": 0, "return_msg": "정상", "ord_no": "0000111222"},
+        )
+
+    client = KiwoomMockClient(
+        base_url=constants.MOCK_BASE_URL,
+        app_key="k",
+        app_secret="s",
+        account_no="a",
+    )
+    client._transport = httpx.MockTransport(tr_handler)
+    client._auth._transport = httpx.MockTransport(oauth_handler)
+
+    account_client = KiwoomDomesticAccountClient(client)
+    order_client = KiwoomDomesticOrderClient(client)
+
+    await account_client.get_orderable_amount(
+        symbol="005930", side="buy", price=70000
+    )
+    await order_client.place_buy_order(
+        symbol="005930", quantity=1, price=70000, exchange="KRX"
+    )
+
+    assert mint_count == 1, (
+        "cold-cache token must be minted exactly once across preflight + POST"
+    )
+
+
+# === B. Mutation-boundary counts ===
+
+
+@pytest.mark.asyncio
+async def test_dry_run_zero_mutations(monkeypatch):
+    """Dry-run place: exactly one preflight, zero POST."""
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    counters = _patch_lifecycle_fakes(monkeypatch, mod)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_place_order"](
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=70000,
+        dry_run=True,
+    )
+
+    assert response["success"] is True
+    assert response["dry_run"] is True
+    assert counters["preflight_calls"] == 1
+    assert counters["order_calls"] == [], "dry_run must not POST to broker"
+
+
+@pytest.mark.asyncio
+async def test_confirmed_one_preflight_one_post(monkeypatch):
+    """Confirmed place: exactly one preflight, exactly one POST."""
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    counters = _patch_lifecycle_fakes(monkeypatch, mod)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_place_order"](
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=70000,
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert response["success"] is True
+    assert counters["preflight_calls"] == 1
+    assert len(counters["order_calls"]) == 1
+
+
+# === C. Fail-closed: POST count 0 on every pre-dispatch failure ===
+
+
+@pytest.mark.asyncio
+async def test_token_resolution_failure_blocks_post(monkeypatch):
+    """KiwoomPreDispatchError(stage=token_resolution) → not_submitted, no reconcile."""
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+    from app.services.brokers.kiwoom.client import KiwoomPreDispatchError
+
+    exc = KiwoomPreDispatchError(
+        stage="token_resolution",
+        api_id="kt10000",
+        cause_type="RuntimeError",
+    )
+    counters = _patch_lifecycle_fakes(monkeypatch, mod, order_buy_exc=exc)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_place_order"](
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=70000,
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert response["success"] is False
+    assert response["status"] == "not_submitted"
+    assert response["dispatch_started"] is False
+    assert response["reconcile_required"] is False
+    assert response["stage"] == "token_resolution"
+    assert response["api_id"] == "kt10000"
+    assert response["cause_type"] == "RuntimeError"
+    assert "RuntimeError" in response["error"]
+    assert len(counters["order_calls"]) == 1, "POST was attempted once then failed"
+
+
+@pytest.mark.asyncio
+async def test_request_build_failure_blocks_post(monkeypatch):
+    """KiwoomPreDispatchError(stage=request_build) → not_submitted."""
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+    from app.services.brokers.kiwoom.client import KiwoomPreDispatchError
+
+    exc = KiwoomPreDispatchError(
+        stage="request_build",
+        api_id="kt10001",
+        cause_type="ValueError",
+    )
+    counters = _patch_lifecycle_fakes(monkeypatch, mod, order_sell_exc=exc)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_place_order"](
+        symbol="005930",
+        side="sell",
+        quantity=1,
+        price=70000,
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert response["success"] is False
+    assert response["status"] == "not_submitted"
+    assert response["dispatch_started"] is False
+    assert response["reconcile_required"] is False
+    assert response["stage"] == "request_build"
+    assert response["api_id"] == "kt10001"
+    assert response["cause_type"] == "ValueError"
+    assert len(counters["order_calls"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_post_dispatch_unknown_failure_requires_reconcile(monkeypatch):
+    """Oracle Q6: generic post-dispatch failure → acceptance_uncertain + reconcile.
+
+    The raw exception message must NOT surface; only ``type(exc).__name__``.
+    """
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    counters = _patch_lifecycle_fakes(
+        monkeypatch, mod, order_buy_exc=RuntimeError("boom")
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_place_order"](
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=70000,
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert response["success"] is False
+    assert response["status"] == "acceptance_uncertain"
+    assert response["reconcile_required"] is True
+    assert response["retry_allowed"] is False
+    assert "RuntimeError" in response["error"]
+    assert "boom" not in response["error"], (
+        "raw exception message must not surface"
+    )
+    assert len(counters["order_calls"]) == 1
+
+
+# === E. Structured stage classification + redaction ===
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stage",
+    ["token_resolution", "pre_dispatch_hook", "request_build", "host_validation"],
+)
+async def test_structured_stage_classified_explicitly(stage):
+    """Each of the 4 valid stages is carried verbatim into the response."""
+    from app.services.brokers.kiwoom.client import KiwoomPreDispatchError
+
+    exc = KiwoomPreDispatchError(
+        stage=stage, api_id="kt10000", cause_type="RuntimeError"
+    )
+    from app.mcp_server.tooling.orders_kiwoom_variants import _not_submitted_response
+
+    result = _not_submitted_response(
+        {"source": "kiwoom", "account_mode": "kiwoom_mock"}, exc
+    )
+
+    assert result["stage"] == stage
+    assert result["api_id"] == "kt10000"
+    assert result["cause_type"] == "RuntimeError"
+    assert result["dispatch_started"] is False
+    assert result["status"] == "not_submitted"
+    assert result["reconcile_required"] is False
+
+
+@pytest.mark.asyncio
+async def test_pre_dispatch_error_redacts_secrets():
+    """The structured response must never surface secrets from __cause__."""
+    from app.mcp_server.tooling.orders_kiwoom_variants import _not_submitted_response
+    from app.services.brokers.kiwoom.client import KiwoomPreDispatchError
+
+    sensitive_msg = (
+        "token=super-secret-token authorization=Bearer leaked-token "
+        "app_secret=hidden-secret account_no=99999999 body=raw-request-body"
+    )
+    cause = RuntimeError(sensitive_msg)
+    exc = KiwoomPreDispatchError(
+        stage="token_resolution", api_id="kt00018", cause_type="RuntimeError"
+    )
+    exc.__cause__ = cause
+
+    response = _not_submitted_response(
+        {
+            "source": "kiwoom",
+            "account_mode": "kiwoom_mock",
+            "symbol": "005930",
+        },
+        exc,
+    )
+
+    assert response["stage"] == "token_resolution"
+    assert response["api_id"] == "kt00018"
+    assert response["cause_type"] == "RuntimeError"
+
+    dumped = str(response)
+    for secret in [
+        "super-secret-token",
+        "leaked-token",
+        "hidden-secret",
+        "99999999",
+        "raw-request-body",
+        "Bearer",
+        "authorization",
+        "app_secret",
+        "body=",
+    ]:
+        assert secret not in dumped, f"secret {secret!r} leaked into response"
+
+
+# === F. Regression guards ===
+
+
+@pytest.mark.asyncio
+async def test_standalone_position_read_then_confirmed_sell_succeeds(monkeypatch):
+    """Standalone position read (1 client/1 dispatch) + confirmed SELL on the
+    new shared-client path both succeed. The position impl still calls
+    ``KiwoomMockClient.from_app_settings()`` directly (left untouched); the
+    place impl calls ``_new_kiwoom_mock_client`` once."""
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+    from app.services.brokers.kiwoom.order_preflight import (
+        PREFLIGHT_OK,
+        PreflightCheck,
+        PreflightResult,
+    )
+
+    place_client_constructions = 0
+
+    class FakeKiwoomMockClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakePlaceClient:
+        pass
+
+    class FakeAccountClient:
+        def __init__(self, _client):
+            pass
+
+        async def get_balance(self, **_kwargs):
+            return {
+                "return_code": 0,
+                "acnt_evlt_remn_indv_tot": [
+                    {"stk_cd": "005930", "rmnd_qty": "10", "pur_pric": "70000"}
+                ],
+            }
+
+        async def get_orderable_amount(self, **_kwargs):
+            return {"return_code": 0}
+
+        async def get_deposit(self, **_kwargs):
+            return {"return_code": 0}
+
+    class FakeOrderClient:
+        def __init__(self, _client):
+            pass
+
+        async def place_sell_order(self, **_kwargs):
+            return {"return_code": 0, "return_msg": "정상", "ord_no": "0000555666"}
+
+        async def place_buy_order(self, **_kwargs):
+            return {"return_code": 0, "ord_no": "unused"}
+
+    async def sell_ok_preflight(**_kwargs):
+        return PreflightResult(
+            ok=True,
+            error_code=PREFLIGHT_OK,
+            checks=[PreflightCheck("sellable", True, "sellable=10")],
+        )
+
+    def counting_place_client_factory():
+        nonlocal place_client_constructions
+        place_client_constructions += 1
+        return FakePlaceClient()
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    monkeypatch.setattr(mod, "KiwoomMockClient", FakeKiwoomMockClient, raising=False)
+    monkeypatch.setattr(
+        mod, "KiwoomDomesticAccountClient", FakeAccountClient, raising=False
+    )
+    monkeypatch.setattr(
+        mod, "KiwoomDomesticOrderClient", FakeOrderClient, raising=False
+    )
+    monkeypatch.setattr(mod, "_new_kiwoom_mock_client", counting_place_client_factory)
+    monkeypatch.setattr(
+        mod, "_run_preflight_for_kiwoom_mock", sell_ok_preflight, raising=False
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    positions_response = await mcp.tools["kiwoom_mock_get_positions"]()
+    assert positions_response["success"] is True
+
+    sell_response = await mcp.tools["kiwoom_mock_place_order"](
+        symbol="005930",
+        side="sell",
+        quantity=5,
+        price=71000,
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert sell_response["success"] is True
+    assert sell_response["dry_run"] is False
+    assert place_client_constructions == 1

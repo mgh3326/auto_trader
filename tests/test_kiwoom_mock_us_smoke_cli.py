@@ -621,7 +621,9 @@ async def test_probe_predispatch_place_failure_requires_no_cleanup(
         async def place_buy_order(self, **kwargs: Any) -> dict[str, Any]:
             del kwargs
             raise smoke.KiwoomPreDispatchError(
-                "Kiwoom request failed before HTTP dispatch: RuntimeError"
+                stage="token_resolution",
+                api_id="ust20000",
+                cause_type="RuntimeError",
             )
 
         async def cancel_order(self, **kwargs: Any) -> dict[str, Any]:

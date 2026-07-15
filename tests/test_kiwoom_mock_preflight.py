@@ -664,3 +664,48 @@ async def test_preflight_zero_sellable_with_nonzero_quantity_blocks():
     assert result.ok is False
     assert result.error_code == PREFLIGHT_SELLABLE_EXCEEDED
     assert result.estimated_evidence["sellable_quantity"] == 0
+
+
+# ---------------------------------------------------------------------------
+# ROB-893 v2: KiwoomAuthClient concurrent refresh dedup
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_auth_refresh_dedupes_to_single_mint():
+    """Three concurrent get_token() calls share one token-mint HTTP (asyncio.Lock)."""
+    import datetime as dt
+
+    import httpx
+
+    from app.services.brokers.kiwoom import constants
+    from app.services.brokers.kiwoom.auth import KiwoomAuthClient
+
+    expires = (dt.datetime.now(dt.UTC) + dt.timedelta(days=1)).strftime(
+        "%Y%m%d%H%M%S"
+    )
+    mint_count = 0
+
+    def handler(request):  # noqa: ARG001
+        nonlocal mint_count
+        mint_count += 1
+        return httpx.Response(
+            200,
+            json={"return_code": 0, "token": "tok-1", "expires_dt": expires},
+        )
+
+    auth = KiwoomAuthClient(
+        base_url=constants.MOCK_BASE_URL,
+        app_key="k",
+        app_secret="s",
+        transport=httpx.MockTransport(handler),
+    )
+
+    import asyncio
+
+    tokens = await asyncio.gather(
+        auth.get_token(), auth.get_token(), auth.get_token()
+    )
+
+    assert mint_count == 1, "concurrent refresh must dedupe to a single mint"
+    assert all(t == "tok-1" for t in tokens)
