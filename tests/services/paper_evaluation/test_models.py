@@ -37,11 +37,7 @@ def _foreign_key_names(model: type) -> set[str]:
 
 
 def _index_names(model: type) -> set[str]:
-    return {
-        index.name
-        for index in model.__table__.indexes
-        if index.name is not None
-    }
+    return {index.name for index in model.__table__.indexes if index.name is not None}
 
 
 def test_models_are_exposed_via_package_exports() -> None:
@@ -123,6 +119,8 @@ def test_evaluation_epoch_columns() -> None:
     assert set(columns.keys()) == {
         "id",
         "epoch_id",
+        "assignment_id",
+        "validation_id",
         "cohort_id",
         "config_hash",
         "initial_equity",
@@ -142,19 +140,24 @@ def test_evaluation_epoch_columns() -> None:
 
 def test_evaluation_epoch_constraints_and_foreign_keys() -> None:
     assert {
-        "uq_evaluation_epoch_id",
+        "uq_evaluation_epoch_identity",
         "uq_evaluation_epoch_lineage",
         "uq_evaluation_epoch_start",
         "ck_evaluation_epoch_config_hash",
         "ck_evaluation_epoch_experiment_hash",
         "ck_evaluation_epoch_cohort_hash",
         "ck_evaluation_epoch_reset_reason",
+        "ck_evaluation_epoch_prior_not_self",
     } <= _constraint_names(EvaluationEpoch)
     assert {
         "fk_evaluation_epoch_cohort",
+        "fk_evaluation_epoch_assignment",
+        "fk_evaluation_epoch_cohort_lineage",
         "fk_evaluation_epoch_config",
+        "fk_evaluation_epoch_prior_lineage",
     } <= _foreign_key_names(EvaluationEpoch)
     assert "ix_evaluation_epoch_cohort_started" in _index_names(EvaluationEpoch)
+    assert "ix_evaluation_epoch_assignment_started" in _index_names(EvaluationEpoch)
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +169,9 @@ def test_evaluation_scorecard_columns() -> None:
     columns = EvaluationScorecard.__table__.columns
     assert set(columns.keys()) == {
         "id",
+        "evaluation_id",
         "epoch_id",
+        "assignment_id",
         "config_hash",
         "view_name",
         "currency",
@@ -183,7 +188,7 @@ def test_evaluation_scorecard_columns() -> None:
 
 def test_evaluation_scorecard_constraints_and_foreign_keys() -> None:
     assert {
-        "uq_evaluation_scorecard_epoch_view",
+        "uq_evaluation_scorecard_evaluation_view",
         "ck_evaluation_scorecard_config_hash",
         "ck_evaluation_scorecard_experiment_hash",
         "ck_evaluation_scorecard_cohort_hash",
@@ -191,7 +196,7 @@ def test_evaluation_scorecard_constraints_and_foreign_keys() -> None:
         "ck_evaluation_scorecard_currency",
         "ck_evaluation_scorecard_view_currency_consistency",
     } <= _constraint_names(EvaluationScorecard)
-    assert "fk_evaluation_scorecard_epoch" in _foreign_key_names(
+    assert "fk_evaluation_scorecard_epoch_identity" in _foreign_key_names(
         EvaluationScorecard
     )
     assert "ix_evaluation_scorecard_epoch" in _index_names(EvaluationScorecard)
@@ -206,7 +211,9 @@ def test_evaluation_verdict_columns() -> None:
     columns = EvaluationVerdict.__table__.columns
     assert set(columns.keys()) == {
         "id",
+        "evaluation_id",
         "epoch_id",
+        "assignment_id",
         "config_hash",
         "idempotency_key",
         "request_hash",
@@ -223,7 +230,7 @@ def test_evaluation_verdict_columns() -> None:
 
 def test_evaluation_verdict_constraints_and_foreign_keys() -> None:
     assert {
-        "uq_evaluation_verdict_epoch",
+        "uq_evaluation_verdict_evaluation",
         "uq_evaluation_verdict_idempotency",
         "ck_evaluation_verdict_config_hash",
         "ck_evaluation_verdict_request_hash",
@@ -231,7 +238,7 @@ def test_evaluation_verdict_constraints_and_foreign_keys() -> None:
         "ck_evaluation_verdict_cohort_hash",
         "ck_evaluation_verdict_status",
     } <= _constraint_names(EvaluationVerdict)
-    assert "fk_evaluation_verdict_epoch" in _foreign_key_names(
+    assert "fk_evaluation_verdict_epoch_identity" in _foreign_key_names(
         EvaluationVerdict
     )
     assert "ix_evaluation_verdict_epoch" in _index_names(EvaluationVerdict)

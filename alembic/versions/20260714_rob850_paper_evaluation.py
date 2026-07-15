@@ -73,9 +73,7 @@ def upgrade() -> None:
         sa.Column("config_hash", sa.String(64), nullable=False),
         sa.Column("schema_id", sa.String(64), nullable=False),
         sa.Column("formula_version", sa.String(16), nullable=False),
-        sa.Column(
-            "currency_conversion_policy", sa.String(16), nullable=False
-        ),
+        sa.Column("currency_conversion_policy", sa.String(16), nullable=False),
         sa.Column("payload", postgresql.JSONB(), nullable=False),
         _timestamps(),
         sa.UniqueConstraint("config_hash", name="uq_evaluation_config_hash"),
@@ -101,6 +99,8 @@ def upgrade() -> None:
         "evaluation_epochs",
         sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
         sa.Column("epoch_id", sa.String(128), nullable=False),
+        sa.Column("assignment_id", sa.String(128), nullable=False),
+        sa.Column("validation_id", sa.String(128), nullable=False),
         sa.Column("cohort_id", sa.String(128), nullable=False),
         sa.Column("config_hash", sa.String(64), nullable=False),
         sa.Column("initial_equity", postgresql.JSONB(), nullable=False),
@@ -117,19 +117,56 @@ def upgrade() -> None:
             name="fk_evaluation_epoch_cohort",
         ),
         sa.ForeignKeyConstraint(
+            ["cohort_id", "assignment_id"],
+            [
+                "research.paper_validation_cohort_assignments.cohort_id",
+                "research.paper_validation_cohort_assignments.assignment_id",
+            ],
+            ondelete="RESTRICT",
+            name="fk_evaluation_epoch_assignment",
+        ),
+        sa.ForeignKeyConstraint(
+            ["cohort_id", "cohort_hash"],
+            [
+                "research.paper_validation_cohorts.cohort_id",
+                "research.paper_validation_cohorts.cohort_hash",
+            ],
+            ondelete="RESTRICT",
+            name="fk_evaluation_epoch_cohort_lineage",
+        ),
+        sa.ForeignKeyConstraint(
+            ["cohort_id", "assignment_id", "prior_epoch_id"],
+            [
+                "research.evaluation_epochs.cohort_id",
+                "research.evaluation_epochs.assignment_id",
+                "research.evaluation_epochs.epoch_id",
+            ],
+            ondelete="RESTRICT",
+            name="fk_evaluation_epoch_prior_lineage",
+        ),
+        sa.ForeignKeyConstraint(
             ["config_hash"],
             ["research.evaluation_configs.config_hash"],
             ondelete="RESTRICT",
             name="fk_evaluation_epoch_config",
         ),
-        sa.UniqueConstraint("epoch_id", name="uq_evaluation_epoch_id"),
         sa.UniqueConstraint(
             "cohort_id",
+            "assignment_id",
             "epoch_id",
             name="uq_evaluation_epoch_lineage",
         ),
         sa.UniqueConstraint(
+            "epoch_id",
+            "assignment_id",
+            "config_hash",
+            "experiment_hash",
+            "cohort_hash",
+            name="uq_evaluation_epoch_identity",
+        ),
+        sa.UniqueConstraint(
             "cohort_id",
+            "assignment_id",
             "config_hash",
             "started_at",
             name="uq_evaluation_epoch_start",
@@ -147,9 +184,14 @@ def upgrade() -> None:
             name=op.f("ck_evaluation_epoch_cohort_hash"),
         ),
         sa.CheckConstraint(
-            "reset_reason IN ('account_reset','api_key_recreation',"
-            "'initial_equity_change') OR reset_reason IS NULL",
+            "((prior_epoch_id IS NULL AND reset_reason IS NULL) OR "
+            "(prior_epoch_id IS NOT NULL AND reset_reason IN "
+            "('account_reset','api_key_recreation','initial_equity_change')))",
             name=op.f("ck_evaluation_epoch_reset_reason"),
+        ),
+        sa.CheckConstraint(
+            "prior_epoch_id IS NULL OR prior_epoch_id <> epoch_id",
+            name=op.f("ck_evaluation_epoch_prior_not_self"),
         ),
         schema="research",
     )
@@ -157,10 +199,18 @@ def upgrade() -> None:
         "CREATE INDEX ix_evaluation_epoch_cohort_started "
         "ON research.evaluation_epochs (cohort_id, started_at DESC)"
     )
+    op.create_index(
+        "ix_evaluation_epoch_assignment_started",
+        "evaluation_epochs",
+        ["cohort_id", "assignment_id", "started_at"],
+        schema="research",
+    )
     op.create_table(
         "evaluation_scorecards",
         sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
+        sa.Column("evaluation_id", sa.String(64), nullable=False),
         sa.Column("epoch_id", sa.String(128), nullable=False),
+        sa.Column("assignment_id", sa.String(128), nullable=False),
         sa.Column("config_hash", sa.String(64), nullable=False),
         sa.Column("view_name", sa.String(32), nullable=False),
         sa.Column("currency", sa.String(8), nullable=False),
@@ -169,15 +219,31 @@ def upgrade() -> None:
         sa.Column("metrics", postgresql.JSONB(), nullable=False),
         _timestamps(),
         sa.ForeignKeyConstraint(
-            ["epoch_id"],
-            ["research.evaluation_epochs.epoch_id"],
+            [
+                "epoch_id",
+                "assignment_id",
+                "config_hash",
+                "experiment_hash",
+                "cohort_hash",
+            ],
+            [
+                "research.evaluation_epochs.epoch_id",
+                "research.evaluation_epochs.assignment_id",
+                "research.evaluation_epochs.config_hash",
+                "research.evaluation_epochs.experiment_hash",
+                "research.evaluation_epochs.cohort_hash",
+            ],
             ondelete="RESTRICT",
-            name="fk_evaluation_scorecard_epoch",
+            name="fk_evaluation_scorecard_epoch_identity",
         ),
         sa.UniqueConstraint(
-            "epoch_id",
+            "evaluation_id",
             "view_name",
-            name="uq_evaluation_scorecard_epoch_view",
+            name="uq_evaluation_scorecard_evaluation_view",
+        ),
+        sa.CheckConstraint(
+            f"evaluation_id ~ '{_SHA256}'",
+            name=op.f("ck_evaluation_scorecard_evaluation_id"),
         ),
         sa.CheckConstraint(
             f"config_hash ~ '{_SHA256}'",
@@ -192,8 +258,7 @@ def upgrade() -> None:
             name=op.f("ck_evaluation_scorecard_cohort_hash"),
         ),
         sa.CheckConstraint(
-            "view_name IN ('binance_broker','alpaca_broker',"
-            "'canonical_shadow')",
+            "view_name IN ('binance_broker','alpaca_broker','canonical_shadow')",
             name=op.f("ck_evaluation_scorecard_view_name"),
         ),
         sa.CheckConstraint(
@@ -217,7 +282,9 @@ def upgrade() -> None:
     op.create_table(
         "evaluation_verdicts",
         sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
+        sa.Column("evaluation_id", sa.String(64), nullable=False),
         sa.Column("epoch_id", sa.String(128), nullable=False),
+        sa.Column("assignment_id", sa.String(128), nullable=False),
         sa.Column("config_hash", sa.String(64), nullable=False),
         sa.Column("idempotency_key", sa.String(128), nullable=False),
         sa.Column("request_hash", sa.String(64), nullable=False),
@@ -227,16 +294,32 @@ def upgrade() -> None:
         sa.Column("cohort_hash", sa.String(64), nullable=False),
         _timestamps(),
         sa.ForeignKeyConstraint(
-            ["epoch_id"],
-            ["research.evaluation_epochs.epoch_id"],
+            [
+                "epoch_id",
+                "assignment_id",
+                "config_hash",
+                "experiment_hash",
+                "cohort_hash",
+            ],
+            [
+                "research.evaluation_epochs.epoch_id",
+                "research.evaluation_epochs.assignment_id",
+                "research.evaluation_epochs.config_hash",
+                "research.evaluation_epochs.experiment_hash",
+                "research.evaluation_epochs.cohort_hash",
+            ],
             ondelete="RESTRICT",
-            name="fk_evaluation_verdict_epoch",
+            name="fk_evaluation_verdict_epoch_identity",
         ),
-        sa.UniqueConstraint("epoch_id", name="uq_evaluation_verdict_epoch"),
+        sa.UniqueConstraint("evaluation_id", name="uq_evaluation_verdict_evaluation"),
         sa.UniqueConstraint(
             "epoch_id",
             "idempotency_key",
             name="uq_evaluation_verdict_idempotency",
+        ),
+        sa.CheckConstraint(
+            f"evaluation_id ~ '{_SHA256}'",
+            name=op.f("ck_evaluation_verdict_evaluation_id"),
         ),
         sa.CheckConstraint(
             f"config_hash ~ '{_SHA256}'",
@@ -280,8 +363,7 @@ def downgrade() -> None:
             f"ON research.{table}"
         )
         op.execute(
-            f"DROP TRIGGER IF EXISTS trg_rob850_{table}_immutable "
-            f"ON research.{table}"
+            f"DROP TRIGGER IF EXISTS trg_rob850_{table}_immutable ON research.{table}"
         )
     op.execute("DROP FUNCTION IF EXISTS research.reject_evaluation_mutation()")
     op.drop_index(
@@ -296,8 +378,11 @@ def downgrade() -> None:
         schema="research",
     )
     op.drop_table("evaluation_scorecards", schema="research")
-    op.execute(
-        "DROP INDEX IF EXISTS research.ix_evaluation_epoch_cohort_started"
+    op.drop_index(
+        "ix_evaluation_epoch_assignment_started",
+        table_name="evaluation_epochs",
+        schema="research",
     )
+    op.execute("DROP INDEX IF EXISTS research.ix_evaluation_epoch_cohort_started")
     op.drop_table("evaluation_epochs", schema="research")
     op.drop_table("evaluation_configs", schema="research")

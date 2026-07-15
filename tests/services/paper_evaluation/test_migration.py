@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import os
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -12,7 +12,7 @@ import asyncpg
 import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import delete, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -68,18 +68,23 @@ def test_migration_defines_all_tables_and_key_constraints() -> None:
         "evaluation_scorecards",
         "evaluation_verdicts",
         "uq_evaluation_config_hash",
+        "uq_evaluation_epoch_identity",
         "uq_evaluation_epoch_lineage",
         "uq_evaluation_epoch_start",
-        "uq_evaluation_scorecard_epoch_view",
-        "uq_evaluation_verdict_epoch",
+        "uq_evaluation_scorecard_evaluation_view",
+        "uq_evaluation_verdict_evaluation",
         "uq_evaluation_verdict_idempotency",
         "fk_evaluation_epoch_cohort",
+        "fk_evaluation_epoch_assignment",
+        "fk_evaluation_epoch_cohort_lineage",
+        "fk_evaluation_epoch_prior_lineage",
         "fk_evaluation_epoch_config",
-        "fk_evaluation_scorecard_epoch",
-        "fk_evaluation_verdict_epoch",
+        "fk_evaluation_scorecard_epoch_identity",
+        "fk_evaluation_verdict_epoch_identity",
         "ck_evaluation_scorecard_view_currency_consistency",
         "ck_evaluation_verdict_status",
         "ck_evaluation_epoch_reset_reason",
+        "ck_evaluation_epoch_prior_not_self",
     ):
         assert required in source
 
@@ -236,7 +241,7 @@ async def test_evaluation_tables_update_delete_and_truncate_are_rejected(
     await db_session.flush()
 
     config = EvaluationConfig(
-        config_hash=_hash(f"{nonce}:config-hash"),
+        config_hash=experiment.frozen_config_hash,
         schema_id="paper_evaluation_config.v1",
         formula_version="v1",
         currency_conversion_policy="none",
@@ -247,6 +252,8 @@ async def test_evaluation_tables_update_delete_and_truncate_are_rejected(
 
     epoch = EvaluationEpoch(
         epoch_id=f"epoch-{nonce}",
+        assignment_id=f"assignment-{nonce}",
+        validation_id=f"validation-{nonce}",
         cohort_id=cohort.cohort_id,
         config_hash=config.config_hash,
         initial_equity={
@@ -255,40 +262,151 @@ async def test_evaluation_tables_update_delete_and_truncate_are_rejected(
             "canonical_shadow": "10000",
         },
         started_at=datetime.now(UTC),
-        experiment_hash=_hash(f"{nonce}:exp"),
-        cohort_hash=_hash(f"{nonce}:cohort"),
+        experiment_hash=experiment.experiment_id,
+        cohort_hash=cohort.cohort_hash,
     )
     db_session.add(epoch)
     await db_session.flush()
 
     scorecard = EvaluationScorecard(
+        evaluation_id=_hash(f"{nonce}:evaluation"),
         epoch_id=epoch.epoch_id,
+        assignment_id=epoch.assignment_id,
         config_hash=config.config_hash,
         view_name="binance_broker",
         currency="USDT",
-        experiment_hash=_hash(f"{nonce}:exp"),
-        cohort_hash=_hash(f"{nonce}:cohort"),
+        experiment_hash=epoch.experiment_hash,
+        cohort_hash=epoch.cohort_hash,
         metrics={"net_return_pct": "0.05"},
     )
     db_session.add(scorecard)
+    for view_name, currency in (
+        ("alpaca_broker", "USD"),
+        ("canonical_shadow", "USDT"),
+    ):
+        db_session.add(
+            EvaluationScorecard(
+                evaluation_id=scorecard.evaluation_id,
+                epoch_id=epoch.epoch_id,
+                assignment_id=epoch.assignment_id,
+                config_hash=config.config_hash,
+                view_name=view_name,
+                currency=currency,
+                experiment_hash=epoch.experiment_hash,
+                cohort_hash=epoch.cohort_hash,
+                metrics={"net_return_pct": "0.05"},
+            )
+        )
 
     verdict = EvaluationVerdict(
+        evaluation_id=_hash(f"{nonce}:evaluation"),
         epoch_id=epoch.epoch_id,
+        assignment_id=epoch.assignment_id,
         config_hash=config.config_hash,
         idempotency_key=f"idem-{nonce}",
         request_hash=_hash(f"{nonce}:request"),
         verdict_status="insufficient_evidence",
         verdict_payload={"status": "insufficient_evidence"},
-        experiment_hash=_hash(f"{nonce}:exp"),
-        cohort_hash=_hash(f"{nonce}:cohort"),
+        experiment_hash=epoch.experiment_hash,
+        cohort_hash=epoch.cohort_hash,
     )
     db_session.add(verdict)
+    second_evaluation_id = _hash(f"{nonce}:evaluation-day-7")
+    for view_name, currency in (
+        ("binance_broker", "USDT"),
+        ("alpaca_broker", "USD"),
+        ("canonical_shadow", "USDT"),
+    ):
+        db_session.add(
+            EvaluationScorecard(
+                evaluation_id=second_evaluation_id,
+                epoch_id=epoch.epoch_id,
+                assignment_id=epoch.assignment_id,
+                config_hash=config.config_hash,
+                view_name=view_name,
+                currency=currency,
+                experiment_hash=epoch.experiment_hash,
+                cohort_hash=epoch.cohort_hash,
+                metrics={"evaluation_day": 7},
+            )
+        )
+    db_session.add(
+        EvaluationVerdict(
+            evaluation_id=second_evaluation_id,
+            epoch_id=epoch.epoch_id,
+            assignment_id=epoch.assignment_id,
+            config_hash=config.config_hash,
+            idempotency_key=f"idem-day-7-{nonce}",
+            request_hash=_hash(f"{nonce}:request-day-7"),
+            verdict_status="gate_blocked",
+            verdict_payload={"status": "gate_blocked", "evaluation_day": 7},
+            experiment_hash=epoch.experiment_hash,
+            cohort_hash=epoch.cohort_hash,
+        )
+    )
     await db_session.flush()
+    assert (
+        await db_session.scalar(
+            select(func.count(EvaluationScorecard.id)).where(
+                EvaluationScorecard.epoch_id == epoch.epoch_id
+            )
+        )
+        == 6
+    )
+    assert (
+        await db_session.scalar(
+            select(func.count(EvaluationVerdict.id)).where(
+                EvaluationVerdict.epoch_id == epoch.epoch_id
+            )
+        )
+        == 2
+    )
     config_pk = config.id
     epoch_pk = epoch.id
     scorecard_pk = scorecard.id
     verdict_pk = verdict.id
     await db_session.commit()
+
+    for suffix, prior_epoch_id in (
+        ("self", f"epoch-{nonce}-self"),
+        ("dangling", f"epoch-{nonce}-missing"),
+    ):
+        with pytest.raises(DBAPIError):
+            async with db_session.begin_nested():
+                db_session.add(
+                    EvaluationEpoch(
+                        epoch_id=f"epoch-{nonce}-{suffix}",
+                        assignment_id=epoch.assignment_id,
+                        validation_id=epoch.validation_id,
+                        cohort_id=epoch.cohort_id,
+                        config_hash=epoch.config_hash,
+                        initial_equity=epoch.initial_equity,
+                        started_at=epoch.started_at
+                        + timedelta(minutes=1 if suffix == "self" else 2),
+                        reset_reason="account_reset",
+                        prior_epoch_id=prior_epoch_id,
+                        experiment_hash=epoch.experiment_hash,
+                        cohort_hash=epoch.cohort_hash,
+                    )
+                )
+                await db_session.flush()
+
+    with pytest.raises(DBAPIError):
+        async with db_session.begin_nested():
+            db_session.add(
+                EvaluationScorecard(
+                    evaluation_id=_hash(f"{nonce}:mismatch-evaluation"),
+                    epoch_id=epoch.epoch_id,
+                    assignment_id=epoch.assignment_id,
+                    config_hash=_hash(f"{nonce}:wrong-config"),
+                    view_name="binance_broker",
+                    currency="USDT",
+                    experiment_hash=epoch.experiment_hash,
+                    cohort_hash=epoch.cohort_hash,
+                    metrics={},
+                )
+            )
+            await db_session.flush()
 
     # --- evaluation_configs ---
     with pytest.raises(DBAPIError, match="append-only"):
@@ -348,9 +466,7 @@ async def test_evaluation_tables_update_delete_and_truncate_are_rejected(
 
     with pytest.raises(DBAPIError, match="append-only"):
         await db_session.execute(
-            delete(EvaluationScorecard).where(
-                EvaluationScorecard.id == scorecard_pk
-            )
+            delete(EvaluationScorecard).where(EvaluationScorecard.id == scorecard_pk)
         )
         await db_session.commit()
     await db_session.rollback()

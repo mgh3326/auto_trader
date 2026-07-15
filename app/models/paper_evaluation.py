@@ -20,6 +20,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     String,
     UniqueConstraint,
@@ -64,9 +65,7 @@ class EvaluationConfig(Base):
     config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     schema_id: Mapped[str] = mapped_column(String(64), nullable=False)
     formula_version: Mapped[str] = mapped_column(String(16), nullable=False)
-    currency_conversion_policy: Mapped[str] = mapped_column(
-        String(16), nullable=False
-    )
+    currency_conversion_policy: Mapped[str] = mapped_column(String(16), nullable=False)
     payload: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -78,17 +77,54 @@ class EvaluationEpoch(Base):
 
     __tablename__ = "evaluation_epochs"
     __table_args__ = (
-        UniqueConstraint("epoch_id", name="uq_evaluation_epoch_id"),
         UniqueConstraint(
             "cohort_id",
+            "assignment_id",
             "epoch_id",
             name="uq_evaluation_epoch_lineage",
         ),
         UniqueConstraint(
+            "epoch_id",
+            "assignment_id",
+            "config_hash",
+            "experiment_hash",
+            "cohort_hash",
+            name="uq_evaluation_epoch_identity",
+        ),
+        UniqueConstraint(
             "cohort_id",
+            "assignment_id",
             "config_hash",
             "started_at",
             name="uq_evaluation_epoch_start",
+        ),
+        ForeignKeyConstraint(
+            ["cohort_id", "assignment_id"],
+            [
+                "research.paper_validation_cohort_assignments.cohort_id",
+                "research.paper_validation_cohort_assignments.assignment_id",
+            ],
+            ondelete="RESTRICT",
+            name="fk_evaluation_epoch_assignment",
+        ),
+        ForeignKeyConstraint(
+            ["cohort_id", "cohort_hash"],
+            [
+                "research.paper_validation_cohorts.cohort_id",
+                "research.paper_validation_cohorts.cohort_hash",
+            ],
+            ondelete="RESTRICT",
+            name="fk_evaluation_epoch_cohort_lineage",
+        ),
+        ForeignKeyConstraint(
+            ["cohort_id", "assignment_id", "prior_epoch_id"],
+            [
+                "research.evaluation_epochs.cohort_id",
+                "research.evaluation_epochs.assignment_id",
+                "research.evaluation_epochs.epoch_id",
+            ],
+            ondelete="RESTRICT",
+            name="fk_evaluation_epoch_prior_lineage",
         ),
         CheckConstraint(
             f"config_hash ~ '{_SHA256}'",
@@ -103,20 +139,33 @@ class EvaluationEpoch(Base):
             name=conv("ck_evaluation_epoch_cohort_hash"),
         ),
         CheckConstraint(
-            "reset_reason IN ('account_reset','api_key_recreation',"
-            "'initial_equity_change') OR reset_reason IS NULL",
+            "((prior_epoch_id IS NULL AND reset_reason IS NULL) OR "
+            "(prior_epoch_id IS NOT NULL AND reset_reason IN "
+            "('account_reset','api_key_recreation','initial_equity_change')))",
             name=conv("ck_evaluation_epoch_reset_reason"),
+        ),
+        CheckConstraint(
+            "prior_epoch_id IS NULL OR prior_epoch_id <> epoch_id",
+            name=conv("ck_evaluation_epoch_prior_not_self"),
         ),
         Index(
             "ix_evaluation_epoch_cohort_started",
             "cohort_id",
             text("started_at DESC"),
         ),
+        Index(
+            "ix_evaluation_epoch_assignment_started",
+            "cohort_id",
+            "assignment_id",
+            "started_at",
+        ),
         {"schema": "research"},
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     epoch_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    assignment_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    validation_id: Mapped[str] = mapped_column(String(128), nullable=False)
     cohort_id: Mapped[str] = mapped_column(
         String(128),
         ForeignKey(
@@ -135,16 +184,12 @@ class EvaluationEpoch(Base):
         ),
         nullable=False,
     )
-    initial_equity: Mapped[dict[str, object]] = mapped_column(
-        JSONB, nullable=False
-    )
+    initial_equity: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
     reset_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    prior_epoch_id: Mapped[str | None] = mapped_column(
-        String(128), nullable=True
-    )
+    prior_epoch_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     experiment_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     cohort_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -158,9 +203,31 @@ class EvaluationScorecard(Base):
     __tablename__ = "evaluation_scorecards"
     __table_args__ = (
         UniqueConstraint(
-            "epoch_id",
+            "evaluation_id",
             "view_name",
-            name="uq_evaluation_scorecard_epoch_view",
+            name="uq_evaluation_scorecard_evaluation_view",
+        ),
+        ForeignKeyConstraint(
+            [
+                "epoch_id",
+                "assignment_id",
+                "config_hash",
+                "experiment_hash",
+                "cohort_hash",
+            ],
+            [
+                "research.evaluation_epochs.epoch_id",
+                "research.evaluation_epochs.assignment_id",
+                "research.evaluation_epochs.config_hash",
+                "research.evaluation_epochs.experiment_hash",
+                "research.evaluation_epochs.cohort_hash",
+            ],
+            ondelete="RESTRICT",
+            name="fk_evaluation_scorecard_epoch_identity",
+        ),
+        CheckConstraint(
+            f"evaluation_id ~ '{_SHA256}'",
+            name=conv("ck_evaluation_scorecard_evaluation_id"),
         ),
         CheckConstraint(
             f"config_hash ~ '{_SHA256}'",
@@ -193,15 +260,9 @@ class EvaluationScorecard(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    epoch_id: Mapped[str] = mapped_column(
-        String(128),
-        ForeignKey(
-            "research.evaluation_epochs.epoch_id",
-            ondelete="RESTRICT",
-            name="fk_evaluation_scorecard_epoch",
-        ),
-        nullable=False,
-    )
+    evaluation_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    epoch_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    assignment_id: Mapped[str] = mapped_column(String(128), nullable=False)
     config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     view_name: Mapped[str] = mapped_column(String(32), nullable=False)
     currency: Mapped[str] = mapped_column(String(8), nullable=False)
@@ -218,11 +279,33 @@ class EvaluationVerdict(Base):
 
     __tablename__ = "evaluation_verdicts"
     __table_args__ = (
-        UniqueConstraint("epoch_id", name="uq_evaluation_verdict_epoch"),
+        UniqueConstraint("evaluation_id", name="uq_evaluation_verdict_evaluation"),
         UniqueConstraint(
             "epoch_id",
             "idempotency_key",
             name="uq_evaluation_verdict_idempotency",
+        ),
+        ForeignKeyConstraint(
+            [
+                "epoch_id",
+                "assignment_id",
+                "config_hash",
+                "experiment_hash",
+                "cohort_hash",
+            ],
+            [
+                "research.evaluation_epochs.epoch_id",
+                "research.evaluation_epochs.assignment_id",
+                "research.evaluation_epochs.config_hash",
+                "research.evaluation_epochs.experiment_hash",
+                "research.evaluation_epochs.cohort_hash",
+            ],
+            ondelete="RESTRICT",
+            name="fk_evaluation_verdict_epoch_identity",
+        ),
+        CheckConstraint(
+            f"evaluation_id ~ '{_SHA256}'",
+            name=conv("ck_evaluation_verdict_evaluation_id"),
         ),
         CheckConstraint(
             f"config_hash ~ '{_SHA256}'",
@@ -250,22 +333,14 @@ class EvaluationVerdict(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    epoch_id: Mapped[str] = mapped_column(
-        String(128),
-        ForeignKey(
-            "research.evaluation_epochs.epoch_id",
-            ondelete="RESTRICT",
-            name="fk_evaluation_verdict_epoch",
-        ),
-        nullable=False,
-    )
+    evaluation_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    epoch_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    assignment_id: Mapped[str] = mapped_column(String(128), nullable=False)
     config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     verdict_status: Mapped[str] = mapped_column(String(32), nullable=False)
-    verdict_payload: Mapped[dict[str, object]] = mapped_column(
-        JSONB, nullable=False
-    )
+    verdict_payload: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
     experiment_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     cohort_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(

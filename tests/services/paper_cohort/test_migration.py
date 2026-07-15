@@ -126,6 +126,13 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             # Base metadata represents the current application head. Rebuild
             # the ROB-849 boundary so later migrations are exercised instead
             # of colliding with tables that create_all already materialized.
+            for table in (
+                "evaluation_verdicts",
+                "evaluation_scorecards",
+                "evaluation_epochs",
+                "evaluation_configs",
+            ):
+                await connection.execute(text(f"DROP TABLE research.{table}"))
             await connection.execute(
                 text("DROP TABLE review.trade_retrospective_action_control")
             )
@@ -146,7 +153,7 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             )
 
         commands = (
-            ("stamp", "20260714_rob850_paper_evaluation"),
+            ("stamp", "20260714_rob849_paper_cohort"),
             ("downgrade", "20260713_rob848_paper_validation"),
             ("upgrade", "head"),
             ("downgrade", "20260713_rob848_paper_validation"),

@@ -336,6 +336,41 @@ async def _rebuild_legacy_paper_cohort_schema(conn) -> None:
         await conn.execute(text(f"DROP TABLE IF EXISTS research.{table} CASCADE"))
 
 
+async def _rebuild_legacy_paper_evaluation_schema(conn) -> None:
+    """Recreate the unshipped ROB-850 tables when their identity shape is stale."""
+    verdict_exists = await conn.scalar(
+        text("SELECT to_regclass('research.evaluation_verdicts') IS NOT NULL")
+    )
+    if not verdict_exists:
+        return
+    present = {
+        (row.table_name, row.column_name)
+        for row in (
+            await conn.execute(
+                text(
+                    "SELECT table_name, column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'research' AND "
+                    "(table_name, column_name) IN "
+                    "(('evaluation_epochs','assignment_id'),"
+                    "('evaluation_epochs','validation_id'),"
+                    "('evaluation_scorecards','evaluation_id'),"
+                    "('evaluation_verdicts','evaluation_id'))"
+                )
+            )
+        )
+    }
+    expected = {
+        ("evaluation_epochs", "assignment_id"),
+        ("evaluation_epochs", "validation_id"),
+        ("evaluation_scorecards", "evaluation_id"),
+        ("evaluation_verdicts", "evaluation_id"),
+    }
+    if expected <= present:
+        return
+    for table in reversed(_PAPER_EVALUATION_AUDIT_TABLES):
+        await conn.execute(text(f"DROP TABLE IF EXISTS research.{table} CASCADE"))
+
+
 _PAPER_COHORT_TRIGGER_DDL: tuple[str, ...] = (
     "ALTER TABLE research.paper_validation_cohorts ADD COLUMN IF NOT EXISTS "
     "assignment_count INTEGER NOT NULL DEFAULT 1",
@@ -398,6 +433,11 @@ _PAPER_COHORT_TRIGGER_DDL: tuple[str, ...] = (
 )
 
 _PAPER_EVALUATION_TRIGGER_DDL: tuple[str, ...] = (
+    "ALTER TABLE research.evaluation_epochs DROP CONSTRAINT IF EXISTS "
+    "fk_evaluation_epoch_assignment_identity",
+    "DROP INDEX IF EXISTS research.uq_paper_cohort_assignment_evaluation_identity",
+    "CREATE INDEX IF NOT EXISTS ix_evaluation_epoch_assignment_started "
+    "ON research.evaluation_epochs (cohort_id, assignment_id, started_at)",
     "CREATE OR REPLACE FUNCTION research.reject_evaluation_mutation() "
     "RETURNS trigger AS $$ BEGIN RAISE EXCEPTION "
     "'research.% is append-only/immutable; % rejected', TG_TABLE_NAME, TG_OP "
@@ -406,8 +446,7 @@ _PAPER_EVALUATION_TRIGGER_DDL: tuple[str, ...] = (
         statement
         for table in _PAPER_EVALUATION_AUDIT_TABLES
         for statement in (
-            f"DROP TRIGGER IF EXISTS trg_rob850_{table}_immutable ON "
-            f"research.{table}",
+            f"DROP TRIGGER IF EXISTS trg_rob850_{table}_immutable ON research.{table}",
             f"CREATE TRIGGER trg_rob850_{table}_immutable BEFORE UPDATE OR "
             f"DELETE ON research.{table} FOR EACH ROW EXECUTE FUNCTION "
             "research.reject_evaluation_mutation()",
@@ -1304,6 +1343,7 @@ async def apply_test_schema(conn) -> None:
         )
 
     await _rebuild_legacy_paper_cohort_schema(conn)
+    await _rebuild_legacy_paper_evaluation_schema(conn)
     await conn.run_sync(Base.metadata.create_all)
 
     # --- conditional "only when genuinely missing" probes (per-table catalog
