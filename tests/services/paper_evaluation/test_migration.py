@@ -81,7 +81,9 @@ def test_migration_defines_all_tables_and_key_constraints() -> None:
         "uq_evaluation_epoch_start",
         "uq_evaluation_scorecard_evaluation_view",
         "uq_evaluation_verdict_evaluation",
+        "uq_evaluation_verdict_full_identity",
         "uq_evaluation_verdict_idempotency",
+        "uq_paper_cohort_assignment_evaluation_identity",
         "fk_evaluation_epoch_cohort",
         "fk_evaluation_epoch_assignment",
         "fk_evaluation_epoch_assignment_identity",
@@ -95,6 +97,7 @@ def test_migration_defines_all_tables_and_key_constraints() -> None:
         "ck_evaluation_verdict_status",
         "ck_evaluation_epoch_reset_reason",
         "ck_evaluation_epoch_prior_not_self",
+        "validate_evaluation_completeness",
     ):
         assert required in source
 
@@ -549,22 +552,102 @@ async def test_evaluation_tables_update_delete_and_truncate_are_rejected(
                 )
                 await db_session.flush()
 
-    with pytest.raises(DBAPIError):
+    other_cohort = PaperValidationCohort(
+        cohort_id=f"other-cohort-{nonce}",
+        cohort_hash=_hash(f"{nonce}:other-cohort"),
+        venues=["binance", "alpaca"],
+        symbols=["BTCUSDT", "ETHUSDT"],
+        market="spot",
+        leverage="1",
+        interval="1m",
+        required_lookback=30,
+        max_capture_skew_ms=5_000,
+        max_ticker_age_ms=5_000,
+        capital_notional_usd="100",
+        assignment_count=1,
+        activated_at=datetime.now(UTC),
+    )
+    other_assignment = PaperValidationCohortAssignment(
+        assignment_id=f"other-assignment-{nonce}",
+        cohort_id=other_cohort.cohort_id,
+        ordinal=0,
+        role="champion",
+        validation_id=f"other-validation-{nonce}",
+        validation_version=1,
+        experiment_id=experiment.experiment_id,
+        source_backtest_run_id=run.id,
+        strategy_version_id=experiment.strategy_version,
+        target_weights={"BTCUSDT": "0.5", "ETHUSDT": "0.5"},
+        experiment_hash=experiment.experiment_id,
+        strategy_hash=experiment.strategy_hash,
+        config_hash=config_hash,
+        policy_hash=experiment.policy_hash,
+        input_hash=_hash(f"{nonce}:other-input"),
+    )
+    db_session.add_all((other_cohort, other_assignment))
+    await db_session.flush()
+    with pytest.raises(DBAPIError, match="fk_evaluation_epoch_prior_lineage"):
         async with db_session.begin_nested():
             db_session.add(
-                EvaluationScorecard(
-                    evaluation_id=_hash(f"{nonce}:mismatch-evaluation"),
-                    epoch_id=epoch.epoch_id,
-                    assignment_id=epoch.assignment_id,
-                    config_hash=_hash(f"{nonce}:wrong-config"),
-                    view_name="binance_broker",
-                    currency="USDT",
-                    experiment_hash=epoch.experiment_hash,
-                    cohort_hash=epoch.cohort_hash,
-                    metrics={},
+                EvaluationEpoch(
+                    epoch_id=f"other-epoch-{nonce}",
+                    assignment_id=other_assignment.assignment_id,
+                    validation_id=other_assignment.validation_id,
+                    cohort_id=other_cohort.cohort_id,
+                    config_hash=config_hash,
+                    initial_equity=epoch.initial_equity,
+                    started_at=epoch.started_at + timedelta(minutes=3),
+                    reset_reason="account_reset",
+                    prior_epoch_id=epoch.epoch_id,
+                    experiment_hash=experiment_hash,
+                    cohort_hash=other_cohort.cohort_hash,
                 )
             )
             await db_session.flush()
+
+    correct_identity = {
+        "config_hash": epoch.config_hash,
+        "experiment_hash": epoch.experiment_hash,
+        "cohort_hash": epoch.cohort_hash,
+    }
+    for model, field in (
+        (EvaluationScorecard, "config_hash"),
+        (EvaluationScorecard, "experiment_hash"),
+        (EvaluationScorecard, "cohort_hash"),
+        (EvaluationVerdict, "config_hash"),
+        (EvaluationVerdict, "experiment_hash"),
+        (EvaluationVerdict, "cohort_hash"),
+    ):
+        identity = {
+            **correct_identity,
+            field: _hash(f"{nonce}:{model.__name__}:{field}"),
+        }
+        common = {
+            "evaluation_id": _hash(f"{nonce}:{model.__name__}:{field}:evaluation"),
+            "epoch_id": epoch.epoch_id,
+            "assignment_id": epoch.assignment_id,
+            **identity,
+        }
+        row = (
+            EvaluationScorecard(
+                **common,
+                view_name="binance_broker",
+                currency="USDT",
+                metrics={},
+            )
+            if model is EvaluationScorecard
+            else EvaluationVerdict(
+                **common,
+                idempotency_key=f"mismatch-{model.__name__}-{field}-{nonce}",
+                request_hash=_hash(f"{nonce}:{model.__name__}:{field}:request"),
+                verdict_status="insufficient_evidence",
+                verdict_payload={},
+            )
+        )
+        with pytest.raises(DBAPIError, match="epoch_identity"):
+            async with db_session.begin_nested():
+                db_session.add(row)
+                await db_session.flush()
 
     # --- evaluation_configs ---
     with pytest.raises(DBAPIError, match="append-only"):

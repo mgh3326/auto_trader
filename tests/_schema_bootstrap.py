@@ -365,13 +365,16 @@ async def _rebuild_legacy_paper_evaluation_schema(conn) -> None:
         ("evaluation_scorecards", "evaluation_id"),
         ("evaluation_verdicts", "evaluation_id"),
     }
-    identity_fk = await conn.scalar(
+    required_constraints = await conn.scalar(
         text(
-            "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = "
-            "'fk_evaluation_epoch_assignment_identity')"
+            "SELECT count(DISTINCT conname) FROM pg_constraint WHERE conname IN ("
+            "'fk_evaluation_epoch_assignment_identity',"
+            "'uq_evaluation_epoch_id',"
+            "'uq_evaluation_verdict_full_identity',"
+            "'fk_evaluation_scorecard_verdict_identity')"
         )
     )
-    if expected <= present and identity_fk:
+    if expected <= present and required_constraints == 4:
         return
     for table in reversed(_PAPER_EVALUATION_AUDIT_TABLES):
         await conn.execute(text(f"DROP TABLE IF EXISTS research.{table} CASCADE"))

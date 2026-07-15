@@ -962,10 +962,10 @@ class PaperEvaluationPnL:
             by_symbol[mark.symbol].append(mark)
         for symbol in mapping.benchmark_symbols:
             by_symbol[symbol].sort(key=lambda item: item.marked_at)
-            if not by_symbol[symbol] or by_symbol[symbol][-1].marked_at != window.end:
+            if not by_symbol[symbol]:
                 raise EvaluationConfigError(
                     "insufficient_evidence",
-                    f"missing window-end native mark for {symbol}",
+                    f"missing native mark for {symbol}",
                 )
         for fill in fills:
             if not window.start <= fill.filled_at <= window.end:
@@ -1095,7 +1095,31 @@ class PaperEvaluationPnL:
         curve = [initial]
         consumed: list[str] = []
         timing = self._config.mark_fill_timing.fill_timing
-        for index, observation in enumerate(observations):
+        canonical_bars: dict[
+            tuple[datetime, datetime],
+            tuple[dict[str, Decimal], dict[str, Decimal]],
+        ] = {}
+        for observation in observations:
+            source_bars = observation.candle_bars or (
+                (
+                    observation.candle_open_at,
+                    observation.candle_close_at,
+                    observation.opens,
+                    observation.closes,
+                ),
+            )
+            for opened_at, closed_at, opens, closes in source_bars:
+                key = (opened_at, closed_at)
+                value = (dict(opens), dict(closes))
+                previous = canonical_bars.get(key)
+                if previous is not None and previous != value:
+                    raise EvaluationConfigError(
+                        "cross_wired_evidence", "conflicting canonical candle"
+                    )
+                canonical_bars[key] = value
+        ordered_bars = sorted(canonical_bars.items())
+        last_mark_prices: dict[str, Decimal] | None = None
+        for observation in observations:
             if not window.start <= observation.observed_at < window.end:
                 raise EvaluationConfigError("invalid_evaluation_window")
             closes = dict(observation.closes)
@@ -1108,19 +1132,25 @@ class PaperEvaluationPnL:
                 target_qty = equity * weights.get(symbol, _ZERO) / closes[symbol]
                 deltas[symbol] = target_qty - positions[symbol]
             if timing == "next_bar_open" and any(deltas.values()):
-                if index + 1 >= len(observations):
+                next_bar = next(
+                    (
+                        (key, prices)
+                        for key, prices in ordered_bars
+                        if key[0] > observation.candle_close_at
+                    ),
+                    None,
+                )
+                if next_bar is None:
                     raise EvaluationConfigError(
                         "insufficient_evidence", "next canonical bar missing"
                     )
-                next_observation = observations[index + 1]
-                gap = next_observation.candle_open_at - observation.candle_close_at
+                (next_open_at, _next_close_at), (fill_prices, mark_prices) = next_bar
+                gap = next_open_at - observation.candle_close_at
                 if gap.total_seconds() < 0 or gap.total_seconds() > 1:
                     raise EvaluationConfigError(
                         "insufficient_evidence",
                         "next canonical candle is not contiguous",
                     )
-                fill_prices = dict(next_observation.opens)
-                mark_prices = dict(next_observation.closes)
             else:
                 fill_prices = closes
                 mark_prices = closes
@@ -1158,12 +1188,13 @@ class PaperEvaluationPnL:
                     for symbol, quantity in positions.items()
                 )
             )
+            last_mark_prices = mark_prices
             consumed.append(observation.snapshot_hash)
         if not observations:
             raise EvaluationConfigError(
                 "insufficient_evidence", "shadow evidence missing"
             )
-        final_closes = dict(observations[-1].closes)
+        final_closes = last_mark_prices or dict(observations[-1].closes)
         ending = cash + sum(
             quantity * final_closes[symbol] for symbol, quantity in positions.items()
         )

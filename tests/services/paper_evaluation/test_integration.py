@@ -208,3 +208,49 @@ def test_zero_delta_shadow_observations_are_not_fills() -> None:
     )
     assert metrics.fill_count == 0
     assert metrics.observation_count == 2
+
+
+def test_next_bar_open_uses_deduped_candle_from_later_snapshot_lookback() -> None:
+    evidence = make_evidence()
+    config = make_evaluation_config(
+        min_observations=1,
+        min_fills=1,
+        min_calendar_days=7,
+        fill_timing="next_bar_open",
+        fee_rate_bps=Decimal("0"),
+        spread_bps=Decimal("0"),
+        slippage_bps=Decimal("0"),
+    )
+    first = evidence.shadow_observations[0]
+    next_open = first.candle_close_at + timedelta(milliseconds=1)
+    next_close = next_open + timedelta(minutes=1) - timedelta(milliseconds=1)
+    immediate_bar = (
+        next_open,
+        next_close,
+        (("BTCUSDT", Decimal("100")), ("ETHUSDT", Decimal("100"))),
+        (("BTCUSDT", Decimal("102")), ("ETHUSDT", Decimal("102"))),
+    )
+    observations = (
+        first,
+        replace(
+            evidence.shadow_observations[1],
+            candle_bars=(immediate_bar,),
+        ),
+    )
+    epoch = evidence.epoch.model_copy(
+        update={
+            "config_hash": config.config_hash(),
+            "initial_equity": config.initial_equity,
+        }
+    )
+    metrics = PaperEvaluationPnL(
+        config,
+        epoch,
+        experiment_hash=epoch.experiment_hash,
+        cohort_hash=epoch.cohort_hash,
+    ).compute_shadow_evidence_view(
+        observations=observations,
+        window=evidence.shadow_window,
+    )
+    assert metrics.fill_count > 0
+    assert metrics.ending_equity > Decimal("0")
