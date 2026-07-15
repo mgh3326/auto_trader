@@ -1002,7 +1002,9 @@ async def test_orderable_cash_with_symbol_calls_orderable_amount(monkeypatch):
     mcp = DummyMCP()
     _register(mcp)
 
-    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](symbol="005930")
+    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](
+        symbol="005930", side="buy", price=70000
+    )
 
     assert response["success"] is True
     assert response["source"] == "kiwoom"
@@ -1042,6 +1044,42 @@ async def test_orderable_cash_with_symbol_side_price_sends_trde_tp_and_uv(monkey
     assert len(orderable_calls) == 1
     assert orderable_calls[0]["side"] == "buy"
     assert orderable_calls[0]["price"] == 70000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("side", "price"),
+    [
+        (None, 70000),
+        ("buy", None),
+        (None, None),
+    ],
+)
+async def test_orderable_cash_symbol_path_rejects_missing_side_or_price(
+    monkeypatch, side, price
+):
+    # ROB-891 — Official kt00010 symbol path requires stk_cd, trde_tp, uv.
+    # Missing side or price must be rejected before any dispatch.
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    calls = _patch_fake_kiwoom_account_client(
+        monkeypatch,
+        mod,
+        payloads={
+            "orderable_amount": {"return_code": 0, "ord_alowa": "1500000"},
+        },
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](
+        symbol="005930", side=side, price=price
+    )
+
+    assert response["success"] is False
+    assert response["cash"] is None
+    assert response["provenance"]["api_id"] == "kt00010"
+    assert all(c.get("method") != "orderable_amount" for c in calls)
 
 
 @pytest.mark.asyncio
@@ -1145,7 +1183,9 @@ async def test_orderable_cash_unavailable_evidence_fails_closed(
     mcp = DummyMCP()
     _register(mcp)
 
-    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](symbol=symbol)
+    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](
+        symbol=symbol, side="buy", price=70000
+    )
 
     assert response["success"] is False
     assert response["error"] == "kiwoom_mock_evidence_invalid"
@@ -1192,7 +1232,9 @@ async def test_orderable_cash_broker_rejection_has_stable_failure_source(
     mcp = DummyMCP()
     _register(mcp)
 
-    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](symbol=symbol)
+    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](
+        symbol=symbol, side="buy", price=70000
+    )
 
     assert response["success"] is False
     assert response["error"] == "kiwoom_mock_broker_error"
@@ -1238,7 +1280,9 @@ async def test_orderable_cash_broker_error_is_fail_closed(monkeypatch, symbol, a
     mcp = DummyMCP()
     _register(mcp)
 
-    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](symbol=symbol)
+    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](
+        symbol=symbol, side="buy", price=70000
+    )
 
     assert response["success"] is False
     assert response["error"] == "kiwoom_mock_transport_error"
@@ -1487,7 +1531,9 @@ async def test_orderable_cash_both_branches_fail_closed_on_live_provenance(
     mcp = DummyMCP()
     _register(mcp)
 
-    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](symbol=symbol)
+    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](
+        symbol=symbol, side="buy", price=70000
+    )
 
     assert response["success"] is False
     assert response["cash"] is None

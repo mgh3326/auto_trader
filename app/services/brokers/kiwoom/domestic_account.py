@@ -43,15 +43,25 @@ class KiwoomDomesticAccountClient:
         cont_yn: str | None = None,
         next_key: str | None = None,
     ) -> dict[str, Any]:
-        body: dict[str, Any] = {
-            "dmst_stex_tp": constants.ACCOUNT_DMST_STEX_TP_DEFAULT,
-            "stk_cd": normalize_krx_symbol(symbol),
-        }
-        if side is not None and price is not None:
-            body["trde_tp"] = (
-                constants.TRADE_TYPE_BUY if side == "buy" else constants.TRADE_TYPE_SELL
+        # ROB-891 — Official kt00010 body fields: stk_cd, trde_tp, uv.
+        # Both side and price are required (trde_tp + uv are mandatory).
+        # dmst_stex_tp is NOT in the official kt00010 docs.
+        canonical_symbol = normalize_krx_symbol(symbol)
+        if side not in ("buy", "sell"):
+            raise ValueError(
+                f"kt00010 symbol path requires side='buy'|'sell'; got {side!r}"
             )
-            body["uv"] = str(price)
+        if price is None or not isinstance(price, int) or price <= 0:
+            raise ValueError(
+                f"kt00010 symbol path requires a positive int price; got {price!r}"
+            )
+        body: dict[str, Any] = {
+            "stk_cd": canonical_symbol,
+            "trde_tp": (
+                constants.TRADE_TYPE_BUY if side == "buy" else constants.TRADE_TYPE_SELL
+            ),
+            "uv": str(price),
+        }
         return await self._client.post_api(
             api_id=constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID,
             path=ACCOUNT_PATH,
@@ -66,12 +76,13 @@ class KiwoomDomesticAccountClient:
         cont_yn: str | None = None,
         next_key: str | None = None,
     ) -> dict[str, Any]:
+        # ROB-891 — Official kt00001 body is exactly {"qry_tp": "2"}.
+        # "2" = 일반조회 (current orderable cash). dmst_stex_tp is NOT in
+        # the official kt00001 docs.
         return await self._client.post_api(
             api_id=constants.ACCOUNT_DEPOSIT_API_ID,
             path=ACCOUNT_PATH,
-            body={
-                "dmst_stex_tp": constants.ACCOUNT_DMST_STEX_TP_DEFAULT,
-            },
+            body={"qry_tp": constants.ACCOUNT_DEPOSIT_QRY_TP_DEFAULT},
             cont_yn=cont_yn,
             next_key=next_key,
         )

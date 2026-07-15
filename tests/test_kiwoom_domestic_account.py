@@ -30,66 +30,89 @@ class FakeClient:
 
 
 @pytest.mark.asyncio
-async def test_get_orderable_amount_uses_kt00010():
-    fake = FakeClient()
-    acct = KiwoomDomesticAccountClient(fake)
-    await acct.get_orderable_amount(symbol="005930")
-    assert fake.calls[-1]["api_id"] == constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID
-    assert fake.calls[-1]["body"]["stk_cd"] == "005930"
-
-
-@pytest.mark.asyncio
-async def test_get_orderable_amount_includes_dmst_stex_tp():
-    # ROB-460 — get_orderable_cash(symbol=...) routes here (kt00010). Its sibling
-    # account-cash read kt00018 was PROVEN (2026-06-09 live) to require
-    # dmst_stex_tp (국내거래소구분); leaving kt00010 — the SAME tool's symbol path —
-    # without it would reproduce the partial-fix that produced ROB-460. The value
-    # "KRX" is proven correct by every order endpoint (kt10000-kt10003).
-    fake = FakeClient()
-    acct = KiwoomDomesticAccountClient(fake)
-    await acct.get_orderable_amount(symbol="005930")
-    call = fake.calls[-1]
-    assert call["api_id"] == constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID
-    assert call["body"]["stk_cd"] == "005930"
-    assert call["body"]["dmst_stex_tp"] == constants.ACCOUNT_DMST_STEX_TP_DEFAULT
-
-
-@pytest.mark.asyncio
-async def test_get_orderable_amount_with_side_price_sends_trde_tp_and_uv():
+async def test_get_orderable_amount_exact_body_no_dmst_stex_tp():
+    # ROB-891 — Official kt00010 body: stk_cd, trde_tp, uv.
+    # dmst_stex_tp is NOT in the official docs for kt00010.
     fake = FakeClient()
     acct = KiwoomDomesticAccountClient(fake)
     await acct.get_orderable_amount(symbol="005930", side="buy", price=70000)
     call = fake.calls[-1]
-    assert call["body"]["trde_tp"] == constants.TRADE_TYPE_BUY
-    assert call["body"]["uv"] == "70000"
+    assert call["api_id"] == constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID
+    assert call["body"] == {
+        "stk_cd": "005930",
+        "trde_tp": constants.TRADE_TYPE_BUY,
+        "uv": "70000",
+    }
+    assert "dmst_stex_tp" not in call["body"]
 
 
 @pytest.mark.asyncio
-async def test_get_orderable_amount_with_sell_side_sends_correct_trde_tp():
+async def test_get_orderable_amount_buy_trde_tp_is_two():
+    # ROB-891 — Official: 매수(buy) = "2"
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+    await acct.get_orderable_amount(symbol="005930", side="buy", price=70000)
+    assert fake.calls[-1]["body"]["trde_tp"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_get_orderable_amount_sell_trde_tp_is_one():
+    # ROB-891 — Official: 매도(sell) = "1"
     fake = FakeClient()
     acct = KiwoomDomesticAccountClient(fake)
     await acct.get_orderable_amount(symbol="005930", side="sell", price=70000)
-    assert fake.calls[-1]["body"]["trde_tp"] == constants.TRADE_TYPE_SELL
+    assert fake.calls[-1]["body"]["trde_tp"] == "1"
 
 
 @pytest.mark.asyncio
-async def test_get_orderable_amount_without_side_price_omits_trde_tp_and_uv():
+async def test_get_orderable_amount_serializes_price_as_string_uv():
     fake = FakeClient()
     acct = KiwoomDomesticAccountClient(fake)
-    await acct.get_orderable_amount(symbol="005930")
-    body = fake.calls[-1]["body"]
-    assert "trde_tp" not in body
-    assert "uv" not in body
+    await acct.get_orderable_amount(symbol="005930", side="buy", price=70000)
+    uv = fake.calls[-1]["body"]["uv"]
+    assert isinstance(uv, str)
+    assert uv == "70000"
 
 
 @pytest.mark.asyncio
-async def test_get_deposit_uses_kt00001_with_dmst_stex_tp():
+@pytest.mark.parametrize("side", [None, "hold", "", "unknown"])
+async def test_get_orderable_amount_rejects_missing_or_invalid_side_before_dispatch(
+    side,
+):
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+    with pytest.raises(ValueError, match="side"):
+        await acct.get_orderable_amount(
+            symbol="005930", side=side, price=70000
+        )
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("price", [None, 0, -100])
+async def test_get_orderable_amount_rejects_missing_or_invalid_price_before_dispatch(
+    price,
+):
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+    with pytest.raises(ValueError, match="price"):
+        await acct.get_orderable_amount(
+            symbol="005930", side="buy", price=price
+        )
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+async def test_get_deposit_exact_body_qry_tp_two():
+    # ROB-891 — Official kt00001 body is exactly {"qry_tp": "2"}.
+    # dmst_stex_tp is NOT in the official docs for kt00001.
     fake = FakeClient()
     acct = KiwoomDomesticAccountClient(fake)
     await acct.get_deposit()
     call = fake.calls[-1]
     assert call["api_id"] == constants.ACCOUNT_DEPOSIT_API_ID
-    assert call["body"]["dmst_stex_tp"] == constants.ACCOUNT_DMST_STEX_TP_DEFAULT
+    assert call["body"] == {"qry_tp": "2"}
+    assert "dmst_stex_tp" not in call["body"]
 
 
 @pytest.mark.asyncio
@@ -184,6 +207,6 @@ async def test_get_orderable_amount_forwards_trimmed_canonical_symbol():
     fake = FakeClient()
     acct = KiwoomDomesticAccountClient(fake)
 
-    await acct.get_orderable_amount(symbol=" 005930 ")
+    await acct.get_orderable_amount(symbol=" 005930 ", side="buy", price=70000)
 
     assert fake.calls[-1]["body"]["stk_cd"] == "005930"
