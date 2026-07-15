@@ -15,6 +15,10 @@ caller_source_var: ContextVar[CallerSource] = ContextVar(
     "mcp_caller_source",
     default="none",
 )
+caller_argument_names_var: ContextVar[frozenset[str] | None] = ContextVar(
+    "mcp_caller_argument_names",
+    default=None,
+)
 
 
 def get_caller_agent_id() -> str | None:
@@ -25,3 +29,8 @@ def get_caller_agent_id() -> str | None:
 def get_caller_source() -> CallerSource:
     """Return the source used to resolve the current MCP caller identity."""
     return caller_source_var.get()
+
+
+def get_caller_argument_names() -> frozenset[str] | None:
+    """Return raw MCP argument names, preserving omitted-vs-explicit-null."""
+    return caller_argument_names_var.get()

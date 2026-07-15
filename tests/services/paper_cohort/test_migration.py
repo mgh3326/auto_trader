@@ -100,6 +100,7 @@ def test_migration_defines_full_lineage_reservation_fence_and_claim_states() -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("retrospective_action_control_lock")
 async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
     base_url = make_url(settings.DATABASE_URL)
     if base_url.get_backend_name() != "postgresql":

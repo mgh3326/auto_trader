@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastmcp.server.dependencies import get_http_request
 from fastmcp.server.middleware import Middleware
@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.mcp_server.caller_identity import (
     CallerSource,
     caller_agent_id_var,
+    caller_argument_names_var,
     caller_source_var,
 )
 
@@ -62,8 +63,15 @@ class CallerIdentityMiddleware(Middleware):
         caller_agent_id, caller_source = _resolve_caller_identity()
         agent_id_token = caller_agent_id_var.set(caller_agent_id)
         source_token = caller_source_var.set(caller_source)
+        raw_arguments: Any = getattr(context.message, "arguments", None)
+        argument_names_token = caller_argument_names_var.set(
+            frozenset(raw_arguments.keys())
+            if isinstance(raw_arguments, dict)
+            else frozenset()
+        )
         try:
             return await call_next(context)
         finally:
+            caller_argument_names_var.reset(argument_names_token)
             caller_source_var.reset(source_token)
             caller_agent_id_var.reset(agent_id_token)

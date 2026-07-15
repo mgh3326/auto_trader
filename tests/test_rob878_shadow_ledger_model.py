@@ -7,6 +7,8 @@ test DB with the correct columns, constraints, indexes, and control row.
 import pytest
 from sqlalchemy import text
 
+pytestmark = pytest.mark.usefixtures("retrospective_action_control_lock")
+
 
 def test_trade_retrospective_action_table_registered_on_metadata():
     """Both new tables must be registered on Base.metadata for create_all."""
