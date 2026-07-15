@@ -62,3 +62,37 @@ export interface NextActionsResponse {
   scan_limit: number;
   items: NextActionRow[];
 }
+
+// ROB-885 — must field-for-field match backend CanonicalActionRow.
+export interface RetrospectiveAction {
+  action_id: string;
+  version: number;
+  action: string;
+  owner: string | null;
+  issue_id: string | null;
+  status: string;
+  due_kst_date: string | null;
+  overdue: boolean;
+  status_changed_at: string | null;
+  resolved_at: string | null;
+  status_actor: string | null;
+  status_source: string | null;
+  status_reason: string | null;
+  retrospective_id: number;
+  correlation_id: string | null;
+  symbol: string | null;
+  market: string | null;
+  trigger_type: string | null;
+  outcome: string | null;
+  realized_pnl: number | null;
+  created_at: string | null;
+}
+
+export interface RetrospectiveActionsResponse {
+  total: number;
+  count: number;
+  limit: number;
+  offset: number;
+  as_of: string;
+  items: RetrospectiveAction[];
+}
