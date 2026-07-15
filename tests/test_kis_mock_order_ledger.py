@@ -746,6 +746,357 @@ async def test_shadow_exposure_unknown_on_db_error(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# ROB-890: conservative KR DAY expiry for shadow reservation
+# ---------------------------------------------------------------------------
+
+_KST = __import__("datetime").timezone(__import__("datetime").timedelta(hours=9))
+
+
+def _make_shadow_row(  # noqa: PLR0913 — test factory
+    *,
+    side: str = "buy",
+    instrument_type: str = "equity_kr",
+    ordered_at: str = "2026-07-15T09:30:00+09:00",
+    amount: float = 140_000.0,
+    remaining_qty: float = 2.0,
+    lifecycle_state: str = "accepted",
+    order_no: str = "MOCK-001",
+    ledger_id: int = 1,
+) -> dict:
+    """Build a shadow pending order dict matching _shadow_row_to_order output."""
+    return {
+        "order_id": order_no,
+        "ledger_id": ledger_id,
+        "symbol": "005930",
+        "market": "kr" if instrument_type == "equity_kr" else "us",
+        "instrument_type": instrument_type,
+        "side": side,
+        "order_type": "limit",
+        "status": "pending",
+        "lifecycle_state": lifecycle_state,
+        "ordered_qty": 2.0,
+        "remaining_qty": remaining_qty,
+        "filled_qty": 0.0,
+        "ordered_price": 70_000.0,
+        "amount": amount,
+        "currency": "KRW" if instrument_type == "equity_kr" else "USD",
+        "ordered_at": ordered_at,
+        "created_at": ordered_at,
+        "source": "kis_mock_ledger_shadow",
+        "confidence": "db_shadow_pending",
+        "warning": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_previous_day_sell_reservation_does_not_lock_sellable(monkeypatch):
+    """ROB-890: stale KR DAY sell from a prior session frees sellable qty."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    rows = [
+        _make_shadow_row(
+            side="sell",
+            ordered_at="2026-07-14T09:30:00+09:00",
+            remaining_qty=2.0,
+            order_no="STALE-SELL",
+        )
+    ]
+    monkeypatch.setattr(
+        kis_mock_ledger,
+        "_list_kis_mock_shadow_pending_orders",
+        AsyncMock(return_value=rows),
+    )
+
+    result = await kis_mock_ledger._get_kis_mock_shadow_exposure(
+        normalized_symbol="005930",
+        market_type="equity_kr",
+        now=__import__("datetime").datetime(2026, 7, 15, 9, 30, tzinfo=_KST),
+    )
+
+    assert result["buy_reserved_amount"] == 0.0
+    assert result["sell_reserved_quantity"] == 0.0
+    assert result["expired_reservation_count"] == 1
+    # Expired row still visible in orders list
+    assert len(result["orders"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_previous_day_buy_reservation_does_not_lock_cash(monkeypatch):
+    """ROB-890: stale KR DAY buy from a prior session frees reserved cash."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    rows = [
+        _make_shadow_row(
+            side="buy",
+            ordered_at="2026-07-14T09:30:00+09:00",
+            amount=140_000.0,
+            order_no="STALE-BUY",
+        )
+    ]
+    monkeypatch.setattr(
+        kis_mock_ledger,
+        "_list_kis_mock_shadow_pending_orders",
+        AsyncMock(return_value=rows),
+    )
+
+    result = await kis_mock_ledger._get_kis_mock_shadow_exposure(
+        normalized_symbol="005930",
+        market_type="equity_kr",
+        now=__import__("datetime").datetime(2026, 7, 15, 9, 30, tzinfo=_KST),
+    )
+
+    assert result["buy_reserved_amount"] == 0.0
+    assert result["sell_reserved_quantity"] == 0.0
+    assert result["expired_reservation_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_same_day_valid_session_order_still_locks(monkeypatch):
+    """ROB-890: same-session KR DAY order keeps reserving cash/qty."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    rows = [
+        _make_shadow_row(
+            side="buy",
+            ordered_at="2026-07-15T09:30:00+09:00",
+            amount=140_000.0,
+        ),
+        _make_shadow_row(
+            side="sell",
+            ordered_at="2026-07-15T10:00:00+09:00",
+            remaining_qty=1.0,
+            order_no="MOCK-SELL",
+            ledger_id=2,
+        ),
+    ]
+    monkeypatch.setattr(
+        kis_mock_ledger,
+        "_list_kis_mock_shadow_pending_orders",
+        AsyncMock(return_value=rows),
+    )
+
+    result = await kis_mock_ledger._get_kis_mock_shadow_exposure(
+        now=__import__("datetime").datetime(2026, 7, 15, 10, 30, tzinfo=_KST),
+    )
+
+    assert result["buy_reserved_amount"] == 140_000.0
+    assert result["sell_reserved_quantity"] == 1.0
+    assert result["expired_reservation_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_partial_fill_remaining_quantity_reserved(monkeypatch):
+    """ROB-890: partial fill rows reserve only remaining qty, not full order."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    rows = [
+        _make_shadow_row(
+            side="sell",
+            lifecycle_state="fill",
+            ordered_at="2026-07-15T09:30:00+09:00",
+            remaining_qty=0.5,
+            order_no="MOCK-PARTIAL",
+        )
+    ]
+    monkeypatch.setattr(
+        kis_mock_ledger,
+        "_list_kis_mock_shadow_pending_orders",
+        AsyncMock(return_value=rows),
+    )
+
+    result = await kis_mock_ledger._get_kis_mock_shadow_exposure(
+        now=__import__("datetime").datetime(2026, 7, 15, 10, 30, tzinfo=_KST),
+    )
+
+    # Only remaining 0.5 is reserved, not the full 2.0
+    assert result["sell_reserved_quantity"] == 0.5
+
+
+@pytest.mark.asyncio
+async def test_expired_partial_fill_does_not_lock(monkeypatch):
+    """ROB-890: expired partial fill frees the remaining qty too."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    rows = [
+        _make_shadow_row(
+            side="sell",
+            lifecycle_state="fill",
+            ordered_at="2026-07-14T09:30:00+09:00",
+            remaining_qty=0.5,
+            order_no="MOCK-EXPIRED-PARTIAL",
+        )
+    ]
+    monkeypatch.setattr(
+        kis_mock_ledger,
+        "_list_kis_mock_shadow_pending_orders",
+        AsyncMock(return_value=rows),
+    )
+
+    result = await kis_mock_ledger._get_kis_mock_shadow_exposure(
+        now=__import__("datetime").datetime(2026, 7, 15, 9, 30, tzinfo=_KST),
+    )
+
+    assert result["sell_reserved_quantity"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_us_equity_rows_not_expired_by_kr_day_rules(monkeypatch):
+    """ROB-890: equity_us rows are not subject to KR DAY expiry."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    rows = [
+        _make_shadow_row(
+            side="buy",
+            instrument_type="equity_us",
+            ordered_at="2026-07-14T09:30:00+09:00",
+            amount=100.0,
+        )
+    ]
+    monkeypatch.setattr(
+        kis_mock_ledger,
+        "_list_kis_mock_shadow_pending_orders",
+        AsyncMock(return_value=rows),
+    )
+
+    result = await kis_mock_ledger._get_kis_mock_shadow_exposure(
+        market_type="equity_us",
+        now=__import__("datetime").datetime(2026, 7, 15, 9, 30, tzinfo=_KST),
+    )
+
+    # US equity rows are NOT expired by KR rules → keep locked
+    assert result["buy_reserved_amount"] == 100.0
+    assert result["expired_reservation_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_missing_ordered_at_keeps_locked_fail_closed(monkeypatch):
+    """ROB-890: rows with missing/unparseable ordered_at are kept locked."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    rows = [
+        _make_shadow_row(
+            side="sell",
+            ordered_at=None,  # type: ignore[arg-type]
+            remaining_qty=2.0,
+        )
+    ]
+    monkeypatch.setattr(
+        kis_mock_ledger,
+        "_list_kis_mock_shadow_pending_orders",
+        AsyncMock(return_value=rows),
+    )
+
+    result = await kis_mock_ledger._get_kis_mock_shadow_exposure(
+        now=__import__("datetime").datetime(2026, 7, 15, 9, 30, tzinfo=_KST),
+    )
+
+    # Fail-closed: unparseable timestamp → keep locked
+    assert result["sell_reserved_quantity"] == 2.0
+    assert result["expired_reservation_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_mixed_expired_and_valid_rows(monkeypatch):
+    """ROB-890: mix of expired and same-session rows reserves only valid ones."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    rows = [
+        _make_shadow_row(
+            side="buy",
+            ordered_at="2026-07-14T09:30:00+09:00",  # expired
+            amount=100_000.0,
+            order_no="EXPIRED",
+        ),
+        _make_shadow_row(
+            side="buy",
+            ordered_at="2026-07-15T09:30:00+09:00",  # valid
+            amount=50_000.0,
+            order_no="VALID",
+            ledger_id=2,
+        ),
+    ]
+    monkeypatch.setattr(
+        kis_mock_ledger,
+        "_list_kis_mock_shadow_pending_orders",
+        AsyncMock(return_value=rows),
+    )
+
+    result = await kis_mock_ledger._get_kis_mock_shadow_exposure(
+        now=__import__("datetime").datetime(2026, 7, 15, 9, 30, tzinfo=_KST),
+    )
+
+    assert result["buy_reserved_amount"] == 50_000.0
+    assert result["expired_reservation_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_list_open_orders_unaffected_by_expiry(monkeypatch):
+    """ROB-890: reconciliation/list_open_orders still returns all open rows."""
+    from datetime import UTC, datetime
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    class FakeDB:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
+    class FakeSvc:
+        def __init__(self, db):
+            self.db = db
+
+        async def list_open_orders(self, **kwargs):
+            # Return both stale and fresh rows — reconciliation sees ALL
+            return [
+                SimpleNamespace(
+                    id=1,
+                    trade_date=datetime(2026, 7, 14, 9, 30, tzinfo=UTC),
+                    symbol="005930",
+                    instrument_type="equity_kr",
+                    side="sell",
+                    order_type="limit",
+                    quantity=Decimal("2"),
+                    price=Decimal("70000"),
+                    amount=Decimal("140000"),
+                    currency="KRW",
+                    order_no="STALE",
+                    lifecycle_state="accepted",
+                ),
+                SimpleNamespace(
+                    id=2,
+                    trade_date=datetime(2026, 7, 15, 9, 30, tzinfo=UTC),
+                    symbol="005930",
+                    instrument_type="equity_kr",
+                    side="buy",
+                    order_type="limit",
+                    quantity=Decimal("1"),
+                    price=Decimal("70000"),
+                    amount=Decimal("70000"),
+                    currency="KRW",
+                    order_no="FRESH",
+                    lifecycle_state="accepted",
+                ),
+            ]
+
+    monkeypatch.setattr(
+        kis_mock_ledger, "_order_session_factory", lambda: lambda: FakeDB()
+    )
+    monkeypatch.setattr(kis_mock_ledger, "KISMockLifecycleService", FakeSvc)
+
+    rows = await kis_mock_ledger._list_kis_mock_shadow_pending_orders(
+        normalized_symbol="005930", market_type="equity_kr"
+    )
+
+    # Both stale and fresh rows are returned — no time filtering at this level
+    assert len(rows) == 2
+    assert {r["order_id"] for r in rows} == {"STALE", "FRESH"}
+
+
+# ---------------------------------------------------------------------------
 # ROB-730: place-time provenance spine — mint correlation_id + emit forecast
 # ---------------------------------------------------------------------------
 
