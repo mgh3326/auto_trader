@@ -89,6 +89,12 @@ failure). Inspect `targets` against what you expect to be open right now.
 TOSS_FILL_POLL_ENABLED=true uv run python -m scripts.toss_fill_reconcile_poller --commit
 ```
 
+> ⚠️ **동시 실행 금지**: ROB-757 TaskIQ 폴러 스케줄이 armed(워커+스케줄러 가동
+> 중)일 때 `--commit`을 돌리지 말 것. dedupe는 delta 기반이라 **직렬** 재실행만
+> 보호한다 — 두 reconcile 패스가 겹치면(둘 다 `already=0`을 읽은 뒤 커밋)
+> 이중 부기 가능성이 있다(`update_reconcile_outcome`에 row lock 없음). 수동
+> reps 기간엔 TaskIQ 폴러가 off인 것을 먼저 확인하라.
+
 Expect `{"status": "ran", "success": true, "discover": {...}, "reconcile": {...}, "booked_symbols": [...]}`.
 Re-running this immediately is safe — the second pass should report
 `booked_symbols: []` and `reconcile.counts` dominated by
