@@ -8,12 +8,15 @@ equities"); live (is_mock=False) and crypto (real Upbit funds) stay fully guarde
 
 from __future__ import annotations
 
+import datetime
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from app.mcp_server.tooling import order_validation
 from app.mcp_server.tooling.order_validation import (
+    DefensiveTrimContext,
+    LossCutContext,
     ScalpingExitContext,
     evaluate_sell_price_guards,
 )
@@ -309,3 +312,115 @@ def test_scalping_exit_takes_precedence_over_allow_loss_sell() -> None:
         allow_loss_sell=True,
     )
     assert err is None
+
+
+# ---------------------------------------------------------------------------
+# ROB-912: Sell Price Guard Marketable Band Tests
+# ---------------------------------------------------------------------------
+@pytest.mark.unit
+def test_rob_912_sell_marketable_band_guards() -> None:
+    # a. [XOM 재현] price=145.51, current=145.71, avg=100.0(floor 무관), ctx 전부 None -> None(허용)
+    err_a = evaluate_sell_price_guards(
+        price=145.51,
+        current_price=145.71,
+        avg_price=100.0,
+        defensive_trim_ctx=None,
+        scalping_exit_ctx=None,
+        allow_loss_sell=False,
+    )
+    assert err_a is None
+
+    # b. [밴드 경계] price == current*(1-0.02) 정확히 -> None(허용, >= 시맨틱스)
+    # 145.71 * 0.98 = 142.7958
+    err_b = evaluate_sell_price_guards(
+        price=142.7958,
+        current_price=145.71,
+        avg_price=100.0,
+        defensive_trim_ctx=None,
+        scalping_exit_ctx=None,
+        allow_loss_sell=False,
+    )
+    assert err_b is None
+
+    # c. [fat-finger 차단] price = current*0.97 (밴드 밖) -> "below marketable band floor" 메시지 반환
+    # 145.71 * 0.97 = 141.3387
+    err_c = evaluate_sell_price_guards(
+        price=141.3387,
+        current_price=145.71,
+        avg_price=100.0,
+        defensive_trim_ctx=None,
+        scalping_exit_ctx=None,
+        allow_loss_sell=False,
+    )
+    assert err_c is not None and "below marketable band floor" in err_c
+
+    # d. [손실매도 여전히 차단] avg=150, current=145.71, price=145.51 (밴드 안이지만 avg*1.01=151.5 미달) -> floor 메시지 반환
+    err_d = evaluate_sell_price_guards(
+        price=145.51,
+        current_price=145.71,
+        avg_price=150.0,
+        defensive_trim_ctx=None,
+        scalping_exit_ctx=None,
+        allow_loss_sell=False,
+    )
+    assert err_d is not None and "below minimum" in err_d
+
+    trim_ctx = DefensiveTrimContext(
+        approval_issue_id="issue",
+        requester_agent_id="agent",
+        approval_verified_at=datetime.datetime.now(datetime.UTC),
+    )
+
+    # 밴드 안(<current) -> None
+    err_e1 = evaluate_sell_price_guards(
+        price=145.51,
+        current_price=145.71,
+        avg_price=150.0,
+        defensive_trim_ctx=trim_ctx,
+        scalping_exit_ctx=None,
+        allow_loss_sell=False,
+    )
+    assert err_e1 is None
+
+    # 밴드 밖(<current*0.98) -> band 메시지
+    err_e2 = evaluate_sell_price_guards(
+        price=141.3387,
+        current_price=145.71,
+        avg_price=150.0,
+        defensive_trim_ctx=trim_ctx,
+        scalping_exit_ctx=None,
+        allow_loss_sell=False,
+    )
+    assert err_e2 is not None and "below marketable band floor" in err_e2
+
+    loss_ctx = LossCutContext(
+        retrospective_id=1,
+        exit_reason="loss_cut",
+        approval_issue_id=None,
+        requester_agent_id="test",
+        max_slip=0.05,
+        approval_verified_at=datetime.datetime.now(datetime.UTC),
+    )
+    # price가 current*(1-0.05) = 145.71 * 0.95 = 138.4245 보다 작으면 차단되어야 함.
+    # price=140.0 은 2% 밴드 밖(142.7958 미만)이지만 loss_cut 5% 밴드 안이므로 None(허용)이어야 함.
+    err_f1 = evaluate_sell_price_guards(
+        price=140.0,
+        current_price=145.71,
+        avg_price=150.0,
+        defensive_trim_ctx=None,
+        scalping_exit_ctx=None,
+        allow_loss_sell=False,
+        loss_cut_ctx=loss_ctx,
+    )
+    assert err_f1 is None
+
+    # g. [시세 불가] current_price=0 -> 현재가 가드 미발동(기존 시맨틱스) 유지.
+    err_g = evaluate_sell_price_guards(
+        price=105.0,
+        current_price=0.0,
+        avg_price=100.0,
+        defensive_trim_ctx=None,
+        scalping_exit_ctx=None,
+        allow_loss_sell=False,
+    )
+    assert err_g is None
