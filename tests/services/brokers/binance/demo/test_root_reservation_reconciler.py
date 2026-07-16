@@ -97,6 +97,44 @@ async def _row(cid: str) -> BinanceDemoOrderLedger:
         return row
 
 
+async def _advance(cid: str, *, to: str, at: dt.datetime = _PLANNED_AT) -> None:
+    """Advance a freshly-seeded root through pre-ack lifecycle transitions.
+
+    Only ``previewed``/``validated`` are supported here: both leave
+    ``broker_order_id`` NULL (no broker acknowledgement), which is exactly the
+    pre-ack open-root class ROB-906 must reconcile.
+    """
+    async with AsyncSessionLocal() as db:
+        service = BinanceDemoLedgerService(db)
+        await service.record_previewed(client_order_id=cid, now=at)
+        if to == "validated":
+            await service.record_validated(client_order_id=cid, now=at)
+        elif to != "previewed":  # pragma: no cover - guard against typos
+            raise AssertionError(f"unsupported pre-ack target state {to!r}")
+        await db.commit()
+
+
+async def _force_broker_order_id(cid: str, broker_order_id: str) -> None:
+    """Attach a broker ack id without advancing state (artificial test state).
+
+    Used only to prove a ``previewed``/``validated`` row that already carries a
+    broker acknowledgement is excluded from the pre-ack candidate set.
+    """
+    async with AsyncSessionLocal() as db:
+        row = await db.scalar(
+            select(BinanceDemoOrderLedger).where(
+                BinanceDemoOrderLedger.client_order_id == cid
+            )
+        )
+        assert row is not None
+        row.broker_order_id = broker_order_id
+        await db.commit()
+
+
+async def _instrument_id(cid: str) -> int:
+    return (await _row(cid)).instrument_id
+
+
 @pytest.mark.parametrize(
     ("invalid_field", "invalid"),
     [
@@ -215,6 +253,7 @@ async def test_candidate_for_unconfigured_product_stays_client_unavailable() -> 
             "client_order_id": cid,
             "action": "kept",
             "reason": "client_unavailable",
+            "lifecycle_state": "planned",
         }
     ]
     assert (await _row(cid)).lifecycle_state == "planned"
@@ -660,6 +699,7 @@ async def test_not_found_release_is_bounded_by_broker_lookup_retention(
             "client_order_id": cid,
             "action": expected_action,
             "reason": expected_reason,
+            "lifecycle_state": "planned",
         }
     ]
     assert (await _row(cid)).lifecycle_state == (
@@ -1064,3 +1104,217 @@ async def test_invalid_required_truth_is_kept_malformed(
 
     assert result["outcomes"][0]["reason"] == "malformed_broker_truth"
     assert (await _row(cid)).lifecycle_state == "planned"
+
+
+# ---------------------------------------------------------------------------
+# ROB-906 — pre-ack open roots (previewed/validated with no broker ack) are
+# candidates for the same broker-truth release path. This closes the blind spot
+# where a crash after record_validated() (broker POST never reached) left a
+# durable `validated` root permanently occupying the global open-root cap.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["previewed", "validated"])
+async def test_pre_ack_open_root_not_found_would_release(state: str) -> None:
+    from app.jobs.binance_demo_root_reservation_reconciliation import (
+        reconcile_binance_demo_root_reservations,
+    )
+    from app.services.brokers.binance.demo.errors import BinanceDemoOrderNotFound
+
+    cid, _symbol = await _seed(product="spot", suffix=f"preack{state}notfound")
+    await _advance(cid, to=state)
+
+    class _Spot(_CredentialBoundClient):
+        async def get_order_status(self, **_kwargs):
+            raise BinanceDemoOrderNotFound(cid)
+
+    result = await reconcile_binance_demo_root_reservations(
+        AsyncSessionLocal,
+        clients={"spot": _Spot()},
+        now=_NOW,
+        stale_before=_STALE_BEFORE,
+        dry_run=True,
+    )
+
+    assert result["scanned"] == 1
+    assert result["outcomes"] == [
+        {
+            "client_order_id": cid,
+            "action": "would_release",
+            "reason": "broker_order_not_found",
+            "lifecycle_state": state,
+        }
+    ]
+    # dry-run mutates nothing.
+    assert (await _row(cid)).lifecycle_state == state
+
+
+@pytest.mark.asyncio
+async def test_validated_pre_ack_root_release_frees_open_cap() -> None:
+    from app.jobs.binance_demo_root_reservation_reconciliation import (
+        reconcile_binance_demo_root_reservations,
+    )
+    from app.services.brokers.binance.demo.errors import BinanceDemoOrderNotFound
+
+    cid, _symbol = await _seed(product="spot", suffix="preackapply")
+    await _advance(cid, to="validated")
+    instrument_id = await _instrument_id(cid)
+
+    async with AsyncSessionLocal() as db:
+        service = BinanceDemoLedgerService(db)
+        assert (
+            await service.has_open_lifecycle_for_instrument(
+                product="spot", instrument_id=instrument_id
+            )
+            is True
+        )
+
+    class _Spot(_CredentialBoundClient):
+        async def get_order_status(self, **_kwargs):
+            raise BinanceDemoOrderNotFound(cid)
+
+    async with AsyncSessionLocal() as db:
+        result = await reconcile_binance_demo_root_reservations(
+            AsyncSessionLocal,
+            clients={"spot": _Spot()},
+            now=_NOW,
+            stale_before=_STALE_BEFORE,
+            dry_run=False,
+        )
+        await db.commit()
+
+    assert result["released"] == 1
+    assert result["outcomes"][0]["lifecycle_state"] == "validated"
+    assert (await _row(cid)).lifecycle_state == "reconciled"
+    # Root exposure slot for this instrument is freed — the cap is released.
+    async with AsyncSessionLocal() as db:
+        service = BinanceDemoLedgerService(db)
+        assert (
+            await service.has_open_lifecycle_for_instrument(
+                product="spot", instrument_id=instrument_id
+            )
+            is False
+        )
+
+
+@pytest.mark.asyncio
+async def test_validated_pre_ack_root_kept_when_client_unavailable() -> None:
+    from app.jobs.binance_demo_root_reservation_reconciliation import (
+        reconcile_binance_demo_root_reservations,
+    )
+
+    cid, _symbol = await _seed(product="usdm_futures", suffix="preacknolane")
+    await _advance(cid, to="validated")
+
+    result = await reconcile_binance_demo_root_reservations(
+        AsyncSessionLocal,
+        clients={},
+        now=_NOW,
+        stale_before=_STALE_BEFORE,
+        dry_run=False,
+    )
+
+    assert result["outcomes"] == [
+        {
+            "client_order_id": cid,
+            "action": "kept",
+            "reason": "client_unavailable",
+            "lifecycle_state": "validated",
+        }
+    ]
+    assert (await _row(cid)).lifecycle_state == "validated"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["previewed", "validated"])
+async def test_pre_ack_root_with_broker_ack_is_not_a_candidate(state: str) -> None:
+    """A broker-acknowledged row is out of scope — fill evidence owns it."""
+    from app.jobs.binance_demo_root_reservation_reconciliation import (
+        reconcile_binance_demo_root_reservations,
+    )
+
+    cid, _symbol = await _seed(product="spot", suffix=f"preackacked{state}")
+    await _advance(cid, to=state)
+    await _force_broker_order_id(cid, "9990001")
+
+    class _Spot(_CredentialBoundClient):
+        calls = 0
+
+        async def get_order_status(self, **_kwargs):
+            self.calls += 1
+            raise AssertionError("acked pre-ack row must not be looked up")
+
+    client = _Spot()
+    result = await reconcile_binance_demo_root_reservations(
+        AsyncSessionLocal,
+        clients={"spot": client},
+        now=_NOW,
+        stale_before=_STALE_BEFORE,
+        dry_run=False,
+    )
+
+    assert result["scanned"] == 0
+    assert client.calls == 0
+    assert not any(o["client_order_id"] == cid for o in result["outcomes"])
+    assert (await _row(cid)).lifecycle_state == state
+
+
+@pytest.mark.asyncio
+async def test_submitted_root_is_not_a_pre_ack_candidate() -> None:
+    """`submitted` (broker-acked) roots stay owned by the fill-evidence path."""
+    from app.jobs.binance_demo_root_reservation_reconciliation import (
+        reconcile_binance_demo_root_reservations,
+    )
+
+    cid, _symbol = await _seed(product="spot", suffix="submittedroot")
+    async with AsyncSessionLocal() as db:
+        service = BinanceDemoLedgerService(db)
+        await service.record_previewed(client_order_id=cid, now=_PLANNED_AT)
+        await service.record_validated(client_order_id=cid, now=_PLANNED_AT)
+        await service.record_submitted(
+            client_order_id=cid,
+            broker_order_id="submitted-broker-order",
+            now=_PLANNED_AT,
+        )
+        await db.commit()
+
+    class _Spot(_CredentialBoundClient):
+        calls = 0
+
+        async def get_order_status(self, **_kwargs):
+            self.calls += 1
+            raise AssertionError("submitted root must not be looked up")
+
+    client = _Spot()
+    result = await reconcile_binance_demo_root_reservations(
+        AsyncSessionLocal,
+        clients={"spot": client},
+        now=_NOW,
+        stale_before=_STALE_BEFORE,
+        dry_run=False,
+    )
+
+    assert result["scanned"] == 0
+    assert client.calls == 0
+    assert (await _row(cid)).lifecycle_state == "submitted"
+
+
+@pytest.mark.asyncio
+async def test_record_cancelled_permitted_from_pre_ack_states() -> None:
+    """State-machine guarantee the pre-ack release path depends on."""
+    from app.services.brokers.binance.demo.ledger.service import (
+        _ALLOWED_TRANSITIONS,
+    )
+
+    assert "cancelled" in _ALLOWED_TRANSITIONS["previewed"]
+    assert "cancelled" in _ALLOWED_TRANSITIONS["validated"]
+
+    cid, _symbol = await _seed(product="spot", suffix="cancelfromvalidated")
+    await _advance(cid, to="validated")
+    async with AsyncSessionLocal() as db:
+        service = BinanceDemoLedgerService(db)
+        await service.record_cancelled(client_order_id=cid, now=_NOW)
+        await service.record_reconciled(client_order_id=cid, now=_NOW)
+        await db.commit()
+    assert (await _row(cid)).lifecycle_state == "reconciled"

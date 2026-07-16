@@ -1,9 +1,13 @@
 """Broker-truth reconciliation for abandoned Binance Demo root reservations.
 
-Only root rows still persisted as ``planned`` are candidates. A reservation is
-released solely when Binance explicitly reports the client order missing, or a
-terminal order with zero executed quantity. Transport errors, malformed truth,
-open orders, and any executed quantity remain blocking.
+Candidates are *pre-acknowledgement* open roots: a still-persisted ``planned``
+root, or a ``previewed``/``validated`` root whose ``broker_order_id`` is still
+NULL (ROB-906 — the broker POST never reached the venue, so no ack exists).
+``submitted``/``filled``/``anomaly`` roots carry a broker acknowledgement and
+remain owned by the fill-evidence reconcile path. A reservation is released
+solely when Binance explicitly reports the client order missing, or a terminal
+order with zero executed quantity. Transport errors, malformed truth, open
+orders, and any executed quantity remain blocking.
 """
 
 from __future__ import annotations
@@ -14,8 +18,9 @@ from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.db import AsyncSessionLocal
 from app.models.binance_demo_order_ledger import BinanceDemoOrderLedger
@@ -117,6 +122,38 @@ async def _lookup_order(client: Any, *, product: str, symbol: str, cid: str) -> 
     return await client.get_order(symbol=symbol, client_order_id=cid)
 
 
+def _candidate_where_clauses(
+    stale_before: dt.datetime,
+) -> tuple[ColumnElement[bool], ...]:
+    """Shared predicate for the discovery snapshot and the FOR UPDATE re-read.
+
+    A candidate is an old *pre-acknowledgement* open root:
+
+    * a ``planned`` root (original ROB-844 semantics, unchanged), or
+    * a ``previewed``/``validated`` root whose ``broker_order_id`` is still NULL
+      (ROB-906 — a crash after ``record_validated`` but before the broker POST
+      leaves a durable open root that no ack-keyed fill-evidence path can free).
+
+    ``submitted``/``filled``/``anomaly`` roots carry a broker acknowledgement and
+    are deliberately excluded here. ``planned_at`` is set at insert and never
+    cleared across pre-ack transitions, so it remains the age gate for all three
+    states. The re-read applies the same predicate, so a row that advanced to
+    ``submitted`` (or gained a ``broker_order_id``) between snapshot and lock is
+    silently dropped, never kept.
+    """
+    return (
+        BinanceDemoOrderLedger.parent_client_order_id.is_(None),
+        BinanceDemoOrderLedger.planned_at <= stale_before,
+        or_(
+            BinanceDemoOrderLedger.lifecycle_state == "planned",
+            and_(
+                BinanceDemoOrderLedger.lifecycle_state.in_(("previewed", "validated")),
+                BinanceDemoOrderLedger.broker_order_id.is_(None),
+            ),
+        ),
+    )
+
+
 async def reconcile_binance_demo_root_reservations(
     session_factory: async_sessionmaker[AsyncSession],
     *,
@@ -140,11 +177,7 @@ async def reconcile_binance_demo_root_reservations(
             (
                 await discovery_session.scalars(
                     select(BinanceDemoOrderLedger.id)
-                    .where(
-                        BinanceDemoOrderLedger.parent_client_order_id.is_(None),
-                        BinanceDemoOrderLedger.lifecycle_state == "planned",
-                        BinanceDemoOrderLedger.planned_at <= stale_before,
-                    )
+                    .where(*_candidate_where_clauses(stale_before))
                     .order_by(
                         BinanceDemoOrderLedger.planned_at,
                         BinanceDemoOrderLedger.id,
@@ -172,9 +205,7 @@ async def reconcile_binance_demo_root_reservations(
                     )
                     .where(
                         BinanceDemoOrderLedger.id == candidate_id,
-                        BinanceDemoOrderLedger.parent_client_order_id.is_(None),
-                        BinanceDemoOrderLedger.lifecycle_state == "planned",
-                        BinanceDemoOrderLedger.planned_at <= stale_before,
+                        *_candidate_where_clauses(stale_before),
                     )
                     .with_for_update(skip_locked=True, of=BinanceDemoOrderLedger)
                     .execution_options(populate_existing=True)
@@ -184,6 +215,12 @@ async def reconcile_binance_demo_root_reservations(
                     continue
                 row, symbol = candidate
                 scanned += 1
+                # Snapshot the pre-release lifecycle state for operator-readable
+                # outcomes (ROB-906). Reported on every outcome — including
+                # released rows — so the operator sees which pre-ack state
+                # (planned/previewed/validated) was reconciled rather than the
+                # post-release ``reconciled``.
+                lifecycle_state = row.lifecycle_state
                 client = clients.get(row.product)
                 if client is None:
                     kept += 1
@@ -192,6 +229,7 @@ async def reconcile_binance_demo_root_reservations(
                             "client_order_id": row.client_order_id,
                             "action": "kept",
                             "reason": "client_unavailable",
+                            "lifecycle_state": lifecycle_state,
                         }
                     )
                     continue
@@ -202,6 +240,7 @@ async def reconcile_binance_demo_root_reservations(
                             "client_order_id": row.client_order_id,
                             "action": "kept",
                             "reason": "venue_host_mismatch",
+                            "lifecycle_state": lifecycle_state,
                         }
                     )
                     continue
@@ -220,6 +259,7 @@ async def reconcile_binance_demo_root_reservations(
                             "client_order_id": row.client_order_id,
                             "action": "kept",
                             "reason": "credential_fingerprint_missing",
+                            "lifecycle_state": lifecycle_state,
                         }
                     )
                     continue
@@ -238,6 +278,7 @@ async def reconcile_binance_demo_root_reservations(
                             "client_order_id": row.client_order_id,
                             "action": "kept",
                             "reason": "client_credential_fingerprint_unavailable",
+                            "lifecycle_state": lifecycle_state,
                         }
                     )
                     continue
@@ -248,6 +289,7 @@ async def reconcile_binance_demo_root_reservations(
                             "client_order_id": row.client_order_id,
                             "action": "kept",
                             "reason": "credential_fingerprint_mismatch",
+                            "lifecycle_state": lifecycle_state,
                         }
                     )
                     continue
@@ -272,6 +314,7 @@ async def reconcile_binance_demo_root_reservations(
                                 "client_order_id": row.client_order_id,
                                 "action": "kept",
                                 "reason": "broker_lookup_retention_exceeded",
+                                "lifecycle_state": lifecycle_state,
                             }
                         )
                         continue
@@ -283,6 +326,7 @@ async def reconcile_binance_demo_root_reservations(
                             "client_order_id": row.client_order_id,
                             "action": "kept",
                             "reason": "broker_lookup_failed",
+                            "lifecycle_state": lifecycle_state,
                         }
                     )
                     continue
@@ -299,6 +343,7 @@ async def reconcile_binance_demo_root_reservations(
                                 "client_order_id": row.client_order_id,
                                 "action": "kept",
                                 "reason": "malformed_broker_truth",
+                                "lifecycle_state": lifecycle_state,
                             }
                         )
                         continue
@@ -316,6 +361,7 @@ async def reconcile_binance_demo_root_reservations(
                                 "client_order_id": row.client_order_id,
                                 "action": "kept",
                                 "reason": "broker_identity_mismatch",
+                                "lifecycle_state": lifecycle_state,
                             }
                         )
                         continue
@@ -331,6 +377,7 @@ async def reconcile_binance_demo_root_reservations(
                                 "client_order_id": row.client_order_id,
                                 "action": "kept",
                                 "reason": "broker_exposure_not_disproven",
+                                "lifecycle_state": lifecycle_state,
                             }
                         )
                         continue
@@ -362,6 +409,7 @@ async def reconcile_binance_demo_root_reservations(
                         "client_order_id": row.client_order_id,
                         "action": action,
                         "reason": release_reason,
+                        "lifecycle_state": lifecycle_state,
                     }
                 )
 
