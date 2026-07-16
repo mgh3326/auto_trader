@@ -153,6 +153,28 @@ class KISCircuitBreaker:
             self._failures = 0
         self._probe_in_flight = False
 
+    def release_probe(self) -> None:
+        """Release a HALF_OPEN probe lease WITHOUT recording a KIS outcome.
+
+        Call this when ``before_request`` handed out a probe but the call
+        aborted BEFORE any HTTP reached KIS — a pre-send freshness block
+        (``PreSendFreshnessError``), a distributed-gate failure/deadline
+        (``DistributedGateUnavailable``), or an ``asyncio.CancelledError``
+        during the pre-dispatch wait. These are HTTP=0 pre-dispatch aborts:
+
+        * they must NOT be mistaken for a KIS success/failure, so they do not
+          change ``_state`` or the consecutive ``_failures`` count;
+        * they only release the exclusive probe lease so the next request can
+          probe again — otherwise a HALF_OPEN breaker with ``_probe_in_flight``
+          stuck ``True`` raises ``KISCircuitOpen`` forever (ROB-892 merge
+          blocker: a Redis outage during a half-open probe must not permanently
+          stall every subsequent KIS request).
+        """
+        if not self._enabled:
+            return
+        if self._state == _HALF_OPEN:
+            self._probe_in_flight = False
+
     def record_failure(self) -> None:
         if not self._enabled:
             return

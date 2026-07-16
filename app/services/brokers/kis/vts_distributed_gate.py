@@ -178,6 +178,7 @@ class VTSDistributedGate:
         socket_timeout_seconds: float = _DEFAULT_SOCKET_TIMEOUT_SECONDS,
         socket_connect_timeout_seconds: float = _DEFAULT_SOCKET_CONNECT_TIMEOUT_SECONDS,
         acquire_deadline_seconds: float = _DEFAULT_ACQUIRE_DEADLINE_SECONDS,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError("interval_seconds must be positive")
@@ -198,6 +199,10 @@ class VTSDistributedGate:
         self._socket_timeout_seconds = float(socket_timeout_seconds)
         self._socket_connect_timeout_seconds = float(socket_connect_timeout_seconds)
         self._acquire_deadline_seconds = float(acquire_deadline_seconds)
+        # Injectable monotonic clock so deadline arithmetic is deterministic in
+        # tests (real Redis is still real-time; ``asyncio.wait_for`` bounds use
+        # wall time). Production uses ``time.monotonic``.
+        self._monotonic = monotonic
         self._redis: redis.Redis | None = None
         self._redis_lock = asyncio.Lock()
         self._claim_sha: str | None = None
@@ -255,20 +260,35 @@ class VTSDistributedGate:
                 f"VTS distributed gate Redis claim failed for scope {scope_key!r}: {exc}"
             ) from exc
 
-        if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+        if not isinstance(raw, (list, tuple)) or len(raw) != 2:
             raise DistributedGateUnavailable(
                 f"VTS distributed gate returned malformed result for scope "
                 f"{scope_key!r}: {raw!r}"
             )
         try:
-            admitted = bool(int(raw[0]))
+            admitted_value = int(raw[0])
             retry_after_ms = int(raw[1])
         except (TypeError, ValueError) as exc:
             raise DistributedGateUnavailable(
                 f"VTS distributed gate returned non-numeric result for scope "
                 f"{scope_key!r}: {raw!r}"
             ) from exc
-        return admitted, max(0.0, retry_after_ms / 1000.0)
+        # Reject anything outside the exact claim protocol: admission must be a
+        # 0/1 bit (a value like 2 must never authorize HTTP), retry_after must be
+        # non-negative, and a denial MUST carry a positive retry (otherwise the
+        # caller would busy-loop Redis). All malformed/corrupt results fail
+        # closed instead of coercing/clamping.
+        if admitted_value not in (0, 1) or retry_after_ms < 0:
+            raise DistributedGateUnavailable(
+                f"VTS distributed gate returned invalid result for scope "
+                f"{scope_key!r}: {raw!r}"
+            )
+        if admitted_value == 0 and retry_after_ms == 0:
+            raise DistributedGateUnavailable(
+                f"VTS distributed gate denied with zero retry for scope "
+                f"{scope_key!r}: {raw!r}"
+            )
+        return admitted_value == 1, retry_after_ms / 1000.0
 
     async def acquire(
         self,
@@ -302,7 +322,7 @@ class VTSDistributedGate:
             asyncio.CancelledError: re-raised if the wait is cancelled; the
                 caller never started HTTP (HTTP=0).
         """
-        start = time.monotonic()
+        start = self._monotonic()
         pid = os.getpid()
         if deadline_monotonic is None:
             deadline_monotonic = start + self._acquire_deadline_seconds
@@ -310,16 +330,63 @@ class VTSDistributedGate:
         attempts = 0
         last_fingerprint = scope_key.rsplit(":", 1)[-1]
 
+        def _remaining() -> float:
+            return deadline_monotonic - self._monotonic()
+
         # Freshness is run BEFORE every claim attempt, including the first,
         # so the very first (likely-immediately-admissible) claim still
-        # verifies the book right before the atomic admit.
+        # verifies the book right before the atomic admit. Every await is
+        # bounded by the remaining deadline budget and the deadline is rechecked
+        # after each await, so a slow freshness hook or Redis claim can never
+        # admit past the deadline (CR3).
         while True:
+            if _remaining() <= 0:
+                raise DistributedGateUnavailable(
+                    f"VTS distributed gate acquire deadline "
+                    f"({self._acquire_deadline_seconds:.1f}s) already exceeded "
+                    f"for scope {scope_key!r} (class={call_class}, pid={pid})"
+                )
             if freshness_hook is not None:
-                await freshness_hook()
+                try:
+                    await asyncio.wait_for(freshness_hook(), _remaining())
+                except TimeoutError as exc:
+                    raise DistributedGateUnavailable(
+                        f"VTS distributed gate freshness exceeded the acquire "
+                        f"deadline for scope {scope_key!r} (class={call_class})"
+                    ) from exc
+                if _remaining() <= 0:
+                    raise DistributedGateUnavailable(
+                        f"VTS distributed gate acquire deadline crossed during "
+                        f"freshness for scope {scope_key!r} (class={call_class})"
+                    )
             attempts += 1
-            admitted, retry_after = await self._claim(scope_key)
+            remaining_for_claim = _remaining()
+            if remaining_for_claim <= 0:
+                raise DistributedGateUnavailable(
+                    f"VTS distributed gate acquire deadline exceeded for scope "
+                    f"{scope_key!r} (class={call_class}, pid={pid})"
+                )
+            try:
+                admitted, retry_after = await asyncio.wait_for(
+                    self._claim(scope_key), remaining_for_claim
+                )
+            except TimeoutError as exc:
+                raise DistributedGateUnavailable(
+                    f"VTS distributed gate claim exceeded the acquire deadline "
+                    f"for scope {scope_key!r} (class={call_class})"
+                ) from exc
             if admitted:
-                waited = time.monotonic() - start
+                # CR3: a claim that succeeded after the deadline crossed has
+                # already consumed the slot in Redis (the Lua SET ran). Be
+                # conservative — never recycle that slot into a retry — but
+                # keep the HTTP=0 contract by failing closed here.
+                if _remaining() <= 0:
+                    raise DistributedGateUnavailable(
+                        f"VTS distributed gate admitted after the deadline "
+                        f"crossed; slot consumed, HTTP=0 for scope {scope_key!r} "
+                        f"(class={call_class}, pid={pid})"
+                    )
+                waited = self._monotonic() - start
                 if attempts > 1 or waited > 0.01:
                     logger.info(
                         "vts_gate admitted scope=%s fp=%s pid=%s class=%s "
@@ -339,8 +406,7 @@ class VTSDistributedGate:
 
             # Contention: another PID won this slot. Sleep without spinning,
             # but never past the bounded deadline.
-            now = time.monotonic()
-            if now + retry_after > deadline_monotonic:
+            if self._monotonic() + retry_after > deadline_monotonic:
                 raise DistributedGateUnavailable(
                     f"VTS distributed gate acquire deadline "
                     f"({self._acquire_deadline_seconds:.1f}s) exceeded for "

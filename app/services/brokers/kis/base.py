@@ -31,6 +31,13 @@ from app.services.brokers.kis.vts_distributed_gate import (
 )
 from app.services.redis_token_manager import redis_token_manager
 
+# Official KIS mock (VTS) REST host. Stable KIS constant — used only as an
+# additional fail-closed discriminator ("this request is definitely mock"), never
+# to gate a live request (live is openapi.koreainvestment.com:9443).
+_KIS_MOCK_REST_HOSTS: frozenset[str] = frozenset(
+    {"openapivts.koreainvestment.com:29443"}
+)
+
 
 def _is_closed_loop_runtime_error(exc: RuntimeError) -> bool:
     return str(exc) == "Event loop is closed"
@@ -158,12 +165,20 @@ class BaseKISClient:
         return f"{base_url}{path}"
 
     def _vts_gate_scope(self, url: str, headers: dict[str, str]) -> str | None:
-        """Return the ROB-892 distributed-gate scope key for a mock request.
+        """Return the ROB-892 distributed-gate scope key, or None to bypass.
 
-        ``None`` for any non-mock host (live, or test hosts) so live dispatch
-        contacts Redis zero times. The scope is the request's netloc plus a
-        non-reversible sha256 fingerprint of the ``appkey`` header — never the
-        raw credential.
+        Three-way contract (ROB-892 + independent review):
+
+        * Mock dispatch (``self._is_mock_client`` True, OR the request netloc
+          matches the configured mock base / the official KIS mock host) → MUST
+          gate. If the scope cannot be built safely (malformed/empty URL or
+          empty ``appkey``), raise ``DistributedGateUnavailable`` (HTTP=0,
+          fail-closed). A mock request must NEVER silently bypass the gate.
+        * Live or custom test host, or non-string (MagicMock) settings/URL →
+          return None so Redis is contacted zero times.
+
+        The scope key is the request netloc plus a non-reversible sha256
+        fingerprint of the ``appkey`` header — never the raw credential.
         """
         from urllib.parse import urlsplit
 
@@ -171,16 +186,40 @@ class BaseKISClient:
             build_vts_gate_scope_key,
         )
 
-        mock_base = getattr(self._settings, "kis_mock_base_url", "") or ""
-        mock_netloc = urlsplit(mock_base.rstrip("/")).netloc.lower()
-        if not mock_netloc:
+        is_mock_client = bool(getattr(self, "_is_mock_client", False))
+
+        mock_base = getattr(self._settings, "kis_mock_base_url", "")
+        mock_netloc = ""
+        if isinstance(mock_base, str):
+            mock_netloc = urlsplit(mock_base.rstrip("/")).netloc.lower()
+
+        request_netloc = ""
+        if isinstance(url, str):
+            request_netloc = urlsplit(url).netloc.lower()
+
+        targets_mock_host = bool(request_netloc) and (
+            (bool(mock_netloc) and request_netloc == mock_netloc)
+            or request_netloc in _KIS_MOCK_REST_HOSTS
+        )
+
+        if not (is_mock_client or targets_mock_host):
+            # Not a mock dispatch (live host, custom test host, or MagicMock
+            # unit-test settings/url) -> gate is a no-op, Redis untouched.
             return None
-        request_netloc = urlsplit(url).netloc.lower()
-        if request_netloc != mock_netloc:
-            return None
-        app_key = str(headers.get("appkey") or "")
+
+        # Mock dispatch: fail-closed if the scope cannot be built safely rather
+        # than letting the request through unthrottled (fail-open).
+        if not request_netloc:
+            raise DistributedGateUnavailable(
+                "KIS mock dispatch URL has no host; cannot scope the "
+                "distributed gate (HTTP=0 fail-closed)"
+            )
+        app_key = str(headers.get("appkey") or "") if isinstance(headers, dict) else ""
         if not app_key:
-            return None
+            raise DistributedGateUnavailable(
+                "KIS mock dispatch has no appkey credential fingerprint; "
+                "cannot scope the distributed gate (HTTP=0 fail-closed)"
+            )
         return build_vts_gate_scope_key(host=request_netloc, app_key=app_key)
 
     async def _await_vts_gate(
@@ -556,13 +595,22 @@ class BaseKISClient:
                 pre_send_hook=pre_send_hook,
                 send_outcome=send_outcome,
             )
-        except PreSendFreshnessError:
-            # ROB-843 P1: a mock pre-send freshness block means NO HTTP happened —
-            # it is not a KIS reachability signal, so it must not move the breaker.
+        except (PreSendFreshnessError, DistributedGateUnavailable):
+            # ROB-843 / ROB-892: these aborted BEFORE any HTTP reached KIS
+            # (mock freshness block / Redis gate failure-or-deadline). They are
+            # not KIS reachability signals, so they must not move the breaker
+            # state or failure count. But ``before_request`` may have handed out
+            # an exclusive HALF_OPEN probe lease; release ONLY that lease so the
+            # next request can probe again (otherwise the breaker stalls open).
+            breaker.release_probe()
             raise
-        except DistributedGateUnavailable:
-            # ROB-892: a Redis gate failure/deadline is a pre-dispatch failure
-            # (HTTP=0), not a KIS reachability signal — must not move the breaker.
+        except asyncio.CancelledError:
+            # A cancellation during the pre-dispatch wait (e.g. mid gate-acquire)
+            # is HTTP=0. It must not be mistaken for KIS reachability (the broad
+            # BaseException handler below would otherwise record_reachable_error
+            # and close a HALF_OPEN probe on a request that never reached KIS).
+            # Release the probe lease only; preserve cancellation semantics.
+            breaker.release_probe()
             raise
         except BaseException as exc:  # noqa: BLE001 — classify then re-raise unchanged
             if is_kis_connect_failure(exc):
