@@ -17,6 +17,8 @@ from typing import Any, cast
 import yaml
 
 from app.mcp_server.profiles import McpProfile
+from app.mcp_server.tooling.alpaca_paper import ALPACA_PAPER_READONLY_TOOL_NAMES
+from app.mcp_server.tooling.alpaca_paper_preview import ALPACA_PAPER_PREVIEW_TOOL_NAMES
 from app.mcp_server.tooling.orders_kiwoom_us_variants import (
     KIWOOM_MOCK_US_MUTATION_TOOL_NAMES,
     KIWOOM_MOCK_US_READ_TOOL_NAMES,
@@ -29,6 +31,7 @@ from app.mcp_server.tooling.route_request_lanes import (
     READ_ONLY_ADVISORY_TOOLS,
     lane_tool_names,
 )
+from app.mcp_server.tooling.us_dual_paper import US_DUAL_PAPER_TOOL_NAMES
 from tests._mcp_tooling_support import DummyMCP
 
 _PLAYBOOK_PATH = (
@@ -96,6 +99,11 @@ def test_read_only_bucket_has_no_phantom_tools():
         "analysis_bundle_get",
         # ROB-907: gated by settings.binance_demo_scalping_enabled (default off).
         "binance_demo_ledger_status",
+        # ROB-908: Alpaca paper read/preview/us_dual surface, gated by
+        # settings.alpaca_paper_default_tools_enabled (default off).
+        *ALPACA_PAPER_READONLY_TOOL_NAMES,
+        *ALPACA_PAPER_PREVIEW_TOOL_NAMES,
+        *US_DUAL_PAPER_TOOL_NAMES,
         *KIWOOM_MOCK_US_READ_TOOL_NAMES,
     }
     phantom = READ_ONLY_ADVISORY_TOOLS - default - _FLAG_GATED_OR_OPTIONAL

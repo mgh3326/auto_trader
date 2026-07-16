@@ -173,6 +173,33 @@ alpaca_paper_roundtrip_report(lifecycle_correlation_id=None, client_order_id=Non
 
 ---
 
+## Profile exposure (ROB-908 — DEFAULT-profile flag)
+
+The Alpaca paper surface historically registered only under the `us-paper`
+(`McpProfile.US_PAPER`) server. The mock_alpaca operator session runs on the
+single DEFAULT profile (8765 haproxy → 8766), so those tools were invisible to
+it. ROB-908 adds a flag-gated DEFAULT exposure, mirroring the ROB-601/ROB-867
+kiwoom-mock pattern:
+
+- Set `ALPACA_PAPER_DEFAULT_TOOLS_ENABLED=true`
+  (`settings.alpaca_paper_default_tools_enabled`, default `False`) to surface the
+  Alpaca paper surface in the DEFAULT profile: the read tools
+  (`alpaca_paper_get_account` / `_get_cash` / `_list_positions` / `_list_orders`
+  / `_get_order` / `_list_assets` / `_list_fills`), the pure-validator
+  `alpaca_paper_preview_order`, the read-only `us_dual_paper_*` trio, the
+  confirm-gated `alpaca_paper_submit_order` / `alpaca_paper_cancel_order`, and
+  the ledger reads (`alpaca_paper_ledger_list_recent` / `_ledger_get` /
+  `_ledger_get_by_correlation` / `_roundtrip_report` /
+  `_execution_preflight_check`).
+- With the flag off (default) these tools are **physically absent** from the
+  DEFAULT profile — a defense-in-depth complement to the per-call `confirm=True`
+  + server-issued `quote_snapshot_id` order gates, which are unchanged.
+- `alpaca_paper_automated_submit_order` (and its automated preview) are
+  **never** exposed in DEFAULT even with the flag on — they stay `us-paper`-only
+  (ROB-842 governance deny-list).
+
+---
+
 ## Operator FAQ
 
 **Q: How do I find all anomaly (formerly canceled/unexpected) orders?**
