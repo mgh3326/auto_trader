@@ -952,10 +952,15 @@ async def test_get_holdings_groups_by_account_and_calculates_pnl(monkeypatch):
     kis_kr = next(
         item for item in kis_account["positions"] if item["symbol"] == "005930"
     )
-    assert kis_kr["current_price"] == pytest.approx(71000.0)
-    assert kis_kr["evaluation_amount"] == pytest.approx(142000.0)
-    assert kis_kr["profit_loss"] == pytest.approx(2000.0)
-    assert kis_kr["profit_rate"] == pytest.approx(1.43)
+    # ROB-902: a KIS-account KR holding keeps its bulk balance snapshot
+    # (prpr / evlu_amt / evlu_pfls_amt / evlu_pfls_rt) instead of firing the
+    # per-symbol itemchartprice refresh — mirroring the US snapshot exemption
+    # asserted below. The 71000 KR refresh mock only serves the manual/Toss
+    # 005930 holding (source != kis_api), not this KIS-account one.
+    assert kis_kr["current_price"] == pytest.approx(70500.0)
+    assert kis_kr["evaluation_amount"] == pytest.approx(141000.0)
+    assert kis_kr["profit_loss"] == pytest.approx(1000.0)
+    assert kis_kr["profit_rate"] == pytest.approx(0.71)
 
     kis_us = next(item for item in kis_account["positions"] if item["symbol"] == "AAPL")
     assert kis_us["current_price"] == pytest.approx(210.0)
@@ -3314,7 +3319,7 @@ async def test_get_available_capital_paper(monkeypatch):
 def _us_refresh_position(symbol: str = "AAPL") -> dict:
     """A US position whose KIS snapshot is incomplete, so the refresh path fires.
 
-    source != "kis_api" makes _has_valid_kis_equity_us_snapshot() return False.
+    source != "kis_api" makes _has_valid_kis_equity_snapshot() return False.
     """
     return {
         "instrument_type": "equity_us",

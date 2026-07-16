@@ -234,3 +234,73 @@ async def test_kr_price_enrichment_db_miss_falls_back_to_legacy_kis_result(
 
     assert actual == ({("equity_kr", "005930"): 62_000.0}, [], {})
     kis_quote.assert_awaited_once_with("005930")
+
+
+def _kr_kis_snapshot_position(symbol: str = "005930") -> dict[str, object]:
+    """A KIS-account KR holding whose balance snapshot is numerically complete.
+
+    ``_collect_kis_positions`` fills these four fields in one bulk balance call
+    (``prpr`` / ``evlu_amt`` / ``evlu_pfls_amt`` / ``evlu_pfls_rt``). ROB-902:
+    such a holding must NOT trigger the per-symbol itemchartprice refresh —
+    mirroring the pre-existing US snapshot exemption (PR #288 / ROB-365).
+    """
+    return {
+        "instrument_type": "equity_kr",
+        "symbol": symbol,
+        "source": "kis_api",
+        "current_price": 62_000.0,
+        "evaluation_amount": 620_000.0,
+        "profit_loss": 20_000.0,
+        "profit_rate": 3.33,
+    }
+
+
+@pytest.mark.asyncio
+async def test_kr_kis_snapshot_skips_price_refresh_and_makes_zero_kis_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROB-902: valid KIS-account KR snapshot fans out 0 DB reads and 0 KIS HTTP."""
+    db_read = AsyncMock(return_value=None)
+    kis_quote = AsyncMock(return_value={"price": 61_000.0})
+    monkeypatch.setattr(portfolio_holdings, "cache_first_kr", db_read)
+    monkeypatch.setattr(portfolio_holdings, "_fetch_quote_equity_kr", kis_quote)
+
+    actual = await portfolio_holdings._fetch_price_map_for_positions(
+        [_kr_kis_snapshot_position()]
+    )
+
+    # No equity pair enqueued -> empty price map, no errors.
+    assert actual == ({}, [], {})
+    db_read.assert_not_awaited()
+    kis_quote.assert_not_awaited()
+
+
+def test_kr_kis_snapshot_is_exempt_from_refresh() -> None:
+    """ROB-902: the refresh predicate exempts a complete KIS-account KR snapshot."""
+    assert (
+        portfolio_holdings._position_needs_current_price_refresh(
+            _kr_kis_snapshot_position()
+        )
+        is False
+    )
+
+
+def test_kr_kis_incomplete_snapshot_still_refreshes() -> None:
+    """A KIS-account KR holding with a zero/absent price still needs a refresh."""
+    incomplete = _kr_kis_snapshot_position()
+    incomplete["current_price"] = None
+    assert portfolio_holdings._position_needs_current_price_refresh(incomplete) is True
+
+
+def test_kr_non_kis_snapshot_still_refreshes() -> None:
+    """A manual/Toss KR holding (source != kis_api) is never exempt."""
+    manual = _kr_kis_snapshot_position()
+    manual["source"] = "manual"
+    assert portfolio_holdings._position_needs_current_price_refresh(manual) is True
+
+
+def test_us_kis_snapshot_remains_exempt() -> None:
+    """Regression: the pre-existing US snapshot exemption is preserved."""
+    us = _kr_kis_snapshot_position("AAPL")
+    us["instrument_type"] = "equity_us"
+    assert portfolio_holdings._position_needs_current_price_refresh(us) is False
