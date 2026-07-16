@@ -22,6 +22,8 @@ def _ledger_row(
     state: str = "accepted",
     baseline: Decimal | None = Decimal("5"),
     accepted_age_sec: int = 5,
+    instrument_type: str = "equity_kr",
+    price: Decimal = Decimal("0"),
 ):
     row = MagicMock(spec=KISMockOrderLedger)
     row.id = ledger_id
@@ -31,12 +33,23 @@ def _ledger_row(
     row.lifecycle_state = state
     row.holdings_baseline_qty = baseline
     row.trade_date = datetime.now(UTC) - timedelta(seconds=accepted_age_sec)
+    row.instrument_type = instrument_type
+    row.price = price
     return row
 
 
 def _fake_kis_client(*, kr=None, us=None):
     client = MagicMock()
     client.fetch_my_stocks = AsyncMock(side_effect=[kr or [], us or []])
+    return client
+
+
+def _fake_kis_client_seq(*, side_effect):
+    """KIS client whose fetch_my_stocks resolves KR then US via an explicit
+    side_effect list (entries may be lists or Exception instances to fail a
+    market fetch)."""
+    client = MagicMock()
+    client.fetch_my_stocks = AsyncMock(side_effect=side_effect)
     return client
 
 
@@ -280,6 +293,185 @@ async def test_run_passes_symbol_to_list_open_orders(db_session, monkeypatch):
     )
     assert captured["symbol"] == "005930"
     assert result["orders_processed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_sell_to_zero_books_fill_when_symbol_absent_but_fetch_ok(monkeypatch):
+    """ROB-910 core reproduction: full sell to zero.
+
+    Baseline 1, sell 1. KIS holdings inquiry succeeds (US market) but returns NO
+    row for the symbol because the position is now zero (KIS only returns
+    nonzero holdings). Expected: next_state=fill, observed_holdings_qty=0,
+    observed_delta=-1, attributed_fill_qty=1 — NOT anomaly.
+    """
+    mock_db = AsyncMock()
+    mock_lifecycle_svc = AsyncMock()
+    mock_lifecycle_svc.list_open_orders.return_value = [
+        _ledger_row(
+            ledger_id=54,
+            symbol="F",
+            side="sell",
+            qty=Decimal("1"),
+            state="accepted",
+            baseline=Decimal("1"),
+            instrument_type="equity_us",
+        )
+    ]
+    mock_lifecycle_svc.apply_lifecycle_transition.return_value = {"applied": True}
+    monkeypatch.setattr(
+        "app.jobs.kis_mock_reconciliation_job.KISMockLifecycleService",
+        lambda _: mock_lifecycle_svc,
+    )
+
+    # Both fetches succeed; US returns empty (F is now zero → not listed).
+    fake_kis = _fake_kis_client(kr=[], us=[])
+
+    await run_kis_mock_reconciliation(mock_db, dry_run=True, kis_client=fake_kis)
+
+    args = mock_lifecycle_svc.apply_lifecycle_transition.call_args.kwargs
+    assert args["ledger_id"] == 54
+    assert args["next_state"] == "fill"
+    assert args["reason_code"] == "fill_detected"
+    assert args["detail"]["observed_holdings_qty"] == "0"
+    assert args["detail"]["observed_delta"] == "-1"
+    assert args["detail"]["attributed_fill_qty"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_sell_to_zero_stays_anomaly_when_market_fetch_fails(monkeypatch):
+    """ROB-910 fail-closed boundary: if the symbol's market fetch RAISED, we must
+    NOT synthesize a zero snapshot. The order stays anomaly /
+    holdings_snapshot_missing (fetch failure != qty 0)."""
+    mock_db = AsyncMock()
+    mock_lifecycle_svc = AsyncMock()
+    mock_lifecycle_svc.list_open_orders.return_value = [
+        _ledger_row(
+            ledger_id=54,
+            symbol="F",
+            side="sell",
+            qty=Decimal("1"),
+            state="accepted",
+            baseline=Decimal("1"),
+            instrument_type="equity_us",
+        )
+    ]
+    mock_lifecycle_svc.apply_lifecycle_transition.return_value = {"applied": True}
+    monkeypatch.setattr(
+        "app.jobs.kis_mock_reconciliation_job.KISMockLifecycleService",
+        lambda _: mock_lifecycle_svc,
+    )
+
+    # KR succeeds ([]), US fetch RAISES → US market unverified.
+    fake_kis = _fake_kis_client_seq(
+        side_effect=[[], RuntimeError("EGW00201 mock inquiry failed")]
+    )
+
+    await run_kis_mock_reconciliation(mock_db, dry_run=True, kis_client=fake_kis)
+
+    args = mock_lifecycle_svc.apply_lifecycle_transition.call_args.kwargs
+    assert args["ledger_id"] == 54
+    assert args["next_state"] == "anomaly"
+    assert args["reason_code"] == "holdings_snapshot_missing"
+
+
+@pytest.mark.asyncio
+async def test_sell_to_zero_stays_anomaly_when_fetch_returns_none(monkeypatch):
+    """ROB-910 fail-closed: a None return (not a real empty list) is treated as an
+    unverified fetch — no zero synthesis, anomaly preserved."""
+    mock_db = AsyncMock()
+    mock_lifecycle_svc = AsyncMock()
+    mock_lifecycle_svc.list_open_orders.return_value = [
+        _ledger_row(
+            ledger_id=55,
+            symbol="F",
+            side="sell",
+            qty=Decimal("1"),
+            state="accepted",
+            baseline=Decimal("1"),
+            instrument_type="equity_us",
+        )
+    ]
+    mock_lifecycle_svc.apply_lifecycle_transition.return_value = {"applied": True}
+    monkeypatch.setattr(
+        "app.jobs.kis_mock_reconciliation_job.KISMockLifecycleService",
+        lambda _: mock_lifecycle_svc,
+    )
+
+    fake_kis = _fake_kis_client_seq(side_effect=[[], None])
+
+    await run_kis_mock_reconciliation(mock_db, dry_run=True, kis_client=fake_kis)
+
+    args = mock_lifecycle_svc.apply_lifecycle_transition.call_args.kwargs
+    assert args["next_state"] == "anomaly"
+    assert args["reason_code"] == "holdings_snapshot_missing"
+
+
+@pytest.mark.asyncio
+async def test_empty_account_books_sell_to_zero_fill(monkeypatch):
+    """ROB-910: genuinely empty account (fetch succeeds, returns []) is a verified
+    zero for a KR sell-to-zero — books the fill, distinct from a fetch failure."""
+    mock_db = AsyncMock()
+    mock_lifecycle_svc = AsyncMock()
+    mock_lifecycle_svc.list_open_orders.return_value = [
+        _ledger_row(
+            ledger_id=60,
+            symbol="005930",
+            side="sell",
+            qty=Decimal("2"),
+            state="accepted",
+            baseline=Decimal("2"),
+            instrument_type="equity_kr",
+        )
+    ]
+    mock_lifecycle_svc.apply_lifecycle_transition.return_value = {"applied": True}
+    monkeypatch.setattr(
+        "app.jobs.kis_mock_reconciliation_job.KISMockLifecycleService",
+        lambda _: mock_lifecycle_svc,
+    )
+
+    fake_kis = _fake_kis_client(kr=[], us=[])
+
+    await run_kis_mock_reconciliation(mock_db, dry_run=True, kis_client=fake_kis)
+
+    args = mock_lifecycle_svc.apply_lifecycle_transition.call_args.kwargs
+    assert args["next_state"] == "fill"
+    assert args["reason_code"] == "fill_detected"
+    assert args["detail"]["attributed_fill_qty"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_buy_absent_symbol_not_misbooked_as_fill(monkeypatch):
+    """ROB-910 buy guard: a BUY whose symbol is absent from a verified fetch
+    reflects observed qty 0 (delta 0 vs baseline 0) → still pending, never a
+    fabricated fill."""
+    mock_db = AsyncMock()
+    mock_lifecycle_svc = AsyncMock()
+    mock_lifecycle_svc.list_open_orders.return_value = [
+        _ledger_row(
+            ledger_id=70,
+            symbol="0148J0",
+            side="buy",
+            qty=Decimal("10"),
+            state="accepted",
+            baseline=Decimal("0"),
+            instrument_type="equity_kr",
+            accepted_age_sec=5,
+        )
+    ]
+    mock_lifecycle_svc.apply_lifecycle_transition.return_value = {"applied": True}
+    monkeypatch.setattr(
+        "app.jobs.kis_mock_reconciliation_job.KISMockLifecycleService",
+        lambda _: mock_lifecycle_svc,
+    )
+
+    fake_kis = _fake_kis_client(kr=[], us=[])
+
+    await run_kis_mock_reconciliation(mock_db, dry_run=True, kis_client=fake_kis)
+
+    args = mock_lifecycle_svc.apply_lifecycle_transition.call_args.kwargs
+    assert args["next_state"] == "pending"
+    assert args["reason_code"] == "pending_unconfirmed"
+    assert args["detail"]["attributed_fill_qty"] == "0"
 
 
 def test_reconcile_gate_flags_default_false():
