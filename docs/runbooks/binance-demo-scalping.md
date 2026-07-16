@@ -177,18 +177,34 @@ don't (correctly) trip the global cap. Procedure:
 5. Capture the redacted evidence line + a broker/ledger reconciliation
    check (open orders 0; futures position flat).
 
-### Abandoned root-reservation reconciliation (ROB-844)
+### Abandoned root-reservation reconciliation (ROB-844, ROB-906)
 
 `reserve_root_planned` commits its exposure claim in an independent DB
-transaction before broker order submission. A process crash can therefore leave a durable
-`planned` root. It is never released by elapsed time alone. The scheduleless
+transaction before broker order submission. A process crash can therefore leave
+a durable **pre-acknowledgement open root** — a root row still persisted as
+`planned`, `previewed`, or `validated` whose `broker_order_id` is still NULL
+(the broker POST never reached the venue, so no acknowledgement exists). All
+three occupy the global open-root cap and are candidates here.
+`submitted`/`filled`/`anomaly` roots carry a broker ack and stay owned by the
+fill-evidence reconcile path — they are never candidates for this job.
+
+> **ROB-906:** the original job only scanned `planned` rows, so a crash *after*
+> `record_validated` (but before the broker POST) stranded a `validated` root
+> that permanently occupied the cap — observed in production as every scalping
+> tick entry blocking with `global_lifecycle_cap_reached` while the broker
+> account was flat. The pre-ack candidate set above closes that blind spot.
+
+It is never released by elapsed time alone. The scheduleless
 TaskIQ entrypoint `binance.demo_root_reservation.reconcile` combines an age
-eligibility guard with exact broker truth by `client_order_id`. Before any
+eligibility guard (`planned_at`, populated at insert and preserved across pre-ack
+transitions) with exact broker truth by `client_order_id`. Before any
 broker GET, the persisted row must match the product's exact Demo host and its
 `extra_metadata.credential_fingerprint` must exactly match the running
 adapter's opaque API-key fingerprint. Raw API keys/secrets are never stored.
 Legacy rows with no fingerprint, rotated/mismatched credentials, or unavailable
-client identity stay blocking and dispatch zero broker reads.
+client identity stay blocking and dispatch zero broker reads. Each outcome
+reports its pre-release `lifecycle_state` (`planned`/`previewed`/`validated`) for
+operator readability.
 
 - explicit Binance `-2013` order-not-found is releasable only while reservation
   age is **strictly below 89 days**. At exactly 89 days or older, lookup
@@ -248,8 +264,10 @@ does not propagate gates or credentials to an existing worker.
    `BINANCE_DEMO_RESERVATION_RECONCILE_CONFIRM=true`, restart/reload the worker,
    confirm the effective setting, then issue the same plain kick exactly once.
 5. Verify each reported `released` row is now `reconciled` with matching
-   redacted reconciliation evidence; verify kept rows remain `planned`, broker
-   open orders are expected, and Futures positions are understood.
+   redacted reconciliation evidence; verify kept rows remain in their pre-ack
+   open state (`planned`/`previewed`/`validated`, per each outcome's
+   `lifecycle_state`), broker open orders are expected, and Futures positions
+   are understood.
 6. **Immediately close the apply window:** set confirm back to `false`, restart/
    reload the worker, and verify a subsequent controlled invocation reports
    `mutation_confirmed=false`. On any error or unexpected outcome, perform this
