@@ -329,28 +329,38 @@ broker state: rungs at or after submit (`submitting`, `acked`, `resting`, or
 next session rebuilt the same judgment from scratch instead of being told it
 had died.
 
-- **`exit_intent="defensive_trim"`** is now accepted alongside `"loss_cut"`.
-  Unlike `loss_cut` it requires no retrospective evidence — only `side="sell"`
-  and a supported live `account_mode`/`market` combination (the same set as
-  `loss_cut`). It exists so a sell-side risk-reduction ("trim") proposal can be
-  tagged and get the TTL floor below without impersonating a sanctioned
-  stop-loss exit.
-- **Approval-window TTL floor.** For `exit_intent in {"loss_cut",
-  "defensive_trim"}`, `create_proposal` raises a too-short `valid_until`
-  (default or caller-supplied) up to the end of the next observed Telegram
-  approval-activity window — it never shortens a longer caller-supplied value.
-  Windows are defined once in `app/services/order_proposals/defensive_ttl.py`:
-  US `22:30-23:30 KST` (07-15 research); KR `08:10-09:30 KST` plus a shorter
-  `12:00-12:15 KST` noon check-in (the noon window's exact width wasn't in the
-  07-15 record — this is a conservative, operator-adjustable default). Markets
-  without a defined window (e.g. `crypto`) are unaffected.
+- **`exit_intent="defensive_trim"` is still rejected at create time** — code
+  review caught that every submit path (`order_execution.py`,
+  `orders_kis_variants.py`, `orders_toss_variants.py`) only recognizes
+  `exit_intent="loss_cut"`. An earlier draft of this PR accepted
+  `"defensive_trim"` at create, which would TTL-floor and list correctly but
+  die in revalidation the instant it was approved — a zombie lane. That was
+  reverted; `create_proposal` still fails closed with `unknown exit_intent`
+  for anything but `"loss_cut"`. Execution-side support for `defensive_trim`
+  is a separate, not-yet-scoped issue.
+- **Approval-window TTL floor.** For `exit_intent="loss_cut"` (the only value
+  `create_proposal` currently accepts), `create_proposal` raises a too-short
+  `valid_until` (default or caller-supplied) up to the end of the next
+  observed Telegram approval-activity window — it never shortens a longer
+  caller-supplied value. Windows are defined once in
+  `app/services/order_proposals/defensive_ttl.py`: US `22:30-23:30 KST` (07-15
+  research); KR `08:10-09:30 KST` plus a shorter `12:00-12:15 KST` noon
+  check-in (the noon window's exact width wasn't in the 07-15 record — this is
+  a conservative, operator-adjustable default). Markets without a defined
+  window (e.g. `crypto`) are unaffected. `DEFENSIVE_EXIT_INTENTS` also names
+  `"defensive_trim"` for forward-compat with the read-only handoff tool below,
+  but since create rejects it, only `loss_cut` proposals actually reach this
+  floor today.
 - **`order_proposal_list_expired_defensive(hours=24, market=None)`** — new
-  read-only MCP tool. Lists `loss_cut`/`defensive_trim` proposals that expired
-  or were voided in the last `hours` (max 720) without a human decision, each
-  flagged `needs_reassessment=true`. Noise suppression: a proposal already
-  superseded, or sharing a `symbol`+`side` with a still-active (non-terminal)
-  proposal, is dropped — either means the decision already moved on. Reuses
-  ROB-897's `updated_at`/lifecycle-state plumbing; adds no new sweep, no new
+  read-only MCP tool. Lists `loss_cut`/`defensive_trim`-tagged proposals that
+  expired or were voided in the last `hours` (max 720) without a human
+  decision, each flagged `needs_reassessment=true`. In practice only
+  `loss_cut` proposals can appear (see above); the `defensive_trim` match is
+  forward-compat so this surface doesn't need another PR once execution
+  support for it lands. Noise suppression: a proposal already superseded, or
+  sharing a `symbol`+`side` with a still-active (non-terminal) proposal, is
+  dropped — either means the decision already moved on. Reuses ROB-897's
+  `updated_at`/lifecycle-state plumbing; adds no new sweep, no new
   notification path, and never mutates a broker. Wiring this into a
   session-start prompt is an orch/Hermes-side decision, out of scope here.
 

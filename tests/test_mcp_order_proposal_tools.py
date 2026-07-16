@@ -823,15 +823,30 @@ def test_list_expired_defensive_registered_in_tool_names():
 
 
 @pytest.mark.asyncio
-async def test_list_expired_defensive_returns_expired_defensive_trim_proposal(
+async def test_list_expired_defensive_returns_expired_loss_cut_proposal(
     monkeypatch,
 ):
+    # exit_intent="defensive_trim" is rejected at create time (ROB-929 code
+    # review: no execution-path support yet) -- loss_cut is the only
+    # defensive exit_intent actually creatable today.
+    async def fake_lookup(session, retrospective_id):
+        return SimpleNamespace(
+            symbol="MCPHANDOFF1",
+            trigger_type="stop_loss",
+            created_at=_HANDOFF_RECENT,
+        )
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
     created = await opt.order_proposal_create(
         **_create_kwargs(
             symbol="MCPHANDOFF1",
             market="equity_us",
             side="sell",
-            exit_intent="defensive_trim",
+            exit_intent="loss_cut",
+            exit_reason="stop_loss",
+            retrospective_id=42,
             rungs=[
                 {
                     "rung_index": 0,
@@ -860,7 +875,7 @@ async def test_list_expired_defensive_returns_expired_defensive_trim_proposal(
     matching = [p for p in result["proposals"] if p["proposal_id"] == str(proposal_id)]
     assert len(matching) == 1
     assert matching[0]["symbol"] == "MCPHANDOFF1"
-    assert matching[0]["exit_intent"] == "defensive_trim"
+    assert matching[0]["exit_intent"] == "loss_cut"
     assert matching[0]["lifecycle_state"] == "expired"
     assert matching[0]["needs_reassessment"] is True
     assert Decimal(matching[0]["limit_price"]) == Decimal("150")
@@ -886,14 +901,26 @@ async def test_list_expired_defensive_excludes_non_defensive_proposal():
 
 
 @pytest.mark.asyncio
-async def test_list_expired_defensive_filters_by_market():
+async def test_list_expired_defensive_filters_by_market(monkeypatch):
+    async def fake_lookup(session, retrospective_id):
+        return SimpleNamespace(
+            symbol="MCPHANDOFF3",
+            trigger_type="stop_loss",
+            created_at=_HANDOFF_RECENT,
+        )
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
     created = await opt.order_proposal_create(
         **_create_kwargs(
             symbol="MCPHANDOFF3",
             market="equity_kr",
             account_mode="kis_live",
             side="sell",
-            exit_intent="defensive_trim",
+            exit_intent="loss_cut",
+            exit_reason="stop_loss",
+            retrospective_id=42,
             rungs=[
                 {
                     "rung_index": 0,

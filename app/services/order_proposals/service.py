@@ -361,10 +361,14 @@ class OrderProposalsService:
             self._require_timezone_aware(valid_until)
             if valid_until <= now:
                 raise OrderProposalError("valid_until must be in the future")
-        # ROB-929: loss_cut/defensive_trim proposals must stay approvable through
-        # the next observed Telegram approval window -- this only raises a
-        # too-short valid_until (default or caller-supplied) up to that window's
-        # end; a caller-supplied longer window is left untouched.
+        # ROB-929: loss_cut proposals must stay approvable through the next
+        # observed Telegram approval window -- this only raises a too-short
+        # valid_until (default or caller-supplied) up to that window's end; a
+        # caller-supplied longer window is left untouched. DEFENSIVE_EXIT_INTENTS
+        # also names "defensive_trim" for forward-compat with the read-only
+        # handoff surface below, but _validate_exit_binding still rejects
+        # exit_intent="defensive_trim" at create time (no execution-path
+        # support yet) -- so only loss_cut can reach here in practice today.
         if defensive_floor is not None and valid_until < defensive_floor:
             valid_until = defensive_floor
         await self._validate_exit_binding(
@@ -491,21 +495,18 @@ class OrderProposalsService:
             if any(value is not None for value in supporting):
                 raise OrderProposalError("exit binding fields require exit_intent")
             return
-        if exit_intent == "defensive_trim":
-            # ROB-929: defensive_trim is a lighter-weight defensive tag than
-            # loss_cut -- no retrospective evidence is required (it isn't a
-            # sanctioned stop-loss exit), only that it's a sell on a supported
-            # live account/market so the TTL floor above actually applies to it.
-            if side != "sell":
-                raise OrderProposalError("defensive_trim requires side='sell'")
-            if (account_mode, market) not in _SUBMITTABLE_ACCOUNT_MODE_MARKETS:
-                raise OrderProposalError(
-                    "defensive_trim requires a supported live account and market"
-                )
-            return
         if exit_intent != "loss_cut":
+            # ROB-929 code review: every submit path (order_execution.py,
+            # orders_kis_variants.py, orders_toss_variants.py) still rejects
+            # anything but exit_intent="loss_cut" -- accepting "defensive_trim"
+            # here would create a proposal that TTL-floors and lists correctly
+            # but dies in revalidation the moment it's approved (a zombie
+            # lane). Execution-side support for defensive_trim is a separate,
+            # not-yet-scoped issue; fail closed here until that lands.
             raise OrderProposalError(
-                "unknown exit_intent (only 'loss_cut', 'defensive_trim')"
+                "unknown exit_intent (only 'loss_cut' is currently supported "
+                "end-to-end; defensive_trim execution support is a separate "
+                "issue)"
             )
 
         errors: list[str] = []

@@ -3,6 +3,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import func, select
@@ -352,6 +353,12 @@ async def test_loss_cut_requires_all_group_fields_without_paperclip_lookup(
         ({"retrospective_id": None}, "retrospective_id"),
         ({"exit_reason": None}, "exit_reason"),
         ({"exit_intent": "emergency"}, "unknown exit_intent"),
+        # ROB-929 code review: every submit path still only recognizes
+        # exit_intent="loss_cut" -- accepting "defensive_trim" at create would
+        # produce a proposal that TTL-floors/lists fine but dies in
+        # revalidation once approved. Fail closed until execution-side
+        # support for defensive_trim exists (separate issue).
+        ({"exit_intent": "defensive_trim"}, "unknown exit_intent"),
     ],
 )
 async def test_loss_cut_required_fields_fail_closed(db_session, overrides, message):
@@ -636,39 +643,30 @@ async def test_loss_cut_valid_until_default_also_respects_floor(
 
 
 @pytest.mark.asyncio
-async def test_defensive_trim_exit_intent_is_accepted_and_floors_valid_until(
+async def test_defensive_trim_exit_intent_is_rejected_pending_execution_support(
     db_session,
 ):
-    now = datetime(2026, 7, 15, 20, 0, tzinfo=KST)
+    """exit_intent="defensive_trim" is deliberately NOT accepted at create time.
 
-    group = await OrderProposalsService(db_session).create_proposal(
-        symbol="AAPL",
-        market="equity_us",
-        account_mode="kis_live",
-        side="sell",
-        order_type="limit",
-        proposer="p",
-        rungs=[RungInput(0, "sell", Decimal("1"), Decimal("200"), None)],
-        exit_intent="defensive_trim",
-        valid_until=now + timedelta(minutes=1),
-        now=now,
-    )
-
-    assert group.exit_intent == "defensive_trim"
-    assert group.valid_until == datetime(2026, 7, 15, 23, 30, tzinfo=KST)
-
-
-@pytest.mark.asyncio
-async def test_defensive_trim_requires_sell_side(db_session):
-    with pytest.raises(OrderProposalError, match="defensive_trim requires side"):
+    ROB-929 code review: every submit path (order_execution.py,
+    orders_kis_variants.py, orders_toss_variants.py) still only recognizes
+    exit_intent="loss_cut" -- accepting "defensive_trim" here would create a
+    proposal that TTL-floors and lists correctly but dies in revalidation the
+    moment it's approved (a zombie lane). The TTL-floor helper and the
+    expiry-handoff read surface stay forward-compat aware of "defensive_trim"
+    (see defensive_ttl.DEFENSIVE_EXIT_INTENTS) for whenever execution-side
+    support lands as a separate issue, but create must keep failing closed
+    until then.
+    """
+    with pytest.raises(OrderProposalError, match="unknown exit_intent"):
         await OrderProposalsService(db_session).create_proposal(
             symbol="AAPL",
             market="equity_us",
             account_mode="kis_live",
-            side="buy",
+            side="sell",
             order_type="limit",
             proposer="p",
-            rungs=[RungInput(0, "buy", Decimal("1"), Decimal("200"), None)],
+            rungs=[RungInput(0, "sell", Decimal("1"), Decimal("200"), None)],
             exit_intent="defensive_trim",
             now=datetime(2026, 7, 15, 20, 0, tzinfo=KST),
         )
@@ -2743,28 +2741,45 @@ async def _create_defensive_rung(
     db_session,
     *,
     symbol: str,
-    exit_intent: str = "defensive_trim",
     market: str = "equity_us",
     account_mode: str = "kis_live",
 ):
+    """Create the only defensive exit_intent actually creatable today: loss_cut.
+
+    exit_intent="defensive_trim" is rejected at create time (see
+    test_defensive_trim_exit_intent_is_rejected_pending_execution_support) --
+    every handoff test below that needs a *real* expired/voided defensive
+    proposal uses loss_cut. Forward-compat recognition of the "defensive_trim"
+    tag itself is covered separately by
+    test_expired_defensive_handoff_recognizes_defensive_trim_tag_forward_compat.
+    """
     service = OrderProposalsService(db_session)
-    group = await service.create_proposal(
-        symbol=symbol,
-        market=market,
-        account_mode=account_mode,
-        side="sell",
-        order_type="limit",
-        proposer="p",
-        rungs=[RungInput(0, "sell", Decimal("1"), Decimal("100"), None)],
-        exit_intent=exit_intent,
-        valid_until=datetime(2026, 7, 20, 0, 0, tzinfo=UTC),
-    )
+
+    async def fake_lookup(session, retrospective_id):
+        return _retro(symbol=symbol)
+
+    with patch(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    ):
+        group = await service.create_proposal(
+            symbol=symbol,
+            market=market,
+            account_mode=account_mode,
+            side="sell",
+            order_type="limit",
+            proposer="p",
+            rungs=[RungInput(0, "sell", Decimal("1"), Decimal("100"), None)],
+            exit_intent="loss_cut",
+            exit_reason="stop_loss",
+            retrospective_id=42,
+            valid_until=datetime(2026, 7, 20, 0, 0, tzinfo=UTC),
+        )
     await db_session.commit()
     return service, group
 
 
 @pytest.mark.asyncio
-async def test_expired_defensive_handoff_includes_expired_defensive_trim(db_session):
+async def test_expired_defensive_handoff_includes_expired_loss_cut(db_session):
     service, group = await _create_defensive_rung(db_session, symbol="HANDOFF_EXP")
     assert await service.expire_if_needed(group.proposal_id, now=_HANDOFF_RECENT)
     group.updated_at = _HANDOFF_RECENT
@@ -2776,9 +2791,35 @@ async def test_expired_defensive_handoff_includes_expired_defensive_trim(db_sess
     assert len(matching) == 1
     assert matching[0].symbol == "HANDOFF_EXP"
     assert matching[0].side == "sell"
-    assert matching[0].exit_intent == "defensive_trim"
+    assert matching[0].exit_intent == "loss_cut"
     assert matching[0].lifecycle_state == "expired"
     assert matching[0].needs_reassessment is True
+
+
+@pytest.mark.asyncio
+async def test_expired_defensive_handoff_recognizes_defensive_trim_tag_forward_compat(
+    db_session,
+):
+    """The read surface stays forward-compat aware of exit_intent="defensive_trim"
+    even though create rejects it today (ROB-929 code review) -- so no further
+    PR is needed here once execution-side support for defensive_trim lands.
+    This bypasses create validation by writing the tag directly, mirroring how
+    a future execution-aware create path would persist it.
+    """
+    service, group = await _create_single_rung(db_session, symbol="HANDOFF_FWDCOMPAT")
+    group.side = "sell"
+    group.exit_intent = "defensive_trim"
+    group.valid_until = datetime(2026, 7, 20, 0, 0, tzinfo=UTC)
+    await db_session.commit()
+    assert await service.expire_if_needed(group.proposal_id, now=_HANDOFF_RECENT)
+    group.updated_at = _HANDOFF_RECENT
+    await db_session.commit()
+
+    items = await service.list_expired_defensive_handoff(now=_HANDOFF_NOW, hours=24)
+
+    matching = [item for item in items if item.proposal_id == group.proposal_id]
+    assert len(matching) == 1
+    assert matching[0].exit_intent == "defensive_trim"
 
 
 @pytest.mark.asyncio
@@ -2860,6 +2901,8 @@ async def test_expired_defensive_handoff_excludes_symbol_side_with_active_reprop
     expired_group.updated_at = _HANDOFF_RECENT
     await db_session.commit()
     # A fresh re-proposal for the same symbol+side is still active (proposed).
+    # No exit_intent needed here -- the active-pair exclusion matches on
+    # symbol+side regardless of exit_intent.
     await service.create_proposal(
         symbol="HANDOFF_ACTIVE",
         market="equity_us",
@@ -2868,7 +2911,6 @@ async def test_expired_defensive_handoff_excludes_symbol_side_with_active_reprop
         order_type="limit",
         proposer="p",
         rungs=[RungInput(0, "sell", Decimal("1"), Decimal("110"), None)],
-        exit_intent="defensive_trim",
         now=_HANDOFF_RECENT,
     )
     await db_session.commit()
