@@ -530,6 +530,8 @@ class PaperEvaluationPnL:
                 filled_price_raw = getattr(row, "filled_avg_price", None)
 
                 if filled_qty_raw is None or filled_price_raw is None:
+                    if row.lifecycle_state == "canceled":
+                        continue
                     missing_observation_count += 1
                     continue
 
@@ -537,6 +539,8 @@ class PaperEvaluationPnL:
                     filled_qty = Decimal(str(filled_qty_raw))
                     filled_price = Decimal(str(filled_price_raw))
                 except Exception:
+                    if row.lifecycle_state == "canceled":
+                        continue
                     missing_observation_count += 1
                     continue
 
@@ -546,6 +550,10 @@ class PaperEvaluationPnL:
                     or filled_qty <= 0
                     or filled_price <= 0
                 ):
+                    if row.lifecycle_state == "canceled" and (
+                        filled_qty <= 0 or filled_price <= 0
+                    ):
+                        continue
                     missing_observation_count += 1
                     continue
 

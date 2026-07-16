@@ -86,7 +86,8 @@ The migration `d4e5f6a7b8c9` (down_revision: `c1d2e3f4a5b6`) mapped old states a
 | `open` | `submitted` | `execution` | `confirm_flag=true` |
 | `partially_filled` | `submitted` | `execution` | Broker status preserved in `order_status` |
 | `filled` | `filled` | `execution` | `confirm_flag=true` |
-| `canceled` | `anomaly` | `execution` | `confirm_flag=true` |
+| `canceled` (with evidence) | `canceled` | `execution` | ROB-920 update (intended cancellations) |
+| `canceled` (no evidence) | `anomaly` | `execution` | ROB-920 update (unexpected cancellations) |
 | `unexpected` | `anomaly` | `execution` | — |
 
 > [!NOTE]

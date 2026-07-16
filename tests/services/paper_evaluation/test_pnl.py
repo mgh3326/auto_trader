@@ -929,6 +929,70 @@ class TestAlpacaView:
         metrics = await service.compute_alpaca_view(ledger, correlation_ids=["corr_1"])
         assert metrics.partial_fill_count == 1
 
+    @pytest.mark.asyncio
+    async def test_canceled_zero_fill_ignored_without_missing_observation(self) -> None:
+        service = _make_service()
+        # Seed a zero-fill canceled order row and a normal filled row
+        ledger = FakeAlpacaLedgerReader(
+            rows_by_correlation={
+                "corr_1": [
+                    _make_alpaca_execution_row(
+                        side="buy", filled_qty="1", filled_price="50000", row_id=1
+                    ),
+                    FakeAlpacaRow(
+                        id=2,
+                        record_kind="execution",
+                        lifecycle_state="canceled",
+                        side="buy",
+                        currency="USD",
+                        execution_symbol="BTC/USD",
+                        filled_qty=Decimal("0"),
+                        filled_avg_price=None,
+                        client_order_id="coid_2",
+                        lifecycle_correlation_id="corr_1",
+                    ),
+                ]
+            }
+        )
+        metrics = await service.compute_alpaca_view(
+            ledger,
+            correlation_ids=["corr_1"],
+            native_marks={"BTC/USD": Decimal("50000")},
+        )
+        assert metrics.missing_observation_count == 0
+        assert metrics.fill_count == 1
+
+    @pytest.mark.asyncio
+    async def test_canceled_partial_fill_reflected(self) -> None:
+        service = _make_service()
+        # Seed a partial-fill canceled order row
+        ledger = FakeAlpacaLedgerReader(
+            rows_by_correlation={
+                "corr_1": [
+                    FakeAlpacaRow(
+                        id=1,
+                        record_kind="execution",
+                        lifecycle_state="canceled",
+                        side="buy",
+                        currency="USD",
+                        execution_symbol="BTC/USD",
+                        filled_qty=Decimal("0.5"),
+                        filled_avg_price=Decimal("50000"),
+                        client_order_id="coid_1",
+                        lifecycle_correlation_id="corr_1",
+                    ),
+                ]
+            }
+        )
+        metrics = await service.compute_alpaca_view(
+            ledger,
+            correlation_ids=["corr_1"],
+            native_marks={"BTC/USD": Decimal("50000")},
+        )
+        assert metrics.missing_observation_count == 0
+        assert metrics.fill_count == 1
+        assert metrics.turnover == Decimal("25000")  # 0.5 * 50000
+
 
 # ---------------------------------------------------------------------------
 # View 3: Canonical shadow P&L tests
