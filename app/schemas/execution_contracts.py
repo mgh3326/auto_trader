@@ -52,6 +52,7 @@ OrderLifecycleState = Literal[
     "failed",
     "anomaly",
     "cancelled",
+    "canceled",
 ]
 ORDER_LIFECYCLE_STATES: frozenset[str] = frozenset(
     {
@@ -66,6 +67,7 @@ ORDER_LIFECYCLE_STATES: frozenset[str] = frozenset(
         "failed",
         "anomaly",
         "cancelled",
+        "canceled",
     }
 )
 
@@ -75,7 +77,7 @@ ORDER_LIFECYCLE_STATES: frozenset[str] = frozenset(
 # emit ``reconciled``. ``anomaly`` is also intentionally NOT terminal — it means
 # "needs operator review", which is a hand-off, not a conclusion.
 TERMINAL_LIFECYCLE_STATES: frozenset[str] = frozenset(
-    {"reconciled", "failed", "stale", "cancelled"}
+    {"reconciled", "failed", "stale", "cancelled", "canceled"}
 )
 
 # In-flight: order has been sent or acknowledged by the broker and is

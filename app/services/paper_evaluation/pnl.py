@@ -493,6 +493,7 @@ class PaperEvaluationPnL:
                 "sell_validated",
                 "closed",
                 "final_reconciled",
+                "canceled",
             }
         )
         _RECORD_KIND_EXECUTION = "execution"
@@ -528,23 +529,44 @@ class PaperEvaluationPnL:
                 filled_qty_raw = getattr(row, "filled_qty", None)
                 filled_price_raw = getattr(row, "filled_avg_price", None)
 
-                if filled_qty_raw is None or filled_price_raw is None:
+                # Parse qty safely
+                filled_qty = None
+                qty_invalid = False
+                if filled_qty_raw is not None:
+                    try:
+                        filled_qty = Decimal(str(filled_qty_raw))
+                        if not filled_qty.is_finite():
+                            qty_invalid = True
+                    except Exception:
+                        qty_invalid = True
+
+                # If qty is invalid, then it's a missing/invalid observation for both canceled and normal states.
+                if qty_invalid:
+                    missing_observation_count += 1
+                    continue
+
+                # Zero-fill cancels have: row.lifecycle_state == "canceled" AND (qty is None or qty == 0)
+                is_zero_fill_cancel = row.lifecycle_state == "canceled" and (
+                    filled_qty is None or filled_qty == 0
+                )
+
+                if is_zero_fill_cancel:
+                    # benign zero-fill cancel: skip completely without incrementing missing_observation_count
+                    continue
+
+                # For any other case, both qty and price must be valid and positive.
+                # If either is missing/invalid, increment missing_observation_count
+                if filled_qty is None or filled_price_raw is None:
                     missing_observation_count += 1
                     continue
 
                 try:
-                    filled_qty = Decimal(str(filled_qty_raw))
                     filled_price = Decimal(str(filled_price_raw))
                 except Exception:
                     missing_observation_count += 1
                     continue
 
-                if (
-                    not filled_qty.is_finite()
-                    or not filled_price.is_finite()
-                    or filled_qty <= 0
-                    or filled_price <= 0
-                ):
+                if not filled_price.is_finite() or filled_qty <= 0 or filled_price <= 0:
                     missing_observation_count += 1
                     continue
 

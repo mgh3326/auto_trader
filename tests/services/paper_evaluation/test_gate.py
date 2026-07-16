@@ -292,3 +292,37 @@ def test_multiple_views_with_issues_flagged() -> None:
     assert len(reasons) >= 2
     assert any("fill_count" in reason for reason in reasons)
     assert any("missing observations" in reason for reason in reasons)
+
+
+def test_zero_missing_observations_with_zero_fill_canceled_passes() -> None:
+    # (a) zero-fill canceled -> missing 0 -> sufficient is True
+    metrics = {
+        ViewName.ALPACA_BROKER: _view_metrics(
+            view_name=ViewName.ALPACA_BROKER,
+            fill_count=100,
+            missing_observation_count=0,
+        ),
+    }
+    minimum = MinimumEvidence(min_observations=100, min_fills=10, min_calendar_days=7)
+    sufficient, reasons = evaluate_insufficient_evidence(
+        view_metrics=metrics, minimum_evidence=minimum
+    )
+    assert sufficient is True
+    assert reasons == []
+
+
+def test_genuine_missing_observation_fails_gate() -> None:
+    # (c) 진짜 missing(무증거 anomaly) -> missing_observation_count > 0 -> sufficient is False
+    metrics = {
+        ViewName.ALPACA_BROKER: _view_metrics(
+            view_name=ViewName.ALPACA_BROKER,
+            fill_count=100,
+            missing_observation_count=1,
+        ),
+    }
+    minimum = MinimumEvidence(min_observations=100, min_fills=10, min_calendar_days=7)
+    sufficient, reasons = evaluate_insufficient_evidence(
+        view_metrics=metrics, minimum_evidence=minimum
+    )
+    assert sufficient is False
+    assert any("missing observations" in reason for reason in reasons)

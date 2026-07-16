@@ -53,7 +53,8 @@ from sqlalchemy import text
 # (research.reject_evaluation_mutation) for the four new evaluation tables.
 # The ORM tables are built by create_all; the trigger functions are non-ORM DDL
 # mirrored here.
-SCHEMA_BOOTSTRAP_VERSION = 24
+# v25 (ROB-920): update alpaca_paper_order_ledger check constraint to include canceled state.
+SCHEMA_BOOTSTRAP_VERSION = 25
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -1352,6 +1353,51 @@ async def _ensure_operator_session_context_created_by_constraint(conn) -> None:
     )
 
 
+async def _ensure_alpaca_paper_ledger_lifecycle_state_constraint(conn) -> None:
+    constraints = await conn.execute(
+        text(
+            "SELECT conname, pg_get_constraintdef(oid) AS definition "
+            "FROM pg_constraint "
+            "WHERE conrelid = 'review.alpaca_paper_order_ledger'::regclass "
+            "AND contype = 'c' "
+            "AND pg_get_constraintdef(oid) LIKE '%lifecycle_state%'"
+        )
+    )
+    rows = list(constraints)
+    needs_rebuild = False
+    if not rows:
+        needs_rebuild = True
+    else:
+        for _conname, definition in rows:
+            if "canceled" not in (definition or ""):
+                needs_rebuild = True
+                break
+
+    if not needs_rebuild:
+        return
+
+    # Drop all existing lifecycle_state check constraints
+    for conname, _definition in rows:
+        await conn.execute(
+            text(
+                f"ALTER TABLE review.alpaca_paper_order_ledger DROP CONSTRAINT IF EXISTS {conname}"
+            )
+        )
+
+    # Add the updated constraint
+    await conn.execute(
+        text(
+            "ALTER TABLE review.alpaca_paper_order_ledger "
+            "ADD CONSTRAINT alpaca_paper_ledger_lifecycle_state "
+            "CHECK (lifecycle_state IN ("
+            "'planned','previewed','validated','submitted','filled',"
+            "'position_reconciled','sell_validated','closed','final_reconciled','anomaly',"
+            "'stale_preview_cleanup_required','canceled'"
+            "))"
+        )
+    )
+
+
 def schema_content_hash() -> str:
     """SHA256 hex of the bootstrap version + the DDL tuple.
 
@@ -1455,6 +1501,7 @@ async def apply_test_schema(conn) -> None:
     await _ensure_trade_forecast_status_constraint(conn)
     await _ensure_analysis_artifacts_created_by_constraint(conn)
     await _ensure_operator_session_context_created_by_constraint(conn)
+    await _ensure_alpaca_paper_ledger_lifecycle_state_constraint(conn)
 
     for stmt in _DDL_STATEMENTS:
         await conn.execute(text(stmt))

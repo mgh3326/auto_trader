@@ -712,7 +712,7 @@ class AlpacaPaperOrderLedger(Base):
             "lifecycle_state IN ("
             "'planned','previewed','validated','submitted','filled',"
             "'position_reconciled','sell_validated','closed','final_reconciled','anomaly',"
-            "'stale_preview_cleanup_required'"
+            "'stale_preview_cleanup_required','canceled'"
             ")",
             name="alpaca_paper_ledger_lifecycle_state",
         ),

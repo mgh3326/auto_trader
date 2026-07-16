@@ -1295,3 +1295,46 @@ def test_benchmark_computation_composes_with_view_metrics() -> None:
     binance_metrics = verdict.view_metrics[ViewName.BINANCE_BROKER]
     assert binance_metrics.cash_benchmark_return_pct == cash_bench
     assert binance_metrics.btc_eth_benchmark_return_pct == btc_eth_bench
+
+
+def test_conjunctive_verdict_zero_missing_observations_with_zero_fill_canceled_passes() -> (
+    None
+):
+    # (a) zero-fill canceled -> missing 0 -> status is PROMOTION_ELIGIBLE
+    views = make_three_views(
+        alpaca_broker={
+            "fill_count": 100,
+            "missing_observation_count": 0,
+        }
+    )
+    verdict = compute_conjunctive_verdict(
+        view_metrics=views,
+        config=make_evaluation_config(),
+        shadow_gate=make_passed_shadow_gate(),
+        paper_gate=make_passed_paper_gate(),
+        epoch_id=_EPOCH_ID,
+        experiment_hash=_EXPERIMENT_HASH,
+        cohort_hash=_COHORT_HASH,
+    )
+    assert verdict.status is VerdictStatus.PROMOTION_ELIGIBLE
+
+
+def test_conjunctive_verdict_genuine_missing_observation_fails_evidence_check() -> None:
+    # (c) genuine missing -> missing_observation_count > 0 -> status is INSUFFICIENT_EVIDENCE
+    views = make_three_views(
+        alpaca_broker={
+            "fill_count": 100,
+            "missing_observation_count": 1,
+        }
+    )
+    verdict = compute_conjunctive_verdict(
+        view_metrics=views,
+        config=make_evaluation_config(),
+        shadow_gate=make_passed_shadow_gate(),
+        paper_gate=make_passed_paper_gate(),
+        epoch_id=_EPOCH_ID,
+        experiment_hash=_EXPERIMENT_HASH,
+        cohort_hash=_COHORT_HASH,
+    )
+    assert verdict.status is VerdictStatus.INSUFFICIENT_EVIDENCE
+    assert verdict.reason_code == "insufficient_evidence"

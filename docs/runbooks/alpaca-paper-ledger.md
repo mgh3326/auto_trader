@@ -25,6 +25,7 @@ Related: ROB-83 introduced the Alpaca Paper smoke workflow. ROB-84 adds persiste
 | `sell_validated` | Sell-leg confirm-false check passed |
 | `closed` | Sell order executed; position closed |
 | `final_reconciled` | Roundtrip fully reconciled |
+| `canceled` | Order successfully canceled at the broker with cancel request evidence (ROB-920) |
 | `anomaly` | Broker returned a non-recoverable status (rejected, expired, suspended, canceled, unknown) or a state mismatch |
 
 ### Lifecycle Transitions
@@ -44,7 +45,7 @@ record_validation_attempt(validation_outcome='failed')
 
 record_submit()
   └─ lifecycle_state = _derive_lifecycle_state(order.status, order.filled_qty)
-       submitted / filled / anomaly
+       submitted / filled / anomaly / canceled
        record_kind = execution, confirm_flag = true
 
 record_status()
@@ -52,7 +53,7 @@ record_status()
        (updated on each status poll)
 
 record_cancel()
-  └─ writes cancel_status + canceled_at; lifecycle_state is set by record_status()
+  └─ writes cancel_status + canceled_at; updates lifecycle_state to canceled if order_status is already canceled (ROB-920)
 
 record_position_snapshot()
   └─ writes position_snapshot JSONB + lifecycle_state = position_reconciled
@@ -85,8 +86,14 @@ The migration `d4e5f6a7b8c9` (down_revision: `c1d2e3f4a5b6`) mapped old states a
 | `open` | `submitted` | `execution` | `confirm_flag=true` |
 | `partially_filled` | `submitted` | `execution` | Broker status preserved in `order_status` |
 | `filled` | `filled` | `execution` | `confirm_flag=true` |
-| `canceled` | `anomaly` | `execution` | `confirm_flag=true` |
+| `canceled` (with evidence) | `canceled` | `execution` | ROB-920 update (intended cancellations) |
+| `canceled` (no evidence) | `anomaly` | `execution` | ROB-920 update (unexpected cancellations) |
 | `unexpected` | `anomaly` | `execution` | — |
+
+> [!NOTE]
+> **ROB-920 Evidence-Based Cancellation (Asymmetry Rule):**
+> From 2026-07-17 (ROB-920), order_status `'canceled'` is mapped to the terminal `canceled` lifecycle state **only** if there is cancel request evidence (e.g. `cancel_status` and/or `canceled_at` is set on the row). Unexpected broker-side cancellations without evidence remain mapped to `anomaly`.
+> *2026-07-17 이전 행은 구 매핑* (Past anomaly-canceled rows before 2026-07-17 remain mapped to `anomaly` - no backfill).
 
 ---
 

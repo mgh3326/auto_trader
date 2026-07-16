@@ -62,9 +62,9 @@ async def alpaca_paper_ledger_list_recent(
 
     Args:
         limit: Maximum number of rows to return (default 50, max 200).
-        lifecycle_state: Optional filter — one of the ROB-90 canonical states:
+        lifecycle_state: Optional filter — one of the canonical states:
             planned, previewed, validated, submitted, filled,
-            position_reconciled, sell_validated, closed, final_reconciled, anomaly.
+            position_reconciled, sell_validated, closed, final_reconciled, anomaly, canceled.
     """
     if limit < 1:
         raise ValueError("limit must be >= 1")
@@ -332,9 +332,9 @@ def register_alpaca_paper_ledger_read_tools(mcp: FastMCP) -> None:
         name="alpaca_paper_ledger_list_recent",
         description=(
             "Read-only list of recent Alpaca Paper order ledger entries. "
-            "Supports optional lifecycle_state filter (ROB-90 canonical states: "
+            "Supports optional lifecycle_state filter (canonical states: "
             "planned, previewed, validated, submitted, filled, position_reconciled, "
-            "sell_validated, closed, final_reconciled, anomaly) and limit. "
+            "sell_validated, closed, final_reconciled, anomaly, canceled) and limit. "
             "No broker mutation."
         ),
     )(alpaca_paper_ledger_list_recent)
