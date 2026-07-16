@@ -58,8 +58,33 @@ async def run_demo_scalping_tick(*, now: dt.datetime | None = None) -> dict[str,
             "scheduler_enabled": scheduler,
         }
 
-    confirm = _truthy(os.environ.get(_CONFIRM_ENV))
     now = now or dt.datetime.now(dt.UTC)
+
+    # ROB-905: confirm=true is honoured only behind a validated-signal gate.
+    # ROB-316's posture (OOS gross-negative micro-breakout signal) requires the
+    # signal to stay dry-run/observe-only until a validated-signal artifact
+    # authorises live Demo orders. If confirm is requested but the gate denies,
+    # downgrade to a dry-run tick (keep telemetry, place no real order) — never
+    # crash the tick.
+    confirm_requested = _truthy(os.environ.get(_CONFIRM_ENV))
+    confirm = confirm_requested
+    validated_signal_gate: dict[str, Any] | None = None
+    if confirm_requested:
+        from app.services.brokers.binance.demo_scalping_exec.validated_signal_gate import (  # noqa: E501
+            evaluate_validated_signal_gate,
+        )
+
+        gate = evaluate_validated_signal_gate(now=now)
+        validated_signal_gate = {"allowed": gate.allowed, "reason": gate.reason}
+        if not gate.allowed:
+            confirm = False
+            logger.warning(
+                "demo scalping confirm=true requested but validated-signal gate "
+                "denied (reason=%s) — downgrading this tick to dry-run "
+                "(no real Demo orders)",
+                gate.reason,
+            )
+
     symbols = sorted(DEFAULT_ALLOWLIST)
 
     # Lazy imports so the disabled path triggers zero engine/credential setup.
@@ -133,4 +158,16 @@ async def run_demo_scalping_tick(*, now: dt.datetime | None = None) -> dict[str,
             if aclose is not None:
                 await aclose()
 
-    return {"status": "ran", "confirm": confirm, **summary.to_evidence_dict()}
+    extra: dict[str, Any] = {}
+    if confirm_requested:
+        # Only surface the request/gate keys when confirm was actually
+        # requested; the no-confirm summary shape is left unchanged.
+        extra["confirm_requested"] = confirm_requested
+        if validated_signal_gate is not None:
+            extra["validated_signal_gate"] = validated_signal_gate
+    return {
+        "status": "ran",
+        "confirm": confirm,
+        **extra,
+        **summary.to_evidence_dict(),
+    }

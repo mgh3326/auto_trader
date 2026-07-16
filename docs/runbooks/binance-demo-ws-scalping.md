@@ -10,6 +10,8 @@
 > - Treat this daemon (and the 5-min Prefect tick in `binance-demo-scalping.md`) as **plumbing / observe / a harness for a future validated signal** — not a strategy-alpha runner.
 > - The current micro-breakout signal must remain **disabled or observe/dry-run only**.
 > - `confirm=true` and any recurring activation (Prefect / scheduler / launchd / TaskIQ) require a **separate validated-signal gate**. Do not enable live Demo order confirmation on this signal.
+>
+> **ROB-905 — the validated-signal gate is now enforced in code** for the 5-min Prefect tick path (`run_demo_scalping_tick`). `BINANCE_DEMO_SCALPING_SCHEDULER_CONFIRM=true` is honoured only when `BINANCE_DEMO_SCALPING_VALIDATED_GATE_PATH` points at a readable `validated_signal_gate.v1` / `verdict: "validated"` (optional future `valid_until`) artifact; otherwise confirm is fail-closed **downgraded to dry-run**. Since no validated signal exists yet, that artifact should not exist and the tick stays dry-run. See `binance-demo-scalping.md` → "Validated-signal gate for `confirm=true`".
 
 ---
 

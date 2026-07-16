@@ -316,11 +316,37 @@ exits flat in-run) on each signal. It is **registered with no schedule**
 | `BINANCE_DEMO_SCALPING_ENABLED` | shared feature gate |
 | `BINANCE_DEMO_SCALPING_SCHEDULER_ENABLED` | scheduler **kill switch** |
 | `BINANCE_DEMO_SCALPING_SCHEDULER_CONFIRM` | second key — without it the tick runs signals + risk re-checks but every `execute_monitored` is a **dry-run** (zero broker mutation) |
+| `BINANCE_DEMO_SCALPING_VALIDATED_GATE_PATH` | ROB-905 — path to the validated-signal gate artifact; `SCHEDULER_CONFIRM` is honoured **only** when this passes |
 
 Both `*_ENABLED` flags must be truthy or the tick builds zero clients,
 touches no DB, and returns `{"status": "disabled"}`. **The kill switch is:
 unset `BINANCE_DEMO_SCALPING_SCHEDULER_ENABLED`** (or set it false) — the
 next tick is an immediate no-op.
+
+### Validated-signal gate for `confirm=true` (ROB-905, code-enforced)
+
+Per the ROB-316 posture above, `confirm=true` alone can no longer place real
+Demo orders. `run_demo_scalping_tick` evaluates a **fail-closed validated-signal
+gate** (`app/services/brokers/binance/demo_scalping_exec/validated_signal_gate.py`)
+whenever `BINANCE_DEMO_SCALPING_SCHEDULER_CONFIRM` is truthy. The applied
+`confirm` is downgraded to `False` (the tick still runs — dry-run telemetry
+preserved, zero broker mutation) unless `BINANCE_DEMO_SCALPING_VALIDATED_GATE_PATH`
+points at a readable JSON file with:
+
+```json
+{"schema": "validated_signal_gate.v1", "verdict": "validated"}
+```
+
+An optional `"valid_until"` (ISO-8601) must be in the future or the gate is
+`gate_expired`. Any other outcome (`gate_path_unset` / `gate_file_missing` /
+`gate_file_unreadable` / `gate_invalid_json` / `gate_schema_mismatch` /
+`gate_verdict_not_validated` / `gate_expired`) downgrades to dry-run. When
+confirm was requested the tick summary carries `confirm_requested` and
+`validated_signal_gate: {allowed, reason}` alongside the applied `confirm`.
+Because the current micro-breakout signal is OOS gross-negative, **no validated
+gate artifact should exist yet** — this guard exists so an unpaused Prefect
+deployment with `confirm=true` (as observed in ROB-905) cannot place real Demo
+orders without a validated-signal artifact.
 
 ### Manual invocation (no schedule registered)
 
