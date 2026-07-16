@@ -289,15 +289,34 @@ uv run python -m scripts.list_recent_fill_events \
 
 reconciler 원장엔 6~7월 백필 수십 건이 이미 존재한다. 워터마크 없이 최초 기동하면
 poller가 `--limit 50` 범위의 과거 fill을 한 번에 트리아지+Discord 발송한다. **설치
-직전** 최신 ledger_id로 워터마크를 미리 채워 과거분을 건너뛴다:
+직전** 최신 ledger_id로 워터마크를 미리 채워 과거분을 건너뛴다.
+
+> ⚠️ **`--limit 1`(마지막 행만 조회)로 시드하면 안 된다.** `list_recent_fill_events`는
+> `ExecutionLedger.id` **오름차순**으로 반환한다(`repository.py::list_recent_fills_for_triage`
+> — `order_by(id.asc()).limit(n)`). 즉 `--after-id` 없이 `--limit 1`을 주면
+> `fills[0]`은 필터에 매치하는 **가장 오래된**(최소 id) 행이다. 그 값을 워터마크로
+> 쓰면 `--after-id <최소id>`가 되어 나머지 백필이 거의 전부 통과한다 — AC 2를 정면
+> 위반하는 회귀. 최신 id를 얻으려면 **after-id로 끝까지 걸어가서 마지막 배치의
+> max(ledger_id)**를 취해야 한다. CLI에 내림차순/`--limit 500` 초과 옵션이 없으므로
+> (repo `limit` clamp가 `[1, 500]`) 배치 워킹 루프로 이를 우회한다. 이 루프는
+> 백필이 500건을 초과해도 안전하다 — 매 반복이 `after_id`를 전진시키므로 배치 수만
+> 늘어날 뿐 무한 루프나 누락은 없다(빈 배치가 나오는 순간 종료).
 
 ```bash
 mkdir -p ~/.local/state/fill-event-triage-toss
-latest_id="$(uv run python -m scripts.list_recent_fill_events \
-  --source reconciler --broker toss --account-mode live --limit 1 \
-  | jq -r '.fills[0].ledger_id // empty')"
-if [[ -n "$latest_id" ]]; then
-  echo "$latest_id" > ~/.local/state/fill-event-triage-toss/last_ledger_id
+last=""
+while true; do
+  batch="$(uv run python -m scripts.list_recent_fill_events \
+    --source reconciler --broker toss --account-mode live \
+    ${last:+--after-id "$last"} --limit 500)"
+  max_id="$(jq -r '[.fills[].ledger_id] | max // empty' <<<"$batch")"
+  if [[ -z "$max_id" ]]; then
+    break   # 빈 배치 = 더 이상 없음 → 이전 반복의 $last가 최종(최신) 워터마크
+  fi
+  last="$max_id"
+done
+if [[ -n "$last" ]]; then
+  echo "$last" > ~/.local/state/fill-event-triage-toss/last_ledger_id
 else
   echo "reconciler+toss fill 없음 — 워터마크 시드 생략(첫 fill부터 정상 처리됨)"
 fi
@@ -333,20 +352,32 @@ job이 각자 60초 주기로 동시에 돈다.
 
 **기존 websocket 인스턴스 무회귀 확인 (AC 3):**
 
-canonical poller.sh로 교체하기 **전**에 현재 동작을 캡처해둔다:
+라이브 `FILL_TRIAGE_STATE_DIR`(이미 워터마크가 전진돼 있음)로 전/후를 비교하면
+양쪽 다 "새 fill 없음"의 **빈 배치**만 나와 diff가 항상 일치하는 무의미한 테스트가
+된다. 대신 **격리된 임시 STATE_DIR**(워터마크 없음)로 양쪽을 돌려, 매번 최근
+`--limit 50` 전체가 담긴 **비어있지 않은** 배치를 비교한다.
+
+canonical poller.sh로 교체하기 **전**에 캡처:
 
 ```bash
+tmp_before="$(mktemp -d)"
 DRY_RUN=1 DISCORD_FILL_TRIAGE_WEBHOOK=placeholder AUTO_TRADER_REPO="$AUTO_TRADER_REPO" \
+  FILL_TRIAGE_STATE_DIR="$tmp_before" \
   bash ~/ops/fill-event-triage/poller.sh > /tmp/fill-triage-ws-before.txt 2>&1
 ```
 
-교체 후(§3의 `cp` 또는 `patch` 절차 적용 후) 동일 명령을 재실행해 diff가 비어 있는지
-확인한다(그 사이 새 websocket fill이 없다는 전제 — 짧은 시간 창에서 연속 실행):
+교체 후(§3의 `cp` 또는 `patch` 절차 적용 후) **새로운** 임시 디렉토리로 재실행해
+diff가 비어 있는지 확인한다(그 사이 새 websocket fill이 없다는 전제 — 짧은 시간
+창에서 연속 실행; 임시 디렉토리를 재사용하면 워터마크가 전진해 있어 두 번째 실행이
+다시 빈 배치가 되므로 반드시 **매번 새 `mktemp -d`**를 쓴다):
 
 ```bash
+tmp_after="$(mktemp -d)"
 DRY_RUN=1 DISCORD_FILL_TRIAGE_WEBHOOK=placeholder AUTO_TRADER_REPO="$AUTO_TRADER_REPO" \
+  FILL_TRIAGE_STATE_DIR="$tmp_after" \
   bash ~/ops/fill-event-triage/poller.sh > /tmp/fill-triage-ws-after.txt 2>&1
 diff /tmp/fill-triage-ws-before.txt /tmp/fill-triage-ws-after.txt && echo "무회귀 확인"
+rm -rf "$tmp_before" "$tmp_after"
 ```
 
 ---
