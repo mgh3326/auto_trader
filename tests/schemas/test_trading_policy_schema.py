@@ -15,7 +15,7 @@ def _raw() -> dict:
 
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-07-14.1"
+    assert doc.version == "2026-07-17.1"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -128,5 +128,38 @@ def test_extra_threshold_key_rejected():
 def test_extra_crypto_market_rule_key_rejected():
     raw = _raw()
     raw["market_rules"]["crypto"]["no_chasing"]["bogus"] = True
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_crash_day_trigger_and_actions_parse():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    crash_day = doc.crash_day
+
+    assert crash_day.trigger.index_symbol == "069500"
+    assert crash_day.trigger.index_gap_pct_max == -3.0
+    assert crash_day.actions.new_entry_hold is True
+    assert crash_day.actions.deep_rung_reprice_to_band_floor is True
+    assert crash_day.actions.profit_trim_marketable_allowed is True
+    assert crash_day.actions.defensive_brief_cross_check is True
+
+
+def test_crash_day_extra_trigger_key_rejected():
+    raw = _raw()
+    raw["crash_day"]["trigger"]["bogus"] = 1
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_crash_day_extra_actions_key_rejected():
+    raw = _raw()
+    raw["crash_day"]["actions"]["bogus"] = True
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_crash_day_missing_block_rejected():
+    raw = _raw()
+    del raw["crash_day"]
     with pytest.raises(ValidationError):
         TradingPolicyDocument.model_validate(raw)

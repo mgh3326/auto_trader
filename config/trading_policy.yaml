@@ -2,9 +2,9 @@
 # Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
 # (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
 # Repo is public; exposing these values is an accepted decision.
-version: "2026-07-14.1"
-captured_as_of: "2026-07-14"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed"
+version: "2026-07-17.1"
+captured_as_of: "2026-07-17"
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys"
 
 authority:
   scope: judgment_policy_only
@@ -232,3 +232,20 @@ market_overrides:
   kr: {}
   us: {}
   crypto: {}
+
+# ROB-932 — crash-day advisory playbook. Trigger = index-open gap only
+# (KODEX200 open vs prev close, judged 09:00-09:05 KST). advisory-only, no
+# code enforcement; defensive_trim execution support is deferred (separate
+# issue). Cross-check against ROB-930 preopen shadow gap_risk verdict.
+crash_day:
+  trigger:
+    index_symbol: "069500"        # KODEX200
+    index_gap_pct_max: -3.0       # open vs prev close, 09:00-09:05 판정
+    # LIMITATION: intraday crashes (e.g. 2026-07-13: gap -0.8% -> intraday
+    # -9.8%) are NOT covered by this gap-only trigger. Documented gap, not
+    # an oversight — see docs/runbooks/crash-day-policy-mock-reps.md.
+  actions:
+    new_entry_hold: true          # NEW entries only; averaging-down deep rungs are EXEMPT (2026-07-16 midday dip-buys measured effective)
+    deep_rung_reprice_to_band_floor: true    # advisory: reprice deep rungs toward buy.deep_limit_pct_range floor
+    profit_trim_marketable_allowed: true     # advisory: profit-side trims may use marketable band (ROB-912 -2%)
+    defensive_brief_cross_check: true        # cross-check with ROB-930 preopen gap_risk verdict
