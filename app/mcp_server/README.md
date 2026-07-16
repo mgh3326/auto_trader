@@ -219,6 +219,26 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - `decision_history_account_mode="kis_mock"` switches only the advisory
     `decision_history` block to the explicit mock/counterfactual branch. Leave it
     unset for default live/default lesson context.
+  - The `decision_history` block includes `open_actions` (ROB-884): a bounded
+    list of at most five active retrospective actions (`open`/`in_progress`
+    only; terminal `done`/`obsolete`/`expired` actions are always excluded).
+    Each compact item carries `action_id`, `action`, `status`, `owner`,
+    `issue_id`, `due_kst_date`, and `overdue` — nothing else. Action text is
+    capped at 220 characters, owner at 80, issue ID at 32, and the total
+    `open_actions` JSON is capped at 3 KiB (UTF-8). `open_actions_meta` carries
+    `authority="historical_advisory"`, `executable=false`, the returned `count`,
+    and a `truncated` flag. **This is historical advisory context only — it is
+    not an order instruction, tool execution authorization, or auto-approval.**
+    Action text alone must never trigger tool or order auto-execution.
+    Visibility uses the same retrospective predicate as lessons/outcomes:
+    `kis_mock` is exact-only when that account mode is requested; the default
+    path excludes the mock-counterfactual cohort. Stock-detail's separate
+    decision-history schema is not extended (it already has retrospective cards).
+    `open_actions` is injected only on the `quick=True` compact path; the
+    `quick=False` full-analysis path does not carry compact decision-history
+    injection. Frozen analysis bundles capture the same `open_actions`/meta in
+    their `decision_history` section, and frozen reads return the stored values
+    without re-querying.
   - Compact US rows carry the same quote provenance fields as `get_quote` when present: `session`, `data_state`, `data_state_reason`, `price_source`, `venue`, `quote_asof`, and `delayed`.
 
 ### Snapshot-backed report generation
