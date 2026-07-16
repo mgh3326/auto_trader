@@ -694,6 +694,7 @@ def test_tools_registered_and_names_exported():
         "order_proposal_list",
         "order_proposal_void",
         "order_proposal_expire_sweep",
+        "order_proposal_list_expired_defensive",
     }
 
 
@@ -809,3 +810,141 @@ async def test_expire_sweep_confirm_skips_non_voidable_and_does_not_edit_telegra
 
 def test_expire_sweep_registered_in_tool_names():
     assert "order_proposal_expire_sweep" in opt.ORDER_PROPOSAL_TOOL_NAMES
+
+
+# -- ROB-929: order_proposal_list_expired_defensive MCP tool ----------------
+
+_HANDOFF_NOW = datetime(2026, 7, 22, 1, 0, tzinfo=UTC)
+_HANDOFF_RECENT = datetime(2026, 7, 22, 0, 30, tzinfo=UTC)
+
+
+def test_list_expired_defensive_registered_in_tool_names():
+    assert "order_proposal_list_expired_defensive" in opt.ORDER_PROPOSAL_TOOL_NAMES
+
+
+@pytest.mark.asyncio
+async def test_list_expired_defensive_returns_expired_loss_cut_proposal(
+    monkeypatch,
+):
+    # exit_intent="defensive_trim" is rejected at create time (ROB-929 code
+    # review: no execution-path support yet) -- loss_cut is the only
+    # defensive exit_intent actually creatable today.
+    async def fake_lookup(session, retrospective_id):
+        return SimpleNamespace(
+            symbol="MCPHANDOFF1",
+            trigger_type="stop_loss",
+            created_at=_HANDOFF_RECENT,
+        )
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    created = await opt.order_proposal_create(
+        **_create_kwargs(
+            symbol="MCPHANDOFF1",
+            market="equity_us",
+            side="sell",
+            exit_intent="loss_cut",
+            exit_reason="stop_loss",
+            retrospective_id=42,
+            rungs=[
+                {
+                    "rung_index": 0,
+                    "side": "sell",
+                    "quantity": "1",
+                    "limit_price": "150",
+                    "notional": None,
+                }
+            ],
+        )
+    )
+    assert created["success"] is True
+    proposal_id = uuid.UUID(created["proposal_id"])
+    async with AsyncSessionLocal() as session:
+        service = OrderProposalsService(session)
+        group, _ = await service.get_proposal(proposal_id)
+        group.valid_until = datetime(2026, 7, 21, 0, 0, tzinfo=UTC)
+        await session.commit()
+        assert await service.expire_if_needed(proposal_id, now=_HANDOFF_RECENT)
+        group.updated_at = _HANDOFF_RECENT
+        await session.commit()
+
+    result = await opt.order_proposal_list_expired_defensive(hours=24)
+
+    assert result["success"] is True
+    matching = [p for p in result["proposals"] if p["proposal_id"] == str(proposal_id)]
+    assert len(matching) == 1
+    assert matching[0]["symbol"] == "MCPHANDOFF1"
+    assert matching[0]["exit_intent"] == "loss_cut"
+    assert matching[0]["lifecycle_state"] == "expired"
+    assert matching[0]["needs_reassessment"] is True
+    assert Decimal(matching[0]["limit_price"]) == Decimal("150")
+
+
+@pytest.mark.asyncio
+async def test_list_expired_defensive_excludes_non_defensive_proposal():
+    created = await opt.order_proposal_create(**_create_kwargs(symbol="MCPHANDOFF2"))
+    proposal_id = uuid.UUID(created["proposal_id"])
+    async with AsyncSessionLocal() as session:
+        service = OrderProposalsService(session)
+        group, _ = await service.get_proposal(proposal_id)
+        group.valid_until = datetime(2026, 7, 21, 0, 0, tzinfo=UTC)
+        await session.commit()
+        assert await service.expire_if_needed(proposal_id, now=_HANDOFF_RECENT)
+        group.updated_at = _HANDOFF_RECENT
+        await session.commit()
+
+    result = await opt.order_proposal_list_expired_defensive(hours=24)
+
+    assert result["success"] is True
+    assert str(proposal_id) not in {p["proposal_id"] for p in result["proposals"]}
+
+
+@pytest.mark.asyncio
+async def test_list_expired_defensive_filters_by_market(monkeypatch):
+    async def fake_lookup(session, retrospective_id):
+        return SimpleNamespace(
+            symbol="MCPHANDOFF3",
+            trigger_type="stop_loss",
+            created_at=_HANDOFF_RECENT,
+        )
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    created = await opt.order_proposal_create(
+        **_create_kwargs(
+            symbol="MCPHANDOFF3",
+            market="equity_kr",
+            account_mode="kis_live",
+            side="sell",
+            exit_intent="loss_cut",
+            exit_reason="stop_loss",
+            retrospective_id=42,
+            rungs=[
+                {
+                    "rung_index": 0,
+                    "side": "sell",
+                    "quantity": "1",
+                    "limit_price": "50000",
+                    "notional": None,
+                }
+            ],
+        )
+    )
+    proposal_id = uuid.UUID(created["proposal_id"])
+    async with AsyncSessionLocal() as session:
+        service = OrderProposalsService(session)
+        group, _ = await service.get_proposal(proposal_id)
+        group.valid_until = datetime(2026, 7, 21, 0, 0, tzinfo=UTC)
+        await session.commit()
+        assert await service.expire_if_needed(proposal_id, now=_HANDOFF_RECENT)
+        group.updated_at = _HANDOFF_RECENT
+        await session.commit()
+
+    result = await opt.order_proposal_list_expired_defensive(
+        hours=24, market="equity_us"
+    )
+
+    assert result["success"] is True
+    assert str(proposal_id) not in {p["proposal_id"] for p in result["proposals"]}
