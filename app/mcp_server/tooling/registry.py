@@ -108,6 +108,9 @@ from app.mcp_server.tooling.analysis_readonly_registration import (
     register_analysis_readonly_tools,
 )
 from app.mcp_server.tooling.analysis_registration import register_analysis_tools
+from app.mcp_server.tooling.downside_watch_registration import (
+    register_downside_watch_tools,
+)
 from app.mcp_server.tooling.execution_ledger_events import (
     register_execution_ledger_event_tools,
 )
@@ -298,6 +301,9 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     register_portfolio_tools(mcp)
     register_account_routing_tools(mcp)
     register_trade_journal_tools(mcp)
+    # ROB-928 — downside watch auto-register sweep; read-only advisory
+    # (notify-only watch registration only, no broker/order mutation).
+    register_downside_watch_tools(mcp)
     # ROB-755 — execution ledger fill event read tool; read-only, always registered.
     register_execution_ledger_event_tools(mcp)
     register_mock_loop_retro_tools(mcp)
