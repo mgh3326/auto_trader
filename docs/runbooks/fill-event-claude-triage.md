@@ -15,6 +15,7 @@ ROB-755 — 체결(fill) 이벤트 자동 기동: websocket 동기화된 `execut
 5. [스모크 절차](#5-스모크-절차)
    - [Step 1: 설치 사전 확인](#step-1-설치-사전-확인)
    - [Step 2: CLI read 경로 스모크](#step-2-cli-read-경로-스모크)
+   - [Toss Reconciler 인스턴스 (ROB-926)](#toss-reconciler-인스턴스-rob-926)
    - [Step 3: Poller dry-run (claude 미호출)](#step-3-poller-dry-run-claude-미호출)
    - [Step 4: 안전 차단 증명 (MANDATORY gate)](#step-4-안전-차단-증명-mandatory-gate)
    - [Step 5: 실 트리아지 1건 (선택)](#step-5-실-트리아지-1건-선택)
@@ -96,91 +97,33 @@ scripts/list_recent_fill_events.py  (레포 내, read-only DB 조회)
 
 ## 3. Poller 스크립트
 
-운영자 머신 `~/ops/fill-event-triage/poller.sh` 에 저장. **레포에 커밋하지 않음.**
+운영자 머신 `~/ops/fill-event-triage/poller.sh` 에 저장. **레포에 커밋하지 않음** — 다만
+**canonical 소스는 레포에 추적**한다(ROB-926, 예전엔 이 문서에 인라인으로 박제된 스크립트가
+호스트 적응판과 조용히 드리프트했다):
 
-```bash
-#!/usr/bin/env bash
-# fill-event → claude 트리아지 poller (운영자-호스트, 레포밖). ROB-755.
-set -euo pipefail
+- 정본: [`docs/runbooks/assets/fill-event-triage/poller.sh`](assets/fill-event-triage/poller.sh)
+- 호스트 적응판에 이미 적용된 3건(REPO/OPERATOR_WS 경로, prod env에서 webhook 로드,
+  claude -p는 operator 워크스페이스에서 실행)을 포함한 상태이며, `FILL_TRIAGE_SOURCE` /
+  `FILL_TRIAGE_BROKER` / `FILL_TRIAGE_ACCOUNT_MODE` 를 `FILL_TRIAGE_MARKET`(호스트 적응 (a))과
+  동일한 패턴으로 조건부 CLI 인자 전달한다. env 미설정 시 각각 `websocket`(기본)/생략/생략이라
+  기존 websocket 인스턴스와 **바이트 수준 동일 동작**(무회귀 — [Toss Reconciler 인스턴스](#toss-reconciler-인스턴스-rob-926)의
+  "기존 websocket 인스턴스 무회귀 확인" 참고).
 
-REPO="${AUTO_TRADER_REPO:-$HOME/work/auto_trader}"
-SETTINGS="$REPO/.claude/settings.readonly.json"
-MARKET="${FILL_TRIAGE_MARKET:-crypto}"
-SOURCE="${FILL_TRIAGE_SOURCE:-websocket}"
-BROKER="${FILL_TRIAGE_BROKER:-}"
-ACCOUNT_MODE="${FILL_TRIAGE_ACCOUNT_MODE:-}"
-DISCORD_WEBHOOK="${DISCORD_FILL_TRIAGE_WEBHOOK:?DISCORD_FILL_TRIAGE_WEBHOOK 미설정}"
-STATE_DIR="${FILL_TRIAGE_STATE_DIR:-$HOME/.local/state/fill-event-triage}"
-WATERMARK="$STATE_DIR/last_ledger_id"          # execution_ledger.id 워터마크
-SEEN="$STATE_DIR/seen_ledger_ids"              # 최근 처리 id(워터마크 동률 대비)
-VLOG="$STATE_DIR/validation.jsonl"             # Q3 검증 로그
-DRY_RUN="${DRY_RUN:-0}"                         # 1이면 claude/Discord 미호출
-
-mkdir -p "$STATE_DIR"; touch "$SEEN"
-last_id="$(cat "$WATERMARK" 2>/dev/null || true)"
-
-cd "$REPO"
-args=(--market "$MARKET" --source "$SOURCE" --limit 50)
-[ -n "$BROKER" ] && args+=(--broker "$BROKER")
-[ -n "$ACCOUNT_MODE" ] && args+=(--account-mode "$ACCOUNT_MODE")
-[ -n "$last_id" ] && args+=(--after-id "$last_id")
-if ! response="$(uv run python -m scripts.list_recent_fill_events "${args[@]}")"; then
-  error="$(jq -r '.error // "unknown error"' <<<"$response" 2>/dev/null || printf '%s' "$response")"
-  echo "list_recent_fill_events failed: $error" >&2
-  exit 1
-fi
-if [[ "$(jq -r '.success' <<<"$response")" != "true" ]]; then
-  echo "list_recent_fill_events failed: $(jq -r '.error // "unknown error"' <<<"$response")" >&2
-  exit 1
-fi
-fills="$(jq -c '.fills // []' <<<"$response")"
-
-echo "$fills" | jq -c '.[]' | while read -r fill; do
-  lid="$(jq -r '.ledger_id' <<<"$fill")"
-  # id가 seen에 있으면(exit 0) continue; 없으면(exit 1) && 단락→계속 진행 (set -e 미발동)
-  grep -qxF "$lid" "$SEEN" && continue   # 이미 처리
-
-  payload="$(jq -r \
-    '"ledger_id=\(.ledger_id) event_key=\(.event_key) broker=\(.broker) account_mode=\(.account_mode) market=\(.market) symbol=\(.symbol) side=\(.side) filled_qty=\(.filled_qty) filled_price=\(.filled_price) filled_notional=\(.filled_notional) currency=\(.currency) filled_at=\(.filled_at) correlation_id=\(.correlation_id // "")"' \
-    <<<"$fill")"
-
-  if [[ "$DRY_RUN" == "1" ]]; then
-    echo "[dry-run] claude -p \"/fill-event-triage $payload\" --permission-mode bypassPermissions --settings $SETTINGS --output-format json"
-  else
-    # Claude 시도 — 실패 시 break(배치 중단, 다음 폴에서 재시도).
-    # fills는 execution_ledger.id 오름차순으로 들어오므로 break로 배치를 끊어
-    # 워터마크가 실패 fill을 건너뛰고 후속 fill을 처리하는 일을 막는다 (at-least-once).
-    res="$(claude -p "/fill-event-triage $payload" \
-            --permission-mode bypassPermissions \
-            --settings "$SETTINGS" \
-            --output-format json)" || { echo "claude 실패(배치 중단, 다음 폴에서 재시도): $lid" >&2; break; }
-    text="$(jq -r '.result' <<<"$res")"
-    # Discord POST — 성공해야만 Q3 로그·seen·워터마크를 갱신한다.
-    # 실패 시 break로 배치 중단 (at-least-once).
-    curl -fsS -H 'Content-Type: application/json' \
-      -d "$(jq -nc --arg c "**[fill triage] $(jq -r .symbol <<<"$fill")**"$'\n'"$text" '{content:$c}')" \
-      "$DISCORD_WEBHOOK" >/dev/null \
-      || { echo "discord post 실패(배치 중단, 다음 폴에서 재시도): $lid" >&2; break; }
-    # Q3 검증 로그 — Discord 성공 "직후"에만 기록.
-    # Claude는 성공했으나 Discord가 실패한 채로 재시도되면 동일 ledger_id가 중복
-    # 기록되는 것을 막기 위함(§6.1 집계는 ledger_id 기준 합산만 하므로 중복이
-    # 들어가면 비용/시간 평균이 부풀어진다).
-    jq -nc --arg lid "$lid" --argjson r "$res" \
-      '{ledger_id:$lid, session_id:$r.session_id, cost_usd:$r.cost_usd, duration_ms:$r.duration_ms, num_turns:$r.num_turns}' >> "$VLOG"
-  fi
-
-  # 디듀프 + 워터마크 전진 (claude + Discord 모두 성공한 이벤트만)
-  echo "$lid" >> "$SEEN"; tail -n 500 "$SEEN" > "$SEEN.tmp" && mv "$SEEN.tmp" "$SEEN"
-  echo "$lid" > "$WATERMARK"
-done
-```
-
-**설치:**
+**설치 (신규):**
 
 ```bash
 mkdir -p ~/ops/fill-event-triage
-# 위 내용을 ~/ops/fill-event-triage/poller.sh 에 저장
+cp docs/runbooks/assets/fill-event-triage/poller.sh ~/ops/fill-event-triage/poller.sh
 chmod +x ~/ops/fill-event-triage/poller.sh
+```
+
+**호스트 적응판이 이미 있고 드리프트만 따라잡고 싶을 때 (기존 websocket 인스턴스):**
+
+```bash
+cd ~/ops/fill-event-triage
+patch -p1 --dry-run < "$AUTO_TRADER_REPO/docs/runbooks/assets/fill-event-triage/host-poller.diff"   # 먼저 확인
+patch -p1 < "$AUTO_TRADER_REPO/docs/runbooks/assets/fill-event-triage/host-poller.diff"
+diff poller.sh "$AUTO_TRADER_REPO/docs/runbooks/assets/fill-event-triage/poller.sh" && echo "canonical과 동일"
 ```
 
 **주요 동작:**
@@ -245,6 +188,10 @@ launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.operator.fill-event-tria
 tail -f ~/.local/state/fill-event-triage/stdout.log
 tail -f ~/.local/state/fill-event-triage/stderr.log
 ```
+
+**Toss reconciler 전용 인스턴스**는 별도 plist를 쓴다 — 등록 절차는
+[§5 Toss Reconciler 인스턴스](#toss-reconciler-인스턴스-rob-926) 참고:
+[`docs/runbooks/assets/fill-event-triage/com.operator.fill-event-triage-toss.plist`](assets/fill-event-triage/com.operator.fill-event-triage-toss.plist).
 
 ---
 
@@ -317,38 +264,90 @@ uv run python -m scripts.list_recent_fill_events --market crypto --source websoc
 
 ---
 
-### Toss REST Poller Fills
+### Toss Reconciler 인스턴스 (ROB-926)
 
 Toss fills are written by `toss_live.poll_fills_periodic` through the reconcile
 path, so they land in `execution_ledger` with `broker="toss"` and
-`source="reconciler"`, not `source="websocket"`.
+`source="reconciler"`, not `source="websocket"`. Canonical `poller.sh`(§3)는
+`FILL_TRIAGE_SOURCE`/`FILL_TRIAGE_BROKER`/`FILL_TRIAGE_ACCOUNT_MODE`를
+`FILL_TRIAGE_MARKET`과 동일하게 조건부 전달하므로, 이 인스턴스는 **동일
+poller.sh를 다른 env로 재사용하는 별도 launchd job**이지 코드 포크가 아니다.
 
-Use this query for Toss KR:
+**CLI 직접 확인 (read-only, poll 전):**
 
 ```bash
 uv run python -m scripts.list_recent_fill_events \
-  --market kr \
-  --source reconciler \
-  --broker toss \
-  --account-mode live \
-  --limit 50
+  --source reconciler --broker toss --account-mode live --limit 5 | jq .
 ```
 
-For the operator-host poller, run Toss as a separate stream so its
-`execution_ledger.id` watermark does not collide with the websocket poller:
+`--market` 미지정 시 Toss KR/US 양쪽 row를 모두 조회한다 — Toss는 crypto를 다루지
+않으므로 단일 인스턴스로 충분하다. market별로 격리하고 싶으면
+`FILL_TRIAGE_MARKET=kr|us` + 별도 `FILL_TRIAGE_STATE_DIR`로 인스턴스를 더 쪼갠다.
+`--source all --broker toss` 는 source 무관 전체 Toss 감사용으로만 사용한다.
+
+**워터마크 시드 (설치 전 MANDATORY — AC 2, 백필 일괄 발화 방지):**
+
+reconciler 원장엔 6~7월 백필 수십 건이 이미 존재한다. 워터마크 없이 최초 기동하면
+poller가 `--limit 50` 범위의 과거 fill을 한 번에 트리아지+Discord 발송한다. **설치
+직전** 최신 ledger_id로 워터마크를 미리 채워 과거분을 건너뛴다:
 
 ```bash
-export FILL_TRIAGE_MARKET="kr"
-export FILL_TRIAGE_SOURCE="reconciler"
-export FILL_TRIAGE_BROKER="toss"
-export FILL_TRIAGE_ACCOUNT_MODE="live"
-export FILL_TRIAGE_STATE_DIR="$HOME/.local/state/fill-event-triage-toss-kr"
-bash ~/ops/fill-event-triage/poller.sh
+mkdir -p ~/.local/state/fill-event-triage-toss
+latest_id="$(uv run python -m scripts.list_recent_fill_events \
+  --source reconciler --broker toss --account-mode live --limit 1 \
+  | jq -r '.fills[0].ledger_id // empty')"
+if [[ -n "$latest_id" ]]; then
+  echo "$latest_id" > ~/.local/state/fill-event-triage-toss/last_ledger_id
+else
+  echo "reconciler+toss fill 없음 — 워터마크 시드 생략(첫 fill부터 정상 처리됨)"
+fi
 ```
 
-Use `FILL_TRIAGE_MARKET=us` and a distinct state dir for Toss US. Use
-`--source all --broker toss` only when auditing every Toss execution-ledger row
-regardless of source.
+**DRY_RUN 스모크 (claude/Discord 미호출, 워터마크 시드 후):**
+
+```bash
+DRY_RUN=1 DISCORD_FILL_TRIAGE_WEBHOOK=placeholder \
+  FILL_TRIAGE_SOURCE=reconciler FILL_TRIAGE_BROKER=toss FILL_TRIAGE_ACCOUNT_MODE=live \
+  FILL_TRIAGE_STATE_DIR="$HOME/.local/state/fill-event-triage-toss" \
+  AUTO_TRADER_REPO="$AUTO_TRADER_REPO" \
+  bash ~/ops/fill-event-triage/poller.sh
+```
+
+시드된 ledger_id 이후 새 reconciler fill이 없으면 출력 없음(정상) — 워터마크 시드가
+과거 fill을 걸러내고 있다는 뜻이다. Step 4(안전 차단 증명)를 이 인스턴스에서도 통과한
+후에만 `DRY_RUN=0`으로 전환한다.
+
+**launchd 등록 (운영 인스턴스, `~/Library/LaunchAgents/com.operator.fill-event-triage-toss.plist`):**
+
+```bash
+cp docs/runbooks/assets/fill-event-triage/com.operator.fill-event-triage-toss.plist \
+  ~/Library/LaunchAgents/com.operator.fill-event-triage-toss.plist
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.operator.fill-event-triage-toss.plist
+launchctl print gui/$UID/com.operator.fill-event-triage-toss   # 상태 확인
+```
+
+기존 websocket 인스턴스(`com.operator.fill-event-triage`)와는 Label/
+EnvironmentVariables/`FILL_TRIAGE_STATE_DIR`/로그 경로가 전부 분리돼 있어 워터마크가
+서로 간섭하지 않는다(AC 2, AC 5 — `seen_ledger_ids`도 인스턴스별로 독립). 두 launchd
+job이 각자 60초 주기로 동시에 돈다.
+
+**기존 websocket 인스턴스 무회귀 확인 (AC 3):**
+
+canonical poller.sh로 교체하기 **전**에 현재 동작을 캡처해둔다:
+
+```bash
+DRY_RUN=1 DISCORD_FILL_TRIAGE_WEBHOOK=placeholder AUTO_TRADER_REPO="$AUTO_TRADER_REPO" \
+  bash ~/ops/fill-event-triage/poller.sh > /tmp/fill-triage-ws-before.txt 2>&1
+```
+
+교체 후(§3의 `cp` 또는 `patch` 절차 적용 후) 동일 명령을 재실행해 diff가 비어 있는지
+확인한다(그 사이 새 websocket fill이 없다는 전제 — 짧은 시간 창에서 연속 실행):
+
+```bash
+DRY_RUN=1 DISCORD_FILL_TRIAGE_WEBHOOK=placeholder AUTO_TRADER_REPO="$AUTO_TRADER_REPO" \
+  bash ~/ops/fill-event-triage/poller.sh > /tmp/fill-triage-ws-after.txt 2>&1
+diff /tmp/fill-triage-ws-before.txt /tmp/fill-triage-ws-after.txt && echo "무회귀 확인"
+```
 
 ---
 
