@@ -492,11 +492,23 @@ class CurrentOrdersService:
                 count=0,
                 message=type(exc).__name__,
             )
-        rows = [
-            normalize_kis_order(row, market="kr", exchange="KRX")
-            for row in raw or []
-            if isinstance(row, dict)
-        ]
+        # KIS domestic pending-order inquiry (TTTC8036R) can surface the same
+        # order_no more than once — pagination is known to repeat rows and a
+        # NXT/SOR-routed order shows up under both KRX and NXT venues. Dedup by
+        # order_no the way the US path (_collect_kis_us) already does so the row
+        # list and header count reflect distinct orders. order_no is unique per
+        # order in this TR, so this never collapses legitimate partial-fill rows.
+        rows: list[OpenOrderRow] = []
+        seen: set[str] = set()
+        for row in raw or []:
+            if not isinstance(row, dict):
+                continue
+            order_no = _first_str(row, ("ord_no", "odno", "order_id"))
+            if order_no and order_no in seen:
+                continue
+            if order_no:
+                seen.add(order_no)
+            rows.append(normalize_kis_order(row, market="kr", exchange="KRX"))
         return rows, _source(
             broker="kis", market="kr", status="ok", fetched_at=now, count=len(rows)
         )
