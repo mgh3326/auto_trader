@@ -620,11 +620,25 @@ async def _collect_toss_api_positions(
     return positions, snapshot.errors, True
 
 
-def _has_valid_kis_equity_us_snapshot(position: dict[str, Any]) -> bool:
+def _has_valid_kis_equity_snapshot(position: dict[str, Any]) -> bool:
+    """KIS-account equity (KR or US) whose broker balance snapshot is complete.
+
+    When True, get_holdings keeps the KIS-provided snapshot values
+    (``current_price`` / ``evaluation_amount`` / ``profit_loss`` /
+    ``profit_rate``) and skips the per-symbol live current-price refresh.
+
+    PR #288 (ROB-365) established this for ``equity_us`` — the Yahoo/KIS live
+    refresh is a *fallback*, not the default for a valid KIS US snapshot.
+    ROB-902 extends the identical rule to ``equity_kr``: the KIS domestic
+    balance (``fetch_my_stocks``) already returns 현재가(``prpr``) / 평가금액 /
+    평가손익 for every holding in ONE bulk call, so the per-symbol
+    ``inquire-daily-itemchartprice`` refresh was a redundant N+1 (~41 KR HTTP
+    calls per get_holdings invocation).
+    """
     if position.get("source") != "kis_api":
         return False
 
-    if str(position.get("instrument_type") or "") != "equity_us":
+    if str(position.get("instrument_type") or "") not in {"equity_kr", "equity_us"}:
         return False
 
     current_price = _to_optional_float(position.get("current_price"))
@@ -644,7 +658,7 @@ def _has_valid_kis_equity_us_snapshot(position: dict[str, Any]) -> bool:
 
 def _position_needs_current_price_refresh(position: dict[str, Any]) -> bool:
     instrument_type = str(position.get("instrument_type") or "")
-    if _has_valid_kis_equity_us_snapshot(position):
+    if _has_valid_kis_equity_snapshot(position):
         return False
 
     return instrument_type in {"equity_kr", "equity_us", "crypto"}
