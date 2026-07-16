@@ -213,6 +213,28 @@ class BinanceDemoLedgerService:
     ) -> list[BinanceDemoOrderLedger]:
         return await self._repo.closed_rows_since(since=since)
 
+    # ------------------------------------------------------------------
+    # Read-only observability surface (ROB-907 — binance_demo_ledger_status).
+    # ------------------------------------------------------------------
+
+    async def status_distribution(self) -> dict[str, int]:
+        return await self._repo.status_distribution()
+
+    async def list_recent(
+        self, *, limit: int, lifecycle_state: str | None = None
+    ) -> list[BinanceDemoOrderLedger]:
+        return await self._repo.list_recent(
+            limit=limit, lifecycle_state=lifecycle_state
+        )
+
+    async def stale_open_roots(
+        self, *, older_than: dt.datetime, limit: int
+    ) -> list[BinanceDemoOrderLedger]:
+        return await self._repo.stale_open_roots(older_than=older_than, limit=limit)
+
+    async def latest_activity_at(self) -> dt.datetime | None:
+        return await self._repo.latest_activity_at()
+
     async def record_planned(
         self,
         *,

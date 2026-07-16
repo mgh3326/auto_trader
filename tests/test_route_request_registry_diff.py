@@ -94,6 +94,8 @@ def test_read_only_bucket_has_no_phantom_tools():
     _FLAG_GATED_OR_OPTIONAL: set[str] = {
         "analysis_bundle_create",
         "analysis_bundle_get",
+        # ROB-907: gated by settings.binance_demo_scalping_enabled (default off).
+        "binance_demo_ledger_status",
         *KIWOOM_MOCK_US_READ_TOOL_NAMES,
     }
     phantom = READ_ONLY_ADVISORY_TOOLS - default - _FLAG_GATED_OR_OPTIONAL

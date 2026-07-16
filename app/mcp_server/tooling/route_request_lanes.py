@@ -271,6 +271,11 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "analyze_portfolio",
         "analyze_stock",
         "analyze_stock_batch",
+        # ROB-907: read-only Demo ledger status (flag-gated —
+        # settings.binance_demo_scalping_enabled — like binance_demo_scalping_
+        # submit_decision itself, which is a mutation tool and lives outside
+        # this bucket).
+        "binance_demo_ledger_status",
         "execution_ledger_fill_events_list_recent",
         "forecast_resolve",
         "forecast_save",

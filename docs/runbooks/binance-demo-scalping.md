@@ -395,3 +395,37 @@ approval. Failure-only alerting wires onto the tick's error log
 (`logger.error` / the `TickSummary.errors` list) and the CLI's non-zero exit; a
 clean tick is quiet. Rollback = unset `BINANCE_DEMO_SCALPING_SCHEDULER_ENABLED`
 (kill switch) and pause the deployment in the ops repo.
+
+## Observability (ROB-907)
+
+Each tick's `entered` evidence tuple is `[product, symbol, status, reason_codes]`
+— `reason_codes` (e.g. `spread_too_wide`, `stale_data`, `global_lifecycle_cap_
+reached`, `daily_order_cap_reached`) is the executor's own preflight vocabulary
+(`app/services/brokers/binance/demo_scalping/contract.py::ReasonCode`), so a
+Prefect log line for an all-`blocked` tick is enough to diagnose the cause
+without a DB read.
+
+### `binance_demo_ledger_status` MCP tool (read-only)
+
+Use this tool instead of a direct production-DB `SELECT` to check
+`binance_demo_order_ledger` health during an operational review — state
+distribution (`anomaly` / unresolved `planned`·`submitted` / `reconciled`
+ratio), stuck-open root lifecycles, and freshness. Gated the same as
+`binance_demo_scalping_submit_decision` (`settings.binance_demo_scalping_
+enabled`, default off) and registered in the DEFAULT MCP profile.
+
+```
+binance_demo_ledger_status(stale_age_seconds=3600, recent_limit=20)
+→ {
+    "status_distribution": {"planned": 1, "reconciled": 12, "anomaly": 0, ...},
+    "open_root_count": 1,          # blocking root lifecycles — same definition
+                                    # the executor's capacity gate uses
+    "anomaly_count": 0,
+    "stale_open_roots": [...],     # open roots planned_at <= now - stale_age_seconds
+    "latest_activity_at": "2026-07-16T12:00:00+00:00",
+    "recent": [...],               # bounded by recent_limit (<= 200)
+    "as_of": "2026-07-16T12:05:00+00:00",
+  }
+```
+
+No broker call, no ledger write.

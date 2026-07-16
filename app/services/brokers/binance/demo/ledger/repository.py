@@ -412,6 +412,60 @@ class BinanceDemoLedgerRepository:
         )
         return list(result.scalars().all())
 
+    # ------------------------------------------------------------------
+    # Read-only observability surface (ROB-907 — binance_demo_ledger_status).
+    # ------------------------------------------------------------------
+
+    async def status_distribution(self) -> dict[str, int]:
+        """Table-wide row count per ``lifecycle_state`` (all products)."""
+        result = await self._session.execute(
+            select(
+                BinanceDemoOrderLedger.lifecycle_state,
+                func.count(),
+            ).group_by(BinanceDemoOrderLedger.lifecycle_state)
+        )
+        return dict(result.all())
+
+    async def list_recent(
+        self, *, limit: int, lifecycle_state: str | None = None
+    ) -> list[BinanceDemoOrderLedger]:
+        """Most recently updated rows, newest first, optionally state-filtered."""
+        stmt = select(BinanceDemoOrderLedger).order_by(
+            BinanceDemoOrderLedger.updated_at.desc()
+        )
+        if lifecycle_state is not None:
+            stmt = stmt.where(BinanceDemoOrderLedger.lifecycle_state == lifecycle_state)
+        stmt = stmt.limit(limit)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def stale_open_roots(
+        self, *, older_than: dt.datetime, limit: int
+    ) -> list[BinanceDemoOrderLedger]:
+        """Open *root* lifecycles planned at/before ``older_than``, oldest first.
+
+        Root-only (``parent_client_order_id IS NULL``) — a close/reduce-only
+        child leg is never a stuck exposure by itself.
+        """
+        stmt = (
+            select(BinanceDemoOrderLedger)
+            .where(
+                BinanceDemoOrderLedger.parent_client_order_id.is_(None),
+                BinanceDemoOrderLedger.lifecycle_state.in_(OPEN_LIFECYCLE_STATES),
+                BinanceDemoOrderLedger.planned_at <= older_than,
+            )
+            .order_by(BinanceDemoOrderLedger.planned_at.asc())
+            .limit(limit)
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def latest_activity_at(self) -> dt.datetime | None:
+        """Table-wide ``max(updated_at)`` — freshness signal for the ledger."""
+        return await self._session.scalar(
+            select(func.max(BinanceDemoOrderLedger.updated_at))
+        )
+
     async def update_state(
         self,
         row: BinanceDemoOrderLedger,

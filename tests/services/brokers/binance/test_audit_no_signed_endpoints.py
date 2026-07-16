@@ -165,6 +165,18 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # precedent it mirrors (strict-equality, no wildcard). String reference
         # only — same class as the other entries here.
         "app/services/action_report/remote_debug_audit/host_allowlist.py",
+        # ROB-907 — read-only binance_demo_ledger_status MCP tool. Reads the
+        # already-persisted demo ledger exclusively through
+        # BinanceDemoLedgerService (no repository import, no HTTP/WS client,
+        # no signing, no credentials). References "Binance" only via the
+        # module/tool name and the service import path. (registry.py's new
+        # conditional import of this module needs no separate entry — it is
+        # already allow-listed above for the Phase 3 handler import.)
+        "app/mcp_server/tooling/binance_demo_ledger_status_read.py",
+        # ROB-907 — route_request_lanes.py adds "binance_demo_ledger_status"
+        # to READ_ONLY_ADVISORY_TOOLS: a bare tool-name string in a Python
+        # set literal, not a Binance HTTP/WS/signed reference.
+        "app/mcp_server/tooling/route_request_lanes.py",
     }
 )
 

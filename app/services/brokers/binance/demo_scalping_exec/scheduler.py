@@ -44,7 +44,11 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class TickSummary:
     status: str  # "disabled" | "ran"
-    entered: list[tuple[str, str, str]] = field(default_factory=list)
+    # (product, symbol, status, reason_codes) — reason_codes surfaces the
+    # executor's blocked/dry_run/reconciled/anomaly reason vocabulary
+    # (ROB-907) so Prefect logs carry enough signal to diagnose all-blocked
+    # runs without a DB read.
+    entered: list[tuple[str, str, str, list[str]]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
     def to_evidence_dict(self) -> dict[str, Any]:
@@ -84,7 +88,7 @@ async def run_scalping_tick(
         return TickSummary(status="disabled")
 
     limits = limits or ScalpingRiskLimits()
-    entered: list[tuple[str, str, str]] = []
+    entered: list[tuple[str, str, str, list[str]]] = []
     errors: list[str] = []
     monitor_kwargs = monitor_kwargs or {}
 
@@ -131,7 +135,9 @@ async def run_scalping_tick(
                 result = await executor.execute_monitored(
                     intent, confirm=confirm, market=market, **monitor_kwargs
                 )
-                entered.append((product, symbol, result.status))
+                entered.append(
+                    (product, symbol, result.status, sorted(result.reason_codes))
+                )
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"enter {product}/{symbol}: {exc}")
 

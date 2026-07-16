@@ -54,23 +54,27 @@ def _flat() -> list[Candle]:
 
 
 class _Result:
-    def __init__(self, status):
+    def __init__(self, status, *, reason_codes=()):
         self.status = status
+        self.reason_codes = tuple(reason_codes)
 
 
 class _FakeExecutor:
-    def __init__(self, *, entry_status="reconciled", raise_on_entry=False):
+    def __init__(
+        self, *, entry_status="reconciled", raise_on_entry=False, reason_codes=()
+    ):
         self.entered: list[str] = []
         self.markets: list = []  # ROB-315 0c: captured market conditions
         self._entry_status = entry_status
         self._raise_on_entry = raise_on_entry
+        self._reason_codes = reason_codes
 
     async def execute_monitored(self, intent, *, confirm, **kwargs):
         self.markets.append(kwargs.get("market"))
         if self._raise_on_entry:
             raise RuntimeError("boom")
         self.entered.append(intent.symbol)
-        return _Result(self._entry_status)
+        return _Result(self._entry_status, reason_codes=self._reason_codes)
 
 
 class _FakeMarketData:
@@ -125,6 +129,35 @@ async def test_enters_monitored_on_signal() -> None:
     assert spot.entered == ["XRPUSDT"]  # uptrend -> long entry placed (monitored)
     assert fut.entered == ["XRPUSDT"]
     assert summary.errors == []
+    # ROB-907: entered tuples are (product, symbol, status, reason_codes).
+    assert ("spot", "XRPUSDT", "reconciled", []) in summary.entered
+    assert ("usdm_futures", "XRPUSDT", "reconciled", []) in summary.entered
+
+
+@pytest.mark.asyncio
+async def test_entered_tuple_surfaces_blocked_reason_codes() -> None:
+    """ROB-907: blocked entries carry their reason_codes into the summary so
+    Prefect logs can diagnose all-blocked ticks without a DB read."""
+    spot = _FakeExecutor(
+        entry_status="blocked", reason_codes=("spread_too_wide", "stale_data")
+    )
+    summary = await run_scalping_tick(
+        executors=_executors(spot, _FakeExecutor()),
+        market_data=_FakeMarketData(_uptrend()),
+        symbols=["XRPUSDT"],
+        products=["spot"],
+        now=_NOW,
+        confirm=True,
+        enabled=True,
+    )
+    assert summary.status == "ran"
+    assert summary.entered == [
+        ("spot", "XRPUSDT", "blocked", ["spread_too_wide", "stale_data"])
+    ]
+    evidence = summary.to_evidence_dict()
+    assert evidence["entered"] == [
+        ["spot", "XRPUSDT", "blocked", ["spread_too_wide", "stale_data"]]
+    ]
 
 
 @pytest.mark.asyncio
