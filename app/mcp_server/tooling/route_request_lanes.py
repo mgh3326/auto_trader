@@ -12,6 +12,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.mcp_server.tooling.alpaca_paper import ALPACA_PAPER_READONLY_TOOL_NAMES
+from app.mcp_server.tooling.alpaca_paper_orders import ALPACA_PAPER_MUTATING_TOOL_NAMES
+from app.mcp_server.tooling.alpaca_paper_preview import ALPACA_PAPER_PREVIEW_TOOL_NAMES
 from app.mcp_server.tooling.mirror_counterfactual_registration import (
     MIRROR_COUNTERFACTUAL_TOOL_NAMES,
 )
@@ -27,6 +30,7 @@ from app.mcp_server.tooling.orders_kiwoom_us_variants import (
 from app.mcp_server.tooling.orders_kiwoom_variants import KIWOOM_MOCK_TOOL_NAMES
 from app.mcp_server.tooling.orders_registration import ORDER_TOOL_NAMES
 from app.mcp_server.tooling.orders_toss_variants import TOSS_LIVE_ORDER_TOOL_NAMES
+from app.mcp_server.tooling.us_dual_paper import US_DUAL_PAPER_TOOL_NAMES
 
 # intent enum (the only free LLM choice) -> playbook lane
 INTENT_TO_LANE: dict[str, str] = {
@@ -183,6 +187,12 @@ MUTATION_TOOLS: frozenset[str] = frozenset(
     | KIWOOM_MOCK_TOOL_NAMES
     | KIWOOM_MOCK_US_MUTATION_TOOL_NAMES
     | MIRROR_COUNTERFACTUAL_TOOL_NAMES
+    # ROB-908: Alpaca paper confirm-gated order mutations (submit/cancel). Flag-
+    # gated in DEFAULT (settings.alpaca_paper_default_tools_enabled, default off);
+    # the read/preview/us_dual/ledger surface is read-only and lives in
+    # READ_ONLY_ADVISORY_TOOLS. The automated-submit tool is not registered in
+    # DEFAULT at all (ROB-842), so it is intentionally not classified here.
+    | frozenset(ALPACA_PAPER_MUTATING_TOOL_NAMES)
     | frozenset(
         {
             # ROB-703: paper resting-limit sim mutations (paper-table writes only,
@@ -262,6 +272,17 @@ _MARKET_EXEC_PURPOSE: dict[str, str] = {
 READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
     {
         *KIWOOM_MOCK_US_READ_TOOL_NAMES,
+        # ROB-908: Alpaca paper read surface, flag-gated in DEFAULT
+        # (settings.alpaca_paper_default_tools_enabled, default off). Covers the
+        # account/positions/orders/assets/fills + ledger reads
+        # (ALPACA_PAPER_READONLY_TOOL_NAMES), the pure-validator preview
+        # (ALPACA_PAPER_PREVIEW_TOOL_NAMES — no side effects, does not submit),
+        # and the read-only us_dual capability/state/preview trio
+        # (US_DUAL_PAPER_TOOL_NAMES, submit_enabled always False). The
+        # confirm-gated submit/cancel mutations live in MUTATION_TOOLS.
+        *ALPACA_PAPER_READONLY_TOOL_NAMES,
+        *ALPACA_PAPER_PREVIEW_TOOL_NAMES,
+        *US_DUAL_PAPER_TOOL_NAMES,
         "route_request",
         "analysis_artifact_get",
         "analysis_artifact_list",

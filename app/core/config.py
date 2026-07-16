@@ -257,6 +257,13 @@ class Settings(BaseSettings):
     kiwoom_mock_us_app_secret: str | None = None
     kiwoom_mock_us_account_no: str | None = None
 
+    # ROB-908: surface Alpaca paper read/preview/confirm-gated order/ledger tools
+    # in the DEFAULT profile (mock_alpaca operator session runs on DEFAULT, not a
+    # separate us-paper instance). Flag-gated off by default, mirroring the
+    # ROB-601/ROB-867 kiwoom-mock DEFAULT gate; the automated-submit tool stays
+    # US_PAPER-only regardless (ROB-842 governance).
+    alpaca_paper_default_tools_enabled: bool = False
+
     # Toss Securities Open API. Live-only, disabled by default. ROB-530 adds
     # read-only client support; order mutations are handled by follow-up issues.
     toss_api_enabled: bool = False

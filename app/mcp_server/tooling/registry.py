@@ -8,8 +8,11 @@ Profile → tool surface mapping
   legacy ambiguous order tools (place_order / cancel_order / modify_order /
   get_order_history with account_mode switching) +
   typed kis_live_* and kis_mock_* variants (additive). Typed kiwoom_mock_* is
-  additive only when the existing ROB-601 feature gate is enabled. Alpaca,
-  us-dual paper, and DB paper tools are omitted.
+  additive only when the existing ROB-601 feature gate is enabled. Alpaca paper
+  read/preview/confirm-gated order/ledger tools are additive only when the
+  ROB-908 ``alpaca_paper_default_tools_enabled`` gate is on — and even then the
+  ROB-842 automated-submit tool is excluded (US_PAPER-only). DB paper tools are
+  omitted.
 
 "hermes-paper-kis" (McpProfile.HERMES_PAPER_KIS):
   All side-effect-free research tools + read-only portfolio tools +
@@ -357,6 +360,24 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
             # ROB-907: read-only ledger status alongside the scalping submit
             # tool — same gate, since both are Demo-scalping observability.
             register_binance_demo_ledger_status_tool(mcp)
+        # ROB-908: surface the Alpaca paper surface in the operator DEFAULT
+        # session so the mock_alpaca lane (account/positions/ledger reads,
+        # confirm-gated round-trip) works without standing up a separate
+        # us-paper MCP instance — same flag-gated DEFAULT pattern as the
+        # ROB-601/867 kiwoom blocks above. Gated by
+        # ``settings.alpaca_paper_default_tools_enabled`` so the tools are
+        # physically absent unless the operator opts in; the confirm=True +
+        # server-issued quote_snapshot_id order gates are unchanged. The
+        # automated-submit surface (register_alpaca_paper_automated_orders_tools)
+        # is DELIBERATELY excluded here — ``alpaca_paper_automated_submit_order``
+        # is a ROB-842 governance deny-list tool and must never appear in
+        # DEFAULT; it stays US_PAPER-only below.
+        if settings.alpaca_paper_default_tools_enabled:
+            register_alpaca_paper_tools(mcp)
+            register_alpaca_paper_preview_tools(mcp)
+            register_us_dual_paper_tools(mcp)
+            register_alpaca_paper_orders_tools(mcp)
+            register_alpaca_paper_ledger_read_tools(mcp)
     elif profile is McpProfile.HERMES_PAPER_KIS:
         # Paper-only: only mock-pinned order surface. Live surface is physically absent.
         register_kis_mock_order_tools(mcp)
