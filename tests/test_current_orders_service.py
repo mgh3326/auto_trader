@@ -916,3 +916,45 @@ async def test_current_orders_name_lookup_failure_fails_open(monkeypatch) -> Non
     assert response.count == 1
     assert response.items[0].symbol == "005930"
     assert response.items[0].symbol_name is None
+
+
+@pytest.mark.asyncio
+async def test_current_orders_kis_kr_dedupes_same_order_no() -> None:
+    """ROB-901: KIS domestic pending inquiry surfaces the same order_no twice
+    (KRX + NXT/SOR venue rows, or repeated pagination). It must collapse to one
+    row and the source count must reflect distinct orders, not the raw rows."""
+    from app.services.current_orders_service import CurrentOrdersService
+
+    class _FakeKIS:
+        async def inquire_korea_orders(self, is_mock: bool = False):
+            # 하나금융지주 sell 1 @137,000 returned twice under the same order_no.
+            row = {
+                "ord_no": "00156551",
+                "pdno": "086790",
+                "prdt_name": "하나금융지주",
+                "sll_buy_dvsn_cd": "01",
+                "ord_qty": "1",
+                "ord_unpr": "137000",
+                "rmn_qty": "1",
+            }
+            return [dict(row), dict(row)]
+
+        async def inquire_overseas_orders(
+            self, exchange_code: str = "NASD", is_mock: bool = False
+        ):
+            return []
+
+    service = CurrentOrdersService(
+        kis_client_factory=lambda: _FakeKIS(),
+        upbit_client=None,
+        toss_client_factory=None,
+        db="db-session",  # type: ignore[arg-type]
+        clock=lambda: dt.datetime(2026, 7, 16, 0, 0, tzinfo=dt.UTC),
+    )
+
+    response = await service.list_open_orders(market="kr")
+
+    assert response.count == 1
+    assert [item.order_no for item in response.items] == ["00156551"]
+    kis_kr = next(s for s in response.sources if s.broker == "kis" and s.market == "kr")
+    assert kis_kr.count == 1
