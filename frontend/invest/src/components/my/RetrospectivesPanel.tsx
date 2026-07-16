@@ -1,16 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { fetchOpenNextActions, fetchRetrospectives } from "../../api/retrospectives";
+import { fetchRetrospectiveActions, fetchRetrospectives } from "../../api/retrospectives";
 import { Pill } from "../../ds";
+import { buildLinearIssueUrl } from "../../linearLink";
 import { crosslinkAnchorSlug, crosslinkKey, retroMarket } from "../../insightsCrosslink";
 import { stockDetailPath } from "../../stockDetailPath";
 import type {
-  NextActionRow,
   RetroMarket,
   RetroOutcomeFilter,
+  RetrospectiveAction,
   RetrospectiveRow,
 } from "../../types/retrospectives";
+
+const LINEAR_WORKSPACE_URL = import.meta.env.VITE_LINEAR_WORKSPACE_URL;
 
 const MARKET_OPTIONS: { key: RetroMarket; label: string }[] = [
   { key: "all", label: "전체" },
@@ -32,8 +35,6 @@ const TRIGGER_OPTIONS: { key: string; label: string }[] = [
   { key: "guardrail_block", label: "가드레일" },
 ];
 
-// ROB-691 — win/loss/decided trade-history filter, forwarded as
-// outcome_filter. "" = no filter (all outcomes, decided or not).
 const OUTCOME_OPTIONS: { key: RetroOutcomeFilter | ""; label: string }[] = [
   { key: "", label: "전체" },
   { key: "win", label: "승" },
@@ -41,9 +42,14 @@ const OUTCOME_OPTIONS: { key: RetroOutcomeFilter | ""; label: string }[] = [
   { key: "decided", label: "결정" },
 ];
 
-// Debounce the free-text symbol search so every keystroke doesn't fire a
-// request; 300ms mirrors common UI debounce defaults elsewhere in the app.
 const SEARCH_DEBOUNCE_MS = 300;
+
+// ROB-885 — read-only triage UX. No mutation controls; the action network
+// call is GET-only and always requests status=open,in_progress explicitly.
+const ACTION_STATUS_LABEL: Record<string, { label: string; tone: "paper" | "accent" }> = {
+  open: { label: "예정", tone: "paper" },
+  in_progress: { label: "진행중", tone: "accent" },
+};
 
 function pnlText(row: { realized_pnl: number | null; realized_pnl_currency: string | null }): string {
   if (row.realized_pnl == null) return "—";
@@ -51,36 +57,105 @@ function pnlText(row: { realized_pnl: number | null; realized_pnl_currency: stri
   return `${sign}${row.realized_pnl.toLocaleString("ko-KR")} ${row.realized_pnl_currency ?? ""}`.trim();
 }
 
-function NextActionChecklist({ items }: { items: NextActionRow[] }) {
-  if (items.length === 0) return null;
+function ActionIssueLink({ issueId }: { issueId: string | null }) {
+  if (!issueId) return null;
+  const href = buildLinearIssueUrl(issueId, LINEAR_WORKSPACE_URL);
+  if (!href) {
+    return <span style={{ color: "var(--fg-3)", fontSize: 11 }}>· {issueId}</span>;
+  }
   return (
-    <div
-      data-testid="retro-next-actions"
-      style={{ margin: "0 14px 12px", padding: "10px 12px", borderRadius: 12, background: "var(--surface-2)" }}
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{ color: "var(--link, #4a9)", textDecoration: "none", fontSize: 11, whiteSpace: "nowrap" }}
     >
-      <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>
-        미완료 액션 ({items.length})
+      · {issueId}
+    </a>
+  );
+}
+
+function ActionQueue({
+  state,
+  compact,
+  loadingMore,
+  onLoadMore,
+}: {
+  state:
+    | { status: "loading" }
+    | { status: "ready"; items: RetrospectiveAction[]; total: number; hasMore: boolean }
+    | { status: "error"; message: string };
+  compact: boolean;
+  loadingMore: boolean;
+  onLoadMore: () => void;
+}) {
+  if (state.status === "loading") {
+    return (
+      <div data-testid="retro-actions" style={{ margin: "0 14px 12px", padding: "10px 12px", borderRadius: 12, background: "var(--surface-2)" }}>
+        <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>미완료 액션</div>
+        <div style={{ fontSize: 13, color: "var(--fg-3)" }}>액션을 불러오는 중…</div>
       </div>
+    );
+  }
+  if (state.status === "error") {
+    return (
+      <div data-testid="retro-actions" role="alert" style={{ margin: "0 14px 12px", padding: "10px 12px", borderRadius: 12, background: "var(--surface-2)" }}>
+        <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>미완료 액션</div>
+        <div style={{ fontSize: 13, color: "var(--danger)" }}>액션을 불러오지 못했습니다. {state.message}</div>
+      </div>
+    );
+  }
+  const { items, total, hasMore } = state;
+  if (items.length === 0) {
+    return (
+      <div data-testid="retro-actions" style={{ margin: "0 14px 12px", padding: "10px 12px", borderRadius: 12, background: "var(--surface-2)" }}>
+        <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>미완료 액션 ({total})</div>
+        <div style={{ fontSize: 13, color: "var(--fg-3)" }}>진행 중인 액션이 없습니다.</div>
+      </div>
+    );
+  }
+  return (
+    <div data-testid="retro-actions" style={{ margin: "0 14px 12px", padding: "10px 12px", borderRadius: 12, background: "var(--surface-2)" }}>
+      <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>미완료 액션 ({total})</div>
       <div style={{ display: "grid", gap: 6 }}>
-        {items.map((a, idx) => {
-          const href = a.market ? stockDetailPath(a.market as "kr" | "us" | "crypto", a.symbol) : null;
-          const sym = (
-            <span style={{ fontWeight: 700 }}>
-              {href ? <Link to={href} style={{ color: "inherit", textDecoration: "none" }}>{a.symbol}</Link> : a.symbol}
-            </span>
-          );
+        {items.map((a) => {
+          const statusMeta = ACTION_STATUS_LABEL[a.status] ?? { label: a.status, tone: "paper" as const };
+          const href = a.market ? stockDetailPath(a.market as "kr" | "us" | "crypto", a.symbol ?? "") : null;
           return (
-            <div key={`${a.retro_id}-${idx}`} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
-              <Pill tone={a.status === "in_progress" ? "accent" : "paper"} size="sm">
-                {a.status === "in_progress" ? "진행중" : "예정"}
-              </Pill>
-              <span>{a.action}</span>
-              <span style={{ color: "var(--fg-3)", fontSize: 11 }}>· {sym}</span>
-              {a.due_kst_date && <span style={{ color: "var(--fg-3)", fontSize: 11 }}>· {a.due_kst_date}</span>}
+            <div key={a.action_id} style={{ display: "grid", gap: 3, fontSize: 13, padding: "4px 0", borderBottom: "1px solid var(--divider)" }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <Pill tone={statusMeta.tone} size="sm">{statusMeta.label}</Pill>
+                {a.overdue && <Pill tone="warn" size="sm">지연</Pill>}
+                <span>{a.action}</span>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", color: "var(--fg-3)", fontSize: 11 }}>
+                {href && a.symbol ? (
+                  <Link to={href} style={{ color: "inherit", textDecoration: "none", fontWeight: 700 }}>{a.symbol}</Link>
+                ) : a.symbol ? (
+                  <span style={{ fontWeight: 700 }}>{a.symbol}</span>
+                ) : null}
+                {a.owner && <span>· 담당 {a.owner}</span>}
+                <ActionIssueLink issueId={a.issue_id} />
+                {a.due_kst_date && <span>· 마감 {a.due_kst_date}</span>}
+              </div>
             </div>
           );
         })}
       </div>
+      {hasMore && (
+        <button
+          type="button"
+          onClick={onLoadMore}
+          disabled={loadingMore}
+          style={{
+            marginTop: 8, border: "1px solid var(--border)", borderRadius: 8, padding: "4px 10px",
+            fontSize: 11, fontWeight: 700, cursor: loadingMore ? "default" : "pointer", fontFamily: "inherit",
+            background: "var(--surface)", color: "var(--fg-2)",
+          }}
+        >
+          {loadingMore ? "불러오는 중…" : compact ? "더 보기" : "더 많은 액션 보기"}
+        </button>
+      )}
     </div>
   );
 }
@@ -97,18 +172,25 @@ export function RetrospectivesPanel({
   const [market, setMarket] = useState<RetroMarket>("all");
   const [triggerType, setTriggerType] = useState<string>("");
   const [outcomeFilter, setOutcomeFilter] = useState<RetroOutcomeFilter | "">("");
-  // Raw input vs. debounced value: the raw value drives the <input>, the
-  // debounced value drives the fetch (ROB-691 — avoid firing a request per keystroke).
   const [symbolSearchInput, setSymbolSearchInput] = useState("");
   const [symbolSearch, setSymbolSearch] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
-  const [nextActions, setNextActions] = useState<NextActionRow[]>([]);
   const [state, setState] = useState<
     | { status: "loading" }
     | { status: "ready"; items: RetrospectiveRow[]; total: number }
     | { status: "error"; message: string }
   >({ status: "loading" });
+
+  const actionPageSize = compact ? 5 : 10;
+  const [actionOffset, setActionOffset] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [actionState, setActionState] = useState<
+    | { status: "loading" }
+    | { status: "ready"; items: RetrospectiveAction[]; total: number; hasMore: boolean }
+    | { status: "error"; message: string }
+  >({ status: "loading" });
+  const actionReqIdRef = useRef(0);
 
   useEffect(() => {
     const timer = setTimeout(() => setSymbolSearch(symbolSearchInput.trim()), SEARCH_DEBOUNCE_MS);
@@ -136,18 +218,76 @@ export function RetrospectivesPanel({
     return () => { cancelled = true; };
   }, [market, triggerType, outcomeFilter, symbolSearch, dateFrom, dateTo, compact]);
 
+  // ROB-885 — canonical action queue. Shares the same filter semantics as the
+  // retrospective list. Filter changes reset offset to 0. A request-id guard
+  // discards stale responses so a slow older fetch can't overwrite a newer one.
   useEffect(() => {
-    let cancelled = false;
-    fetchOpenNextActions(market)
-      .then((data) => { if (!cancelled) setNextActions(data.items); })
-      .catch(() => { if (!cancelled) setNextActions([]); });
-    return () => { cancelled = true; };
-  }, [market]);
+    const reqId = ++actionReqIdRef.current;
+    setActionOffset(0);
+    setLoadingMore(false);
+    setActionState({ status: "loading" });
+    fetchRetrospectiveActions({
+      market,
+      triggerType: triggerType || undefined,
+      outcomeFilter: outcomeFilter || undefined,
+      q: symbolSearch || undefined,
+      dateFrom: dateFrom || undefined,
+      dateTo: dateTo || undefined,
+      limit: actionPageSize,
+      offset: 0,
+    })
+      .then((data) => {
+        if (actionReqIdRef.current !== reqId) return;
+        setActionState({
+          status: "ready",
+          items: data.items,
+          total: data.total,
+          hasMore: data.offset + data.count < data.total,
+        });
+      })
+      .catch((err: unknown) => {
+        if (actionReqIdRef.current !== reqId) return;
+        setActionState({ status: "error", message: err instanceof Error ? err.message : String(err) });
+      });
+  }, [market, triggerType, outcomeFilter, symbolSearch, dateFrom, dateTo, actionPageSize]);
 
-  // Report retrospective symbol keys so a host page can crosslink them to
-  // matching closed forecasts (ROB-682 — re-keyed from correlation_id, which
-  // was structurally dead: forecast/retro id namespaces never overlap).
-  // No-op off /insights (prop undefined) — /my never passes this prop.
+  function handleLoadMoreActions() {
+    if (actionState.status !== "ready" || !actionState.hasMore || loadingMore) return;
+    const nextOffset = actionOffset + actionPageSize;
+    const reqId = ++actionReqIdRef.current;
+    setActionOffset(nextOffset);
+    setLoadingMore(true);
+    fetchRetrospectiveActions({
+      market,
+      triggerType: triggerType || undefined,
+      outcomeFilter: outcomeFilter || undefined,
+      q: symbolSearch || undefined,
+      dateFrom: dateFrom || undefined,
+      dateTo: dateTo || undefined,
+      limit: actionPageSize,
+      offset: nextOffset,
+    })
+      .then((data) => {
+        if (actionReqIdRef.current !== reqId) return;
+        setActionState((prev) => {
+          if (prev.status !== "ready") return prev;
+          return {
+            status: "ready",
+            items: [...prev.items, ...data.items],
+            total: data.total,
+            hasMore: data.offset + data.count < data.total,
+          };
+        });
+      })
+      .catch((err: unknown) => {
+        if (actionReqIdRef.current !== reqId) return;
+        setActionState({ status: "error", message: err instanceof Error ? err.message : String(err) });
+      })
+      .finally(() => {
+        if (actionReqIdRef.current === reqId) setLoadingMore(false);
+      });
+  }
+
   useEffect(() => {
     if (!onSymbolKeys) return;
     if (state.status !== "ready") return;
@@ -180,9 +320,6 @@ export function RetrospectivesPanel({
               </button>
             ))}
           </div>
-          {/* ROB-691 — win/loss/decided filter: small footprint like the
-              market chips above, so it stays visible in compact mode too
-              (unlike the wider trigger/search/date-range controls below). */}
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignSelf: "flex-end" }}>
             {OUTCOME_OPTIONS.map((option) => (
               <button key={option.key || "all"} type="button" onClick={() => setOutcomeFilter(option.key)}
@@ -235,7 +372,7 @@ export function RetrospectivesPanel({
         </div>
       </div>
 
-      <NextActionChecklist items={nextActions} />
+      <ActionQueue state={actionState} compact={compact} loadingMore={loadingMore} onLoadMore={handleLoadMoreActions} />
 
       {state.status === "loading" && (
         <div style={{ padding: 24, color: "var(--fg-3)", fontSize: 13, textAlign: "center" }}>회고를 불러오는 중…</div>
@@ -261,10 +398,6 @@ export function RetrospectivesPanel({
             </thead>
             <tbody>
               {(() => {
-                // Anchor ids are keyed by symbol, so a symbol with multiple
-                // retrospectives would otherwise emit duplicate DOM ids. Only
-                // the first matching row per key gets the anchor; the
-                // crosslink `<a>` still renders on every match.
                 const anchored = new Set<string>();
                 return rows.map((row) => {
                   const href = row.market ? stockDetailPath(row.market as "kr" | "us" | "crypto", row.symbol) : null;

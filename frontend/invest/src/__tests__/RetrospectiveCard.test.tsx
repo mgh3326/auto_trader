@@ -44,4 +44,44 @@ describe("RetrospectiveCard", () => {
     );
     expect(screen.queryByText("끝난 액션")).not.toBeInTheDocument();
   });
+
+  test("ROB-885: shows open and in_progress actions (explicit allowlist)", () => {
+    render(
+      <RetrospectiveCard
+        retrospectives={[
+          retro({
+            next_actions: [
+              { action: "열린 액션", status: "open" },
+              { action: "진행 액션", status: "in_progress" },
+            ],
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("열린 액션")).toBeInTheDocument();
+    expect(screen.getByText("진행 액션")).toBeInTheDocument();
+  });
+
+  test("ROB-885: hides obsolete, expired, missing-status, and unknown-status actions", () => {
+    render(
+      <RetrospectiveCard
+        retrospectives={[
+          retro({
+            next_actions: [
+              { action: "폐기 액션", status: "obsolete" },
+              { action: "만료 액션", status: "expired" },
+              { action: "상태누락 액션" },
+              { action: "알수없음 액션", status: "bogus" },
+              { action: "보여줘", status: "open" },
+            ],
+          }),
+        ]}
+      />,
+    );
+    expect(screen.queryByText("폐기 액션")).not.toBeInTheDocument();
+    expect(screen.queryByText("만료 액션")).not.toBeInTheDocument();
+    expect(screen.queryByText("상태누락 액션")).not.toBeInTheDocument();
+    expect(screen.queryByText("알수없음 액션")).not.toBeInTheDocument();
+    expect(screen.getByText("보여줘")).toBeInTheDocument();
+  });
 });
