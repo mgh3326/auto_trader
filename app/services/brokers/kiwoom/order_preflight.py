@@ -7,7 +7,7 @@ from app.mcp_server.tick_size import get_tick_size_kr
 from app.services.brokers.kiwoom.client import KiwoomPreDispatchError
 from app.services.brokers.kiwoom.normalization import (
     KiwoomMockEvidenceError,
-    normalize_orderable_cash,
+    normalize_deposit,
     normalize_positions,
     validate_mock_response_provenance,
 )
@@ -273,13 +273,17 @@ async def _check_buy_cash(
     checks: list[PreflightCheck],
     estimated: dict[str, Any],
 ) -> PreflightResult | None:
+    # ROB-904 — kt00010 (주문인출가능금액) is unsupported by mockapi.kiwoom.com
+    # (return_code=20, RC7006; ROB-891 4-variant probe). Cash evidence for buy
+    # preflight comes from kt00001 (예수금상세현황) ord_alow_amt instead — mock is
+    # a cash account (margin 100%), so account-level orderable cash is a
+    # conservative valid buy-cash bound. symbol/price are unused for this call
+    # but kept in the signature for interface stability.
     try:
-        cash_response = await account_client.get_orderable_amount(
-            symbol=symbol, side="buy", price=price
-        )
+        cash_response = await account_client.get_deposit()
         validate_mock_response_provenance(cash_response)
         _validate_successful_broker_response(cash_response)
-        orderable_cash = normalize_orderable_cash(cash_response)
+        orderable_cash = normalize_deposit(cash_response)
     except KiwoomPreDispatchError:
         raise
     except KiwoomMockEvidenceError as exc:

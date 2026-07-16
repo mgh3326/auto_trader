@@ -46,6 +46,18 @@ class KiwoomDomesticAccountClient:
         # ROB-891 — Official kt00010 body fields: stk_cd, trde_tp, uv.
         # Both side and price are required (trde_tp + uv are mandatory).
         # dmst_stex_tp is NOT in the official kt00010 docs.
+        #
+        # ROB-904 — kt00010 (주문인출가능금액) is unsupported by
+        # mockapi.kiwoom.com: a 2026-07-16 wire-body smoke sent this exact
+        # official-contract body across 4 field variants and got
+        # return_code=20 ("[2000](RC7006:모의투자 조회실패)") every time (same
+        # class of gap as US ust31490). No caller in this codebase invokes
+        # this method anymore — buy preflight and the orderable-cash MCP tool
+        # both fall back to kt00001 (get_deposit/normalize_deposit) instead.
+        # This method is kept, unmodified, as the correct implementation
+        # against Kiwoom's official contract for when/if live trading (or a
+        # future mock fix) needs it. Do NOT "fix" it by tweaking body fields —
+        # the contract is already correct; the gap is server-side.
         canonical_symbol = normalize_krx_symbol(symbol)
         if side not in ("buy", "sell"):
             raise ValueError(

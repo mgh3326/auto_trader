@@ -28,16 +28,20 @@ class _FakeAccountClient:
         self,
         *,
         balance_payload: dict[str, Any] | None = None,
-        cash_payload: dict[str, Any] | None = None,
+        deposit_payload: dict[str, Any] | None = None,
         balance_error: Exception | None = None,
-        cash_error: Exception | None = None,
+        deposit_error: Exception | None = None,
     ) -> None:
         self.balance_calls = 0
-        self.cash_calls = 0
+        self.deposit_calls = 0
+        # ROB-904 — kt00010 (주문인출가능금액) is unsupported by mockapi (RC7006,
+        # ROB-891). Buy preflight no longer calls get_orderable_amount; this
+        # counter stays at 0 across every buy test to prove that.
+        self.orderable_amount_calls = 0
         self._balance_payload = balance_payload
-        self._cash_payload = cash_payload
+        self._deposit_payload = deposit_payload
         self._balance_error = balance_error
-        self._cash_error = cash_error
+        self._deposit_error = deposit_error
 
     async def get_balance(self, **_kwargs):
         self.balance_calls += 1
@@ -45,11 +49,18 @@ class _FakeAccountClient:
             raise self._balance_error
         return self._balance_payload or {"return_code": 0}
 
+    async def get_deposit(self, **_kwargs):
+        self.deposit_calls += 1
+        if self._deposit_error is not None:
+            raise self._deposit_error
+        return self._deposit_payload or {"return_code": 0}
+
     async def get_orderable_amount(self, **_kwargs):
-        self.cash_calls += 1
-        if self._cash_error is not None:
-            raise self._cash_error
-        return self._cash_payload or {"return_code": 0}
+        self.orderable_amount_calls += 1
+        raise AssertionError(
+            "kt00010 get_orderable_amount must never be dispatched by buy "
+            "preflight (mockapi RC7006-unsupported, ROB-904)"
+        )
 
 
 def _positions_payload(rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -80,7 +91,7 @@ async def test_preflight_quote_missing_fails_closed():
     assert result.checks[0].name == "quote_freshness"
     assert result.checks[0].ok is False
     assert client.balance_calls == 0
-    assert client.cash_calls == 0
+    assert client.deposit_calls == 0
 
 
 @pytest.mark.asyncio
@@ -98,7 +109,7 @@ async def test_preflight_quote_stale_fails_closed():
     assert result.ok is False
     assert result.error_code == PREFLIGHT_QUOTE_STALE
     assert client.balance_calls == 0
-    assert client.cash_calls == 0
+    assert client.deposit_calls == 0
 
 
 @pytest.mark.parametrize(
@@ -156,14 +167,14 @@ async def test_preflight_tick_validation_rejects_non_krx_ticks(invalid_price):
     )
     assert result.ok is False
     assert result.error_code == PREFLIGHT_TICK_INVALID
-    assert client.cash_calls == 0
+    assert client.deposit_calls == 0
 
 
 @pytest.mark.parametrize("price", [40000, 100000])
 @pytest.mark.asyncio
 async def test_preflight_price_distance_exceeded_fails_closed(price):
     client = _FakeAccountClient(
-        cash_payload={"return_code": 0, "ord_alowa": "100000000"}
+        deposit_payload={"return_code": 0, "ord_alow_amt": "100000000"}
     )
     result = await run_order_preflight(
         account_client=client,
@@ -180,13 +191,13 @@ async def test_preflight_price_distance_exceeded_fails_closed(price):
     distance_check = next(c for c in result.checks if c.name == "price_distance")
     assert distance_check.ok is False
     assert result.estimated_evidence["price_distance_pct"] > 30.0
-    assert client.cash_calls == 0
+    assert client.deposit_calls == 0
 
 
 @pytest.mark.asyncio
 async def test_preflight_price_distance_at_limit_passes():
     client = _FakeAccountClient(
-        cash_payload={"return_code": 0, "ord_alowa": "100000000"}
+        deposit_payload={"return_code": 0, "ord_alow_amt": "100000000"}
     )
     result = await run_order_preflight(
         account_client=client,
@@ -202,7 +213,7 @@ async def test_preflight_price_distance_at_limit_passes():
     distance_check = next(c for c in result.checks if c.name == "price_distance")
     assert distance_check.ok is True
     assert result.estimated_evidence["price_distance_pct"] == 30.0
-    assert client.cash_calls == 1
+    assert client.deposit_calls == 1
 
 
 @pytest.mark.asyncio
@@ -269,9 +280,9 @@ async def test_preflight_missing_symbol_position_fails_closed():
 @pytest.mark.asyncio
 async def test_preflight_cash_insufficient_fails_closed():
     client = _FakeAccountClient(
-        cash_payload={
+        deposit_payload={
             "return_code": 0,
-            "ord_alowa": "500000",
+            "ord_alow_amt": "500000",
         }
     )
     result = await run_order_preflight(
@@ -294,9 +305,9 @@ async def test_preflight_cash_insufficient_fails_closed():
 @pytest.mark.asyncio
 async def test_preflight_cash_sufficient_passes(return_code):
     client = _FakeAccountClient(
-        cash_payload={
+        deposit_payload={
             "return_code": return_code,
-            "ord_alowa": "100000000",
+            "ord_alow_amt": "100000000",
         }
     )
     result = await run_order_preflight(
@@ -313,9 +324,53 @@ async def test_preflight_cash_sufficient_passes(return_code):
 
 
 @pytest.mark.asyncio
+async def test_preflight_buy_uses_kt00001_deposit_not_kt00010_orderable_amount():
+    """ROB-904 — buy cash-evidence source is kt00001 (deposit), never kt00010."""
+    client = _FakeAccountClient(
+        deposit_payload={"return_code": 0, "ord_alow_amt": "100000000"}
+    )
+    result = await run_order_preflight(
+        account_client=client,
+        symbol="005930",
+        side="buy",
+        quantity=10,
+        price=70000,
+        quote_price=70000,
+        quote_freshness="fresh",
+    )
+    assert result.ok is True
+    assert result.estimated_evidence.get("orderable_cash") == 100000000
+    assert client.deposit_calls == 1
+    assert client.orderable_amount_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_preflight_buy_provenance_conflict_fails_closed():
+    client = _FakeAccountClient(
+        deposit_payload={
+            "return_code": 0,
+            "provenance": {"environment": "live"},
+            "ord_alow_amt": "100000000",
+        }
+    )
+    result = await run_order_preflight(
+        account_client=client,
+        symbol="005930",
+        side="buy",
+        quantity=1,
+        price=70000,
+        quote_price=70000,
+        quote_freshness="fresh",
+    )
+    assert result.ok is False
+    assert result.error_code == PREFLIGHT_PROVENANCE_CONFLICT
+    assert client.orderable_amount_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_preflight_buy_marks_fee_and_tax_estimates_unavailable():
     client = _FakeAccountClient(
-        cash_payload={"return_code": 0, "ord_alowa": "100000000"}
+        deposit_payload={"return_code": 0, "ord_alow_amt": "100000000"}
     )
 
     result = await run_order_preflight(
@@ -346,7 +401,7 @@ async def test_preflight_buy_marks_fee_and_tax_estimates_unavailable():
 @pytest.mark.asyncio
 async def test_preflight_cash_missing_field_fails_closed():
     client = _FakeAccountClient(
-        cash_payload={"return_code": 0}  # no ord_alowa
+        deposit_payload={"return_code": 0}  # no ord_alow_amt
     )
     result = await run_order_preflight(
         account_client=client,
@@ -374,10 +429,10 @@ async def test_preflight_cash_missing_field_fails_closed():
 )
 @pytest.mark.asyncio
 async def test_preflight_cash_broker_failure_fails_closed(return_code):
-    payload: dict[str, Any] = {"ord_alowa": "100000000"}
+    payload: dict[str, Any] = {"ord_alow_amt": "100000000"}
     if return_code != "missing":
         payload["return_code"] = return_code
-    client = _FakeAccountClient(cash_payload=payload)
+    client = _FakeAccountClient(deposit_payload=payload)
 
     result = await run_order_preflight(
         account_client=client,
@@ -489,12 +544,12 @@ async def test_preflight_sell_reraises_pre_dispatch_error():
     assert exc_info.value.stage == "request_build"
     assert exc_info.value.api_id == "kt00018"
     assert client.balance_calls == 1
-    assert client.cash_calls == 0
+    assert client.deposit_calls == 0
 
 
 @pytest.mark.asyncio
 async def test_preflight_cash_transport_failure_fails_closed():
-    client = _FakeAccountClient(cash_error=RuntimeError("broker timeout"))
+    client = _FakeAccountClient(deposit_error=RuntimeError("broker timeout"))
     result = await run_order_preflight(
         account_client=client,
         symbol="005930",
@@ -511,9 +566,9 @@ async def test_preflight_cash_transport_failure_fails_closed():
 @pytest.mark.asyncio
 async def test_preflight_buy_reraises_pre_dispatch_error():
     client = _FakeAccountClient(
-        cash_error=KiwoomPreDispatchError(
+        deposit_error=KiwoomPreDispatchError(
             stage="host_validation",
-            api_id="kt00010",
+            api_id="kt00001",
             cause_type="ValueError",
         )
     )
@@ -530,9 +585,9 @@ async def test_preflight_buy_reraises_pre_dispatch_error():
         )
 
     assert exc_info.value.stage == "host_validation"
-    assert exc_info.value.api_id == "kt00010"
+    assert exc_info.value.api_id == "kt00001"
     assert client.balance_calls == 0
-    assert client.cash_calls == 1
+    assert client.deposit_calls == 1
 
 
 @pytest.mark.asyncio
@@ -651,7 +706,7 @@ async def test_preflight_does_not_mutate_account_position_for_sell():
 @pytest.mark.asyncio
 async def test_preflight_buy_path_never_calls_position_read():
     client = _FakeAccountClient(
-        cash_payload={"return_code": 0, "ord_alowa": "100000000"}
+        deposit_payload={"return_code": 0, "ord_alow_amt": "100000000"}
     )
     result = await run_order_preflight(
         account_client=client,
@@ -664,7 +719,7 @@ async def test_preflight_buy_path_never_calls_position_read():
     )
     assert result.ok is True
     assert client.balance_calls == 0
-    assert client.cash_calls == 1
+    assert client.deposit_calls == 1
 
 
 @pytest.mark.asyncio
@@ -682,7 +737,7 @@ async def test_preflight_sell_path_skips_cash_read():
         quote_freshness="fresh",
     )
     assert result.ok is True
-    assert client.cash_calls == 0
+    assert client.deposit_calls == 0
 
 
 @pytest.mark.asyncio

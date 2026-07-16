@@ -2,7 +2,9 @@
 
 Verifies ``--mode contract`` in ``scripts/kiwoom_mock_smoke.py``:
 
-* Four read endpoints called (kt00018, kt00001, kt00010, kt00009).
+* Four read stages called (kt00018, kt00001, kt00001, kt00009). ROB-904 —
+  the "orderable_amount" stage now falls back to kt00001 (kt00010 is
+  mock-unsupported, RC7006), so only three distinct api_ids are dispatched.
 * Strict pass: success==True AND return_code==0 AND exact mock provenance AND
   expected api_id. Inconsistent envelopes (success=true + nonzero RC) fail.
 * Zero broker mutations. Mutation tools are guarded.
@@ -184,7 +186,9 @@ async def test_four_endpoints_with_contract_fields(
     assert len(steps) == 4
 
     api_ids = {ln["expected_api_id"] for ln in steps}
-    assert api_ids == {"kt00018", "kt00001", "kt00010", "kt00009"}
+    # ROB-904 — orderable_amount stage now falls back to kt00001 (kt00010 is
+    # mock-unsupported), so only three distinct api_ids appear across 4 stages.
+    assert api_ids == {"kt00018", "kt00001", "kt00009"}
 
     for step in steps:
         assert "contract_fields" in step
@@ -207,20 +211,19 @@ async def test_request_body_captured_via_mocktransport(
 
     assert kw_constants.ACCOUNT_BALANCE_API_ID in captured
     assert kw_constants.ACCOUNT_DEPOSIT_API_ID in captured
-    assert kw_constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID in captured
+    # ROB-904 — kt00010 is mock-unsupported (RC7006) and must never be
+    # dispatched by the contract sweep's "orderable_amount" stage.
+    assert kw_constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID not in captured
     assert kw_constants.ACCOUNT_ORDER_STATUS_API_ID in captured
 
     assert captured[kw_constants.ACCOUNT_BALANCE_API_ID] == {
         "qry_tp": kw_constants.ACCOUNT_BALANCE_QRY_TP_DEFAULT,
         "dmst_stex_tp": kw_constants.ACCOUNT_DMST_STEX_TP_DEFAULT,
     }
+    # Both the "deposit" and "orderable_amount" stages dispatch the identical
+    # kt00001 request body; the account-level query takes no symbol/side/price.
     assert captured[kw_constants.ACCOUNT_DEPOSIT_API_ID] == {
         "qry_tp": kw_constants.ACCOUNT_DEPOSIT_QRY_TP_DEFAULT,
-    }
-    assert captured[kw_constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID] == {
-        "stk_cd": "005930",
-        "trde_tp": kw_constants.TRADE_TYPE_BUY,
-        "uv": "50000",
     }
     assert captured[kw_constants.ACCOUNT_ORDER_STATUS_API_ID] == {
         "stk_bond_tp": kw_constants.ACCOUNT_ORDER_STK_BOND_TP_DEFAULT,
