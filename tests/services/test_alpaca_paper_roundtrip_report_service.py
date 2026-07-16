@@ -342,3 +342,53 @@ async def test_open_order_snapshot_is_caller_supplied_and_can_block_report():
     assert report.open_orders.source == "caller_supplied"
     assert report.anomalies.should_block is True
     assert report.anomalies.anomalies[0]["check_id"] == "unexpected_open_orders"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_roundtrip_report_with_canceled_leg_is_not_anomaly():
+    # Seed a roundtrip with a canceled buy leg
+    rows = [
+        _row(
+            lifecycle_state=LIFECYCLE_PLANNED,
+            record_kind=RECORD_KIND_PLAN,
+            side="buy",
+            client_order_id="buy-rob92",
+            lifecycle_correlation_id="corr-rob92-cxl",
+        ),
+        _row(
+            lifecycle_state=LIFECYCLE_PREVIEWED,
+            record_kind=RECORD_KIND_PREVIEW,
+            side="buy",
+            client_order_id="buy-rob92",
+            lifecycle_correlation_id="corr-rob92-cxl",
+        ),
+        _row(
+            lifecycle_state="canceled",
+            record_kind=RECORD_KIND_EXECUTION,
+            side="buy",
+            client_order_id="buy-rob92",
+            lifecycle_correlation_id="corr-rob92-cxl",
+            order_status="canceled",
+            cancel_status="canceled",
+        ),
+    ]
+    db = AsyncMock()
+
+    # Mock database to return the rows
+    class _ScalarResult:
+        def scalars(self):
+            class _S:
+                def all(self_inner):
+                    return rows
+
+            return _S()
+
+    db.execute = AsyncMock(return_value=_ScalarResult())
+
+    svc = AlpacaPaperRoundtripReportService(db)
+    report = await svc.build_report(lifecycle_correlation_id="corr-rob92-cxl")
+
+    assert report.status == "incomplete"  # not "anomaly"
+    assert report.anomalies.should_block is False
+    assert [a["check_id"] for a in report.anomalies.anomalies] == ["preflight_clean"]

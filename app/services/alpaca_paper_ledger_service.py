@@ -40,6 +40,7 @@ LIFECYCLE_CLOSED = "closed"
 LIFECYCLE_FINAL_RECONCILED = "final_reconciled"
 LIFECYCLE_ANOMALY = "anomaly"
 LIFECYCLE_STALE_PREVIEW_CLEANUP_REQUIRED = "stale_preview_cleanup_required"
+LIFECYCLE_CANCELED = "canceled"
 
 CANONICAL_LIFECYCLE_STATES: frozenset[str] = frozenset(
     {
@@ -54,11 +55,13 @@ CANONICAL_LIFECYCLE_STATES: frozenset[str] = frozenset(
         LIFECYCLE_FINAL_RECONCILED,
         LIFECYCLE_ANOMALY,
         LIFECYCLE_STALE_PREVIEW_CLEANUP_REQUIRED,
+        LIFECYCLE_CANCELED,
     }
 )
 
 # ROB-91: post-submit executed states used for idempotency checks.
 # Excludes pre-submit (planned/previewed/validated) and anomaly.
+# ROB-920: Include canceled.
 EXECUTED_LIFECYCLE_STATES: frozenset[str] = frozenset(
     {
         LIFECYCLE_SUBMITTED,
@@ -67,6 +70,7 @@ EXECUTED_LIFECYCLE_STATES: frozenset[str] = frozenset(
         LIFECYCLE_SELL_VALIDATED,
         LIFECYCLE_CLOSED,
         LIFECYCLE_FINAL_RECONCILED,
+        LIFECYCLE_CANCELED,
     }
 )
 
@@ -166,6 +170,7 @@ def normalize_known_broker_order_status(value: Any) -> str | None:
 def _derive_lifecycle_state(
     order_status: Any,
     filled_qty: Decimal | float | None = None,
+    has_cancel_evidence: bool = False,
 ) -> str:
     """Map broker order_status to ROB-90 canonical lifecycle state.
 
@@ -174,7 +179,8 @@ def _derive_lifecycle_state(
     - partially_filled → submitted (broker status preserved in order_status)
     - open statuses (new/accepted/…) → submitted
     - open status with filled_qty > 0 → anomaly
-    - canceled → anomaly (ROB-90: no benign cancel state)
+    - canceled with cancel evidence → canceled (ROB-920)
+    - canceled without cancel evidence → anomaly
     - rejected/expired/suspended/unknown → anomaly
     """
     if not isinstance(order_status, str):
@@ -193,7 +199,11 @@ def _derive_lifecycle_state(
             if qty > 0:
                 return LIFECYCLE_ANOMALY
         return LIFECYCLE_SUBMITTED
-    if status in _ANOMALY_STATUSES or status == "canceled":
+    if status == "canceled":
+        if has_cancel_evidence:
+            return LIFECYCLE_CANCELED
+        return LIFECYCLE_ANOMALY
+    if status in _ANOMALY_STATUSES:
         return LIFECYCLE_ANOMALY
     return LIFECYCLE_ANOMALY
 
@@ -1283,8 +1293,12 @@ class AlpacaPaperLedgerService:
             except Exception:
                 filled_avg_price = None
 
+        has_cancel_evidence = (
+            getattr(source_row, "cancel_status", None) is not None
+            or getattr(source_row, "canceled_at", None) is not None
+        )
         lifecycle_state = lifecycle_state_override or _derive_lifecycle_state(
-            raw_order_status, filled_qty
+            raw_order_status, filled_qty, has_cancel_evidence=has_cancel_evidence
         )
         raw_responses = None
         if raw_response is not None:
@@ -1387,8 +1401,12 @@ class AlpacaPaperLedgerService:
             except Exception:
                 filled_avg_price = None
 
+        has_cancel_evidence = (
+            getattr(target_row, "cancel_status", None) is not None
+            or getattr(target_row, "canceled_at", None) is not None
+        )
         lifecycle_state = lifecycle_state_override or _derive_lifecycle_state(
-            order_status, filled_qty
+            order_status, filled_qty, has_cancel_evidence=has_cancel_evidence
         )
 
         update_vals: dict[str, Any] = {
@@ -1424,7 +1442,7 @@ class AlpacaPaperLedgerService:
         raw_response: dict[str, Any] | None = None,
         error_summary: str | None = None,
     ) -> AlpacaPaperOrderLedger:
-        """Record cancel metadata. Lifecycle state is set by record_status, not here."""
+        """Record cancel metadata. Updates lifecycle state to canceled if status matches."""
         target_row = await self._require_row(client_order_id)
 
         update_vals: dict[str, Any] = {
@@ -1433,6 +1451,25 @@ class AlpacaPaperLedgerService:
         }
         if error_summary is not None:
             update_vals["error_summary"] = _redact_sensitive_text(error_summary)
+
+        # ROB-920: If broker order status is already canceled (either on the row or in
+        # the incoming raw response), we transition lifecycle_state to 'canceled' and
+        # clear any temporary status check anomaly error summary.
+        current_status = getattr(target_row, "order_status", None)
+        if raw_response and isinstance(raw_response, dict):
+            incoming_status = raw_response.get("status")
+            if isinstance(incoming_status, str):
+                current_status = incoming_status
+
+        if current_status and current_status.lower() == "canceled":
+            update_vals["lifecycle_state"] = LIFECYCLE_CANCELED
+            err = getattr(target_row, "error_summary", None)
+            if (
+                err
+                and err.lower().startswith("anomaly: order_status=")
+                and "canceled" in err.lower()
+            ):
+                update_vals["error_summary"] = None
 
         await self._db.execute(
             update(AlpacaPaperOrderLedger)

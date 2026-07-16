@@ -493,6 +493,7 @@ class PaperEvaluationPnL:
                 "sell_validated",
                 "closed",
                 "final_reconciled",
+                "canceled",
             }
         )
         _RECORD_KIND_EXECUTION = "execution"

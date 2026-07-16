@@ -410,7 +410,7 @@ async def test_verified_application_cancel_syncs_lifecycle_and_replays_without_b
         submitted.native_client_order_id or ""
     )
     assert row is not None
-    assert row.lifecycle_state == "anomaly"
+    assert row.lifecycle_state == "canceled"
     assert row.order_status == "canceled"
     assert row.cancel_status == "canceled"
 

@@ -159,6 +159,7 @@ def test_alpaca_paper_ledger_lifecycle_check_canonical_states():
         "final_reconciled",
         "anomaly",
         "stale_preview_cleanup_required",
+        "canceled",
     ]
     for state in canonical:
         assert state in check_text, f"Canonical state {state!r} missing from CHECK"
@@ -167,7 +168,6 @@ def test_alpaca_paper_ledger_lifecycle_check_canonical_states():
         "validation_failed",
         "open",
         "partially_filled",
-        "canceled",
         "unexpected",
     ]
     for state in excluded:
@@ -184,6 +184,7 @@ def test_canonical_lifecycle_constants_exported():
     from app.services.alpaca_paper_ledger_service import (
         CANONICAL_LIFECYCLE_STATES,
         LIFECYCLE_ANOMALY,
+        LIFECYCLE_CANCELED,
         LIFECYCLE_CLOSED,
         LIFECYCLE_FILLED,
         LIFECYCLE_FINAL_RECONCILED,
@@ -207,8 +208,9 @@ def test_canonical_lifecycle_constants_exported():
     assert LIFECYCLE_FINAL_RECONCILED == "final_reconciled"
     assert LIFECYCLE_ANOMALY == "anomaly"
     assert LIFECYCLE_STALE_PREVIEW_CLEANUP_REQUIRED == "stale_preview_cleanup_required"
+    assert LIFECYCLE_CANCELED == "canceled"
 
-    assert len(CANONICAL_LIFECYCLE_STATES) == 11
+    assert len(CANONICAL_LIFECYCLE_STATES) == 12
     assert CANONICAL_LIFECYCLE_STATES == {
         "planned",
         "previewed",
@@ -221,6 +223,7 @@ def test_canonical_lifecycle_constants_exported():
         "final_reconciled",
         "anomaly",
         "stale_preview_cleanup_required",
+        "canceled",
     }
 
 
@@ -269,6 +272,26 @@ def test_derive_lifecycle_state(order_status, filled_qty, expected):
     from app.services.alpaca_paper_ledger_service import _derive_lifecycle_state
 
     assert _derive_lifecycle_state(order_status, filled_qty) == expected
+
+
+@pytest.mark.unit
+def test_derive_lifecycle_state_canceled_evidence():
+    from app.services.alpaca_paper_ledger_service import _derive_lifecycle_state
+
+    assert (
+        _derive_lifecycle_state("canceled", None, has_cancel_evidence=True)
+        == "canceled"
+    )
+    assert (
+        _derive_lifecycle_state("canceled", None, has_cancel_evidence=False)
+        == "anomaly"
+    )
+    assert (
+        _derive_lifecycle_state("CANCELED", 0, has_cancel_evidence=True) == "canceled"
+    )
+    assert (
+        _derive_lifecycle_state("CANCELED", 0, has_cancel_evidence=False) == "anomaly"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1325,3 +1348,99 @@ def test_service_is_valid_python():
     source = SERVICE_PATH.read_text()
     tree = ast.parse(source)
     assert tree is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_status_with_cancel_evidence_derives_canceled():
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(cancel_status="canceled", lifecycle_state="anomaly")
+    db = _mock_db_with_row(row)
+
+    svc = AlpacaPaperLedgerService(db)
+    await svc.record_status(
+        "test-client-001",
+        order={"id": "bid1", "status": "canceled", "filled_qty": "0"},
+    )
+    update_stmt = db.execute.call_args_list[1].args[0]
+    update_params = update_stmt.compile().params
+    assert update_params["lifecycle_state"] == "canceled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_status_without_cancel_evidence_derives_anomaly():
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(cancel_status=None, lifecycle_state="anomaly")
+    db = _mock_db_with_row(row)
+
+    svc = AlpacaPaperLedgerService(db)
+    await svc.record_status(
+        "test-client-001",
+        order={"id": "bid1", "status": "canceled", "filled_qty": "0"},
+    )
+    update_stmt = db.execute.call_args_list[1].args[0]
+    update_params = update_stmt.compile().params
+    assert update_params["lifecycle_state"] == "anomaly"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_cancel_transitions_to_canceled_if_order_status_is_canceled():
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(order_status="canceled", lifecycle_state="anomaly")
+    db = _mock_db_with_row(row)
+
+    svc = AlpacaPaperLedgerService(db)
+    await svc.record_cancel("test-client-001", cancel_status="canceled")
+    update_stmt = db.execute.call_args_list[1].args[0]
+    update_params = update_stmt.compile().params
+    assert update_params["lifecycle_state"] == "canceled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_cancel_clears_status_anomaly_error_summary():
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(
+        order_status="canceled",
+        lifecycle_state="anomaly",
+        error_summary="anomaly: order_status='canceled' during status check",
+    )
+    db = _mock_db_with_row(row)
+
+    svc = AlpacaPaperLedgerService(db)
+    await svc.record_cancel("test-client-001", cancel_status="canceled")
+    update_stmt = db.execute.call_args_list[1].args[0]
+    update_params = update_stmt.compile().params
+    assert update_params["lifecycle_state"] == "canceled"
+    assert update_params["error_summary"] is None
+
+
+@pytest.mark.unit
+def test_schema_accepts_canceled_state():
+    from datetime import UTC, datetime
+
+    from app.schemas.execution_contracts import OrderLifecycleEvent, OrderPreviewLine
+
+    event = OrderLifecycleEvent(
+        account_mode="alpaca_paper",
+        execution_source="preopen",
+        state="canceled",
+        occurred_at=datetime.now(UTC),
+    )
+    assert event.state == "canceled"
+
+    line = OrderPreviewLine(
+        symbol="AAPL",
+        market="equity_us",
+        side="buy",
+        account_mode="alpaca_paper",
+        execution_source="preopen",
+        lifecycle_state="canceled",
+    )
+    assert line.lifecycle_state == "canceled"

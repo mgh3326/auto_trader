@@ -450,3 +450,31 @@ def test_scoped_preflight_still_blocks_symbol_mismatch_inside_same_correlation()
 
     assert report.should_block is True
     assert "signal_execution_symbol_mismatch" in _check_ids(report)
+
+
+@pytest.mark.unit
+def test_preflight_does_not_flag_canceled_state_as_anomaly():
+    # Check that a canceled row does not trigger unexpected anomalies
+    report = build_paper_execution_preflight_report(
+        ledger_rows=[
+            _row(
+                client_order_id="buy-reconciled",
+                lifecycle_state="position_reconciled",
+                order_status="filled",
+            ),
+            _row(
+                client_order_id="sell-canceled",
+                side="sell",
+                lifecycle_state="canceled",
+                order_status="canceled",
+                cancel_status="canceled",
+                raw_responses={"payload": {"source_client_order_id": "buy-reconciled"}},
+            ),
+        ],
+        open_orders=[],
+        positions=[],
+    )
+
+    assert report.status == "pass"
+    assert report.should_block is False
+    assert "ledger_anomaly_row" not in _check_ids(report)
