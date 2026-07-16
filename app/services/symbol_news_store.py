@@ -17,7 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.news import NewsArticle
+from app.models.news import NewsArticle, NewsArticleRelatedSymbol
 from app.models.symbol_news_relevance import SymbolNewsRelevance
 from app.services.symbol_news_relevance import build_relevance_hints
 
@@ -168,6 +168,41 @@ async def upsert_kr_feed_articles(
 ) -> int:
     """KR 호환 래퍼 — 기존 호출부 보존용 (ROB-491)."""
     return await upsert_feed_articles(db, "kr", symbol, items, feed_source=feed_source)
+
+
+async def upsert_related_symbols(
+    db: AsyncSession,
+    rows: list[dict[str, Any]],
+    *,
+    commit: bool = True,
+) -> int:
+    """Single write seam for `news_article_related_symbols` (ROB-916).
+
+    ``rows`` are pre-built dicts matching the ORM column set (see
+    ``app.services.news_payload_normalizer`` row builders). Idempotent by the
+    ``(article_id, market, symbol, source)`` unique constraint — re-running
+    over the same articles/matcher is always a no-op for existing rows.
+    Callers that batch multiple writes in one transaction (e.g. the
+    news-ingestor bulk endpoint) should pass ``commit=False`` and commit once
+    at the end themselves.
+    """
+    if not rows:
+        return 0
+    result = await db.execute(
+        pg_insert(NewsArticleRelatedSymbol)
+        .values(rows)
+        .on_conflict_do_nothing(
+            index_elements=[
+                NewsArticleRelatedSymbol.article_id,
+                NewsArticleRelatedSymbol.market,
+                NewsArticleRelatedSymbol.symbol,
+                NewsArticleRelatedSymbol.source,
+            ]
+        )
+    )
+    if commit:
+        await db.commit()
+    return int(result.rowcount or 0)
 
 
 async def list_pending(

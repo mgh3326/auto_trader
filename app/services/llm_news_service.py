@@ -23,13 +23,16 @@ from app.schemas.news import (
     NewsReadinessResponse,
     NewsSourceCoverage,
 )
+from app.services import kr_symbol_universe_service, symbol_news_store
 from app.services.news_entity_matcher import (
     SymbolMatch,
+    match_kr_universe_symbols,
     match_symbols_for_article,
 )
 from app.services.news_payload_normalizer import (
     _RELATED_SYMBOL_MARKETS,
     _article_values_from_ingestor_payload,
+    _kr_universe_related_symbol_row,
     _normalize_related_symbol_market,
     _normalize_related_symbol_symbol,
     _related_symbol_values_from_ingestor_payload,
@@ -330,29 +333,65 @@ async def ingest_news_ingestor_bulk(
         inserted_count = len(inserted_urls)
 
         related_symbol_values: list[dict[str, Any]] = []
+        related_symbols_by_article: dict[int, set[str]] = {}
         for article_data in request.articles:
             article_id = inserted_url_to_id.get(article_data.url.strip())
             if article_id is None:
                 continue
-            related_symbol_values.extend(
-                _related_symbol_values_from_ingestor_payload(
-                    article_id=article_id, article_data=article_data
-                )
+            rows = _related_symbol_values_from_ingestor_payload(
+                article_id=article_id, article_data=article_data
             )
+            related_symbol_values.extend(rows)
+            for row in rows:
+                if row["market"] == "kr":
+                    related_symbols_by_article.setdefault(article_id, set()).add(
+                        row["symbol"]
+                    )
+
+        # ROB-916: supplementary deterministic KR name-dictionary match — the
+        # news-ingestor's own candidate extraction (source=candidate_metadata/
+        # tv_related_symbol above) is external and sometimes misses an
+        # explicit company-name mention in the title (e.g. 한화오션). This
+        # fills the gap without touching/overriding what the ingestor sent.
+        kr_article_present = any(
+            _normalize_related_symbol_market(a.market, a.market) == "kr"
+            for a in request.articles
+        )
+        if kr_article_present:
+            kr_universe = await kr_symbol_universe_service.list_active_kr_symbol_names(
+                db
+            )
+            if kr_universe:
+                for article_data in request.articles:
+                    if (
+                        _normalize_related_symbol_market(
+                            article_data.market, article_data.market
+                        )
+                        != "kr"
+                    ):
+                        continue
+                    article_id = inserted_url_to_id.get(article_data.url.strip())
+                    if article_id is None:
+                        continue
+                    already = related_symbols_by_article.setdefault(article_id, set())
+                    text = f"{article_data.title}\n{article_data.summary or ''}"
+                    for match in match_kr_universe_symbols(text, kr_universe):
+                        if match.symbol in already:
+                            continue
+                        related_symbol_values.append(
+                            _kr_universe_related_symbol_row(
+                                article_id=article_id,
+                                symbol=match.symbol,
+                                matched_term=match.matched_term,
+                                canonical_name=match.canonical_name,
+                            )
+                        )
+                        already.add(match.symbol)
+
         if related_symbol_values:
-            related_stmt = (
-                pg_insert(NewsArticleRelatedSymbol)
-                .values(related_symbol_values)
-                .on_conflict_do_nothing(
-                    index_elements=[
-                        NewsArticleRelatedSymbol.article_id,
-                        NewsArticleRelatedSymbol.market,
-                        NewsArticleRelatedSymbol.symbol,
-                        NewsArticleRelatedSymbol.source,
-                    ]
-                )
+            await symbol_news_store.upsert_related_symbols(
+                db, related_symbol_values, commit=False
             )
-            await db.execute(related_stmt)
 
         run = request.ingestion_run
         run_values = {

@@ -88,6 +88,67 @@ def match_symbols(
     return sorted(seen.values(), key=lambda m: (m.market, m.symbol))
 
 
+def match_kr_universe_symbols(
+    text: str,
+    universe: Iterable[tuple[str, str]],
+) -> list[SymbolMatch]:
+    """Longest-match-wins full-name matcher over a DB-backed KR symbol universe.
+
+    ROB-916: supplementary mapping source for `news_article_related_symbols`
+    when the upstream news-ingestor's own candidate extraction misses an
+    explicit company-name mention (the curated `KR_ALIASES` dict is
+    intentionally small — this covers the long-tail via `kr_symbol_universe`).
+
+    ``universe`` is a caller-supplied ``(symbol, name)`` sequence (e.g. all
+    active `kr_symbol_universe` rows) so this function stays DB-free/pure.
+    Matching is done against the *full* registered company name only (never a
+    truncated alias), and overlapping matches are resolved by trying longest
+    names first and skipping any shorter match whose span is already claimed —
+    this is what prevents a short name that is a literal substring of a
+    longer one (e.g. "한화" inside a "한화오션" mention) from also firing as a
+    spurious extra symbol tag alongside the correct longer match.
+    """
+    if not text:
+        return []
+    haystack = text.lower()
+    entries = sorted(
+        (
+            (symbol, name.strip())
+            for symbol, name in universe
+            if symbol and name and name.strip()
+        ),
+        key=lambda pair: len(pair[1]),
+        reverse=True,
+    )
+    claimed: list[tuple[int, int]] = []
+    matches: dict[str, SymbolMatch] = {}
+    for symbol, name in entries:
+        if symbol in matches:
+            continue
+        needle = name.lower()
+        if needle not in haystack:
+            continue
+        if _is_ascii_term(name):
+            pattern = r"(?<![A-Za-z0-9])" + re.escape(needle) + r"(?![A-Za-z0-9])"
+            occurrences = re.finditer(pattern, haystack)
+        else:
+            occurrences = re.finditer(re.escape(needle), haystack)
+        for occurrence in occurrences:
+            start, end = occurrence.span()
+            if any(start < c_end and end > c_start for c_start, c_end in claimed):
+                continue
+            claimed.append((start, end))
+            matches[symbol] = SymbolMatch(
+                symbol=symbol,
+                market="kr",
+                canonical_name=name,
+                matched_term=name,
+                reason="kr_symbol_universe_name",
+            )
+            break
+    return sorted(matches.values(), key=lambda m: m.symbol)
+
+
 _URL_METADATA_PREFIXES = (
     "canonical_url:",
     "source_url:",

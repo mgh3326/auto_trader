@@ -694,6 +694,12 @@ class Settings(BaseSettings):
     NEWS_RELEVANCE_JUDGMENT_TOKEN: str = ""
     NEWS_RELEVANCE_JUDGMENT_TIMEOUT_S: float = 120.0
     NEWS_RELEVANCE_JUDGMENT_BATCH_LIMIT: int = 50
+    # ROB-916 — default-disabled gate for scripts/backfill_news_related_symbols.py.
+    # Read-only DB access + additive news_article_related_symbols inserts only
+    # (never touches symbol_news_relevance excluded/pending state); the gate
+    # exists so the script can't run against a target DB unattended even in
+    # --dry-run.
+    NEWS_RELATED_SYMBOLS_BACKFILL_ENABLED: bool = False
 
     # ROB-510 — Finnhub news fetch reliability (per-attempt timeout + bounded retry)
     FINNHUB_NEWS_TIMEOUT_S: float = 8.0

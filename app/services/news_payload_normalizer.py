@@ -279,6 +279,34 @@ def _related_symbol_row_from_candidate(
     }
 
 
+def _kr_universe_related_symbol_row(
+    *,
+    article_id: int,
+    symbol: str,
+    matched_term: str,
+    canonical_name: str,
+) -> dict[str, Any]:
+    """Row for the ROB-916 supplementary `kr_symbol_universe_name` source.
+
+    Distinct ``source`` value from the ingestor-provided candidates
+    (``candidate_metadata``/``tv_related_symbol``) so both can coexist per
+    article under the ``(article_id, market, symbol, source)`` unique
+    constraint — this is additive, never a replacement for ingestor tags.
+    """
+    return {
+        "article_id": article_id,
+        "market": "kr",
+        "symbol": symbol,
+        "display_name": canonical_name.strip()[:120] or None,
+        "source": "kr_symbol_universe_name",
+        "matched_term": matched_term.strip()[:120] or None,
+        "score": None,
+        "rank": None,
+        "raw": {"matcher": "kr_symbol_universe_name"},
+        "created_at": now_kst_naive(),
+    }
+
+
 def _related_symbol_values_from_ingestor_payload(
     *, article_id: int, article_data: Any
 ) -> list[dict[str, Any]]:
