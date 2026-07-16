@@ -430,9 +430,19 @@ class KISClient(BaseKISClient):
         order_number: str = "",
         is_mock: bool = False,
         max_pages: int = 100,
+        inter_page_delay: float = 0.1,
+        stop_when_no_new_rows: bool = False,
     ) -> list[dict[str, Any]]:
         return await self._domestic_orders.inquire_daily_order_domestic(
-            start_date, end_date, stock_code, side, order_number, is_mock, max_pages
+            start_date,
+            end_date,
+            stock_code,
+            side,
+            order_number,
+            is_mock,
+            max_pages,
+            inter_page_delay=inter_page_delay,
+            stop_when_no_new_rows=stop_when_no_new_rows,
         )
 
     async def modify_korea_order(
@@ -533,6 +543,8 @@ class KISClient(BaseKISClient):
         order_number: str = "",
         is_mock: bool = False,
         max_pages: int = 100,
+        inter_page_delay: float = 0.1,
+        stop_when_no_new_rows: bool = False,
     ) -> list[dict[str, Any]]:
         return await self._overseas_orders.inquire_daily_order_overseas(
             start_date,
@@ -543,6 +555,8 @@ class KISClient(BaseKISClient):
             order_number,
             is_mock,
             max_pages,
+            inter_page_delay=inter_page_delay,
+            stop_when_no_new_rows=stop_when_no_new_rows,
         )
 
     async def modify_overseas_order(

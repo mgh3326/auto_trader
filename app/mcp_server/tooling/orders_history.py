@@ -225,6 +225,12 @@ async def _fetch_kr_orders(
             stock_code=normalized_symbol,
             side="00",
             is_mock=is_mock,
+            # ROB-903: display-only fast pagination. rate limiter paces requests
+            # (drop the redundant inter-page sleep) and halt on the KIS
+            # duplicate-cursor runaway. Reconcile/fill-evidence paths keep the
+            # broker defaults (exhaustive, 0.1s spacing) — untouched.
+            inter_page_delay=0.0,
+            stop_when_no_new_rows=True,
         )
         fetched.extend([_normalize_kis_domestic_order(o) for o in hist_ops])
 
@@ -295,6 +301,10 @@ async def _fetch_us_orders(
             exchange_code=ex,
             side="00",
             is_mock=is_mock,
+            # ROB-903: display-only fast pagination (see _fetch_kr_orders).
+            # Reconcile/fill-evidence paths keep the broker defaults.
+            inter_page_delay=0.0,
+            stop_when_no_new_rows=True,
         )
         fetched.extend([_normalize_kis_overseas_order(o) for o in hist_ops])
 

@@ -23,6 +23,18 @@ if TYPE_CHECKING:
 _MAX_TOKEN_REFRESH_RESUBMITS = 1
 
 
+def _domestic_order_key(order: dict[str, Any]) -> str | None:
+    """Identity key for a daily-order row (ROB-903 dedupe-aware early stop).
+
+    KIS re-emits the same execution row across continuation pages; the order
+    number (odno) uniquely identifies a row. Returns ``None`` when absent so
+    callers fall back to exhaustive pagination.
+    """
+    odno = order.get("odno") or order.get("ODNO")
+    key = str(odno).strip() if odno is not None else ""
+    return key or None
+
+
 class DomesticOrderClient:
     """Client for KIS domestic (Korean) stock order operations.
 
@@ -611,6 +623,8 @@ class DomesticOrderClient:
         order_number: str = "",
         is_mock: bool = False,
         max_pages: int = 100,
+        inter_page_delay: float = 0.1,
+        stop_when_no_new_rows: bool = False,
     ) -> list[dict]:
         """
         국내주식 일별 체결조회 (주문 히스토리)
@@ -623,6 +637,13 @@ class DomesticOrderClient:
             order_number: 주문번호 (특정 주문만 조회 시)
             is_mock: True면 모의투자, False면 실전투자
             max_pages: 최대 조회 페이지 수
+            inter_page_delay: 연속조회 페이지 사이 sleep(초). KIS 19 req/s rate
+                limiter가 이미 페이싱하므로 이중 스로틀 — 표시 경로는 0.0을 넘긴다
+                (ROB-903). reconcile/fill-evidence 경로는 기본 0.1 유지.
+            stop_when_no_new_rows: True면 non-empty 페이지가 새 주문행(odno)을 더하지
+                못하는 순간 중단(KIS 중복행 연속조회 runaway 방지). 이미 모든 고유 행을
+                수집한 시점이라 증거 손실 없음. 기본 False(현행 exhaustive) — reconcile
+                경로는 기본값 유지.
 
         Returns:
             체결 주문 목록 (list of dict)
@@ -672,6 +693,7 @@ class DomesticOrderClient:
         )
 
         all_orders = []
+        seen_order_keys: set[str] = set()
         ctx_area_fk100 = ""
         ctx_area_nk100 = ""
         tr_cont = ""
@@ -759,6 +781,18 @@ class DomesticOrderClient:
                 logging.info(f"페이지 {page}에서 더 이상 주문이 없음")
                 break
 
+            # ROB-903: display path halts once a page adds no new order rows
+            # (KIS duplicate-cursor runaway). All unique rows already collected →
+            # no fill evidence lost. Reconcile keeps the default (exhaustive).
+            if stop_when_no_new_rows:
+                page_keys = {
+                    key for o in orders if (key := _domestic_order_key(o)) is not None
+                }
+                if page_keys and page_keys <= seen_order_keys:
+                    logging.info("연속조회 새 주문행 없음 — 조기 종료(display)")
+                    break
+                seen_order_keys |= page_keys
+
             all_orders.extend(orders)
             logging.info(
                 f"페이지 {page}: {len(orders)}건 조회 (누적: {len(all_orders)}건)"
@@ -779,7 +813,8 @@ class DomesticOrderClient:
             if page > page_limit:
                 truncated = True
                 break
-            await asyncio.sleep(0.1)
+            if inter_page_delay > 0:
+                await asyncio.sleep(inter_page_delay)
 
         if truncated:
             raise RuntimeError(
