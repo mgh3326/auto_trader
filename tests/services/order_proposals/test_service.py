@@ -568,6 +568,135 @@ async def test_toss_live_loss_cut_rejects_invalid_retrospective(
         )
 
 
+#  -- ROB-929: defensive proposal (loss_cut/defensive_trim) TTL floor --------
+
+
+@pytest.mark.asyncio
+async def test_loss_cut_valid_until_floors_up_to_next_approval_window_when_shorter(
+    db_session, monkeypatch
+):
+    async def fake_lookup(session, retrospective_id):
+        return _retro(symbol="AAPL")
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    now = datetime(2026, 7, 15, 20, 0, tzinfo=KST)
+    kwargs = _loss_cut_create_kwargs(now=now)
+    kwargs["symbol"] = "AAPL"
+    kwargs["market"] = "equity_us"
+    kwargs["valid_until"] = now + timedelta(minutes=1)
+
+    group = await OrderProposalsService(db_session).create_proposal(**kwargs)
+
+    assert group.valid_until == datetime(2026, 7, 15, 23, 30, tzinfo=KST)
+
+
+@pytest.mark.asyncio
+async def test_loss_cut_valid_until_keeps_caller_supplied_longer_window(
+    db_session, monkeypatch
+):
+    async def fake_lookup(session, retrospective_id):
+        return _retro()
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    now = datetime(2026, 7, 15, 20, 0, tzinfo=KST)
+    longer_window = datetime(2026, 7, 16, 10, 0, tzinfo=KST)
+    kwargs = _loss_cut_create_kwargs(now=now)
+    kwargs["valid_until"] = longer_window
+
+    group = await OrderProposalsService(db_session).create_proposal(**kwargs)
+
+    assert group.valid_until == longer_window
+
+
+@pytest.mark.asyncio
+async def test_loss_cut_valid_until_default_also_respects_floor(
+    db_session, monkeypatch
+):
+    """No valid_until supplied at all -- the default must not fall short either."""
+
+    async def fake_lookup(session, retrospective_id):
+        return _retro(symbol="AAPL")
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    kwargs = _loss_cut_create_kwargs(now=datetime(2026, 7, 15, 20, 0, tzinfo=KST))
+    kwargs["symbol"] = "AAPL"
+    kwargs["market"] = "equity_us"
+
+    group = await OrderProposalsService(db_session).create_proposal(**kwargs)
+
+    # Default (next KST midnight) already exceeds the US window end here, so
+    # the default itself, not the floor, wins -- this locks that in.
+    assert group.valid_until == datetime(2026, 7, 16, 0, 0, tzinfo=KST)
+
+
+@pytest.mark.asyncio
+async def test_defensive_trim_exit_intent_is_accepted_and_floors_valid_until(
+    db_session,
+):
+    now = datetime(2026, 7, 15, 20, 0, tzinfo=KST)
+
+    group = await OrderProposalsService(db_session).create_proposal(
+        symbol="AAPL",
+        market="equity_us",
+        account_mode="kis_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "sell", Decimal("1"), Decimal("200"), None)],
+        exit_intent="defensive_trim",
+        valid_until=now + timedelta(minutes=1),
+        now=now,
+    )
+
+    assert group.exit_intent == "defensive_trim"
+    assert group.valid_until == datetime(2026, 7, 15, 23, 30, tzinfo=KST)
+
+
+@pytest.mark.asyncio
+async def test_defensive_trim_requires_sell_side(db_session):
+    with pytest.raises(OrderProposalError, match="defensive_trim requires side"):
+        await OrderProposalsService(db_session).create_proposal(
+            symbol="AAPL",
+            market="equity_us",
+            account_mode="kis_live",
+            side="buy",
+            order_type="limit",
+            proposer="p",
+            rungs=[RungInput(0, "buy", Decimal("1"), Decimal("200"), None)],
+            exit_intent="defensive_trim",
+            now=datetime(2026, 7, 15, 20, 0, tzinfo=KST),
+        )
+
+
+@pytest.mark.asyncio
+async def test_general_proposal_valid_until_is_not_floored_by_approval_window(
+    db_session,
+):
+    now = datetime(2026, 7, 15, 20, 0, tzinfo=KST)
+    short_valid_until = now + timedelta(minutes=1)
+
+    group = await OrderProposalsService(db_session).create_proposal(
+        symbol="AAPL",
+        market="equity_us",
+        account_mode="kis_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "sell", Decimal("1"), Decimal("200"), None)],
+        valid_until=short_valid_until,
+        now=now,
+    )
+
+    assert group.exit_intent is None
+    assert group.valid_until == short_valid_until
+
+
 @pytest.mark.asyncio
 async def test_create_and_get_multi_rung(db_session):
     svc = OrderProposalsService(db_session)
@@ -2596,3 +2725,206 @@ async def test_list_expiry_candidates_is_read_only_preview(db_session):
     unchanged, rungs = await service.get_proposal(group.proposal_id)
     assert unchanged.lifecycle_state == "proposed"
     assert [r.state for r in rungs] == ["pending_approval"]
+
+
+# -- ROB-929: expired/voided defensive proposal handoff surface -------------
+#
+# ``lifecycle_state``/``valid_until`` transitions accept a fictional business
+# ``now``, but ``updated_at`` is DB ``onupdate=func.now()`` -- the real wall
+# clock -- unless explicitly overridden. Every test below stamps
+# ``updated_at`` directly after the transition so the `hours` filter is
+# deterministic regardless of when the suite actually runs.
+
+_HANDOFF_NOW = datetime(2026, 7, 21, 1, 0, tzinfo=UTC)
+_HANDOFF_RECENT = datetime(2026, 7, 21, 0, 30, tzinfo=UTC)  # 30min before _HANDOFF_NOW
+
+
+async def _create_defensive_rung(
+    db_session,
+    *,
+    symbol: str,
+    exit_intent: str = "defensive_trim",
+    market: str = "equity_us",
+    account_mode: str = "kis_live",
+):
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol=symbol,
+        market=market,
+        account_mode=account_mode,
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "sell", Decimal("1"), Decimal("100"), None)],
+        exit_intent=exit_intent,
+        valid_until=datetime(2026, 7, 20, 0, 0, tzinfo=UTC),
+    )
+    await db_session.commit()
+    return service, group
+
+
+@pytest.mark.asyncio
+async def test_expired_defensive_handoff_includes_expired_defensive_trim(db_session):
+    service, group = await _create_defensive_rung(db_session, symbol="HANDOFF_EXP")
+    assert await service.expire_if_needed(group.proposal_id, now=_HANDOFF_RECENT)
+    group.updated_at = _HANDOFF_RECENT
+    await db_session.commit()
+
+    items = await service.list_expired_defensive_handoff(now=_HANDOFF_NOW, hours=24)
+
+    matching = [item for item in items if item.proposal_id == group.proposal_id]
+    assert len(matching) == 1
+    assert matching[0].symbol == "HANDOFF_EXP"
+    assert matching[0].side == "sell"
+    assert matching[0].exit_intent == "defensive_trim"
+    assert matching[0].lifecycle_state == "expired"
+    assert matching[0].needs_reassessment is True
+
+
+@pytest.mark.asyncio
+async def test_expired_defensive_handoff_includes_voided_loss_cut(
+    db_session, monkeypatch
+):
+    async def fake_lookup(session, retrospective_id):
+        return _retro(symbol="HANDOFF_VOID", created_at=_HANDOFF_RECENT)
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="HANDOFF_VOID",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "sell", Decimal("1"), Decimal("65000"), None)],
+        exit_intent="loss_cut",
+        exit_reason="stop_loss",
+        retrospective_id=42,
+        now=_HANDOFF_RECENT,
+    )
+    await db_session.commit()
+    await service.void_proposal(
+        group.proposal_id, reason="operator abort", now=_HANDOFF_RECENT
+    )
+    group.updated_at = _HANDOFF_RECENT
+    await db_session.commit()
+
+    items = await service.list_expired_defensive_handoff(now=_HANDOFF_NOW, hours=24)
+
+    matching = [item for item in items if item.proposal_id == group.proposal_id]
+    assert len(matching) == 1
+    assert matching[0].lifecycle_state == "voided"
+    assert matching[0].exit_intent == "loss_cut"
+
+
+@pytest.mark.asyncio
+async def test_expired_defensive_handoff_excludes_general_expired_proposal(db_session):
+    service, group = await _create_single_rung(db_session, symbol="HANDOFF_GENERAL")
+    group.valid_until = datetime(2026, 7, 20, 0, 0, tzinfo=UTC)
+    await db_session.commit()
+    assert await service.expire_if_needed(group.proposal_id, now=_HANDOFF_RECENT)
+    group.updated_at = _HANDOFF_RECENT
+    await db_session.commit()
+
+    items = await service.list_expired_defensive_handoff(now=_HANDOFF_NOW, hours=24)
+
+    assert group.proposal_id not in {item.proposal_id for item in items}
+
+
+@pytest.mark.asyncio
+async def test_expired_defensive_handoff_excludes_superseded_proposal(db_session):
+    service, group = await _create_defensive_rung(db_session, symbol="HANDOFF_SUPER")
+    assert await service.expire_if_needed(group.proposal_id, now=_HANDOFF_RECENT)
+    group.updated_at = _HANDOFF_RECENT
+    group.superseded_by_proposal_id = uuid.uuid4()
+    await db_session.commit()
+
+    items = await service.list_expired_defensive_handoff(now=_HANDOFF_NOW, hours=24)
+
+    assert group.proposal_id not in {item.proposal_id for item in items}
+
+
+@pytest.mark.asyncio
+async def test_expired_defensive_handoff_excludes_symbol_side_with_active_reproposal(
+    db_session,
+):
+    service, expired_group = await _create_defensive_rung(
+        db_session, symbol="HANDOFF_ACTIVE"
+    )
+    assert await service.expire_if_needed(
+        expired_group.proposal_id, now=_HANDOFF_RECENT
+    )
+    expired_group.updated_at = _HANDOFF_RECENT
+    await db_session.commit()
+    # A fresh re-proposal for the same symbol+side is still active (proposed).
+    await service.create_proposal(
+        symbol="HANDOFF_ACTIVE",
+        market="equity_us",
+        account_mode="kis_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "sell", Decimal("1"), Decimal("110"), None)],
+        exit_intent="defensive_trim",
+        now=_HANDOFF_RECENT,
+    )
+    await db_session.commit()
+
+    items = await service.list_expired_defensive_handoff(now=_HANDOFF_NOW, hours=24)
+
+    assert expired_group.proposal_id not in {item.proposal_id for item in items}
+
+
+@pytest.mark.asyncio
+async def test_expired_defensive_handoff_respects_hours_boundary(db_session):
+    service, in_window = await _create_defensive_rung(
+        db_session, symbol="HANDOFF_HRS_IN"
+    )
+    assert await service.expire_if_needed(in_window.proposal_id, now=_HANDOFF_RECENT)
+    in_window.updated_at = _HANDOFF_NOW - timedelta(hours=24)  # exactly 24h ago
+
+    _, out_of_window = await _create_defensive_rung(
+        db_session, symbol="HANDOFF_HRS_OUT"
+    )
+    assert await service.expire_if_needed(
+        out_of_window.proposal_id, now=_HANDOFF_RECENT
+    )
+    out_of_window.updated_at = (
+        _HANDOFF_NOW - timedelta(hours=24) - timedelta(seconds=1)
+    )  # 1s past 24h
+    await db_session.commit()
+
+    items = await service.list_expired_defensive_handoff(now=_HANDOFF_NOW, hours=24)
+
+    ids = {item.proposal_id for item in items}
+    assert in_window.proposal_id in ids
+    assert out_of_window.proposal_id not in ids
+
+
+@pytest.mark.asyncio
+async def test_expired_defensive_handoff_filters_by_market(db_session):
+    service, us_group = await _create_defensive_rung(
+        db_session, symbol="HANDOFF_US", market="equity_us"
+    )
+    assert await service.expire_if_needed(us_group.proposal_id, now=_HANDOFF_RECENT)
+    us_group.updated_at = _HANDOFF_RECENT
+    _, kr_group = await _create_defensive_rung(
+        db_session,
+        symbol="HANDOFF_KR",
+        market="equity_kr",
+        account_mode="toss_live",
+    )
+    assert await service.expire_if_needed(kr_group.proposal_id, now=_HANDOFF_RECENT)
+    kr_group.updated_at = _HANDOFF_RECENT
+    await db_session.commit()
+
+    items = await service.list_expired_defensive_handoff(
+        now=_HANDOFF_NOW, hours=24, market="equity_kr"
+    )
+
+    ids = {item.proposal_id for item in items}
+    assert kr_group.proposal_id in ids
+    assert us_group.proposal_id not in ids

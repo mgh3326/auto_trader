@@ -12,7 +12,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import TIMESTAMP, Text, cast, func, select
+from sqlalchemy import TIMESTAMP, Text, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -22,6 +22,7 @@ from app.models.order_proposals import (
     OrderProposalApprovalBatchMember,
     OrderProposalRung,
 )
+from app.services.order_proposals.defensive_ttl import DEFENSIVE_EXIT_INTENTS
 
 
 class OrderProposalRepository:
@@ -194,6 +195,49 @@ class OrderProposalRepository:
             .order_by(OrderProposal.id)
         )
         return list((await self._session.execute(stmt)).scalars().all())
+
+    # ROB-929: expired/voided defensive (loss_cut/defensive_trim) proposal
+    # handoff surface. Mirrors ``_EXPIRY_TERMINAL_GROUP_STATES`` above -- once a
+    # group resolves to expired/voided it must not be re-swept, but it IS the
+    # set this handoff reads from (the opposite of the sweep's candidate set).
+    _DEFENSIVE_HANDOFF_TERMINAL_STATES = frozenset({"expired", "voided"})
+
+    async def list_expired_defensive_candidates(
+        self, *, since: datetime, market: str | None
+    ) -> list[OrderProposal]:
+        stmt = (
+            select(OrderProposal)
+            .where(
+                OrderProposal.exit_intent.in_(DEFENSIVE_EXIT_INTENTS),
+                OrderProposal.lifecycle_state.in_(
+                    self._DEFENSIVE_HANDOFF_TERMINAL_STATES
+                ),
+                OrderProposal.updated_at >= since,
+            )
+            .order_by(OrderProposal.updated_at.desc())
+        )
+        if market is not None:
+            stmt = stmt.where(OrderProposal.market == market)
+        return list((await self._session.execute(stmt)).scalars().all())
+
+    async def list_active_symbol_sides(
+        self, pairs: list[tuple[str, str]]
+    ) -> set[tuple[str, str]]:
+        """Return the (symbol, side) pairs among ``pairs`` with a still-active
+        (non-terminal) proposal -- used to suppress handoff noise for symbols
+        that already have a live re-proposal in flight."""
+        if not pairs:
+            return set()
+        conditions = [
+            (OrderProposal.symbol == symbol) & (OrderProposal.side == side)
+            for symbol, side in pairs
+        ]
+        stmt = select(OrderProposal.symbol, OrderProposal.side).where(
+            or_(*conditions),
+            OrderProposal.lifecycle_state.not_in(self._EXPIRY_TERMINAL_GROUP_STATES),
+        )
+        rows = (await self._session.execute(stmt)).all()
+        return {(row[0], row[1]) for row in rows}
 
     async def list_local_stale_candidates(
         self,

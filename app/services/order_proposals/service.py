@@ -29,6 +29,10 @@ from app.models.order_proposals import (
 from app.models.review import TossLiveOrderLedger
 from app.services.order_proposals import state_machine as sm
 from app.services.order_proposals.broker_gateway import SUPPORTED_TARGET_ACTIONS
+from app.services.order_proposals.defensive_ttl import (
+    DEFENSIVE_EXIT_INTENTS,
+    resolve_defensive_valid_until,
+)
 from app.services.order_proposals.errors import (
     OrderProposalError,
     OrderProposalNotFound,
@@ -86,6 +90,27 @@ class ExpirySweepResult:
     symbol: str
     chat_id: str | None
     message_id: int | None
+
+
+@dataclass(frozen=True)
+class ExpiredDefensiveProposal:
+    """One expired/voided loss_cut/defensive_trim proposal for handoff (ROB-929).
+
+    ``needs_reassessment`` is always ``True`` -- every entry in this list is,
+    by construction, a defensive proposal that died without a human decision
+    and needs a fresh current-price judgment next session.
+    """
+
+    proposal_id: uuid.UUID
+    symbol: str
+    side: str
+    market: str
+    exit_intent: str
+    lifecycle_state: str
+    limit_price: Decimal | None
+    valid_until: datetime | None
+    expired_or_voided_at: datetime
+    needs_reassessment: bool = True
 
 
 # (account_mode, market) combinations the submit path
@@ -323,6 +348,11 @@ class OrderProposalsService:
             merged_source_asof["target_order_snapshot"] = normalized_target_snapshot
         now = now or datetime.now(UTC)
         self._require_timezone_aware(now)
+        defensive_floor = (
+            resolve_defensive_valid_until(market, now)
+            if exit_intent in DEFENSIVE_EXIT_INTENTS
+            else None
+        )
         if valid_until is None:
             valid_until = (now.astimezone(KST) + timedelta(days=1)).replace(
                 hour=0, minute=0, second=0, microsecond=0
@@ -331,6 +361,12 @@ class OrderProposalsService:
             self._require_timezone_aware(valid_until)
             if valid_until <= now:
                 raise OrderProposalError("valid_until must be in the future")
+        # ROB-929: loss_cut/defensive_trim proposals must stay approvable through
+        # the next observed Telegram approval window -- this only raises a
+        # too-short valid_until (default or caller-supplied) up to that window's
+        # end; a caller-supplied longer window is left untouched.
+        if defensive_floor is not None and valid_until < defensive_floor:
+            valid_until = defensive_floor
         await self._validate_exit_binding(
             symbol=symbol,
             market=market,
@@ -455,8 +491,22 @@ class OrderProposalsService:
             if any(value is not None for value in supporting):
                 raise OrderProposalError("exit binding fields require exit_intent")
             return
+        if exit_intent == "defensive_trim":
+            # ROB-929: defensive_trim is a lighter-weight defensive tag than
+            # loss_cut -- no retrospective evidence is required (it isn't a
+            # sanctioned stop-loss exit), only that it's a sell on a supported
+            # live account/market so the TTL floor above actually applies to it.
+            if side != "sell":
+                raise OrderProposalError("defensive_trim requires side='sell'")
+            if (account_mode, market) not in _SUBMITTABLE_ACCOUNT_MODE_MARKETS:
+                raise OrderProposalError(
+                    "defensive_trim requires a supported live account and market"
+                )
+            return
         if exit_intent != "loss_cut":
-            raise OrderProposalError("unknown exit_intent (only 'loss_cut')")
+            raise OrderProposalError(
+                "unknown exit_intent (only 'loss_cut', 'defensive_trim')"
+            )
 
         errors: list[str] = []
         if exit_reason not in _LOSS_CUT_EXIT_REASONS:
@@ -1700,6 +1750,57 @@ class OrderProposalsService:
                     symbol=group.symbol,
                     chat_id=source_asof.get("approval_chat_id"),
                     message_id=source_asof.get("approval_message_id"),
+                )
+            )
+        return results
+
+    async def list_expired_defensive_handoff(
+        self, *, now: datetime, hours: int = 24, market: str | None = None
+    ) -> list[ExpiredDefensiveProposal]:
+        """Read-only handoff list of recently expired/voided defensive proposals.
+
+        ROB-929: 07-15 US 방어 제안 6건이 미응답 만료되고 다음 세션이 같은 판단을
+        처음부터 재구축했다 -- this surfaces exactly the loss_cut/defensive_trim
+        proposals that died without a decision so a session prompt can force a
+        current-price re-judgment instead of silently forgetting them. Noise
+        suppression: a group already superseded, or sharing a symbol+side with
+        a still-active (non-terminal) proposal, is dropped -- both mean the
+        decision has already moved on and re-surfacing it would just be noise.
+        """
+        self._require_timezone_aware(now)
+        since = now - timedelta(hours=hours)
+        candidates = await self._repo.list_expired_defensive_candidates(
+            since=since, market=market
+        )
+        eligible = [
+            group for group in candidates if group.superseded_by_proposal_id is None
+        ]
+        active_pairs = await self._repo.list_active_symbol_sides(
+            [(group.symbol, group.side) for group in eligible]
+        )
+
+        results: list[ExpiredDefensiveProposal] = []
+        for group in eligible:
+            if (group.symbol, group.side) in active_pairs:
+                continue
+            rungs = await self._repo.list_rungs(group.id)
+            limit_price = next(
+                (rung.limit_price for rung in rungs if rung.limit_price is not None),
+                None,
+            )
+            results.append(
+                ExpiredDefensiveProposal(
+                    proposal_id=group.proposal_id,
+                    symbol=group.symbol,
+                    side=group.side,
+                    market=group.market,
+                    exit_intent=str(group.exit_intent),
+                    lifecycle_state=group.lifecycle_state,
+                    limit_price=(
+                        Decimal(str(limit_price)) if limit_price is not None else None
+                    ),
+                    valid_until=group.valid_until,
+                    expired_or_voided_at=group.updated_at,
                 )
             )
         return results

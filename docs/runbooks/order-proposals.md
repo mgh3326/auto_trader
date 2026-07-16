@@ -322,6 +322,40 @@ broker state: rungs at or after submit (`submitting`, `acked`, `resting`, or
 
 ---
 
+## ROB-929 Defensive Proposal TTL Floor + Expiry Handoff
+
+07-15 US 방어 제안 6건(GOOGL/XOM/AMZN/CRM 트림 + ORCL/AEM 매수) expired unanswered —
+`valid_until` had already passed by the time anyone looked at Telegram, and the
+next session rebuilt the same judgment from scratch instead of being told it
+had died.
+
+- **`exit_intent="defensive_trim"`** is now accepted alongside `"loss_cut"`.
+  Unlike `loss_cut` it requires no retrospective evidence — only `side="sell"`
+  and a supported live `account_mode`/`market` combination (the same set as
+  `loss_cut`). It exists so a sell-side risk-reduction ("trim") proposal can be
+  tagged and get the TTL floor below without impersonating a sanctioned
+  stop-loss exit.
+- **Approval-window TTL floor.** For `exit_intent in {"loss_cut",
+  "defensive_trim"}`, `create_proposal` raises a too-short `valid_until`
+  (default or caller-supplied) up to the end of the next observed Telegram
+  approval-activity window — it never shortens a longer caller-supplied value.
+  Windows are defined once in `app/services/order_proposals/defensive_ttl.py`:
+  US `22:30-23:30 KST` (07-15 research); KR `08:10-09:30 KST` plus a shorter
+  `12:00-12:15 KST` noon check-in (the noon window's exact width wasn't in the
+  07-15 record — this is a conservative, operator-adjustable default). Markets
+  without a defined window (e.g. `crypto`) are unaffected.
+- **`order_proposal_list_expired_defensive(hours=24, market=None)`** — new
+  read-only MCP tool. Lists `loss_cut`/`defensive_trim` proposals that expired
+  or were voided in the last `hours` (max 720) without a human decision, each
+  flagged `needs_reassessment=true`. Noise suppression: a proposal already
+  superseded, or sharing a `symbol`+`side` with a still-active (non-terminal)
+  proposal, is dropped — either means the decision already moved on. Reuses
+  ROB-897's `updated_at`/lifecycle-state plumbing; adds no new sweep, no new
+  notification path, and never mutates a broker. Wiring this into a
+  session-start prompt is an orch/Hermes-side decision, out of scope here.
+
+---
+
 ## ROB-832 Replace and Cancel Actions
 
 `order_proposal_create` now accepts `action="place"` (the default) and

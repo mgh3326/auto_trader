@@ -48,6 +48,7 @@ ORDER_PROPOSAL_TOOL_NAMES: set[str] = {
     "order_proposal_list",
     "order_proposal_void",
     "order_proposal_expire_sweep",
+    "order_proposal_list_expired_defensive",
 }
 
 _MARKET_ALIASES = {"kr": "equity_kr", "us": "equity_us"}
@@ -540,6 +541,56 @@ async def order_proposal_expire_sweep(dry_run: bool = True) -> dict[str, Any]:
         return {"success": False, "error": str(exc)}
 
 
+async def order_proposal_list_expired_defensive(
+    hours: int = 24, market: str | None = None
+) -> dict[str, Any]:
+    """List recently expired/voided defensive (loss_cut/defensive_trim) proposals.
+
+    ROB-929: 07-15 US 방어 제안 6건이 미응답 만료되고 다음 세션이 같은 판단을
+    처음부터 재구축했다. This forces that handoff -- a session-start check can
+    call this and, for anything returned, re-judge at the current price instead
+    of silently letting the same setup die again. Noise suppression: a group
+    already superseded, or sharing a symbol+side with a still-active
+    (non-terminal) proposal, is dropped. Read-only; not a broker mutation and
+    never sends anything.
+    """
+    try:
+        now = now_kst()
+        bounded_hours = max(1, min(int(hours), 24 * 30))
+        async with AsyncSessionLocal() as session:
+            service = OrderProposalsService(session)
+            items = await service.list_expired_defensive_handoff(
+                now=now, hours=bounded_hours, market=market
+            )
+        return {
+            "success": True,
+            "hours": bounded_hours,
+            "market": market,
+            "count": len(items),
+            "proposals": [
+                {
+                    "proposal_id": str(item.proposal_id),
+                    "symbol": item.symbol,
+                    "side": item.side,
+                    "market": item.market,
+                    "exit_intent": item.exit_intent,
+                    "lifecycle_state": item.lifecycle_state,
+                    "limit_price": (
+                        str(item.limit_price) if item.limit_price is not None else None
+                    ),
+                    "valid_until": (
+                        item.valid_until.isoformat() if item.valid_until else None
+                    ),
+                    "expired_or_voided_at": item.expired_or_voided_at.isoformat(),
+                    "needs_reassessment": item.needs_reassessment,
+                }
+                for item in items
+            ],
+        }
+    except (ValueError, OrderProposalError) as exc:
+        return {"success": False, "error": str(exc)}
+
+
 def register_order_proposal_tools(mcp: FastMCP) -> None:
     """Register the order_proposals read/create/void MCP tools.
 
@@ -587,6 +638,17 @@ def register_order_proposal_tools(mcp: FastMCP) -> None:
             "cleans up the Telegram approval message for each expired group."
         ),
     )(order_proposal_expire_sweep)
+    _ = mcp.tool(
+        name="order_proposal_list_expired_defensive",
+        description=(
+            "Read-only handoff list of loss_cut/defensive_trim proposals that "
+            "expired or were voided in the last `hours` (default 24, max 720) "
+            "without a human decision, optionally filtered by market. Excludes "
+            "proposals already superseded or sharing a symbol+side with a "
+            "still-active proposal. Every entry needs a fresh current-price "
+            "re-judgment (needs_reassessment=true) -- NOT a broker mutation."
+        ),
+    )(order_proposal_list_expired_defensive)
 
 
 __all__ = [
@@ -595,6 +657,7 @@ __all__ = [
     "order_proposal_expire_sweep",
     "order_proposal_get",
     "order_proposal_list",
+    "order_proposal_list_expired_defensive",
     "order_proposal_void",
     "register_order_proposal_tools",
     "run_order_proposal_expire_sweep",
