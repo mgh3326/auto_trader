@@ -63,6 +63,12 @@ MOCK_APP_KEY = "test-mock-app-key-ROB892"
 # Small measurement tolerance for server-enforced gaps (covers scheduling +
 # monotonic-clock noise). Tight enough to actually guarantee interval + margin.
 _TIMING_TOLERANCE = 0.03
+# Cross-process tolerance for the multiprocessing gap test. The admit gap is
+# Redis-SERVER-enforced (>= interval + margin); the only noise is cross-process
+# scheduling jitter waking the next admitted child (milliseconds). Kept well
+# below the configured safety margin so the test proves the margin, not just the
+# bare interval.
+_MP_TIMING_TOLERANCE = 0.02
 
 
 # ---------------------------------------------------------------------------
@@ -815,10 +821,11 @@ def test_multiprocessing_kr_buy_sell_read_share_budget(real_redis: _RealRedis):
     assert total == 3, f"expected 3 dispatches, got {total}"
     all_starts.sort()
     gaps = [all_starts[i] - all_starts[i - 1] for i in range(1, len(all_starts))]
-    # CR10: adjacent starts must meet interval + margin (only small tolerance),
-    # not just the bare interval.
+    # CR10: adjacent starts must meet interval + margin with only a small
+    # cross-process tolerance — NOT the full margin — so the safety margin is
+    # actually proven (gap is Redis-server-enforced at >= interval + margin).
     for g in gaps:
-        assert g >= interval + margin - 0.05, (
+        assert g >= interval + margin - _MP_TIMING_TOLERANCE, (
             f"cross-PID burst: gap {g:.3f}s < {interval + margin}s"
         )
 
@@ -1242,6 +1249,287 @@ async def test_half_open_probe_released_on_pre_send_freshness(
 def real_redis_url_unused() -> str:
     """A placeholder URL for breaker tests whose gate is never contacted."""
     return "redis://127.0.0.1:1/0"
+
+
+# ===========================================================================
+# Section 8 — ownership/stale-release + 3-phase cancellation + decoder [1,+]
+#            + urlsplit robustness (final runtime review)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_decoder_rejects_admit_with_positive_retry(real_redis: _RealRedis):
+    """CR2: the Lua success shape is exactly [1, 0]; [1, positive] must fail."""
+    gate = _make_gate(real_redis.url)
+    scope = build_vts_gate_scope_key(host=MOCK_HOST, app_key="admitpos")
+    try:
+        for raw in ([1, 999], [1, -1]):
+            fake_client = MagicMock()
+            fake_client.execute_command = AsyncMock(return_value=raw)
+            gate._get_redis = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+            with pytest.raises(DistributedGateUnavailable):
+                await gate.acquire(scope, call_class="order")
+    finally:
+        await gate.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_stale_release_never_releases_other_probe_lease():
+    """P1: an older request's lease token cannot release the current probe owner."""
+    cb, _clock = _breaker_open_past_cooldown()
+    # Simulate the dispatch wrapper handing out the probe to request B.
+    lease_b = cb.before_request()  # HALF_OPEN, owner=lease_b, probe in flight
+    assert cb.state == "half_open" and cb._probe_in_flight is True
+
+    # An OLDER request A (admitted earlier in CLOSED) is cancelled/aborted and
+    # tries to release with its own stale token — must be a no-op.
+    stale_token_a = lease_b - 1  # any different token
+    cb.release_probe(stale_token_a)
+    assert cb._probe_in_flight is True  # B's lease intact
+    # A fresh third request must still be blocked (stampede guard).
+    from app.services.brokers.kis.circuit_breaker import KISCircuitOpen
+
+    with pytest.raises(KISCircuitOpen):
+        cb.before_request()
+    # Only the true owner can release.
+    cb.release_probe(lease_b)
+    assert cb._probe_in_flight is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_stale_outcome_does_not_close_half_open_generation():
+    """A stale request's record_success must NOT close the current probe generation."""
+    cb, _clock = _breaker_open_past_cooldown()
+    lease_b = cb.before_request()
+    stale_a = lease_b - 1
+    cb.record_success(stale_a)  # stale -> no-op
+    assert cb.state == "half_open"
+    assert cb._probe_in_flight is True
+    cb.record_success(lease_b)  # owner -> closes
+    assert cb.state == "closed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_stale_outcome_does_not_reopen_half_open_generation():
+    """A stale request's record_failure must NOT re-open the current generation."""
+    cb, _clock = _breaker_open_past_cooldown()
+    lease_b = cb.before_request()
+    stale_a = lease_b - 1
+    cb.record_failure(stale_a)  # stale -> no-op
+    assert cb.state == "half_open"
+    assert cb._probe_in_flight is True
+    cb.record_failure(lease_b)  # owner -> re-open
+    assert cb.state == "open"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_closed_failure_threshold_semantics_preserved():
+    """CLOSED consecutive-failure counting stays token-agnostic (N-strike trip)."""
+    cb, _clock = _breaker_open_past_cooldown()  # currently OPEN (2 strikes)
+    # Drive CLOSED counting: reset, then fail without/with arbitrary tokens.
+    cb.reset()
+    assert cb.state == "closed"
+    cb.record_failure(123)  # arbitrary token, CLOSED -> counts
+    cb.record_failure(None)
+    assert cb.failure_count == 2  # threshold reached -> OPEN
+    assert cb.state == "open"
+
+
+@pytest.mark.unit
+def test_reset_does_not_roll_back_generation():
+    """reset must not reuse old tokens (the monotonic counter keeps advancing)."""
+    cb, _clock = _breaker_open_past_cooldown()
+    lease_before = cb.before_request if cb.state != "open" else None
+    cb.reset()
+    # After reset, a fresh before_request in CLOSED yields a NEW token strictly
+    # greater than any earlier one (old permits can never collide).
+    t = cb.before_request()
+    assert t > 0
+    # release_probe with the pre-reset token is a no-op (state is CLOSED now).
+    cb.release_probe(t)
+    assert cb.state == "closed"
+    del lease_before
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_cancellation_after_http_started_reopens_breaker(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Phase 2: owner cancelled mid-HTTP (no response) -> re-OPEN + cooldown."""
+    cb, _clock = _breaker_open_past_cooldown()
+    monkeypatch.setattr(
+        "app.services.brokers.kis.base.get_kis_circuit_breaker", lambda: cb
+    )
+
+    gate = _make_gate("redis://127.0.0.1:1/0")
+    client = _UnitDispatchClient(gate)
+    hang = asyncio.Event()
+
+    async def _hanging_http(*args: Any, **kwargs: Any) -> Any:  # type: ignore[override]
+        client.http_calls += 1
+        await hang.wait()  # never resolves -> cancelled mid-HTTP
+        return MagicMock(status_code=200, headers={}, json=lambda: {"rt_cd": "0"})
+
+    client._execute_http_request = _hanging_http  # type: ignore[assignment]
+    try:
+        task = asyncio.create_task(
+            client._request_with_rate_limit_with_headers(
+                "GET",
+                f"https://{LIVE_HOST}/uapi/quotations/inquire-price",
+                headers={"appkey": "live-key", "authorization": "Bearer t"},
+                timeout=5.0,
+                api_name="inquire_price",
+                tr_id="FHKST01010100",
+            )
+        )
+        await asyncio.sleep(0.1)  # let it reach the hanging HTTP (http_started=True)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert client.http_calls == 1  # HTTP did start
+        assert cb.state == "open"  # phase 2 -> re-opened + cooldown
+    finally:
+        hang.set()
+        await gate.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_cancellation_after_response_seen_closes_breaker(
+    monkeypatch: pytest.MonkeyPatch,
+    real_redis: _RealRedis,
+):
+    """Phase 3: cancelled during retry sleep after a response -> reachable -> CLOSED."""
+    cb, _clock = _breaker_open_past_cooldown()
+    monkeypatch.setattr(
+        "app.services.brokers.kis.base.get_kis_circuit_breaker", lambda: cb
+    )
+
+    gate = _make_gate(real_redis.url)
+    client = _UnitDispatchClient(gate)
+
+    async def _then_429(*args: Any, **kwargs: Any) -> Any:  # type: ignore[override]
+        client.http_calls += 1
+        resp = MagicMock()
+        resp.status_code = 429
+        resp.headers = {"Retry-After": "5"}  # long retry sleep -> cancelled here
+        resp.json.return_value = {"rt_cd": "1", "msg_cd": "429"}
+        return resp
+
+    client._execute_http_request = _then_429  # type: ignore[assignment]
+    try:
+        task = asyncio.create_task(
+            client._request_with_rate_limit_with_headers(
+                "GET",
+                f"https://{LIVE_HOST}/uapi/quotations/inquire-price",
+                headers={"appkey": "live-key", "authorization": "Bearer t"},
+                timeout=5.0,
+                api_name="inquire_price",
+                tr_id="FHKST01010100",
+            )
+        )
+        await asyncio.sleep(0.15)  # response received, now in retry sleep
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert client.http_calls == 1  # response was seen
+        assert cb.state == "closed"  # phase 3 -> reachable -> CLOSED
+    finally:
+        await gate.close()
+
+
+class _MalformedMockSettings(_UnitMockSettings):
+    kis_mock_base_url = "http://["  # invalid IPv6 -> urlsplit raises ValueError
+    kis_base_url = f"https://{LIVE_HOST}"
+
+
+class _MalformedLiveClient(_UnitDispatchClient):
+    """Live client whose ``kis_mock_base_url`` is malformed (must not break live)."""
+
+    @property
+    def _settings(self) -> Any:  # type: ignore[override]
+        return _MalformedMockSettings()
+
+
+class _ExplicitMockMalformedClient(_UnitDispatchClient):
+    """Explicit mock client (``_is_mock_client``) with a malformed request URL."""
+
+    _is_mock_client = True
+
+    @property
+    def _settings(self) -> Any:  # type: ignore[override]
+        return _MalformedMockSettings()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_malformed_mock_base_url_does_not_break_live_request(
+    monkeypatch: pytest.MonkeyPatch, real_redis: _RealRedis
+):
+    """Fix 3: a malformed kis_mock_base_url must NOT break a valid live request
+    and must not move the breaker (no ValueError reaches the outer handler)."""
+    cb = KISCircuitBreaker(settings_obj=_BreakerSettings())
+    monkeypatch.setattr(
+        "app.services.brokers.kis.base.get_kis_circuit_breaker", lambda: cb
+    )
+
+    gate = _make_gate(real_redis.url)
+    claim_spy = AsyncMock(wraps=gate._claim)
+    gate._claim = claim_spy  # type: ignore[method-assign]
+    client = _MalformedLiveClient(gate)
+    try:
+        await client._request_with_rate_limit_with_headers(
+            "GET",
+            f"https://{LIVE_HOST}/uapi/quotations/inquire-price",
+            headers={"appkey": "live-key", "authorization": "Bearer t"},
+            timeout=5.0,
+            api_name="inquire_price",
+            tr_id="FHKST01010100",
+        )
+        assert client.http_calls == 1
+        claim_spy.assert_not_awaited()
+        assert cb.state == "closed"
+    finally:
+        await gate.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_malformed_mock_request_failcloses_without_breaker_move(
+    monkeypatch: pytest.MonkeyPatch, real_redis: _RealRedis
+):
+    """Fix 3: an explicit-mock dispatch whose URL is malformed fails CLOSED (DGU),
+    HTTP=0, and the breaker is NOT mistaken as KIS-reachable (stays HALF_OPEN)."""
+    cb, _clock = _breaker_open_past_cooldown()
+    monkeypatch.setattr(
+        "app.services.brokers.kis.base.get_kis_circuit_breaker", lambda: cb
+    )
+
+    gate = _make_gate(real_redis.url)
+    client = _ExplicitMockMalformedClient(gate)
+    try:
+        with pytest.raises(DistributedGateUnavailable, match="host"):
+            await client._request_with_rate_limit_with_headers(
+                "POST",
+                "http://[::1",  # malformed request URL -> urlsplit ValueError
+                headers={"appkey": MOCK_APP_KEY, "authorization": "Bearer t"},
+                json_body={"PDNO": "005930"},
+                timeout=5.0,
+                api_name="order_korea_stock",
+                tr_id="VTTC0802U",
+                retry_request_errors=False,
+                max_retries_override=0,
+            )
+        assert client.http_calls == 0
+        assert cb.state == "half_open"
+    finally:
+        await gate.close()
 
 
 @pytest.fixture(autouse=True)

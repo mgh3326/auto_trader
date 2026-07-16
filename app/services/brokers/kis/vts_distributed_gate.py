@@ -273,14 +273,22 @@ class VTSDistributedGate:
                 f"VTS distributed gate returned non-numeric result for scope "
                 f"{scope_key!r}: {raw!r}"
             ) from exc
-        # Reject anything outside the exact claim protocol: admission must be a
-        # 0/1 bit (a value like 2 must never authorize HTTP), retry_after must be
-        # non-negative, and a denial MUST carry a positive retry (otherwise the
-        # caller would busy-loop Redis). All malformed/corrupt results fail
-        # closed instead of coercing/clamping.
+        # Reject anything outside the exact claim protocol:
+        #   * admission must be a 0/1 bit (a value like 2 must never authorize HTTP);
+        #   * retry_after must be non-negative;
+        #   * an ADMIT (1) MUST carry a zero retry — the Lua success shape is
+        #     exactly [1, 0]; [1, positive] is not a valid admit and is rejected
+        #     so a corrupt result can never authorize HTTP with a stale retry;
+        #   * a DENY (0) MUST carry a positive retry (otherwise busy-loop).
+        # All malformed/corrupt results fail closed instead of coercing/clamping.
         if admitted_value not in (0, 1) or retry_after_ms < 0:
             raise DistributedGateUnavailable(
                 f"VTS distributed gate returned invalid result for scope "
+                f"{scope_key!r}: {raw!r}"
+            )
+        if admitted_value == 1 and retry_after_ms != 0:
+            raise DistributedGateUnavailable(
+                f"VTS distributed gate admitted with non-zero retry for scope "
                 f"{scope_key!r}: {raw!r}"
             )
         if admitted_value == 0 and retry_after_ms == 0:

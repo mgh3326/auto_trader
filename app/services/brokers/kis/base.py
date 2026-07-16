@@ -177,8 +177,11 @@ class BaseKISClient:
         * Live or custom test host, or non-string (MagicMock) settings/URL →
           return None so Redis is contacted zero times.
 
-        The scope key is the request netloc plus a non-reversible sha256
-        fingerprint of the ``appkey`` header — never the raw credential.
+        Robust against malformed URLs: a ``urlsplit`` ``ValueError`` (e.g. an
+        invalid IPv6 ``kis_mock_base_url``) is absorbed — it never leaks as a
+        generic exception that the outer breaker would mistake for KIS
+        reachability. A malformed mock config fails CLOSED for mock dispatch but
+        must NOT break a valid live request.
         """
         from urllib.parse import urlsplit
 
@@ -186,16 +189,22 @@ class BaseKISClient:
             build_vts_gate_scope_key,
         )
 
-        is_mock_client = bool(getattr(self, "_is_mock_client", False))
+        is_mock_client = getattr(self, "_is_mock_client", False) is True
 
         mock_base = getattr(self._settings, "kis_mock_base_url", "")
         mock_netloc = ""
         if isinstance(mock_base, str):
-            mock_netloc = urlsplit(mock_base.rstrip("/")).netloc.lower()
+            try:
+                mock_netloc = urlsplit(mock_base.rstrip("/")).netloc.lower()
+            except ValueError:
+                mock_netloc = ""  # malformed mock base -> treated as unscopable
 
         request_netloc = ""
         if isinstance(url, str):
-            request_netloc = urlsplit(url).netloc.lower()
+            try:
+                request_netloc = urlsplit(url).netloc.lower()
+            except ValueError:
+                request_netloc = ""  # malformed request URL -> handled below
 
         targets_mock_host = bool(request_netloc) and (
             (bool(mock_netloc) and request_netloc == mock_netloc)
@@ -203,16 +212,18 @@ class BaseKISClient:
         )
 
         if not (is_mock_client or targets_mock_host):
-            # Not a mock dispatch (live host, custom test host, or MagicMock
-            # unit-test settings/url) -> gate is a no-op, Redis untouched.
+            # Live host, custom test host, MagicMock unit-test settings/url, or
+            # a malformed mock config for a non-mock request -> gate is a no-op,
+            # Redis untouched. A malformed mock_base_url must NOT break live.
             return None
 
-        # Mock dispatch: fail-closed if the scope cannot be built safely rather
-        # than letting the request through unthrottled (fail-open).
+        # Mock dispatch: fail closed if the scope cannot be built safely rather
+        # than letting the request through unthrottled (fail-open) or leaking a
+        # ValueError that the breaker would mistake for KIS reachability.
         if not request_netloc:
             raise DistributedGateUnavailable(
-                "KIS mock dispatch URL has no host; cannot scope the "
-                "distributed gate (HTTP=0 fail-closed)"
+                "KIS mock dispatch URL has no host (or is malformed); cannot "
+                "scope the distributed gate (HTTP=0 fail-closed)"
             )
         app_key = str(headers.get("appkey") or "") if isinstance(headers, dict) else ""
         if not app_key:
@@ -388,10 +399,19 @@ class BaseKISClient:
             KeyError: If response doesn't contain access_token.
         """
         breaker = get_kis_circuit_breaker()
-        breaker.before_request()  # OUTSIDE the classify try/except (ROB-699 invariant)
+        # ROB-699 invariant preserved: the breaker check stays OUTSIDE the
+        # classify try/except so a KISCircuitOpen propagates unclassified. The
+        # lease token + cancellation-phase contract (ROB-892) is applied here
+        # too so a cancelled token POST is not misclassified as KIS-reachable.
+        # OAuth token issuance is intentionally NOT routed through the VTS Redis
+        # gate (separate /oauth2/token endpoint/quota).
+        lease = breaker.before_request()
+        http_started = False
+        response_seen = False
         try:
             token_timeout = self._token_request_timeout()
             cli = await self._ensure_client(timeout=token_timeout)
+            http_started = True
             r = await cli.post(
                 self._kis_url("/oauth2/token"),
                 data={
@@ -401,16 +421,27 @@ class BaseKISClient:
                 },
                 timeout=token_timeout,
             )
+            response_seen = True
             response = r.json()
             access_token = response["access_token"]
             expires_in = response.get("expires_in", 3600)
+        except asyncio.CancelledError:
+            if response_seen:
+                breaker.record_reachable_error(lease)
+            elif http_started:
+                breaker.record_failure(lease)
+            else:
+                breaker.release_probe(lease)
+            raise
         except BaseException as exc:  # noqa: BLE001 — classify then re-raise unchanged
             if is_kis_connect_failure(exc):
-                breaker.record_failure()  # connect/read outage -> trips after N
+                breaker.record_failure(lease)  # connect/read outage -> trips after N
             else:
-                breaker.record_reachable_error()  # KIS responded (401/KeyError/JSON) — no trip
+                breaker.record_reachable_error(
+                    lease
+                )  # KIS responded (401/KeyError/JSON)
             raise
-        breaker.record_success()
+        breaker.record_success(lease)
         logging.info("KIS 새 토큰 발급 완료")
         return access_token, expires_in
 
@@ -579,7 +610,18 @@ class BaseKISClient:
         ~0ms. Closed = pure passthrough. See ``circuit_breaker.py``.
         """
         breaker = get_kis_circuit_breaker()
-        breaker.before_request()  # raises KISCircuitOpen when open — 0 HTTP, 0 wait
+        # before_request returns an opaque lease token identifying THIS request.
+        # On a pre-dispatch abort we release ONLY this request's lease, so an
+        # old request can never release another request's HALF_OPEN probe (P1).
+        lease = breaker.before_request()
+        # Cancellation-phase contract: the breaker outcome for a CancelledError
+        # depends on how far THIS dispatch progressed. ``send_outcome`` is None
+        # for reads/token, so an internal phase holder is threaded through the
+        # retry loop (monotonic high-water marks) and read on cancellation:
+        #   * no HTTP started -> HTTP=0, release lease, keep HALF_OPEN;
+        #   * HTTP started, no response -> outcome unknown -> re-OPEN + cooldown;
+        #   * response seen -> KIS reachable -> CLOSED.
+        phase = {"http_started": False, "response_seen": False}
         try:
             result = await self._dispatch_rate_limited_with_headers(
                 method,
@@ -594,31 +636,28 @@ class BaseKISClient:
                 max_retries_override=max_retries_override,
                 pre_send_hook=pre_send_hook,
                 send_outcome=send_outcome,
+                _phase=phase,
             )
         except (PreSendFreshnessError, DistributedGateUnavailable):
-            # ROB-843 / ROB-892: these aborted BEFORE any HTTP reached KIS
-            # (mock freshness block / Redis gate failure-or-deadline). They are
-            # not KIS reachability signals, so they must not move the breaker
-            # state or failure count. But ``before_request`` may have handed out
-            # an exclusive HALF_OPEN probe lease; release ONLY that lease so the
-            # next request can probe again (otherwise the breaker stalls open).
-            breaker.release_probe()
+            # Pre-dispatch abort (HTTP=0): release ONLY this request's lease,
+            # never another request's. Keeps HALF_OPEN; does not change state.
+            breaker.release_probe(lease)
             raise
         except asyncio.CancelledError:
-            # A cancellation during the pre-dispatch wait (e.g. mid gate-acquire)
-            # is HTTP=0. It must not be mistaken for KIS reachability (the broad
-            # BaseException handler below would otherwise record_reachable_error
-            # and close a HALF_OPEN probe on a request that never reached KIS).
-            # Release the probe lease only; preserve cancellation semantics.
-            breaker.release_probe()
+            if phase["response_seen"]:
+                breaker.record_reachable_error(lease)
+            elif phase["http_started"]:
+                breaker.record_failure(lease)
+            else:
+                breaker.release_probe(lease)
             raise
         except BaseException as exc:  # noqa: BLE001 — classify then re-raise unchanged
             if is_kis_connect_failure(exc):
-                breaker.record_failure()
+                breaker.record_failure(lease)
             else:
-                breaker.record_reachable_error()
+                breaker.record_reachable_error(lease)
             raise
-        breaker.record_success()
+        breaker.record_success(lease)
         return result
 
     async def _dispatch_rate_limited_with_headers(
@@ -636,6 +675,7 @@ class BaseKISClient:
         max_retries_override: int | None = None,
         pre_send_hook: PreSendHook | None = None,
         send_outcome: OrderSendOutcomeTracker | None = None,
+        _phase: dict[str, bool] | None = None,
     ) -> tuple[dict[str, Any], dict[str, str]]:
         """Like :meth:`_request_with_rate_limit` but also returns response headers.
 
@@ -649,8 +689,15 @@ class BaseKISClient:
             response body. Callers that need that signal use this method; everyone else
             should keep using :meth:`_request_with_rate_limit`.
         """
-        parsed_url = urlparse(url)
-        api_path = parsed_url.path or "/unknown"
+        # ROB-892: classify the VTS scope ONCE, safely, BEFORE any urlparse so a
+        # malformed URL (or a MagicMock unit-test url) cannot leak as a generic
+        # ValueError that the outer breaker would mistake for KIS reachability.
+        # Reused across the retry loop.
+        vts_scope = self._vts_gate_scope(url, headers)
+        try:
+            api_path = urlparse(url).path or "/unknown"
+        except (ValueError, TypeError):
+            api_path = "/unknown"
         api_key = f"{tr_id or 'unknown'}|{api_path}"
 
         rate, period = self._get_rate_limit_for_api(api_key)
@@ -675,15 +722,14 @@ class BaseKISClient:
 
             try:
                 client = await self._ensure_client(timeout=timeout)
-                # ROB-892: distributed admit gate for KIS mock (VTS). The scope
-                # is None for any non-mock host, so live dispatch (and unit
-                # tests using non-mock hosts) contact Redis zero times. For mock
-                # the gate runs the pre_send_hook immediately before its atomic
-                # claim (freshness), rerunning it on contention; after admission
+                # ROB-892: distributed admit gate for KIS mock (VTS). ``vts_scope``
+                # is None for any non-mock host, so live dispatch (and unit tests
+                # using non-mock hosts) contact Redis zero times. For mock the
+                # gate runs the pre_send_hook immediately before its atomic claim
+                # (freshness), rerunning it on contention; after admission
                 # mark_dispatched + HTTP run with no further unbounded wait. A
-                # Redis failure/deadline raises DistributedGateUnavailable
-                # before any HTTP -> mutation HTTP=0 (no fallback).
-                vts_scope = self._vts_gate_scope(url, headers)
+                # Redis failure/deadline raises DistributedGateUnavailable before
+                # any HTTP -> mutation HTTP=0 (no fallback).
                 if vts_scope is not None:
                     await self._await_vts_gate(
                         vts_scope,
@@ -694,6 +740,10 @@ class BaseKISClient:
                     await pre_send_hook()
                 if send_outcome is not None:
                     send_outcome.mark_dispatched()
+                # Cancellation-phase high-water mark: once any HTTP attempt has
+                # started for this dispatch, it stays True across retries.
+                if _phase is not None:
+                    _phase["http_started"] = True
                 response = await self._execute_http_request(
                     client,
                     method,
@@ -703,6 +753,8 @@ class BaseKISClient:
                     json_body=json_body,
                     timeout=timeout,
                 )
+                if _phase is not None:
+                    _phase["response_seen"] = True
                 status_code = _safe_status_code(response)
                 if send_outcome is not None:
                     send_outcome.mark_http_response(status_code)
