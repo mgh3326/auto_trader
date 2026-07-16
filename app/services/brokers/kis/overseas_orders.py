@@ -9,7 +9,6 @@ from app.core.symbol import to_kis_symbol
 
 from . import constants
 from .pre_send import PreSendHook
-from .vts_order_pacer import get_vts_order_pacer
 
 if TYPE_CHECKING:
     from .protocols import KISClientProtocol
@@ -191,9 +190,6 @@ class OverseasOrderClient:
             body.get("ORD_QTY"),
             body.get("OVRS_ORD_UNPR"),
         )
-
-        if is_mock:
-            await get_vts_order_pacer().acquire()
 
         js = await self._parent._request_with_rate_limit(
             "POST",

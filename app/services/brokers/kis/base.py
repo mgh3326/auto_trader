@@ -24,6 +24,11 @@ from app.services.brokers.kis.circuit_breaker import (
 )
 from app.services.brokers.kis.pre_send import PreSendFreshnessError, PreSendHook
 from app.services.brokers.kis.send_outcome import OrderSendOutcomeTracker
+from app.services.brokers.kis.vts_distributed_gate import (
+    DistributedGateUnavailable,
+    VTSDistributedGate,
+    get_vts_distributed_gate,
+)
 from app.services.redis_token_manager import redis_token_manager
 
 
@@ -104,6 +109,10 @@ class BaseKISClient:
         self._unmapped_rate_limit_keys_logged: set[str] = set()
         if type(self)._shared_client_lock is None:
             type(self)._shared_client_lock = asyncio.Lock()
+        # ROB-892: injected distributed admit gate for KIS mock (VTS) calls.
+        # ``None`` means "use the process-wide singleton"; tests override this
+        # to point at a disposable Redis. Live dispatch never reaches acquire().
+        self._vts_gate: VTSDistributedGate | None = None
 
     @property
     def _http_client(self) -> httpx.AsyncClient | None:
@@ -147,6 +156,52 @@ class BaseKISClient:
         if not base_url:
             base_url = "https://openapi.koreainvestment.com:9443"
         return f"{base_url}{path}"
+
+    def _vts_gate_scope(self, url: str, headers: dict[str, str]) -> str | None:
+        """Return the ROB-892 distributed-gate scope key for a mock request.
+
+        ``None`` for any non-mock host (live, or test hosts) so live dispatch
+        contacts Redis zero times. The scope is the request's netloc plus a
+        non-reversible sha256 fingerprint of the ``appkey`` header — never the
+        raw credential.
+        """
+        from urllib.parse import urlsplit
+
+        from app.services.brokers.kis.vts_distributed_gate import (
+            build_vts_gate_scope_key,
+        )
+
+        mock_base = getattr(self._settings, "kis_mock_base_url", "") or ""
+        mock_netloc = urlsplit(mock_base.rstrip("/")).netloc.lower()
+        if not mock_netloc:
+            return None
+        request_netloc = urlsplit(url).netloc.lower()
+        if request_netloc != mock_netloc:
+            return None
+        app_key = str(headers.get("appkey") or "")
+        if not app_key:
+            return None
+        return build_vts_gate_scope_key(host=request_netloc, app_key=app_key)
+
+    async def _await_vts_gate(
+        self,
+        scope_key: str,
+        *,
+        freshness_hook: PreSendHook | None,
+        call_class: str,
+    ) -> None:
+        """Admit one mock request through the distributed gate (ROB-892).
+
+        Uses the injected ``_vts_gate`` when set (tests), otherwise the
+        process-wide singleton. Raises ``DistributedGateUnavailable`` on any
+        Redis failure/deadline — a stable pre-dispatch failure (HTTP=0).
+        """
+        gate = self._vts_gate
+        if gate is None:
+            gate = await get_vts_distributed_gate()
+        await gate.acquire(
+            scope_key, freshness_hook=freshness_hook, call_class=call_class
+        )
 
     async def _get_limiter(self, api_key: str, *, rate: int, period: float) -> Any:
         return await get_limiter("kis", api_key, rate=rate, period=period)
@@ -505,6 +560,10 @@ class BaseKISClient:
             # ROB-843 P1: a mock pre-send freshness block means NO HTTP happened —
             # it is not a KIS reachability signal, so it must not move the breaker.
             raise
+        except DistributedGateUnavailable:
+            # ROB-892: a Redis gate failure/deadline is a pre-dispatch failure
+            # (HTTP=0), not a KIS reachability signal — must not move the breaker.
+            raise
         except BaseException as exc:  # noqa: BLE001 — classify then re-raise unchanged
             if is_kis_connect_failure(exc):
                 breaker.record_failure()
@@ -568,12 +627,22 @@ class BaseKISClient:
 
             try:
                 client = await self._ensure_client(timeout=timeout)
-                # ROB-843 P1: the actual HTTP send boundary. Re-check freshness
-                # here — after token/limiter/client prep and rate-limit wait, and
-                # on EVERY retry/re-send — so a mock scalping BUY never POSTs on a
-                # book that went stale/crossed during those awaits. PreSendFreshness
-                # Error propagates cleanly (zero POST); live passes no hook.
-                if pre_send_hook is not None:
+                # ROB-892: distributed admit gate for KIS mock (VTS). The scope
+                # is None for any non-mock host, so live dispatch (and unit
+                # tests using non-mock hosts) contact Redis zero times. For mock
+                # the gate runs the pre_send_hook immediately before its atomic
+                # claim (freshness), rerunning it on contention; after admission
+                # mark_dispatched + HTTP run with no further unbounded wait. A
+                # Redis failure/deadline raises DistributedGateUnavailable
+                # before any HTTP -> mutation HTTP=0 (no fallback).
+                vts_scope = self._vts_gate_scope(url, headers)
+                if vts_scope is not None:
+                    await self._await_vts_gate(
+                        vts_scope,
+                        freshness_hook=pre_send_hook,
+                        call_class=api_name,
+                    )
+                elif pre_send_hook is not None:
                     await pre_send_hook()
                 if send_outcome is not None:
                     send_outcome.mark_dispatched()

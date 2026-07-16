@@ -12,7 +12,6 @@ from . import constants
 from .base import _log_kis_api_failure
 from .pre_send import PreSendHook
 from .send_outcome import OrderSendOutcomeTracker
-from .vts_order_pacer import get_vts_order_pacer
 
 if TYPE_CHECKING:
     from .protocols import KISClientProtocol
@@ -319,9 +318,6 @@ class DomesticOrderClient:
             f"수량: {quantity}주, 가격: {price if price > 0 else '시장가'}, "
             f"tr_id: {tr_id}, routing: {body['EXCG_ID_DVSN_CD']}"
         )
-
-        if is_mock:
-            await get_vts_order_pacer().acquire()
 
         js = await self._parent._request_with_rate_limit(
             "POST",
