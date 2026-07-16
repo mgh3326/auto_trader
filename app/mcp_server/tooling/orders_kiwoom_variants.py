@@ -33,7 +33,6 @@ from app.services.brokers.kiwoom.normalization import (
     KiwoomMockEvidenceError,
     build_mock_provenance,
     normalize_deposit,
-    normalize_orderable_cash,
     normalize_orders,
     normalize_positions,
     redact_broker_response,
@@ -51,6 +50,14 @@ if TYPE_CHECKING:
 __all__ = ("_derive_broker_success",)
 
 ACCOUNT_MODE_KIWOOM_MOCK = "kiwoom_mock"
+
+# ROB-904 — kt00010 (주문인출가능금액) is unsupported by mockapi.kiwoom.com
+# (return_code=20, RC7006; ROB-891 4-variant probe confirmed this). Cash
+# evidence — with or without a symbol — always comes from kt00001
+# (예수금상세현황) ord_alow_amt now. The symbol-path cash_source is spelled out
+# explicitly so callers can tell the figure is account-level, not order-scoped.
+_CASH_SOURCE_DEPOSIT = "deposit"
+_CASH_SOURCE_DEPOSIT_FALLBACK = "deposit_fallback_kt00010_unsupported"
 
 KIWOOM_MOCK_TOOL_NAMES: set[str] = {
     "kiwoom_mock_preview_order",
@@ -626,19 +633,17 @@ async def _kiwoom_mock_positions_impl(**kwargs: Any) -> dict[str, Any]:
 async def _kiwoom_mock_orderable_cash_impl(**kwargs: Any) -> dict[str, Any]:
     symbol_raw = kwargs.get("symbol")
     symbol = None if symbol_raw is None else normalize_krx_symbol(symbol_raw)
-    side = kwargs.get("side")
-    price = kwargs.get("price")
     cont_yn = kwargs.get("cont_yn")
     next_key = kwargs.get("next_key")
 
-    if symbol is not None:
-        base_source = "orderable_amount"
-        api_id = constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID
-        normalizer = normalize_orderable_cash
-    else:
-        base_source = "deposit"
-        api_id = constants.ACCOUNT_DEPOSIT_API_ID
-        normalizer = normalize_deposit
+    # ROB-904 — kt00010 is mock-unsupported (RC7006), so the symbol path no
+    # longer dispatches to it. Both branches call kt00001 (get_deposit); side
+    # and price are accepted (kwargs) for call-site backcompat only and do not
+    # affect dispatch or the cash value, which is account-level either way.
+    base_source = (
+        _CASH_SOURCE_DEPOSIT_FALLBACK if symbol is not None else _CASH_SOURCE_DEPOSIT
+    )
+    api_id = constants.ACCOUNT_DEPOSIT_API_ID
 
     extra: dict[str, Any] = {
         "cash_source": f"{base_source}_unavailable",
@@ -646,38 +651,12 @@ async def _kiwoom_mock_orderable_cash_impl(**kwargs: Any) -> dict[str, Any]:
     if symbol is not None:
         extra["symbol"] = symbol
 
-    # ROB-891 — Official kt00010 symbol path requires stk_cd, trde_tp, uv.
-    # Reject missing or invalid side/price before any dispatch.
-    if symbol is not None and (
-        side not in ("buy", "sell") or type(price) is not int or price <= 0
-    ):
-        return _stable_read_failure(
-            result_key="cash",
-            result_value=None,
-            api_id=api_id,
-            error="kiwoom_mock_symbol_path_requires_side_and_price",
-            error_detail=(
-                "kt00010 symbol path requires side='buy'|'sell' "
-                f"and a positive int price; got side={side!r}, price={price!r}"
-            ),
-            extra=extra,
-        )
-
     try:
         client = KiwoomMockClient.from_app_settings()
         account_client = KiwoomDomesticAccountClient(cast(Any, client))
-        if symbol is not None:
-            broker_response = await account_client.get_orderable_amount(
-                symbol=symbol,
-                side=side,
-                price=price,
-                cont_yn=cont_yn,
-                next_key=next_key,
-            )
-        else:
-            broker_response = await account_client.get_deposit(
-                cont_yn=cont_yn, next_key=next_key
-            )
+        broker_response = await account_client.get_deposit(
+            cont_yn=cont_yn, next_key=next_key
+        )
     except Exception as exc:  # noqa: BLE001 - MCP tools fail closed with JSON
         return _stable_read_failure(
             result_key="cash",
@@ -714,7 +693,7 @@ async def _kiwoom_mock_orderable_cash_impl(**kwargs: Any) -> dict[str, Any]:
         return response
 
     try:
-        cash = normalizer(broker_response)
+        cash = normalize_deposit(broker_response)
     except KiwoomMockEvidenceError as exc:
         return _stable_read_failure(
             result_key="cash",
@@ -957,13 +936,15 @@ def register(mcp: FastMCP) -> None:
         side: Literal["buy", "sell"] | None = None,
         price: int | None = None,
     ) -> dict[str, Any]:
+        # ROB-904 — cash evidence always resolves via kt00001 now (kt00010 is
+        # mock-unsupported); symbol path is a fallback, not a distinct API.
+        api_id = constants.ACCOUNT_DEPOSIT_API_ID
+        base_source = (
+            _CASH_SOURCE_DEPOSIT_FALLBACK
+            if symbol is not None
+            else _CASH_SOURCE_DEPOSIT
+        )
         if (guard := _mock_config_error()) is not None:
-            if symbol is not None:
-                api_id = constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID
-                cash_source = "orderable_amount_unavailable"
-            else:
-                api_id = constants.ACCOUNT_DEPOSIT_API_ID
-                cash_source = "deposit_unavailable"
             return _stable_read_failure(
                 result_key="cash",
                 result_value=None,
@@ -971,7 +952,7 @@ def register(mcp: FastMCP) -> None:
                 error="kiwoom_mock_config_invalid",
                 error_detail=str(guard["error"]),
                 extra={
-                    "cash_source": cash_source,
+                    "cash_source": f"{base_source}_unavailable",
                     **({"symbol": symbol} if symbol is not None else {}),
                 },
             )
@@ -982,11 +963,11 @@ def register(mcp: FastMCP) -> None:
                 return _stable_read_failure(
                     result_key="cash",
                     result_value=None,
-                    api_id=constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID,
+                    api_id=api_id,
                     error="kiwoom_mock_symbol_invalid",
                     error_detail=str(exc),
                     extra={
-                        "cash_source": "orderable_amount_unavailable",
+                        "cash_source": f"{base_source}_unavailable",
                         "symbol": symbol,
                     },
                 )

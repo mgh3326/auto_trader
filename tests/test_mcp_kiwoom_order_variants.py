@@ -983,17 +983,20 @@ def _patch_preflight_success(monkeypatch, mod) -> None:
 
 
 @pytest.mark.asyncio
-async def test_orderable_cash_with_symbol_calls_orderable_amount(monkeypatch):
+async def test_orderable_cash_with_symbol_calls_deposit_fallback(monkeypatch):
+    # ROB-904 — kt00010 (주문인출가능금액) is unsupported by mockapi (RC7006,
+    # ROB-891 4-variant probe). The symbol path now falls back to kt00001
+    # (예수금상세현황) and must never dispatch kt00010.
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
 
     calls = _patch_fake_kiwoom_account_client(
         monkeypatch,
         mod,
         payloads={
-            "orderable_amount": {
+            "deposit": {
                 "return_code": 0,
                 "return_msg": "정상",
-                "ord_alowa": "1500000",
+                "ord_alow_amt": "1500000",
             },
             "balance": {"return_code": 0},
             "order_status": {"return_code": 0},
@@ -1009,41 +1012,47 @@ async def test_orderable_cash_with_symbol_calls_orderable_amount(monkeypatch):
     assert response["success"] is True
     assert response["source"] == "kiwoom"
     assert response["account_mode"] == "kiwoom_mock"
-    assert response["broker_response"]["ord_alowa"] == "1500000"
+    assert response["broker_response"]["ord_alow_amt"] == "1500000"
     assert response["cash"] == 1500000
-    assert response["cash_source"] == "orderable_amount"
+    assert response["cash_source"] == "deposit_fallback_kt00010_unsupported"
     assert response["symbol"] == "005930"
-    assert response["provenance"]["api_id"] == "kt00010"
+    assert response["provenance"]["api_id"] == "kt00001"
     assert response["provenance"]["host"] == "mockapi.kiwoom.com"
-    # balance/deposit must NOT have been called
-    assert all(c.get("method") not in ("balance", "deposit") for c in calls)
+    # balance/orderable_amount (kt00010) must NOT have been called
+    assert all(c.get("method") not in ("balance", "orderable_amount") for c in calls)
+    assert any(c.get("method") == "deposit" for c in calls)
 
 
 @pytest.mark.asyncio
-async def test_orderable_cash_with_symbol_side_price_sends_trde_tp_and_uv(monkeypatch):
+async def test_orderable_cash_with_symbol_side_price_accepted_but_unused(monkeypatch):
+    # ROB-904 — symbol/side/price are accepted for call-site backcompat but no
+    # longer shape the broker dispatch: the deposit call takes no args derived
+    # from them (kt00010's trde_tp/uv are gone).
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
 
     calls = _patch_fake_kiwoom_account_client(
         monkeypatch,
         mod,
         payloads={
-            "orderable_amount": {
+            "deposit": {
                 "return_code": 0,
-                "ord_alowa": "1500000",
+                "ord_alow_amt": "1500000",
             },
         },
     )
     mcp = DummyMCP()
     _register(mcp)
 
-    await mcp.tools["kiwoom_mock_get_orderable_cash"](
+    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](
         symbol="005930", side="buy", price=70000
     )
 
-    orderable_calls = [c for c in calls if c.get("method") == "orderable_amount"]
-    assert len(orderable_calls) == 1
-    assert orderable_calls[0]["side"] == "buy"
-    assert orderable_calls[0]["price"] == 70000
+    assert response["success"] is True
+    deposit_calls = [c for c in calls if c.get("method") == "deposit"]
+    assert len(deposit_calls) == 1
+    assert "side" not in deposit_calls[0]
+    assert "price" not in deposit_calls[0]
+    assert all(c.get("method") != "orderable_amount" for c in calls)
 
 
 @pytest.mark.asyncio
@@ -1053,9 +1062,6 @@ async def test_orderable_cash_with_symbol_side_price_sends_trde_tp_and_uv(monkey
         (None, 70000),
         ("buy", None),
         (None, None),
-        # ROB-891 — bool is an int subclass; isinstance(price, int) wrongly
-        # accepted True and dispatched uv="True". type(price) is int rejects
-        # bools/floats/strings before any broker dispatch.
         ("buy", True),
         ("buy", False),
         ("buy", 1.5),
@@ -1063,18 +1069,18 @@ async def test_orderable_cash_with_symbol_side_price_sends_trde_tp_and_uv(monkey
         ("buy", "70000"),
     ],
 )
-async def test_orderable_cash_symbol_path_rejects_missing_side_or_price(
+async def test_orderable_cash_symbol_path_ignores_missing_or_invalid_side_price(
     monkeypatch, side, price
 ):
-    # ROB-891 — Official kt00010 symbol path requires stk_cd, trde_tp, uv.
-    # Missing side or price must be rejected before any dispatch.
+    # ROB-904 — kt00010 is no longer dispatched, so the symbol path no longer
+    # requires side/price to be well-formed; it succeeds via kt00001 regardless.
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
 
     calls = _patch_fake_kiwoom_account_client(
         monkeypatch,
         mod,
         payloads={
-            "orderable_amount": {"return_code": 0, "ord_alowa": "1500000"},
+            "deposit": {"return_code": 0, "ord_alow_amt": "1500000"},
         },
     )
     mcp = DummyMCP()
@@ -1084,36 +1090,10 @@ async def test_orderable_cash_symbol_path_rejects_missing_side_or_price(
         symbol="005930", side=side, price=price
     )
 
-    assert response["success"] is False
-    assert response["cash"] is None
-    assert response["provenance"]["api_id"] == "kt00010"
+    assert response["success"] is True
+    assert response["cash"] == 1500000
+    assert response["provenance"]["api_id"] == "kt00001"
     assert all(c.get("method") != "orderable_amount" for c in calls)
-
-
-@pytest.mark.asyncio
-async def test_orderable_cash_bool_price_never_dispatched(monkeypatch):
-    # ROB-891 regression — price=True previously dispatched uv="True" because
-    # isinstance(True, int) is True. Fail-closed at the MCP boundary with zero
-    # broker dispatch.
-    from app.mcp_server.tooling import orders_kiwoom_variants as mod
-
-    calls = _patch_fake_kiwoom_account_client(
-        monkeypatch,
-        mod,
-        payloads={
-            "orderable_amount": {"return_code": 0, "ord_alowa": "1500000"},
-        },
-    )
-    mcp = DummyMCP()
-    _register(mcp)
-
-    response = await mcp.tools["kiwoom_mock_get_orderable_cash"](
-        symbol="005930", side="buy", price=True
-    )
-
-    assert response["success"] is False
-    assert response["cash"] is None
-    assert calls == []
 
 
 @pytest.mark.asyncio
@@ -1151,46 +1131,40 @@ async def test_orderable_cash_without_symbol_calls_deposit(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("symbol", "payload_key", "payload", "api_id", "cash_source"),
+    ("symbol", "payload", "api_id", "cash_source"),
     [
         (
             "005930",
-            "orderable_amount",
             {"return_code": 0, "some_unknown_field": "x"},
-            "kt00010",
-            "orderable_amount_unavailable",
+            "kt00001",
+            "deposit_fallback_kt00010_unsupported_unavailable",
         ),
         (
             "005930",
-            "orderable_amount",
-            {"return_code": 0, "ord_alowa": "not-a-number"},
-            "kt00010",
-            "orderable_amount_unavailable",
+            {"return_code": 0, "ord_alow_amt": "not-a-number"},
+            "kt00001",
+            "deposit_fallback_kt00010_unsupported_unavailable",
         ),
         (
             "005930",
-            "orderable_amount",
-            {"return_code": 0, "ord_alowa": "-1"},
-            "kt00010",
-            "orderable_amount_unavailable",
+            {"return_code": 0, "ord_alow_amt": "-1"},
+            "kt00001",
+            "deposit_fallback_kt00010_unsupported_unavailable",
         ),
         (
             None,
-            "deposit",
             {"return_code": 0, "some_unknown_field": "x"},
             "kt00001",
             "deposit_unavailable",
         ),
         (
             None,
-            "deposit",
             {"return_code": 0, "ord_alow_amt": "not-a-number"},
             "kt00001",
             "deposit_unavailable",
         ),
         (
             None,
-            "deposit",
             {"return_code": 0, "ord_alow_amt": "-1"},
             "kt00001",
             "deposit_unavailable",
@@ -1198,18 +1172,16 @@ async def test_orderable_cash_without_symbol_calls_deposit(monkeypatch):
     ],
 )
 async def test_orderable_cash_unavailable_evidence_fails_closed(
-    monkeypatch, symbol, payload_key, payload, api_id, cash_source
+    monkeypatch, symbol, payload, api_id, cash_source
 ):
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
 
     payloads = {
-        "orderable_amount": {"return_code": 0, "ord_alowa": "1500000"},
-        "deposit": {"return_code": 0, "ord_alow_amt": "987654"},
+        "deposit": payload,
         "balance": {"return_code": 0},
         "order_status": {"return_code": 0},
     }
-    payloads[payload_key] = payload
-    _patch_fake_kiwoom_account_client(
+    calls = _patch_fake_kiwoom_account_client(
         monkeypatch,
         mod,
         payloads=payloads,
@@ -1227,42 +1199,50 @@ async def test_orderable_cash_unavailable_evidence_fails_closed(
     assert response["cash_source"] == cash_source
     assert response["broker_response"] == payload
     assert response["provenance"]["api_id"] == api_id
+    assert all(c.get("method") != "orderable_amount" for c in calls)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("symbol", "payload_key", "api_id", "cash_source", "return_code"),
+    ("symbol", "api_id", "cash_source", "return_code"),
     [
-        ("005930", "orderable_amount", "kt00010", "orderable_amount_unavailable", 40),
         (
             "005930",
-            "orderable_amount",
-            "kt00010",
-            "orderable_amount_unavailable",
+            "kt00001",
+            "deposit_fallback_kt00010_unsupported_unavailable",
+            40,
+        ),
+        (
+            "005930",
+            "kt00001",
+            "deposit_fallback_kt00010_unsupported_unavailable",
             False,
         ),
-        ("005930", "orderable_amount", "kt00010", "orderable_amount_unavailable", 0.5),
-        (None, "deposit", "kt00001", "deposit_unavailable", 40),
-        (None, "deposit", "kt00001", "deposit_unavailable", False),
-        (None, "deposit", "kt00001", "deposit_unavailable", 0.5),
+        (
+            "005930",
+            "kt00001",
+            "deposit_fallback_kt00010_unsupported_unavailable",
+            0.5,
+        ),
+        (None, "kt00001", "deposit_unavailable", 40),
+        (None, "kt00001", "deposit_unavailable", False),
+        (None, "kt00001", "deposit_unavailable", 0.5),
     ],
 )
 async def test_orderable_cash_broker_rejection_has_stable_failure_source(
-    monkeypatch, symbol, payload_key, api_id, cash_source, return_code
+    monkeypatch, symbol, api_id, cash_source, return_code
 ):
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
 
     payloads = {
-        "orderable_amount": {"return_code": 0, "ord_alowa": "1500000"},
-        "deposit": {"return_code": 0, "ord_alow_amt": "987654"},
+        "deposit": {
+            "return_code": return_code,
+            "return_msg": "broker rejected",
+        },
         "balance": {"return_code": 0},
         "order_status": {"return_code": 0},
     }
-    payloads[payload_key] = {
-        "return_code": return_code,
-        "return_msg": "broker rejected",
-    }
-    _patch_fake_kiwoom_account_client(monkeypatch, mod, payloads=payloads)
+    calls = _patch_fake_kiwoom_account_client(monkeypatch, mod, payloads=payloads)
     mcp = DummyMCP()
     _register(mcp)
 
@@ -1275,13 +1255,14 @@ async def test_orderable_cash_broker_rejection_has_stable_failure_source(
     assert response["cash"] is None
     assert response["cash_source"] == cash_source
     assert response["provenance"]["api_id"] == api_id
+    assert all(c.get("method") != "orderable_amount" for c in calls)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("symbol", "api_id"),
     [
-        ("005930", "kt00010"),
+        ("005930", "kt00001"),
         (None, "kt00001"),
     ],
 )
@@ -1298,7 +1279,7 @@ async def test_orderable_cash_broker_error_is_fail_closed(monkeypatch, symbol, a
             pass
 
         async def get_orderable_amount(self, **kwargs):  # noqa: ARG002
-            raise RuntimeError("boom")
+            raise AssertionError("kt00010 must never be dispatched (ROB-904)")
 
         async def get_deposit(self, **kwargs):  # noqa: ARG002
             raise RuntimeError("boom")
@@ -1543,31 +1524,34 @@ def _assert_stable_read_failure(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("symbol", "payload_key", "api_id"),
+    ("symbol", "api_id"),
     [
-        ("005930", "orderable_amount", "kt00010"),
-        (None, "deposit", "kt00001"),
+        ("005930", "kt00001"),
+        (None, "kt00001"),
     ],
 )
 async def test_orderable_cash_both_branches_fail_closed_on_live_provenance(
-    monkeypatch, symbol, payload_key, api_id
+    monkeypatch, symbol, api_id
 ):
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
 
     payloads = {
-        "orderable_amount": {"return_code": 0, "ord_alowa": "1500000"},
-        "deposit": {"return_code": 0, "ord_alow_amt": "987654"},
+        "deposit": {
+            "return_code": 0,
+            "ord_alow_amt": "987654",
+            "provenance": {"environment": "live"},
+        },
         "balance": {"return_code": 0},
         "order_status": {"return_code": 0},
     }
-    payloads[payload_key]["provenance"] = {"environment": "live"}
-    _patch_fake_kiwoom_account_client(monkeypatch, mod, payloads=payloads)
+    calls = _patch_fake_kiwoom_account_client(monkeypatch, mod, payloads=payloads)
     mcp = DummyMCP()
     _register(mcp)
 
     response = await mcp.tools["kiwoom_mock_get_orderable_cash"](
         symbol=symbol, side="buy", price=70000
     )
+    assert all(c.get("method") != "orderable_amount" for c in calls)
 
     assert response["success"] is False
     assert response["cash"] is None
@@ -1733,7 +1717,11 @@ async def test_registered_reads_config_failure_has_stable_envelope(
 @pytest.mark.parametrize(
     ("symbol", "api_id", "cash_source"),
     [
-        ("005930", "kt00010", "orderable_amount_unavailable"),
+        (
+            "005930",
+            "kt00001",
+            "deposit_fallback_kt00010_unsupported_unavailable",
+        ),
         (None, "kt00001", "deposit_unavailable"),
     ],
 )

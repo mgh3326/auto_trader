@@ -662,14 +662,19 @@ _CONTRACT_STEPS_SPEC: list[dict[str, Any]] = [
         },
     },
     {
+        # ROB-904 — kt00010 (주문인출가능금액) is unsupported by mockapi.kiwoom.com
+        # (return_code=20, RC7006; ROB-891 4-variant probe). The symbol-scoped
+        # orderable-cash query now falls back to kt00001 (예수금상세현황) — same
+        # endpoint as the "deposit" stage, surfaced via a distinct cash_source.
         "stage": "orderable_amount",
         "tool": "kiwoom_mock_get_orderable_cash",
-        "expected_api_id": kw_constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID,
+        "expected_api_id": kw_constants.ACCOUNT_DEPOSIT_API_ID,
         "evidence_kind": "orderable_amount",
         "tool_args": {"symbol": "005930", "side": "buy", "price": 50000},
         "contract_fields": {
-            "request_body": {"stk_cd": "<symbol>", "trde_tp": "1|2", "uv": "<price>"},
-            "response_field": "ord_alowa",
+            "request_body": {"qry_tp": "2"},
+            "response_field": "ord_alow_amt",
+            "cash_source": "deposit_fallback_kt00010_unsupported",
         },
     },
     {
