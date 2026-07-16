@@ -12,7 +12,7 @@ from tests._mcp_tooling_support import DummyMCP
 async def test_get_trading_policy_returns_thresholds_and_version():
     out = await get_trading_policy(market="kr", lane="buy")
     assert out["success"] is True
-    assert out["version"] == "2026-07-14.1"
+    assert out["version"] == "2026-07-17.1"
     assert out["content_hash"]
     assert out["thresholds"]["portfolio.sector_cluster_cap_pct"]["value"] == 10
     assert out["decision_rules"] == {}
@@ -23,7 +23,7 @@ async def test_get_trading_policy_returns_crypto_market_rules_and_stamp():
     out = await get_trading_policy(market="crypto", lane="buy")
 
     assert out["success"] is True
-    assert out["version"] == "2026-07-14.1"
+    assert out["version"] == "2026-07-17.1"
     assert len(out["content_hash"]) == 12
     assert out["market_rules"]["recovery_gate"]["min_conditions_met"] == 2
     assert out["market_rules"]["no_chasing"]["daily_change_pct_threshold"] is None
@@ -37,6 +37,19 @@ async def test_get_trading_policy_returns_sell_trim_preplace_rule():
     assert rule["tiers"][0]["action"] == "preplace_small_trim_ladder"
     assert rule["tiers"][1]["conditions"]["resistance_near_pct_max"] == 2
     assert rule["tiers"][2]["action"] == "register_watch"
+
+
+@pytest.mark.asyncio
+async def test_get_trading_policy_returns_crash_day_advisory_with_version_echo():
+    out = await get_trading_policy(market="kr", lane="buy")
+    assert out["success"] is True
+    assert out["crash_day"]["trigger"]["index_symbol"] == "069500"
+    assert out["crash_day"]["trigger"]["index_gap_pct_max"] == -3.0
+    assert out["crash_day"]["actions"]["new_entry_hold"] is True
+    # advisory keys are echoed with the same version/content_hash stamp as
+    # every other section of the response (ROB-932).
+    assert out["version"]
+    assert out["content_hash"]
 
 
 @pytest.mark.asyncio

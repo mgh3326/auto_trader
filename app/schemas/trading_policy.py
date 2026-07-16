@@ -151,6 +151,41 @@ class OrderProposalsPolicy(BaseModel):
     auto_approve: OrderProposalAutoApprovePolicy
 
 
+class CrashDayTrigger(BaseModel):
+    """ROB-932 — gap-only trigger. Intraday crashes (e.g. 2026-07-13: gap
+    -0.8% -> intraday -9.8%) are NOT covered by this trigger; that gap is a
+    documented limitation, not an oversight."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    index_symbol: str
+    index_gap_pct_max: float
+
+
+class CrashDayActions(BaseModel):
+    """ROB-932 — advisory only, no code enforcement. new_entry_hold applies
+    to NEW entries only; averaging-down deep rungs on existing positions are
+    exempt (2026-07-16 midday dip-buys measured effective)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    new_entry_hold: bool
+    deep_rung_reprice_to_band_floor: bool
+    profit_trim_marketable_allowed: bool
+    defensive_brief_cross_check: bool
+
+
+class CrashDayPolicy(BaseModel):
+    """ROB-932 — crash-day advisory playbook. Not enforced in code; a
+    cross-check reference for judgment only. defensive_trim execution support
+    is out of scope for this PR."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    trigger: CrashDayTrigger
+    actions: CrashDayActions
+
+
 class TradingPolicyDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -164,3 +199,4 @@ class TradingPolicyDocument(BaseModel):
     decision_rules: dict[str, PolicyDecisionRule] = Field(default_factory=dict)
     market_rules: dict[Literal["crypto"], CryptoMarketRules]
     market_overrides: dict[Market, dict[str, ThresholdValue]]
+    crash_day: CrashDayPolicy

@@ -5,7 +5,7 @@ from app.services import trading_policy_service as svc
 
 def test_version_stamp_has_version_and_hash():
     stamp = svc.policy_version_stamp()
-    assert stamp["version"] == "2026-07-14.1"
+    assert stamp["version"] == "2026-07-17.1"
     assert len(stamp["content_hash"]) == 12
 
 
@@ -15,7 +15,7 @@ def test_content_hash_stable_across_calls():
 
 def test_get_policy_for_buy_kr_includes_cap_and_version():
     view = svc.get_policy_for("kr", "buy")
-    assert view["version"] == "2026-07-14.1"
+    assert view["version"] == "2026-07-17.1"
     assert view["content_hash"]
     t = view["thresholds"]
     # buy lane references these (playbook lane tags)
@@ -31,7 +31,7 @@ def test_get_policy_for_buy_kr_includes_cap_and_version():
 def test_get_policy_for_crypto_buy_exposes_report_derived_market_rules():
     view = svc.get_policy_for("crypto", "buy")
 
-    assert view["version"] == "2026-07-14.1"
+    assert view["version"] == "2026-07-17.1"
     assert set(view["market_rules"]) == {
         "recovery_gate",
         "support_resistance",
@@ -96,6 +96,23 @@ def test_market_override_applied(monkeypatch, tmp_path):
     t = svc.get_policy_for("us", "discovery")["thresholds"]
     assert t["screen.rsi_max"]["value"] == 55
     assert t["screen.rsi_max"]["source"] == "override"
+
+
+def test_get_policy_for_includes_crash_day_advisory_with_version_stamp():
+    view = svc.get_policy_for("kr", "buy")
+    assert view["version"] == svc.policy_version_stamp()["version"]
+    assert view["content_hash"] == svc.policy_content_hash()
+    crash_day = view["crash_day"]
+    assert crash_day["trigger"]["index_symbol"] == "069500"
+    assert crash_day["trigger"]["index_gap_pct_max"] == -3.0
+    assert crash_day["actions"]["new_entry_hold"] is True
+
+
+def test_get_policy_for_crash_day_present_regardless_of_market_lane():
+    # crash_day is a single global advisory trigger, not market/lane-scoped.
+    us_sell = svc.get_policy_for("us", "sell")["crash_day"]
+    crypto_discovery = svc.get_policy_for("crypto", "discovery")["crash_day"]
+    assert us_sell == crypto_discovery
 
 
 def test_sector_cluster_for():
