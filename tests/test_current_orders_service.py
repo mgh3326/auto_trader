@@ -956,7 +956,5 @@ async def test_current_orders_kis_kr_dedupes_same_order_no() -> None:
 
     assert response.count == 1
     assert [item.order_no for item in response.items] == ["00156551"]
-    kis_kr = next(
-        s for s in response.sources if s.broker == "kis" and s.market == "kr"
-    )
+    kis_kr = next(s for s in response.sources if s.broker == "kis" and s.market == "kr")
     assert kis_kr.count == 1
