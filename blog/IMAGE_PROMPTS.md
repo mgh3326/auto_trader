@@ -77,3 +77,27 @@
 1. 생성된 PNG를 `blog/images/`에 위 파일명으로 저장
 2. 글 발행은 CDP 자동화 레시피로 (티스토리 발행 워크플로우 메모리 참조)
 3. 썸네일 한글이 깨지면: 텍스트 없는 버전으로 재생성 후 `blog/tools/` SVG 파이프라인으로 제목만 얹기
+
+---
+
+## 14편 — 텔레그램 승인 매매 (blog_14_telegram_approval.md)
+
+### `telegram_approval_thumbnail.png` (썸네일, 한글 텍스트 포함)
+
+> A wide 16:9 blog thumbnail illustration, dark navy blue gradient background (#0d1330 to #1a2454), modern tech-editorial style. In the center, a large smartphone displays a trading proposal card in a messenger chat: a small stock chart, order details, and two big inline buttons — a glowing teal approve button with a checkmark and a muted red decline button. A human thumb hovers over the approve button. On the left side, a friendly AI robot holds up a paper proposal document with a candlestick chart on it, presenting it politely like a clerk. A glowing message path (paper-plane motif) connects the robot's document to the phone. Flat vector illustration with soft glow accents in teal (#25e2a4) and violet (#6c5ce7). Large bold Korean headline text at the top: "텔레그램 버튼으로 승인하는 반자동 매매", smaller subtitle below: "AI와 사람의 결재선 만들기". Text must be crisp, correctly spelled Korean, high contrast.
+
+### `telegram_approval_flow.png` (본문 컨셉 컷, 텍스트 없음)
+
+> A wide 16:9 tech illustration, no text anywhere. Dark navy gradient background. A left-to-right flow: (1) an AI robot at a desk writes a proposal document with a small chart on it, (2) the document flies as a glowing paper plane toward a smartphone, (3) on the phone screen a human thumb presses a large glowing green approve button, (4) the approved document, now bearing a glowing stamp seal, travels through two translucent security gates (echoing airport-security style checkpoints) and finally reaches a stock exchange building. One rejected document variant drops into a bin below the phone. Flat vector style, teal and violet glow accents, clean and minimal.
+
+---
+
+## brewdial — DB 세 번 이사기 (blog_brewdial_db_migrations.md)
+
+### `brewdial_db_thumbnail.png` (썸네일, 한글 텍스트 포함)
+
+> A wide 16:9 blog thumbnail illustration, dark navy blue gradient background (#0d1330 to #1a2454), modern tech-editorial style. A small glowing moving truck carries a large database cylinder strapped in its cargo bed, driving along a winding road past three "homes" in sequence: first a small cozy local house with a single server box, second a sleek managed-cloud skyscraper with a green lightning logo motif, third a sturdy self-hosted server rack shed connected to an orange glowing tunnel. A developer character with a V60 pour-over coffee dripper and a coffee cup waves from beside the road. Small coffee beans scattered as decorative elements. Flat vector illustration with soft glow accents in teal (#25e2a4) and violet (#6c5ce7). Large bold Korean headline text at the top: "사이드 프로젝트 DB 세 번 이사기", smaller subtitle below: "CouchDB → Supabase → OCI PostgreSQL". Text must be crisp, correctly spelled Korean, high contrast.
+
+### `brewdial_db_journey.png` (본문 컨셉 컷, 텍스트 없음)
+
+> A wide 16:9 isometric tech illustration, no text anywhere. Dark navy gradient background. A three-stop journey map connected by a glowing dotted road: STOP 1 — a cozy local house containing a document-shaped database (papers stacked inside a cylinder), with a warning sign showing a single point of failure; STOP 2 — a modern managed-cloud building with a green lightning bolt emblem, convenient but with a coin-meter and a sleeping "zzz" pause icon attached; STOP 3 — a self-hosted server rack inside a small fortress, connected to the outside world only through a glowing orange tunnel pipe (no open doors), with a coffee cup on top. Moving boxes full of data blocks are carried between stops by a tiny robot mover. Flat vector style, teal and violet glow accents.
