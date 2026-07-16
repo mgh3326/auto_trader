@@ -893,6 +893,21 @@ class _UnitDispatchClient(BaseKISClient):
         return resp
 
 
+class _MagicMockConfiguredClient(_UnitDispatchClient):
+    """Model legacy tests whose client marker and settings are MagicMocks."""
+
+    _is_mock_client = MagicMock()
+    _magic_settings = MagicMock()
+    _magic_settings.kis_mock_base_url = MagicMock()
+    _magic_settings.kis_rate_limit_rate = 19
+    _magic_settings.kis_rate_limit_period = 1.0
+    _magic_settings.kis_api_rate_limits = {}
+
+    @property
+    def _settings(self) -> Any:  # type: ignore[override]
+        return self._magic_settings
+
+
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_redis_failure_mutation_is_http_zero():
@@ -968,6 +983,29 @@ async def test_live_host_never_contacts_redis(real_redis: _RealRedis):
         )
         assert client.http_calls == 1
         claim_spy.assert_not_awaited()  # live -> zero Redis calls, proven
+    finally:
+        await gate.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_magicmock_client_and_settings_custom_host_bypass_redis():
+    """MagicMock truthiness must not classify a custom/live test URL as VTS."""
+    gate = _make_gate(real_redis_url_unused())
+    claim_spy = AsyncMock(wraps=gate._claim)
+    gate._claim = claim_spy  # type: ignore[method-assign]
+    client = _MagicMockConfiguredClient(gate)
+    try:
+        await client._dispatch_rate_limited_with_headers(
+            "GET",
+            "https://custom-kis-test.invalid/uapi/quotations/inquire-price",
+            headers={"appkey": "custom-key", "authorization": "Bearer t"},
+            timeout=5.0,
+            api_name="inquire_price",
+            tr_id="FHKST01010100",
+        )
+        assert client.http_calls == 1
+        claim_spy.assert_not_awaited()
     finally:
         await gate.close()
 
@@ -1157,6 +1195,63 @@ async def test_half_open_probe_released_on_distributed_gate_failure(
         # Next request can obtain a fresh probe (no permanent KISCircuitOpen).
         cb.before_request()
         assert cb._probe_in_flight is True
+    finally:
+        await gate.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_half_open_retry_gate_failure_after_http_started_reopens_breaker(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A retry-time gate failure cannot erase an ambiguous HALF_OPEN HTTP.
+
+    The first attempt reached the HTTP boundary but produced no response.  If
+    the second attempt then aborts in the distributed gate, the probe outcome
+    remains indeterminate and must restart the OPEN cooldown rather than make
+    the breaker immediately probeable again.
+    """
+    import httpx
+
+    from app.services.brokers.kis.circuit_breaker import KISCircuitOpen
+
+    cb, _clock = _breaker_open_past_cooldown()
+    monkeypatch.setattr(
+        "app.services.brokers.kis.base.get_kis_circuit_breaker", lambda: cb
+    )
+
+    gate = _make_gate(real_redis_url_unused())
+    client = _UnitDispatchClient(gate)
+    client._await_vts_gate = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[None, DistributedGateUnavailable("retry gate unavailable")]
+    )
+
+    async def _read_timeout(*args: Any, **kwargs: Any) -> Any:
+        client.http_calls += 1
+        raise httpx.ReadTimeout("first attempt timed out")
+
+    client._execute_http_request = _read_timeout  # type: ignore[assignment]
+    monkeypatch.setattr(client, "_calculate_retry_delay", lambda **kwargs: 0.0)
+
+    try:
+        with pytest.raises(DistributedGateUnavailable, match="retry gate unavailable"):
+            await client._request_with_rate_limit_with_headers(
+                "GET",
+                MOCK_BASE_URL + "/uapi/domestic-stock/v1/trading/inquire-balance",
+                headers={"appkey": MOCK_APP_KEY, "authorization": "Bearer t"},
+                timeout=5.0,
+                api_name="inquire_balance",
+                tr_id="VTTC8434R",
+                retry_request_errors=True,
+                max_retries_override=1,
+            )
+
+        assert client.http_calls == 1
+        assert client._await_vts_gate.await_count == 2  # type: ignore[attr-defined]
+        assert cb.state == "open"
+        assert cb._probe_in_flight is False
+        with pytest.raises(KISCircuitOpen):
+            cb.before_request()
     finally:
         await gate.close()
 
@@ -1361,6 +1456,7 @@ def test_reset_does_not_roll_back_generation():
         cb.record_success,
         cb.record_failure,
         cb.record_indeterminate,
+        cb.record_reachable_error,
     ):
         prev_state = cb.state
         stale_call(old_token)

@@ -640,10 +640,15 @@ class BaseKISClient:
             )
         except (PreSendFreshnessError, DistributedGateUnavailable):
             # Phase-aware: if a response was already seen on an earlier retry,
-            # KIS reachability is proven -> reachable (CLOSED). Otherwise this is
-            # a true pre-dispatch abort (HTTP=0) -> release only this lease.
+            # KIS reachability is proven -> reachable (CLOSED). If an earlier
+            # retry started HTTP without a response, its outcome remains unknown
+            # -> re-OPEN the owning HALF_OPEN probe. Only a request that never
+            # started HTTP is a true pre-dispatch abort (HTTP=0) whose lease can
+            # be released for an immediate next probe.
             if phase["response_seen"]:
                 breaker.record_reachable_error(lease)
+            elif phase["http_started"]:
+                breaker.record_indeterminate(lease)
             else:
                 breaker.release_probe(lease)
             raise
