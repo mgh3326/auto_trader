@@ -234,3 +234,8 @@ Activation gates:
 The task never places, modifies, or cancels broker orders. Confirmed fill deltas
 are written to `review.execution_ledger` with `broker="toss"` and
 `source="reconciler"`; ROB-755 triage should query `--source reconciler --broker toss`.
+
+For manual reps / single-shot runs of this exact poll before promoting it to
+a recurring schedule, see `docs/runbooks/toss-fill-reconcile-poller.md`
+(ROB-925) — a standalone CLI wrapping the same kernels, usable without the
+TaskIQ worker/scheduler.
