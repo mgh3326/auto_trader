@@ -403,6 +403,9 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "trade_retrospective_pending",
         "update_manual_holdings",
         "update_trade_journal",
+        # ROB-928: notify-only downside watch sweep (dry_run default; only
+        # mutation is an investment_watch_alerts INSERT, no broker/order path).
+        "watch_downside_register_sweep",
     }
 )
 
