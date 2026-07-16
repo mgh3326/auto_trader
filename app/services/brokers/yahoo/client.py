@@ -109,11 +109,17 @@ async def fetch_ohlcv(
     days: int = 100,
     period: str = "day",
     end_date: datetime | None = None,
+    *,
+    prepost: bool = False,
 ) -> pd.DataFrame:
     normalized_period = str(period or "").strip().lower()
 
+    # ROB-922: prepost=True must never read/write the closed-candle cache — the
+    # cache is built from regular-session-only data (_filter_closed_buckets_nyse),
+    # so mixing in extended-hours candles would silently corrupt it.
     if (
-        normalized_period in {"day", "week", "month"}
+        not prepost
+        and normalized_period in {"day", "week", "month"}
         and settings.yahoo_ohlcv_cache_enabled
     ):
         from app.services import yahoo_ohlcv_cache as yahoo_ohlcv_cache_service
@@ -132,6 +138,7 @@ async def fetch_ohlcv(
         days=days,
         period=normalized_period,
         end_date=end_date,
+        prepost=prepost,
     )
     if normalized_period in {"day", "week", "month"}:
         return _filter_closed_buckets_nyse(raw, normalized_period)
@@ -161,6 +168,8 @@ async def _fetch_ohlcv_raw(
     days: int = 100,
     period: str = "day",
     end_date: datetime | None = None,
+    *,
+    prepost: bool = False,
 ) -> pd.DataFrame:
     period_map = {"day": "1d", "week": "1wk", "month": "1mo", "1h": "60m"}
     if period not in period_map:
@@ -172,6 +181,10 @@ async def _fetch_ohlcv_raw(
     )
     multiplier = {"day": 2, "week": 10, "month": 40, "1h": 2}.get(period, 2)
     start = end - timedelta(days=days * multiplier)
+
+    # ROB-922: prepost=False (default) omits the kwarg entirely so the
+    # yf.download call stays byte-identical to the pre-ROB-922 signature.
+    extra_kwargs: dict[str, Any] = {"prepost": True} if prepost else {}
 
     last_exc: BaseException | None = None
     for attempt in range(_CRUMB_RETRY_MAX + 1):
@@ -185,6 +198,7 @@ async def _fetch_ohlcv_raw(
                     progress=False,
                     auto_adjust=False,
                     session=session,
+                    **extra_kwargs,
                 )
             df = _flatten_cols(df).reset_index(names="date")
             df = (
@@ -323,6 +337,63 @@ async def fetch_price(ticker: str) -> pd.DataFrame:
 
 async def fetch_fast_info(ticker: str) -> dict[str, Any]:
     return await asyncio.to_thread(_fetch_fast_info_sync, ticker)
+
+
+def _fetch_prepost_quote_sync(ticker: str) -> dict[str, Any] | None:
+    """ROB-922: last extended-session (pre/post-market) 1-minute bar for
+    ``ticker``, or ``None`` when today's prepost data is empty (fail-closed —
+    never fabricate a quote)."""
+    yahoo_ticker = to_yahoo_symbol(ticker)
+    last_exc: BaseException | None = None
+
+    for attempt in range(_CRUMB_RETRY_MAX + 1):
+        try:
+            with yfinance_tracing_session() as session:
+                df = yf.Ticker(yahoo_ticker, session=session).history(
+                    period="1d", interval="1m", prepost=True
+                )
+            if df is None or df.empty:
+                return None
+            df = _flatten_cols(df.reset_index())
+            last_row = df.iloc[-1].to_dict()
+            price = _to_float_or_none(last_row.get("close"))
+            if price is None:
+                return None
+            ts_col = "datetime" if "datetime" in df.columns else "date"
+            quote_asof: str | None = None
+            ts_raw = last_row.get(ts_col)
+            if ts_raw is not None:
+                ts = pd.Timestamp(ts_raw)
+                ts = ts.tz_localize(UTC) if ts.tzinfo is None else ts.tz_convert(UTC)
+                quote_asof = ts.isoformat()
+            return {
+                "symbol": ticker,
+                "price": price,
+                "quote_asof": quote_asof,
+                "volume": _to_int_or_none(last_row.get("volume")),
+            }
+        except Exception as exc:
+            last_exc = exc
+            if _is_crumb_auth_error(exc) and attempt < _CRUMB_RETRY_MAX:
+                logger.warning(
+                    "Yahoo crumb/auth error for %s prepost quote (attempt %d/%d), retrying: %s",
+                    safe_log_value(yahoo_ticker),
+                    attempt + 1,
+                    _CRUMB_RETRY_MAX + 1,
+                    exc,
+                )
+                continue
+            raise
+
+    raise last_exc  # type: ignore[misc]
+
+
+async def fetch_prepost_quote(ticker: str) -> dict[str, Any] | None:
+    """ROB-922: opt-in extended-hours (pre/post-market) last quote from Yahoo's
+    1-minute prepost bars. Returns ``None`` when no extended-session data is
+    available (never fabricated) — callers fall back to their existing quote
+    source."""
+    return await asyncio.to_thread(_fetch_prepost_quote_sync, ticker)
 
 
 def _roe_to_percent(raw_roe: Any) -> float | None:
