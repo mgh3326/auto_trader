@@ -429,7 +429,7 @@ class BaseKISClient:
             if response_seen:
                 breaker.record_reachable_error(lease)
             elif http_started:
-                breaker.record_failure(lease)
+                breaker.record_indeterminate(lease)
             else:
                 breaker.release_probe(lease)
             raise
@@ -639,15 +639,22 @@ class BaseKISClient:
                 _phase=phase,
             )
         except (PreSendFreshnessError, DistributedGateUnavailable):
-            # Pre-dispatch abort (HTTP=0): release ONLY this request's lease,
-            # never another request's. Keeps HALF_OPEN; does not change state.
-            breaker.release_probe(lease)
+            # Phase-aware: if a response was already seen on an earlier retry,
+            # KIS reachability is proven -> reachable (CLOSED). Otherwise this is
+            # a true pre-dispatch abort (HTTP=0) -> release only this lease.
+            if phase["response_seen"]:
+                breaker.record_reachable_error(lease)
+            else:
+                breaker.release_probe(lease)
             raise
         except asyncio.CancelledError:
             if phase["response_seen"]:
                 breaker.record_reachable_error(lease)
             elif phase["http_started"]:
-                breaker.record_failure(lease)
+                # HTTP started, no response -> outcome unknown. Owner-only
+                # re-OPEN; CLOSED/stale/non-owner cancellation is a no-op (a
+                # normal disconnect must never inflate the failure count).
+                breaker.record_indeterminate(lease)
             else:
                 breaker.release_probe(lease)
             raise

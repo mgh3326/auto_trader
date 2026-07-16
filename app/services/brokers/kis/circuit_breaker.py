@@ -238,6 +238,29 @@ class KISCircuitBreaker:
                 self._cooldown,
             )
 
+    def record_indeterminate(self, token: int | None = None) -> None:
+        """Owner-only outcome for an ambiguous mid-HTTP cancellation (HTTP
+        started, no response).
+
+        Only the CURRENT HALF_OPEN probe owner re-OPENS and restarts the
+        cooldown — its probe outcome is genuinely unknown. In any other state
+        (CLOSED/OPEN) or for a stale/non-owner token this is a complete no-op:
+        a normal client-disconnect / worker-shutdown cancellation must NEVER
+        inflate the CLOSED ``_failures`` count or open the circuit, because it
+        is NOT a KIS connect-failure (P1 merge blocker: N cancellations must
+        not falsely trip the N-strike threshold).
+        """
+        if not self._enabled:
+            return
+        if self._state == _HALF_OPEN and (token is None or token == self._probe_owner):
+            self._probe_in_flight = False
+            self._probe_owner = 0
+            self._opened_at = self._now()
+            self._state = _OPEN
+            logger.warning(
+                "KIS circuit re-opened: probe cancelled mid-HTTP (outcome unknown)"
+            )
+
 
 _breaker: KISCircuitBreaker | None = None
 

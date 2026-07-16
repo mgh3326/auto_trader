@@ -1342,18 +1342,180 @@ async def test_closed_failure_threshold_semantics_preserved():
 
 @pytest.mark.unit
 def test_reset_does_not_roll_back_generation():
-    """reset must not reuse old tokens (the monotonic counter keeps advancing)."""
-    cb, _clock = _breaker_open_past_cooldown()
-    lease_before = cb.before_request if cb.state != "open" else None
+    """reset must not reuse old tokens: after reset, a stale pre-reset token
+    cannot release/close/re-open the NEW HALF_OPEN owner's generation."""
+    cb, clock = _breaker_open_past_cooldown()
+    old_token = cb.before_request()  # half-opens, owner=old_token
+    assert cb.state == "half_open" and cb._probe_in_flight is True
     cb.reset()
-    # After reset, a fresh before_request in CLOSED yields a NEW token strictly
-    # greater than any earlier one (old permits can never collide).
-    t = cb.before_request()
-    assert t > 0
-    # release_probe with the pre-reset token is a no-op (state is CLOSED now).
-    cb.release_probe(t)
+    # Build a fresh HALF_OPEN generation with a strictly greater owner token.
+    cb.record_failure()
+    cb.record_failure()  # threshold -> OPEN
+    clock.advance(11.0)
+    new_owner = cb.before_request()  # half-opens, owner=new_owner
+    assert new_owner > old_token
+    assert cb.state == "half_open" and cb._probe_in_flight is True
+    # Every outcome called with the STALE old token must leave the new owner intact.
+    for stale_call in (
+        cb.release_probe,
+        cb.record_success,
+        cb.record_failure,
+        cb.record_indeterminate,
+    ):
+        prev_state = cb.state
+        stale_call(old_token)
+        assert cb.state == prev_state
+    assert cb._probe_in_flight is True
+    # The genuine new owner can still release.
+    cb.release_probe(new_owner)
+    assert cb._probe_in_flight is False
+
+
+@pytest.mark.unit
+def test_record_indeterminate_closed_is_noop():
+    """A mid-HTTP cancellation in CLOSED must NOT inflate the failure count or
+    open the circuit (it is not a KIS connect-failure)."""
+    cb, _clock = _breaker_open_past_cooldown()
+    cb.reset()  # CLOSED, failures=0
+    cb.record_indeterminate(999)  # arbitrary token
+    cb.record_indeterminate(998)
     assert cb.state == "closed"
-    del lease_before
+    assert cb.failure_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_closed_mid_http_cancellation_does_not_open_circuit(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """P1: N normal mid-HTTP cancellations (client disconnect / worker shutdown)
+    in CLOSED must never trip the N-strike threshold."""
+    cb = KISCircuitBreaker(
+        now=_FakeClock(1000.0), settings_obj=_BreakerSettings()
+    )  # threshold=2, CLOSED
+    monkeypatch.setattr(
+        "app.services.brokers.kis.base.get_kis_circuit_breaker", lambda: cb
+    )
+
+    gate = _make_gate("redis://127.0.0.1:1/0")
+    client = _UnitDispatchClient(gate)
+    hang = asyncio.Event()
+
+    async def _hanging_http(*a: Any, **k: Any) -> Any:  # type: ignore[override]
+        client.http_calls += 1
+        await hang.wait()
+        return MagicMock(status_code=200, headers={}, json=lambda: {"rt_cd": "0"})
+
+    client._execute_http_request = _hanging_http  # type: ignore[assignment]
+    try:
+        for _ in range(2):  # threshold strikes, all normal cancellations
+            task = asyncio.create_task(
+                client._request_with_rate_limit_with_headers(
+                    "GET",
+                    f"https://{LIVE_HOST}/uapi/quotations/inquire-price",
+                    headers={"appkey": "live-key", "authorization": "Bearer t"},
+                    timeout=5.0,
+                    api_name="inquire_price",
+                    tr_id="FHKST01010100",
+                )
+            )
+            await asyncio.sleep(0.08)  # reach the hanging HTTP (http_started=True)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert client.http_calls == 2
+        assert cb.state == "closed"  # NOT opened by normal cancellations
+        assert cb.failure_count == 0
+    finally:
+        hang.set()
+        await gate.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_half_open_owner_mid_http_cancel_reopens_and_blocks_next(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Phase 2: a HALF_OPEN probe owner cancelled mid-HTTP re-OPENS, and the next
+    before_request fails fast (KISCircuitOpen) for the cooldown window."""
+    from app.services.brokers.kis.circuit_breaker import KISCircuitOpen
+
+    cb, _clock = _breaker_open_past_cooldown()
+    monkeypatch.setattr(
+        "app.services.brokers.kis.base.get_kis_circuit_breaker", lambda: cb
+    )
+
+    gate = _make_gate("redis://127.0.0.1:1/0")
+    client = _UnitDispatchClient(gate)
+    hang = asyncio.Event()
+
+    async def _hanging_http(*a: Any, **k: Any) -> Any:  # type: ignore[override]
+        client.http_calls += 1
+        await hang.wait()
+        return MagicMock(status_code=200, headers={}, json=lambda: {"rt_cd": "0"})
+
+    client._execute_http_request = _hanging_http  # type: ignore[assignment]
+    try:
+        task = asyncio.create_task(
+            client._request_with_rate_limit_with_headers(
+                "GET",
+                f"https://{LIVE_HOST}/uapi/quotations/inquire-price",
+                headers={"appkey": "live-key", "authorization": "Bearer t"},
+                timeout=5.0,
+                api_name="inquire_price",
+                tr_id="FHKST01010100",
+            )
+        )
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert client.http_calls == 1
+        assert cb.state == "open"  # owner re-opened (record_indeterminate)
+        with pytest.raises(KISCircuitOpen):
+            cb.before_request()  # next request fails fast within cooldown
+    finally:
+        hang.set()
+        await gate.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_fetch_token_mid_http_cancel_does_not_open_circuit(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Token path: a mid-HTTP cancellation during the OAuth POST must not inflate
+    the CLOSED failure count (same record_indeterminate contract)."""
+    cb = KISCircuitBreaker(
+        now=_FakeClock(1000.0), settings_obj=_BreakerSettings()
+    )  # CLOSED
+    monkeypatch.setattr(
+        "app.services.brokers.kis.base.get_kis_circuit_breaker", lambda: cb
+    )
+
+    gate = _make_gate("redis://127.0.0.1:1/0")
+    client = _UnitDispatchClient(gate)
+    hang = asyncio.Event()
+
+    class _HangClient:
+        async def post(self, *a: Any, **k: Any) -> Any:
+            await hang.wait()
+            return MagicMock()
+
+    client._ensure_client = AsyncMock(return_value=_HangClient())  # type: ignore[assignment]
+    client._kis_url = lambda path: f"https://{LIVE_HOST}{path}"  # type: ignore[assignment]
+    try:
+        for _ in range(2):  # threshold strikes, all normal cancellations
+            task = asyncio.create_task(client._fetch_token())
+            await asyncio.sleep(0.08)  # reach the hanging POST (http_started=True)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert cb.state == "closed"
+        assert cb.failure_count == 0
+    finally:
+        hang.set()
+        await gate.close()
 
 
 @pytest.mark.asyncio
