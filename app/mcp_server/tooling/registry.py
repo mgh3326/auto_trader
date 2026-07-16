@@ -346,11 +346,17 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
 
             register_kiwoom_us(mcp)
         if settings.binance_demo_scalping_enabled:
+            from app.mcp_server.tooling.binance_demo_ledger_status_read import (
+                register_binance_demo_ledger_status_tool,
+            )
             from app.mcp_server.tooling.binance_demo_scalping_handler import (
                 register_binance_demo_scalping_tools,
             )
 
             register_binance_demo_scalping_tools(mcp)
+            # ROB-907: read-only ledger status alongside the scalping submit
+            # tool — same gate, since both are Demo-scalping observability.
+            register_binance_demo_ledger_status_tool(mcp)
     elif profile is McpProfile.HERMES_PAPER_KIS:
         # Paper-only: only mock-pinned order surface. Live surface is physically absent.
         register_kis_mock_order_tools(mcp)
