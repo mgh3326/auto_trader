@@ -45,6 +45,18 @@ def _is_token_expiry(js: dict[str, Any]) -> bool:
     return js.get("msg_cd") in ["EGW00123", "EGW00121"]
 
 
+def _overseas_order_key(order: dict[str, Any]) -> str | None:
+    """Identity key for a daily-order row (ROB-903 dedupe-aware early stop).
+
+    KIS may re-emit the same execution row across continuation pages; the order
+    number (odno) uniquely identifies a row. Returns ``None`` when no order
+    number is present so callers fall back to exhaustive pagination.
+    """
+    odno = order.get("odno") or order.get("ODNO")
+    key = str(odno).strip() if odno is not None else ""
+    return key or None
+
+
 def _normalize_kis_exchange_code(code: str) -> str:
     """Normalize exchange code to KIS format.
 
@@ -619,6 +631,8 @@ class OverseasOrderClient:
         order_number: str = "",
         is_mock: bool = False,
         max_pages: int = 100,
+        inter_page_delay: float = 0.1,
+        stop_when_no_new_rows: bool = False,
     ) -> list[dict]:
         """
         해외주식 일별 체결조회 (주문 히스토리)
@@ -632,6 +646,15 @@ class OverseasOrderClient:
             order_number: 주문번호 (해외주식은 미지원으로 무시됨)
             is_mock: True면 모의투자, False면 실전투자
             max_pages: 최대 조회 페이지 수
+            inter_page_delay: 연속조회 페이지 사이 sleep(초). KIS는 이미 19 req/s
+                sliding-window rate limiter로 페이싱되므로 이 sleep은 이중 스로틀.
+                기본 0.1(현행 유지) — 표시(display) 경로는 0.0으로 넘겨 rate limiter에만
+                의존한다(ROB-903). reconcile/fill-evidence 경로는 기본값 유지.
+            stop_when_no_new_rows: True면 non-empty 페이지가 새 주문행(odno 기준)을 하나도
+                더하지 못하는 순간 중단한다. KIS는 연속조회 커서(nk200)가 계속 전진해도
+                동일 행을 중복 반환하는 경우가 있어(runaway 100페이지) 표시 경로 비용을
+                증폭시킨다. 이 시점에는 이미 모든 고유 행을 수집했으므로 증거 손실이 없다.
+                기본 False(현행 exhaustive pagination 유지) — reconcile 경로는 기본값 유지.
 
         Returns:
             체결 주문 목록 (list of dict)
@@ -657,6 +680,7 @@ class OverseasOrderClient:
         )
 
         all_orders = []
+        seen_order_keys: set[str] = set()
         ctx_area_fk200 = ""
         ctx_area_nk200 = ""
         tr_cont = ""
@@ -754,6 +778,20 @@ class OverseasOrderClient:
                 logging.info(f"페이지 {page}에서 더 이상 주문이 없음")
                 break
 
+            # ROB-903: on the display path, halt once a page contributes no new
+            # order rows (KIS re-emits duplicate rows across continuation pages
+            # with an ever-advancing cursor). Every unique row is already
+            # collected, so this loses no fill evidence. Reconcile keeps the
+            # default (stop_when_no_new_rows=False) → exhaustive pagination.
+            if stop_when_no_new_rows:
+                page_keys = {
+                    key for o in orders if (key := _overseas_order_key(o)) is not None
+                }
+                if page_keys and page_keys <= seen_order_keys:
+                    logging.info("연속조회 새 주문행 없음 — 조기 종료(display)")
+                    break
+                seen_order_keys |= page_keys
+
             all_orders.extend(orders)
             logging.info(
                 f"페이지 {page}: {len(orders)}건 조회 (누적: {len(all_orders)}건)"
@@ -774,7 +812,8 @@ class OverseasOrderClient:
             if page > page_limit:
                 truncated = True
                 break
-            await asyncio.sleep(0.1)
+            if inter_page_delay > 0:
+                await asyncio.sleep(inter_page_delay)
 
         if truncated:
             raise RuntimeError(
