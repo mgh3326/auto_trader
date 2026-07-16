@@ -19,6 +19,9 @@ import yaml
 from app.mcp_server.profiles import McpProfile
 from app.mcp_server.tooling.alpaca_paper import ALPACA_PAPER_READONLY_TOOL_NAMES
 from app.mcp_server.tooling.alpaca_paper_preview import ALPACA_PAPER_PREVIEW_TOOL_NAMES
+from app.mcp_server.tooling.market_quote_snapshot_tools import (
+    MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
+)
 from app.mcp_server.tooling.orders_kiwoom_us_variants import (
     KIWOOM_MOCK_US_MUTATION_TOOL_NAMES,
     KIWOOM_MOCK_US_READ_TOOL_NAMES,
@@ -105,6 +108,7 @@ def test_read_only_bucket_has_no_phantom_tools():
         *ALPACA_PAPER_PREVIEW_TOOL_NAMES,
         *US_DUAL_PAPER_TOOL_NAMES,
         *KIWOOM_MOCK_US_READ_TOOL_NAMES,
+        *MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
     }
     phantom = READ_ONLY_ADVISORY_TOOLS - default - _FLAG_GATED_OR_OPTIONAL
     assert not phantom, (

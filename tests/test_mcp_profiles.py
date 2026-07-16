@@ -31,6 +31,9 @@ from app.mcp_server.tooling.analysis_readonly_registration import (
     ANALYSIS_READONLY_FORBIDDEN_TOOL_NAMES,
     ANALYSIS_READONLY_TOOL_NAMES,
 )
+from app.mcp_server.tooling.market_quote_snapshot_tools import (
+    MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
+)
 from app.mcp_server.tooling.order_proposal_tools import ORDER_PROPOSAL_TOOL_NAMES
 from app.mcp_server.tooling.orders_kis_variants import (
     KIS_LIVE_ORDER_TOOL_NAMES,
@@ -69,6 +72,7 @@ _ALPACA_PAPER_TOOL_NAMES = (
     ALPACA_PAPER_READONLY_TOOL_NAMES
     | ALPACA_PAPER_PREVIEW_TOOL_NAMES
     | ALPACA_PAPER_MUTATING_TOOL_NAMES
+    | MARKET_QUOTE_SNAPSHOT_TOOL_NAMES
 )
 _US_PAPER_TOOL_NAMES = _ALPACA_PAPER_TOOL_NAMES | US_DUAL_PAPER_TOOL_NAMES
 _DB_PAPER_TOOL_NAMES = (

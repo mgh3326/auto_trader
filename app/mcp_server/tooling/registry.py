@@ -127,6 +127,9 @@ from app.mcp_server.tooling.market_brief_registration import (
     register_market_brief_tools,
 )
 from app.mcp_server.tooling.market_data_registration import register_market_data_tools
+from app.mcp_server.tooling.market_quote_snapshot_tools import (
+    register_market_quote_snapshot_tools,
+)
 from app.mcp_server.tooling.mirror_counterfactual_registration import (
     register_mirror_counterfactual_tools,
 )
@@ -378,6 +381,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
             register_us_dual_paper_tools(mcp)
             register_alpaca_paper_orders_tools(mcp)
             register_alpaca_paper_ledger_read_tools(mcp)
+            register_market_quote_snapshot_tools(mcp)
     elif profile is McpProfile.HERMES_PAPER_KIS:
         # Paper-only: only mock-pinned order surface. Live surface is physically absent.
         register_kis_mock_order_tools(mcp)
@@ -393,6 +397,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_alpaca_paper_orders_tools(mcp)
         register_alpaca_paper_automated_orders_tools(mcp)
         register_alpaca_paper_ledger_read_tools(mcp)
+        register_market_quote_snapshot_tools(mcp)
     elif profile is McpProfile.DB_PAPER:
         register_paper_account_tools(mcp)
         register_paper_analytics_tools(mcp)

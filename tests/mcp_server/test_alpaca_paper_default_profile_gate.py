@@ -25,17 +25,21 @@ from app.mcp_server.tooling.alpaca_paper_automated_orders import (
 )
 from app.mcp_server.tooling.alpaca_paper_orders import ALPACA_PAPER_MUTATING_TOOL_NAMES
 from app.mcp_server.tooling.alpaca_paper_preview import ALPACA_PAPER_PREVIEW_TOOL_NAMES
+from app.mcp_server.tooling.market_quote_snapshot_tools import (
+    MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
+)
 from app.mcp_server.tooling.registry import register_all_tools
 from app.mcp_server.tooling.us_dual_paper import US_DUAL_PAPER_TOOL_NAMES
 from tests._mcp_tooling_support import DummyMCP
 
-# The full flag-gated DEFAULT surface (18 tools): read + preview + us_dual +
-# confirm-gated submit/cancel + ledger reads.
+# The full flag-gated DEFAULT surface (20 tools): read + preview + us_dual +
+# confirm-gated submit/cancel + ledger reads + market quote snapshot tools.
 _DEFAULT_ALPACA_TOOL_NAMES = (
     ALPACA_PAPER_READONLY_TOOL_NAMES
     | ALPACA_PAPER_PREVIEW_TOOL_NAMES
     | US_DUAL_PAPER_TOOL_NAMES
     | ALPACA_PAPER_MUTATING_TOOL_NAMES
+    | MARKET_QUOTE_SNAPSHOT_TOOL_NAMES
 )
 
 

@@ -509,6 +509,9 @@ replay**. There is no direct-POST fallback, and this holds for `us-paper` only.
   missing / stale / symbol-mismatched / non-finite-priced snapshot fails closed
   before any packet is built. Packet + policy hashes are recorded in the ledger
   preview evidence.
+- **Snapshot retrieval & build lever (ROB-913).** Two MCP tools are provided to manage market quote evidence:
+  - `market_quote_snapshot_latest(market: "kr"|"us"|"crypto", symbol: str)` reads the latest snapshot row and exposes its metadata along with `age_seconds`, `is_fresh` (within 5 minutes: `0 <= age <= 300`), and `submit_ready` (indicating whether it passes the server-side submit gates).
+  - `market_quote_snapshot_ensure(market: "kr"|"us"|"crypto", symbol: str)` ensures a fresh snapshot exists. If the latest row is fresh and submit-ready, it reuses it (`reused: true`). Otherwise, it builds a new snapshot for the symbol (`reused: false`) and validates it. Price injection is strictly forbidden; price is only fetched from the trusted server-side quote sources.
 - **Replay before freshness.** Immutable token/key/hash/account binding is checked
   first; a completed or terminally-failed order then replays its original result
   even after the packet's freshness window has elapsed. Freshness / market-data /
