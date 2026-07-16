@@ -993,6 +993,96 @@ class TestAlpacaView:
         assert metrics.fill_count == 1
         assert metrics.turnover == Decimal("25000")  # 0.5 * 50000
 
+    @pytest.mark.asyncio
+    async def test_canceled_partial_fill_missing_price(self) -> None:
+        service = _make_service()
+        # Seed a partial-fill (qty > 0) canceled order row but missing price
+        ledger = FakeAlpacaLedgerReader(
+            rows_by_correlation={
+                "corr_1": [
+                    FakeAlpacaRow(
+                        id=1,
+                        record_kind="execution",
+                        lifecycle_state="canceled",
+                        side="buy",
+                        currency="USD",
+                        execution_symbol="BTC/USD",
+                        filled_qty=Decimal("0.5"),
+                        filled_avg_price=None,
+                        client_order_id="coid_1",
+                        lifecycle_correlation_id="corr_1",
+                    ),
+                ]
+            }
+        )
+        metrics = await service.compute_alpaca_view(
+            ledger,
+            correlation_ids=["corr_1"],
+            native_marks={"BTC/USD": Decimal("50000")},
+        )
+        assert metrics.missing_observation_count == 1
+        assert metrics.fill_count == 0
+
+    @pytest.mark.asyncio
+    async def test_canceled_nan_filled_qty(self) -> None:
+        service = _make_service()
+        # Seed a canceled order row with NaN filled_qty
+        ledger = FakeAlpacaLedgerReader(
+            rows_by_correlation={
+                "corr_1": [
+                    FakeAlpacaRow(
+                        id=1,
+                        record_kind="execution",
+                        lifecycle_state="canceled",
+                        side="buy",
+                        currency="USD",
+                        execution_symbol="BTC/USD",
+                        filled_qty=Decimal("NaN"),
+                        filled_avg_price=Decimal("50000"),
+                        client_order_id="coid_1",
+                        lifecycle_correlation_id="corr_1",
+                    ),
+                ]
+            }
+        )
+        metrics = await service.compute_alpaca_view(
+            ledger,
+            correlation_ids=["corr_1"],
+            native_marks={"BTC/USD": Decimal("50000")},
+        )
+        assert metrics.missing_observation_count == 1
+        assert metrics.fill_count == 0
+
+    @pytest.mark.asyncio
+    async def test_canceled_zero_fill_explicit_zero(self) -> None:
+        service = _make_service()
+        # Seed a zero-fill (qty == 0) canceled order row
+        ledger = FakeAlpacaLedgerReader(
+            rows_by_correlation={
+                "corr_1": [
+                    FakeAlpacaRow(
+                        id=1,
+                        record_kind="execution",
+                        lifecycle_state="canceled",
+                        side="buy",
+                        currency="USD",
+                        execution_symbol="BTC/USD",
+                        filled_qty=Decimal("0"),
+                        filled_avg_price=None,
+                        client_order_id="coid_1",
+                        lifecycle_correlation_id="corr_1",
+                    ),
+                ]
+            }
+        )
+        metrics = await service.compute_alpaca_view(
+            ledger,
+            correlation_ids=["corr_1"],
+            native_marks={"BTC/USD": Decimal("50000")},
+        )
+        assert metrics.missing_observation_count == 0
+        assert metrics.fill_count == 0
+
 
 # ---------------------------------------------------------------------------
 # View 3: Canonical shadow P&L tests
