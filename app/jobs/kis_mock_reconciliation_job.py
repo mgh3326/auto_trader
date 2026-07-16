@@ -12,6 +12,8 @@ baseline is captured at order-insert time by the order execution path.
 
 from __future__ import annotations
 
+import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -39,15 +41,43 @@ def _to_decimal(val: Any) -> Decimal:
         return Decimal(0)
 
 
+@dataclass(frozen=True, slots=True)
+class _HoldingsCollection:
+    """Snapshot dict plus per-market fetch-success flags.
+
+    ``kr_ok`` / ``us_ok`` are True only when the corresponding
+    ``fetch_my_stocks`` call returned a real list (an empty ``[]`` is a valid
+    "truly empty account" and counts as success). A raised exception or a
+    ``None`` return leaves the flag False so the reconciler can tell a genuine
+    qty-0 position apart from a failed/unverifiable inquiry (ROB-910).
+    """
+
+    snapshots: dict[str, HoldingsSnapshot]
+    kr_ok: bool
+    us_ok: bool
+
+
 async def _collect_kis_mock_holdings(
     kis_client: KISClient,
     *,
     taken_at: datetime,
-) -> dict[str, HoldingsSnapshot]:
-    """Read-only snapshot of KIS mock holdings (KR + US)."""
+) -> _HoldingsCollection:
+    """Read-only snapshot of KIS mock holdings (KR + US).
+
+    KIS balance inquiries return only nonzero holdings, so a fully-sold symbol
+    is simply absent from the response. We therefore track KR and US fetch
+    success independently: a verified-successful market lets the caller treat an
+    absent open-order symbol as qty 0, while a failed fetch keeps it unresolved
+    (fail-closed) rather than fabricating a zero (ROB-910).
+    """
     snapshots: dict[str, HoldingsSnapshot] = {}
 
-    kr = await kis_client.fetch_my_stocks(is_mock=True, is_overseas=False)
+    try:
+        kr = await kis_client.fetch_my_stocks(is_mock=True, is_overseas=False)
+    except Exception:
+        logging.exception("KIS mock KR holdings fetch failed")
+        kr = None
+    kr_ok = kr is not None
     for stock in kr or []:
         symbol = to_db_symbol(str(stock.get("pdno") or ""))
         if not symbol:
@@ -58,7 +88,12 @@ async def _collect_kis_mock_holdings(
             taken_at=taken_at,
         )
 
-    us = await kis_client.fetch_my_stocks(is_mock=True, is_overseas=True)
+    try:
+        us = await kis_client.fetch_my_stocks(is_mock=True, is_overseas=True)
+    except Exception:
+        logging.exception("KIS mock US holdings fetch failed")
+        us = None
+    us_ok = us is not None
     for stock in us or []:
         symbol = to_db_symbol(str(stock.get("ovrs_pdno") or ""))
         if not symbol:
@@ -69,7 +104,45 @@ async def _collect_kis_mock_holdings(
             taken_at=taken_at,
         )
 
-    return snapshots
+    return _HoldingsCollection(snapshots=snapshots, kr_ok=kr_ok, us_ok=us_ok)
+
+
+def _synthesize_zero_for_absent_symbols(
+    *,
+    open_rows: list[Any],
+    collection: _HoldingsCollection,
+    taken_at: datetime,
+) -> None:
+    """Fill in qty-0 snapshots for open-order symbols absent from a verified
+    market fetch (ROB-910).
+
+    "Broker inquiry succeeded + symbol absent" == "held qty is 0" (KIS lists
+    only nonzero holdings). Synthesizing a zero snapshot lets the existing delta
+    logic book a sell-to-zero as a full fill. A symbol whose market fetch did
+    NOT verifiably succeed is left absent so the reconciler still emits
+    ``holdings_snapshot_missing`` (fetch failure != qty 0). When the market
+    cannot be determined from ``instrument_type`` we require BOTH markets to have
+    succeeded before treating the symbol as zero (conservative).
+    """
+    snapshots = collection.snapshots
+    for row in open_rows:
+        symbol = row.symbol
+        if not symbol or symbol in snapshots:
+            continue
+        instrument = str(getattr(row, "instrument_type", "") or "")
+        if instrument == "equity_kr":
+            verified = collection.kr_ok
+        elif instrument == "equity_us":
+            verified = collection.us_ok
+        else:
+            verified = collection.kr_ok and collection.us_ok
+        if not verified:
+            continue
+        snapshots[symbol] = HoldingsSnapshot(
+            symbol=symbol,
+            quantity=Decimal(0),
+            taken_at=taken_at,
+        )
 
 
 async def run_kis_mock_reconciliation(
@@ -105,7 +178,15 @@ async def run_kis_mock_reconciliation(
 
     now = datetime.now(UTC)
     client = kis_client if kis_client is not None else KISClient(is_mock=True)
-    holdings_map = await _collect_kis_mock_holdings(client, taken_at=now)
+    collection = await _collect_kis_mock_holdings(client, taken_at=now)
+    # ROB-910: an open-order symbol absent from a verified-successful market
+    # fetch means the position is now zero (KIS lists only nonzero holdings).
+    # Synthesize a zero snapshot so sell-to-zero books a fill; a failed fetch
+    # leaves the symbol unresolved → holdings_snapshot_missing (fail-closed).
+    _synthesize_zero_for_absent_symbols(
+        open_rows=open_rows, collection=collection, taken_at=now
+    )
+    holdings_map = collection.snapshots
 
     order_inputs: list[LedgerOrderInput] = [
         LedgerOrderInput(
