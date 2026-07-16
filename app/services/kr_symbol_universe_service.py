@@ -554,6 +554,32 @@ async def get_kr_names_by_symbols(
         await session.close()
 
 
+async def _list_active_symbol_names_impl(db: AsyncSession) -> list[tuple[str, str]]:
+    stmt = select(KRSymbolUniverse.symbol, KRSymbolUniverse.name).where(
+        KRSymbolUniverse.is_active.is_(True)
+    )
+    rows = (await db.execute(stmt)).all()
+    return [(row.symbol, row.name) for row in rows]
+
+
+async def list_active_kr_symbol_names(
+    db: AsyncSession | None = None,
+) -> list[tuple[str, str]]:
+    """Return ``[(symbol, name)]`` for every active KR symbol.
+
+    ROB-916: feeds `news_entity_matcher.match_kr_universe_symbols` — the
+    DB-backed long-tail name dictionary the curated `KR_ALIASES` list defers
+    to. Read-only; no ordering guarantee beyond what the DB returns.
+    """
+    if db is not None:
+        return await _list_active_symbol_names_impl(db)
+    session = cast(AsyncSession, cast(object, AsyncSessionLocal()))
+    try:
+        return await _list_active_symbol_names_impl(session)
+    finally:
+        await session.close()
+
+
 __all__ = [
     "KRSymbolUniverseLookupError",
     "KRSymbolUniverseEmptyError",
@@ -565,6 +591,7 @@ __all__ = [
     "get_kr_nxt_tradability",
     "get_kr_symbol_by_name",
     "is_nxt_eligible",
+    "list_active_kr_symbol_names",
     "search_kr_symbols",
     "sync_kr_symbol_universe",
 ]
