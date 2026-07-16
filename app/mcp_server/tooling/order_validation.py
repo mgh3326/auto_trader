@@ -53,6 +53,9 @@ async def _call_kis(method: Any, *args: Any, is_mock: bool, **kwargs: Any) -> An
 
 _TRADER_AGENT_ID_DEFAULT = "6b2192cc-14fa-4335-b572-2fe1e0cb54a7"
 
+# ROB-912 — marketable sell(지정가<현재가)은 유리 체결이므로 허용, fat-finger 딥디스카운트만 차단. 2%는 trim_preplace ultra_near 티어(≤2%)와 대칭.
+SELL_MARKETABLE_MAX_DISCOUNT = 0.02
+
 
 @dataclass(frozen=True)
 class DefensiveTrimContext:
@@ -144,8 +147,14 @@ def evaluate_sell_price_guards(
             f"Sell price {price} below minimum "
             f"(avg_buy_price * 1.01 = {min_sell_price:.0f})"
         )
-    if price < current_price:
-        return f"Sell price {price} below current price {current_price}"
+    if current_price > 0:
+        band_floor = current_price * (1.0 - SELL_MARKETABLE_MAX_DISCOUNT)
+        if price < band_floor:
+            return (
+                f"Sell price {price} below marketable band floor "
+                f"{band_floor:.4f} (current {current_price} * "
+                f"(1 - {SELL_MARKETABLE_MAX_DISCOUNT}))"
+            )
     return None
 
 

@@ -57,7 +57,7 @@ def test_guard_blocks_below_current_price_when_no_context() -> None:
         defensive_trim_ctx=None,
         scalping_exit_ctx=None,
     )
-    assert err is not None and "below current price" in err
+    assert err is not None and "below marketable band floor" in err
 
 
 @pytest.mark.unit
@@ -70,7 +70,7 @@ def test_defensive_trim_bypasses_floor_but_not_current_price() -> None:
         defensive_trim_ctx=_trim_ctx(),
         scalping_exit_ctx=None,
     )
-    assert err is not None and "below current price" in err
+    assert err is not None and "below marketable band floor" in err
 
 
 @pytest.mark.unit

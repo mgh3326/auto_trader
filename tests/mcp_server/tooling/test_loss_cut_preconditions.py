@@ -60,14 +60,14 @@ def test_defensive_trim_unchanged_still_enforces_current_price():
         approval_verified_at=datetime.datetime.now(datetime.UTC),
     )
     err = evaluate_sell_price_guards(
-        price=1244.0,
+        price=1200.0,
         current_price=1245.0,
         avg_price=2000.0,
         defensive_trim_ctx=dt,
         scalping_exit_ctx=None,
         loss_cut_ctx=None,
     )
-    assert err is not None and "below current price" in err
+    assert err is not None and "below marketable band floor" in err
 
 
 @pytest.mark.unit
