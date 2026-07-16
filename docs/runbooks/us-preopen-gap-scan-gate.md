@@ -87,13 +87,35 @@ user decision.
 
 ## Step 2 — U3 filter
 
+**Market cap data source**: `get_quote` and `get_earnings_calendar` do not
+return `market_cap` — use `get_company_profile(symbol, market="us")` for the
+U3 market-cap check. Its US path (`_fetch_company_profile_finnhub` in
+`app/mcp_server/tooling/fundamentals_sources_finnhub.py:53`) passes Finnhub's
+`marketCapitalization` straight through with **no unit conversion**.
+Finnhub's `marketCapitalization` is denominated in **millions of USD** — this
+is verified in-repo by the sibling `_map_finnhub_metrics` mapper
+(`app/services/market_valuation_snapshots/finnhub_fallback.py`), whose test
+(`tests/test_market_valuation_finnhub_fallback_rob434.py:47-57`) asserts
+`marketCapitalization: 1500.0` (`# millions → ×1e6 absolute`) converts to
+`1_500_000_000.0` — i.e. that specific mapper multiplies by `1e6` to get an
+absolute-dollar value, which only makes sense if the raw Finnhub field is in
+millions. `get_company_profile` does **not** run that mapper, so its
+`market_cap` field is the raw, unconverted millions value. **Therefore: the
+$1B threshold below means `get_company_profile(...)["market_cap"] >= 1000`**
+(not `>= 1_000_000_000`) — do not apply the absolute-dollar threshold to this
+tool's raw output. If the candidate list is large enough that per-symbol
+`get_company_profile` calls become a bottleneck, `get_top_stocks(market="us")`
+row-level `market_cap` (if already absolute-dollar in that tool's output —
+verify its own units before reusing) is a reasonable batch alternative; the
+per-symbol path above is the default.
+
 Apply, in order, to every symbol measured in Step 1:
 
 | Filter | Threshold | On fail |
 |---|---|---|
 | Gap % | `+5%` to `+20%` (inclusive) | Record in **배제 로그** as `gap_out_of_range` (note whether `>20%` or `<5%`, and gap-down cases separately as `gap_down` — these are your gap-down-exclusion-hit-rate denominator for AC #3) |
-| Market cap | `> $1B` | Record as `micro_cap_excluded` |
-| Volume | `> 500,000 shares` (premarket/cumulative volume from the quote payload where available; note the source if it's a partial-session volume) | Record as `low_volume_excluded` |
+| Market cap | `> $1B` (i.e. `get_company_profile(...)["market_cap"] > 1000`, per the units note above) | Record as `micro_cap_excluded` |
+| Volume | `> 500,000 shares` — **the `volume` field on the `get_quote` payload is the prior regular session's volume, not a live premarket tape.** ROB-922's `_apply_extended_hours_overlay` only overwrites `price`/`price_source`/`quote_asof`/`data_state` — it never touches `volume` (see `app/mcp_server/tooling/market_data_quotes.py` `_apply_extended_hours_overlay`). Live premarket volume is not exposed by any current MCP surface. Apply this filter against the prior-regular-session `volume` as a liquidity proxy and record it as such — do not present it as a premarket figure. | Record as `low_volume_excluded` |
 
 Additional exclusions recorded but not separately thresholded: inverse ETFs,
 and any symbol whose **nominal** market cap clears $1B but whose premarket
