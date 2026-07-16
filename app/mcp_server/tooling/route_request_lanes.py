@@ -15,6 +15,9 @@ from typing import Any
 from app.mcp_server.tooling.alpaca_paper import ALPACA_PAPER_READONLY_TOOL_NAMES
 from app.mcp_server.tooling.alpaca_paper_orders import ALPACA_PAPER_MUTATING_TOOL_NAMES
 from app.mcp_server.tooling.alpaca_paper_preview import ALPACA_PAPER_PREVIEW_TOOL_NAMES
+from app.mcp_server.tooling.market_quote_snapshot_tools import (
+    MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
+)
 from app.mcp_server.tooling.mirror_counterfactual_registration import (
     MIRROR_COUNTERFACTUAL_TOOL_NAMES,
 )
@@ -283,6 +286,7 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         *ALPACA_PAPER_READONLY_TOOL_NAMES,
         *ALPACA_PAPER_PREVIEW_TOOL_NAMES,
         *US_DUAL_PAPER_TOOL_NAMES,
+        *MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
         "route_request",
         "analysis_artifact_get",
         "analysis_artifact_list",
