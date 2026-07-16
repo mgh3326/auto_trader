@@ -1,15 +1,20 @@
 """ROB-892: process-local serial pacer for VTS (KIS mock) order POSTs.
 
-The official KIS mock REST limit is 1 order per second (per account/app-key).
-The existing ``AsyncSlidingWindowRateLimiter`` keys on ``TR_ID|path``, so buy
-and sell have independent 8/s budgets that allow bursts. This pacer serializes
-all VTS order POSTs (buy + sell, domestic + overseas) through a single
-process-local gate with a minimum 1-second interval between dispatches.
+SUPERSEDED — retained for backward-compat/test coverage only.
 
-Design:
+The official KIS mock REST limit is 1 request per second (per account/app-key)
+applied to *every* REST call (orders AND reads, domestic AND overseas). This
+process-local pacer was (a) only applied to place-order POSTs and (b) unable
+to coordinate independent API/MCP/worker PIDs. ROB-892 replaces it with the
+Redis-backed distributed gate in ``vts_distributed_gate.py``, enforced at the
+common actual-dispatch boundary in ``base.py``. No runtime dispatch path calls
+this pacer any more (single authority = the distributed gate). The class is
+kept as a self-contained serial-pacer utility with its existing unit tests.
+
+Design (historical):
 - ``asyncio.Lock`` + monotonic clock → strict serial ordering.
 - Injectable ``clock`` / ``sleep`` for deterministic concurrent tests.
-- Module-level singleton so every mock order path shares one gate.
+- Module-level singleton so every mock order path shared one gate.
 - No retry, no Redis, no distributed coordination (process-local scope only).
 """
 

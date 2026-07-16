@@ -75,7 +75,7 @@ jobs:
 
     steps:
     - uses: actions/checkout@v5
-    
+
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v6
       with:
@@ -83,6 +83,17 @@ jobs:
 
     - name: Install UV
       run: pip install uv
+
+    - name: Install redis-server (ROB-892 real-Redis acceptance)
+      # ROB-892: the gate-acceptance suite spawns its own disposable redis-server
+      # on a random port (per-module isolation; never touches production Redis).
+      # The binary must exist in CI; if missing the fixture fails loudly rather
+      # than silently skipping the real-Redis tests.
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq redis-server redis-tools
+        redis-server --version
+        redis-cli --version
 
     - name: Load cached venv
       id: cached-uv-dependencies
