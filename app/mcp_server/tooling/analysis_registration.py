@@ -24,6 +24,7 @@ from app.mcp_server.tooling.research_pipeline_read import (
     stage_analysis_get_impl,
 )
 from app.mcp_server.tooling.screener_snapshot_tool import screen_stocks_snapshot_impl
+from app.mcp_server.tooling.theme_events import get_theme_events_impl
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -47,6 +48,7 @@ ANALYSIS_TOOL_NAMES: set[str] = {
     "get_dividends",
     "get_crypto_fear_greed",
     "get_momentum_candidates",
+    "get_theme_events",
     "research_session_get",
     "research_session_list_recent",
     "stage_analysis_get",
@@ -77,6 +79,33 @@ def register_analysis_tools(
             market=market,
             date=date,
             limit=limit,
+        )
+
+    @mcp.tool(
+        name="get_theme_events",
+        description=(
+            "Read-only 테마/업종 클러스터 snapshots from persisted Naver Stock theme "
+            "events (10-minute intraday collector). Returns rank/name/change_rate/"
+            "trade_value/stock_count/leader_symbols per item, with an intraday "
+            "data_state=stale tag when the latest snapshot is >20min old during a "
+            "live KRX session. Does not fetch Naver or mutate broker/order state."
+        ),
+    )
+    async def get_theme_events(
+        market: str = "kr",
+        event_kind: str = "all",
+        top_n: int = 20,
+        trading_date: str | None = None,
+        at: str | None = None,
+        include_stocks: bool = False,
+    ) -> dict[str, Any]:
+        return await get_theme_events_impl(
+            market=market,
+            event_kind=event_kind,
+            top_n=top_n,
+            trading_date=trading_date,
+            at=at,
+            include_stocks=include_stocks,
         )
 
     @mcp.tool(

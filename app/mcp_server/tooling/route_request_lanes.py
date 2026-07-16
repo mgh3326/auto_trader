@@ -355,6 +355,7 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "get_sector_peers",
         "get_short_interest",
         "get_support_resistance",
+        "get_theme_events",
         "get_top_stocks",
         "get_toss_ai_signal",
         "get_toss_buy_balance",
