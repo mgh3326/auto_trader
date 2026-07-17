@@ -239,7 +239,7 @@ class TossLiveOrderLedgerService:
         order_id: str | None = None,
         market: str | None = None,
         limit: int = 100,
-    ) -> list[TossLiveOrderLedger]:
+    ) -> tuple[list[TossLiveOrderLedger], dict[str, int]]:
         stmt = select(TossLiveOrderLedger).where(
             TossLiveOrderLedger.status.in_(("accepted", "pending", "partial"))
         )
@@ -312,18 +312,21 @@ class TossLiveOrderLedgerService:
             stmt = stmt.where(TossLiveOrderLedger.market == market)
         stmt = stmt.order_by(TossLiveOrderLedger.id.asc()).limit(limit)
         rows = list((await self._db.execute(stmt)).unique().scalars().all())
-        rows = [
-            row
-            for row in rows
-            if await self._has_unambiguous_terminal_projection_match(row)
-        ]
+        candidates: list[TossLiveOrderLedger] = []
+        anomalies: dict[str, int] = {}
         for row in rows:
+            accepted, reason = await self._terminal_projection_match(row)
+            if accepted:
+                candidates.append(row)
+            elif reason is not None:
+                anomalies[reason] = anomalies.get(reason, 0) + 1
+        for row in candidates:
             self._db.expunge(row)
-        return rows
+        return candidates, anomalies
 
-    async def _has_unambiguous_terminal_projection_match(
+    async def _terminal_projection_match(
         self, row: TossLiveOrderLedger
-    ) -> bool:
+    ) -> tuple[bool, str | None]:
         """Accept only one broker/correlation-consistent rung for repair.
 
         A terminal ledger row may be linked to legacy duplicated correlations.
@@ -351,7 +354,7 @@ class TossLiveOrderLedgerService:
             and row.correlation_id is None
             and row.client_order_id is None
         ):
-            return False
+            return False, None
         stmt = (
             select(
                 OrderProposalRung.id,
@@ -379,14 +382,20 @@ class TossLiveOrderLedgerService:
             ids for ids in (broker_ids, correlation_ids, idempotency_ids) if ids
         ]
         if not evidence_sets:
-            return False
+            return False, None
         intersection = set.intersection(*evidence_sets)
-        if len(intersection) != 1:
-            return False
+        if not intersection:
+            return False, "proposal_evidence_conflict"
+        if len(broker_ids) > 1:
+            return False, "broker_id_duplicate"
+        if not broker_ids and not idempotency_ids and len(correlation_ids) > 1:
+            return False, "content_hash_only_ambiguous"
+        if len(intersection) > 1:
+            return False, "proposal_evidence_ambiguous"
         rung_id = next(iter(intersection))
         return next(match.state for match in matches if match.id == rung_id) in (
             _PROPOSAL_EVIDENCE_ACCEPTING_STATES
-        )
+        ), None
 
     async def update_reconcile_outcome(
         self,

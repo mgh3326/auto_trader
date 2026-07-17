@@ -28,7 +28,7 @@ class KISLiveOrderLedgerService:
         symbol: str | None = None,
         order_id: str | None = None,
         limit: int = 100,
-    ) -> list[KISLiveOrderLedger]:
+    ) -> tuple[list[KISLiveOrderLedger], dict[str, int]]:
         evidence_match = or_(
             and_(
                 KISLiveOrderLedger.correlation_id.is_not(None),
@@ -58,18 +58,21 @@ class KISLiveOrderLedgerService:
             stmt = stmt.where(KISLiveOrderLedger.order_no == order_id)
         stmt = stmt.order_by(KISLiveOrderLedger.id.asc()).limit(limit)
         rows = list((await self._db.execute(stmt)).unique().scalars().all())
-        rows = [
-            row
-            for row in rows
-            if await self._has_unambiguous_terminal_projection_match(row)
-        ]
+        candidates: list[KISLiveOrderLedger] = []
+        anomalies: dict[str, int] = {}
         for row in rows:
+            accepted, reason = await self._terminal_projection_match(row)
+            if accepted:
+                candidates.append(row)
+            elif reason is not None:
+                anomalies[reason] = anomalies.get(reason, 0) + 1
+        for row in candidates:
             self._db.expunge(row)
-        return rows
+        return candidates, anomalies
 
-    async def _has_unambiguous_terminal_projection_match(
+    async def _terminal_projection_match(
         self, row: KISLiveOrderLedger
-    ) -> bool:
+    ) -> tuple[bool, str | None]:
         broker_match = (
             OrderProposalRung.broker_order_id == row.order_no
             if row.order_no is not None
@@ -90,7 +93,7 @@ class KISLiveOrderLedgerService:
             and row.correlation_id is None
             and row.idempotency_key is None
         ):
-            return False
+            return False, None
         stmt = (
             select(
                 OrderProposalRung.id,
@@ -115,11 +118,17 @@ class KISLiveOrderLedgerService:
             ids for ids in (broker_ids, correlation_ids, idempotency_ids) if ids
         ]
         if not evidence_sets:
-            return False
+            return False, None
         intersection = set.intersection(*evidence_sets)
-        if len(intersection) != 1:
-            return False
+        if not intersection:
+            return False, "proposal_evidence_conflict"
+        if len(broker_ids) > 1:
+            return False, "broker_id_duplicate"
+        if not broker_ids and not idempotency_ids and len(correlation_ids) > 1:
+            return False, "content_hash_only_ambiguous"
+        if len(intersection) > 1:
+            return False, "proposal_evidence_ambiguous"
         rung_id = next(iter(intersection))
         return next(match.state for match in matches if match.id == rung_id) in (
             _PROPOSAL_EVIDENCE_ACCEPTING_STATES
-        )
+        ), None

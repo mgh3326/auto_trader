@@ -687,10 +687,17 @@ async def _repair_terminal_kis_proposal_projections(
 ) -> dict[str, int]:
     """Idempotently repair KIS terminal ledger rows skipped by the open scan."""
     async with _order_session_factory()() as db:
-        rows = await KISLiveOrderLedgerService(db).list_terminal_projection_candidates(
+        rows, anomalies = await KISLiveOrderLedgerService(
+            db
+        ).list_terminal_projection_candidates(
             symbol=symbol, order_id=order_id, limit=limit
         )
-    report = {"candidates": len(rows), "converged": 0, "failed": 0}
+    report = {
+        "candidates": len(rows),
+        "converged": 0,
+        "failed": 0,
+        "anomalies": anomalies,
+    }
     for row in rows:
         result = await _converge_kis_proposal_rung(
             row, ledger_status=row.status, filled_qty=row.filled_qty
@@ -890,7 +897,7 @@ async def kis_live_reconcile_orders_impl(
     limit: int = 100,
 ) -> dict[str, Any]:
     """Reconcile accepted/pending live KR orders against broker fill evidence."""
-    projection_repair = {"candidates": 0, "converged": 0, "failed": 0}
+    projection_repair = {"candidates": 0, "converged": 0, "failed": 0, "anomalies": {}}
     if not dry_run:
         projection_repair = await _repair_terminal_kis_proposal_projections(
             symbol=symbol, order_id=order_id, limit=limit
