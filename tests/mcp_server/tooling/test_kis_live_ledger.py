@@ -230,6 +230,7 @@ async def test_reconcile_repairs_terminal_filled_proposal_projection(db_session)
         "candidates": 1,
         "converged": 1,
         "failed": 0,
+        "anomalies": {},
     }
     assert rungs[0].state == "filled"
 
@@ -313,6 +314,7 @@ async def test_terminal_repair_skips_terminal_and_resting_key_conflict(db_sessio
         "candidates": 0,
         "converged": 0,
         "failed": 0,
+        "anomalies": {},
     }
     assert terminal[0].state == "filled"
     assert resting[0].state == "resting"

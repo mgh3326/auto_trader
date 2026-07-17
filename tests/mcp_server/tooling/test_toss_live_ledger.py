@@ -441,6 +441,7 @@ async def test_terminal_ledger_projection_failure_is_retried_by_sweep(db_session
         "candidates": 1,
         "converged": 1,
         "failed": 0,
+        "anomalies": {},
     }
     assert rung.state == "filled"
     assert rung.filled_qty == Decimal("2")
@@ -520,6 +521,7 @@ async def test_projection_repair_converges_after_timestamptz_kst_round_trip(
         "candidates": 1,
         "converged": 1,
         "failed": 0,
+        "anomalies": {},
     }
     assert rung.state == "filled"
 
@@ -558,6 +560,7 @@ async def test_terminal_rejected_ledger_projection_repairs_resting_rung(db_sessi
         "candidates": 1,
         "converged": 1,
         "failed": 0,
+        "anomalies": {},
     }
     # A broker REJECTED after a submitted DAY order is an expired order, not an
     # ungrounded transition to the state-machine's submit-time `rejected`.
@@ -624,6 +627,7 @@ async def test_terminal_repair_skips_ambiguous_correlation_link(db_session):
         "candidates": 0,
         "converged": 0,
         "failed": 0,
+        "anomalies": {},
     }
     assert first.state == second.state == "resting"
 
@@ -691,6 +695,7 @@ async def test_terminal_repair_skips_terminal_and_resting_key_conflict(db_sessio
         "candidates": 0,
         "converged": 0,
         "failed": 0,
+        "anomalies": {},
     }
     assert terminal_rung.state == "filled"
     assert resting.state == "resting"
