@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.order_proposals import OrderProposal, OrderProposalRung
@@ -289,7 +289,7 @@ class TossLiveOrderLedgerService:
             )
             .where(
                 TossLiveOrderLedger.operation_kind == "place",
-                TossLiveOrderLedger.status.in_(("filled", "cancelled")),
+                TossLiveOrderLedger.status.in_(("filled", "cancelled", "rejected")),
                 OrderProposalRung.state.in_(_PROPOSAL_EVIDENCE_ACCEPTING_STATES),
                 OrderProposal.account_mode == "toss_live",
                 OrderProposal.symbol == TossLiveOrderLedger.symbol,
@@ -313,9 +313,64 @@ class TossLiveOrderLedgerService:
             stmt = stmt.where(TossLiveOrderLedger.market == market)
         stmt = stmt.order_by(TossLiveOrderLedger.id.asc()).limit(limit)
         rows = list((await self._db.execute(stmt)).unique().scalars().all())
+        rows = [
+            row
+            for row in rows
+            if await self._has_unambiguous_terminal_projection_match(row)
+        ]
         for row in rows:
             self._db.expunge(row)
         return rows
+
+    async def _has_unambiguous_terminal_projection_match(
+        self, row: TossLiveOrderLedger
+    ) -> bool:
+        """Accept only one broker/correlation-consistent rung for repair.
+
+        A terminal ledger row may be linked to legacy duplicated correlations.
+        Projection repair must never pick an arbitrary rung: a present evidence
+        key must identify exactly one eligible rung, and when both keys resolve
+        they must resolve to the same rung.
+        """
+        broker_match = (
+            OrderProposalRung.broker_order_id == row.broker_order_id
+            if row.broker_order_id is not None
+            else literal(False)
+        )
+        correlation_match = (
+            OrderProposalRung.correlation_id == row.correlation_id
+            if row.correlation_id is not None
+            else literal(False)
+        )
+        if row.broker_order_id is None and row.correlation_id is None:
+            return False
+        stmt = (
+            select(
+                OrderProposalRung.id,
+                broker_match.label("broker_match"),
+                correlation_match.label("correlation_match"),
+            )
+            .join(OrderProposal, OrderProposalRung.proposal_pk == OrderProposal.id)
+            .where(
+                or_(broker_match, correlation_match),
+                OrderProposalRung.state.in_(_PROPOSAL_EVIDENCE_ACCEPTING_STATES),
+                OrderProposal.account_mode == "toss_live",
+                OrderProposal.symbol == row.symbol,
+                or_(
+                    and_(row.market == "kr", OrderProposal.market == "equity_kr"),
+                    and_(row.market == "us", OrderProposal.market == "equity_us"),
+                ),
+            )
+        )
+        matches = list((await self._db.execute(stmt)).all())
+        broker_ids = {match.id for match in matches if match.broker_match}
+        correlation_ids = {match.id for match in matches if match.correlation_match}
+        evidence_sets = [ids for ids in (broker_ids, correlation_ids) if ids]
+        return (
+            bool(evidence_sets)
+            and all(ids == evidence_sets[0] for ids in evidence_sets)
+            and len(evidence_sets[0]) == 1
+        )
 
     async def update_reconcile_outcome(
         self,

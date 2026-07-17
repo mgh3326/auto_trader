@@ -1548,11 +1548,13 @@ class OrderProposalsService:
         broker_order_id: str | None = None,
         idempotency_key: str | None = None,
         filled_qty: Decimal | None = None,
-        terminal_state: Literal["filled", "partially_filled", "cancelled"] = "filled",
+        terminal_state: Literal[
+            "filled", "partially_filled", "cancelled", "expired"
+        ] = "filled",
         now: datetime,
         account_mode: str | None = None,
     ) -> OrderProposalRung | None:
-        """Converge a rung from broker fill/cancel evidence (ROB-816 PR-3c).
+        """Converge a rung from broker terminal evidence (ROB-816 PR-3c).
 
         Called by the live reconcile kernel. Fail-safe by construction:
 
@@ -1562,8 +1564,9 @@ class OrderProposalsService:
           (which reconcile would otherwise mislabel as an anomaly).
         - The matched rung is re-read under a row lock and re-checked for
           terminality, closing the find→transition race with a concurrent pass.
-        - ``cancelled`` carries no fill quantity (``filled_qty=None``) so a
-          partial fill booked before a cancel is preserved, not zeroed.
+        - ``cancelled`` and ``expired`` carry no fill quantity
+          (``filled_qty=None``) so a partial fill booked before terminal broker
+          evidence is preserved, not zeroed.
         - No terminal state is ever inferred without matching broker evidence.
         - Upbit client identifiers match the rung ``idempotency_key`` while
           broker UUIDs continue to match ``broker_order_id``.

@@ -494,6 +494,15 @@ async def test_projection_repair_converges_after_timestamptz_kst_round_trip(
     ).scalar_one()
     assert persisted_kst_day == "20260716"
 
+
+async def test_terminal_rejected_ledger_projection_repairs_resting_rung(db_session):
+    """ROB-900: broker REJECTED/DAY expiry is terminal proposal evidence."""
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
+    proposal_id, row = await _proposal_accepted_row(db_session, suffix="rejected")
+    row.status = "rejected"
+    await db_session.commit()
+
     with (
         patch.object(
             mod.TossLiveOrderLedgerService,
@@ -508,7 +517,9 @@ async def test_projection_repair_converges_after_timestamptz_kst_round_trip(
             ),
         ),
         patch.object(
-            mod.TossLiveOrderLedgerService, "list_open", new=AsyncMock(return_value=[])
+            mod.TossLiveOrderLedgerService,
+            "list_open",
+            new=AsyncMock(return_value=[]),
         ),
     ):
         repaired = await mod.toss_reconcile_orders_impl(dry_run=False)
@@ -519,7 +530,73 @@ async def test_projection_repair_converges_after_timestamptz_kst_round_trip(
         "converged": 1,
         "failed": 0,
     }
-    assert rung.state == "filled"
+    # A broker REJECTED after a submitted DAY order is an expired order, not an
+    # ungrounded transition to the state-machine's submit-time `rejected`.
+    assert rung.state == "expired"
+
+
+async def test_terminal_repair_skips_ambiguous_correlation_link(db_session):
+    """ROB-900: repair must not choose a rung when evidence keys disagree."""
+    from datetime import UTC, datetime
+
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.services.order_proposals import OrderProposalsService
+    from app.services.order_proposals.service import RungInput
+
+    proposal_id, row = await _proposal_accepted_row(db_session, suffix="ambiguous")
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="AAPL",
+        market="equity_us",
+        account_mode="toss_live",
+        side="buy",
+        order_type="limit",
+        proposer="ambiguous-projection-test",
+        rungs=[RungInput(0, "buy", Decimal("2"), Decimal("190"), None)],
+    )
+    for state in ("revalidating", "approved", "submitting"):
+        await service.transition_rung(group.proposal_id, 0, new_state=state)
+    await service.record_resting(
+        group.proposal_id,
+        0,
+        broker_order_id=f"other-{row.broker_order_id}",
+        correlation_id=row.correlation_id,
+        idempotency_key="ambiguous-idempotency",
+        approval_hash_digest="ambiguous-digest",
+        now=datetime.now(UTC),
+    )
+    row.status = "filled"
+    await db_session.commit()
+
+    with (
+        patch.object(
+            mod.TossLiveOrderLedgerService,
+            "reopen_anomalies_for_reconcile",
+            new=AsyncMock(
+                return_value={
+                    "rows": [],
+                    "dry_run": False,
+                    "reopened": 0,
+                    "candidates": 0,
+                }
+            ),
+        ),
+        patch.object(
+            mod.TossLiveOrderLedgerService,
+            "list_open",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        repaired = await mod.toss_reconcile_orders_impl(dry_run=False)
+
+    first = await _proposal_rung(db_session, proposal_id)
+    second = await _proposal_rung(db_session, group.proposal_id)
+    assert repaired["proposal_projection_repair"] == {
+        "candidates": 0,
+        "converged": 0,
+        "failed": 0,
+    }
+    assert first.state == second.state == "resting"
 
 
 @pytest.mark.parametrize("terminal_status", ["filled", "cancelled"])

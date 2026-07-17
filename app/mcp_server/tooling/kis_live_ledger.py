@@ -40,6 +40,7 @@ from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
     FillVerdict,
     classify_fill_evidence,
 )
+from app.services.kis_live_order_ledger_service import KISLiveOrderLedgerService
 from app.services.live_correlation import live_correlation_id
 from app.services.live_place_provenance import publish_place_time_forecast
 
@@ -619,6 +620,74 @@ async def _list_open_ledger_rows(
         return rows
 
 
+async def _converge_kis_proposal_rung(
+    row: KISLiveOrderLedger,
+    *,
+    ledger_status: str,
+    filled_qty: Decimal | None,
+) -> dict[str, Any] | None:
+    """Project committed KIS terminal evidence in an independent session."""
+    from app.services.order_proposals import OrderProposalsService
+
+    terminal_state = {
+        "filled": "filled",
+        "cancelled": "cancelled",
+        "expired": "expired",
+        # A broker rejection observed after submission is expiry evidence for a
+        # resting DAY rung; do not force the submit-time `rejected` transition.
+        "rejected": "expired",
+    }.get(ledger_status)
+    if terminal_state is None:
+        return None
+    try:
+        async with _order_session_factory()() as db:
+            service = OrderProposalsService(db)
+            rung = await service.record_fill_evidence(
+                correlation_id=row.correlation_id,
+                broker_order_id=row.order_no,
+                filled_qty=(
+                    None if terminal_state in {"cancelled", "expired"} else filled_qty
+                ),
+                terminal_state=terminal_state,
+                now=datetime.datetime.now(datetime.UTC),
+                account_mode="kis_live",
+            )
+            await db.commit()
+    except Exception as exc:  # noqa: BLE001 - ledger booking remains authoritative
+        logger.error(
+            "KIS proposal rung convergence failed ledger_id=%s order_no=%s "
+            "ledger_status=%s: %s",
+            row.id,
+            row.order_no,
+            ledger_status,
+            exc,
+        )
+        return {"converged": False, "error": str(exc) or exc.__class__.__name__}
+    if rung is None:
+        return None
+    return {"converged": True, "proposal_rung_state": rung.state}
+
+
+async def _repair_terminal_kis_proposal_projections(
+    *, symbol: str | None, order_id: str | None, limit: int
+) -> dict[str, int]:
+    """Idempotently repair KIS terminal ledger rows skipped by the open scan."""
+    async with _order_session_factory()() as db:
+        rows = await KISLiveOrderLedgerService(db).list_terminal_projection_candidates(
+            symbol=symbol, order_id=order_id, limit=limit
+        )
+    report = {"candidates": len(rows), "converged": 0, "failed": 0}
+    for row in rows:
+        result = await _converge_kis_proposal_rung(
+            row, ledger_status=row.status, filled_qty=row.filled_qty
+        )
+        if result is not None and result.get("converged") is False:
+            report["failed"] += 1
+        else:
+            report["converged"] += 1
+    return report
+
+
 async def _reconcile_one_ledger_row(
     row: KISLiveOrderLedger, *, dry_run: bool
 ) -> dict[str, Any]:
@@ -798,6 +867,11 @@ async def kis_live_reconcile_orders_impl(
     limit: int = 100,
 ) -> dict[str, Any]:
     """Reconcile accepted/pending live KR orders against broker fill evidence."""
+    projection_repair = {"candidates": 0, "converged": 0, "failed": 0}
+    if not dry_run:
+        projection_repair = await _repair_terminal_kis_proposal_projections(
+            symbol=symbol, order_id=order_id, limit=limit
+        )
     try:
         rows = await _list_open_ledger_rows(
             symbol=symbol, order_no=order_id, limit=limit
@@ -843,6 +917,7 @@ async def kis_live_reconcile_orders_impl(
         "dry_run": dry_run,
         "counts": counts,
         "reconciled": reconciled,
+        "proposal_projection_repair": projection_repair,
         "message": message,
     }
 

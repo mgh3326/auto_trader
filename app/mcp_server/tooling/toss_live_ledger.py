@@ -264,7 +264,7 @@ async def _converge_toss_proposal_rung(
     """Project committed Toss evidence in an independent committed session."""
     from app.services.order_proposals import OrderProposalsService
 
-    if ledger_status not in {"partial", "filled", "cancelled"}:
+    if ledger_status not in {"partial", "filled", "cancelled", "rejected"}:
         return None
 
     try:
@@ -287,11 +287,17 @@ async def _converge_toss_proposal_rung(
                 "partial": "partially_filled",
                 "filled": "filled",
                 "cancelled": "cancelled",
+                # Toss reports DAY expiry as REJECTED after an order was already
+                # submitted.  `expired` is the legal evidence-grounded rung
+                # terminal state from resting/partially_filled.
+                "rejected": "expired",
             }[ledger_status]
             rung = await service.record_fill_evidence(
                 correlation_id=getattr(row, "correlation_id", None),
                 broker_order_id=row.broker_order_id,
-                filled_qty=None if terminal_state == "cancelled" else filled_qty,
+                filled_qty=(
+                    None if terminal_state in {"cancelled", "expired"} else filled_qty
+                ),
                 terminal_state=terminal_state,
                 now=datetime.now(UTC),
                 account_mode="toss_live",
