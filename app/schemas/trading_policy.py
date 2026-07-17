@@ -21,6 +21,20 @@ RuleConditionValue = int | float | str | bool | list[int | float | str | bool]
 PolicyComparison = Literal["gt", "gte", "lt", "lte", "eq"]
 
 
+class OneShareExceptionPolicy(BaseModel):
+    """ROB-956 — US shares can't be bought fractionally; if a single share's
+    price exceeds a USD notional band's ceiling, allow exactly one share
+    instead of blocking the entry outright. absolute_ceiling_usd still hard-
+    blocks ultra-high-priced symbols (BRK.A/NVR-class); max_deep_rungs caps
+    additional averaging-down exposure on exception entries."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    absolute_ceiling_usd: float
+    max_deep_rungs: int
+
+
 class PolicyThreshold(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -29,6 +43,7 @@ class PolicyThreshold(BaseModel):
     unit: str
     semantics: str
     of: int | None = None
+    one_share_exception: OneShareExceptionPolicy | None = None
 
 
 class PolicyDecisionRuleTier(BaseModel):

@@ -2,9 +2,9 @@
 # Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
 # (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
 # Repo is public; exposing these values is an accepted decision.
-version: "2026-07-17.2"
+version: "2026-07-17.3"
 captured_as_of: "2026-07-17"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys"
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key"
 
 authority:
   scope: judgment_policy_only
@@ -74,7 +74,19 @@ thresholds:
     lanes: [buy, discovery]
     value: [200000, 400000]
     unit: krw
-    semantics: per-symbol order sizing for new entries (policy threshold, not account balance)
+    semantics: per-symbol order sizing for new entries (policy threshold, not account balance; KR lane only)
+  # ROB-956 — US-lane sizing decoupled from KRW/FX (KR range in FX terms
+  # priced new US entries out above ~$268/share at FX~1491). USD-denominated;
+  # not derived from the KR range.
+  buy.per_symbol_notional_usd_range:
+    lanes: [buy, discovery]
+    value: [150, 450]  # 신규 진입 1차 트란치 밴드
+    unit: usd
+    one_share_exception:
+      enabled: true
+      absolute_ceiling_usd: 700
+      max_deep_rungs: 1
+    semantics: per-symbol first-tranche sizing for US new entries; advisory (ROB-646 원칙 — 코드 강제 아님)
   sell.loss_guard_min_multiple:
     lanes: [buy, sell]
     value: 1.01
