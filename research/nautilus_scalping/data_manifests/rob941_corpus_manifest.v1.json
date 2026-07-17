@@ -1,0 +1,720 @@
+{
+  "eligibility": [
+    {
+      "demo_execution_eligible": false,
+      "historical_only": true,
+      "reason": "min_notional_50_exceeds_demo_cap_10",
+      "symbol": "BTCUSDT"
+    },
+    {
+      "demo_execution_eligible": true,
+      "historical_only": false,
+      "reason": null,
+      "symbol": "XRPUSDT"
+    },
+    {
+      "demo_execution_eligible": true,
+      "historical_only": false,
+      "reason": null,
+      "symbol": "DOGEUSDT"
+    },
+    {
+      "demo_execution_eligible": true,
+      "historical_only": false,
+      "reason": null,
+      "symbol": "SOLUSDT"
+    }
+  ],
+  "funding": [
+    {
+      "archives": [
+        {
+          "checksum_sha256": "b097dff828f6e43fece23db0d3cb98042a9d7bc19693b8cbfd051d88eb973b7b",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2025-07.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2025-07.b097dff828f6e43fece23db0d3cb98042a9d7bc19693b8cbfd051d88eb973b7b.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2025-07.zip"
+        },
+        {
+          "checksum_sha256": "1180129860b6e196e8d70bb9719e81573aa6b4acb423ba5ee7f82f10c836f7ab",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2025-08.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2025-08.1180129860b6e196e8d70bb9719e81573aa6b4acb423ba5ee7f82f10c836f7ab.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2025-08.zip"
+        },
+        {
+          "checksum_sha256": "21dc6570fc6bffad0e7b5f9e99211b82ad07c95ab4f18c3a2daa3b95ec98344c",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2025-09.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2025-09.21dc6570fc6bffad0e7b5f9e99211b82ad07c95ab4f18c3a2daa3b95ec98344c.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2025-09.zip"
+        },
+        {
+          "checksum_sha256": "9ecdedab6344fc4cdb154763266b8e09627a71c3cc5574cf868158b541c259c2",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2025-10.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2025-10.9ecdedab6344fc4cdb154763266b8e09627a71c3cc5574cf868158b541c259c2.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2025-10.zip"
+        },
+        {
+          "checksum_sha256": "23735400405627d610123e3a43db3e98ae7addb93459cd670e65a7659a5f081b",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2025-11.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2025-11.23735400405627d610123e3a43db3e98ae7addb93459cd670e65a7659a5f081b.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2025-11.zip"
+        },
+        {
+          "checksum_sha256": "35318b789f020b0e04c9043112480743855554e52e1d188437cbdaa67246d51d",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2025-12.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2025-12.35318b789f020b0e04c9043112480743855554e52e1d188437cbdaa67246d51d.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2025-12.zip"
+        },
+        {
+          "checksum_sha256": "fcdc796484f395830d418588a34a26baed8849dbef0ff2b56173247e493ff51f",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2026-01.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2026-01.fcdc796484f395830d418588a34a26baed8849dbef0ff2b56173247e493ff51f.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2026-01.zip"
+        },
+        {
+          "checksum_sha256": "80df1dd669dc1e3afc360c9da8b9a949a127fce088eedbf5bf708bd37b0a1f58",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2026-02.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2026-02.80df1dd669dc1e3afc360c9da8b9a949a127fce088eedbf5bf708bd37b0a1f58.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2026-02.zip"
+        },
+        {
+          "checksum_sha256": "5c069d5e9597a44fd0e213395082e59ff223fb99c9eab3a2a5a2a5622ba7867c",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2026-03.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2026-03.5c069d5e9597a44fd0e213395082e59ff223fb99c9eab3a2a5a2a5622ba7867c.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2026-03.zip"
+        },
+        {
+          "checksum_sha256": "51cdeb4de7d5ef1d4eece80b6115e391bdf7a2d0803bf9ad8371ab23340b22d3",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2026-04.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2026-04.51cdeb4de7d5ef1d4eece80b6115e391bdf7a2d0803bf9ad8371ab23340b22d3.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2026-04.zip"
+        },
+        {
+          "checksum_sha256": "445b65fd6b17bfcfb5e4d035db29fad34f729fa078f0449024db42621be84e6e",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2026-05.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2026-05.445b65fd6b17bfcfb5e4d035db29fad34f729fa078f0449024db42621be84e6e.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2026-05.zip"
+        },
+        {
+          "checksum_sha256": "cff97ce688329592bccbbf5873b5c7021649e093f5f5806e332c5b4fb7fd6a00",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2026-06.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2026-06.cff97ce688329592bccbbf5873b5c7021649e093f5f5806e332c5b4fb7fd6a00.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2026-06.zip"
+        }
+      ],
+      "max_calc_time_ms": 1782835200005,
+      "min_calc_time_ms": 1751328000007,
+      "normalized_shard_sha256": "28ae74450e27e893f892bb956d31abe9327ec9f76870b2f41babdaaf8dbdf2b7",
+      "row_count": 1095,
+      "shard_file_sha256": "2b87d97e34e817ded5be602857f5cd2e937c90f308151d218fb5a898e9c2ccc4",
+      "shard_path": "shards/funding/BTCUSDT-fundingRate.28ae74450e27e893f892bb956d31abe9327ec9f76870b2f41babdaaf8dbdf2b7.parquet",
+      "symbol": "BTCUSDT",
+      "transform_version": "rob941_corpus.v2"
+    },
+    {
+      "archives": [
+        {
+          "checksum_sha256": "039ff5c8dab9d9f2633f1bd4d191e6a727d6d169d897b6cbcd7fc162ff374723",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2025-07.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2025-07.039ff5c8dab9d9f2633f1bd4d191e6a727d6d169d897b6cbcd7fc162ff374723.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2025-07.zip"
+        },
+        {
+          "checksum_sha256": "07a8182394836928094bb6b476fef9e8858e234d0ff05ef41114ff25bab923ba",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2025-08.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2025-08.07a8182394836928094bb6b476fef9e8858e234d0ff05ef41114ff25bab923ba.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2025-08.zip"
+        },
+        {
+          "checksum_sha256": "1f09cb45eadb64731acaaae997167c54b76c3a08b367cd5acbd89f8562593ee3",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2025-09.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2025-09.1f09cb45eadb64731acaaae997167c54b76c3a08b367cd5acbd89f8562593ee3.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2025-09.zip"
+        },
+        {
+          "checksum_sha256": "3fc5b1bcac5579e6cc49e17457282c6bfb970932d2aefcbc0c896d660b81a939",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2025-10.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2025-10.3fc5b1bcac5579e6cc49e17457282c6bfb970932d2aefcbc0c896d660b81a939.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2025-10.zip"
+        },
+        {
+          "checksum_sha256": "22040d49b1cdce5337571f5641008a81f1374680226b7c7a5ae63d37dcc449fd",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2025-11.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2025-11.22040d49b1cdce5337571f5641008a81f1374680226b7c7a5ae63d37dcc449fd.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2025-11.zip"
+        },
+        {
+          "checksum_sha256": "21c4a5933de28ec693fbe3a43d9ae4504b762e70e7cc0e0de4afd46104abe7f0",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2025-12.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2025-12.21c4a5933de28ec693fbe3a43d9ae4504b762e70e7cc0e0de4afd46104abe7f0.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2025-12.zip"
+        },
+        {
+          "checksum_sha256": "618977f8e0c4d048292fae038094ea9624c96debfbb1d2bd6463ffcdce2fcd2a",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2026-01.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2026-01.618977f8e0c4d048292fae038094ea9624c96debfbb1d2bd6463ffcdce2fcd2a.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2026-01.zip"
+        },
+        {
+          "checksum_sha256": "8d8be995b48b2085a8384d9e417bfeef2d213b35478baa88cbe5001d0497535d",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2026-02.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2026-02.8d8be995b48b2085a8384d9e417bfeef2d213b35478baa88cbe5001d0497535d.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2026-02.zip"
+        },
+        {
+          "checksum_sha256": "e3399c2e5fd5c18a2716b26530bcedc7fb9ce8adb2641c0882c8ba6e0a336567",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2026-03.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2026-03.e3399c2e5fd5c18a2716b26530bcedc7fb9ce8adb2641c0882c8ba6e0a336567.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2026-03.zip"
+        },
+        {
+          "checksum_sha256": "0e586915d578a977ad69482ddc52c11d9c2c1a767d3865078553b3e91fb7716a",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2026-04.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2026-04.0e586915d578a977ad69482ddc52c11d9c2c1a767d3865078553b3e91fb7716a.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2026-04.zip"
+        },
+        {
+          "checksum_sha256": "f8c0c09953b112a7f5ac203a826811ead1ac43db8c075b17b2ca69e837828255",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2026-05.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2026-05.f8c0c09953b112a7f5ac203a826811ead1ac43db8c075b17b2ca69e837828255.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2026-05.zip"
+        },
+        {
+          "checksum_sha256": "f5d1b51767ddc812c4608080adf54cfca0db7cba592d3e62d7416cd358a3ebde",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2026-06.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2026-06.f5d1b51767ddc812c4608080adf54cfca0db7cba592d3e62d7416cd358a3ebde.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/XRPUSDT/XRPUSDT-fundingRate-2026-06.zip"
+        }
+      ],
+      "max_calc_time_ms": 1782835200005,
+      "min_calc_time_ms": 1751328000007,
+      "normalized_shard_sha256": "3fff8b16dd5ca113804b1daf45b2405bfbf490fdec199757184b7eff923c5d3e",
+      "row_count": 1095,
+      "shard_file_sha256": "96956e9f26e496a76c743accb760ac784c365552546341329e6d30dbc3c7c4b8",
+      "shard_path": "shards/funding/XRPUSDT-fundingRate.3fff8b16dd5ca113804b1daf45b2405bfbf490fdec199757184b7eff923c5d3e.parquet",
+      "symbol": "XRPUSDT",
+      "transform_version": "rob941_corpus.v2"
+    },
+    {
+      "archives": [
+        {
+          "checksum_sha256": "e56f1173899b2be5b35e14cdd61d6549dfed04bd2eacc1673285fbc067affe11",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2025-07.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2025-07.e56f1173899b2be5b35e14cdd61d6549dfed04bd2eacc1673285fbc067affe11.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2025-07.zip"
+        },
+        {
+          "checksum_sha256": "c73e14c91a6e44f2a7a4795c845f54f0c82fac1529dd0852c66c52175d76ff53",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2025-08.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2025-08.c73e14c91a6e44f2a7a4795c845f54f0c82fac1529dd0852c66c52175d76ff53.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2025-08.zip"
+        },
+        {
+          "checksum_sha256": "1105b391de748f50048b5590f6a5265fcb2a6354ec8a6ac3ba79b5ca734aa9cc",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2025-09.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2025-09.1105b391de748f50048b5590f6a5265fcb2a6354ec8a6ac3ba79b5ca734aa9cc.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2025-09.zip"
+        },
+        {
+          "checksum_sha256": "6217d0bc8ab8abe35dd0c56d18cc008e8a8e36adef2be37ed9ccbf3c91c71d0a",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2025-10.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2025-10.6217d0bc8ab8abe35dd0c56d18cc008e8a8e36adef2be37ed9ccbf3c91c71d0a.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2025-10.zip"
+        },
+        {
+          "checksum_sha256": "ea4b56653bb13210c5fbdeceb668f632b15a8fe6e7676d1afcbbcb5a019d92f4",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2025-11.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2025-11.ea4b56653bb13210c5fbdeceb668f632b15a8fe6e7676d1afcbbcb5a019d92f4.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2025-11.zip"
+        },
+        {
+          "checksum_sha256": "8e84dea86eb7fe0cb7b2f9278f0df0479b68ae10ac9b6ade872372888769f874",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2025-12.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2025-12.8e84dea86eb7fe0cb7b2f9278f0df0479b68ae10ac9b6ade872372888769f874.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2025-12.zip"
+        },
+        {
+          "checksum_sha256": "73c2760e0bf4a5dd8af31d1f03ba1e6d213aa1ed42da17a8c537f28c7f033f44",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2026-01.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2026-01.73c2760e0bf4a5dd8af31d1f03ba1e6d213aa1ed42da17a8c537f28c7f033f44.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2026-01.zip"
+        },
+        {
+          "checksum_sha256": "5a82031b9e3009265751cf02853ded1e1649bd3c2c3c764d5e50e64edc944a6e",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2026-02.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2026-02.5a82031b9e3009265751cf02853ded1e1649bd3c2c3c764d5e50e64edc944a6e.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2026-02.zip"
+        },
+        {
+          "checksum_sha256": "f4b2222b88d3cf518939c38a20fdd224629c3844a8d2f710c8c14e4fe9409d85",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2026-03.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2026-03.f4b2222b88d3cf518939c38a20fdd224629c3844a8d2f710c8c14e4fe9409d85.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2026-03.zip"
+        },
+        {
+          "checksum_sha256": "1a041267001c6417220e595f9c723919eec3b2e317012a8cfd22f95ac8105ceb",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2026-04.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2026-04.1a041267001c6417220e595f9c723919eec3b2e317012a8cfd22f95ac8105ceb.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2026-04.zip"
+        },
+        {
+          "checksum_sha256": "99411bbfdc7508a498204faf9ce3f02958f484828a5ffd309b6c267b89c89ba6",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2026-05.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2026-05.99411bbfdc7508a498204faf9ce3f02958f484828a5ffd309b6c267b89c89ba6.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2026-05.zip"
+        },
+        {
+          "checksum_sha256": "b701956a49aa6e9daf692eccbe0c79be94dd3e0dbacde8996852f551a5fbfdba",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2026-06.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2026-06.b701956a49aa6e9daf692eccbe0c79be94dd3e0dbacde8996852f551a5fbfdba.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/DOGEUSDT/DOGEUSDT-fundingRate-2026-06.zip"
+        }
+      ],
+      "max_calc_time_ms": 1782835200005,
+      "min_calc_time_ms": 1751328000007,
+      "normalized_shard_sha256": "b1c2ae3cdecd84a87e0f7a428d2562f7f0837ed996dc1ac9a673c61b2e7f5d5c",
+      "row_count": 1095,
+      "shard_file_sha256": "27aa460cfb088e0fac71eca2d181fa7814d024fe9190b791deb5426e6c176919",
+      "shard_path": "shards/funding/DOGEUSDT-fundingRate.b1c2ae3cdecd84a87e0f7a428d2562f7f0837ed996dc1ac9a673c61b2e7f5d5c.parquet",
+      "symbol": "DOGEUSDT",
+      "transform_version": "rob941_corpus.v2"
+    },
+    {
+      "archives": [
+        {
+          "checksum_sha256": "66ce38d1a8bc4bdd53af29d8ea5c72493ed48fe9894ee5e9ff4600ccec864c4f",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2025-07.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2025-07.66ce38d1a8bc4bdd53af29d8ea5c72493ed48fe9894ee5e9ff4600ccec864c4f.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2025-07.zip"
+        },
+        {
+          "checksum_sha256": "fe9efc3abe1e4be2a2fa9a4008e6957856387f6783a06b97cac3ee271746915f",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2025-08.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2025-08.fe9efc3abe1e4be2a2fa9a4008e6957856387f6783a06b97cac3ee271746915f.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2025-08.zip"
+        },
+        {
+          "checksum_sha256": "f953315124d20dab98ba710d108103fb4cf054d1535787fd76d35d6b9c18e534",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2025-09.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2025-09.f953315124d20dab98ba710d108103fb4cf054d1535787fd76d35d6b9c18e534.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2025-09.zip"
+        },
+        {
+          "checksum_sha256": "d80c5be7660a950ad673a0e82488877c6ca0eb81f084d4c844320f892ad2c020",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2025-10.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2025-10.d80c5be7660a950ad673a0e82488877c6ca0eb81f084d4c844320f892ad2c020.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2025-10.zip"
+        },
+        {
+          "checksum_sha256": "5134fdf4319d629473f8cff1e66dc74180844ae2846ab41a8128466ab3682c2f",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2025-11.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2025-11.5134fdf4319d629473f8cff1e66dc74180844ae2846ab41a8128466ab3682c2f.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2025-11.zip"
+        },
+        {
+          "checksum_sha256": "01db13c460b0190736e1da019c7fcd7ea0abbf3b047e16d3aa8a9e9acec3101f",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2025-12.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2025-12.01db13c460b0190736e1da019c7fcd7ea0abbf3b047e16d3aa8a9e9acec3101f.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2025-12.zip"
+        },
+        {
+          "checksum_sha256": "c53be79aae38a1f35e94880f106df4eceab57bfa74a0b5fc5852fdfabf57ab8e",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2026-01.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2026-01.c53be79aae38a1f35e94880f106df4eceab57bfa74a0b5fc5852fdfabf57ab8e.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2026-01.zip"
+        },
+        {
+          "checksum_sha256": "84cb9bcf44ba1364b37db876e7c852aa1b831371556b610e2387115addec9d5f",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2026-02.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2026-02.84cb9bcf44ba1364b37db876e7c852aa1b831371556b610e2387115addec9d5f.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2026-02.zip"
+        },
+        {
+          "checksum_sha256": "75cfaea075d97779a577c3744ea63e3d83704f281806fb5f76f2d3e0f089fd2c",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2026-03.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2026-03.75cfaea075d97779a577c3744ea63e3d83704f281806fb5f76f2d3e0f089fd2c.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2026-03.zip"
+        },
+        {
+          "checksum_sha256": "951a280e98b6d20fe4be25bf2b71f3cda1c07c7583a88cb874151e2b1fe941f1",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2026-04.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2026-04.951a280e98b6d20fe4be25bf2b71f3cda1c07c7583a88cb874151e2b1fe941f1.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2026-04.zip"
+        },
+        {
+          "checksum_sha256": "c13066e5f7c5d161dbebd488cbeaab1205688c6dc7f9fafcc8f94296f2c1e47b",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2026-05.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2026-05.c13066e5f7c5d161dbebd488cbeaab1205688c6dc7f9fafcc8f94296f2c1e47b.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2026-05.zip"
+        },
+        {
+          "checksum_sha256": "8d32fa3153d54c58667650e8b2c65e489b3a433b775052a93208bf60541a40d3",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2026-06.zip.CHECKSUM",
+          "local_path": "raw/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2026-06.8d32fa3153d54c58667650e8b2c65e489b3a433b775052a93208bf60541a40d3.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2026-06.zip"
+        }
+      ],
+      "max_calc_time_ms": 1782835200005,
+      "min_calc_time_ms": 1751328000007,
+      "normalized_shard_sha256": "c4fc7778955cdc7274722c85a11a214277936592dd1e14b3ca1cabaa1b1e4c1c",
+      "row_count": 1095,
+      "shard_file_sha256": "46466ddcd8593fb99356ed402a11d1d11280182caf67c9d2f132fb2e379ef273",
+      "shard_path": "shards/funding/SOLUSDT-fundingRate.c4fc7778955cdc7274722c85a11a214277936592dd1e14b3ca1cabaa1b1e4c1c.parquet",
+      "symbol": "SOLUSDT",
+      "transform_version": "rob941_corpus.v2"
+    }
+  ],
+  "klines": [
+    {
+      "archives": [
+        {
+          "checksum_sha256": "cf5fe0891c80e68d2d613eb5457100b7d886eee8cc913ccdd96ef45e757a5aaf",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2025-07.zip.CHECKSUM",
+          "local_path": "raw/klines/BTCUSDT/BTCUSDT-klines-2025-07.cf5fe0891c80e68d2d613eb5457100b7d886eee8cc913ccdd96ef45e757a5aaf.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2025-07.zip"
+        },
+        {
+          "checksum_sha256": "eaf41354fc1aa96eac94ee50b3fda603cd595f95030ebf30b2ab5bea7a4462c3",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2025-08.zip.CHECKSUM",
+          "local_path": "raw/klines/BTCUSDT/BTCUSDT-klines-2025-08.eaf41354fc1aa96eac94ee50b3fda603cd595f95030ebf30b2ab5bea7a4462c3.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2025-08.zip"
+        },
+        {
+          "checksum_sha256": "c296ba45c215934e9750ca82846c7b5d14be661649d8e4423eac834cf57330dc",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2025-09.zip.CHECKSUM",
+          "local_path": "raw/klines/BTCUSDT/BTCUSDT-klines-2025-09.c296ba45c215934e9750ca82846c7b5d14be661649d8e4423eac834cf57330dc.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2025-09.zip"
+        },
+        {
+          "checksum_sha256": "bb7f53350fe27b6d8e38b5856ffc43f9ecda9d568d5bf31d0db0cd011da7100f",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2025-10.zip.CHECKSUM",
+          "local_path": "raw/klines/BTCUSDT/BTCUSDT-klines-2025-10.bb7f53350fe27b6d8e38b5856ffc43f9ecda9d568d5bf31d0db0cd011da7100f.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2025-10.zip"
+        },
+        {
+          "checksum_sha256": "981da0b054f99b959fe6245fb363336b46908d358f37251d59bad308f375bc54",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2025-11.zip.CHECKSUM",
+          "local_path": "raw/klines/BTCUSDT/BTCUSDT-klines-2025-11.981da0b054f99b959fe6245fb363336b46908d358f37251d59bad308f375bc54.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2025-11.zip"
+        },
+        {
+          "checksum_sha256": "2d5b2e1887dac1dfe450010877de7203a72e19df7a771067b980bbb07ad3069c",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2025-12.zip.CHECKSUM",
+          "local_path": "raw/klines/BTCUSDT/BTCUSDT-klines-2025-12.2d5b2e1887dac1dfe450010877de7203a72e19df7a771067b980bbb07ad3069c.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2025-12.zip"
+        },
+        {
+          "checksum_sha256": "58e9c620a6acda209d25766b3cf4262f3104649f5c26f247d933e0da8bb7946f",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2026-01.zip.CHECKSUM",
+          "local_path": "raw/klines/BTCUSDT/BTCUSDT-klines-2026-01.58e9c620a6acda209d25766b3cf4262f3104649f5c26f247d933e0da8bb7946f.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2026-01.zip"
+        },
+        {
+          "checksum_sha256": "805626ad2dc5b704d52c211996d12e9e4b1be234998f3dba4b3d34ff79be0337",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2026-02.zip.CHECKSUM",
+          "local_path": "raw/klines/BTCUSDT/BTCUSDT-klines-2026-02.805626ad2dc5b704d52c211996d12e9e4b1be234998f3dba4b3d34ff79be0337.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2026-02.zip"
+        },
+        {
+          "checksum_sha256": "c472a865f230bf1b5b17e124770a83c083144e3e11a115733288fb8f3e3b8baa",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2026-03.zip.CHECKSUM",
+          "local_path": "raw/klines/BTCUSDT/BTCUSDT-klines-2026-03.c472a865f230bf1b5b17e124770a83c083144e3e11a115733288fb8f3e3b8baa.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2026-03.zip"
+        },
+        {
+          "checksum_sha256": "515b86570f0c6924f6dc2cf90589d3db90f3de9c6bfd9a22dde0429995dc5405",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2026-04.zip.CHECKSUM",
+          "local_path": "raw/klines/BTCUSDT/BTCUSDT-klines-2026-04.515b86570f0c6924f6dc2cf90589d3db90f3de9c6bfd9a22dde0429995dc5405.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2026-04.zip"
+        },
+        {
+          "checksum_sha256": "d91548e94220d5211bb32447cc4b604ee266d145f2092edc5ec613328cbbc20a",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2026-05.zip.CHECKSUM",
+          "local_path": "raw/klines/BTCUSDT/BTCUSDT-klines-2026-05.d91548e94220d5211bb32447cc4b604ee266d145f2092edc5ec613328cbbc20a.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2026-05.zip"
+        },
+        {
+          "checksum_sha256": "9b214199eb5063585c7ed0f59ba19323326d68ac024b85106713989399204490",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2026-06.zip.CHECKSUM",
+          "local_path": "raw/klines/BTCUSDT/BTCUSDT-klines-2026-06.9b214199eb5063585c7ed0f59ba19323326d68ac024b85106713989399204490.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2026-06.zip"
+        }
+      ],
+      "gap_ranges": [],
+      "interval": "1m",
+      "max_open_time_ms": 1782863940000,
+      "min_open_time_ms": 1751328000000,
+      "normalized_shard_sha256": "8f43af68dbf401b0c3a2a800c3dd0d0675a78458d179bcd93964d634c2d90939",
+      "row_count": 525600,
+      "shard_file_sha256": "5646bb252f0e5d0733f6ebfa13eaec39238e84aa5cc5a5f5f4c82bcd92952d54",
+      "shard_path": "shards/klines/BTCUSDT-1m.8f43af68dbf401b0c3a2a800c3dd0d0675a78458d179bcd93964d634c2d90939.parquet",
+      "symbol": "BTCUSDT",
+      "transform_version": "rob941_corpus.v2"
+    },
+    {
+      "archives": [
+        {
+          "checksum_sha256": "6f5f7faa96370dacb4792b18ce628d3ff8b0a5fa4cd10063e55065e03ff9f53d",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2025-07.zip.CHECKSUM",
+          "local_path": "raw/klines/XRPUSDT/XRPUSDT-klines-2025-07.6f5f7faa96370dacb4792b18ce628d3ff8b0a5fa4cd10063e55065e03ff9f53d.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2025-07.zip"
+        },
+        {
+          "checksum_sha256": "823e87bba1c53bebffd8074ee190adfae55c489936ff5d539fcdf54e1ea68633",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2025-08.zip.CHECKSUM",
+          "local_path": "raw/klines/XRPUSDT/XRPUSDT-klines-2025-08.823e87bba1c53bebffd8074ee190adfae55c489936ff5d539fcdf54e1ea68633.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2025-08.zip"
+        },
+        {
+          "checksum_sha256": "0f47e24c9e133c09d0df6756e224c2547d5e1ca3c9ba7af77232d1e9368330fb",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2025-09.zip.CHECKSUM",
+          "local_path": "raw/klines/XRPUSDT/XRPUSDT-klines-2025-09.0f47e24c9e133c09d0df6756e224c2547d5e1ca3c9ba7af77232d1e9368330fb.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2025-09.zip"
+        },
+        {
+          "checksum_sha256": "9ba37c1fb1bded7e554dbfc9221c126cdb8bf4c569b4b5c639e83bcda38b6b3e",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2025-10.zip.CHECKSUM",
+          "local_path": "raw/klines/XRPUSDT/XRPUSDT-klines-2025-10.9ba37c1fb1bded7e554dbfc9221c126cdb8bf4c569b4b5c639e83bcda38b6b3e.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2025-10.zip"
+        },
+        {
+          "checksum_sha256": "dd62352ab1fc3b2e8f5f235c7c775044432a493c8a5ab732f709acfe1c8f62bc",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2025-11.zip.CHECKSUM",
+          "local_path": "raw/klines/XRPUSDT/XRPUSDT-klines-2025-11.dd62352ab1fc3b2e8f5f235c7c775044432a493c8a5ab732f709acfe1c8f62bc.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2025-11.zip"
+        },
+        {
+          "checksum_sha256": "821efe300f5a66a68fe468e45fe9094431fac70b62a909c4aa7cc97239c4ce4c",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2025-12.zip.CHECKSUM",
+          "local_path": "raw/klines/XRPUSDT/XRPUSDT-klines-2025-12.821efe300f5a66a68fe468e45fe9094431fac70b62a909c4aa7cc97239c4ce4c.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2025-12.zip"
+        },
+        {
+          "checksum_sha256": "8612f9c3796982d55feb1696d4a08407e4910d40cfce25e71b0172dea32b9847",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2026-01.zip.CHECKSUM",
+          "local_path": "raw/klines/XRPUSDT/XRPUSDT-klines-2026-01.8612f9c3796982d55feb1696d4a08407e4910d40cfce25e71b0172dea32b9847.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2026-01.zip"
+        },
+        {
+          "checksum_sha256": "58bff9b0136a1584414b6d24133279c02a56030da7625942c286e9d11f3d37a3",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2026-02.zip.CHECKSUM",
+          "local_path": "raw/klines/XRPUSDT/XRPUSDT-klines-2026-02.58bff9b0136a1584414b6d24133279c02a56030da7625942c286e9d11f3d37a3.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2026-02.zip"
+        },
+        {
+          "checksum_sha256": "38b4f4f23cd92c23b37c2fea4e827540af06c8a0e2330bff8491acaf3d14e794",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2026-03.zip.CHECKSUM",
+          "local_path": "raw/klines/XRPUSDT/XRPUSDT-klines-2026-03.38b4f4f23cd92c23b37c2fea4e827540af06c8a0e2330bff8491acaf3d14e794.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2026-03.zip"
+        },
+        {
+          "checksum_sha256": "e887d411a37786bfd83d3fcbe7561801529d3c9e012d90b420c628226253d63a",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2026-04.zip.CHECKSUM",
+          "local_path": "raw/klines/XRPUSDT/XRPUSDT-klines-2026-04.e887d411a37786bfd83d3fcbe7561801529d3c9e012d90b420c628226253d63a.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2026-04.zip"
+        },
+        {
+          "checksum_sha256": "6733b41f25b4a278a67ae6002e5f20c089a61ae864d99c9d1b002e375c932f9b",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2026-05.zip.CHECKSUM",
+          "local_path": "raw/klines/XRPUSDT/XRPUSDT-klines-2026-05.6733b41f25b4a278a67ae6002e5f20c089a61ae864d99c9d1b002e375c932f9b.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2026-05.zip"
+        },
+        {
+          "checksum_sha256": "b49faed75492e1136f2dc3f8cad1328e55c3179368ba80b85e1f961d536a8a47",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2026-06.zip.CHECKSUM",
+          "local_path": "raw/klines/XRPUSDT/XRPUSDT-klines-2026-06.b49faed75492e1136f2dc3f8cad1328e55c3179368ba80b85e1f961d536a8a47.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/XRPUSDT/1m/XRPUSDT-1m-2026-06.zip"
+        }
+      ],
+      "gap_ranges": [],
+      "interval": "1m",
+      "max_open_time_ms": 1782863940000,
+      "min_open_time_ms": 1751328000000,
+      "normalized_shard_sha256": "72139b566eaf9ca97bba792a3458b05c1cfe028e1309a0d8517b2fac88fdc630",
+      "row_count": 525600,
+      "shard_file_sha256": "8f58bde502bdef60d7b4a29bc7f27b97d20fb7b0f7076452ad92a56743448db4",
+      "shard_path": "shards/klines/XRPUSDT-1m.72139b566eaf9ca97bba792a3458b05c1cfe028e1309a0d8517b2fac88fdc630.parquet",
+      "symbol": "XRPUSDT",
+      "transform_version": "rob941_corpus.v2"
+    },
+    {
+      "archives": [
+        {
+          "checksum_sha256": "6c6858a61ec39254b54a40fd864bef0cacd99a3a244bb9b0e5cec0acbe6eb631",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2025-07.zip.CHECKSUM",
+          "local_path": "raw/klines/DOGEUSDT/DOGEUSDT-klines-2025-07.6c6858a61ec39254b54a40fd864bef0cacd99a3a244bb9b0e5cec0acbe6eb631.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2025-07.zip"
+        },
+        {
+          "checksum_sha256": "1a69ffc39419bb27c12e019de4809e086e40bf620e40e8a044762ba62095026e",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2025-08.zip.CHECKSUM",
+          "local_path": "raw/klines/DOGEUSDT/DOGEUSDT-klines-2025-08.1a69ffc39419bb27c12e019de4809e086e40bf620e40e8a044762ba62095026e.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2025-08.zip"
+        },
+        {
+          "checksum_sha256": "34dac0a3873c158dd3e6126719e0e931ee305f6a1ce56e1a68c5c05b00284b3d",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2025-09.zip.CHECKSUM",
+          "local_path": "raw/klines/DOGEUSDT/DOGEUSDT-klines-2025-09.34dac0a3873c158dd3e6126719e0e931ee305f6a1ce56e1a68c5c05b00284b3d.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2025-09.zip"
+        },
+        {
+          "checksum_sha256": "c2e2ef77ee80bd0d0fef438a5f24dc2f4765de6e3ef0ab36797d1bfb20731bd5",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2025-10.zip.CHECKSUM",
+          "local_path": "raw/klines/DOGEUSDT/DOGEUSDT-klines-2025-10.c2e2ef77ee80bd0d0fef438a5f24dc2f4765de6e3ef0ab36797d1bfb20731bd5.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2025-10.zip"
+        },
+        {
+          "checksum_sha256": "613eba1df328da3b171bd0fe975e2dd1047e0ac535c49a71aad0649ba3da4d6c",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2025-11.zip.CHECKSUM",
+          "local_path": "raw/klines/DOGEUSDT/DOGEUSDT-klines-2025-11.613eba1df328da3b171bd0fe975e2dd1047e0ac535c49a71aad0649ba3da4d6c.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2025-11.zip"
+        },
+        {
+          "checksum_sha256": "c7d230dcded82fe00f47546094318bb67b7477fe202aac48075237f30cda8840",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2025-12.zip.CHECKSUM",
+          "local_path": "raw/klines/DOGEUSDT/DOGEUSDT-klines-2025-12.c7d230dcded82fe00f47546094318bb67b7477fe202aac48075237f30cda8840.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2025-12.zip"
+        },
+        {
+          "checksum_sha256": "b1461ec0ea96fe535e72780b698471907136df72c97a360628c6b65ae6dd5cae",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2026-01.zip.CHECKSUM",
+          "local_path": "raw/klines/DOGEUSDT/DOGEUSDT-klines-2026-01.b1461ec0ea96fe535e72780b698471907136df72c97a360628c6b65ae6dd5cae.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2026-01.zip"
+        },
+        {
+          "checksum_sha256": "2fa5c67037194c73e823abb111331334e07e5d4f0eaa6704fd879983971e8755",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2026-02.zip.CHECKSUM",
+          "local_path": "raw/klines/DOGEUSDT/DOGEUSDT-klines-2026-02.2fa5c67037194c73e823abb111331334e07e5d4f0eaa6704fd879983971e8755.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2026-02.zip"
+        },
+        {
+          "checksum_sha256": "ba4758aaa2fb1bd5be4f120d21cf5c94d7e315d38918080ee880b36dc60b7841",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2026-03.zip.CHECKSUM",
+          "local_path": "raw/klines/DOGEUSDT/DOGEUSDT-klines-2026-03.ba4758aaa2fb1bd5be4f120d21cf5c94d7e315d38918080ee880b36dc60b7841.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2026-03.zip"
+        },
+        {
+          "checksum_sha256": "31a8edfd1f029e3ee08d7824b6352e898828cc8d3e2c71b7cd02b3c9b2637bf5",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2026-04.zip.CHECKSUM",
+          "local_path": "raw/klines/DOGEUSDT/DOGEUSDT-klines-2026-04.31a8edfd1f029e3ee08d7824b6352e898828cc8d3e2c71b7cd02b3c9b2637bf5.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2026-04.zip"
+        },
+        {
+          "checksum_sha256": "109a1d0020c4710c1aa86b8773795b21326d038d795b224e1758bf9091c4e110",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2026-05.zip.CHECKSUM",
+          "local_path": "raw/klines/DOGEUSDT/DOGEUSDT-klines-2026-05.109a1d0020c4710c1aa86b8773795b21326d038d795b224e1758bf9091c4e110.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2026-05.zip"
+        },
+        {
+          "checksum_sha256": "90b1a9a55146505876a5b0469b69e8606194b018beec06094be8b4babd37c8b4",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2026-06.zip.CHECKSUM",
+          "local_path": "raw/klines/DOGEUSDT/DOGEUSDT-klines-2026-06.90b1a9a55146505876a5b0469b69e8606194b018beec06094be8b4babd37c8b4.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/DOGEUSDT/1m/DOGEUSDT-1m-2026-06.zip"
+        }
+      ],
+      "gap_ranges": [],
+      "interval": "1m",
+      "max_open_time_ms": 1782863940000,
+      "min_open_time_ms": 1751328000000,
+      "normalized_shard_sha256": "26bed8cc351e40c35eda1636eef518fae613cc16713a0d3a206f08e95288c5c4",
+      "row_count": 525600,
+      "shard_file_sha256": "f6405ee6c99c7ece8e005067753b2b5772482d1f307aa41f5e94124ec3819a03",
+      "shard_path": "shards/klines/DOGEUSDT-1m.26bed8cc351e40c35eda1636eef518fae613cc16713a0d3a206f08e95288c5c4.parquet",
+      "symbol": "DOGEUSDT",
+      "transform_version": "rob941_corpus.v2"
+    },
+    {
+      "archives": [
+        {
+          "checksum_sha256": "6a11ec2b081657fd4850b61cb1f28e2217913ac1a309c484169f080733320ee7",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2025-07.zip.CHECKSUM",
+          "local_path": "raw/klines/SOLUSDT/SOLUSDT-klines-2025-07.6a11ec2b081657fd4850b61cb1f28e2217913ac1a309c484169f080733320ee7.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2025-07.zip"
+        },
+        {
+          "checksum_sha256": "9916be68e1e354b1d2ad30e09ca2f0552ddbf9a3ad64d2854bd54016463b56a6",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2025-08.zip.CHECKSUM",
+          "local_path": "raw/klines/SOLUSDT/SOLUSDT-klines-2025-08.9916be68e1e354b1d2ad30e09ca2f0552ddbf9a3ad64d2854bd54016463b56a6.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2025-08.zip"
+        },
+        {
+          "checksum_sha256": "389290c0c468d168ea3b327d926e273aa9de639249e5101f443360eda4456b4e",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2025-09.zip.CHECKSUM",
+          "local_path": "raw/klines/SOLUSDT/SOLUSDT-klines-2025-09.389290c0c468d168ea3b327d926e273aa9de639249e5101f443360eda4456b4e.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2025-09.zip"
+        },
+        {
+          "checksum_sha256": "66542f68d37e6b8b071997ea07fa495abc01d3762acbf6476398c63f79128016",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2025-10.zip.CHECKSUM",
+          "local_path": "raw/klines/SOLUSDT/SOLUSDT-klines-2025-10.66542f68d37e6b8b071997ea07fa495abc01d3762acbf6476398c63f79128016.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2025-10.zip"
+        },
+        {
+          "checksum_sha256": "dbadf06d740261c21299abc82f3adeae1b41e4dbbcee8a5adca3e761f1896ce7",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2025-11.zip.CHECKSUM",
+          "local_path": "raw/klines/SOLUSDT/SOLUSDT-klines-2025-11.dbadf06d740261c21299abc82f3adeae1b41e4dbbcee8a5adca3e761f1896ce7.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2025-11.zip"
+        },
+        {
+          "checksum_sha256": "c9375b066069aaa4dbf33fbf7c79ca9db4a534b99d4ebd9f558ba2381e610636",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2025-12.zip.CHECKSUM",
+          "local_path": "raw/klines/SOLUSDT/SOLUSDT-klines-2025-12.c9375b066069aaa4dbf33fbf7c79ca9db4a534b99d4ebd9f558ba2381e610636.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2025-12.zip"
+        },
+        {
+          "checksum_sha256": "ac9cc536ec056e7c4fc4f391da5edbe778f59fb2a059670875d05285ebca3fcf",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2026-01.zip.CHECKSUM",
+          "local_path": "raw/klines/SOLUSDT/SOLUSDT-klines-2026-01.ac9cc536ec056e7c4fc4f391da5edbe778f59fb2a059670875d05285ebca3fcf.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2026-01.zip"
+        },
+        {
+          "checksum_sha256": "ad93c921265eb4a473ba91d21f8d02346d77330475740977cc7541a0ac1ec05a",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2026-02.zip.CHECKSUM",
+          "local_path": "raw/klines/SOLUSDT/SOLUSDT-klines-2026-02.ad93c921265eb4a473ba91d21f8d02346d77330475740977cc7541a0ac1ec05a.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2026-02.zip"
+        },
+        {
+          "checksum_sha256": "d705ca5ec2de775733be12c6e3f29bcf3204be15d7b0b273ec87a013fcaa612f",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2026-03.zip.CHECKSUM",
+          "local_path": "raw/klines/SOLUSDT/SOLUSDT-klines-2026-03.d705ca5ec2de775733be12c6e3f29bcf3204be15d7b0b273ec87a013fcaa612f.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2026-03.zip"
+        },
+        {
+          "checksum_sha256": "8ce6bb0ea598eecdfa2078cc1429c7fc4fc39a32d306d74184f137fa6ae8d3cb",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2026-04.zip.CHECKSUM",
+          "local_path": "raw/klines/SOLUSDT/SOLUSDT-klines-2026-04.8ce6bb0ea598eecdfa2078cc1429c7fc4fc39a32d306d74184f137fa6ae8d3cb.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2026-04.zip"
+        },
+        {
+          "checksum_sha256": "588bdc611885c6de2bd55df7f8fbc597147ca0eef33f6824e340d2bff1a04066",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2026-05.zip.CHECKSUM",
+          "local_path": "raw/klines/SOLUSDT/SOLUSDT-klines-2026-05.588bdc611885c6de2bd55df7f8fbc597147ca0eef33f6824e340d2bff1a04066.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2026-05.zip"
+        },
+        {
+          "checksum_sha256": "dcd12574ab820047a10c3e6977b69251b7285fe7998fa7aff6d73470c6637ecd",
+          "checksum_url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2026-06.zip.CHECKSUM",
+          "local_path": "raw/klines/SOLUSDT/SOLUSDT-klines-2026-06.dcd12574ab820047a10c3e6977b69251b7285fe7998fa7aff6d73470c6637ecd.zip",
+          "url": "https://data.binance.vision/data/futures/um/monthly/klines/SOLUSDT/1m/SOLUSDT-1m-2026-06.zip"
+        }
+      ],
+      "gap_ranges": [],
+      "interval": "1m",
+      "max_open_time_ms": 1782863940000,
+      "min_open_time_ms": 1751328000000,
+      "normalized_shard_sha256": "0dbad131fcfbf7aa3b02f685d2099a9ccd060b38b8c69edd271520eec6b0c2f9",
+      "row_count": 525600,
+      "shard_file_sha256": "1385c41fb3c4baaa9c81f363771f735b43b6dbda3167cde861b2def410d902ab",
+      "shard_path": "shards/klines/SOLUSDT-1m.0dbad131fcfbf7aa3b02f685d2099a9ccd060b38b8c69edd271520eec6b0c2f9.parquet",
+      "symbol": "SOLUSDT",
+      "transform_version": "rob941_corpus.v2"
+    }
+  ],
+  "universe": [
+    "BTCUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "SOLUSDT"
+  ],
+  "window_end_iso": "2026-07-01T00:00:00Z",
+  "window_start_iso": "2025-07-01T00:00:00Z"
+}
