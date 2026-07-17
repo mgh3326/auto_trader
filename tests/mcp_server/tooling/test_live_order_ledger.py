@@ -237,6 +237,134 @@ async def test_reconcile_cancelled_no_journal():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_reconcile_expired_marks_terminal_without_booking_fill_or_journal():
+    """ROB-952: terminal US DAY expiry closes the ledger, never a trade."""
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+
+    from app.mcp_server.tooling import live_order_ledger as ll
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence,
+        FillVerdict,
+    )
+
+    lid = await ll._save_live_order_ledger(
+        broker="kis",
+        account_scope="kis_live",
+        market="us",
+        symbol="GOOGL",
+        exchange="NASD",
+        market_symbol=None,
+        side="buy",
+        order_kind="limit",
+        quantity=1.0,
+        price=380.1,
+        amount=380.1,
+        currency="USD",
+        order_no="0031116724",
+        order_time="224201",
+        status="accepted",
+        response_code="0",
+        response_message=None,
+        raw_response=None,
+        reason=None,
+        thesis=None,
+        strategy=None,
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
+    )
+    row = await ll._load_live_ledger_row(lid)
+    expired = FillEvidence(
+        FillVerdict.EXPIRED, Decimal("0"), None, None, "expired", "us_day_order"
+    )
+
+    class _Adapter:
+        broker = "kis"
+        fetch_evidence = AsyncMock(return_value=expired)
+
+    with (
+        patch.object(ll, "get_evidence_adapter", return_value=_Adapter()),
+        patch.object(ll, "_save_order_fill", new=AsyncMock()) as save_fill,
+        patch.object(
+            ll, "_create_trade_journal_for_buy", new=AsyncMock()
+        ) as create_journal,
+        patch.object(ll, "_close_journals_on_sell", new=AsyncMock()) as close_journals,
+    ):
+        preview = await ll._reconcile_one_live_row(row, dry_run=True)
+        out = await ll._reconcile_one_live_row(row, dry_run=False)
+
+    assert preview["verdict"] == "expired"
+    assert preview["action"] == "would_mark_expired"
+    assert out["verdict"] == "expired"
+    assert out["action"] == "marked_expired"
+    save_fill.assert_not_awaited()
+    create_journal.assert_not_awaited()
+    close_journals.assert_not_awaited()
+    after = await ll._load_live_ledger_row(lid)
+    assert after.status == "expired"
+    assert after.filled_qty is None
+    assert after.trade_id is None
+    assert after.journal_id is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_evidence_fetch_failure_keeps_us_ledger_open() -> None:
+    """ROB-952: unavailable broker evidence remains fail-closed, never expiry."""
+    from unittest.mock import AsyncMock, patch
+
+    from app.mcp_server.tooling import live_order_ledger as ll
+
+    lid = await ll._save_live_order_ledger(
+        broker="kis",
+        account_scope="kis_live",
+        market="us",
+        symbol="GOOGL",
+        exchange="NASD",
+        market_symbol=None,
+        side="buy",
+        order_kind="limit",
+        quantity=1.0,
+        price=380.1,
+        amount=380.1,
+        currency="USD",
+        order_no="US-EVIDENCE-FAILURE",
+        order_time="224201",
+        status="accepted",
+        response_code="0",
+        response_message=None,
+        raw_response=None,
+        reason=None,
+        thesis=None,
+        strategy=None,
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
+    )
+    row = await ll._load_live_ledger_row(lid)
+
+    class _Adapter:
+        broker = "kis"
+        fetch_evidence = AsyncMock(side_effect=RuntimeError("history unavailable"))
+
+    with patch.object(ll, "get_evidence_adapter", return_value=_Adapter()):
+        with pytest.raises(RuntimeError, match="history unavailable"):
+            await ll._reconcile_one_live_row(row, dry_run=False)
+
+    after = await ll._load_live_ledger_row(lid)
+    assert after.status == "accepted"
+    assert after.filled_qty is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_live_reconcile_impl_dry_run_empty():
     from app.mcp_server.tooling import live_order_ledger as ll
 
