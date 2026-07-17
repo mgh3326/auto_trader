@@ -284,6 +284,11 @@ async def _close_journals_on_sell(
             elif remaining_qty > 0 and journal_qty <= remaining_qty:
                 remaining_qty -= journal_qty
             elif remaining_qty > 0 and journal_qty > remaining_qty:
+                # Partial sell smaller than the oldest active lot: intentionally stop
+                # here without consuming any lot (no lot-splitting). This is the
+                # designed behavior behind journals_closed=0 / security_pnl_usd=null
+                # on such sells (ROB-955 F3) — not a bug. See
+                # docs/runbooks/live-order-reconcile.md "journals_closed=0 진단".
                 break
             else:
                 break
