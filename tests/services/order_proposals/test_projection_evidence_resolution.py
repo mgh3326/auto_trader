@@ -174,6 +174,103 @@ async def test_duplicate_broker_id_is_classified_separately(db_session, broker_s
         )
 
 
+async def test_disjoint_broker_and_correlation_keys_are_a_conflict(
+    db_session, broker_scope
+):
+    account_mode, market, symbol = broker_scope
+    unique = uuid4().hex
+    await _resting_rung(
+        db_session,
+        account_mode=account_mode,
+        market=market,
+        symbol=symbol,
+        broker_order_id=f"broker-b-{unique}",
+        correlation_id=f"corr-b-{unique}",
+    )
+    terminal_proposal, _ = await _resting_rung(
+        db_session,
+        account_mode=account_mode,
+        market=market,
+        symbol=symbol,
+        broker_order_id=f"broker-a-{unique}",
+        correlation_id=f"corr-a-{unique}",
+    )
+    service = OrderProposalsService(db_session)
+    await service.transition_rung(terminal_proposal, 0, new_state="filled")
+    with pytest.raises(OrderProposalError, match="proposal_evidence_conflict"):
+        await service.find_unambiguous_evidence_rung_id(
+            broker_order_id=f"broker-b-{unique}",
+            correlation_id=f"corr-a-{unique}",
+            account_mode=account_mode,
+            market=market,
+            symbol=symbol,
+        )
+
+
+async def test_disjoint_broker_and_client_id_keys_are_a_conflict(
+    db_session, broker_scope
+):
+    account_mode, market, symbol = broker_scope
+    unique = uuid4().hex
+    await _resting_rung(
+        db_session,
+        account_mode=account_mode,
+        market=market,
+        symbol=symbol,
+        broker_order_id=f"broker-b-{unique}",
+        correlation_id=None,
+    )
+    terminal_proposal, _ = await _resting_rung(
+        db_session,
+        account_mode=account_mode,
+        market=market,
+        symbol=symbol,
+        broker_order_id=f"broker-a-{unique}",
+        correlation_id=None,
+        idempotency_key=f"client-a-{unique}",
+    )
+    service = OrderProposalsService(db_session)
+    await service.transition_rung(terminal_proposal, 0, new_state="filled")
+    with pytest.raises(OrderProposalError, match="proposal_evidence_conflict"):
+        await service.find_unambiguous_evidence_rung_id(
+            broker_order_id=f"broker-b-{unique}",
+            correlation_id=None,
+            idempotency_key=f"client-a-{unique}",
+            account_mode=account_mode,
+            market=market,
+            symbol=symbol,
+        )
+
+
+async def test_overlapping_multi_rung_intersection_is_ambiguous(
+    db_session, broker_scope
+):
+    account_mode, market, symbol = broker_scope
+    unique = uuid4().hex
+    corr = f"corr-shared-{unique}"
+    idempotency_key = f"idem-shared-{unique}"
+    for index in range(2):
+        await _resting_rung(
+            db_session,
+            account_mode=account_mode,
+            market=market,
+            symbol=symbol,
+            broker_order_id=f"broker-{index}-{unique}",
+            correlation_id=corr,
+            idempotency_key=idempotency_key,
+        )
+    service = OrderProposalsService(db_session)
+    with pytest.raises(OrderProposalError, match="proposal_evidence_ambiguous"):
+        await service.find_unambiguous_evidence_rung_id(
+            broker_order_id=None,
+            correlation_id=corr,
+            idempotency_key=idempotency_key,
+            account_mode=account_mode,
+            market=market,
+            symbol=symbol,
+        )
+
+
 async def test_superseded_shared_client_id_uses_intersection_not_key_priority(
     db_session, broker_scope
 ):
