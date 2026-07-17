@@ -59,9 +59,13 @@ from rob945_accounting_seal import (
     PRIMARY_ATTEMPT_NOT_COMPLETED_REASON,
     RETRIES_PRESENT_REASON,
     ScorecardInputError,
+    _recompute_fold_evidence_hash_and_run_identity,
     seal_trial_accounting,
 )
-from run_rob944_campaign import _summary_to_attempt_evidence
+from run_rob944_campaign import (
+    _global_failure_evidence_batch,
+    _summary_to_attempt_evidence,
+)
 
 from research_contracts.canonical_hash import canonical_sha256
 
@@ -225,6 +229,26 @@ def _all_24_completed_attempts() -> list[dict]:
     return _real_attempts_for(DEFAULT_WALKFORWARD_RESULTS)
 
 
+def _experiment_id_by_key() -> dict:
+    return {
+        (_STRATEGY_KEY[cid[:2]], cid): eid
+        for eid, cid in _EXPERIMENT_ID_TO_CONFIG_ID.items()
+    }
+
+
+def _all_24_global_failure_attempts() -> list[dict]:
+    """The REAL, authentic 24-row global-corpus-load-failed fallback batch
+    (``run_rob944_campaign._global_failure_evidence_batch`` -- the actual
+    H6-build boundary for this whole-campaign sentinel), never a hand-rolled
+    approximation."""
+    batch = _global_failure_evidence_batch(
+        _experiment_id_by_key(),
+        full_campaign_hash=FULL_CAMPAIGN_HASH,
+        campaign_run_id=CAMPAIGN_RUN_ID,
+    )
+    return [e.model_dump() for e in batch]
+
+
 def _hand_built_attempt(
     experiment_id: str,
     *,
@@ -278,12 +302,21 @@ def _clean_report(**overrides) -> dict:
     return report
 
 
+# Production `seal_trial_accounting` now gives `walkforward_results=None`
+# a REAL meaning (the genuine global-corpus-load-failure producer state,
+# Task 1C/I4) -- this helper's own "caller omitted the kwarg, use my
+# default fixture" convenience can therefore no longer reuse `None` as ITS
+# sentinel, or every test that explicitly wants to exercise the real `None`
+# semantics would be indistinguishable from one that simply didn't care.
+_UNSET = object()
+
+
 def _seal(
     *,
     attempt_evidence=None,
     accounting_report=None,
     full_campaign_hash=None,
-    walkforward_results=None,
+    walkforward_results=_UNSET,
 ):
     return seal_trial_accounting(
         accounting_report=accounting_report
@@ -295,9 +328,9 @@ def _seal(
         full_campaign_hash=full_campaign_hash
         if full_campaign_hash is not None
         else FULL_CAMPAIGN_HASH,
-        walkforward_results=walkforward_results
-        if walkforward_results is not None
-        else DEFAULT_WALKFORWARD_RESULTS,
+        walkforward_results=DEFAULT_WALKFORWARD_RESULTS
+        if walkforward_results is _UNSET
+        else walkforward_results,
     )
 
 
@@ -419,11 +452,53 @@ def test_rejects_negative_retry_index():
         _seal(attempt_evidence=attempts)
 
 
+def _legit_retry_attempt(
+    experiment_id: str, *, retry_index: int, walkforward_results=None
+) -> dict:
+    """A retry row that legitimately cross-binds against the SAME real H4
+    summary as the primary for this experiment_id, at a different
+    retry_index -- fold_evidence_hash/scenario_evidence are unchanged
+    (identity/status-derived, retry-index-independent), run_identity
+    differs since its own payload embeds retry_index (Task 1C, I5:
+    non-primary attempts are cross-bound too, using THAT row's retry_index)."""
+    wf = walkforward_results or DEFAULT_WALKFORWARD_RESULTS
+    config_id = _EXPERIMENT_ID_TO_CONFIG_ID[experiment_id]
+    strategy = config_id[:2]
+    summary = next(
+        s
+        for s in summarize_config_attempts_for_h6(wf[strategy])
+        if s.config_id == config_id
+    )
+    fold_hash, run_identity = _recompute_fold_evidence_hash_and_run_identity(
+        summary,
+        full_campaign_hash=FULL_CAMPAIGN_HASH,
+        campaign_run_id=CAMPAIGN_RUN_ID,
+        strategy_key=_STRATEGY_KEY[strategy],
+        experiment_id=experiment_id,
+        retry_index=retry_index,
+    )
+    row = _hand_built_attempt(
+        experiment_id,
+        retry_index=retry_index,
+        status=summary.status,
+        reason_code=summary.reason_code,
+    )
+    row["fold_evidence_hash"] = fold_hash
+    row["run_identity"] = run_identity
+    row["scenario_evidence"] = [
+        {
+            "scenario_name": s.scenario_name,
+            "trade_count": s.trade_count,
+            "artifact_hash": s.artifact_hash,
+        }
+        for s in sorted(summary.scenario_summaries, key=lambda r: r.scenario_name)
+    ]
+    return row
+
+
 def test_a_contiguous_explicit_retry_forces_performance_usable_false_but_is_not_malformed():
     attempts = _all_24_completed_attempts()
-    retry_row = _hand_built_attempt(
-        FROZEN_EXPERIMENT_IDS[0], retry_index=1, status="completed"
-    )
+    retry_row = _legit_retry_attempt(FROZEN_EXPERIMENT_IDS[0], retry_index=1)
     attempts.append(retry_row)
     report = _clean_report(
         total_attempts=25,
@@ -434,6 +509,29 @@ def test_a_contiguous_explicit_retry_forces_performance_usable_false_but_is_not_
     assert sealed.accounting_complete is True
     assert sealed.performance_usable is False
     assert RETRIES_PRESENT_REASON in sealed.reason_codes
+
+
+def test_contiguous_retry_with_arbitrary_hashes_fails_cross_bind():
+    """Task 1C (I5): cross-binding previously applied ONLY to primaries --
+    a contiguous retry (retry_index=1) with forged/arbitrary
+    fold_evidence_hash/run_identity/scenario_evidence was silently
+    accepted (never validated against the real H4 summary), letting the
+    campaign seal as merely "incomplete" (retries present) without ever
+    checking that retry's own claimed evidence. Every normal-path attempt
+    (not just primaries) must be cross-bound."""
+    attempts = _all_24_completed_attempts()
+    forged_retry = _hand_built_attempt(
+        FROZEN_EXPERIMENT_IDS[0], retry_index=1, status="completed"
+    )
+    attempts.append(forged_retry)
+    report = _clean_report(
+        total_attempts=25,
+        retry_attempts=1,
+        status_counts={"completed": 25, "rejected": 0, "crashed": 0, "timeout": 0},
+    )
+    with pytest.raises(ScorecardInputError) as exc_info:
+        _seal(attempt_evidence=attempts, accounting_report=report)
+    assert CROSS_BIND_MISMATCH_REASON in str(exc_info.value)
 
 
 def test_a_retry_gap_is_internally_inconsistent_and_raises():
@@ -518,13 +616,73 @@ def test_accepts_crashed_and_timeout_reason_codes_cross_bound():
         assert PRIMARY_ATTEMPT_NOT_COMPLETED_REASON in sealed.reason_codes
 
 
-def test_accepts_the_global_corpus_load_failed_crashed_sentinel_as_a_non_cross_bindable_exemption():
-    """A ``global_corpus_load_failed`` crashed row is a documented H4
-    fallback: it is emitted for ALL 24 experiments when the corpus never
-    loaded at all -- there is, by construction, no per-config
-    ``WalkForwardResult`` to cross-bind against. This one (status, reason)
-    pairing is the sole cross-bind exemption; every other combination is
-    still fully cross-bound."""
+def test_accepts_the_authentic_all_24_global_corpus_load_failed_sentinel():
+    """Task 1C (I4): the ``global_corpus_load_failed`` crashed sentinel is a
+    documented H4 WHOLE-CAMPAIGN fallback -- it is emitted for ALL 24
+    experiments identically when the corpus never loaded at all, never for
+    an individual row. The authentic 24-row batch (the real
+    ``run_rob944_campaign._global_failure_evidence_batch`` boundary) must
+    still seal successfully even though there is, by construction, no
+    per-config ``WalkForwardResult`` to cross-bind against.
+
+    Uses ``walkforward_results=None`` -- the GENUINE producer state for a
+    real corpus-load failure (H4 never even attempts a per-config
+    walk-forward). A fabricated stand-in WalkForwardResult would not be
+    the real producer state and must not be accepted as equivalent -- see
+    the conflict-control test below, which proves supplying a REAL
+    ``walkforward_results`` alongside this same evidence is rejected."""
+    attempts = _all_24_global_failure_attempts()
+    report = _clean_report(
+        status_counts={"completed": 0, "rejected": 0, "crashed": 24, "timeout": 0}
+    )
+    sealed = _seal(
+        attempt_evidence=attempts,
+        accounting_report=report,
+        walkforward_results=None,
+    )
+    assert sealed.accounting_complete is True
+    assert sealed.performance_usable is False
+    assert PRIMARY_ATTEMPT_NOT_COMPLETED_REASON in sealed.reason_codes
+
+
+def test_walkforward_results_none_with_non_fallback_evidence_is_malformed():
+    """Task 1C (I4): ``walkforward_results=None`` is malformed unless the
+    supplied evidence IS genuinely the authentic all-24 fallback claim --
+    normal (non-fallback) evidence always requires a real
+    ``walkforward_results`` mapping to cross-bind against."""
+    with pytest.raises(ScorecardInputError):
+        _seal(walkforward_results=None)
+
+
+def test_all_24_global_corpus_load_failed_claim_conflicting_with_real_completed_h4_fails():
+    """Task 1C (I4 conflict control): a corpus that never loaded could
+    never produce a genuinely "completed" per-config H4 result -- if the
+    caller's OWN ``walkforward_results`` shows real completions (as
+    ``DEFAULT_WALKFORWARD_RESULTS`` does) while attempt_evidence claims the
+    whole-campaign global-failure sentinel for all 24 rows, that claim is
+    directly contradicted by evidence the caller also supplied and must
+    fail cross-binding -- never silently accepted merely because every row
+    superficially matches the sentinel pairing."""
+    attempts = _all_24_global_failure_attempts()
+    report = _clean_report(
+        status_counts={"completed": 0, "rejected": 0, "crashed": 24, "timeout": 0}
+    )
+    with pytest.raises(ScorecardInputError) as exc_info:
+        _seal(
+            attempt_evidence=attempts,
+            accounting_report=report,
+            walkforward_results=DEFAULT_WALKFORWARD_RESULTS,
+        )
+    assert CROSS_BIND_MISMATCH_REASON in str(exc_info.value)
+
+
+def test_mixed_single_row_global_corpus_load_failed_claim_fails_cross_bind():
+    """Task 1C (I4): a single row claiming the (crashed,
+    global_corpus_load_failed) sentinel while the other 23 are real
+    completed H4 evidence is NOT the authentic whole-campaign fallback --
+    real H4 never emits this for an individual config while the rest of the
+    campaign ran normally. It must fail cross-binding against the real H4
+    evidence for that config, never be silently exempted."""
     attempts = _all_24_completed_attempts()
     attempts[0] = _hand_built_attempt(
         FROZEN_EXPERIMENT_IDS[0],
@@ -535,9 +693,29 @@ def test_accepts_the_global_corpus_load_failed_crashed_sentinel_as_a_non_cross_b
     report = _clean_report(
         status_counts={"completed": 23, "rejected": 0, "crashed": 1, "timeout": 0}
     )
-    sealed = _seal(attempt_evidence=attempts, accounting_report=report)
-    assert sealed.accounting_complete is True
-    assert PRIMARY_ATTEMPT_NOT_COMPLETED_REASON in sealed.reason_codes
+    with pytest.raises(ScorecardInputError) as exc_info:
+        _seal(attempt_evidence=attempts, accounting_report=report)
+    assert CROSS_BIND_MISMATCH_REASON in str(exc_info.value)
+
+
+def test_all_24_global_corpus_load_failed_claim_with_an_arbitrary_hash_fails():
+    """Task 1C (I4): even when ALL 24 primaries share the whole-campaign
+    sentinel pairing, each one's fold_evidence_hash/run_identity must still
+    byte-match H4's deterministic fallback recipe
+    (``run_rob944_campaign._global_failure_summaries``) -- an authentic-
+    looking but ARBITRARY hash on even one row must still fail closed."""
+    attempts = _all_24_global_failure_attempts()
+    attempts[0]["fold_evidence_hash"] = _hex64("arbitrary")
+    report = _clean_report(
+        status_counts={"completed": 0, "rejected": 0, "crashed": 24, "timeout": 0}
+    )
+    with pytest.raises(ScorecardInputError) as exc_info:
+        _seal(
+            attempt_evidence=attempts,
+            accounting_report=report,
+            walkforward_results=None,
+        )
+    assert CROSS_BIND_MISMATCH_REASON in str(exc_info.value)
 
 
 # -- Case 7: hash-format validation --
@@ -827,14 +1005,31 @@ def test_mutating_fold_evidence_hash_changes_the_trial_accounting_hash():
 def test_mutating_the_report_alone_changes_the_hash():
     """``mismatch_experiment_ids`` is the one report field this seal does
     not independently recompute from attempt evidence (no data available to
-    do so -- see module docstring); mutating it alone -- with no attempt
-    change -- still changes the trial_accounting_hash and correctly forces
-    ``accounting_complete=False``."""
+    do so -- see module docstring); mutating it alone still changes the
+    trial_accounting_hash and correctly forces ``accounting_complete=False``.
+
+    Real H6 only marks an ID `mismatch` when its expected frozen
+    registration is absent -- it can never ALSO have terminal evidence
+    supplied under that same experiment_id, so this is a real 23-attempt
+    mismatch vector (that row excluded), never a same-attempts-plus-mismatch
+    fixture."""
     baseline = _seal()
+    mismatched_id = FROZEN_EXPERIMENT_IDS[0]
+    mismatch_attempts = [
+        a
+        for a in _all_24_completed_attempts()
+        if a["attempt_key"]["experiment_id"] != mismatched_id
+    ]
     mutated_report = _clean_report(
-        mismatch_experiment_ids=[FROZEN_EXPERIMENT_IDS[0]], verdict="incomplete"
+        primary_attempts=23,
+        total_attempts=23,
+        status_counts={"completed": 23, "rejected": 0, "crashed": 0, "timeout": 0},
+        mismatch_experiment_ids=[mismatched_id],
+        verdict="incomplete",
     )
-    mutated = _seal(accounting_report=mutated_report)
+    mutated = _seal(
+        attempt_evidence=mismatch_attempts, accounting_report=mutated_report
+    )
     assert baseline.trial_accounting_hash != mutated.trial_accounting_hash
     assert mutated.accounting_complete is False
     assert mutated.performance_usable is False
@@ -889,10 +1084,38 @@ def test_actual_registrations_below_the_distinct_supplied_experiment_count_is_ma
         _seal(accounting_report=report)
 
 
-def test_actual_registrations_above_expected_total_is_malformed():
-    report = _clean_report(actual_registrations=25)
-    with pytest.raises(ScorecardInputError):
-        _seal(accounting_report=report)
+def test_actual_registrations_can_exceed_24_via_mismatch_multiplicity_with_no_extra_ids():
+    """Task 1C (I1, captain precision appendix): a single ``mismatch``
+    entry can itself correspond to MULTIPLE drifted registered candidates
+    sharing one params hash -- every such candidate inflates
+    ``actual_registrations`` while entering neither the supplied evidence
+    nor ``extra_experiment_ids`` (it IS one of the frozen 24, just
+    registered more than once). A `mismatch` entry means that exact frozen
+    registration's expected identity is absent -- so its row is EXCLUDED
+    from attempt_evidence (23 rows, not 24; an all-24 fixture claiming both
+    "this ID completed normally" AND "this ID is a registration mismatch"
+    would itself be internally contradictory). The serialized report
+    cannot reconstruct the multiplicity, so ``actual_registrations=25``
+    with exactly one mismatch ID and NO extra ID must seal as well-formed
+    incomplete, never raise -- there is no H5-observable finite upper
+    bound on this field."""
+    mismatched_id = FROZEN_EXPERIMENT_IDS[0]
+    attempts = [
+        a
+        for a in _all_24_completed_attempts()
+        if a["attempt_key"]["experiment_id"] != mismatched_id
+    ]
+    report = _clean_report(
+        actual_registrations=25,
+        primary_attempts=23,
+        total_attempts=23,
+        status_counts={"completed": 23, "rejected": 0, "crashed": 0, "timeout": 0},
+        mismatch_experiment_ids=[mismatched_id],
+        verdict="incomplete",
+    )
+    sealed = _seal(attempt_evidence=attempts, accounting_report=report)
+    assert sealed.accounting_complete is False
+    assert sealed.performance_usable is False
 
 
 def test_extra_experiment_ids_without_matching_attempt_evidence_is_well_formed_incomplete():
@@ -904,7 +1127,9 @@ def test_extra_experiment_ids_without_matching_attempt_evidence_is_well_formed_i
     not a raise."""
     attempts = _all_24_completed_attempts()
     report = _clean_report(
-        extra_experiment_ids=["some-unexpected-registered-id"], verdict="incomplete"
+        actual_registrations=25,  # 24 frozen + 1 extra registration
+        extra_experiment_ids=["some-unexpected-registered-id"],
+        verdict="incomplete",
     )
     sealed = _seal(attempt_evidence=attempts, accounting_report=report)
     assert sealed.accounting_complete is False
@@ -947,9 +1172,15 @@ def test_discrepancy_lists_normalize_to_canonical_order_regardless_of_input_orde
     DIFFERENT order must seal to byte-identical ``trial_accounting_hash``es
     -- discrepancy list order is normalized, never leaked into the hash."""
     ids = ["zzz-extra-a", "aaa-extra-b"]
-    report1 = _clean_report(extra_experiment_ids=list(ids), verdict="incomplete")
+    report1 = _clean_report(
+        actual_registrations=26,  # 24 frozen + 2 extra registrations
+        extra_experiment_ids=list(ids),
+        verdict="incomplete",
+    )
     report2 = _clean_report(
-        extra_experiment_ids=list(reversed(ids)), verdict="incomplete"
+        actual_registrations=26,
+        extra_experiment_ids=list(reversed(ids)),
+        verdict="incomplete",
     )
     sealed1 = _seal(accounting_report=report1)
     sealed2 = _seal(accounting_report=report2)
@@ -967,7 +1198,11 @@ def test_authentic_retry_gap_report_with_excluded_counters_is_accepted_as_incomp
     itself remains strictly cross-checked."""
     attempts = _all_24_completed_attempts()
     gapped_id = FROZEN_EXPERIMENT_IDS[0]
-    gap_row = _hand_built_attempt(gapped_id, retry_index=2, status="completed")
+    # Legitimate (cross-bindable) evidence at retry_index=2 -- I5 now
+    # cross-binds every normal-path attempt, so an arbitrary/forged hash
+    # here would raise for the WRONG reason (cross-bind mismatch) rather
+    # than exercising the gap-accounting behavior this test targets.
+    gap_row = _legit_retry_attempt(gapped_id, retry_index=2)
     attempts.append(gap_row)
     # H6 excludes the gapped experiment's 2 rows entirely from its own
     # counters here (23 clean primaries + the gapped group's rows neither
@@ -984,6 +1219,200 @@ def test_authentic_retry_gap_report_with_excluded_counters_is_accepted_as_incomp
     sealed = _seal(attempt_evidence=attempts, accounting_report=report)
     assert sealed.accounting_complete is False
     assert sealed.performance_usable is False
+
+
+# -- Task 1C (independent-audit strategy-audit-rob945-task1b-20260718-042347.md):
+# I1 authentic-incomplete round-trip / I2 gap-branch forged-aggregate bypass /
+# I3 cross-bind cardinality+identity / I4 whole-campaign-only exemption. --
+
+
+def test_actual_registrations_can_exceed_24_when_backed_by_extra_experiment_ids():
+    """I1 ('extra_actual_25'): real H6 semantics permit
+    ``actual_registrations`` to exceed the frozen 24 when backed by a
+    matching ``extra_experiment_ids`` entry (an extra IS an additional
+    registration beyond the frozen 24) -- this must seal as well-formed
+    incomplete, never raise."""
+    attempts = _all_24_completed_attempts()
+    report = _clean_report(
+        actual_registrations=25,
+        extra_experiment_ids=["some-unexpected-registered-id"],
+        verdict="incomplete",
+    )
+    sealed = _seal(attempt_evidence=attempts, accounting_report=report)
+    assert sealed.accounting_complete is False
+    assert sealed.performance_usable is False
+
+
+def test_mismatch_experiment_id_is_not_independently_reclassified_as_missing():
+    """I1 ('authentic_mismatch'): a frozen ID H6 legitimately classifies as
+    ``mismatch`` (a registration-time discrepancy this seal cannot recompute)
+    may have no retry_index==0 attempt evidence supplied at all -- the seal
+    must trust the caller's mismatch classification rather than ALSO
+    independently reclassifying it as ``missing`` and raising a spurious
+    cross-check conflict."""
+    attempts = _all_24_completed_attempts()[:23]
+    mismatched_id = FROZEN_EXPERIMENT_IDS[23]
+    report = _clean_report(
+        actual_registrations=24,
+        primary_attempts=23,
+        total_attempts=23,
+        status_counts={"completed": 23, "rejected": 0, "crashed": 0, "timeout": 0},
+        mismatch_experiment_ids=[mismatched_id],
+        verdict="incomplete",
+    )
+    sealed = _seal(attempt_evidence=attempts, accounting_report=report)
+    assert sealed.accounting_complete is False
+    assert sealed.performance_usable is False
+
+
+def test_retry_index_one_only_group_is_missing_not_duplicate_or_gap():
+    """I1 ('authentic_retry_only'): an experiment with a single
+    retry_index=1 evidence row and NO retry_index=0 primary is simply a
+    missing primary -- it must not ALSO be independently reclassified as a
+    duplicate/gap purely because its sole retry index isn't
+    contiguous-from-zero.
+
+    Captain counter-parity correction: the real H6 loop hits
+    ``retry_indices[0] != 0`` for this group, classifies it missing, and
+    `continue`s -- NONE of that group's rows enter
+    primary_attempts/total_attempts/retry_attempts/status_counts. The
+    authentic fixture therefore reports 23/23/0 and completed=23 (the
+    stray retry-only row is entirely excluded), never 24/1/24."""
+    attempts = _all_24_completed_attempts()[:23]
+    missing_id = FROZEN_EXPERIMENT_IDS[23]
+    stray_retry_row = _legit_retry_attempt(missing_id, retry_index=1)
+    attempts.append(stray_retry_row)
+    report = _clean_report(
+        actual_registrations=24,
+        primary_attempts=23,
+        total_attempts=23,
+        retry_attempts=0,
+        status_counts={"completed": 23, "rejected": 0, "crashed": 0, "timeout": 0},
+        missing_experiment_ids=[missing_id],
+        verdict="incomplete",
+    )
+    sealed = _seal(attempt_evidence=attempts, accounting_report=report)
+    assert sealed.accounting_complete is False
+    assert missing_id in sealed.report["missing_experiment_ids"]
+    assert missing_id not in sealed.report["duplicate_or_gap_experiment_ids"]
+
+
+def test_gap_branch_recomputes_non_gapped_counters_and_rejects_forged_zero_aggregates():
+    """I2: 24 valid primaries plus one extra retry_index=2 row (making one
+    experiment gapped) must have its non-gapped counters (primary/total/
+    status) cross-checked against the ACTUAL 23 non-gapped rows -- a report
+    forging these to all-zero must be rejected, not accepted merely because
+    it is internally self-consistent (0 == 0 + 0)."""
+    attempts = _all_24_completed_attempts()
+    gapped_id = FROZEN_EXPERIMENT_IDS[0]
+    gap_row = _hand_built_attempt(gapped_id, retry_index=2, status="completed")
+    attempts.append(gap_row)
+    forged_report = _clean_report(
+        actual_registrations=24,
+        primary_attempts=0,
+        total_attempts=0,
+        retry_attempts=0,
+        status_counts={"completed": 0, "rejected": 0, "crashed": 0, "timeout": 0},
+        duplicate_or_gap_experiment_ids=[gapped_id],
+        verdict="incomplete",
+    )
+    with pytest.raises(ScorecardInputError):
+        _seal(attempt_evidence=attempts, accounting_report=forged_report)
+
+
+def test_duplicate_config_attempt_result_in_walkforward_result_fails_closed():
+    """I3: a ``WalkForwardResult`` whose ``config_attempts`` contains a
+    duplicate ``config_id`` (13 rows, all 12 real configs present PLUS one
+    literal repeat -- never silently overwrite the earlier summary for that
+    config_id in ``summaries_by_strategy_config``) must fail closed. Using
+    the REAL, unmodified 24-attempt evidence set (matching the real S1
+    result byte-for-byte otherwise), this currently (bug) seals successfully
+    with ``accounting_complete=True``/``performance_usable=True``."""
+    real_s1 = DEFAULT_WALKFORWARD_RESULTS["S1"]
+    duplicated_attempts = real_s1.config_attempts + (real_s1.config_attempts[0],)
+    malformed_s1 = WalkForwardResult(
+        strategy="S1",
+        folds=real_s1.folds,
+        config_attempts=duplicated_attempts,
+        concatenated_oos_ledgers=real_s1.concatenated_oos_ledgers,
+    )
+    wf = dict(DEFAULT_WALKFORWARD_RESULTS)
+    wf["S1"] = malformed_s1
+    with pytest.raises(ScorecardInputError):
+        _seal(walkforward_results=wf)
+
+
+def test_walkforward_results_wrong_config_prefix_fails_closed():
+    """I3: a ``WalkForwardResult`` labeled ``strategy="S1"`` whose
+    ``config_attempts`` actually carry S2's config IDs must fail closed --
+    the exact frozen 12-config set per strategy is required, not just a
+    count of 12."""
+    real_s1 = DEFAULT_WALKFORWARD_RESULTS["S1"]
+    real_s2 = DEFAULT_WALKFORWARD_RESULTS["S2"]
+    wrong_prefix_s1 = WalkForwardResult(
+        strategy="S1",
+        folds=real_s1.folds,
+        config_attempts=real_s2.config_attempts,
+        concatenated_oos_ledgers=real_s1.concatenated_oos_ledgers,
+    )
+    wf = dict(DEFAULT_WALKFORWARD_RESULTS)
+    wf["S1"] = wrong_prefix_s1
+    with pytest.raises(ScorecardInputError):
+        _seal(walkforward_results=wf)
+
+
+def test_walkforward_results_wrong_strategy_key_binding_fails_closed_even_with_matching_hashes():
+    """I3: a caller-supplied ``walkforward_results`` dict slot whose key
+    ("S1") doesn't match the ``WalkForwardResult``'s own ``.strategy``
+    field ("S2") must fail -- even when the attacker forges EVERY one of
+    S1's 12 attempts' fold_evidence_hash/run_identity/scenario evidence to
+    be internally self-consistent with that SAME mislabeled per-config
+    summary set (proving this isn't merely caught by coincidental hash
+    divergence against unmodified real S1 evidence -- a single-row forge
+    alone still diverges on the OTHER 11 untouched real rows)."""
+    real_s1 = DEFAULT_WALKFORWARD_RESULTS["S1"]
+    mislabeled_s1 = WalkForwardResult(
+        strategy="S2",  # deliberately wrong -- dict key below is "S1"
+        folds=real_s1.folds,
+        config_attempts=real_s1.config_attempts,
+        concatenated_oos_ledgers=real_s1.concatenated_oos_ledgers,
+    )
+    mislabeled_summaries = {
+        s.config_id: s for s in summarize_config_attempts_for_h6(mislabeled_s1)
+    }
+    attempts = _all_24_completed_attempts()
+    for i, a in enumerate(attempts):
+        eid = a["attempt_key"]["experiment_id"]
+        config_id = _EXPERIMENT_ID_TO_CONFIG_ID[eid]
+        if not config_id.startswith("S1"):
+            continue
+        summary = mislabeled_summaries[config_id]
+        forged_fold_hash, forged_run_identity = (
+            _recompute_fold_evidence_hash_and_run_identity(
+                summary,
+                full_campaign_hash=FULL_CAMPAIGN_HASH,
+                campaign_run_id=CAMPAIGN_RUN_ID,
+                strategy_key=_STRATEGY_KEY["S1"],
+                experiment_id=eid,
+                retry_index=0,
+            )
+        )
+        forged_row = _hand_built_attempt(eid, retry_index=0, status="completed")
+        forged_row["fold_evidence_hash"] = forged_fold_hash
+        forged_row["run_identity"] = forged_run_identity
+        forged_row["scenario_evidence"] = [
+            {
+                "scenario_name": row.scenario_name,
+                "trade_count": row.trade_count,
+                "artifact_hash": row.artifact_hash,
+            }
+            for row in sorted(summary.scenario_summaries, key=lambda r: r.scenario_name)
+        ]
+        attempts[i] = forged_row
+    wf = dict(DEFAULT_WALKFORWARD_RESULTS)
+    wf["S1"] = mislabeled_s1
+    with pytest.raises(ScorecardInputError):
+        _seal(attempt_evidence=attempts, walkforward_results=wf)
 
 
 def test_sealed_report_status_counts_is_deeply_immutable_against_post_seal_mutation():

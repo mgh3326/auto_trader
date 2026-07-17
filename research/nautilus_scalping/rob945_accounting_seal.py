@@ -56,6 +56,8 @@ from rob944_walkforward import (
     REASON_DATA_GAP_IN_POSITION,
     REASON_GLOBAL_CORPUS_LOAD_FAILED,
     REASON_INSUFFICIENT_TRAIN_EVIDENCE_ALL_FOLDS,
+    ConfigAttemptEvidenceSummary,
+    ScenarioEvidenceSummary,
     WalkForwardResult,
     _json_safe_float_or_sentinel,
     summarize_config_attempts_for_h6,
@@ -84,6 +86,7 @@ __all__ = [
 _LOWERCASE_HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 
 EXPECTED_PRIMARY_ATTEMPT_COUNT = 24
+_EXPECTED_CONFIGS_PER_STRATEGY = 12
 _CANONICAL_SCENARIO_ORDER = ("base", "primary_stress", "upward_stress")
 _CLOSED_STATUSES = ("completed", "rejected", "crashed", "timeout")
 
@@ -238,7 +241,6 @@ def _validate_report_shape(
         value = report[int_field]
         _require(type(value) is int and value >= 0, ACCOUNTING_REPORT_MALFORMED_REASON)
     _require(report["expected_total"] == 24, ACCOUNTING_REPORT_MALFORMED_REASON)
-    _require(report["actual_registrations"] <= 24, ACCOUNTING_REPORT_MALFORMED_REASON)
 
     status_counts = report["status_counts"]
     _require(
@@ -273,6 +275,15 @@ def _validate_report_shape(
                 ACCOUNTING_REPORT_MALFORMED_REASON,
             )
         report[list_field] = sorted(value)
+
+    # Task 1C (I1, extra_actual_25 / captain precision correction): a
+    # single `mismatch` entry can itself correspond to MULTIPLE drifted
+    # registered candidates sharing one params hash -- the serialized
+    # report cannot reconstruct that multiplicity, so `actual_registrations`
+    # has NO knowable upper bound here (never invent one; an arbitrarily
+    # high value is a well-formed-incomplete registration fact, not
+    # malformed). Only a LOWER bound is knowable and is enforced once
+    # `by_experiment`/`extra_experiment_ids` are available, below.
 
     _require(
         report["verdict"] in ("complete", "incomplete"),
@@ -391,12 +402,50 @@ def _validate_attempt(
     )
 
 
-# The one documented (status, reason_code) pairing that is NOT cross-bound
-# against a per-config WalkForwardResult: a global corpus-load failure is,
-# by H4's own design, emitted identically for all 24 experiments with no
-# per-config walk-forward ever having run at all -- there is no
-# ConfigAttemptEvidenceSummary to cross-bind against by construction.
+# The one documented (status, reason_code) pairing that has no per-config
+# WalkForwardResult to cross-bind against by construction: a global
+# corpus-load failure is, by H4's own design, emitted identically for all
+# 24 experiments with no per-config walk-forward ever having run at all.
 _CROSS_BIND_EXEMPT_STATUS_REASON = ("crashed", REASON_GLOBAL_CORPUS_LOAD_FAILED)
+
+
+def _global_failure_summary_for(
+    strategy_key: str, config_id: str
+) -> ConfigAttemptEvidenceSummary:
+    """Mirrors ``run_rob944_campaign._global_failure_summaries``'s
+    deterministic per-config sentinel byte-for-bit (known-vector parity,
+    never importing ``app.*``) -- the ONLY legitimate shape for the
+    whole-campaign ``global_corpus_load_failed`` fallback. Every primary's
+    claimed fold_evidence_hash/run_identity is cross-bound against THIS,
+    never freely accepted merely because its (status, reason_code) pair
+    matches the sentinel."""
+    slug = config_id.split("-", 1)[0]
+    scenario_summaries = tuple(
+        ScenarioEvidenceSummary(
+            scenario_name=name,
+            status="crashed",
+            reason_code=REASON_GLOBAL_CORPUS_LOAD_FAILED,
+            trade_count=0,
+            artifact_hash=canonical_sha256(
+                {
+                    "strategy_key": strategy_key,
+                    "config_id": config_id,
+                    "scenario_name": name,
+                    "status": "crashed",
+                    "reason_code": REASON_GLOBAL_CORPUS_LOAD_FAILED,
+                }
+            ),
+            no_trade_reason_counts={},
+        )
+        for name in _CANONICAL_SCENARIO_ORDER
+    )
+    return ConfigAttemptEvidenceSummary(
+        strategy=slug,
+        config_id=config_id,
+        status="crashed",
+        reason_code=REASON_GLOBAL_CORPUS_LOAD_FAILED,
+        scenario_summaries=scenario_summaries,
+    )
 
 
 def _recompute_fold_evidence_hash_and_run_identity(
@@ -562,7 +611,7 @@ def seal_trial_accounting(
     accounting_report: Mapping[str, Any],
     attempt_evidence: Sequence[Mapping[str, Any]],
     full_campaign_hash: str,
-    walkforward_results: Mapping[str, Any],
+    walkforward_results: Mapping[str, Any] | None = None,
 ) -> SealedTrialAccounting:
     """The one pure boundary for H6 accounting/attempt-evidence trust.
 
@@ -571,15 +620,30 @@ def seal_trial_accounting(
     hash (never the caller's own claimed payload) -- see the module
     docstring's ``ultrathink`` note.
 
-    ``walkforward_results`` (Task 1B) MUST be exactly
+    ``walkforward_results`` (Task 1B) is normally exactly
     ``{"S1": WalkForwardResult, "S2": WalkForwardResult}`` -- every primary
     (``retry_index == 0``) attempt's opaque ``fold_evidence_hash``/
     ``run_identity``/status/reason/scenario evidence is cross-bound against
     the real H4 ``ConfigAttemptEvidenceSummary`` derived from it (via
-    ``rob944_walkforward.summarize_config_attempts_for_h6``), except the one
-    documented ``("crashed", REASON_GLOBAL_CORPUS_LOAD_FAILED)`` sentinel
-    (see ``_CROSS_BIND_EXEMPT_STATUS_REASON``), which by construction has no
-    per-config walk-forward result to cross-bind against.
+    ``rob944_walkforward.summarize_config_attempts_for_h6``).
+
+    ``walkforward_results=None`` (Task 1C, I4) is accepted ONLY as the
+    genuine producer state for a whole-campaign
+    ``global_corpus_load_failed`` fallback: H4 never even attempts a
+    per-config walk-forward when the corpus itself never loaded, so there
+    is, by construction, no real ``WalkForwardResult`` to pass -- a
+    fabricated stand-in (e.g. an all-``crashed`` mapping) would not be the
+    real producer state and the seal must never quietly accept one as
+    equivalent. ``None`` is malformed unless ALL 24 primaries share the
+    exact ``(crashed, global_corpus_load_failed)`` sentinel pairing (see
+    ``_CROSS_BIND_EXEMPT_STATUS_REASON``); conversely, supplying a REAL
+    ``walkforward_results`` mapping together with that same all-24 sentinel
+    claim is itself a contradiction (a corpus that never loaded could never
+    produce ANY real per-config H4 result) and is always rejected. In the
+    ``None`` branch every primary is cross-bound against H4's deterministic
+    fallback recipe (never a freely-accepted arbitrary hash), and the
+    result is always performance-ineligible (no primary can carry
+    ``status="completed"`` in this branch).
     """
     _require_hex64(full_campaign_hash, NOT_FROZEN_PRODUCTION_CAMPAIGN_REASON)
 
@@ -619,16 +683,6 @@ def seal_trial_accounting(
     for a in sealed_attempts_raw:
         by_experiment.setdefault(a.experiment_id, []).append(a)
 
-    # Task 1B: mandatory cross-bind of every primary attempt's opaque
-    # evidence against the real H4 ConfigAttemptEvidenceSummary.
-    _require(
-        set(walkforward_results.keys()) == {"S1", "S2"},
-        WALKFORWARD_RESULTS_MALFORMED_REASON,
-    )
-    for wf_result in walkforward_results.values():
-        _require(
-            type(wf_result) is WalkForwardResult, WALKFORWARD_RESULTS_MALFORMED_REASON
-        )
     experiment_id_to_config_id = dict(
         zip(frozen_experiment_ids, frozen_campaign.CANONICAL_ROW_ORDER, strict=True)
     )
@@ -636,27 +690,114 @@ def seal_trial_accounting(
     experiment_id_to_strategy_key = dict(
         zip(frozen_experiment_ids, (row["strategy_key"] for row in rows), strict=True)
     )
-    summaries_by_strategy_config: dict[tuple[str, str], Any] = {}
-    for strategy, wf_result in walkforward_results.items():
-        for summary in summarize_config_attempts_for_h6(wf_result):
-            summaries_by_strategy_config[(strategy, summary.config_id)] = summary
 
-    for a in sealed_attempts_raw:
-        if a.retry_index != 0:
-            continue  # only primaries are cross-bound; see module docstring
-        if (a.status, a.reason_code) == _CROSS_BIND_EXEMPT_STATUS_REASON:
-            continue
-        config_id = experiment_id_to_config_id[a.experiment_id]
-        strategy = config_id[:2]
-        summary = summaries_by_strategy_config.get((strategy, config_id))
-        _require(summary is not None, CROSS_BIND_MISMATCH_REASON)
-        _cross_bind_attempt(
-            a,
-            summary=summary,
-            full_campaign_hash=true_full_campaign_hash,
-            campaign_run_id=true_campaign_run_id,
-            strategy_key=experiment_id_to_strategy_key[a.experiment_id],
+    primary_rows = [a for a in sealed_attempts_raw if a.retry_index == 0]
+    # Task 1C (I4): the global_corpus_load_failed exemption is legitimate
+    # ONLY as the authentic whole-campaign fallback -- ALL 24 primaries
+    # sharing the exact sentinel pairing, never an individual row while
+    # others reflect real per-config H4 evidence (H4 emits this identically
+    # for all 24 experiments when the corpus never loaded at all; a mixed
+    # single-row sentinel is impossible by construction).
+    claims_global_fallback = len(
+        primary_rows
+    ) == EXPECTED_PRIMARY_ATTEMPT_COUNT and all(
+        (a.status, a.reason_code) == _CROSS_BIND_EXEMPT_STATUS_REASON
+        for a in primary_rows
+    )
+
+    if walkforward_results is None:
+        # Task 1C (I4, captain correction): `None` is the GENUINE producer
+        # state when the corpus never loaded at all -- H4 never even
+        # attempts a per-config walk-forward, so there is, by construction,
+        # no real WalkForwardResult to pass. A fabricated stand-in (e.g. an
+        # all-`crashed` mapping) is NOT that producer state and must never
+        # be accepted as equivalent -- `None` is malformed unless the
+        # supplied evidence is genuinely the all-24 fallback claim.
+        _require(claims_global_fallback, WALKFORWARD_RESULTS_MALFORMED_REASON)
+        for a in primary_rows:
+            config_id = experiment_id_to_config_id[a.experiment_id]
+            strategy_key = experiment_id_to_strategy_key[a.experiment_id]
+            # Still byte-match H4's deterministic fallback recipe -- never
+            # freely accept an arbitrary hash merely because the sentinel
+            # pairing is present.
+            summary = _global_failure_summary_for(strategy_key, config_id)
+            _cross_bind_attempt(
+                a,
+                summary=summary,
+                full_campaign_hash=true_full_campaign_hash,
+                campaign_run_id=true_campaign_run_id,
+                strategy_key=strategy_key,
+            )
+    else:
+        # A corpus that never loaded could never produce ANY real
+        # per-config H4 result -- supplying a real `walkforward_results`
+        # mapping together with the all-24 global-fallback claim is always
+        # a contradiction between the two forms of evidence the caller
+        # itself supplied, and must be rejected outright (never silently
+        # accepted merely because every row superficially matches the
+        # sentinel pairing).
+        _require(not claims_global_fallback, CROSS_BIND_MISMATCH_REASON)
+
+        # Task 1B/1C (I5): mandatory cross-bind of EVERY normal-path
+        # attempt's opaque evidence against the real H4
+        # ConfigAttemptEvidenceSummary -- not just primaries. A retry
+        # re-attempts the SAME config, so it is cross-bound against the
+        # SAME summary as its primary; `_cross_bind_attempt` derives
+        # `run_identity` using THAT row's own `retry_index` (which differs
+        # from the primary's), so a forged/arbitrary hash on a retry row
+        # can never be silently exempted just because cross-binding used to
+        # apply only to `retry_index == 0`.
+        _require(
+            set(walkforward_results.keys()) == {"S1", "S2"},
+            WALKFORWARD_RESULTS_MALFORMED_REASON,
         )
+        summaries_by_strategy_config: dict[tuple[str, str], Any] = {}
+        for strategy, wf_result in walkforward_results.items():
+            # Task 1C (I3): the WalkForwardResult's OWN `.strategy` field
+            # must match the dict slot it was supplied under -- without
+            # this, a caller could supply a self-consistent (summary,
+            # attempt) pair keyed under the WRONG strategy label and have
+            # it cross-bind successfully, since the recompute would be
+            # tautologically self-referential to that same mislabeled
+            # summary. The exact frozen 12-config set (no duplicates, no
+            # foreign-strategy config ids) is likewise required so a
+            # duplicate/foreign config_id can never silently overwrite the
+            # legitimate summary for its slot.
+            _require(
+                type(wf_result) is WalkForwardResult and wf_result.strategy == strategy,
+                WALKFORWARD_RESULTS_MALFORMED_REASON,
+            )
+            summaries = tuple(summarize_config_attempts_for_h6(wf_result))
+            config_ids_seen = [s.config_id for s in summaries]
+            expected_config_ids = frozenset(
+                f"{strategy}-{i:02d}" for i in range(_EXPECTED_CONFIGS_PER_STRATEGY)
+            )
+            _require(
+                len(config_ids_seen) == _EXPECTED_CONFIGS_PER_STRATEGY
+                and len(set(config_ids_seen)) == _EXPECTED_CONFIGS_PER_STRATEGY
+                and set(config_ids_seen) == expected_config_ids
+                # Belt-and-suspenders (captain correction): every summary's
+                # OWN `.strategy` field must also match its S1/S2 slot, not
+                # only the WalkForwardResult's outer `.strategy` field.
+                and all(s.strategy == strategy for s in summaries),
+                WALKFORWARD_RESULTS_MALFORMED_REASON,
+            )
+            for summary in summaries:
+                summaries_by_strategy_config[(strategy, summary.config_id)] = summary
+
+        for a in sealed_attempts_raw:
+            config_id = experiment_id_to_config_id[a.experiment_id]
+            strategy = config_id[:2]
+            strategy_key = experiment_id_to_strategy_key[a.experiment_id]
+            summary = summaries_by_strategy_config.get((strategy, config_id))
+            _require(summary is not None, CROSS_BIND_MISMATCH_REASON)
+            _cross_bind_attempt(
+                a,
+                summary=summary,
+                full_campaign_hash=true_full_campaign_hash,
+                campaign_run_id=true_campaign_run_id,
+                strategy_key=strategy_key,
+            )
 
     # `missing_experiment_ids`/`duplicate_or_gap_experiment_ids` describe
     # exactly what terminal evidence WAS/WASN'T supplied -- fully, exactly
@@ -664,16 +805,49 @@ def seal_trial_accounting(
     # alone, independent of any H6 registration-time bookkeeping this seal
     # never observes. Both are ALWAYS strictly cross-checked (already
     # normalized to sorted order by `_validate_report_shape`).
+    #
+    # Task 1C (I1, authentic_mismatch): a frozen ID the caller has ALREADY,
+    # independently classified as `mismatch` (a registration-time fact this
+    # seal cannot recompute) is excluded from the missing-candidate set --
+    # real H6 treats "missing" and "mismatch" as mutually exclusive
+    # classifications of the same underlying registration/evidence gap, so
+    # this seal must not ALSO reclassify a caller-trusted mismatch ID as
+    # missing merely because no primary evidence happens to exist for it.
+    mismatch_ids = frozenset(report["mismatch_experiment_ids"])
+    # Captain consistency correction: real H6 only marks an ID `mismatch`
+    # when the expected frozen registration is ABSENT -- it can therefore
+    # never ALSO have terminal attempt evidence supplied under that same
+    # frozen experiment_id (that would mean evidence exists for a
+    # registration H6 itself says never happened as expected).
+    _require(
+        mismatch_ids.isdisjoint(by_experiment.keys()),
+        ACCOUNTING_REPORT_MALFORMED_REASON,
+    )
     recomputed_missing = sorted(
         eid
         for eid in frozen_experiment_ids
-        if 0 not in {r.retry_index for r in by_experiment.get(eid, [])}
+        if eid not in mismatch_ids
+        and 0 not in {r.retry_index for r in by_experiment.get(eid, [])}
     )
+
+    # Task 1C (I1, authentic_retry_only): a group whose retry indices are
+    # e.g. {1} alone (no primary, no literal duplicate) is simply MISSING
+    # its primary -- already captured by `recomputed_missing` above -- and
+    # must not ALSO be independently reclassified as duplicate/gap purely
+    # because a non-zero-starting index isn't "contiguous from zero". A
+    # genuine duplicate/gap requires either a literally repeated index, or
+    # a real primary (index 0) present with a hole after it.
+    def _is_duplicate_or_gap(rows: list) -> bool:
+        indices = [r.retry_index for r in rows]
+        unique_sorted = sorted(set(indices))
+        if len(indices) != len(unique_sorted):
+            return True
+        if 0 not in unique_sorted:
+            return False
+        return not _is_contiguous_from_zero(unique_sorted)
+
     recomputed_dup_or_gap = sorted(
-        eid
-        for eid, rows in by_experiment.items()
-        if not _is_contiguous_from_zero(sorted({r.retry_index for r in rows}))
-        or len(rows) != len({r.retry_index for r in rows})
+        eid for eid, rows in by_experiment.items() if _is_duplicate_or_gap(rows)
     )
     _require(
         report["missing_experiment_ids"] == recomputed_missing,
@@ -685,66 +859,74 @@ def seal_trial_accounting(
     )
 
     # `actual_registrations` is a REGISTRATION-time fact (H6 predeclares all
-    # 24 identities before any attempt completes) this seal cannot observe
-    # from terminal evidence -- bounded, never force-equated: it can never
-    # be less than the distinct experiments for which evidence WAS supplied
-    # (evidence cannot exist for something never registered), and never
-    # exceed the frozen 24 (already checked in `_validate_report_shape`).
+    # identities before any attempt completes) this seal cannot observe from
+    # terminal evidence -- only a LOWER bound is knowable, never an upper
+    # one: a single `mismatch` entry can itself correspond to MULTIPLE
+    # drifted registered candidates sharing one params hash, and every such
+    # candidate inflates `actual_registrations` while entering neither
+    # `by_experiment` (no terminal evidence) nor `extra_experiment_ids` (it
+    # IS one of the frozen 24, just registered more than once) -- the
+    # serialized report cannot reconstruct that multiplicity, so no finite
+    # upper bound is ever enforced (captain precision correction, Task 1C
+    # I1 appendix). The lower bound is the UNION of every ID this seal can
+    # observe was registered: distinct supplied evidence + mismatch ids +
+    # extra ids (a plain union already handles any overlap correctly).
     _require(
-        len(by_experiment) <= report["actual_registrations"],
+        len(
+            set(by_experiment.keys())
+            | mismatch_ids
+            | frozenset(report["extra_experiment_ids"])
+        )
+        <= report["actual_registrations"],
         ACCOUNTING_REPORT_MALFORMED_REASON,
     )
 
-    gapped_ids = frozenset(recomputed_dup_or_gap)
-    if not gapped_ids:
-        # No gap/duplicate ambiguity -- every aggregate count is fully,
-        # exactly recomputable from the supplied attempts and cross-checked.
-        recomputed_primary_attempts = sum(
-            1
-            for rows in by_experiment.values()
-            if any(r.retry_index == 0 for r in rows)
+    # Task 1C (I1/I2, captain counter-parity correction): mirrors the real
+    # H6 per-experiment loop exactly -- a group counts toward
+    # primary/total/retry/status ONLY when its retry indices are a clean,
+    # contiguous-from-zero sequence with no literal duplicate (a real
+    # primary present, optionally followed by unbroken retries). Any other
+    # group -- missing (no primary at all, e.g. a stray retry-only row),
+    # duplicate, or gapped -- is excluded from these counters ENTIRELY
+    # (H6 hits the anomaly, classifies it, and `continue`s without ever
+    # tallying that group's rows); it is never counted at face value nor
+    # silently absorbed into either accounting bucket. This uniformly
+    # replaces any special-casing on whether a gap/duplicate happens to
+    # exist anywhere in the campaign.
+    def _is_clean_group(rows: list) -> bool:
+        indices = [r.retry_index for r in rows]
+        unique_sorted = sorted(set(indices))
+        return len(indices) == len(unique_sorted) and _is_contiguous_from_zero(
+            unique_sorted
         )
-        recomputed_status_counts = dict.fromkeys(_CLOSED_STATUSES, 0)
-        for a in sealed_attempts_raw:
-            recomputed_status_counts[a.status] += 1
-        _require(
-            len(sealed_attempts_raw) == report["total_attempts"],
-            ACCOUNTING_REPORT_MALFORMED_REASON,
-        )
-        _require(
-            report["primary_attempts"] == recomputed_primary_attempts,
-            ACCOUNTING_REPORT_MALFORMED_REASON,
-        )
-        _require(
-            report["retry_attempts"]
-            == len(sealed_attempts_raw) - recomputed_primary_attempts,
-            ACCOUNTING_REPORT_MALFORMED_REASON,
-        )
-        _require(
-            report["status_counts"] == recomputed_status_counts,
-            ACCOUNTING_REPORT_MALFORMED_REASON,
-        )
-    else:
-        # H6's own real counting convention for a gapped/duplicated group is
-        # not independently recomputable here (it may exclude that group's
-        # rows from its counters entirely rather than tallying them at face
-        # value) -- validate the report's own aggregate counts for INTERNAL
-        # arithmetic self-consistency only, and that they don't claim more
-        # attempts than were actually supplied. The gap/dup identification
-        # itself (above) remains strictly, independently cross-checked.
-        _require(
-            report["total_attempts"]
-            == report["primary_attempts"] + report["retry_attempts"],
-            ACCOUNTING_REPORT_MALFORMED_REASON,
-        )
-        _require(
-            sum(report["status_counts"].values()) == report["total_attempts"],
-            ACCOUNTING_REPORT_MALFORMED_REASON,
-        )
-        _require(
-            report["total_attempts"] <= len(sealed_attempts_raw),
-            ACCOUNTING_REPORT_MALFORMED_REASON,
-        )
+
+    clean_attempts = [
+        a
+        for a in sealed_attempts_raw
+        if _is_clean_group(by_experiment[a.experiment_id])
+    ]
+    recomputed_total = len(clean_attempts)
+    recomputed_primary = sum(
+        1 for rows in by_experiment.values() if _is_clean_group(rows)
+    )
+    recomputed_status_counts = dict.fromkeys(_CLOSED_STATUSES, 0)
+    for a in clean_attempts:
+        recomputed_status_counts[a.status] += 1
+    _require(
+        report["total_attempts"] == recomputed_total, ACCOUNTING_REPORT_MALFORMED_REASON
+    )
+    _require(
+        report["primary_attempts"] == recomputed_primary,
+        ACCOUNTING_REPORT_MALFORMED_REASON,
+    )
+    _require(
+        report["retry_attempts"] == recomputed_total - recomputed_primary,
+        ACCOUNTING_REPORT_MALFORMED_REASON,
+    )
+    _require(
+        report["status_counts"] == recomputed_status_counts,
+        ACCOUNTING_REPORT_MALFORMED_REASON,
+    )
 
     recomputed_complete = (
         not recomputed_missing
