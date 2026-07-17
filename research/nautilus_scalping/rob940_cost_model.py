@@ -82,7 +82,17 @@ MIN_TP_DISTANCE_BPS = 4.0 * COST_SCENARIO_PRIMARY_STRESS.all_in_bps  # 68.0
 
 @dataclass(frozen=True)
 class FundingCrossing:
-    ts: int  # crossing timestamp, epoch ms UTC, entry_ts < ts <= exit_ts
+    # ROB-944 Q2 (orch-fable-answer-rob944-20260717.md, 2026-07-17): corrected
+    # stale boundary doc (was "entry_ts < ts <= exit_ts"). H1's
+    # FundingSidecar.realized_crossings is the frozen, tested authority: the
+    # half-open position window [entry_ts, exit_ts) is what "held" means -- a
+    # crossing exactly at entry_ts is included (funding is charged if the
+    # position exists at the snapshot instant) and one exactly at exit_ts is
+    # excluded. This module still does not enforce the boundary itself (it
+    # accepts whatever crossings its caller supplies); H4 is the one caller
+    # that builds crossings, and it does so directly from H1's sidecar
+    # without reinterpreting the endpoint.
+    ts: int  # crossing timestamp, epoch ms UTC, entry_ts <= ts < exit_ts
     rate_bps: float  # signed realized funding rate; positive => longs pay shorts
 
     def __post_init__(self) -> None:
