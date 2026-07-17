@@ -705,6 +705,222 @@ async def test_kis_us_buy_reconcile_captures_buy_fx_rate():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_reconcile_us_sell_with_no_prior_journal_leaves_pnl_null():
+    """ROB-955 regression guard — no false matching when no buy journal exists.
+
+    Reproduces the exact prod incident (trades 274/275, XOM/AMZN 2026-07-17/18):
+    the position was a pre-existing broker holding with no ``TradeJournal`` buy
+    row ever recorded (data gap, not a matching-key bug — see ROB-955
+    investigation). ``_close_journals_on_sell`` runs for real here (not mocked)
+    against an empty journal set; it must book the fill/trade but leave
+    ``journals_closed=0`` and ``security_pnl_usd``/``journal_id`` null rather
+    than guessing a lot to attribute PnL against.
+    """
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.mcp_server.tooling import live_order_ledger as ll
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence,
+        FillVerdict,
+    )
+
+    lid = await ll._save_live_order_ledger(
+        broker="kis",
+        account_scope="kis_live",
+        market="us",
+        symbol="ROB955XOM",
+        exchange="NYSE",
+        market_symbol=None,
+        side="sell",
+        order_kind="limit",
+        quantity=1.0,
+        price=145.51,
+        amount=145.51,
+        currency="USD",
+        order_no="ROB955-SELL-NOMATCH",
+        order_time="2210",
+        status="accepted",
+        response_code="0",
+        response_message=None,
+        raw_response=None,
+        reason=None,
+        thesis=None,
+        strategy=None,
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason="defensive_trim",
+        indicators_snapshot=None,
+    )
+    row = await ll._load_live_ledger_row(lid)
+    filled = FillEvidence(
+        FillVerdict.FILLED, Decimal("1"), Decimal("146.515"), None, "filled", ""
+    )
+
+    class _Adapter:
+        broker = "kis"
+        fetch_evidence = AsyncMock(return_value=filled)
+
+    # Real _close_journals_on_sell queries this session factory; return an
+    # empty active-journal set to mirror the prod data gap exactly.
+    mock_session = AsyncMock()
+    mock_scalars = MagicMock()
+    mock_scalars.all.return_value = []
+    mock_result = MagicMock()
+    mock_result.scalars.return_value = mock_scalars
+    mock_session.execute.return_value = mock_result
+    session_cm = AsyncMock()
+    session_cm.__aenter__.return_value = mock_session
+    session_cm.__aexit__.return_value = None
+    journal_factory = MagicMock(return_value=session_cm)
+
+    with (
+        patch.object(ll, "get_evidence_adapter", return_value=_Adapter()),
+        patch.object(ll, "capture_reconcile_spot_fx", new=AsyncMock(return_value=None)),
+        patch.object(ll, "_save_order_fill", new=AsyncMock(return_value=274)),
+        patch(
+            "app.mcp_server.tooling.order_journal._order_session_factory",
+            return_value=journal_factory,
+        ),
+    ):
+        out = await ll._reconcile_one_live_row(row, dry_run=False)
+
+    assert out["verdict"] == "filled"
+    assert out["action"] == "booked"
+    assert out["journals_closed"] == 0
+    assert out["closed_journal_ids"] == []
+    assert out.get("security_pnl_usd") is None
+
+    after = await ll._load_live_ledger_row(lid)
+    assert after.status == "filled"
+    assert after.trade_id == 274
+    assert after.journal_id is None
+    assert after.security_pnl_usd is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_us_sell_with_matching_active_journal_computes_pnl():
+    """ROB-955 regression guard — normal matching still computes realized PnL.
+
+    Mirrors the same XOM lot basis from the prod incident's manual retro
+    correction (KIS avg cost 136.28 -> sell 146.515 = +$10.235) to prove the
+    FIFO lot matcher books it automatically when a buy journal genuinely
+    exists, instead of leaving it null.
+    """
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.mcp_server.tooling import live_order_ledger as ll
+    from app.mcp_server.tooling.fx_pnl import FxRateCapture
+    from app.models.trade_journal import TradeJournal
+    from app.models.trading import InstrumentType
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence,
+        FillVerdict,
+    )
+
+    active_journal = TradeJournal(
+        id=9001,
+        symbol="ROB955XOM2",
+        instrument_type=InstrumentType.equity_us,
+        side="buy",
+        entry_price=Decimal("136.28"),
+        quantity=Decimal("1"),
+        status="active",
+        account="kis",
+        account_type="live",
+        thesis="t",
+        buy_fx_rate=Decimal("1300.00"),
+    )
+
+    lid = await ll._save_live_order_ledger(
+        broker="kis",
+        account_scope="kis_live",
+        market="us",
+        symbol="ROB955XOM2",
+        exchange="NYSE",
+        market_symbol=None,
+        side="sell",
+        order_kind="limit",
+        quantity=1.0,
+        price=145.51,
+        amount=145.51,
+        currency="USD",
+        order_no="ROB955-SELL-MATCH",
+        order_time="2210",
+        status="accepted",
+        response_code="0",
+        response_message=None,
+        raw_response=None,
+        reason=None,
+        thesis=None,
+        strategy=None,
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason="defensive_trim",
+        indicators_snapshot=None,
+    )
+    row = await ll._load_live_ledger_row(lid)
+    filled = FillEvidence(
+        FillVerdict.FILLED, Decimal("1"), Decimal("146.515"), None, "filled", ""
+    )
+
+    class _Adapter:
+        broker = "kis"
+        fetch_evidence = AsyncMock(return_value=filled)
+
+    mock_session = AsyncMock()
+    mock_scalars = MagicMock()
+    mock_scalars.all.return_value = [active_journal]
+    mock_result = MagicMock()
+    mock_result.scalars.return_value = mock_scalars
+    mock_session.execute.return_value = mock_result
+    session_cm = AsyncMock()
+    session_cm.__aenter__.return_value = mock_session
+    session_cm.__aexit__.return_value = None
+    journal_factory = MagicMock(return_value=session_cm)
+
+    with (
+        patch.object(ll, "get_evidence_adapter", return_value=_Adapter()),
+        patch.object(
+            ll,
+            "capture_reconcile_spot_fx",
+            new=AsyncMock(
+                return_value=FxRateCapture(
+                    rate=Decimal("1389.33"),
+                    fx_rate_source="reconcile_spot",
+                    fx_pnl_accuracy="approximate",
+                )
+            ),
+        ),
+        patch.object(ll, "_save_order_fill", new=AsyncMock(return_value=275)),
+        patch(
+            "app.mcp_server.tooling.order_journal._order_session_factory",
+            return_value=journal_factory,
+        ),
+    ):
+        out = await ll._reconcile_one_live_row(row, dry_run=False)
+
+    assert out["verdict"] == "filled"
+    assert out["action"] == "booked"
+    assert out["journals_closed"] == 1
+    assert out["closed_journal_ids"] == [9001]
+    assert out["security_pnl_usd"] == pytest.approx(10.235)
+    assert active_journal.status == "closed"
+
+    after = await ll._load_live_ledger_row(lid)
+    assert after.status == "filled"
+    assert after.trade_id == 275
+    assert after.security_pnl_usd == Decimal("10.2350")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_reconcile_buy_journal_backfills_correlation_id():
     """ROB-714: reconcile-time buy journal must carry the ledger row's
     correlation_id. Drives the REAL _reconcile_one_live_row (US path)."""
