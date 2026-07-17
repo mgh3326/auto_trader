@@ -2,9 +2,9 @@
 # Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
 # (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
 # Repo is public; exposing these values is an accepted decision.
-version: "2026-07-17.1"
+version: "2026-07-17.2"
 captured_as_of: "2026-07-17"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys"
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys"
 
 authority:
   scope: judgment_policy_only
@@ -249,3 +249,19 @@ crash_day:
     deep_rung_reprice_to_band_floor: true    # advisory: reprice deep rungs toward buy.deep_limit_pct_range floor
     profit_trim_marketable_allowed: true     # advisory: profit-side trims may use marketable band (ROB-912 -2%)
     defensive_brief_cross_check: true        # cross-check with ROB-930 preopen gap_risk verdict
+
+# ROB-948 — user investment-stance advisory. Session judgment cites this for
+# upside/downside weighting; it does not override fail-closed risk guards
+# (loss-cut sizing, ladder guards) in code. Frozen block (2026-07-17) — use
+# verbatim, no paraphrasing.
+user_stances:
+  - id: ai-demand-real-value-selective
+    stance: "AI 수요는 실사용 관점에서 실재. 단, (a)가치 포착은 가격결정력 보유 종목에 편중될 수 있고 (b)고베타 반도체는 테제가 맞아도 중간 낙폭이 크다"
+    implications:
+      - "AI/반도체 급락일: 패닉 동조 매도 금지 (보유분은 기존 리스크 규칙으로만 판단)"
+      - "눌림 신규 진입: 검토 후보 승격 가능하되 — 동시 신규 최대 1종목, 분할 진입, 섹터 클러스터 집중도 체크 엄격 적용"
+      - "테마 내 선택 시 가격결정력 보유 종목 우선. 커머디티형은 공급제약 증거 있을 때만"
+      - "3배 레버리지 ETF(SOXL류)는 눌림 보유 수단에서 기본 제외 (변동성 감쇠)"
+    risk_scenario: "효율 충격 — 저비용 고성능 모델 확산으로 프런티어 capex 지불의사 재평가. 판정 이벤트 = 하이퍼스케일러 capex 가이던스"
+    review_condition: "하이퍼스케일러 AI capex 감소 가이던스, 또는 HBM 공급과잉 실측 시 재검토"
+    review_date: "2026-10-17"

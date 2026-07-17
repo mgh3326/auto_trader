@@ -12,7 +12,7 @@ from tests._mcp_tooling_support import DummyMCP
 async def test_get_trading_policy_returns_thresholds_and_version():
     out = await get_trading_policy(market="kr", lane="buy")
     assert out["success"] is True
-    assert out["version"] == "2026-07-17.1"
+    assert out["version"] == "2026-07-17.2"
     assert out["content_hash"]
     assert out["thresholds"]["portfolio.sector_cluster_cap_pct"]["value"] == 10
     assert out["decision_rules"] == {}
@@ -23,7 +23,7 @@ async def test_get_trading_policy_returns_crypto_market_rules_and_stamp():
     out = await get_trading_policy(market="crypto", lane="buy")
 
     assert out["success"] is True
-    assert out["version"] == "2026-07-17.1"
+    assert out["version"] == "2026-07-17.2"
     assert len(out["content_hash"]) == 12
     assert out["market_rules"]["recovery_gate"]["min_conditions_met"] == 2
     assert out["market_rules"]["no_chasing"]["daily_change_pct_threshold"] is None
@@ -48,6 +48,19 @@ async def test_get_trading_policy_returns_crash_day_advisory_with_version_echo()
     assert out["crash_day"]["actions"]["new_entry_hold"] is True
     # advisory keys are echoed with the same version/content_hash stamp as
     # every other section of the response (ROB-932).
+    assert out["version"]
+    assert out["content_hash"]
+
+
+@pytest.mark.asyncio
+async def test_get_trading_policy_returns_user_stances_advisory_with_version_echo():
+    out = await get_trading_policy(market="kr", lane="buy")
+    assert out["success"] is True
+    stances = {s["id"]: s for s in out["user_stances"]}
+    stance = stances["ai-demand-real-value-selective"]
+    assert stance["review_date"] == "2026-10-17"
+    # advisory keys are echoed with the same version/content_hash stamp as
+    # every other section of the response (ROB-948, matching ROB-932).
     assert out["version"]
     assert out["content_hash"]
 
