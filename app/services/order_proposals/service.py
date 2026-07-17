@@ -1626,7 +1626,11 @@ class OrderProposalsService:
         presence must block an otherwise matching resting rung rather than be
         hidden by an evidence-accepting state filter.
         """
-        if correlation_id is None and broker_order_id is None and idempotency_key is None:
+        if (
+            correlation_id is None
+            and broker_order_id is None
+            and idempotency_key is None
+        ):
             return None
         broker_match = (
             OrderProposalRung.broker_order_id == broker_order_id
@@ -1669,7 +1673,9 @@ class OrderProposalsService:
         broker_ids = {row.id for row in rows if row.broker_match}
         correlation_ids = {row.id for row in rows if row.correlation_match}
         idempotency_ids = {row.id for row in rows if row.idempotency_match}
-        evidence_sets = [ids for ids in (broker_ids, correlation_ids, idempotency_ids) if ids]
+        evidence_sets = [
+            ids for ids in (broker_ids, correlation_ids, idempotency_ids) if ids
+        ]
         if not evidence_sets:
             return None
         # R1 resolving-keys intersection: absence is neutral, while every
