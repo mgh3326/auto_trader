@@ -290,7 +290,6 @@ class TossLiveOrderLedgerService:
             .where(
                 TossLiveOrderLedger.operation_kind == "place",
                 TossLiveOrderLedger.status.in_(("filled", "cancelled", "rejected")),
-                OrderProposalRung.state.in_(_PROPOSAL_EVIDENCE_ACCEPTING_STATES),
                 OrderProposal.account_mode == "toss_live",
                 OrderProposal.symbol == TossLiveOrderLedger.symbol,
                 or_(
@@ -347,13 +346,13 @@ class TossLiveOrderLedgerService:
         stmt = (
             select(
                 OrderProposalRung.id,
+                OrderProposalRung.state,
                 broker_match.label("broker_match"),
                 correlation_match.label("correlation_match"),
             )
             .join(OrderProposal, OrderProposalRung.proposal_pk == OrderProposal.id)
             .where(
                 or_(broker_match, correlation_match),
-                OrderProposalRung.state.in_(_PROPOSAL_EVIDENCE_ACCEPTING_STATES),
                 OrderProposal.account_mode == "toss_live",
                 OrderProposal.symbol == row.symbol,
                 or_(
@@ -366,10 +365,15 @@ class TossLiveOrderLedgerService:
         broker_ids = {match.id for match in matches if match.broker_match}
         correlation_ids = {match.id for match in matches if match.correlation_match}
         evidence_sets = [ids for ids in (broker_ids, correlation_ids) if ids]
-        return (
+        if not (
             bool(evidence_sets)
             and all(ids == evidence_sets[0] for ids in evidence_sets)
             and len(evidence_sets[0]) == 1
+        ):
+            return False
+        rung_id = next(iter(evidence_sets[0]))
+        return next(match.state for match in matches if match.id == rung_id) in (
+            _PROPOSAL_EVIDENCE_ACCEPTING_STATES
         )
 
     async def update_reconcile_outcome(

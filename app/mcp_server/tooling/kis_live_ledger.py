@@ -642,7 +642,17 @@ async def _converge_kis_proposal_rung(
     try:
         async with _order_session_factory()() as db:
             service = OrderProposalsService(db)
-            rung = await service.record_fill_evidence(
+            rung_id = await service.find_unambiguous_evidence_rung_id(
+                correlation_id=row.correlation_id,
+                broker_order_id=row.order_no,
+                account_mode="kis_live",
+                symbol=row.symbol,
+                market=row.instrument_type,
+            )
+            if rung_id is None:
+                return None
+            rung = await service.record_fill_evidence_for_rung(
+                rung_id=rung_id,
                 correlation_id=row.correlation_id,
                 broker_order_id=row.order_no,
                 filled_qty=(
@@ -651,6 +661,8 @@ async def _converge_kis_proposal_rung(
                 terminal_state=terminal_state,
                 now=datetime.datetime.now(datetime.UTC),
                 account_mode="kis_live",
+                symbol=row.symbol,
+                market=row.instrument_type,
             )
             await db.commit()
     except Exception as exc:  # noqa: BLE001 - ledger booking remains authoritative

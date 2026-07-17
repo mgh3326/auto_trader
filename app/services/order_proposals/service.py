@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 
-from sqlalchemy import or_, select, text
+from sqlalchemy import literal, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import KST
@@ -1606,6 +1606,135 @@ class OrderProposalsService:
             ):
                 return None
             return await self._repo.update_rung(locked, **audit)
+        return await self._transition_locked_rung(
+            group, locked, new_state=terminal_state, **audit
+        )
+
+    async def find_unambiguous_evidence_rung_id(
+        self,
+        *,
+        correlation_id: str | None,
+        broker_order_id: str | None,
+        idempotency_key: str | None = None,
+        account_mode: str,
+        symbol: str,
+        market: str,
+    ) -> int | None:
+        """Resolve one rung only when all nonempty evidence-key sets intersect.
+
+        Terminal rungs intentionally participate in this comparison: their
+        presence must block an otherwise matching resting rung rather than be
+        hidden by an evidence-accepting state filter.
+        """
+        if correlation_id is None and broker_order_id is None and idempotency_key is None:
+            return None
+        broker_match = (
+            OrderProposalRung.broker_order_id == broker_order_id
+            if broker_order_id is not None
+            else literal(False)
+        )
+        correlation_match = (
+            OrderProposalRung.correlation_id == correlation_id
+            if correlation_id is not None
+            else literal(False)
+        )
+        idempotency_match = (
+            OrderProposalRung.idempotency_key == idempotency_key
+            if idempotency_key is not None
+            else literal(False)
+        )
+        rows = list(
+            (
+                await self._session.execute(
+                    select(
+                        OrderProposalRung.id,
+                        OrderProposalRung.state,
+                        broker_match.label("broker_match"),
+                        correlation_match.label("correlation_match"),
+                        idempotency_match.label("idempotency_match"),
+                    )
+                    .join(
+                        OrderProposal,
+                        OrderProposalRung.proposal_pk == OrderProposal.id,
+                    )
+                    .where(
+                        or_(broker_match, correlation_match, idempotency_match),
+                        OrderProposal.account_mode == account_mode,
+                        OrderProposal.symbol == symbol,
+                        OrderProposal.market == market,
+                    )
+                )
+            ).all()
+        )
+        broker_ids = {row.id for row in rows if row.broker_match}
+        correlation_ids = {row.id for row in rows if row.correlation_match}
+        idempotency_ids = {row.id for row in rows if row.idempotency_match}
+        evidence_sets = [ids for ids in (broker_ids, correlation_ids, idempotency_ids) if ids]
+        if not evidence_sets:
+            return None
+        # R1 resolving-keys intersection: absence is neutral, while every
+        # present key constrains ownership.  This preserves broker attribution
+        # when a content-hash correlation has legitimate sibling rungs.
+        if len(broker_ids) > 1:
+            raise OrderProposalError("broker_id_duplicate")
+        if not broker_ids and not idempotency_ids and len(correlation_ids) > 1:
+            raise OrderProposalError("content_hash_only_ambiguous")
+        intersection = set.intersection(*evidence_sets)
+        if not intersection:
+            raise OrderProposalError("proposal_evidence_conflict")
+        if len(intersection) > 1:
+            raise OrderProposalError("proposal_evidence_ambiguous")
+        return next(iter(intersection))
+
+    async def record_fill_evidence_for_rung(
+        self,
+        *,
+        rung_id: int,
+        correlation_id: str | None,
+        broker_order_id: str | None,
+        idempotency_key: str | None = None,
+        filled_qty: Decimal | None,
+        terminal_state: Literal["filled", "partially_filled", "cancelled", "expired"],
+        now: datetime,
+        account_mode: str,
+        symbol: str,
+        market: str,
+    ) -> OrderProposalRung | None:
+        """Lock and transition the already validated exact rung, never re-pick."""
+        target = (
+            await self._session.execute(
+                select(OrderProposal.proposal_id, OrderProposalRung.rung_index)
+                .join(
+                    OrderProposalRung, OrderProposalRung.proposal_pk == OrderProposal.id
+                )
+                .where(OrderProposalRung.id == rung_id)
+            )
+        ).one_or_none()
+        if target is None:
+            return None
+        group, locked = await self._get_locked_rung(
+            target.proposal_id, target.rung_index
+        )
+        verified_id = await self.find_unambiguous_evidence_rung_id(
+            correlation_id=correlation_id,
+            broker_order_id=broker_order_id,
+            idempotency_key=idempotency_key,
+            account_mode=account_mode,
+            symbol=symbol,
+            market=market,
+        )
+        if verified_id != rung_id:
+            return None
+        if sm.is_terminal(locked.state):
+            if (
+                locked.state == terminal_state
+                and locked.broker_order_id == broker_order_id
+            ):
+                return locked
+            raise OrderProposalError("proposal_terminal_evidence_conflict")
+        audit: dict[str, Any] = {"updated_at": now}
+        if filled_qty is not None:
+            audit["filled_qty"] = filled_qty
         return await self._transition_locked_rung(
             group, locked, new_state=terminal_state, **audit
         )

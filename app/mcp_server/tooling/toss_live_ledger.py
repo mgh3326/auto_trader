@@ -270,6 +270,30 @@ async def _converge_toss_proposal_rung(
     try:
         async with _order_session_factory()() as db:
             service = OrderProposalsService(db)
+            market = _TOSS_MARKET_TO_INSTRUMENT.get(row.market, row.market)
+            if ledger_status == "partial":
+                rung = await service.record_fill_evidence(
+                    correlation_id=getattr(row, "correlation_id", None),
+                    broker_order_id=row.broker_order_id,
+                    idempotency_key=row.client_order_id,
+                    filled_qty=filled_qty,
+                    terminal_state="partially_filled",
+                    now=datetime.now(UTC),
+                    account_mode="toss_live",
+                )
+                await db.commit()
+                if rung is None:
+                    return None
+                return {"converged": True, "proposal_rung_state": rung.state}
+            rung_id = await service.find_unambiguous_evidence_rung_id(
+                correlation_id=getattr(row, "correlation_id", None),
+                broker_order_id=row.broker_order_id,
+                account_mode="toss_live",
+                symbol=row.symbol,
+                market=market,
+            )
+            if rung_id is None:
+                return None
             # A broker-confirmed cancel may carry a final cumulative partial fill.
             # Project that quantity first, then cancel with filled_qty=None so the
             # service preserves the partial audit value on the terminal rung.
@@ -292,7 +316,8 @@ async def _converge_toss_proposal_rung(
                 # terminal state from resting/partially_filled.
                 "rejected": "expired",
             }[ledger_status]
-            rung = await service.record_fill_evidence(
+            rung = await service.record_fill_evidence_for_rung(
+                rung_id=rung_id,
                 correlation_id=getattr(row, "correlation_id", None),
                 broker_order_id=row.broker_order_id,
                 filled_qty=(
@@ -301,6 +326,8 @@ async def _converge_toss_proposal_rung(
                 terminal_state=terminal_state,
                 now=datetime.now(UTC),
                 account_mode="toss_live",
+                symbol=row.symbol,
+                market=market,
             )
             await db.commit()
     except Exception as exc:  # noqa: BLE001 - ledger booking remains authoritative
