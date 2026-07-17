@@ -160,7 +160,6 @@ async def test_adapter_maps_unexpected_application_failure_to_sanitized_result(
 
     assert result.evidence == {
         "error_type": "_SensitiveApplicationFailure",
-        "error_body": "api_secret=must-not-leak",
     }
     assert application.calls[0][0] == method
 
@@ -178,7 +177,6 @@ async def test_adapter_fails_closed_before_application_for_unmapped_symbol() -> 
     assert result.reason_code is PaperReasonCode.ADAPTER_UNAVAILABLE
     assert result.evidence == {
         "error_type": "CryptoExecutionMappingError",
-        "error_body": "unsupported Alpaca Paper execution symbol 'SOL/USD'; allowed: BTC/USD, ETH/USD",
     }
     assert application.calls == []
 

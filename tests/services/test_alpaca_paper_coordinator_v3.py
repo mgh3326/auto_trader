@@ -484,14 +484,32 @@ async def test_extract_and_sanitize_error_body_backtracking_prevention():
         _extract_and_sanitize_error_body,
     )
 
-    text = "Authorization: Bearer " + ("A1" * 512)
-    exc = AlpacaPaperRequestError(text, status_code=403)
+    # 1. Alphanumeric token (contains digits)
+    text_num = "Authorization: Bearer " + ("A1" * 512)
+    exc_num = AlpacaPaperRequestError(text_num, status_code=403)
 
     t0 = time.perf_counter()
-    _ = _extract_and_sanitize_error_body(exc)
+    res_num = _extract_and_sanitize_error_body(exc_num)
     t1 = time.perf_counter()
 
-    duration = t1 - t0
-    assert duration < 0.1, (
-        f"Authorization regex backtracked catastrophically, took {duration:.4f}s"
+    duration_num = t1 - t0
+    assert duration_num < 0.1, (
+        f"Alphanumeric regex backtracked, took {duration_num:.4f}s"
     )
+    assert "A1" not in res_num
+    assert res_num == "Authorization: [REDACTED]"
+
+    # 2. Pure alphabetic 4096-character token
+    text_alpha = "Authorization: Bearer " + ("A" * 4096)
+    exc_alpha = AlpacaPaperRequestError(text_alpha, status_code=403)
+
+    t0 = time.perf_counter()
+    res_alpha = _extract_and_sanitize_error_body(exc_alpha)
+    t1 = time.perf_counter()
+
+    duration_alpha = t1 - t0
+    assert duration_alpha < 0.1, (
+        f"Pure alphabetic regex backtracked, took {duration_alpha:.4f}s"
+    )
+    assert "A" * 10 not in res_alpha
+    assert res_alpha == "Authorization: [REDACTED]"
