@@ -12,12 +12,14 @@ confirmed smoke or verify any mutation capability; all mutation/order-type
 evidence below remained pending or unverified until a dated market-hours
 exercise recorded broker evidence.
 
-ROB-909 recorded that exercise: a 2026-07-16 22:30 KST full smoke run via MCP
-(`kiwoom_mock_us_*`, deploy `ac0264cf`) proved the `trde_tp=00` (limit)
+ROB-909 recorded the first exercise: a 2026-07-16 22:30 KST full smoke run via
+MCP (`kiwoom_mock_us_*`, deploy `ac0264cf`) proved the `trde_tp=00` (limit)
 buy → order-history → cancel → reconcile lifecycle (`ust20000` buy,
-`ust20003` cancel). Sell (`ust20001`), modify (`ust20002`), and every
-`trde_tp` other than `00` remain pending/unverified — this run did not
-exercise them. See ROB-867 comment (2026-07-16) for the raw evidence.
+`ust20003` cancel). A 2026-07-17 full smoke via the same MCP namespace then
+proved the `trde_tp=00` sell → modify → reconcile lifecycle (`ust20001` sell,
+`ust20002` modify). Every `trde_tp` other than `00` remains pending/unverified
+— neither run exercised them. See ROB-867 comment (2026-07-16) for the first
+run's raw evidence.
 
 The US namespace is completely independent from the KR `kiwoom_mock` smoke
 ([`kiwoom-mock-smoke.md`](kiwoom-mock-smoke.md)). It uses a separate app key,
@@ -255,8 +257,8 @@ If `full` mode exits with code 2 (`cleanup_required`), cancel the stranded order
 | TR | Path | Purpose | Mock status | Evidence |
 |---|---|---|---|---|
 | `ust20000` | `/api/us/ordr` | Buy order | **Proven** (2026-07-16 full smoke via MCP `kiwoom_mock_us_*`, deploy `ac0264cf`) | return_code=0 "모의투자 매수주문완료"; `ord_no="000000063"` (9자리, leading-zero) |
-| `ust20001` | `/api/us/ordr` | Sell order | Implemented; smoke pending (still pending as of 2026-07-16) | no acceptance claim yet |
-| `ust20002` | `/api/us/ordr` | Modify order | Implemented; smoke pending (still pending as of 2026-07-16) | no acceptance claim yet |
+| `ust20001` | `/api/us/ordr` | Sell order | **Proven** (2026-07-17 full smoke via MCP `kiwoom_mock_us_*`) | return_code=0 "모의투자 매도주문완료"; `ord_no="000000619"` (9자리, leading-zero) |
+| `ust20002` | `/api/us/ordr` | Modify order | **Proven** (2026-07-17 full smoke via MCP `kiwoom_mock_us_*`) | return_code=0 "모의투자 정정주문완료"; new `ord_no="000000639"` (9자리, leading-zero), `orig_ord_no="000000619"`, `mdfy_ord_qty=1` |
 | `ust20003` | `/api/us/ordr` | Cancel order | **Proven** (2026-07-16 full smoke via MCP `kiwoom_mock_us_*`, deploy `ac0264cf`) | return_code=0 "모의투자 취소주문완료"; `ord_no="000000200"` (9자리), `cncl_ord_qty=000000000001`, `orig_ord_no="000000063"` |
 | `ust21050` | — | Open orders | Proven (2026-07-13 read-only smoke) | return_code=0 |
 | `ust21070` | — | Positions | Proven (2026-07-13 read-only smoke) | return_code=0 |
@@ -268,22 +270,24 @@ If `full` mode exits with code 2 (`cleanup_required`), cancel the stranded order
 > "smoke pending" = the TR path is implemented; the first live mock exercise is
 > this smoke. Record the actual `return_code` / `return_msg` here after running.
 
-### Order-id format (confirmed 2026-07-16)
+### Order-id format (confirmed 2026-07-16 and 2026-07-17)
 
 The 2026-07-16 full smoke confirmed order IDs are **9-digit, leading-zero
 integers**: buy `ord_no="000000063"`, cancel `ord_no="000000200"` (with
 `orig_ord_no="000000063"`), and the open-order sentinel for "no original
-order" is `orig_ord_no="000000000"`. This is consistent with, and narrower
-than, the code's existing 1-18 digit acceptance range documented in the smoke
-sequence below — that range is not reduced by this evidence, since it exists
-to tolerate the full documented Kiwoom ID width, not to assert a specific
-width.
+order" is `orig_ord_no="000000000"`. The 2026-07-17 full smoke reconfirmed
+that shape for buy `ord_no="000000590"`, sell `ord_no="000000619"`, and
+modify new order `ord_no="000000639"` (with `orig_ord_no="000000619"`). This
+is consistent with, and narrower than, the code's existing 1-18 digit
+acceptance range documented in the smoke sequence below — that range is not
+reduced by this evidence, since it exists to tolerate the full documented
+Kiwoom ID width, not to assert a specific width.
 
 ## Per-order-type evidence table
 
 | `trde_tp` | Type | MCP-exposed | Probe status | Evidence |
 |---:|---|---|---|---|
-| `00` | Limit | Yes | **Verified** (2026-07-16 full smoke via MCP `kiwoom_mock_us_*`, deploy `ac0264cf`) | buy `000000063` return_code=0; cancel `000000200` return_code=0; clean final reconcile |
+| `00` | Limit | Yes | **Verified** (2026-07-16 and 2026-07-17 full smokes via MCP `kiwoom_mock_us_*`) | buy `000000063` and cancel `000000200` return_code=0; sell `000000619` and modify new order `000000639` return_code=0; clean final reconcile |
 | `03` | Market | Yes | Unverified | not used in full mode |
 | `26` | Documented advanced buy type | No | Unverified | explicit buy probe required |
 | `27` | Documented advanced buy type | No | Unverified | explicit buy probe required |
@@ -304,7 +308,7 @@ Omit all secret values. If a probe returns a non-zero `return_code`, record the
 Class-share symbols are marked unverified until the smoke workflow records
 broker evidence.
 
-## Observed broker quirks (2026-07-16 full smoke)
+## Observed broker quirks (2026-07-16 and 2026-07-17 full smokes)
 
 - **`fc_entra` scale mismatch — do not use as a cash source.** The buy
   response (`ust20000`) returned `fc_entra="10.0000"` while the account's USD
@@ -314,13 +318,27 @@ broker evidence.
   Current code does not consume `fc_entra`, which is why this is harmless
   today; it must **not** be wired up as a cash/balance source until the scale
   is confirmed.
-- **Cancelled order's original row stays `ord_stat="접수"` in today-history.**
-  After cancel, the `ust21510` (today) row for the *original* order
-  (`000000063`) still reports `ord_stat="접수"` (remnq 0, `cnfm_qty=1`) rather
-  than flipping to a cancelled state itself. **Terminal judgement must use the
-  cancel row** (`ord_no="000000200"`, `ord_stat="취소완료"`) **plus
+- **Cancelled or modified order's original row stays `ord_stat="접수"` in
+  today-history.** After cancel, the `ust21510` (today) row for the *original*
+  order (`000000063`) still reports `ord_stat="접수"` (remnq 0, `cnfm_qty=1`)
+  rather than flipping to a cancelled state itself. **Terminal judgement must
+  use the cancel row** (`ord_no="000000200"`, `ord_stat="취소완료"`) **plus
   `ord_remnq=0`** on the original — not the original row's own `ord_stat`
-  field in isolation.
+  field in isolation. The same pattern appeared after modify: original order
+  `000000619` remained `ord_stat="접수"` (remnq 0, `cnfm_qty=1`,
+  `cntr_time=":  :"`); terminal judgement must use the modify new-order row
+  (`ord_no="000000639"`, `ord_stat="체결완료"`) **plus `ord_remnq=0`** on the
+  original.
+- **`pl_amt` can be malformed — do not wire it as a profit/loss source.** The
+  `ust21070` position row returned `pl_amt=".-203"`, a malformed string where
+  a decimal value was expected, while the same response's
+  `tot_pl_amt="-0.0103"` and `pl_amt_krw="-00000000030"` were normal. This
+  appears to be a broker-side formatting defect, but that is an **estimate,
+  not a confirmed cause** — do not assume a parser or scale without further
+  evidence. Current code does not consume `pl_amt`, which is why this is
+  harmless today; if profit/loss consumption is needed, use `tot_pl_amt`,
+  `pl_rt`, or KRW fields, and **do not wire `pl_amt`** until its format is
+  confirmed.
 
 ## PR evidence table template
 
