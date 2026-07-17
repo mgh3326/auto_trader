@@ -1128,9 +1128,7 @@ async def test_reconcile_us_sell_real_db_account_type_mismatch_leaves_pnl_null()
 
     with (
         patch.object(ll, "get_evidence_adapter", return_value=_Adapter()),
-        patch.object(
-            ll, "capture_reconcile_spot_fx", new=AsyncMock(return_value=None)
-        ),
+        patch.object(ll, "capture_reconcile_spot_fx", new=AsyncMock(return_value=None)),
         patch.object(ll, "_save_order_fill", new=AsyncMock(return_value=502)),
     ):
         out = await ll._reconcile_one_live_row(row, dry_run=False)
