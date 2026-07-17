@@ -45,6 +45,11 @@ DEFAULT_KIS_API_RATE_LIMITS: ApiRateLimitMap = {
         "rate": 1,
         "period": 0.2,
     },
+    # ROB-951: mock-US buy preflight and the read-only probe use VTTS3007R.
+    "VTTS3007R|/uapi/overseas-stock/v1/trading/inquire-psamount": {
+        "rate": 10,
+        "period": 1.0,
+    },
     "TTTC8434R|/uapi/domestic-stock/v1/trading/inquire-balance": {
         "rate": 10,
         "period": 1.0,

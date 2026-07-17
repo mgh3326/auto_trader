@@ -21,13 +21,7 @@ from app.mcp_server.tooling.market_session import (
     kr_market_data_state,
 )
 from app.mcp_server.tooling.portfolio_cash import (
-    extract_usd_orderable_from_row as _extract_usd_orderable_from_row,
-)
-from app.mcp_server.tooling.portfolio_cash import (
     get_cash_balance_impl,
-)
-from app.mcp_server.tooling.portfolio_cash import (
-    select_usd_row_for_us_order as _select_usd_row_for_us_order,
 )
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
@@ -875,14 +869,16 @@ async def _get_balance_for_order(market_type: str, is_mock: bool = False) -> flo
         # (already net of pending buys; no extra subtraction).
         return await _live_kis_orderable("kis_overseas")
 
-    # mock US: KIS 모의투자엔 해외 orderable-cash 서비스가 없음(OPSQ0002). ROB-417
-    # 조기 가드가 _check_balance_and_warn에서 선제 차단하므로 여기 도달은 방어적.
+    # ROB-951: mock US is deliberately isolated from the live path above.
+    # VTTS3007R's ord_psbl_frcr_amt is verified USD orderable cash. Missing or
+    # failed responses raise so _check_balance_and_warn retains its fail-closed
+    # handling; never coerce a failed read to zero.
     kis = _create_kis_client(is_mock=is_mock)
-    margin_data = await _call_kis(kis.inquire_overseas_margin, is_mock=is_mock)
-    usd_row = _select_usd_row_for_us_order(margin_data)
-    if usd_row is None:
-        raise RuntimeError("USD margin data not found in KIS overseas margin")
-    return _extract_usd_orderable_from_row(usd_row)
+    buyable_amount = await _call_kis(kis.inquire_mock_overseas_buyable_amount)
+    orderable = buyable_amount.get("ovrs_ord_psbl_amt")
+    if orderable is None:
+        raise RuntimeError("VTTS3007R response missing verified USD orderable cash")
+    return float(orderable)
 
 
 async def _record_order_history(

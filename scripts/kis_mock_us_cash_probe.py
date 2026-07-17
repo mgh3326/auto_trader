@@ -229,19 +229,29 @@ def _first_field(payload: Mapping[str, Any], names: tuple[str, ...]) -> Any:
 
 def parse_cash_fields(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Expose parsed field values or null; absence is evidence, not success."""
+    from app.services.brokers.kis.account import (
+        parse_mock_overseas_buyable_amount_response,
+    )
+
+    raw_output = _first_field(payload, ("output", "output1", "output2"))
+    vtts3007 = (
+        parse_mock_overseas_buyable_amount_response(raw_output)
+        if isinstance(raw_output, dict)
+        else {"ovrs_ord_psbl_amt": None, "sll_ruse_psbl_amt": None, "exrt": None}
+    )
     fields = {
         "stck_cash_ord_psbl_amt": ("stck_cash_ord_psbl_amt",),
         "usd_ord_psbl_amt": ("usd_ord_psbl_amt",),
         "usd_balance": ("usd_balance",),
-        "overseas_orderable_amount": (
-            "ovrs_ord_psbl_amt",
-            "frcr_ord_psbl_amt",
-            "frcr_ord_psbl_amt1",
-        ),
+        "overseas_orderable_amount": ("ovrs_ord_psbl_amt",),
     }
-    return {
+    parsed = {
         name: _first_field(payload, candidates) for name, candidates in fields.items()
     }
+    parsed["overseas_orderable_amount"] = vtts3007["ovrs_ord_psbl_amt"]
+    parsed["sll_ruse_psbl_amt"] = vtts3007["sll_ruse_psbl_amt"]
+    parsed["exrt"] = vtts3007["exrt"]
+    return parsed
 
 
 def evaluate_response(

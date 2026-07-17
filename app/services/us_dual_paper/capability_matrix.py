@@ -26,21 +26,18 @@ def get_capability_matrix() -> dict[str, dict[str, Any]]:
             **common,
             "broker": "kis",
             "account_mode": "kis_mock",
-            # Verified by live smoke (2026-05-27): KIS 모의투자 offers no overseas
-            # foreign-margin service (OPSQ0002 "없는 서비스 코드"), so USD cash /
-            # buying-power cannot be read; the overseas pending-orders inquiry
-            # (TTTS3018R) is hard-blocked in mock. Overseas holdings/positions DO
-            # read on the mock host (openapivts) via VTTS3012R.
-            "account_cash_read": False,
+            # ROB-951: VTTS3007R was verified on the mock host on 2026-07-17.
+            # Its ord_psbl_frcr_amt is USD orderable cash and exrt supplies the
+            # exchange rate in the same broker response. This does not imply
+            # mock overseas pending-order support (TTTS3018R remains blocked).
+            "account_cash_read": True,
             "open_orders_read": False,
             "market_session_note": (
-                "Mock overseas holdings read pre/post regular session on the mock "
-                "host; USD cash/buying-power unsupported (OPSQ0002); quote freshness "
+                "Mock overseas holdings and VTTS3007R USD buying power read on the "
+                "mock host; overseas pending orders remain unavailable; quote freshness "
                 "is operator-supplied until a US quote adapter lands."
             ),
             "known_unknown_fields": [
-                "cash_usd",
-                "buying_power_usd",
                 "open_orders",
                 "live_quote_state",
             ],

@@ -798,13 +798,18 @@ official KIS mock, and KIS live account paths:
   symbols that resolve to crypto, such as `KRW-BTC`, fail closed with
   `error: "crypto has no mock venue"` before Upbit balance reads or order
   mutation calls.
+  For US buys only, preflight reads mock `VTTS3007R` and validates its
+  `ord_psbl_frcr_amt` USD buying power. A missing or failed response remains
+  fail-closed; this does not change KIS live US routing or mock pending-order
+  support.
 - `account_mode="kis_live"` or omitted: existing live KIS behavior. For
   `place_order`, `dry_run=True` remains the default. KR live buy paths query
   Toss stock warnings before order submission; active `LIQUIDATION_TRADING`
   blocks non-dry-run buys before KIS POST, while lookup failures are fail-open
   and surfaced in the response metadata.
-- **Buy balance pre-check (ROB-625)**: For `side="buy"`, both `dry_run=True` and
-  `dry_run=False` apply the *same* orderable-cash pre-check against the shared
+- **Buy balance pre-check (ROB-625/951)**: For `side="buy"`, both `dry_run=True`
+  and `dry_run=False` apply the same orderable-cash pre-check. KIS mock US uses
+  `VTTS3007R.ord_psbl_frcr_amt`; all existing live routing remains on its shared
   `get_cash_balance` source. Insufficient balance returns `success=false` with an
   `insufficient_balance: true` flag and an `insufficient_balance_detail` block
   (`balance`, `order_amount`, `currency`, `shortfall`, and — for US — a KIS field

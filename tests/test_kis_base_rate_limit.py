@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
+from app.core.config import DEFAULT_KIS_API_RATE_LIMITS
 from app.services.brokers.kis.base import BaseKISClient
 
 
@@ -31,6 +32,22 @@ class _FakeSettingsClient(BaseKISClient):
 
 def _make_client() -> _FakeSettingsClient:
     return _FakeSettingsClient()
+
+
+def test_vtts3007_rate_limit_is_mapped(caplog):
+    assert DEFAULT_KIS_API_RATE_LIMITS[
+        "VTTS3007R|/uapi/overseas-stock/v1/trading/inquire-psamount"
+    ] == {"rate": 10, "period": 1.0}
+    client = _make_client()
+    FakeSettings.kis_api_rate_limits = DEFAULT_KIS_API_RATE_LIMITS
+    try:
+        with caplog.at_level(logging.WARNING):
+            assert client._get_rate_limit_for_api(
+                "VTTS3007R|/uapi/overseas-stock/v1/trading/inquire-psamount"
+            ) == (10, 1.0)
+        assert "VTTS3007R" not in caplog.text
+    finally:
+        del FakeSettings.kis_api_rate_limits
 
 
 class TestCalculateRetryDelay:
