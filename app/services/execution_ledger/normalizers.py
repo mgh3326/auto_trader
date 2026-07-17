@@ -8,7 +8,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from app.core.timezone import KST
+from app.core.timezone import KST, trade_day_kst
 from app.schemas.execution_ledger import ExecutionLedgerUpsert
 
 SENSITIVE_KEY_MARKERS = (
@@ -48,23 +48,53 @@ def _to_decimal(value: object, default: str = "0") -> Decimal:
         return Decimal(default)
 
 
-def _parse_filled_at(value: object) -> datetime:
+def _parse_kis_order_timestamp(ord_dt: object, ord_tmd: object) -> datetime:
+    date_text = str(ord_dt or "").strip()
+    time_text = str(ord_tmd or "000000").strip()
+    if len(date_text) != 8 or not date_text.isdigit():
+        raise ValueError("filled_at is empty and ord_dt is invalid")
+    if len(time_text) < 6 or not time_text[:6].isdigit():
+        raise ValueError("filled_at is empty and ord_tmd is invalid")
+    try:
+        return datetime.strptime(
+            f"{date_text} {time_text[:6]}", "%Y%m%d %H%M%S"
+        ).replace(tzinfo=KST)
+    except ValueError as exc:
+        raise ValueError(
+            "filled_at is empty and KIS order timestamp is invalid"
+        ) from exc
+
+
+def _parse_filled_at(
+    value: object,
+    *,
+    ord_dt: object | None = None,
+    ord_tmd: object | None = None,
+) -> datetime:
     text = str(value or "").strip()
     if not text:
-        return datetime.now(tz=KST)
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        if len(text) == 8:
-            try:
-                parsed = datetime.strptime(text, "%Y%m%d").replace(tzinfo=KST)
-            except ValueError:
-                parsed = datetime.now(tz=KST)
-        else:
-            parsed = datetime.now(tz=KST)
+        parsed = _parse_kis_order_timestamp(ord_dt, ord_tmd)
+    else:
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            if len(text) == 8 and text.isdigit():
+                try:
+                    parsed = datetime.strptime(text, "%Y%m%d").replace(tzinfo=KST)
+                except ValueError as exc:
+                    raise ValueError(f"invalid filled_at: {text!r}") from exc
+            else:
+                raise ValueError(f"invalid filled_at: {text!r}") from None
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=KST)
-    return parsed.astimezone(KST)
+        parsed = parsed.replace(tzinfo=KST)
+    else:
+        parsed = parsed.astimezone(KST)
+    if ord_dt not in (None, "") and trade_day_kst(parsed) != str(ord_dt).strip():
+        raise ValueError(
+            "KST trade day mismatch: "
+            f"filled_at={trade_day_kst(parsed)} ord_dt={str(ord_dt).strip()}"
+        )
+    return parsed
 
 
 def _redact_sensitive_keys(payload: Any) -> Any:
@@ -281,6 +311,8 @@ def _normalize_kis_domestic_filled(order: dict[str, Any]) -> dict[str, Any] | No
         "account": "kis",
         "order_id": str(order.get("ord_no") or order.get("odno") or ""),
         "filled_at": _kis_datetime(ord_dt, ord_tmd),
+        "ord_dt": ord_dt,
+        "ord_tmd": ord_tmd,
         "fill_seq": _domestic_fill_seq(order),
         "venue": "krx",
         "raw_payload_json": _redact_sensitive_keys(order),
@@ -309,6 +341,8 @@ def _normalize_kis_overseas_filled(order: dict[str, Any]) -> dict[str, Any] | No
         "account": "kis_overseas",
         "order_id": str(order.get("odno") or order.get("ord_no") or ""),
         "filled_at": _kis_datetime(ord_dt, ord_tmd),
+        "ord_dt": ord_dt,
+        "ord_tmd": ord_tmd,
         "fill_seq": _overseas_fill_seq(order),
         "venue": str(order.get("ovrs_excg_cd") or order.get("excg_cd") or "NASD"),
         "raw_payload_json": _redact_sensitive_keys(order),
@@ -347,7 +381,11 @@ def to_execution_ledger_upsert(
         if normalized.get("fee") is not None
         else None,
         fee_currency=normalized.get("currency"),
-        filled_at=_parse_filled_at(normalized.get("filled_at")),
+        filled_at=_parse_filled_at(
+            normalized.get("filled_at"),
+            ord_dt=normalized.get("ord_dt"),
+            ord_tmd=normalized.get("ord_tmd"),
+        ),
         currency=normalized["currency"],
         correlation_id=correlation_id or normalized.get("correlation_id"),
         source=source,

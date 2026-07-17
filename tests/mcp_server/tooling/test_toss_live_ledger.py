@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 
 from app.models.execution_ledger import ExecutionLedger
 from app.models.review import TossLiveOrderLedger
@@ -441,6 +441,85 @@ async def test_terminal_ledger_projection_failure_is_retried_by_sweep(db_session
     }
     assert rung.state == "filled"
     assert rung.filled_qty == Decimal("2")
+
+
+async def test_projection_repair_converges_after_timestamptz_kst_round_trip(
+    db_session,
+):
+    """ROB-933 diagnostic: execution-ledger trade day cannot gate Toss repair.
+
+    This uses PostgreSQL's TIMESTAMPTZ conversion with the session set to KST;
+    it deliberately does not derive the date through Python ``astimezone``.
+    The terminal Toss ledger row and resting rung have the same broker id, so
+    the sweep must converge even though the execution-ledger fill is stored on
+    the preceding UTC date.
+    """
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
+    proposal_id, toss_row = await _proposal_accepted_row(db_session, suffix="rob933")
+    filled_at_utc = datetime(2026, 7, 15, 15, 17, 28, tzinfo=UTC)
+    db_session.add(
+        ExecutionLedger(
+            broker="kis",
+            account_mode="live",
+            venue="krx",
+            instrument_type="equity_kr",
+            symbol="214150",
+            raw_symbol="214150",
+            side="sell",
+            broker_order_id=toss_row.broker_order_id,
+            fill_seq=0,
+            filled_qty=Decimal("2"),
+            filled_price=Decimal("100000"),
+            filled_notional=Decimal("200000"),
+            filled_at=filled_at_utc,
+            currency="KRW",
+            source="reconciler",
+        )
+    )
+    toss_row.status = "filled"
+    toss_row.filled_qty = Decimal("2")
+    await db_session.commit()
+
+    await db_session.execute(text("SET TIME ZONE 'Asia/Seoul'"))
+    persisted_kst_day = (
+        await db_session.execute(
+            text(
+                "SELECT to_char(filled_at, 'YYYYMMDD') "
+                "FROM review.execution_ledger "
+                "WHERE broker_order_id = :order_id"
+            ),
+            {"order_id": toss_row.broker_order_id},
+        )
+    ).scalar_one()
+    assert persisted_kst_day == "20260716"
+
+    with (
+        patch.object(
+            mod.TossLiveOrderLedgerService,
+            "reopen_anomalies_for_reconcile",
+            new=AsyncMock(
+                return_value={
+                    "rows": [],
+                    "dry_run": False,
+                    "reopened": 0,
+                    "candidates": 0,
+                }
+            ),
+        ),
+        patch.object(
+            mod.TossLiveOrderLedgerService, "list_open", new=AsyncMock(return_value=[])
+        ),
+    ):
+        repaired = await mod.toss_reconcile_orders_impl(dry_run=False)
+
+    rung = await _proposal_rung(db_session, proposal_id)
+    assert repaired["proposal_projection_repair"] == {
+        "candidates": 1,
+        "converged": 1,
+        "failed": 0,
+    }
+    assert rung.state == "filled"
 
 
 @pytest.mark.parametrize("terminal_status", ["filled", "cancelled"])

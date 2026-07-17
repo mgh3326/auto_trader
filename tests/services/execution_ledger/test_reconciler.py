@@ -172,3 +172,42 @@ async def test_reconciler_rejects_fetch_errors_and_records_failed_run(
     assert len(repo.runs) == 1
     assert "crypto" in repo.runs[0].error_summary
     assert "truncated window" in repo.runs[0].error_summary
+
+
+@pytest.mark.asyncio
+async def test_reconciler_skips_malformed_filled_at_with_one_run_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(
+        "app.services.execution_ledger.reconciler.settings",
+        SimpleNamespace(EXECUTION_LEDGER_COMMIT_ENABLED=False),
+    )
+
+    async def fetcher(**_kwargs):  # noqa: ANN003
+        return {
+            "orders": [
+                {
+                    "symbol": "214150",
+                    "raw_symbol": "214150",
+                    "instrument_type": "equity_kr",
+                    "side": "sell",
+                    "price": "100000",
+                    "quantity": "2",
+                    "total_amount": "200000",
+                    "currency": "KRW",
+                    "account": "kis",
+                    "order_id": f"bad-filled-at-{index}",
+                    "filled_at": "not-a-timestamp",
+                }
+                for index in range(2)
+            ]
+        }
+
+    with caplog.at_level("WARNING"):
+        diff = await ExecutionLedgerReconciler(FakeRepo(), fetcher=fetcher).run(
+            "kis", dry_run=True
+        )
+
+    assert diff.would_insert == 0
+    warnings = [r.message for r in caplog.records if "malformed filled_at" in r.message]
+    assert warnings == ["execution ledger skipped 2 malformed filled_at row(s)"]
