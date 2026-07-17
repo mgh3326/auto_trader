@@ -74,6 +74,7 @@ _CANONICAL_FILLED_LEDGER_STATES = frozenset(
 _FILLED_STATES = frozenset({"filled", "partially_filled"})
 _BUY_REQUIRES_LINKED_SELL_STATES = _FILLED_STATES | _CANONICAL_FILLED_LEDGER_STATES
 _TERMINAL_STATES = frozenset({"filled", "canceled"})
+_TERMINAL_PREVIEW_SIBLING_STATES = frozenset({"final_reconciled", "closed", "canceled"})
 _SELL_SOURCE_KEYS = frozenset(
     {
         "source_client_order_id",
@@ -484,14 +485,64 @@ def build_paper_execution_preflight_report(
 
     # 7. Stale preview/approval packet.
     stale_cutoff = checked_at - timedelta(minutes=stale_after_minutes)
-    stale_rows = []
+    terminal_siblings_by_correlation: dict[str, list[Any]] = {}
+    for row in unscoped_ledger:
+        correlation_id = _scope_value(_get(row, "lifecycle_correlation_id"))
+        lifecycle_state = str(_get(row, "lifecycle_state") or "").lower()
+        if correlation_id and lifecycle_state in _TERMINAL_PREVIEW_SIBLING_STATES:
+            terminal_siblings_by_correlation.setdefault(correlation_id, []).append(row)
+
+    stale_preview_rows = []
     for row in ledger:
         state = str(_get(row, "lifecycle_state") or "").lower()
         if state not in {"previewed", "validation_failed"}:
             continue
         preview_time = _latest_preview_time(row)
         if preview_time is not None and preview_time < stale_cutoff:
-            stale_rows.append(row)
+            stale_preview_rows.append(row)
+
+    spent_preview_rows: list[tuple[Any, Any]] = []
+    blocking_stale_rows = []
+    for row in stale_preview_rows:
+        correlation_id = _scope_value(_get(row, "lifecycle_correlation_id"))
+        terminal_sibling = next(
+            (
+                sibling
+                for sibling in terminal_siblings_by_correlation.get(correlation_id, [])
+                if sibling is not row
+            ),
+            None,
+        )
+        if terminal_sibling is None:
+            blocking_stale_rows.append(row)
+        else:
+            spent_preview_rows.append((row, terminal_sibling))
+
+    if spent_preview_rows:
+        add(
+            "spent_preview_without_cleanup",
+            PaperExecutionAnomalySeverity.warning,
+            "A stale preview has a terminal lifecycle sibling but was not cleaned up",
+            {
+                "stale_after_minutes": stale_after_minutes,
+                "cutoff": stale_cutoff.isoformat(),
+                "count": len(spent_preview_rows),
+                "rows": [
+                    {
+                        **_cleanup_required_row_ref(row),
+                        "terminal_sibling_client_order_id": _get(
+                            terminal_sibling, "client_order_id"
+                        ),
+                        "terminal_sibling_lifecycle_state": _get(
+                            terminal_sibling, "lifecycle_state"
+                        ),
+                    }
+                    for row, terminal_sibling in spent_preview_rows[:10]
+                ],
+            },
+        )
+
+    stale_rows = list(blocking_stale_rows)
     packet_time = _as_aware_utc(
         _parse_datetime(
             packet.get("expires_at")
