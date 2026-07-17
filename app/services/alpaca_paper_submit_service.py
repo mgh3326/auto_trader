@@ -61,9 +61,11 @@ def _extract_and_sanitize_error_body(exc: Exception) -> str:
     """Extract, sanitize, and truncate the error body from AlpacaPaperRequestError.
 
     1. Excerpts the raw response body from HTTP status prefix.
-    2. Sanitizes sensitive text using existing ledger utility.
-    3. Conservatively masks any remaining alphanumeric tokens of length 20+ to protect secrets/account IDs.
-    4. Truncates to 500 characters.
+    2. Limits incoming body size to 2000 characters before regex matching to avoid engine load.
+    3. Sanitizes sensitive text using existing ledger utility.
+    4. Conservatively masks any remaining alphanumeric tokens of length 20+ containing digits
+       to protect secrets, keys, and high-entropy tokens, while preserving UUIDs and general non-digit identifiers.
+    5. Truncates to 500 characters.
     """
     import re
 
@@ -74,8 +76,19 @@ def _extract_and_sanitize_error_body(exc: Exception) -> str:
         if len(parts) > 1:
             body = parts[1]
 
-    redacted = _redact_sensitive_text(body) or ""
-    masked = re.sub(r"[A-Za-z0-9]{20,}", "[MASKED_TOKEN]", redacted)
+    # Pre-truncate to 2000 characters to bound regex evaluation time
+    body_short = body[:2000]
+
+    redacted = _redact_sensitive_text(body_short) or ""
+
+    def replace_token(match) -> str:
+        val = match.group(0)
+        # Only mask tokens that contain at least one digit
+        if any(c.isdigit() for c in val):
+            return "[MASKED_TOKEN]"
+        return val
+
+    masked = re.sub(r"[A-Za-z0-9]{20,}", replace_token, redacted)
     return masked[:500]
 
 

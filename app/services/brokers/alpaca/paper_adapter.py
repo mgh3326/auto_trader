@@ -12,6 +12,7 @@ from app.services.alpaca_paper_order_application import (
     AlpacaPaperOrderSpec,
     AlpacaVerifiedDecision,
 )
+from app.services.alpaca_paper_submit_service import _extract_and_sanitize_error_body
 from app.services.brokers.capabilities import Broker
 from app.services.brokers.paper.contracts import (
     PaperOperation,
@@ -93,7 +94,10 @@ class AlpacaCryptoPaperAdapter:
                 status=PaperOperationStatus.FAILED,
                 reason_code=PaperReasonCode.ADAPTER_UNAVAILABLE,
                 venue=self.broker,
-                evidence={"error_type": type(exc).__name__},
+                evidence={
+                    "error_type": type(exc).__name__,
+                    "error_body": _extract_and_sanitize_error_body(exc),
+                },
             )
         return self._result(operation, outcome)
 

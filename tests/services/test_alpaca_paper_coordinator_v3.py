@@ -433,7 +433,11 @@ async def test_alpaca_submit_failure_sanitizes_sensitive_tokens(db_session):
     packet = _packet(canonical, corr)
 
     sensitive_token = "abcdefghijklmnopqrstuvwxyz1234567890abcd"
-    error_msg = f"HTTP 403: secret: {sensitive_token} and raw_token: {sensitive_token}"
+    uuid_str = "123e4567-e89b-12d3-a456-426614174000"
+    error_msg = (
+        f"HTTP 403: secret: {sensitive_token} and raw_token: {sensitive_token} "
+        f"and normal_word: cryptotradingnotenabled and uuid: {uuid_str}"
+    )
     broker = V3Broker(submit_error=AlpacaPaperRequestError(error_msg, status_code=403))
     coord = _coord(db_session, broker)
 
@@ -444,6 +448,8 @@ async def test_alpaca_submit_failure_sanitizes_sensitive_tokens(db_session):
     assert row is not None
     assert "secret: [REDACTED]" in row.error_summary
     assert "raw_token: [MASKED_TOKEN]" in row.error_summary
+    assert "normal_word: cryptotradingnotenabled" in row.error_summary
+    assert f"uuid: {uuid_str}" in row.error_summary
     assert sensitive_token not in row.error_summary
 
 
@@ -462,3 +468,30 @@ async def test_extract_and_sanitize_error_body_truncates_and_masks():
     )
     result_mask = _extract_and_sanitize_error_body(exc_mask)
     assert result_mask == "[MASKED_TOKEN]"
+
+    # pure alphabetic long word must not be masked
+    exc_clear = AlpacaPaperRequestError(
+        "HTTP 403: cryptotradingnotenabled", status_code=403
+    )
+    result_clear = _extract_and_sanitize_error_body(exc_clear)
+    assert result_clear == "cryptotradingnotenabled"
+
+
+async def test_extract_and_sanitize_error_body_backtracking_prevention():
+    import time
+
+    from app.services.alpaca_paper_submit_service import (
+        _extract_and_sanitize_error_body,
+    )
+
+    text = "Authorization: Bearer " + ("A1" * 512)
+    exc = AlpacaPaperRequestError(text, status_code=403)
+
+    t0 = time.perf_counter()
+    _ = _extract_and_sanitize_error_body(exc)
+    t1 = time.perf_counter()
+
+    duration = t1 - t0
+    assert duration < 0.1, (
+        f"Authorization regex backtracked catastrophically, took {duration:.4f}s"
+    )

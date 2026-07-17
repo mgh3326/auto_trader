@@ -101,8 +101,8 @@ _SENSITIVE_TEXT_VALUE_RE = re.compile(
     re.IGNORECASE,
 )
 _AUTHORIZATION_TEXT_VALUE_RE = re.compile(
-    r"(?P<prefix>\bauthorization\b\s*[:=]\s*)"
-    r"(?P<value>[^,;]+?)(?=\s+\w+(?:[_-]?\w+)*\s*[:=]|$|[,;])",
+    r"(?P<prefix>\b(authorization|bearer)\b\s*[:=]?\s*)"
+    r"(?P<value>(?:bearer\s+)?\S{1,256})",
     re.IGNORECASE,
 )
 
