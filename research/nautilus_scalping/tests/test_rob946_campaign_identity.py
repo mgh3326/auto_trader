@@ -172,9 +172,16 @@ def _rows(s1=_S1_ROWS, s2=_S2_ROWS) -> list[CampaignConfigRow]:
 
 
 def _sources() -> dict[str, StrategySourceProvenance]:
-    s1_text = "def donchian_15m_signal(): ...  # S1 placeholder pending H3"
+    # ROB-944 Q1 (orch-fable-answer-rob944-20260717.md, 2026-07-17): these
+    # strategy_key/strategy_version pairs are FROZEN PRODUCTION IDENTIFIERS
+    # (Fable-promoted), not a placeholder pending H3 -- H3 merged with its own
+    # actual signal source; the source TEXT below is still a stand-in for
+    # this identity-mechanism test only (the pure identity builder never reads
+    # real strategy source itself, it only hashes whatever text it is given).
+    s1_text = "def donchian_15m_signal(): ...  # S1 frozen production identifier (Fable-promoted 2026-07-17)"
     s2_text = (
-        "def confirmed_shock_reversal_5m_signal(): ...  # S2 placeholder pending H3"
+        "def confirmed_shock_reversal_5m_signal(): ...  "
+        "# S2 frozen production identifier (Fable-promoted 2026-07-17)"
     )
     return {
         "S1": StrategySourceProvenance(

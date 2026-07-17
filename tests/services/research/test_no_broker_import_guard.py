@@ -31,6 +31,8 @@ GUARDED_FILES: tuple[pathlib.Path, ...] = (
     REPO_ROOT / "app" / "services" / "research_campaign_bridge.py",
     REPO_ROOT / "app" / "services" / "research_db_write_guard.py",
     REPO_ROOT / "app" / "schemas" / "research_campaign_bridge.py",
+    # ROB-944 (H4) — thin --run preflight/registration controller.
+    REPO_ROOT / "app" / "services" / "rob944_campaign_controller.py",
     *sorted((REPO_ROOT / "research_contracts").glob("*.py")),
 )
 
