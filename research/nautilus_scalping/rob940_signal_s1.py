@@ -24,6 +24,13 @@ module's contract, so indicator state (ATR/Donchian/volume-median buffers)
 resets to a fresh, zero-indexed accumulation exactly when that flag is True.
 No prior-segment bar (including its close) is ever referenced across a gap.
 
+ultrathink (I4, ROB-943 R1 remediation): ``get_s1_config`` only fails closed
+for callers that go THROUGH it. ``generate_s1_signals`` now asserts exact
+frozen-manifest membership (symbol + config, by VALUE not identity) as its
+very first act, before touching ``bars_15m`` at all — a caller handing in a
+forged/tampered/unregistered ``S1Config`` or an out-of-universe symbol must
+never reach the math loop, even with zero bars.
+
 No DB/network/app/broker/order/fill/scheduler/random/current-time imports —
 pure stdlib, deterministic given its input.
 """
@@ -36,7 +43,12 @@ from collections.abc import Sequence
 
 from rob940_bars_agg import AggregatedBar
 from rob940_engine import SignalEvent
-from rob940_signal_manifest import FrozenSignalConstants, S1Config
+from rob940_signal_manifest import (
+    FrozenSignalConstants,
+    S1Config,
+    _validate_symbol,
+    assert_matches_frozen_s1_config,
+)
 
 _C = FrozenSignalConstants
 
@@ -137,6 +149,9 @@ def generate_s1_signals(
     frozen ``S1Config`` row. Returns signals in input (chronological) order,
     already unique by ``signal_ts``.
     """
+    _validate_symbol(symbol)
+    assert_matches_frozen_s1_config(config)
+
     out: list[SignalEvent] = []
     min_idx = max(config.L, _C.ATR_PERIOD)
 

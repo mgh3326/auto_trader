@@ -25,9 +25,14 @@ confirmation-bar overshoot already carried E past T, the reversion thesis is
 already exhausted and passing the trade to H2 unguarded produces a
 mislabeled entry-bar "take_profit" exit that is actually a realized loss
 (see ``tests/test_rob940_signal_s2.py::
-test_ambiguity_gate_direction_mismatch_is_held_pending_consult``, kept
+test_ambiguity_gate_direction_mismatch_final_fable_ruling``, kept
 permanently per the ruling's condition 3). Spec-deviation register entry
 (Fable condition 2, do not re-word): see ``SPEC_DEVIATIONS`` below.
+
+ultrathink (I4, ROB-943 R1 remediation): ``get_s2_config`` only fails closed
+for callers that go THROUGH it. ``generate_s2_signals`` now asserts exact
+frozen-manifest membership (symbol + config, by VALUE not identity) as its
+very first act, before touching ``bars_5m``/``bars_1m`` at all.
 
 No DB/network/app/broker/order/fill/scheduler/random/current-time imports —
 pure stdlib, deterministic given its input.
@@ -42,7 +47,12 @@ from dataclasses import dataclass
 
 from rob940_bars_agg import AggregatedBar, Bar1m
 from rob940_engine import SignalEvent
-from rob940_signal_manifest import FrozenSignalConstants, S2Config
+from rob940_signal_manifest import (
+    FrozenSignalConstants,
+    S2Config,
+    _validate_symbol,
+    assert_matches_frozen_s2_config,
+)
 from rob940_signal_s1 import _assert_unique_signal_ts, _segment_slices
 
 _C = FrozenSignalConstants
@@ -120,14 +130,21 @@ def _evaluate_target_gates(
     # 101.20/100.00-1 lands a few ULPs past 0.012) without masking any real
     # boundary distinction -- inclusive gates below are exact-decimal spec
     # boundaries (68/120bp, R_min*d_SL), not float-noise-sensitive ones.
+    # M3 (ROB-943 R1 remediation): the R_min*d_SL threshold gets the SAME
+    # rounding treatment as d_tp_bps -- rounding only the LHS left an
+    # asymmetric ~1e-14bp ULP gap (e.g. R_min=1.20/d_SL=90bp -> raw RHS
+    # 107.99999999999999 vs exact 108.0); harmless in practice (always
+    # permissive, dwarfed by the 1e-8bp LHS rounding) but a needless
+    # inconsistency once one side was already being cleaned up.
     d_tp_bps = round(abs(target_price / entry_price - 1.0) * 1e4, 8)
+    r_min_sl_bps = round(r_min * sl_distance * 1e4, 8)
     if side == "long" and not (target_price > entry_price):
         return False, "target_direction_invalid", d_tp_bps
     if side == "short" and not (target_price < entry_price):
         return False, "target_direction_invalid", d_tp_bps
     if d_tp_bps > _C.S2_TP_MAX_BPS:
         return False, "tp_above_max", d_tp_bps
-    if d_tp_bps < r_min * sl_distance * 1e4:
+    if d_tp_bps < r_min_sl_bps:
         return False, "tp_below_r_min_sl", d_tp_bps
     if d_tp_bps < _C.S2_TP_ABS_FLOOR_BPS:
         return False, "tp_below_abs_floor", d_tp_bps
@@ -151,6 +168,9 @@ def generate_s2_signals(
     next contiguous 1m open ``E`` for the pre-signal TP-validity gates —
     this module never touches execution/cost/arbitration logic.
     """
+    _validate_symbol(symbol)
+    assert_matches_frozen_s2_config(config)
+
     signals: list[SignalEvent] = []
     rejections: list[RejectedCandidate] = []
     bars_1m_by_ts = {b.ts: b for b in bars_1m}

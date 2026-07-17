@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 from rob940_bars_agg import AggregatedBar
-from rob940_signal_manifest import get_s1_config
+from rob940_signal_manifest import S1Config, get_s1_config
 from rob940_signal_s1 import _rolling_median, _wilder_atr_series, generate_s1_signals
 
 _BUCKET_MS = 15 * 60_000
@@ -273,21 +275,58 @@ def test_s1_07_sl_floor_clip_yields_exactly_67_5bp_tp_no_trade_downstream():
 
 
 def test_a_t_below_min_produces_no_signal():
+    # I2 (R1 remediation, strategy-verify-rob943-r1-20260717-170045.md): the
+    # prior fixture (price ~100, tiny absolute range) was rejected by the
+    # CHASE gate, not a_t (chase=0.741>0.50) -- deleting A_T_MIN entirely
+    # still yielded no signal, so the lower bound had zero effective
+    # coverage. Fixed by holding the ATR-relative shape (and therefore
+    # chase/q) IDENTICAL to the passing boundary fixture below while
+    # shifting the absolute price level up by a large additive offset
+    # (baseline ~1000 instead of ~100): a_t=ATR/C shrinks well under 0.20%
+    # while chase=(C-U)/ATR is UNCHANGED (it only depends on price
+    # DIFFERENCES, which are untouched by the offset) and q is
+    # volume-based, also untouched. a_t is now the ONLY binding gate.
     cfg = get_s1_config("S1-00")
-    # Extremely tight flat range -> a_t well under 0.20%.
-    bars = _flat_warmup(20, h=100.02, low=99.98, c=100.0, v=100.0)
+    baseline = 1000.0
+    bars = _flat_warmup(20, h=baseline + 0.15, low=baseline - 0.15, c=baseline, v=100.0)
     breakout = AggregatedBar(
         ts=20 * _BUCKET_MS,
-        open=100.01,
-        high=100.05,
-        low=100.0,
-        close=100.05,
+        open=baseline + 0.10,
+        high=baseline + 0.30,  # =close, no upper wick
+        low=baseline + 0.0,
+        close=baseline + 0.30,
+        volume=125.0,  # q = 1.25 exactly, same as the passing sibling below
+        close_ts=21 * _BUCKET_MS,
+        is_segment_start=False,
+    )
+    signals = generate_s1_signals([*bars, breakout], cfg, symbol="XRPUSDT")
+    assert signals == ()  # a_t ~= 0.0003 (0.03%), well under the 0.20% floor
+
+
+def test_a_t_lower_boundary_exactly_0_002_emits():
+    # Positive control/sibling for the test above: SAME relative shape
+    # (chase=0.5, q=1.25 boundaries), but the baseline is chosen so
+    # a_t=ATR/C lands EXACTLY on the 0.002 inclusive lower bound -- proving
+    # the gate is `>=`, not `>`, and that a regression loosening/removing
+    # A_T_MIN would be caught (this fixture would still emit if the lower
+    # gate were removed, but the sibling above would ALSO start emitting,
+    # which is exactly the mutation this pair is designed to detect).
+    cfg = get_s1_config("S1-00")
+    baseline = 149.70  # ATR=0.3 (clean), C=150.00 -> a_t=0.3/150.0=0.002 exactly
+    bars = _flat_warmup(20, h=baseline + 0.15, low=baseline - 0.15, c=baseline, v=100.0)
+    breakout = AggregatedBar(
+        ts=20 * _BUCKET_MS,
+        open=baseline + 0.10,
+        high=baseline + 0.30,
+        low=baseline + 0.0,
+        close=baseline + 0.30,
         volume=125.0,
         close_ts=21 * _BUCKET_MS,
         is_segment_start=False,
     )
     signals = generate_s1_signals([*bars, breakout], cfg, symbol="XRPUSDT")
-    assert signals == ()
+    assert len(signals) == 1
+    assert signals[0].side == "long"
 
 
 def test_a_t_above_max_produces_no_signal():
@@ -334,3 +373,55 @@ def test_unique_signal_ts_per_symbol_fails_closed_on_duplicate():
     )
     with pytest.raises(ValueError, match="duplicate"):
         _assert_unique_signal_ts(dup)
+
+
+# ---------------------------------------------------------------------------
+# I4 (R1 remediation): exact frozen-membership fail-closed at the generator
+# boundary -- must reject BEFORE any math, even with zero bars.
+# ---------------------------------------------------------------------------
+
+
+def test_generate_s1_signals_rejects_unknown_symbol():
+    cfg = get_s1_config("S1-00")
+    with pytest.raises(ValueError):
+        generate_s1_signals([], cfg, symbol="ETHUSDT")
+
+
+def test_generate_s1_signals_rejects_forged_unregistered_config():
+    forged = S1Config(999, 9.9, 9.9, 9.9, "S1-FORGED", "forged")
+    with pytest.raises(ValueError):
+        generate_s1_signals([], forged, symbol="XRPUSDT")
+
+
+def test_generate_s1_signals_rejects_in_domain_param_swapped_config():
+    # L swapped 12->24 (both in-domain), config_id left as "S1-01": a caller
+    # could otherwise construct this and get silently-computed signals under
+    # a registered id that doesn't match its own row.
+    swapped = dataclasses.replace(get_s1_config("S1-01"), L=24)
+    with pytest.raises(ValueError):
+        generate_s1_signals([], swapped, symbol="XRPUSDT")
+
+
+def test_generate_s1_signals_rejects_hypothesis_tampered_config():
+    tampered = dataclasses.replace(get_s1_config("S1-00"), hypothesis="tampered")
+    with pytest.raises(ValueError):
+        generate_s1_signals([], tampered, symbol="XRPUSDT")
+
+
+def test_generate_s1_signals_accepts_value_equal_deserialized_config():
+    # A freshly-constructed (not `is`-identical) S1Config with EXACTLY the
+    # frozen row's values must be accepted -- this is a value-equality
+    # check, not an identity check.
+    canonical = get_s1_config("S1-00")
+    deserialized = S1Config(
+        canonical.L,
+        canonical.q_min,
+        canonical.k_SL,
+        canonical.R_TP,
+        canonical.config_id,
+        canonical.hypothesis,
+    )
+    assert deserialized is not canonical
+    assert deserialized == canonical
+    signals = generate_s1_signals([], deserialized, symbol="XRPUSDT")
+    assert signals == ()

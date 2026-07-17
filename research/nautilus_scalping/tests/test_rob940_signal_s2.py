@@ -1,19 +1,22 @@
 """ROB-943 (H3, ROB-940) — S2 confirmed-shock-reversal-5m signal RED/GREEN tests.
 
 Includes the PERMANENT ambiguity-gate reproduction
-(``test_ambiguity_gate_direction_mismatch_is_held_pending_consult`` and its
+(``test_ambiguity_gate_direction_mismatch_final_fable_ruling`` and its
 companion GREEN test) per the Fable-approved final ruling in
 ``orch-fable-answer-rob943-s2-20260717.md`` (Q1=A, direction guard kept,
-RED fixture retained permanently — do not delete this test).
+RED fixture retained permanently — do not delete this test; only its name
+changed in the R1 remediation round to drop the stale "pending_consult"
+wording -- the ruling itself has been final since 2026-07-17).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import math
 
 import pytest
 from rob940_bars_agg import AggregatedBar, Bar1m
-from rob940_signal_manifest import FrozenSignalConstants, get_s2_config
+from rob940_signal_manifest import FrozenSignalConstants, S2Config, get_s2_config
 from rob940_signal_s2 import (
     RejectedCandidate,
     _efficiency_ratio,
@@ -89,7 +92,7 @@ def test_efficiency_ratio_pure_trend_is_one():
 # ---------------------------------------------------------------------------
 
 
-def test_ambiguity_gate_direction_mismatch_is_held_pending_consult():
+def test_ambiguity_gate_direction_mismatch_final_fable_ruling():
     """PERMANENT regression (Fable Q1=A final, orch-fable-answer-rob943-s2-
     20260717.md). Reproduces the exact risk described in the consult doc:
     confirmation overshoot puts target T below entry E for a long (or above
@@ -172,24 +175,30 @@ def _flat_segment(n: int, *, c=100.0, v=100.0) -> list[AggregatedBar]:
 
 
 def _zigzag_then_shock(
-    *, shock_close: float, confirm_close=None, confirm_high=None, confirm_low=None
+    *,
+    shock_close: float,
+    confirm_close=None,
+    confirm_high=None,
+    confirm_low=None,
+    flat_n: int = _FLAT_N,
 ) -> list[AggregatedBar]:
-    """288 flat bars (index 0..287) + 47 alternating +/-0.6 "noise" bars
-    (index 288..334, 47 bars) + shock bar (index 335) [+ optional confirm
-    bar index 336]. Index 335 is bar t=335 >= 289 warm-up floor -- ample
-    margin above the min eligible index so window slicing has headroom.
+    """``flat_n`` flat bars + 47 alternating +/-0.6 "noise" bars + shock bar
+    [+ optional confirm bar]. With the default ``flat_n=288`` the shock lands
+    at bar t=335, well above the 289 min-eligible-index floor (ample margin
+    for window slicing). Passing ``flat_n=241``/``242`` places the shock
+    exactly at the t=288 (excluded) / t=289 (first eligible) boundary.
     """
-    bars = _flat_segment(_FLAT_N)
+    bars = _flat_segment(flat_n)
     noise: list[AggregatedBar] = []
     prev_close = 100.0
     for k in range(47):
-        idx = _FLAT_N + k
+        idx = flat_n + k
         c = 100.6 if k % 2 == 0 else 100.0
         noise.append(
             _bar(idx, prev_close, max(prev_close, c), min(prev_close, c), c, 100.0)
         )
         prev_close = c
-    shock_idx = _FLAT_N + 47
+    shock_idx = flat_n + 47
     shock_bar = _bar(
         shock_idx,
         prev_close,
@@ -282,18 +291,6 @@ def test_next_bar_unavailable_is_rejected_not_silently_dropped():
     assert reasons.get("next_bar_unavailable", 0) == 1
 
 
-def test_gap_reset_discards_pending_shock_and_warmup():
-    cfg = get_s2_config("S2-00")
-    bars = _zigzag_then_shock(shock_close=99.9)  # ends right at the shock bar
-    shock_idx = _FLAT_N + 47
-    # A gap: new segment starts immediately, discarding the pending shock
-    # and resetting warm-up (this lone bar can't possibly be a confirmation).
-    gap_bar = _bar(shock_idx + 1, 99.9, 100.5, 99.9, 100.4, 100.0, segment_start=True)
-    bars = [*bars, gap_bar]
-    result = generate_s2_signals(bars, [], cfg, symbol="XRPUSDT")
-    assert result.signals == ()
-
-
 def test_rejection_dataclass_has_reason_field_for_aggregation():
     rc = RejectedCandidate(
         strategy="S2",
@@ -304,3 +301,235 @@ def test_rejection_dataclass_has_reason_field_for_aggregation():
         reason="target_direction_invalid",
     )
     assert count_rejection_reasons((rc, rc)) == {"target_direction_invalid": 2}
+
+
+# ---------------------------------------------------------------------------
+# I4 (R1 remediation): exact frozen-membership fail-closed at the generator
+# boundary -- must reject BEFORE any math, even with zero bars.
+# ---------------------------------------------------------------------------
+
+
+def test_generate_s2_signals_rejects_unknown_symbol():
+    cfg = get_s2_config("S2-00")
+    with pytest.raises(ValueError):
+        generate_s2_signals([], [], cfg, symbol="ETHUSDT")
+
+
+def test_generate_s2_signals_rejects_forged_unregistered_config():
+    forged = S2Config(9.9, 9.9, 9.9, 9.9, "S2-FORGED", "forged")
+    with pytest.raises(ValueError):
+        generate_s2_signals([], [], forged, symbol="XRPUSDT")
+
+
+def test_generate_s2_signals_rejects_in_domain_param_swapped_config():
+    swapped = dataclasses.replace(get_s2_config("S2-01"), z_min=3.25)
+    with pytest.raises(ValueError):
+        generate_s2_signals([], [], swapped, symbol="XRPUSDT")
+
+
+def test_generate_s2_signals_rejects_hypothesis_tampered_config():
+    tampered = dataclasses.replace(get_s2_config("S2-00"), hypothesis="tampered")
+    with pytest.raises(ValueError):
+        generate_s2_signals([], [], tampered, symbol="XRPUSDT")
+
+
+def test_generate_s2_signals_accepts_value_equal_deserialized_config():
+    canonical = get_s2_config("S2-00")
+    deserialized = S2Config(
+        canonical.z_min,
+        canonical.v_min,
+        canonical.ER_max,
+        canonical.R_min,
+        canonical.config_id,
+        canonical.hypothesis,
+    )
+    assert deserialized is not canonical
+    assert deserialized == canonical
+    result = generate_s2_signals([], [], deserialized, symbol="XRPUSDT")
+    assert result.signals == ()
+    assert result.rejections == ()
+
+
+# ---------------------------------------------------------------------------
+# I3 (R1 remediation): non-vacuous gap-reset -- a REAL 1m bar is present at
+# the confirmation close_ts so the is_segment_start=False control genuinely
+# emits, proving the True (gap) branch's 0-signal/0-rejection result is due
+# to the reset discarding a stale pending shock, not an unrelated no-op.
+# ---------------------------------------------------------------------------
+
+
+def _gap_reset_fixture(*, gap: bool) -> tuple[list[AggregatedBar], list[Bar1m]]:
+    bars = _zigzag_then_shock(
+        shock_close=99.9, confirm_close=100.2, confirm_high=100.25, confirm_low=99.95
+    )
+    # Flip only the confirmation bar's is_segment_start flag: `gap=True`
+    # means a real time discontinuity occurred right before the would-be
+    # confirmation bar, so it starts a NEW segment and the shock (last bar
+    # of the OLD segment) can never be confirmed against it.
+    confirm = bars[-1]
+    bars[-1] = dataclasses.replace(confirm, is_segment_start=gap)
+    bars_1m = [
+        Bar1m(
+            ts=confirm.close_ts,
+            open=99.70,
+            high=99.9,
+            low=99.6,
+            close=99.8,
+            volume=10.0,
+        )
+    ]
+    return bars, bars_1m
+
+
+def test_gap_reset_control_no_gap_emits_real_signal():
+    bars, bars_1m = _gap_reset_fixture(gap=False)
+    result = generate_s2_signals(
+        bars, bars_1m, get_s2_config("S2-00"), symbol="XRPUSDT"
+    )
+    assert len(result.signals) == 1
+    assert result.signals[0].side == "long"
+
+
+def test_gap_reset_discards_pending_shock_stale_candidate_never_evaluated():
+    bars, bars_1m = _gap_reset_fixture(gap=True)
+    result = generate_s2_signals(
+        bars, bars_1m, get_s2_config("S2-00"), symbol="XRPUSDT"
+    )
+    assert result.signals == ()
+    # Not merely "no signal" -- the pending shock must never have been
+    # EVALUATED at all (no confirmation_failed/next_bar_unavailable/etc.
+    # rejection row either), proving it was discarded by the reset rather
+    # than considered and rejected for some unrelated reason.
+    assert result.rejections == ()
+
+
+# ---------------------------------------------------------------------------
+# Recommended regressions (R1's independently-verified one-offs, committed)
+# ---------------------------------------------------------------------------
+
+
+def test_shock_at_t_288_excluded_t_289_first_eligible():
+    cfg = get_s2_config("S2-00")
+    # t=288: flat_n=241 -> shock_idx=241+47=288 (one BELOW the 289 floor).
+    excluded = _zigzag_then_shock(shock_close=99.9, flat_n=241)
+    result_excluded = generate_s2_signals(excluded, [], cfg, symbol="XRPUSDT")
+    assert result_excluded.signals == ()
+    assert result_excluded.rejections == ()  # never evaluated, not rejected
+
+    # t=289: flat_n=242 -> shock_idx=242+47=289 (first eligible), with a
+    # real confirmation + 1m bar so a genuine signal proves it WAS evaluated.
+    included = _zigzag_then_shock(
+        shock_close=99.9,
+        flat_n=242,
+        confirm_close=100.2,
+        confirm_high=100.25,
+        confirm_low=99.95,
+    )
+    bars_1m = [
+        Bar1m(
+            ts=included[-1].close_ts,
+            open=99.70,
+            high=99.9,
+            low=99.6,
+            close=99.8,
+            volume=10.0,
+        )
+    ]
+    result_included = generate_s2_signals(included, bars_1m, cfg, symbol="XRPUSDT")
+    assert len(result_included.signals) == 1
+
+
+def test_positive_shock_short_confirmation_full_signal_round_trips_through_h2():
+    from rob940_cost_model import COST_SCENARIO_PRIMARY_STRESS
+    from rob940_engine import run_symbol_stream
+
+    cfg = get_s2_config("S2-00")
+    shock_close = 101.3  # prev_close=100.6 -> r_t=+0.693% (positive shock)
+    bars = _zigzag_then_shock(
+        shock_close=shock_close,
+        confirm_close=101.0,
+        confirm_high=101.2,  # <= shock high (101.3)
+        confirm_low=100.9,
+    )
+    # T=C_{t-1}=100.6 (shock's own prior close); E=101.50 puts T<E, valid
+    # for short. d_TP=|100.6/101.50-1|=88.67bp, within [68,120]bp.
+    bars_1m = [
+        Bar1m(
+            ts=bars[-1].close_ts,
+            open=101.50,
+            high=101.6,
+            low=101.4,
+            close=101.55,
+            volume=10.0,
+        )
+    ]
+    result = generate_s2_signals(bars, bars_1m, cfg, symbol="XRPUSDT")
+    assert len(result.signals) == 1
+    sig = result.signals[0]
+    assert sig.side == "short"
+    assert sig.tp_target_price == pytest.approx(100.6)
+
+    engine_bars_1m = [
+        Bar1m(
+            ts=bars_1m[0].ts,
+            open=101.50,
+            high=101.55,
+            low=101.30,
+            close=101.35,
+            volume=1.0,
+        )
+    ]
+    engine_result = run_symbol_stream(
+        engine_bars_1m, result.signals, COST_SCENARIO_PRIMARY_STRESS
+    )
+    assert len(engine_result.trades) == 1
+    assert engine_result.trades[0].side == "short"
+
+
+def test_next_bar_unavailable_does_not_scan_forward_to_a_later_1m_bar():
+    cfg = get_s2_config("S2-00")
+    bars = _zigzag_then_shock(
+        shock_close=99.9, confirm_close=100.2, confirm_high=100.25, confirm_low=99.95
+    )
+    confirm_close_ts = bars[-1].close_ts
+    # A 1m bar exists, but one minute LATER than the exact required ts --
+    # the engine-consumption contract (AC3) forbids searching further ahead.
+    later_only = [
+        Bar1m(
+            ts=confirm_close_ts + 60_000,
+            open=99.70,
+            high=99.9,
+            low=99.6,
+            close=99.8,
+            volume=10.0,
+        )
+    ]
+    result = generate_s2_signals(bars, later_only, cfg, symbol="XRPUSDT")
+    assert result.signals == ()
+    reasons = count_rejection_reasons(result.rejections)
+    assert reasons.get("next_bar_unavailable", 0) == 1
+
+
+def test_real_pipeline_target_direction_invalid_reason_count():
+    """FABLE-A1 gap closed: aggregate a rejection produced by an actual
+    ``generate_s2_signals`` run (not a hand-built ``RejectedCandidate``).
+    """
+    cfg = get_s2_config("S2-00")
+    bars = _zigzag_then_shock(
+        shock_close=99.9, confirm_close=100.2, confirm_high=100.25, confirm_low=99.95
+    )
+    # E=101.0 puts E ABOVE T=100.6 for a long -> direction-invalid, even
+    # though the shock/confirmation themselves are perfectly valid.
+    bars_1m = [
+        Bar1m(
+            ts=bars[-1].close_ts,
+            open=101.0,
+            high=101.1,
+            low=100.9,
+            close=101.05,
+            volume=10.0,
+        )
+    ]
+    result = generate_s2_signals(bars, bars_1m, cfg, symbol="XRPUSDT")
+    assert result.signals == ()
+    assert count_rejection_reasons(result.rejections) == {"target_direction_invalid": 1}

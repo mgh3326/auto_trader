@@ -76,7 +76,14 @@ class S2Config:
 # 24-row config shortlist specifically) but validated by dedicated tests so
 # a silent edit to e.g. the ATR period or the S2 288-bar window fails a test
 # rather than drifting unnoticed.
-class FrozenSignalConstants(NamedTuple):
+#
+# M2 (ROB-943 R1 remediation): the TYPE is named ``_FrozenSignalConstantsT``
+# (private) so the public name ``FrozenSignalConstants`` can be rebound below
+# to the single frozen INSTANCE without shadowing/destroying the class --
+# a future `x: _FrozenSignalConstantsT` annotation stays meaningful, whereas
+# annotating with the instance-shadowed public name would silently mean "a
+# variable of this instance's runtime type", not the intended NamedTuple type.
+class _FrozenSignalConstantsT(NamedTuple):
     ATR_PERIOD: int
     VOLUME_MEDIAN_WINDOW: int
     A_T_MIN: float
@@ -97,7 +104,7 @@ class FrozenSignalConstants(NamedTuple):
     S2_COOLDOWN_1M_BARS: int
 
 
-FrozenSignalConstants = FrozenSignalConstants(
+FrozenSignalConstants: _FrozenSignalConstantsT = _FrozenSignalConstantsT(
     ATR_PERIOD=20,
     VOLUME_MEDIAN_WINDOW=20,
     A_T_MIN=0.002,
@@ -207,6 +214,35 @@ def get_s1_config(config_id: str) -> S1Config:
 def get_s2_config(config_id: str) -> S2Config:
     """Look up a frozen S2 config by id; unregistered ids fail closed (KeyError)."""
     return _S2_BY_ID[config_id]
+
+
+# I4 (ROB-943 R1 remediation, strategy-verify-rob943-r1-20260717-170045.md):
+# `get_*_config` only fails closed for CALLERS who go through it. A caller
+# that constructs its own S1Config/S2Config (in-domain param swap, tampered
+# hypothesis text, or a wholly forged/unregistered row) and hands it
+# straight to a generator was silently accepted. These are the single-row
+# membership authority the generators must call BEFORE any math -- exact
+# VALUE equality (dataclass `==`, not `is`) against the frozen row, so a
+# freshly-deserialized-but-identical config is still accepted while any
+# field mismatch (including a same-domain swap) is rejected.
+def assert_matches_frozen_s1_config(config: S1Config) -> None:
+    canonical = _S1_BY_ID.get(config.config_id)
+    if canonical is None or config != canonical:
+        raise ValueError(
+            f"S1Config {config!r} does not exactly match the frozen manifest "
+            f"row for config_id {config.config_id!r} (forged/unregistered/"
+            "tampered config rejected fail-closed)"
+        )
+
+
+def assert_matches_frozen_s2_config(config: S2Config) -> None:
+    canonical = _S2_BY_ID.get(config.config_id)
+    if canonical is None or config != canonical:
+        raise ValueError(
+            f"S2Config {config!r} does not exactly match the frozen manifest "
+            f"row for config_id {config.config_id!r} (forged/unregistered/"
+            "tampered config rejected fail-closed)"
+        )
 
 
 def _validate_symbol(symbol: str) -> None:
