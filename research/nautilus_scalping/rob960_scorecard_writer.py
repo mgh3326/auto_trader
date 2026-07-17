@@ -53,11 +53,35 @@ def _fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
+def _canonical_json_bytes(envelope: dict) -> bytes:
+    """Explicit UTF-8 bytes (never Path.write_text's locale-dependent
+    encoding), terminal newline, no NaN/Infinity ever silently emitted."""
+    text = (
+        json.dumps(
+            envelope, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False
+        )
+        + "\n"
+    )
+    return text.encode("utf-8")
+
+
+def _markdown_bytes(markdown: str) -> bytes:
+    text = markdown if markdown.endswith("\n") else markdown + "\n"
+    return text.encode("utf-8")
+
+
+class ScorecardStagingVerificationError(RuntimeError):
+    """A staged file's re-read bytes did not match what was written --
+    never trust a write without reading it back."""
+
+
 def stage_scorecard_files(envelope: dict, markdown: str, output_dir: Path) -> Path:
     """Writes scorecard.json/scorecard.md into a fresh sibling staging
-    directory and fsyncs both files + the directory itself. Never touches
-    output_dir -- the caller must separately call publish_staged_scorecard
-    to make this staged pair final."""
+    directory as explicit UTF-8 bytes (captain Task-4-hardening gate,
+    2026-07-18), fsyncs both files + the directory itself, and re-reads
+    each file back to verify its bytes exactly match what was written --
+    never touches output_dir. The caller must separately call
+    publish_staged_scorecard to make this staged pair final."""
     output_dir = Path(output_dir)
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     staging_dir = Path(
@@ -65,11 +89,24 @@ def stage_scorecard_files(envelope: dict, markdown: str, output_dir: Path) -> Pa
     )
     json_path = staging_dir / "scorecard.json"
     md_path = staging_dir / "scorecard.md"
-    json_path.write_text(json.dumps(envelope, indent=2, sort_keys=True))
-    md_path.write_text(markdown)
+    json_bytes = _canonical_json_bytes(envelope)
+    md_bytes = _markdown_bytes(markdown)
+    json_path.write_bytes(json_bytes)
+    md_path.write_bytes(md_bytes)
     _fsync_file(json_path)
     _fsync_file(md_path)
     _fsync_dir(staging_dir)
+
+    if json_path.read_bytes() != json_bytes:
+        raise ScorecardStagingVerificationError(
+            f"{json_path} re-read bytes did not match what was written -- refusing "
+            "to hand back an unverified staging directory"
+        )
+    if md_path.read_bytes() != md_bytes:
+        raise ScorecardStagingVerificationError(
+            f"{md_path} re-read bytes did not match what was written -- refusing to "
+            "hand back an unverified staging directory"
+        )
     return staging_dir
 
 
@@ -86,6 +123,11 @@ def publish_staged_scorecard(staging_dir: Path, output_dir: Path) -> tuple[Path,
 
     if not output_dir.exists():
         os.replace(staging_dir, output_dir)
+        # Captain Task-4-hardening gate (2026-07-18): fsync the PARENT
+        # directory too, so the new directory-entry (the rename itself,
+        # not just the two files' contents) is durable, not just resident
+        # in the page cache.
+        _fsync_dir(output_dir.parent)
         return json_path, md_path
 
     staged_json_bytes = (staging_dir / "scorecard.json").read_bytes()

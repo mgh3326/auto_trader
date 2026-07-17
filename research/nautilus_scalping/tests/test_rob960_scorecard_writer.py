@@ -9,6 +9,10 @@ state where output_dir has one file but not the other.
 
 from __future__ import annotations
 
+import json
+
+import pytest
+import rob960_scorecard_writer
 from rob960_scorecard_writer import (
     ScorecardPublishConflictError,
     build_materializer_plan,
@@ -105,3 +109,95 @@ def test_publish_never_leaves_output_dir_with_exactly_one_file(tmp_path):
     publish_staged_scorecard(staging, output_dir)
     files = sorted(p.name for p in output_dir.iterdir())
     assert files == ["scorecard.json", "scorecard.md"]
+
+
+# ---------------------------------------------------------------------------
+# Captain Task-4-hardening gate (2026-07-18 RED 6-7/G7): explicit UTF-8
+# bytes + terminal newline, non-vacuous re-read verification, fault
+# injection on the first-publish rename syscall, and parent-directory
+# durability fsync.
+# ---------------------------------------------------------------------------
+
+
+def test_staged_json_is_explicit_utf8_bytes_with_terminal_newline_and_no_nan(tmp_path):
+    output_dir = tmp_path / "out"
+    envelope = _envelope("utf8-☃")  # snowman -- proves ensure_ascii=False
+    staging = stage_scorecard_files(envelope, "# stub", output_dir)
+    json_bytes = (staging / "scorecard.json").read_bytes()
+    assert json_bytes.endswith(b"\n")
+    decoded = json_bytes.decode("utf-8")  # raises UnicodeDecodeError if not valid UTF-8
+    assert "☃" in decoded  # non-ASCII survived unescaped
+    reparsed = json.loads(decoded)
+    assert reparsed == envelope
+
+
+def test_staged_markdown_is_explicit_utf8_bytes_with_terminal_newline(tmp_path):
+    output_dir = tmp_path / "out"
+    staging = stage_scorecard_files(
+        _envelope(), "# stub, no trailing newline", output_dir
+    )
+    md_bytes = (staging / "scorecard.md").read_bytes()
+    assert md_bytes.endswith(b"\n")
+    assert md_bytes.decode("utf-8") == "# stub, no trailing newline\n"
+
+
+def test_staging_verifies_written_bytes_by_reading_them_back(tmp_path, monkeypatch):
+    """Non-vacuous: force the post-write re-read to observe DIFFERENT bytes
+    than what was written (simulating silent filesystem corruption) and
+    confirm stage_scorecard_files fails closed rather than trusting the
+    write blindly."""
+    from pathlib import Path
+
+    real_read_bytes = Path.read_bytes
+
+    def _corrupting_read_bytes(self):
+        if self.name == "scorecard.json":
+            return b"not what was written"
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", _corrupting_read_bytes)
+    output_dir = tmp_path / "out"
+    with pytest.raises(rob960_scorecard_writer.ScorecardStagingVerificationError):
+        stage_scorecard_files(_envelope(), "# stub", output_dir)
+
+
+def test_first_publish_failure_leaves_no_output_dir_and_preserves_staged_pair(
+    tmp_path, monkeypatch
+):
+    """G7 Step 10: fault-inject the first-publish rename syscall itself --
+    output_dir must not exist afterward, and the staging directory (with
+    BOTH files still intact) must be preserved, never a half-final state."""
+    output_dir = tmp_path / "out"
+    staging = stage_scorecard_files(_envelope(), "# stub", output_dir)
+
+    def _failing_replace(src, dst):
+        raise OSError("simulated failure injected before the rename syscall completes")
+
+    monkeypatch.setattr(rob960_scorecard_writer.os, "replace", _failing_replace)
+
+    with pytest.raises(OSError):
+        publish_staged_scorecard(staging, output_dir)
+
+    assert not output_dir.exists()
+    assert staging.exists()
+    assert (staging / "scorecard.json").exists()
+    assert (staging / "scorecard.md").exists()
+
+
+def test_successful_first_publish_fsyncs_the_parent_directory(tmp_path, monkeypatch):
+    """G7 Step 10 corollary: the new directory entry itself (not just the
+    two files' contents) must be made durable via a parent-directory
+    fsync after a successful rename."""
+    output_dir = tmp_path / "out"
+    staging = stage_scorecard_files(_envelope(), "# stub", output_dir)
+
+    fsynced_dirs = []
+    real_fsync_dir = rob960_scorecard_writer._fsync_dir
+
+    def _recording_fsync_dir(path):
+        fsynced_dirs.append(path)
+        return real_fsync_dir(path)
+
+    monkeypatch.setattr(rob960_scorecard_writer, "_fsync_dir", _recording_fsync_dir)
+    publish_staged_scorecard(staging, output_dir)
+    assert output_dir.parent in fsynced_dirs
