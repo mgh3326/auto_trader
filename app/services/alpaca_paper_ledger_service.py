@@ -105,6 +105,14 @@ _AUTHORIZATION_TEXT_VALUE_RE = re.compile(
     r"(?P<value>(?:bearer\s+)?\S+)",
     re.IGNORECASE,
 )
+_JSON_SENSITIVE_RE = re.compile(
+    r"(?P<prefix>\"(?:api[_-]?key|secret|token|account[_-]?no|"
+    r"account[_-]?number|account[_-]?id|account[_-]?identifier|"
+    r"email|passwd|password|credential)\"\s*:\s*\")"
+    r"(?P<value>[^\"]*)"
+    r"(?P<suffix>\")",
+    re.IGNORECASE,
+)
 
 
 def _redact_sensitive_keys(payload: Any) -> Any:
@@ -128,6 +136,7 @@ def _redact_sensitive_text(text: str | None) -> str | None:
     if text is None:
         return None
     redacted = _AUTHORIZATION_TEXT_VALUE_RE.sub(r"\g<prefix>[REDACTED]", text)
+    redacted = _JSON_SENSITIVE_RE.sub(r"\g<prefix>[REDACTED]\g<suffix>", redacted)
     return _SENSITIVE_TEXT_VALUE_RE.sub(r"\g<prefix>[REDACTED]", redacted)
 
 
