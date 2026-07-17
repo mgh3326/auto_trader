@@ -23,6 +23,7 @@ _MODULES = [
     "rob941_persistence.py",
     "rob941_offline_loader.py",
     "build_rob941_corpus.py",
+    "rob946_campaign_identity.py",
 ]
 
 
