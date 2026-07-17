@@ -149,13 +149,17 @@ def _run_empirical(
 def _run_empirical_impl(
     *, expected_full_campaign_hash: str, campaign_run_id: str, output_dir: str
 ) -> int:
-    """Gate 1 (fresh hash + campaign_run_id derivation check, then bridge +
-    opt-in) happens entirely BEFORE any DB session is constructed -- mirrors
-    run_rob944_campaign._run_empirical_impl's own preflight exactly, reusing
-    the SAME frozen functions (never re-derived independently)."""
+    """Gate 1 (fresh hash + campaign_run_id derivation check + 24-unique-
+    experiment-ID cross-check, then bridge + opt-in) happens entirely
+    BEFORE any DB session is constructed -- mirrors
+    run_rob944_campaign._run_empirical_impl's own preflight exactly
+    (including its 24-experiment-ID gate, captain gate-order-parity
+    correction 2026-07-18), reusing the SAME frozen functions (never
+    re-derived independently)."""
     from rob944_frozen_campaign import build_production_frozen_campaign_envelope
     from run_rob944_campaign import (
         RunPreflightError,
+        _derive_experiment_ids,
         _derive_primary_campaign_run_id,
         _run_precheck_bridge_and_opt_in,
     )
@@ -173,6 +177,26 @@ def _run_empirical_impl(
             "run preflight failed: --campaign-run-id does not match the value "
             "canonically derived from the frozen full-campaign hash -- an arbitrary "
             "UUID/timestamp is refused",
+            file=sys.stderr,
+        )
+        return 4
+
+    # Captain gate-order-parity correction (2026-07-18): the SAME 24-unique-
+    # experiment-ID + independent-recomputation cross-check H4's own CLI
+    # applies (run_rob944_campaign._run_empirical_impl), reused verbatim,
+    # BEFORE any session/bridge/opt-in gate.
+    plain = envelope.to_dict()
+    experiment_ids = plain["experiment_ids"]
+    if len(experiment_ids) != 24 or len(set(experiment_ids)) != 24:
+        print(
+            "run preflight failed: expected exactly 24 unique experiment IDs",
+            file=sys.stderr,
+        )
+        return 4
+    if list(experiment_ids) != _derive_experiment_ids(plain["rows"]):
+        print(
+            "run preflight failed: envelope-embedded experiment_ids diverged from "
+            "an independent recomputation off the same rows -- refusing to run",
             file=sys.stderr,
         )
         return 4
@@ -223,6 +247,20 @@ async def _do_run_with_session(
     controller = _import_campaign_controller()
     output_dir_path = Path(output_dir)
 
+    # Captain typed-error-classification correction (2026-07-18): H6's own
+    # 5 typed validation exceptions carry fixed, safe-to-print templates
+    # (mirrors run_rob944_campaign._do_run_with_session's own catch order
+    # exactly) -- these must NOT be swallowed into the generic "unexpected
+    # error" bucket (exit 6); they get their own sanitized, type-name-only
+    # message and H4's own exit 4.
+    from app.services.rob944_campaign_controller import (
+        CampaignAccountingIncompleteError,
+        CampaignBatchValidationError,
+        CampaignHashDriftError,
+        CampaignRunIdDerivationError,
+        RunIdentityMismatchError,
+    )
+
     async with AsyncSessionLocal() as session:
         try:
             outcome = await run_empirical_campaign_with_capture(
@@ -231,6 +269,24 @@ async def _do_run_with_session(
                 expected_full_campaign_hash=expected_full_campaign_hash,
                 campaign_run_id=campaign_run_id,
             )
+        except (
+            CampaignHashDriftError,
+            CampaignBatchValidationError,
+            CampaignAccountingIncompleteError,
+            CampaignRunIdDerivationError,
+            RunIdentityMismatchError,
+        ) as exc:
+            # These are H6's OWN typed exceptions with fixed, safe-to-print
+            # templates (hashes/experiment IDs only, never raw external
+            # text) -- printing type(exc).__name__ (one of exactly these 5
+            # literal class names) is safe; the exception's own message
+            # text is not re-echoed.
+            await _safe_rollback(session)
+            print(
+                f"run preflight/orchestration failed (rolled back): {type(exc).__name__}",
+                file=sys.stderr,
+            )
+            return 4
         except Exception:  # noqa: BLE001 -- an unknown failure must roll back and exit with a FIXED sanitized message, never re-raise
             await _safe_rollback(session)
             print(

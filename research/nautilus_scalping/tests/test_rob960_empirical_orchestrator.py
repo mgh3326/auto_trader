@@ -182,3 +182,182 @@ async def test_gap_nonempty_fails_closed_same_as_corpus_failure(monkeypatch):
     assert (
         outcome.report.verdict == "complete"
     )  # H4's own fallback still accounts cleanly
+
+
+# ---------------------------------------------------------------------------
+# Captain pre-verify convergence gate item 4 (2026-07-18): observer-effect
+# proof for the ACTUAL seam ROB-960's own wiring calls. Rather than
+# reproducing test_rob945_capture.py's full byte-identity proof at
+# production (full-frozen-year) scale -- which requires ~200K+ real 1-minute
+# bars per fold just to clear H4's own train-evidence-sufficiency gate, an
+# expense disproportionate to what this integration point needs to prove --
+# this test spies on the REAL wrap_config_specs_for_oos_capture/
+# expected_oos_calls_from_walkforward_result/run_walkforward call chain
+# INSIDE this module's own _build_real_capture_wrapped_evidence (never
+# mocking their behavior, only recording arguments/call counts), proving
+# ROB-960's new code actually invokes the SAME seam
+# test_rob945_capture.py's own suite (12/12 green, re-verified fresh
+# alongside this file) already proves is byte-identity-preserving and
+# (via its own test_capture_only_records_oos_phase_signals_never_train)
+# captures a genuinely non-empty OOS signal set when real signals exist.
+# The two pieces of evidence are connected explicitly in the worker report.
+# ---------------------------------------------------------------------------
+
+
+def _fake_kline_row(ts_ms: int):
+    class _Row:
+        open_time_ms = ts_ms
+        open = 100.0
+        high = 100.0
+        low = 100.0
+        close = 100.0
+        base_volume = 1.0
+
+    return _Row()
+
+
+@pytest.mark.asyncio
+async def test_real_wiring_invokes_the_same_capture_seam_test_rob945_capture_proves_safe(
+    monkeypatch,
+):
+    """Non-mocked call-through spy: wrap_config_specs_for_oos_capture is
+    called once per strategy with the correct strategy/fold_schedule/sink,
+    its WRAPPED specs (not the raw ones) are what actually reach
+    run_walkforward (proven by identity, not just equality), and
+    sink.finalize is called with expected_oos_calls_from_walkforward_result's
+    own real output for a real (if OOS-evidence-sparse) WalkForwardResult."""
+    monkeypatch.setenv("ROB944_RESEARCH_WRITE_OPT_IN", "true")
+    monkeypatch.setenv(
+        "AUTO_TRADER_RESEARCH_ARTIFACT_ROOT", "/tmp/rob960-does-not-matter"
+    )
+    full_hash, campaign_run_id = _pinned_identity()
+
+    import rob941_frozen_scope as frozen
+
+    class _FakeManifestEntry:
+        def __init__(self, symbol):
+            self.symbol = symbol
+            self.gap_ranges = ()
+
+    class _FakeManifest:
+        klines = [_FakeManifestEntry(s) for s in frozen.UNIVERSE]
+
+    import rob941_manifest
+
+    real_load = rob941_manifest.CorpusManifest.load
+    call_count = {"n": 0}
+
+    def _patched_load(path):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return real_load(path)
+        return _FakeManifest()
+
+    monkeypatch.setattr(
+        rob941_manifest.CorpusManifest, "load", staticmethod(_patched_load)
+    )
+
+    import rob941_offline_loader
+
+    sparse_rows = [
+        _fake_kline_row(frozen.WINDOW_START_MS + i * 60_000) for i in range(20)
+    ]
+    monkeypatch.setattr(
+        rob941_offline_loader,
+        "load_corpus",
+        lambda manifest, root: {
+            "klines": dict.fromkeys(frozen.UNIVERSE, sparse_rows),
+            "funding": dict.fromkeys(frozen.UNIVERSE, []),
+        },
+    )
+
+    # Captain observer-effect proof (2026-07-18): patch the NAMES BOUND
+    # INSIDE rob960_empirical_orchestrator's own module namespace (a
+    # top-level `from rob945_capture import wrap_config_specs_for_oos_capture,
+    # expected_oos_calls_from_walkforward_result` binds fresh names there at
+    # import time -- patching rob945_capture's own attributes afterward does
+    # NOT affect those already-bound references, per ordinary Python name-
+    # binding semantics). run_walkforward is imported LAZILY inside
+    # _build_real_capture_wrapped_evidence (a fresh `from rob944_walkforward
+    # import run_walkforward` on every call) -- patching rob944_walkforward's
+    # own attribute DOES take effect there.
+    import rob945_capture
+    import rob960_empirical_orchestrator
+
+    wrap_calls = []
+    real_wrap = rob945_capture.wrap_config_specs_for_oos_capture
+
+    def _spying_wrap(config_specs, *, strategy, fold_schedule, sink):
+        wrapped = real_wrap(
+            config_specs, strategy=strategy, fold_schedule=fold_schedule, sink=sink
+        )
+        wrap_calls.append(
+            {"strategy": strategy, "fold_schedule": fold_schedule, "wrapped": wrapped}
+        )
+        return wrapped
+
+    monkeypatch.setattr(
+        rob960_empirical_orchestrator,
+        "wrap_config_specs_for_oos_capture",
+        _spying_wrap,
+    )
+
+    finalize_calls = []
+    real_expected_calls_fn = rob945_capture.expected_oos_calls_from_walkforward_result
+
+    def _spying_expected_calls(result):
+        expected = real_expected_calls_fn(result)
+        finalize_calls.append(expected)
+        return expected
+
+    monkeypatch.setattr(
+        rob960_empirical_orchestrator,
+        "expected_oos_calls_from_walkforward_result",
+        _spying_expected_calls,
+    )
+
+    import rob944_walkforward
+
+    run_walkforward_calls = []
+    real_run_walkforward = rob944_walkforward.run_walkforward
+
+    def _spying_run_walkforward(**kwargs):
+        run_walkforward_calls.append(kwargs)
+        return real_run_walkforward(**kwargs)
+
+    monkeypatch.setattr(rob944_walkforward, "run_walkforward", _spying_run_walkforward)
+
+    fake_controller = _FakeController()
+    outcome = await run_empirical_campaign_with_capture(
+        session=object(),
+        controller=fake_controller,
+        expected_full_campaign_hash=full_hash,
+        campaign_run_id=campaign_run_id,
+    )
+
+    # The seam was invoked for real, exactly once per strategy (S1, S2) --
+    # this is the connective proof: ROB-960's own new code reaches the
+    # SAME rob945_capture functions test_rob945_capture.py's own suite
+    # already proves byte-identity-safe.
+    assert len(wrap_calls) == 2
+    assert {c["strategy"] for c in wrap_calls} == {"S1", "S2"}
+    assert len(finalize_calls) == 2
+    assert len(run_walkforward_calls) == 2
+
+    # Identity proof: the WRAPPED specs (not the raw, unwrapped ones) are
+    # what actually reached run_walkforward for each strategy.
+    wrapped_by_strategy = {c["strategy"]: c["wrapped"] for c in wrap_calls}
+    for call_kwargs in run_walkforward_calls:
+        strategy = call_kwargs["strategy"]
+        assert call_kwargs["configs"] is wrapped_by_strategy[strategy]
+
+    # With only 20 sparse (insufficient-train-evidence) minutes supplied,
+    # no config wins any fold in THIS synthetic scenario -- so accounting
+    # still completes deterministically via the real (unmocked) pipeline,
+    # even though real per-strategy H5 evidence isn't available here. The
+    # non-empty-capture claim itself is proven at the seam level by
+    # test_rob945_capture.py::test_capture_only_records_oos_phase_signals_never_train
+    # (12/12 green, re-verified fresh in this same worker session) --
+    # cross-referenced, not duplicated, per the captain's own sanctioned
+    # alternative.
+    assert outcome.report.verdict == "complete"
