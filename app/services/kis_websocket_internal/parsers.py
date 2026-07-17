@@ -9,6 +9,8 @@ from uuid import uuid4
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from app.core.timezone import KST
+
 from .protocol import (
     _SIDE_MAP,
     _US_SYMBOL_RESERVED_TOKENS,
@@ -585,8 +587,16 @@ class ExecutionMessageParser:
             return cleaned
         if cleaned.isdigit():
             if len(cleaned) == 6:
-                today = datetime.now(UTC).strftime("%Y%m%d")
-                return datetime.strptime(today + cleaned, "%Y%m%d%H%M%S").isoformat()
+                # KIS domestic HHMMSS fields are KST wall-clock time with no
+                # date component; anchor "today" to the KST calendar date
+                # (not UTC) so fills near KST midnight land on the correct
+                # trade day.
+                today_kst = datetime.now(KST).strftime("%Y%m%d")
+                return (
+                    datetime.strptime(today_kst + cleaned, "%Y%m%d%H%M%S")
+                    .replace(tzinfo=KST)
+                    .isoformat()
+                )
             if len(cleaned) == 14:
                 return datetime.strptime(cleaned, "%Y%m%d%H%M%S").isoformat()
         return cleaned

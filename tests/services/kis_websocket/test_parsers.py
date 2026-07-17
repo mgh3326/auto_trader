@@ -1,8 +1,11 @@
+from datetime import UTC, datetime, tzinfo
 from unittest.mock import AsyncMock
 
 import pytest
 
+from app.core.timezone import KST
 from app.services.kis_websocket import KISExecutionWebSocket
+from app.services.kis_websocket_internal import parsers as parsers_module
 from tests.services.kis_websocket import (
     build_domestic_message,
     build_official_h0gscni0_message,
@@ -12,6 +15,104 @@ from tests.services.kis_websocket import (
 @pytest.fixture
 def client():
     return KISExecutionWebSocket(on_execution=lambda x: x, mock_mode=True)
+
+
+class _FrozenDateTime(datetime):
+    """datetime subclass with a fixed `now()` for deterministic KST boundary tests."""
+
+    _now: datetime = datetime(2026, 7, 16, 15, 20, 0, tzinfo=UTC)
+
+    @classmethod
+    def now(cls, tz: tzinfo | None = None):
+        current = cls._now
+        if tz is None:
+            return current.replace(tzinfo=None)
+        return current.astimezone(tz)
+
+
+@pytest.mark.unit
+class TestExtractTimestampKST:
+    """ROB-934: HHMMSS-only tokens are KST wall-clock time and must be
+    combined with the KST calendar date, not the UTC date."""
+
+    def _freeze(self, monkeypatch, *, utc_now: datetime) -> None:
+        frozen = type("_Frozen", (_FrozenDateTime,), {"_now": utc_now})
+        monkeypatch.setattr(parsers_module, "datetime", frozen)
+
+    def test_midnight_adjacent_hhmmss_uses_kst_calendar_date(self, client, monkeypatch):
+        # Wall clock: KST 2026-07-17 00:20:00 (= UTC 2026-07-16 15:20:00).
+        # A fill reported as "001728" (00:17:28 KST) must land on 2026-07-17,
+        # not 2026-07-16 (the UTC calendar date at this instant).
+        self._freeze(monkeypatch, utc_now=datetime(2026, 7, 16, 15, 20, 0, tzinfo=UTC))
+
+        result = client._extract_timestamp("001728")
+
+        parsed = datetime.fromisoformat(result)
+        assert parsed.tzinfo is not None
+        assert parsed.astimezone(KST).strftime("%Y-%m-%d") == "2026-07-17"
+        assert parsed.astimezone(KST).strftime("%H:%M:%S") == "00:17:28"
+
+    def test_kst_midnight_hhmmss_uses_kst_calendar_date(self, client, monkeypatch):
+        # Wall clock: KST 2026-07-17 00:00:30 (= UTC 2026-07-16 15:00:30).
+        self._freeze(monkeypatch, utc_now=datetime(2026, 7, 16, 15, 0, 30, tzinfo=UTC))
+
+        result = client._extract_timestamp("000000")
+
+        parsed = datetime.fromisoformat(result)
+        assert parsed.astimezone(KST).strftime("%Y-%m-%d") == "2026-07-17"
+
+    def test_kst_end_of_day_hhmmss_stays_on_same_kst_date(self, client, monkeypatch):
+        # Wall clock: KST 2026-07-16 23:59:30 (= UTC 2026-07-16 14:59:30).
+        self._freeze(monkeypatch, utc_now=datetime(2026, 7, 16, 14, 59, 30, tzinfo=UTC))
+
+        result = client._extract_timestamp("235959")
+
+        parsed = datetime.fromisoformat(result)
+        assert parsed.astimezone(KST).strftime("%Y-%m-%d") == "2026-07-16"
+        assert parsed.astimezone(KST).strftime("%H:%M:%S") == "23:59:59"
+
+    def test_daytime_hhmmss_regression(self, client, monkeypatch):
+        # Wall clock: KST 2026-07-17 09:00:30 (= UTC 2026-07-17 00:00:30) —
+        # no UTC/KST date discrepancy at this instant; must still resolve
+        # correctly (regression guard for the ordinary trading-hours path).
+        self._freeze(monkeypatch, utc_now=datetime(2026, 7, 17, 0, 0, 30, tzinfo=UTC))
+
+        result = client._extract_timestamp("090000")
+
+        parsed = datetime.fromisoformat(result)
+        assert parsed.astimezone(KST).strftime("%Y-%m-%d") == "2026-07-17"
+        assert parsed.astimezone(KST).strftime("%H:%M:%S") == "09:00:00"
+
+    def test_full_14_digit_timestamp_unaffected_by_now(self, client, monkeypatch):
+        # Full YYYYMMDDHHMMSS tokens must not regress: they carry their own
+        # date and are unaffected by "now" framing.
+        self._freeze(monkeypatch, utc_now=datetime(2026, 7, 16, 15, 20, 0, tzinfo=UTC))
+
+        result = client._extract_timestamp("20260716153045")
+
+        assert result == "2026-07-16T15:30:45"
+
+    def test_already_iso_timestamp_passthrough_unaffected(self, client, monkeypatch):
+        self._freeze(monkeypatch, utc_now=datetime(2026, 7, 16, 15, 20, 0, tzinfo=UTC))
+
+        result = client._extract_timestamp("2026-07-16T15:30:45+09:00")
+
+        assert result == "2026-07-16T15:30:45+09:00"
+
+    def test_midnight_adjacent_hhmmss_via_full_message_parse(self, client, monkeypatch):
+        # End-to-end: a domestic execution message with a midnight-adjacent
+        # KST ord_tmd must produce a filled_at that round-trips to the
+        # correct KST calendar date once parsed.
+        self._freeze(monkeypatch, utc_now=datetime(2026, 7, 16, 15, 20, 0, tzinfo=UTC))
+
+        message = build_domestic_message(
+            symbol="005930", filled_qty="10", filled_price="70000", ord_tmd="001728"
+        )
+        result = client._parse_message(message)
+
+        assert result is not None
+        parsed = datetime.fromisoformat(result["filled_at"])
+        assert parsed.astimezone(KST).strftime("%Y-%m-%d") == "2026-07-17"
 
 
 def test_parse_domestic_execution(client):
