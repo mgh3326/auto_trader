@@ -62,6 +62,10 @@ from rob944_walkforward import (
     _json_safe_float_or_sentinel,
     summarize_config_attempts_for_h6,
 )
+from rob945_h6_summary_contract import (
+    H6SummaryContractError,
+    normalize_and_validate_h6_summary,
+)
 
 from research_contracts.canonical_hash import canonical_sha256
 
@@ -71,9 +75,11 @@ __all__ = [
     "ATTEMPT_EVIDENCE_MALFORMED_REASON",
     "CROSS_BIND_MISMATCH_REASON",
     "EXPECTED_PRIMARY_ATTEMPT_COUNT",
+    "H6_SUMMARY_MALFORMED_REASON",
     "NOT_FROZEN_PRODUCTION_CAMPAIGN_REASON",
     "PRIMARY_ATTEMPT_NOT_COMPLETED_REASON",
     "RETRIES_PRESENT_REASON",
+    "RETRY_PROVENANCE_MALFORMED_REASON",
     "WALKFORWARD_RESULTS_MALFORMED_REASON",
     "ScorecardInputError",
     "SealedAttempt",
@@ -128,6 +134,8 @@ PRIMARY_ATTEMPT_NOT_COMPLETED_REASON = "h6_primary_attempt_not_completed"
 RETRIES_PRESENT_REASON = "h6_accounting_has_retries"
 WALKFORWARD_RESULTS_MALFORMED_REASON = "walkforward_results_malformed"
 CROSS_BIND_MISMATCH_REASON = "h4_cross_bind_evidence_mismatch"
+H6_SUMMARY_MALFORMED_REASON = "h6_summary_malformed"
+RETRY_PROVENANCE_MALFORMED_REASON = "h6_retry_attempt_provenance_malformed"
 
 
 class ScorecardInputError(ValueError):
@@ -530,7 +538,30 @@ def _cross_bind_attempt(
     full_campaign_hash: str,
     campaign_run_id: str,
     strategy_key: str,
+    strategy: str,
+    expected_config_id: str,
 ) -> None:
+    # Task 1 final re-review (I2): a caller/producer-supplied summary must
+    # be normalized + validated against the real H6-build boundary's own
+    # nested invariants (exact fold cardinality, scenario set, status/
+    # reason contracts, closed no-trade reasons, frozen-universe partition/
+    # order) BEFORE it is ever hashed/cross-bound -- a structurally
+    # malformed summary (e.g. one config's fold_selection_trace missing one
+    # fold) must never seal merely because it is internally
+    # hash-self-consistent with itself. Only the returned, normalized
+    # snapshot is ever hashed downstream. ``expected_config_id`` is derived
+    # by the caller from the trusted frozen lineage (never
+    # ``summary.config_id`` itself, which would be tautologically
+    # self-referential).
+    try:
+        summary = normalize_and_validate_h6_summary(
+            summary,
+            expected_strategy=strategy,
+            expected_config_id=expected_config_id,
+        )
+    except H6SummaryContractError as exc:
+        raise ScorecardInputError(H6_SUMMARY_MALFORMED_REASON) from exc
+
     recomputed_fold_hash, recomputed_run_identity = (
         _recompute_fold_evidence_hash_and_run_identity(
             summary,
@@ -612,6 +643,7 @@ def seal_trial_accounting(
     attempt_evidence: Sequence[Mapping[str, Any]],
     full_campaign_hash: str,
     walkforward_results: Mapping[str, Any] | None = None,
+    retry_walkforward_results: Mapping[tuple[str, str, int], Any] | None = None,
 ) -> SealedTrialAccounting:
     """The one pure boundary for H6 accounting/attempt-evidence trust.
 
@@ -712,6 +744,53 @@ def seal_trial_accounting(
         )
     )
 
+    # Task 1E (I3): snapshot + validate the caller-supplied retry provenance
+    # map (never a bare self-attested summary -- each value must be a real,
+    # retry-specific `WalkForwardResult` the seal itself re-derives a
+    # summary from, exactly like a primary). Every key is an exact 3-tuple
+    # of (campaign_run_id, experiment_id, retry_index); this snapshot is
+    # built ONCE, from a single pass over the caller's mapping, before any
+    # use below.
+    #
+    # Independent audit correction (Task 1E): `x or {}` + `isinstance(...,
+    # Mapping)` breaks the exact-plain-dict contract -- `or` silently
+    # discards ANY falsy-evaluating object (a dict SUBCLASS overriding
+    # `__bool__`/`__len__`) as if the caller had passed nothing, and
+    # `isinstance` accepts any Mapping subclass (which could return
+    # different content on repeated `.items()` reads). `None` (the caller
+    # genuinely omitted retry provenance) is the ONLY value treated as
+    # "no retries"; anything else must be an exact `dict`, read via a
+    # single `.items()` pass.
+    if retry_walkforward_results is None:
+        retry_provenance_source: dict = {}
+    else:
+        _require(
+            type(retry_walkforward_results) is dict,
+            RETRY_PROVENANCE_MALFORMED_REASON,
+        )
+        retry_provenance_source = retry_walkforward_results
+    retry_provenance: dict[tuple[str, str, int], Any] = {}
+    for key, retry_wf_result in retry_provenance_source.items():
+        _require(
+            type(key) is tuple and len(key) == 3, RETRY_PROVENANCE_MALFORMED_REASON
+        )
+        key_campaign_run_id, key_experiment_id, key_retry_index = key
+        _require(
+            type(key_campaign_run_id) is str
+            and type(key_experiment_id) is str
+            and type(key_retry_index) is int,
+            RETRY_PROVENANCE_MALFORMED_REASON,
+        )
+        _require(
+            key_campaign_run_id == true_campaign_run_id,
+            RETRY_PROVENANCE_MALFORMED_REASON,
+        )
+        _require(key_experiment_id in frozen_id_set, RETRY_PROVENANCE_MALFORMED_REASON)
+        _require(key_retry_index >= 1, RETRY_PROVENANCE_MALFORMED_REASON)
+        retry_provenance[(key_campaign_run_id, key_experiment_id, key_retry_index)] = (
+            retry_wf_result
+        )
+
     if walkforward_results is None:
         # Task 1C (I4, captain correction): `None` is the GENUINE producer
         # state when the corpus never loaded at all -- H4 never even
@@ -721,6 +800,10 @@ def seal_trial_accounting(
         # be accepted as equivalent -- `None` is malformed unless the
         # supplied evidence is genuinely the all-24 fallback claim.
         _require(claims_global_fallback, WALKFORWARD_RESULTS_MALFORMED_REASON)
+        # Task 1E (I3): the global fallback has exactly the 24 primary rows
+        # and no retries by construction -- any retry provenance supplied
+        # alongside it contradicts that.
+        _require(not retry_provenance, RETRY_PROVENANCE_MALFORMED_REASON)
         for a in sealed_attempts_raw:
             config_id = experiment_id_to_config_id[a.experiment_id]
             strategy_key = experiment_id_to_strategy_key[a.experiment_id]
@@ -734,6 +817,8 @@ def seal_trial_accounting(
                 full_campaign_hash=true_full_campaign_hash,
                 campaign_run_id=true_campaign_run_id,
                 strategy_key=strategy_key,
+                strategy=config_id[:2],
+                expected_config_id=config_id,
             )
     else:
         # A corpus that never loaded could never produce ANY real
@@ -747,13 +832,12 @@ def seal_trial_accounting(
 
         # Task 1B/1C (I5): mandatory cross-bind of EVERY normal-path
         # attempt's opaque evidence against the real H4
-        # ConfigAttemptEvidenceSummary -- not just primaries. A retry
-        # re-attempts the SAME config, so it is cross-bound against the
-        # SAME summary as its primary; `_cross_bind_attempt` derives
-        # `run_identity` using THAT row's own `retry_index` (which differs
-        # from the primary's), so a forged/arbitrary hash on a retry row
-        # can never be silently exempted just because cross-binding used to
-        # apply only to `retry_index == 0`.
+        # ConfigAttemptEvidenceSummary -- not just primaries. Task 1E (I3):
+        # a retry is cross-bound against its OWN retry-specific
+        # WalkForwardResult (never coerced to equal the primary's), so
+        # genuinely heterogeneous histories (e.g. a timeout primary
+        # followed by a completed retry) are representable without either
+        # invocation's summary being treated as authority for the other.
         _require(
             isinstance(walkforward_results, Mapping),
             WALKFORWARD_RESULTS_MALFORMED_REASON,
@@ -796,18 +880,66 @@ def seal_trial_accounting(
             for summary in summaries:
                 summaries_by_strategy_config[(strategy, summary.config_id)] = summary
 
+        # Task 1E (I3): the retry-provenance key set must equal EXACTLY the
+        # supplied non-primary (retry_index >= 1) attempt rows -- no
+        # missing key (a retry without its own provenance fails closed) and
+        # no extra/unused key (provenance for a retry that doesn't exist in
+        # the supplied evidence also fails closed).
+        retry_rows = [a for a in sealed_attempts_raw if a.retry_index != 0]
+        expected_retry_keys = {
+            (true_campaign_run_id, a.experiment_id, a.retry_index) for a in retry_rows
+        }
+        _require(
+            set(retry_provenance.keys()) == expected_retry_keys,
+            RETRY_PROVENANCE_MALFORMED_REASON,
+        )
+
+        retry_summary_by_key: dict[tuple[str, str, int], Any] = {}
+        for key, retry_wf_result in retry_provenance.items():
+            _, experiment_id, _retry_index = key
+            config_id = experiment_id_to_config_id[experiment_id]
+            strategy = config_id[:2]
+            _require(
+                type(retry_wf_result) is WalkForwardResult
+                and retry_wf_result.strategy == strategy,
+                RETRY_PROVENANCE_MALFORMED_REASON,
+            )
+            retry_summaries = tuple(summarize_config_attempts_for_h6(retry_wf_result))
+            retry_config_ids_seen = [s.config_id for s in retry_summaries]
+            expected_config_ids = frozenset(
+                f"{strategy}-{i:02d}" for i in range(_EXPECTED_CONFIGS_PER_STRATEGY)
+            )
+            _require(
+                len(retry_config_ids_seen) == _EXPECTED_CONFIGS_PER_STRATEGY
+                and len(set(retry_config_ids_seen)) == _EXPECTED_CONFIGS_PER_STRATEGY
+                and set(retry_config_ids_seen) == expected_config_ids
+                and all(s.strategy == strategy for s in retry_summaries),
+                RETRY_PROVENANCE_MALFORMED_REASON,
+            )
+            retry_summary_by_key[key] = next(
+                s for s in retry_summaries if s.config_id == config_id
+            )
+
         for a in sealed_attempts_raw:
             config_id = experiment_id_to_config_id[a.experiment_id]
             strategy = config_id[:2]
             strategy_key = experiment_id_to_strategy_key[a.experiment_id]
-            summary = summaries_by_strategy_config.get((strategy, config_id))
-            _require(summary is not None, CROSS_BIND_MISMATCH_REASON)
+            if a.retry_index == 0:
+                summary = summaries_by_strategy_config.get((strategy, config_id))
+                _require(summary is not None, CROSS_BIND_MISMATCH_REASON)
+            else:
+                summary = retry_summary_by_key.get(
+                    (true_campaign_run_id, a.experiment_id, a.retry_index)
+                )
+                _require(summary is not None, RETRY_PROVENANCE_MALFORMED_REASON)
             _cross_bind_attempt(
                 a,
                 summary=summary,
                 full_campaign_hash=true_full_campaign_hash,
                 campaign_run_id=true_campaign_run_id,
                 strategy_key=strategy_key,
+                strategy=strategy,
+                expected_config_id=config_id,
             )
 
     # `missing_experiment_ids`/`duplicate_or_gap_experiment_ids` describe
@@ -871,17 +1003,18 @@ def seal_trial_accounting(
 
     # `actual_registrations` is a REGISTRATION-time fact (H6 predeclares all
     # identities before any attempt completes) this seal cannot observe from
-    # terminal evidence -- only a LOWER bound is knowable, never an upper
-    # one: a single `mismatch` entry can itself correspond to MULTIPLE
-    # drifted registered candidates sharing one params hash, and every such
-    # candidate inflates `actual_registrations` while entering neither
-    # `by_experiment` (no terminal evidence) nor `extra_experiment_ids` (it
-    # IS one of the frozen 24, just registered more than once) -- the
-    # serialized report cannot reconstruct that multiplicity, so no finite
-    # upper bound is ever enforced (captain precision correction, Task 1C
-    # I1 appendix). The lower bound is the UNION of every ID this seal can
-    # observe was registered: distinct supplied evidence + mismatch ids +
-    # extra ids (a plain union already handles any overlap correctly).
+    # terminal evidence -- only a LOWER bound is knowable in general, never
+    # an upper one: a single `mismatch` entry can itself correspond to
+    # MULTIPLE drifted registered candidates sharing one params hash, and
+    # every such candidate inflates `actual_registrations` while entering
+    # neither `by_experiment` (no terminal evidence) nor
+    # `extra_experiment_ids` (it IS one of the frozen 24, just registered
+    # more than once) -- the serialized report cannot reconstruct that
+    # multiplicity, so no finite upper bound is enforced WHILE a mismatch
+    # is present (captain precision correction, Task 1C I1 appendix). The
+    # lower bound is the UNION of every ID this seal can observe was
+    # registered: distinct supplied evidence + mismatch ids + extra ids (a
+    # plain union already handles any overlap correctly).
     _require(
         len(
             set(by_experiment.keys())
@@ -891,6 +1024,22 @@ def seal_trial_accounting(
         <= report["actual_registrations"],
         ACCOUNTING_REPORT_MALFORMED_REASON,
     )
+    # Task 1 final re-review (I1): when `mismatch_experiment_ids` is EMPTY,
+    # the multiplicity ambiguity above cannot occur -- every registered
+    # identity is either one of the frozen 24 (contributing at most one
+    # registration each) or an explicitly declared extra, so the real H6
+    # knowable upper bound `actual_registrations <= 24 + len(extra_ids)`
+    # applies. With every discrepancy list empty (a clean/complete
+    # candidate), this collapses to exactly 24 -- a report claiming 25/999
+    # registrations while asserting no mismatch/extra evidence backing that
+    # claim is internally inconsistent, not merely an incomplete-but-honest
+    # registration fact.
+    if not mismatch_ids:
+        _require(
+            report["actual_registrations"]
+            <= EXPECTED_PRIMARY_ATTEMPT_COUNT + len(report["extra_experiment_ids"]),
+            ACCOUNTING_REPORT_MALFORMED_REASON,
+        )
 
     # Task 1C (I1/I2, captain counter-parity correction): mirrors the real
     # H6 per-experiment loop exactly -- a group counts toward
@@ -963,13 +1112,18 @@ def seal_trial_accounting(
         accounting_complete and all_primary_completed and retry_attempts == 0
     )
 
+    # Captain precision (Task 1E): when accounting is complete but
+    # performance is unusable for MULTIPLE independent reasons (e.g. a
+    # primary that genuinely didn't complete AND a contiguous retry present
+    # for some OTHER/the SAME experiment), both blockers must be exposed
+    # together -- one must never hide the other.
     reason_codes: list[str] = []
     if not accounting_complete:
         reason_codes.append(ACCOUNTING_INCOMPLETE_REASON)
     else:
         if not all_primary_completed:
             reason_codes.append(PRIMARY_ATTEMPT_NOT_COMPLETED_REASON)
-        if all_primary_completed and retry_attempts > 0:
+        if retry_attempts > 0:
             reason_codes.append(RETRIES_PRESENT_REASON)
 
     normalized_attempts = tuple(

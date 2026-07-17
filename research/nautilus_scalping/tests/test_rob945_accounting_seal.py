@@ -55,6 +55,7 @@ from rob944_walkforward import (
 from rob945_accounting_seal import (
     ACCOUNTING_INCOMPLETE_REASON,
     CROSS_BIND_MISMATCH_REASON,
+    H6_SUMMARY_MALFORMED_REASON,
     NOT_FROZEN_PRODUCTION_CAMPAIGN_REASON,
     PRIMARY_ATTEMPT_NOT_COMPLETED_REASON,
     RETRIES_PRESENT_REASON,
@@ -318,6 +319,7 @@ def _seal(
     accounting_report=None,
     full_campaign_hash=None,
     walkforward_results=_UNSET,
+    retry_walkforward_results=None,
 ):
     return seal_trial_accounting(
         accounting_report=accounting_report
@@ -332,6 +334,7 @@ def _seal(
         walkforward_results=DEFAULT_WALKFORWARD_RESULTS
         if walkforward_results is _UNSET
         else walkforward_results,
+        retry_walkforward_results=retry_walkforward_results,
     )
 
 
@@ -455,19 +458,22 @@ def test_rejects_negative_retry_index():
 
 def _legit_retry_attempt(
     experiment_id: str, *, retry_index: int, walkforward_results=None
-) -> dict:
-    """A retry row that legitimately cross-binds against the SAME real H4
-    summary as the primary for this experiment_id, at a different
-    retry_index -- fold_evidence_hash/scenario_evidence are unchanged
-    (identity/status-derived, retry-index-independent), run_identity
-    differs since its own payload embeds retry_index (Task 1C, I5:
-    non-primary attempts are cross-bound too, using THAT row's retry_index)."""
+) -> tuple[dict, WalkForwardResult]:
+    """A retry row that legitimately cross-binds against a retry-specific
+    real H4 ``WalkForwardResult`` for this experiment_id's config, at its
+    own ``retry_index`` (Task 1E, I3: retry provenance is a full
+    retry-specific ``WalkForwardResult``, never a bare self-attested
+    summary). Returns ``(row, retry_walkforward_result)`` -- callers build
+    the ``retry_walkforward_results`` map keyed by
+    ``(campaign_run_id, experiment_id, retry_index)`` from the second
+    element."""
     wf = walkforward_results or DEFAULT_WALKFORWARD_RESULTS
     config_id = _EXPERIMENT_ID_TO_CONFIG_ID[experiment_id]
     strategy = config_id[:2]
+    retry_wf_result = wf[strategy]
     summary = next(
         s
-        for s in summarize_config_attempts_for_h6(wf[strategy])
+        for s in summarize_config_attempts_for_h6(retry_wf_result)
         if s.config_id == config_id
     )
     fold_hash, run_identity = _recompute_fold_evidence_hash_and_run_identity(
@@ -494,19 +500,32 @@ def _legit_retry_attempt(
         }
         for s in sorted(summary.scenario_summaries, key=lambda r: r.scenario_name)
     ]
-    return row
+    return row, retry_wf_result
+
+
+def _retry_provenance(
+    experiment_id: str, *, retry_index: int, walkforward_result
+) -> dict:
+    return {(CAMPAIGN_RUN_ID, experiment_id, retry_index): walkforward_result}
 
 
 def test_a_contiguous_explicit_retry_forces_performance_usable_false_but_is_not_malformed():
     attempts = _all_24_completed_attempts()
-    retry_row = _legit_retry_attempt(FROZEN_EXPERIMENT_IDS[0], retry_index=1)
+    eid = FROZEN_EXPERIMENT_IDS[0]
+    retry_row, retry_wf = _legit_retry_attempt(eid, retry_index=1)
     attempts.append(retry_row)
     report = _clean_report(
         total_attempts=25,
         retry_attempts=1,
         status_counts={"completed": 25, "rejected": 0, "crashed": 0, "timeout": 0},
     )
-    sealed = _seal(attempt_evidence=attempts, accounting_report=report)
+    sealed = _seal(
+        attempt_evidence=attempts,
+        accounting_report=report,
+        retry_walkforward_results=_retry_provenance(
+            eid, retry_index=1, walkforward_result=retry_wf
+        ),
+    )
     assert sealed.accounting_complete is True
     assert sealed.performance_usable is False
     assert RETRIES_PRESENT_REASON in sealed.reason_codes
@@ -519,11 +538,12 @@ def test_contiguous_retry_with_arbitrary_hashes_fails_cross_bind():
     accepted (never validated against the real H4 summary), letting the
     campaign seal as merely "incomplete" (retries present) without ever
     checking that retry's own claimed evidence. Every normal-path attempt
-    (not just primaries) must be cross-bound."""
+    (not just primaries) must be cross-bound -- even when legitimate
+    retry-specific provenance IS supplied for this exact key, a forged row
+    hash must still fail cross-bind."""
     attempts = _all_24_completed_attempts()
-    forged_retry = _hand_built_attempt(
-        FROZEN_EXPERIMENT_IDS[0], retry_index=1, status="completed"
-    )
+    eid = FROZEN_EXPERIMENT_IDS[0]
+    forged_retry = _hand_built_attempt(eid, retry_index=1, status="completed")
     attempts.append(forged_retry)
     report = _clean_report(
         total_attempts=25,
@@ -531,8 +551,485 @@ def test_contiguous_retry_with_arbitrary_hashes_fails_cross_bind():
         status_counts={"completed": 25, "rejected": 0, "crashed": 0, "timeout": 0},
     )
     with pytest.raises(ScorecardInputError) as exc_info:
-        _seal(attempt_evidence=attempts, accounting_report=report)
+        _seal(
+            attempt_evidence=attempts,
+            accounting_report=report,
+            retry_walkforward_results=_retry_provenance(
+                eid, retry_index=1, walkforward_result=DEFAULT_WALKFORWARD_RESULTS["S1"]
+            ),
+        )
     assert CROSS_BIND_MISMATCH_REASON in str(exc_info.value)
+
+
+def test_retry_row_without_its_own_provenance_fails_closed():
+    """Task 1E (I3): a retry row must never be cross-bound against the
+    PRIMARY's WalkForwardResult-derived summary merely because no
+    retry-specific provenance was supplied -- missing provenance for an
+    existing retry row is a fail-closed condition, not a silent fallback."""
+    attempts = _all_24_completed_attempts()
+    eid = FROZEN_EXPERIMENT_IDS[0]
+    retry_row, _retry_wf = _legit_retry_attempt(eid, retry_index=1)
+    attempts.append(retry_row)
+    report = _clean_report(
+        total_attempts=25,
+        retry_attempts=1,
+        status_counts={"completed": 25, "rejected": 0, "crashed": 0, "timeout": 0},
+    )
+    with pytest.raises(ScorecardInputError):
+        _seal(attempt_evidence=attempts, accounting_report=report)
+
+
+def test_extra_unused_retry_provenance_fails_closed():
+    """A ``retry_walkforward_results`` key with no corresponding retry row
+    in the supplied ``attempt_evidence`` is extra, unused provenance --
+    must fail closed, not be silently ignored."""
+    eid = FROZEN_EXPERIMENT_IDS[0]
+    with pytest.raises(ScorecardInputError):
+        _seal(
+            retry_walkforward_results=_retry_provenance(
+                eid, retry_index=1, walkforward_result=DEFAULT_WALKFORWARD_RESULTS["S1"]
+            )
+        )
+
+
+def test_retry_provenance_key_with_wrong_campaign_run_id_fails_closed():
+    attempts = _all_24_completed_attempts()
+    eid = FROZEN_EXPERIMENT_IDS[0]
+    retry_row, retry_wf = _legit_retry_attempt(eid, retry_index=1)
+    attempts.append(retry_row)
+    report = _clean_report(
+        total_attempts=25,
+        retry_attempts=1,
+        status_counts={"completed": 25, "rejected": 0, "crashed": 0, "timeout": 0},
+    )
+    with pytest.raises(ScorecardInputError):
+        _seal(
+            attempt_evidence=attempts,
+            accounting_report=report,
+            retry_walkforward_results={("wrong-campaign-run-id", eid, 1): retry_wf},
+        )
+
+
+def test_retry_provenance_key_with_fake_experiment_id_fails_closed():
+    attempts = _all_24_completed_attempts()
+    eid = FROZEN_EXPERIMENT_IDS[0]
+    retry_row, retry_wf = _legit_retry_attempt(eid, retry_index=1)
+    attempts.append(retry_row)
+    report = _clean_report(
+        total_attempts=25,
+        retry_attempts=1,
+        status_counts={"completed": 25, "rejected": 0, "crashed": 0, "timeout": 0},
+    )
+    with pytest.raises(ScorecardInputError):
+        _seal(
+            attempt_evidence=attempts,
+            accounting_report=report,
+            retry_walkforward_results={
+                (CAMPAIGN_RUN_ID, "totally-made-up-not-frozen", 1): retry_wf
+            },
+        )
+
+
+def test_retry_provenance_key_with_retry_index_zero_fails_closed():
+    eid = FROZEN_EXPERIMENT_IDS[0]
+    with pytest.raises(ScorecardInputError):
+        _seal(
+            retry_walkforward_results=_retry_provenance(
+                eid, retry_index=0, walkforward_result=DEFAULT_WALKFORWARD_RESULTS["S1"]
+            )
+        )
+
+
+def test_retry_provenance_with_wrong_strategy_walkforward_result_fails_closed():
+    """The retry-specific ``WalkForwardResult`` supplied for a retry key
+    must have the matching ``.strategy``/exact 12-config roster -- the same
+    identity discipline primaries already require."""
+    attempts = _all_24_completed_attempts()
+    eid = FROZEN_EXPERIMENT_IDS[0]  # an S1 config
+    retry_row, _ = _legit_retry_attempt(eid, retry_index=1)
+    attempts.append(retry_row)
+    report = _clean_report(
+        total_attempts=25,
+        retry_attempts=1,
+        status_counts={"completed": 25, "rejected": 0, "crashed": 0, "timeout": 0},
+    )
+    with pytest.raises(ScorecardInputError):
+        _seal(
+            attempt_evidence=attempts,
+            accounting_report=report,
+            retry_walkforward_results=_retry_provenance(
+                eid, retry_index=1, walkforward_result=DEFAULT_WALKFORWARD_RESULTS["S2"]
+            ),
+        )
+
+
+class _DictSubclass(dict):
+    """A dict SUBCLASS -- ``isinstance(x, Mapping)`` would accept it, but
+    the retry-provenance boundary requires exact ``type(x) is dict`` so a
+    subclass overriding ``.items()``/``__bool__`` can never bypass it."""
+
+
+def test_retry_walkforward_results_dict_subclass_rejected():
+    eid = FROZEN_EXPERIMENT_IDS[0]
+    retry_row, retry_wf = _legit_retry_attempt(eid, retry_index=1)
+    attempts = _all_24_completed_attempts()
+    attempts.append(retry_row)
+    report = _clean_report(
+        total_attempts=25,
+        retry_attempts=1,
+        status_counts={"completed": 25, "rejected": 0, "crashed": 0, "timeout": 0},
+    )
+    with pytest.raises(ScorecardInputError):
+        _seal(
+            attempt_evidence=attempts,
+            accounting_report=report,
+            retry_walkforward_results=_DictSubclass(
+                _retry_provenance(eid, retry_index=1, walkforward_result=retry_wf)
+            ),
+        )
+
+
+class _AliasStr(str):
+    """A str SUBCLASS -- must never pass the retry-key exact-type gate,
+    which requires ``type(x) is str`` (never ``isinstance``)."""
+
+
+class _TupleSubclass(tuple):
+    """A tuple SUBCLASS key -- must never pass the retry-key exact-type
+    gate, which requires ``type(key) is tuple``."""
+
+
+def test_retry_provenance_key_tuple_subclass_rejected():
+    eid = FROZEN_EXPERIMENT_IDS[0]
+    retry_row, retry_wf = _legit_retry_attempt(eid, retry_index=1)
+    attempts = _all_24_completed_attempts()
+    attempts.append(retry_row)
+    report = _clean_report(
+        total_attempts=25,
+        retry_attempts=1,
+        status_counts={"completed": 25, "rejected": 0, "crashed": 0, "timeout": 0},
+    )
+    with pytest.raises(ScorecardInputError):
+        _seal(
+            attempt_evidence=attempts,
+            accounting_report=report,
+            retry_walkforward_results={
+                _TupleSubclass((CAMPAIGN_RUN_ID, eid, 1)): retry_wf
+            },
+        )
+
+
+def test_retry_provenance_key_campaign_run_id_str_subclass_rejected():
+    eid = FROZEN_EXPERIMENT_IDS[0]
+    retry_row, retry_wf = _legit_retry_attempt(eid, retry_index=1)
+    attempts = _all_24_completed_attempts()
+    attempts.append(retry_row)
+    report = _clean_report(
+        total_attempts=25,
+        retry_attempts=1,
+        status_counts={"completed": 25, "rejected": 0, "crashed": 0, "timeout": 0},
+    )
+    with pytest.raises(ScorecardInputError):
+        _seal(
+            attempt_evidence=attempts,
+            accounting_report=report,
+            retry_walkforward_results={(_AliasStr(CAMPAIGN_RUN_ID), eid, 1): retry_wf},
+        )
+
+
+def test_retry_provenance_key_experiment_id_str_subclass_rejected():
+    eid = FROZEN_EXPERIMENT_IDS[0]
+    retry_row, retry_wf = _legit_retry_attempt(eid, retry_index=1)
+    attempts = _all_24_completed_attempts()
+    attempts.append(retry_row)
+    report = _clean_report(
+        total_attempts=25,
+        retry_attempts=1,
+        status_counts={"completed": 25, "rejected": 0, "crashed": 0, "timeout": 0},
+    )
+    with pytest.raises(ScorecardInputError):
+        _seal(
+            attempt_evidence=attempts,
+            accounting_report=report,
+            retry_walkforward_results={(CAMPAIGN_RUN_ID, _AliasStr(eid), 1): retry_wf},
+        )
+
+
+def test_global_fallback_with_nonempty_retry_provenance_is_rejected():
+    """Global fallback (``walkforward_results=None``) has exactly the 24
+    primary rows and no retries by construction -- supplying ANY
+    ``retry_walkforward_results`` alongside it is a contradiction."""
+    eid = FROZEN_EXPERIMENT_IDS[0]
+    with pytest.raises(ScorecardInputError):
+        _seal(
+            attempt_evidence=_all_24_global_failure_attempts(),
+            accounting_report=_clean_report(
+                status_counts={
+                    "completed": 0,
+                    "rejected": 0,
+                    "crashed": 24,
+                    "timeout": 0,
+                }
+            ),
+            walkforward_results=None,
+            retry_walkforward_results=_retry_provenance(
+                eid, retry_index=1, walkforward_result=DEFAULT_WALKFORWARD_RESULTS["S1"]
+            ),
+        )
+
+
+def test_timeout_primary_then_completed_retry_retains_both_independent_evidences():
+    """Task 1E (I3), the audit's exact scenario: retry 0 (primary) genuinely
+    timed out; retry 1 genuinely completed -- via its OWN retry-specific
+    WalkForwardResult, never coerced to equal the primary's. Both
+    independent performance blockers (primary not completed, retries
+    present) must be exposed together (captain reason-codes precision)."""
+    eid = FROZEN_EXPERIMENT_IDS[0]
+    timeout_wf = _override_walkforward_results(
+        eid, status="timeout", reason_code=REASON_CHILD_EXECUTION_TIMEOUT
+    )
+    attempts = _real_attempts_for(timeout_wf)
+    completed_wf_for_strategy = DEFAULT_WALKFORWARD_RESULTS["S1"]
+    retry_row, retry_wf = _legit_retry_attempt(
+        eid, retry_index=1, walkforward_results={"S1": completed_wf_for_strategy}
+    )
+    attempts.append(retry_row)
+    report = _clean_report(
+        total_attempts=25,
+        retry_attempts=1,
+        status_counts={"completed": 24, "rejected": 0, "crashed": 0, "timeout": 1},
+    )
+    sealed = _seal(
+        attempt_evidence=attempts,
+        accounting_report=report,
+        walkforward_results=timeout_wf,
+        retry_walkforward_results=_retry_provenance(
+            eid, retry_index=1, walkforward_result=retry_wf
+        ),
+    )
+    assert sealed.accounting_complete is True
+    assert sealed.all_primary_completed is False
+    assert sealed.performance_usable is False
+    assert PRIMARY_ATTEMPT_NOT_COMPLETED_REASON in sealed.reason_codes
+    assert RETRIES_PRESENT_REASON in sealed.reason_codes
+
+
+def test_crashed_primary_then_completed_retry_retains_both_independent_evidences():
+    eid = FROZEN_EXPERIMENT_IDS[0]
+    crashed_wf = _override_walkforward_results(
+        eid, status="crashed", reason_code=REASON_CHILD_EXECUTION_CRASHED
+    )
+    attempts = _real_attempts_for(crashed_wf)
+    retry_row, retry_wf = _legit_retry_attempt(
+        eid,
+        retry_index=1,
+        walkforward_results={"S1": DEFAULT_WALKFORWARD_RESULTS["S1"]},
+    )
+    attempts.append(retry_row)
+    report = _clean_report(
+        total_attempts=25,
+        retry_attempts=1,
+        status_counts={"completed": 24, "rejected": 0, "crashed": 1, "timeout": 0},
+    )
+    sealed = _seal(
+        attempt_evidence=attempts,
+        accounting_report=report,
+        walkforward_results=crashed_wf,
+        retry_walkforward_results=_retry_provenance(
+            eid, retry_index=1, walkforward_result=retry_wf
+        ),
+    )
+    assert sealed.accounting_complete is True
+    assert sealed.all_primary_completed is False
+    assert sealed.performance_usable is False
+    assert PRIMARY_ATTEMPT_NOT_COMPLETED_REASON in sealed.reason_codes
+    assert RETRIES_PRESENT_REASON in sealed.reason_codes
+
+
+def test_completed_primary_then_timeout_retry_retains_both_independent_evidences():
+    """The inverse heterogeneous history: primary genuinely completed, but a
+    later retry genuinely timed out -- still a real, independently-evidenced
+    invocation, not silently coerced to match the primary."""
+    eid = FROZEN_EXPERIMENT_IDS[0]
+    timeout_wf_for_strategy = _override_walkforward_results(
+        eid, status="timeout", reason_code=REASON_CHILD_EXECUTION_TIMEOUT
+    )["S1"]
+    attempts = _all_24_completed_attempts()
+    retry_row, retry_wf = _legit_retry_attempt(
+        eid, retry_index=1, walkforward_results={"S1": timeout_wf_for_strategy}
+    )
+    attempts.append(retry_row)
+    report = _clean_report(
+        total_attempts=25,
+        retry_attempts=1,
+        status_counts={"completed": 24, "rejected": 0, "crashed": 0, "timeout": 1},
+    )
+    sealed = _seal(
+        attempt_evidence=attempts,
+        accounting_report=report,
+        retry_walkforward_results=_retry_provenance(
+            eid, retry_index=1, walkforward_result=retry_wf
+        ),
+    )
+    assert sealed.accounting_complete is True
+    assert sealed.all_primary_completed is True  # the PRIMARY (retry 0) did complete
+    assert sealed.performance_usable is False
+    assert RETRIES_PRESENT_REASON in sealed.reason_codes
+
+
+def test_contiguous_retries_0_1_2_each_independently_cross_bound():
+    """Three genuinely independent invocations (retry 0/1/2) for the SAME
+    experiment, each cross-bound against its own retry-specific evidence."""
+    eid = FROZEN_EXPERIMENT_IDS[0]
+    attempts = _all_24_completed_attempts()
+    retry1_row, retry1_wf = _legit_retry_attempt(eid, retry_index=1)
+    retry2_row, retry2_wf = _legit_retry_attempt(eid, retry_index=2)
+    attempts.append(retry1_row)
+    attempts.append(retry2_row)
+    report = _clean_report(
+        total_attempts=26,
+        retry_attempts=2,
+        status_counts={"completed": 26, "rejected": 0, "crashed": 0, "timeout": 0},
+    )
+    sealed = _seal(
+        attempt_evidence=attempts,
+        accounting_report=report,
+        retry_walkforward_results={
+            **_retry_provenance(eid, retry_index=1, walkforward_result=retry1_wf),
+            **_retry_provenance(eid, retry_index=2, walkforward_result=retry2_wf),
+        },
+    )
+    assert sealed.accounting_complete is True
+    assert sealed.performance_usable is False
+    assert RETRIES_PRESENT_REASON in sealed.reason_codes
+
+
+def test_retry_provenance_cross_config_swap_within_same_strategy_fails_closed():
+    """A retry row claims experiment S1-00's identity, but its
+    fold_evidence_hash/run_identity were actually derived from a DIFFERENT
+    config (S1-01) drawn from the SAME (legitimately supplied, correct-
+    strategy) retry WalkForwardResult -- a same-strategy cross-config swap
+    must still fail cross-bind, proving the seal always extracts the
+    TARGET config's own summary, never another config's."""
+    eid_00 = FROZEN_EXPERIMENT_IDS[0]  # S1-00
+    retry_wf = DEFAULT_WALKFORWARD_RESULTS["S1"]
+    summary_01 = next(
+        s for s in summarize_config_attempts_for_h6(retry_wf) if s.config_id == "S1-01"
+    )
+    fold_hash, run_identity = _recompute_fold_evidence_hash_and_run_identity(
+        summary_01,
+        full_campaign_hash=FULL_CAMPAIGN_HASH,
+        campaign_run_id=CAMPAIGN_RUN_ID,
+        strategy_key=_STRATEGY_KEY["S1"],
+        experiment_id=eid_00,
+        retry_index=1,
+    )
+    row = _hand_built_attempt(
+        eid_00,
+        retry_index=1,
+        status=summary_01.status,
+        reason_code=summary_01.reason_code,
+    )
+    row["fold_evidence_hash"] = fold_hash
+    row["run_identity"] = run_identity
+    row["scenario_evidence"] = [
+        {
+            "scenario_name": s.scenario_name,
+            "trade_count": s.trade_count,
+            "artifact_hash": s.artifact_hash,
+        }
+        for s in sorted(summary_01.scenario_summaries, key=lambda r: r.scenario_name)
+    ]
+    attempts = _all_24_completed_attempts()
+    attempts.append(row)
+    report = _clean_report(
+        total_attempts=25,
+        retry_attempts=1,
+        status_counts={"completed": 25, "rejected": 0, "crashed": 0, "timeout": 0},
+    )
+    with pytest.raises(ScorecardInputError) as exc_info:
+        _seal(
+            attempt_evidence=attempts,
+            accounting_report=report,
+            retry_walkforward_results=_retry_provenance(
+                eid_00, retry_index=1, walkforward_result=retry_wf
+            ),
+        )
+    assert CROSS_BIND_MISMATCH_REASON in str(exc_info.value)
+
+
+def test_retry_1_reusing_retry_0s_identity_verbatim_fails_closed():
+    """A retry row at retry_index=1 whose claimed fold_evidence_hash/
+    run_identity are copy-pasted from the SAME experiment's retry_index=0
+    row -- run_identity binds retry_index itself, so reusing retry 0's
+    exact identity at retry 1 must still fail cross-bind."""
+    eid = FROZEN_EXPERIMENT_IDS[0]
+    primary_row = next(
+        a
+        for a in _all_24_completed_attempts()
+        if a["attempt_key"]["experiment_id"] == eid
+    )
+    reused_row = dict(primary_row)
+    reused_row["attempt_key"] = dict(primary_row["attempt_key"])
+    reused_row["attempt_key"]["retry_index"] = 1
+    attempts = _all_24_completed_attempts()
+    attempts.append(reused_row)
+    report = _clean_report(
+        total_attempts=25,
+        retry_attempts=1,
+        status_counts={"completed": 25, "rejected": 0, "crashed": 0, "timeout": 0},
+    )
+    with pytest.raises(ScorecardInputError) as exc_info:
+        _seal(
+            attempt_evidence=attempts,
+            accounting_report=report,
+            retry_walkforward_results=_retry_provenance(
+                eid, retry_index=1, walkforward_result=DEFAULT_WALKFORWARD_RESULTS["S1"]
+            ),
+        )
+    assert CROSS_BIND_MISMATCH_REASON in str(exc_info.value)
+
+
+def test_retry_provenance_key_wrong_shape_2_tuple_fails_closed():
+    eid = FROZEN_EXPERIMENT_IDS[0]
+    retry_row, retry_wf = _legit_retry_attempt(eid, retry_index=1)
+    attempts = _all_24_completed_attempts()
+    attempts.append(retry_row)
+    report = _clean_report(
+        total_attempts=25,
+        retry_attempts=1,
+        status_counts={"completed": 25, "rejected": 0, "crashed": 0, "timeout": 0},
+    )
+    with pytest.raises(ScorecardInputError):
+        _seal(
+            attempt_evidence=attempts,
+            accounting_report=report,
+            retry_walkforward_results={(CAMPAIGN_RUN_ID, eid): retry_wf},
+        )
+
+
+def test_retry_provenance_key_non_int_retry_index_fails_closed():
+    eid = FROZEN_EXPERIMENT_IDS[0]
+    retry_row, retry_wf = _legit_retry_attempt(eid, retry_index=1)
+    attempts = _all_24_completed_attempts()
+    attempts.append(retry_row)
+    report = _clean_report(
+        total_attempts=25,
+        retry_attempts=1,
+        status_counts={"completed": 25, "rejected": 0, "crashed": 0, "timeout": 0},
+    )
+    with pytest.raises(ScorecardInputError):
+        _seal(
+            attempt_evidence=attempts,
+            accounting_report=report,
+            retry_walkforward_results={(CAMPAIGN_RUN_ID, eid, "1"): retry_wf},
+        )
+    with pytest.raises(ScorecardInputError):
+        _seal(
+            attempt_evidence=attempts,
+            accounting_report=report,
+            retry_walkforward_results={(CAMPAIGN_RUN_ID, eid, True): retry_wf},
+        )
 
 
 def test_a_retry_gap_is_internally_inconsistent_and_raises():
@@ -1239,7 +1736,7 @@ def test_authentic_retry_gap_report_with_excluded_counters_is_accepted_as_incomp
     # cross-binds every normal-path attempt, so an arbitrary/forged hash
     # here would raise for the WRONG reason (cross-bind mismatch) rather
     # than exercising the gap-accounting behavior this test targets.
-    gap_row = _legit_retry_attempt(gapped_id, retry_index=2)
+    gap_row, gap_wf = _legit_retry_attempt(gapped_id, retry_index=2)
     attempts.append(gap_row)
     # H6 excludes the gapped experiment's 2 rows entirely from its own
     # counters here (23 clean primaries + the gapped group's rows neither
@@ -1253,7 +1750,13 @@ def test_authentic_retry_gap_report_with_excluded_counters_is_accepted_as_incomp
         duplicate_or_gap_experiment_ids=[gapped_id],
         verdict="incomplete",
     )
-    sealed = _seal(attempt_evidence=attempts, accounting_report=report)
+    sealed = _seal(
+        attempt_evidence=attempts,
+        accounting_report=report,
+        retry_walkforward_results=_retry_provenance(
+            gapped_id, retry_index=2, walkforward_result=gap_wf
+        ),
+    )
     assert sealed.accounting_complete is False
     assert sealed.performance_usable is False
 
@@ -1278,6 +1781,38 @@ def test_actual_registrations_can_exceed_24_when_backed_by_extra_experiment_ids(
     sealed = _seal(attempt_evidence=attempts, accounting_report=report)
     assert sealed.accounting_complete is False
     assert sealed.performance_usable is False
+
+
+def test_actual_registrations_upper_bound_rejected_when_mismatch_and_extra_empty():
+    """Task 1 final re-review (I1): when every discrepancy list
+    (``mismatch_experiment_ids``/``extra_experiment_ids``) is empty, the
+    real H6 knowable upper bound is ``actual_registrations <= 24 +
+    len(extra_experiment_ids) == 24`` -- a report claiming 25 or 999
+    registrations while asserting NO mismatch/extra ids backing that claim
+    is internally inconsistent and must raise, never seal (even as
+    incomplete)."""
+    attempts = _all_24_completed_attempts()
+    for n in (25, 999):
+        report = _clean_report(actual_registrations=n)
+        with pytest.raises(ScorecardInputError):
+            _seal(attempt_evidence=attempts, accounting_report=report)
+
+
+def test_actual_registrations_exactly_24_still_passes_with_no_discrepancies():
+    sealed = _seal()
+    assert sealed.accounting_complete is True
+
+
+def test_actual_registrations_23_below_the_lower_bound_rejected():
+    """Explicit clean-registration matrix (Task 1E): 23 registrations with
+    no discrepancy lists present is BELOW the knowable lower bound (24
+    distinct primary experiment IDs are already observed in
+    ``by_experiment``) -- always rejected, symmetric with the 25/999 upper-
+    bound rejections above."""
+    attempts = _all_24_completed_attempts()
+    report = _clean_report(actual_registrations=23)
+    with pytest.raises(ScorecardInputError):
+        _seal(attempt_evidence=attempts, accounting_report=report)
 
 
 def test_mismatch_experiment_id_is_not_independently_reclassified_as_missing():
@@ -1317,7 +1852,7 @@ def test_retry_index_one_only_group_is_missing_not_duplicate_or_gap():
     stray retry-only row is entirely excluded), never 24/1/24."""
     attempts = _all_24_completed_attempts()[:23]
     missing_id = FROZEN_EXPERIMENT_IDS[23]
-    stray_retry_row = _legit_retry_attempt(missing_id, retry_index=1)
+    stray_retry_row, stray_wf = _legit_retry_attempt(missing_id, retry_index=1)
     attempts.append(stray_retry_row)
     report = _clean_report(
         actual_registrations=24,
@@ -1328,7 +1863,13 @@ def test_retry_index_one_only_group_is_missing_not_duplicate_or_gap():
         missing_experiment_ids=[missing_id],
         verdict="incomplete",
     )
-    sealed = _seal(attempt_evidence=attempts, accounting_report=report)
+    sealed = _seal(
+        attempt_evidence=attempts,
+        accounting_report=report,
+        retry_walkforward_results=_retry_provenance(
+            missing_id, retry_index=1, walkforward_result=stray_wf
+        ),
+    )
     assert sealed.accounting_complete is False
     assert missing_id in sealed.report["missing_experiment_ids"]
     assert missing_id not in sealed.report["duplicate_or_gap_experiment_ids"]
@@ -1355,6 +1896,76 @@ def test_gap_branch_recomputes_non_gapped_counters_and_rejects_forged_zero_aggre
     )
     with pytest.raises(ScorecardInputError):
         _seal(attempt_evidence=attempts, accounting_report=forged_report)
+
+
+def test_summary_missing_one_fold_from_trace_fails_closed_for_cross_bind():
+    """Task 1 final re-review (I2): real H6 rejects a
+    ``ConfigAttemptEvidenceSummary`` whose ``fold_selection_trace`` does not
+    cover exactly the 8 canonical fold IDs (here: S1-00 dropped from
+    fold-00's candidate roster, leaving 7 fold-selection rows) --
+    ``seal_trial_accounting`` must reject this too, not silently hash/
+    cross-bind a structurally malformed summary merely because it is
+    internally self-consistent with itself."""
+    real_s1 = DEFAULT_WALKFORWARD_RESULTS["S1"]
+    folds = list(real_s1.folds)
+    fold0 = folds[0]
+    trimmed_candidates = tuple(
+        c for c in fold0.selection_trace.candidates if c.config_id != "S1-00"
+    )
+    trimmed_trace = FoldSelectionTrace(
+        strategy="S1", candidates=trimmed_candidates, selected_config_id=None
+    )
+    folds[0] = FoldWalkForwardResult(
+        fold=fold0.fold, selection_trace=trimmed_trace, oos_outcomes=()
+    )
+    malformed_s1 = WalkForwardResult(
+        strategy="S1",
+        folds=tuple(folds),
+        config_attempts=real_s1.config_attempts,
+        concatenated_oos_ledgers=real_s1.concatenated_oos_ledgers,
+    )
+    wf = dict(DEFAULT_WALKFORWARD_RESULTS)
+    wf["S1"] = malformed_s1
+
+    # Regenerate matching H5 fold/run/scenario evidence for S1-00 so the
+    # cross-bind reaches the SAME (malformed) summary rather than failing on
+    # an unrelated stale-hash mismatch against the real, unmodified S1-00.
+    summary = next(
+        s
+        for s in summarize_config_attempts_for_h6(malformed_s1)
+        if s.config_id == "S1-00"
+    )
+    eid = next(
+        eid for eid, cid in _EXPERIMENT_ID_TO_CONFIG_ID.items() if cid == "S1-00"
+    )
+    fold_hash, run_identity = _recompute_fold_evidence_hash_and_run_identity(
+        summary,
+        full_campaign_hash=FULL_CAMPAIGN_HASH,
+        campaign_run_id=CAMPAIGN_RUN_ID,
+        strategy_key=_STRATEGY_KEY["S1"],
+        experiment_id=eid,
+        retry_index=0,
+    )
+    attempts = _all_24_completed_attempts()
+    idx = next(
+        i for i, a in enumerate(attempts) if a["attempt_key"]["experiment_id"] == eid
+    )
+    row = _hand_built_attempt(eid, retry_index=0, status="completed")
+    row["fold_evidence_hash"] = fold_hash
+    row["run_identity"] = run_identity
+    row["scenario_evidence"] = [
+        {
+            "scenario_name": s.scenario_name,
+            "trade_count": s.trade_count,
+            "artifact_hash": s.artifact_hash,
+        }
+        for s in sorted(summary.scenario_summaries, key=lambda r: r.scenario_name)
+    ]
+    attempts[idx] = row
+
+    with pytest.raises(ScorecardInputError) as exc_info:
+        _seal(attempt_evidence=attempts, walkforward_results=wf)
+    assert H6_SUMMARY_MALFORMED_REASON in str(exc_info.value)
 
 
 def test_duplicate_config_attempt_result_in_walkforward_result_fails_closed():
