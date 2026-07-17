@@ -495,6 +495,34 @@ async def test_projection_repair_converges_after_timestamptz_kst_round_trip(
     ).scalar_one()
     assert persisted_kst_day == "20260716"
 
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
+    with (
+        patch.object(
+            mod.TossLiveOrderLedgerService,
+            "reopen_anomalies_for_reconcile",
+            new=AsyncMock(
+                return_value={
+                    "rows": [],
+                    "dry_run": False,
+                    "reopened": 0,
+                    "candidates": 0,
+                }
+            ),
+        ),
+        patch.object(
+            mod.TossLiveOrderLedgerService, "list_open", new=AsyncMock(return_value=[])
+        ),
+    ):
+        repaired = await mod.toss_reconcile_orders_impl(dry_run=False)
+    rung = await _proposal_rung(db_session, proposal_id)
+    assert repaired["proposal_projection_repair"] == {
+        "candidates": 1,
+        "converged": 1,
+        "failed": 0,
+    }
+    assert rung.state == "filled"
+
 
 async def test_terminal_rejected_ledger_projection_repairs_resting_rung(db_session):
     """ROB-900: broker REJECTED/DAY expiry is terminal proposal evidence."""
