@@ -645,6 +645,7 @@ async def _converge_kis_proposal_rung(
             rung_id = await service.find_unambiguous_evidence_rung_id(
                 correlation_id=row.correlation_id,
                 broker_order_id=row.order_no,
+                idempotency_key=row.idempotency_key,
                 account_mode="kis_live",
                 symbol=row.symbol,
                 market=row.instrument_type,
@@ -655,6 +656,7 @@ async def _converge_kis_proposal_rung(
                 rung_id=rung_id,
                 correlation_id=row.correlation_id,
                 broker_order_id=row.order_no,
+                idempotency_key=row.idempotency_key,
                 filled_qty=(
                     None if terminal_state in {"cancelled", "expired"} else filled_qty
                 ),

@@ -288,6 +288,7 @@ async def _converge_toss_proposal_rung(
             rung_id = await service.find_unambiguous_evidence_rung_id(
                 correlation_id=getattr(row, "correlation_id", None),
                 broker_order_id=row.broker_order_id,
+                idempotency_key=row.client_order_id,
                 account_mode="toss_live",
                 symbol=row.symbol,
                 market=market,
@@ -320,6 +321,7 @@ async def _converge_toss_proposal_rung(
                 rung_id=rung_id,
                 correlation_id=getattr(row, "correlation_id", None),
                 broker_order_id=row.broker_order_id,
+                idempotency_key=row.client_order_id,
                 filled_qty=(
                     None if terminal_state in {"cancelled", "expired"} else filled_qty
                 ),
