@@ -249,10 +249,11 @@ async def test_terminal_repair_skips_terminal_and_resting_key_conflict(db_sessio
 
     suffix = uuid4().hex
     order_no = f"KIS-ROB900-CONFLICT-{suffix}"
-    correlation_id = f"live:kis_live:conflict-{suffix}"
+    resting_correlation = f"live:kis_live:resting-{suffix}"
+    terminal_correlation = f"live:kis_live:terminal-{suffix}"
     service = OrderProposalsService(db_session)
 
-    async def create_rung(*, broker_order_id: str):
+    async def create_rung(*, broker_order_id: str, correlation_id: str):
         group = await service.create_proposal(
             symbol="214150",
             market="equity_kr",
@@ -275,8 +276,12 @@ async def test_terminal_repair_skips_terminal_and_resting_key_conflict(db_sessio
         )
         return group.proposal_id
 
-    resting_id = await create_rung(broker_order_id=order_no)
-    terminal_id = await create_rung(broker_order_id=f"terminal-{order_no}")
+    resting_id = await create_rung(
+        broker_order_id=order_no, correlation_id=resting_correlation
+    )
+    terminal_id = await create_rung(
+        broker_order_id=f"terminal-{order_no}", correlation_id=terminal_correlation
+    )
     await service.transition_rung(terminal_id, 0, new_state="filled")
     await db_session.commit()
     await kl._save_kis_live_order_ledger(
@@ -304,7 +309,7 @@ async def test_terminal_repair_skips_terminal_and_resting_key_conflict(db_sessio
         notes=None,
         exit_reason=None,
         indicators_snapshot=None,
-        correlation_id=correlation_id,
+        correlation_id=terminal_correlation,
     )
 
     result = await kl.kis_live_reconcile_orders_impl(dry_run=False)
@@ -314,7 +319,7 @@ async def test_terminal_repair_skips_terminal_and_resting_key_conflict(db_sessio
         "candidates": 0,
         "converged": 0,
         "failed": 0,
-        "anomalies": {},
+        "anomalies": {"proposal_evidence_conflict": 1},
     }
     assert terminal[0].state == "filled"
     assert resting[0].state == "resting"

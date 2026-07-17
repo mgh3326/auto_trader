@@ -592,11 +592,13 @@ async def test_terminal_repair_skips_ambiguous_correlation_link(db_session):
         group.proposal_id,
         0,
         broker_order_id=f"other-{row.broker_order_id}",
-        correlation_id=row.correlation_id,
+        correlation_id=f"terminal-{row.correlation_id}",
         idempotency_key="ambiguous-idempotency",
         approval_hash_digest="ambiguous-digest",
         now=datetime.now(UTC),
     )
+    await service.transition_rung(group.proposal_id, 0, new_state="filled")
+    row.correlation_id = f"terminal-{row.correlation_id}"
     row.status = "filled"
     await db_session.commit()
 
@@ -627,9 +629,10 @@ async def test_terminal_repair_skips_ambiguous_correlation_link(db_session):
         "candidates": 0,
         "converged": 0,
         "failed": 0,
-        "anomalies": {},
+        "anomalies": {"proposal_evidence_conflict": 1},
     }
-    assert first.state == second.state == "resting"
+    assert first.state == "resting"
+    assert second.state == "filled"
 
 
 async def test_terminal_repair_skips_terminal_and_resting_key_conflict(db_session):
@@ -659,12 +662,13 @@ async def test_terminal_repair_skips_terminal_and_resting_key_conflict(db_sessio
         terminal.proposal_id,
         0,
         broker_order_id=f"terminal-{row.broker_order_id}",
-        correlation_id=row.correlation_id,
+        correlation_id=f"terminal-{row.correlation_id}",
         idempotency_key="terminal-conflict-idempotency",
         approval_hash_digest="terminal-conflict-digest",
         now=datetime.now(UTC),
     )
     await service.transition_rung(terminal.proposal_id, 0, new_state="filled")
+    row.correlation_id = f"terminal-{row.correlation_id}"
     row.status = "filled"
     await db_session.commit()
 
@@ -695,7 +699,7 @@ async def test_terminal_repair_skips_terminal_and_resting_key_conflict(db_sessio
         "candidates": 0,
         "converged": 0,
         "failed": 0,
-        "anomalies": {},
+        "anomalies": {"proposal_evidence_conflict": 1},
     }
     assert terminal_rung.state == "filled"
     assert resting.state == "resting"
