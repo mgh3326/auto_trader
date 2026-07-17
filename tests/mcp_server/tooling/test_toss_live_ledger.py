@@ -243,7 +243,10 @@ async def test_proposal_projection_partial_fill_and_duplicate_evidence_are_idemp
     )
     rung = await _proposal_rung(db_session, proposal_id)
     assert duplicate["action"] == "noop_already_booked"
-    assert "proposal_rung" not in duplicate
+    assert duplicate["proposal_rung"] == {
+        "converged": True,
+        "proposal_rung_state": "filled",
+    }
     assert rung.state == "filled"
     assert rung.filled_qty == Decimal("2")
 
@@ -398,7 +401,7 @@ async def test_terminal_ledger_projection_failure_is_retried_by_sweep(db_session
 
     with patch.object(
         OrderProposalsService,
-        "record_fill_evidence",
+        "record_fill_evidence_for_rung",
         new=AsyncMock(side_effect=RuntimeError("projection unavailable")),
     ):
         failed = await _reconcile_with_evidence(mod, row, evidence)
@@ -438,6 +441,7 @@ async def test_terminal_ledger_projection_failure_is_retried_by_sweep(db_session
         "candidates": 1,
         "converged": 1,
         "failed": 0,
+        "anomalies": {},
     }
     assert rung.state == "filled"
     assert rung.filled_qty == Decimal("2")
@@ -454,8 +458,6 @@ async def test_projection_repair_converges_after_timestamptz_kst_round_trip(
     the sweep must converge even though the execution-ledger fill is stored on
     the preceding UTC date.
     """
-    from app.mcp_server.tooling import toss_live_ledger as mod
-
     proposal_id, toss_row = await _proposal_accepted_row(db_session, suffix="rob933")
     filled_at_utc = datetime(2026, 7, 15, 15, 17, 28, tzinfo=UTC)
     db_session.add(
@@ -494,6 +496,8 @@ async def test_projection_repair_converges_after_timestamptz_kst_round_trip(
     ).scalar_one()
     assert persisted_kst_day == "20260716"
 
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
     with (
         patch.object(
             mod.TossLiveOrderLedgerService,
@@ -512,14 +516,193 @@ async def test_projection_repair_converges_after_timestamptz_kst_round_trip(
         ),
     ):
         repaired = await mod.toss_reconcile_orders_impl(dry_run=False)
+    rung = await _proposal_rung(db_session, proposal_id)
+    assert repaired["proposal_projection_repair"] == {
+        "candidates": 1,
+        "converged": 1,
+        "failed": 0,
+        "anomalies": {},
+    }
+    assert rung.state == "filled"
+
+
+async def test_terminal_rejected_ledger_projection_repairs_resting_rung(db_session):
+    """ROB-900: broker REJECTED/DAY expiry is terminal proposal evidence."""
+    from app.mcp_server.tooling import toss_live_ledger as mod
+
+    proposal_id, row = await _proposal_accepted_row(db_session, suffix="rejected")
+    row.status = "rejected"
+    await db_session.commit()
+
+    with (
+        patch.object(
+            mod.TossLiveOrderLedgerService,
+            "reopen_anomalies_for_reconcile",
+            new=AsyncMock(
+                return_value={
+                    "rows": [],
+                    "dry_run": False,
+                    "reopened": 0,
+                    "candidates": 0,
+                }
+            ),
+        ),
+        patch.object(
+            mod.TossLiveOrderLedgerService,
+            "list_open",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        repaired = await mod.toss_reconcile_orders_impl(dry_run=False)
 
     rung = await _proposal_rung(db_session, proposal_id)
     assert repaired["proposal_projection_repair"] == {
         "candidates": 1,
         "converged": 1,
         "failed": 0,
+        "anomalies": {},
     }
-    assert rung.state == "filled"
+    # A broker REJECTED after a submitted DAY order is an expired order, not an
+    # ungrounded transition to the state-machine's submit-time `rejected`.
+    assert rung.state == "expired"
+
+
+async def test_terminal_repair_skips_ambiguous_correlation_link(db_session):
+    """ROB-900: repair must not choose a rung when evidence keys disagree."""
+    from datetime import UTC, datetime
+
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.services.order_proposals import OrderProposalsService
+    from app.services.order_proposals.service import RungInput
+
+    proposal_id, row = await _proposal_accepted_row(db_session, suffix="ambiguous")
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="AAPL",
+        market="equity_us",
+        account_mode="toss_live",
+        side="buy",
+        order_type="limit",
+        proposer="ambiguous-projection-test",
+        rungs=[RungInput(0, "buy", Decimal("2"), Decimal("190"), None)],
+    )
+    for state in ("revalidating", "approved", "submitting"):
+        await service.transition_rung(group.proposal_id, 0, new_state=state)
+    await service.record_resting(
+        group.proposal_id,
+        0,
+        broker_order_id=f"other-{row.broker_order_id}",
+        correlation_id=f"terminal-{row.correlation_id}",
+        idempotency_key="ambiguous-idempotency",
+        approval_hash_digest="ambiguous-digest",
+        now=datetime.now(UTC),
+    )
+    await service.transition_rung(group.proposal_id, 0, new_state="filled")
+    row.correlation_id = f"terminal-{row.correlation_id}"
+    row.status = "filled"
+    await db_session.commit()
+
+    with (
+        patch.object(
+            mod.TossLiveOrderLedgerService,
+            "reopen_anomalies_for_reconcile",
+            new=AsyncMock(
+                return_value={
+                    "rows": [],
+                    "dry_run": False,
+                    "reopened": 0,
+                    "candidates": 0,
+                }
+            ),
+        ),
+        patch.object(
+            mod.TossLiveOrderLedgerService,
+            "list_open",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        repaired = await mod.toss_reconcile_orders_impl(dry_run=False)
+
+    first = await _proposal_rung(db_session, proposal_id)
+    second = await _proposal_rung(db_session, group.proposal_id)
+    assert repaired["proposal_projection_repair"] == {
+        "candidates": 0,
+        "converged": 0,
+        "failed": 0,
+        "anomalies": {"proposal_evidence_conflict": 1},
+    }
+    assert first.state == "resting"
+    assert second.state == "filled"
+
+
+async def test_terminal_repair_skips_terminal_and_resting_key_conflict(db_session):
+    """ROB-900 P0: a terminal correlation conflict must block broker-id repair."""
+    from datetime import UTC, datetime
+
+    from app.mcp_server.tooling import toss_live_ledger as mod
+    from app.services.order_proposals import OrderProposalsService
+    from app.services.order_proposals.service import RungInput
+
+    resting_id, row = await _proposal_accepted_row(
+        db_session, suffix="terminal-conflict"
+    )
+    service = OrderProposalsService(db_session)
+    terminal = await service.create_proposal(
+        symbol="AAPL",
+        market="equity_us",
+        account_mode="toss_live",
+        side="buy",
+        order_type="limit",
+        proposer="terminal-conflict-test",
+        rungs=[RungInput(0, "buy", Decimal("2"), Decimal("190"), None)],
+    )
+    for state in ("revalidating", "approved", "submitting"):
+        await service.transition_rung(terminal.proposal_id, 0, new_state=state)
+    await service.record_resting(
+        terminal.proposal_id,
+        0,
+        broker_order_id=f"terminal-{row.broker_order_id}",
+        correlation_id=f"terminal-{row.correlation_id}",
+        idempotency_key="terminal-conflict-idempotency",
+        approval_hash_digest="terminal-conflict-digest",
+        now=datetime.now(UTC),
+    )
+    await service.transition_rung(terminal.proposal_id, 0, new_state="filled")
+    row.correlation_id = f"terminal-{row.correlation_id}"
+    row.status = "filled"
+    await db_session.commit()
+
+    with (
+        patch.object(
+            mod.TossLiveOrderLedgerService,
+            "reopen_anomalies_for_reconcile",
+            new=AsyncMock(
+                return_value={
+                    "rows": [],
+                    "dry_run": False,
+                    "reopened": 0,
+                    "candidates": 0,
+                }
+            ),
+        ),
+        patch.object(
+            mod.TossLiveOrderLedgerService,
+            "list_open",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        repaired = await mod.toss_reconcile_orders_impl(dry_run=False)
+
+    resting = await _proposal_rung(db_session, resting_id)
+    terminal_rung = await _proposal_rung(db_session, terminal.proposal_id)
+    assert repaired["proposal_projection_repair"] == {
+        "candidates": 0,
+        "converged": 0,
+        "failed": 0,
+        "anomalies": {"proposal_evidence_conflict": 1},
+    }
+    assert terminal_rung.state == "filled"
+    assert resting.state == "resting"
 
 
 @pytest.mark.parametrize("terminal_status", ["filled", "cancelled"])
@@ -542,6 +725,8 @@ async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
 
     unique = uuid4().hex
     broker_order_id = f"toss-loss-cut-{terminal_status}-{unique}"
+    proposal_quantity = Decimal("2") if terminal_status == "filled" else Decimal("3")
+    proposal_price = Decimal("99") if terminal_status == "filled" else Decimal("98")
     now = datetime.now(UTC)
     submit_agent_id = f"proposal-submit-{unique}"
 
@@ -570,7 +755,7 @@ async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
         side="sell",
         order_type="limit",
         proposer="e2e-test",
-        rungs=[RungInput(0, "sell", Decimal("2"), Decimal("99"), None)],
+        rungs=[RungInput(0, "sell", proposal_quantity, proposal_price, None)],
         exit_intent="loss_cut",
         exit_reason="stop_loss",
         retrospective_id=42,
@@ -760,7 +945,7 @@ async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
     await db_session.refresh(row)
     if terminal_status == "filled":
         terminal = _toss_evidence(
-            verdict="filled", local_status="filled", filled_qty="2"
+            verdict="filled", local_status="filled", filled_qty=str(proposal_quantity)
         )
     else:
         terminal = _toss_evidence(
