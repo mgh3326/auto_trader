@@ -131,6 +131,48 @@ def test_validate_frozen_scope_rejects_tampered_window():
         tampered.validate_frozen_scope()
 
 
+def test_validate_frozen_scope_rejects_duplicate_kline_symbol():
+    m = _manifest()
+    tampered = CorpusManifest(
+        window_start_iso=m.window_start_iso,
+        window_end_iso=m.window_end_iso,
+        universe=m.universe,
+        eligibility=m.eligibility,
+        klines=m.klines + (m.klines[0],),  # duplicate first symbol
+        funding=m.funding,
+    )
+    with pytest.raises(ValueError, match="klines"):
+        tampered.validate_frozen_scope()
+
+
+def test_validate_frozen_scope_rejects_missing_kline_symbol():
+    m = _manifest()
+    tampered = CorpusManifest(
+        window_start_iso=m.window_start_iso,
+        window_end_iso=m.window_end_iso,
+        universe=m.universe,
+        eligibility=m.eligibility,
+        klines=m.klines[:-1],  # drop the last symbol's kline manifest
+        funding=m.funding,
+    )
+    with pytest.raises(ValueError, match="klines"):
+        tampered.validate_frozen_scope()
+
+
+def test_validate_frozen_scope_rejects_missing_funding_symbol():
+    m = _manifest()
+    tampered = CorpusManifest(
+        window_start_iso=m.window_start_iso,
+        window_end_iso=m.window_end_iso,
+        universe=m.universe,
+        eligibility=m.eligibility,
+        klines=m.klines,
+        funding=m.funding[:-1],
+    )
+    with pytest.raises(ValueError, match="funding"):
+        tampered.validate_frozen_scope()
+
+
 def test_validate_frozen_scope_rejects_tampered_btc_eligibility():
     m = _manifest()
     bad_eligibility = tuple(
@@ -198,3 +240,110 @@ def test_manifest_save_load_round_trip_preserves_content_hash(tmp_path):
     loaded = CorpusManifest.load(path)
     assert loaded.content_hash() == m.content_hash()
     loaded.validate_frozen_scope()
+
+
+# --------------------------------------------------------------------------- #
+# R1 I1 remediation: persisted-shard fields (offline load requires these)
+# --------------------------------------------------------------------------- #
+def test_archive_provenance_local_path_defaults_to_none_and_round_trips():
+    p = ArchiveProvenance(
+        url="https://data.binance.vision/x.zip",
+        checksum_url="https://data.binance.vision/x.zip.CHECKSUM",
+        checksum_sha256="a" * 64,
+    )
+    assert p.local_path is None
+    assert ArchiveProvenance.from_dict(p.to_dict()).local_path is None
+
+    p2 = ArchiveProvenance(
+        url="https://data.binance.vision/x.zip",
+        checksum_url="https://data.binance.vision/x.zip.CHECKSUM",
+        checksum_sha256="a" * 64,
+        local_path="rob941/raw/klines/X/x.zip",
+    )
+    assert (
+        ArchiveProvenance.from_dict(p2.to_dict()).local_path
+        == "rob941/raw/klines/X/x.zip"
+    )
+
+
+def test_archive_provenance_from_dict_defaults_missing_local_path_to_none():
+    # backward compat: an older persisted manifest without local_path must load
+    d = {
+        "url": "https://data.binance.vision/x.zip",
+        "checksum_url": "https://data.binance.vision/x.zip.CHECKSUM",
+        "checksum_sha256": "a" * 64,
+    }
+    assert ArchiveProvenance.from_dict(d).local_path is None
+
+
+def test_symbol_kline_manifest_shard_fields_default_to_none_and_round_trip():
+    k = _kline_manifest("XRPUSDT")
+    assert k.shard_path is None
+    assert k.shard_file_sha256 is None
+    assert SymbolKlineManifest.from_dict(k.to_dict()).shard_path is None
+
+    k2 = SymbolKlineManifest(
+        symbol="XRPUSDT",
+        interval="1m",
+        archives=_prov(),
+        normalized_shard_sha256="b" * 64,
+        shard_path="rob941/shards/klines/XRPUSDT-1m.parquet",
+        shard_file_sha256="d" * 64,
+        row_count=44640,
+        min_open_time_ms=scope.WINDOW_START_MS,
+        max_open_time_ms=scope.WINDOW_END_MS - 60_000,
+        gap_ranges=(),
+    )
+    reloaded = SymbolKlineManifest.from_dict(k2.to_dict())
+    assert reloaded.shard_path == "rob941/shards/klines/XRPUSDT-1m.parquet"
+    assert reloaded.shard_file_sha256 == "d" * 64
+
+
+def test_symbol_funding_manifest_shard_fields_default_to_none_and_round_trip():
+    f = _funding_manifest("XRPUSDT")
+    assert f.shard_path is None
+    assert f.shard_file_sha256 is None
+
+    f2 = SymbolFundingManifest(
+        symbol="XRPUSDT",
+        archives=_prov(),
+        normalized_shard_sha256="c" * 64,
+        shard_path="rob941/shards/funding/XRPUSDT-fundingRate.parquet",
+        shard_file_sha256="e" * 64,
+        row_count=90,
+        min_calc_time_ms=scope.WINDOW_START_MS,
+        max_calc_time_ms=scope.WINDOW_END_MS - 1000,
+    )
+    reloaded = SymbolFundingManifest.from_dict(f2.to_dict())
+    assert reloaded.shard_path == "rob941/shards/funding/XRPUSDT-fundingRate.parquet"
+    assert reloaded.shard_file_sha256 == "e" * 64
+
+
+def test_content_hash_changes_when_shard_path_is_added():
+    m1 = _manifest()
+    m2_klines = tuple(
+        SymbolKlineManifest(
+            symbol=k.symbol,
+            interval=k.interval,
+            archives=k.archives,
+            normalized_shard_sha256=k.normalized_shard_sha256,
+            shard_path="rob941/shards/klines/foo.parquet"
+            if k.symbol == "BTCUSDT"
+            else k.shard_path,
+            shard_file_sha256=k.shard_file_sha256,
+            row_count=k.row_count,
+            min_open_time_ms=k.min_open_time_ms,
+            max_open_time_ms=k.max_open_time_ms,
+            gap_ranges=k.gap_ranges,
+        )
+        for k in m1.klines
+    )
+    m2 = CorpusManifest(
+        window_start_iso=m1.window_start_iso,
+        window_end_iso=m1.window_end_iso,
+        universe=m1.universe,
+        eligibility=m1.eligibility,
+        klines=m2_klines,
+        funding=m1.funding,
+    )
+    assert m1.content_hash() != m2.content_hash()

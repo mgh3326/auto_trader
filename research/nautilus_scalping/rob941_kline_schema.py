@@ -15,6 +15,16 @@ rows (same timestamp, different content) also fail closed; byte-identical
 duplicates are deduped. Rows outside the caller's ``[window_start_ms,
 window_end_ms)`` are silently clipped (not a gap — just out of scope), never
 deleted/forward-filled/synthesized for rows INSIDE the window.
+
+AC5 footnote (R1 M1, not changed by design): "unterminated bars are excluded"
+is implemented here as a fail-closed ``raise`` (``InvalidOHLCVError`` on a
+duration != 59999ms), not a silent skip. This is strictly MORE conservative
+than exclude, and never actually fires on real data in this corpus: Binance's
+monthly historical archives only ever contain fully-closed bars, and the
+frozen half-open window (``rob941_frozen_scope``) already excludes the
+in-progress "current" bar by construction. The raise exists as a fail-closed
+guard against a corrupt/truncated archive, not as the exclude mechanism AC5
+describes for a live/streaming context.
 """
 
 from __future__ import annotations

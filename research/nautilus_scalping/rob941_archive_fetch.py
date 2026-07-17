@@ -74,17 +74,26 @@ class ArchiveProvenance:
     The single canonical definition (``rob941_manifest`` re-exports this, it does
     not redefine it) so a value produced by the fetch layer is always the same
     type the manifest layer serializes.
+
+    ``local_path`` (ROB-941 R1 I1 remediation) is the artifact-root-relative
+    POSIX path where the checksum-verified raw ``.zip`` was persisted by
+    ``rob941_persistence.write_raw_archive`` — ``None`` when the archive was
+    only fetched in-memory (the default for every fixture/unit test and for
+    ``build_symbol_kline_shard``/``build_symbol_funding_shard`` called without
+    a ``raw_archive_sink``).
     """
 
     url: str
     checksum_url: str
     checksum_sha256: str
+    local_path: str | None = None
 
     def to_dict(self) -> dict:
         return {
             "url": self.url,
             "checksum_url": self.checksum_url,
             "checksum_sha256": self.checksum_sha256,
+            "local_path": self.local_path,
         }
 
     @classmethod
@@ -93,6 +102,7 @@ class ArchiveProvenance:
             url=d["url"],
             checksum_url=d["checksum_url"],
             checksum_sha256=d["checksum_sha256"],
+            local_path=d.get("local_path"),
         )
 
 
@@ -103,11 +113,12 @@ class FetchedArchive:
     checksum_url: str
     checksum_sha256: str  # verified to match the downloaded zip_bytes
 
-    def provenance(self) -> ArchiveProvenance:
+    def provenance(self, local_path: str | None = None) -> ArchiveProvenance:
         return ArchiveProvenance(
             url=self.url,
             checksum_url=self.checksum_url,
             checksum_sha256=self.checksum_sha256,
+            local_path=local_path,
         )
 
 

@@ -7,6 +7,13 @@ scope. ``content_hash`` uses the same canonical, collision-free identity
 authority as ``research_contracts`` (via the local ``canonical_hash`` shim) so
 the manifest's identity is reproducible and any field change is detectable —
 that is the immutability enforcement mechanism, not a promise.
+
+ROB-941 R1 I1 remediation: ``shard_path``/``shard_file_sha256`` point at the
+actual persisted Parquet shard (``rob941_persistence.write_kline_shard``/
+``write_funding_shard``, under ``artifact_paths.pit_data_root()``) so H4/H6 can
+``rob941_offline_loader.load_corpus`` this manifest with zero network — the
+manifest alone is a fingerprint, but manifest + artifact root is the whole
+reproducible corpus.
 """
 
 from __future__ import annotations
@@ -29,7 +36,7 @@ __all__ = [
     "SymbolKlineManifest",
 ]
 
-TRANSFORM_VERSION = "rob941_corpus.v1"
+TRANSFORM_VERSION = "rob941_corpus.v2"  # v2 (R1 I1 remediation): shard_path/shard_file_sha256 persist the derived corpus, not just its fingerprint
 
 
 @dataclass(frozen=True)
@@ -43,6 +50,11 @@ class SymbolKlineManifest:
     max_open_time_ms: int
     gap_ranges: tuple[tuple[int, int], ...]
     transform_version: str = TRANSFORM_VERSION
+    # ROB-941 R1 I1: artifact-root-relative POSIX path to the persisted Parquet
+    # shard + its physical file SHA-256 (distinct from normalized_shard_sha256,
+    # the SEMANTIC canonical row-content hash) -- both required for offline load.
+    shard_path: str | None = None
+    shard_file_sha256: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -55,6 +67,8 @@ class SymbolKlineManifest:
             "max_open_time_ms": self.max_open_time_ms,
             "gap_ranges": [list(g) for g in self.gap_ranges],
             "transform_version": self.transform_version,
+            "shard_path": self.shard_path,
+            "shard_file_sha256": self.shard_file_sha256,
         }
 
     @classmethod
@@ -69,6 +83,8 @@ class SymbolKlineManifest:
             max_open_time_ms=d["max_open_time_ms"],
             gap_ranges=tuple(tuple(g) for g in d["gap_ranges"]),
             transform_version=d.get("transform_version", TRANSFORM_VERSION),
+            shard_path=d.get("shard_path"),
+            shard_file_sha256=d.get("shard_file_sha256"),
         )
 
 
@@ -81,6 +97,8 @@ class SymbolFundingManifest:
     min_calc_time_ms: int | None
     max_calc_time_ms: int | None
     transform_version: str = TRANSFORM_VERSION
+    shard_path: str | None = None
+    shard_file_sha256: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -91,6 +109,8 @@ class SymbolFundingManifest:
             "min_calc_time_ms": self.min_calc_time_ms,
             "max_calc_time_ms": self.max_calc_time_ms,
             "transform_version": self.transform_version,
+            "shard_path": self.shard_path,
+            "shard_file_sha256": self.shard_file_sha256,
         }
 
     @classmethod
@@ -103,6 +123,8 @@ class SymbolFundingManifest:
             min_calc_time_ms=d["min_calc_time_ms"],
             max_calc_time_ms=d["max_calc_time_ms"],
             transform_version=d.get("transform_version", TRANSFORM_VERSION),
+            shard_path=d.get("shard_path"),
+            shard_file_sha256=d.get("shard_file_sha256"),
         )
 
 
@@ -189,6 +211,22 @@ class CorpusManifest:
             raise ValueError(
                 f"manifest universe {sorted(self.universe)} deviates from frozen universe "
                 f"{sorted(frozen.UNIVERSE)}"
+            )
+        # R1 I1 loader-hardening follow-up: exactly one kline + one funding
+        # entry per frozen symbol -- no duplicate/missing/extra. A duplicate
+        # symbol would otherwise silently collapse in load_corpus's
+        # symbol-keyed dict without ever raising.
+        kline_symbols = sorted(k.symbol for k in self.klines)
+        if kline_symbols != sorted(frozen.UNIVERSE):
+            raise ValueError(
+                f"manifest klines cover {kline_symbols}, expected exactly "
+                f"{sorted(frozen.UNIVERSE)} (no duplicate/missing/extra)"
+            )
+        funding_symbols = sorted(f.symbol for f in self.funding)
+        if funding_symbols != sorted(frozen.UNIVERSE):
+            raise ValueError(
+                f"manifest funding covers {funding_symbols}, expected exactly "
+                f"{sorted(frozen.UNIVERSE)} (no duplicate/missing/extra)"
             )
         for e in self.eligibility:
             expected = frozen.eligibility(e.symbol)

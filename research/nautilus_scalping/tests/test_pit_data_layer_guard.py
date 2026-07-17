@@ -20,6 +20,8 @@ _MODULES = [
     "rob941_funding_sidecar.py",
     "rob941_manifest.py",
     "rob941_corpus_builder.py",
+    "rob941_persistence.py",
+    "rob941_offline_loader.py",
     "build_rob941_corpus.py",
 ]
 

@@ -125,6 +125,51 @@ def test_build_symbol_funding_shard_normalizes_from_fixture():
     assert len(provenance) == 12
 
 
+def test_build_symbol_kline_shard_invokes_raw_archive_sink_once_per_month_with_verified_bytes():
+    fake = _FakeCorpusUniverse("XRPUSDT")
+    calls = []
+
+    def sink(symbol, kind, year, month, zip_bytes):
+        calls.append((symbol, kind, year, month, zip_bytes))
+        return f"rob941/raw/{kind}/{symbol}/{symbol}-{kind}-{year:04d}-{month:02d}.zip"
+
+    rows, provenance, gap_ranges = cb.build_symbol_kline_shard(
+        "XRPUSDT", opener=fake.opener, raw_archive_sink=sink
+    )
+    assert len(calls) == 12  # one per frozen-window month, never skipped
+    assert all(c[0] == "XRPUSDT" and c[1] == "klines" for c in calls)
+    assert all(isinstance(c[4], bytes) and len(c[4]) > 0 for c in calls)
+    # the sink's returned relative path must land on the archive's provenance
+    assert all(p.local_path is not None for p in provenance)
+    assert all(
+        p.local_path.startswith("rob941/raw/klines/XRPUSDT/") for p in provenance
+    )
+
+
+def test_build_symbol_kline_shard_without_sink_leaves_local_path_none():
+    fake = _FakeCorpusUniverse("XRPUSDT")
+    rows, provenance, gap_ranges = cb.build_symbol_kline_shard(
+        "XRPUSDT", opener=fake.opener
+    )
+    assert all(p.local_path is None for p in provenance)
+
+
+def test_build_symbol_funding_shard_invokes_raw_archive_sink_with_funding_rate_kind():
+    fake = _FakeCorpusUniverse("DOGEUSDT")
+    calls = []
+
+    def sink(symbol, kind, year, month, zip_bytes):
+        calls.append((symbol, kind, year, month))
+        return f"rob941/raw/{kind}/{symbol}/{symbol}-{kind}-{year:04d}-{month:02d}.zip"
+
+    rows, provenance = cb.build_symbol_funding_shard(
+        "DOGEUSDT", opener=fake.opener, raw_archive_sink=sink
+    )
+    assert len(calls) == 12
+    assert all(c[1] == "fundingRate" for c in calls)
+    assert all(p.local_path is not None for p in provenance)
+
+
 def test_corpus_builder_module_has_no_broker_order_or_db_imports():
     # zero broker/order/fill/scheduler wiring — enforced structurally, not by convention
     import ast
