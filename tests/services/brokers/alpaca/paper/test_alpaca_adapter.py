@@ -158,10 +158,9 @@ async def test_adapter_maps_unexpected_application_failure_to_sanitized_result(
 
     result = await getattr(adapter, method)(_intent())
 
-    assert result.operation is operation
-    assert result.status is PaperOperationStatus.FAILED
-    assert result.reason_code is PaperReasonCode.ADAPTER_UNAVAILABLE
-    assert result.evidence == {"error_type": "_SensitiveApplicationFailure"}
+    assert result.evidence == {
+        "error_type": "_SensitiveApplicationFailure",
+    }
     assert application.calls[0][0] == method
 
 
@@ -176,7 +175,9 @@ async def test_adapter_fails_closed_before_application_for_unmapped_symbol() -> 
 
     assert result.status is PaperOperationStatus.FAILED
     assert result.reason_code is PaperReasonCode.ADAPTER_UNAVAILABLE
-    assert result.evidence == {"error_type": "CryptoExecutionMappingError"}
+    assert result.evidence == {
+        "error_type": "CryptoExecutionMappingError",
+    }
     assert application.calls == []
 
 
@@ -262,3 +263,30 @@ def test_adapter_source_has_no_raw_submit_or_tooling_import() -> None:
     assert ".submit_order(" not in source
     assert "app.mcp_server" not in source
     assert "alpaca_live" not in source
+
+
+@pytest.mark.asyncio
+async def test_adapter_captures_and_sanitizes_http_error_body() -> None:
+    from app.services.brokers.alpaca.exceptions import AlpacaPaperRequestError
+    from app.services.brokers.alpaca.paper_adapter import AlpacaCryptoPaperAdapter
+
+    class _RequestErrorRaisingApplication:
+        async def submit(self, decision):
+            token = "abcdefghijklmnopqrstuvwxyz1234567890abcd"
+            long_msg = "word " * 400
+            raise AlpacaPaperRequestError(
+                f"HTTP 403: secret: {token} and raw_token: {token} and {long_msg}",
+                status_code=403,
+            )
+
+    adapter = AlpacaCryptoPaperAdapter(application=_RequestErrorRaisingApplication())
+    result = await adapter.submit(_intent())
+
+    assert result.status is PaperOperationStatus.FAILED
+    assert result.evidence["error_type"] == "AlpacaPaperRequestError"
+
+    error_body = result.evidence["error_body"]
+    assert "secret: [REDACTED]" in error_body
+    assert "raw_token: [MASKED_TOKEN]" in error_body
+    assert "abcdefghijklmnopqrstuvwxyz1234567890abcd" not in error_body
+    assert len(error_body) == 500

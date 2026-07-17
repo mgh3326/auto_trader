@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Awaitable, Callable
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.services.alpaca_paper_order_application import (
     AlpacaPaperApplicationOutcome,
@@ -12,6 +12,8 @@ from app.services.alpaca_paper_order_application import (
     AlpacaPaperOrderSpec,
     AlpacaVerifiedDecision,
 )
+from app.services.alpaca_paper_submit_service import _extract_and_sanitize_error_body
+from app.services.brokers.alpaca.exceptions import AlpacaPaperRequestError
 from app.services.brokers.capabilities import Broker
 from app.services.brokers.paper.contracts import (
     PaperOperation,
@@ -88,12 +90,15 @@ class AlpacaCryptoPaperAdapter:
         try:
             outcome = await handler(self._decision(intent))
         except Exception as exc:  # noqa: BLE001 — canonical port failure boundary
+            evidence: dict[str, Any] = {"error_type": type(exc).__name__}
+            if isinstance(exc, AlpacaPaperRequestError):
+                evidence["error_body"] = _extract_and_sanitize_error_body(exc)
             return PaperOperationResult(
                 operation=operation,
                 status=PaperOperationStatus.FAILED,
                 reason_code=PaperReasonCode.ADAPTER_UNAVAILABLE,
                 venue=self.broker,
-                evidence={"error_type": type(exc).__name__},
+                evidence=evidence,
             )
         return self._result(operation, outcome)
 

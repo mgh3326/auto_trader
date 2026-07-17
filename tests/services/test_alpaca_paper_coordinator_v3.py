@@ -400,3 +400,116 @@ async def test_terminal_persistence_failure_still_no_duplicate_post(
     second = await coord.submit(packet, submit_canonical=canonical)
     assert len(broker.submit_calls) == 1
     assert second.broker_called is False
+
+
+# ---------------------------------------------------------------------------
+# ROB-935: Submit failure error body capture & sanitize/truncate tests
+# ---------------------------------------------------------------------------
+async def test_alpaca_submit_failure_captures_error_body(db_session):
+    corr = f"{_CORR}-errorbody"
+    canonical = _canonical("buy", notional="10")
+    packet = _packet(canonical, corr)
+
+    error_msg = 'HTTP 403: {"message":"crypto trading not enabled"}'
+    broker = V3Broker(submit_error=AlpacaPaperRequestError(error_msg, status_code=403))
+    coord = _coord(db_session, broker)
+
+    first = await coord.submit(packet, submit_canonical=canonical)
+    assert first.status == "failed"
+    assert first.reason_code == "broker_rejected"
+
+    ledger = AlpacaPaperLedgerService(db_session)
+    row = await ledger.get_execution_by_client_order_id(packet.client_order_id)
+    assert row is not None
+    assert (
+        row.error_summary
+        == 'broker_rejected: HTTP 403 \u2014 {"message":"crypto trading not enabled"}'
+    )
+
+
+async def test_alpaca_submit_failure_sanitizes_sensitive_tokens(db_session):
+    corr = f"{_CORR}-sanitize"
+    canonical = _canonical("buy", notional="10")
+    packet = _packet(canonical, corr)
+
+    sensitive_token = "abcdefghijklmnopqrstuvwxyz1234567890abcd"
+    uuid_str = "123e4567-e89b-12d3-a456-426614174000"
+    error_msg = (
+        f"HTTP 403: secret: {sensitive_token} and raw_token: {sensitive_token} "
+        f"and normal_word: cryptotradingnotenabled and uuid: {uuid_str}"
+    )
+    broker = V3Broker(submit_error=AlpacaPaperRequestError(error_msg, status_code=403))
+    coord = _coord(db_session, broker)
+
+    await coord.submit(packet, submit_canonical=canonical)
+
+    ledger = AlpacaPaperLedgerService(db_session)
+    row = await ledger.get_execution_by_client_order_id(packet.client_order_id)
+    assert row is not None
+    assert "secret: [REDACTED]" in row.error_summary
+    assert "raw_token: [MASKED_TOKEN]" in row.error_summary
+    assert "normal_word: cryptotradingnotenabled" in row.error_summary
+    assert f"uuid: {uuid_str}" in row.error_summary
+    assert sensitive_token not in row.error_summary
+
+
+async def test_extract_and_sanitize_error_body_truncates_and_masks():
+    from app.services.alpaca_paper_submit_service import (
+        _extract_and_sanitize_error_body,
+    )
+
+    long_text = "word " * 400
+    exc = AlpacaPaperRequestError(f"HTTP 403: {long_text}", status_code=403)
+    result = _extract_and_sanitize_error_body(exc)
+    assert len(result) == 500
+
+    exc_mask = AlpacaPaperRequestError(
+        "HTTP 403: token12345678901234567890", status_code=403
+    )
+    result_mask = _extract_and_sanitize_error_body(exc_mask)
+    assert result_mask == "[MASKED_TOKEN]"
+
+    # pure alphabetic long word must not be masked
+    exc_clear = AlpacaPaperRequestError(
+        "HTTP 403: cryptotradingnotenabled", status_code=403
+    )
+    result_clear = _extract_and_sanitize_error_body(exc_clear)
+    assert result_clear == "cryptotradingnotenabled"
+
+
+async def test_extract_and_sanitize_error_body_backtracking_prevention():
+    import time
+
+    from app.services.alpaca_paper_submit_service import (
+        _extract_and_sanitize_error_body,
+    )
+
+    # 1. Alphanumeric token (contains digits)
+    text_num = "Authorization: Bearer " + ("A1" * 512)
+    exc_num = AlpacaPaperRequestError(text_num, status_code=403)
+
+    t0 = time.perf_counter()
+    res_num = _extract_and_sanitize_error_body(exc_num)
+    t1 = time.perf_counter()
+
+    duration_num = t1 - t0
+    assert duration_num < 0.1, (
+        f"Alphanumeric regex backtracked, took {duration_num:.4f}s"
+    )
+    assert "A1" not in res_num
+    assert res_num == "Authorization: [REDACTED]"
+
+    # 2. Pure alphabetic 4096-character token
+    text_alpha = "Authorization: Bearer " + ("A" * 4096)
+    exc_alpha = AlpacaPaperRequestError(text_alpha, status_code=403)
+
+    t0 = time.perf_counter()
+    res_alpha = _extract_and_sanitize_error_body(exc_alpha)
+    t1 = time.perf_counter()
+
+    duration_alpha = t1 - t0
+    assert duration_alpha < 0.1, (
+        f"Pure alphabetic regex backtracked, took {duration_alpha:.4f}s"
+    )
+    assert "A" * 10 not in res_alpha
+    assert res_alpha == "Authorization: [REDACTED]"

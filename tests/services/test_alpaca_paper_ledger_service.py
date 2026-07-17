@@ -530,6 +530,27 @@ def test_redact_sensitive_text_masks_operator_narrative_values():
     assert "paper-1" not in redacted
 
 
+@pytest.mark.unit
+def test_redact_sensitive_text_masks_json_quoted_secrets():
+    from app.services.alpaca_paper_ledger_service import (
+        _JSON_SENSITIVE_RE,
+        _redact_sensitive_text,
+    )
+
+    # (a) JSON-quoted secret masking + message survives
+    text = '{"secret":"must-not-leak","message":"cancel not permitted"}'
+    redacted = _redact_sensitive_text(text)
+
+    assert redacted == '{"secret":"[REDACTED]","message":"cancel not permitted"}'
+    assert "must-not-leak" not in redacted
+
+    # (b) mutation guard - verify that it explicitly depends on the new _JSON_SENSITIVE_RE pattern
+    assert _JSON_SENSITIVE_RE is not None
+    match = _JSON_SENSITIVE_RE.search(text)
+    assert match is not None
+    assert match.group("value") == "must-not-leak"
+
+
 # ---------------------------------------------------------------------------
 # record_validation_attempt
 # ---------------------------------------------------------------------------
