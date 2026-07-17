@@ -621,11 +621,12 @@ def seal_trial_accounting(
     docstring's ``ultrathink`` note.
 
     ``walkforward_results`` (Task 1B) is normally exactly
-    ``{"S1": WalkForwardResult, "S2": WalkForwardResult}`` -- every primary
-    (``retry_index == 0``) attempt's opaque ``fold_evidence_hash``/
-    ``run_identity``/status/reason/scenario evidence is cross-bound against
-    the real H4 ``ConfigAttemptEvidenceSummary`` derived from it (via
-    ``rob944_walkforward.summarize_config_attempts_for_h6``).
+    ``{"S1": WalkForwardResult, "S2": WalkForwardResult}`` -- every
+    normal-path attempt's (not just primaries; Task 1C, I5) opaque
+    ``fold_evidence_hash``/``run_identity``/status/reason/scenario evidence
+    is cross-bound against the real H4 ``ConfigAttemptEvidenceSummary``
+    derived from it (via ``rob944_walkforward.summarize_config_attempts_for_h6``),
+    deriving ``run_identity`` with that row's own ``retry_index``.
 
     ``walkforward_results=None`` (Task 1C, I4) is accepted ONLY as the
     genuine producer state for a whole-campaign
@@ -634,15 +635,18 @@ def seal_trial_accounting(
     is, by construction, no real ``WalkForwardResult`` to pass -- a
     fabricated stand-in (e.g. an all-``crashed`` mapping) would not be the
     real producer state and the seal must never quietly accept one as
-    equivalent. ``None`` is malformed unless ALL 24 primaries share the
-    exact ``(crashed, global_corpus_load_failed)`` sentinel pairing (see
-    ``_CROSS_BIND_EXEMPT_STATUS_REASON``); conversely, supplying a REAL
-    ``walkforward_results`` mapping together with that same all-24 sentinel
-    claim is itself a contradiction (a corpus that never loaded could never
-    produce ANY real per-config H4 result) and is always rejected. In the
-    ``None`` branch every primary is cross-bound against H4's deterministic
-    fallback recipe (never a freely-accepted arbitrary hash), and the
-    result is always performance-ineligible (no primary can carry
+    equivalent. ``None`` is malformed unless the supplied evidence is
+    EXACTLY 24 attempts total, every one a primary (``retry_index == 0``;
+    a corpus that never loaded could never produce a retry of anything),
+    all sharing the exact ``(crashed, global_corpus_load_failed)`` sentinel
+    pairing (see ``_CROSS_BIND_EXEMPT_STATUS_REASON``); conversely,
+    supplying a REAL ``walkforward_results`` mapping together with that
+    same all-24 sentinel claim is itself a contradiction (a corpus that
+    never loaded could never produce ANY real per-config H4 result) and is
+    always rejected. In the ``None`` branch every one of the 24 attempts is
+    cross-bound against H4's deterministic fallback recipe (never a
+    freely-accepted arbitrary hash), and the result is always
+    performance-ineligible (no primary can carry
     ``status="completed"`` in this branch).
     """
     _require_hex64(full_campaign_hash, NOT_FROZEN_PRODUCTION_CAMPAIGN_REASON)
@@ -691,18 +695,21 @@ def seal_trial_accounting(
         zip(frozen_experiment_ids, (row["strategy_key"] for row in rows), strict=True)
     )
 
-    primary_rows = [a for a in sealed_attempts_raw if a.retry_index == 0]
-    # Task 1C (I4): the global_corpus_load_failed exemption is legitimate
-    # ONLY as the authentic whole-campaign fallback -- ALL 24 primaries
-    # sharing the exact sentinel pairing, never an individual row while
-    # others reflect real per-config H4 evidence (H4 emits this identically
-    # for all 24 experiments when the corpus never loaded at all; a mixed
-    # single-row sentinel is impossible by construction).
-    claims_global_fallback = len(
-        primary_rows
-    ) == EXPECTED_PRIMARY_ATTEMPT_COUNT and all(
-        (a.status, a.reason_code) == _CROSS_BIND_EXEMPT_STATUS_REASON
-        for a in primary_rows
+    # Task 1C (I4, captain final correction): the global_corpus_load_failed
+    # exemption is legitimate ONLY as the authentic whole-campaign fallback
+    # -- EXACTLY 24 attempts total, EVERY one a primary (retry_index == 0,
+    # no retries at all -- a corpus that never loaded could never produce a
+    # retry of anything), all sharing the exact sentinel pairing. Checking
+    # only the primary subset would let an arbitrary/forged retry row ride
+    # along uncross-bound (the None-branch below only ever iterates the
+    # rows this flag was computed from).
+    claims_global_fallback = (
+        len(sealed_attempts_raw) == EXPECTED_PRIMARY_ATTEMPT_COUNT
+        and all(a.retry_index == 0 for a in sealed_attempts_raw)
+        and all(
+            (a.status, a.reason_code) == _CROSS_BIND_EXEMPT_STATUS_REASON
+            for a in sealed_attempts_raw
+        )
     )
 
     if walkforward_results is None:
@@ -714,7 +721,7 @@ def seal_trial_accounting(
         # be accepted as equivalent -- `None` is malformed unless the
         # supplied evidence is genuinely the all-24 fallback claim.
         _require(claims_global_fallback, WALKFORWARD_RESULTS_MALFORMED_REASON)
-        for a in primary_rows:
+        for a in sealed_attempts_raw:
             config_id = experiment_id_to_config_id[a.experiment_id]
             strategy_key = experiment_id_to_strategy_key[a.experiment_id]
             # Still byte-match H4's deterministic fallback recipe -- never
@@ -747,6 +754,10 @@ def seal_trial_accounting(
         # from the primary's), so a forged/arbitrary hash on a retry row
         # can never be silently exempted just because cross-binding used to
         # apply only to `retry_index == 0`.
+        _require(
+            isinstance(walkforward_results, Mapping),
+            WALKFORWARD_RESULTS_MALFORMED_REASON,
+        )
         _require(
             set(walkforward_results.keys()) == {"S1", "S2"},
             WALKFORWARD_RESULTS_MALFORMED_REASON,

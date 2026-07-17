@@ -58,6 +58,7 @@ from rob945_accounting_seal import (
     NOT_FROZEN_PRODUCTION_CAMPAIGN_REASON,
     PRIMARY_ATTEMPT_NOT_COMPLETED_REASON,
     RETRIES_PRESENT_REASON,
+    WALKFORWARD_RESULTS_MALFORMED_REASON,
     ScorecardInputError,
     _recompute_fold_evidence_hash_and_run_identity,
     seal_trial_accounting,
@@ -652,6 +653,42 @@ def test_walkforward_results_none_with_non_fallback_evidence_is_malformed():
     ``walkforward_results`` mapping to cross-bind against."""
     with pytest.raises(ScorecardInputError):
         _seal(walkforward_results=None)
+
+
+def test_walkforward_results_none_with_24_authentic_primaries_plus_a_retry_is_malformed():
+    """Task 1C (I4/I5 final correction): the real fallback is EXACTLY 24
+    attempts total, every one a primary -- checking only the primary
+    SUBSET for the sentinel would let an extra arbitrary/forged retry row
+    ride along uncross-bound in the ``None`` branch (which only ever
+    iterates the rows the fallback flag was computed from). 24 authentic
+    global-failure primaries plus ANY additional retry row must fail,
+    never silently seal."""
+    attempts = _all_24_global_failure_attempts()
+    arbitrary_retry = _hand_built_attempt(
+        FROZEN_EXPERIMENT_IDS[0], retry_index=1, status="completed"
+    )
+    attempts.append(arbitrary_retry)
+    report = _clean_report(
+        total_attempts=25,
+        retry_attempts=1,
+        status_counts={"completed": 1, "rejected": 0, "crashed": 24, "timeout": 0},
+    )
+    with pytest.raises(ScorecardInputError):
+        _seal(
+            attempt_evidence=attempts,
+            accounting_report=report,
+            walkforward_results=None,
+        )
+
+
+def test_non_mapping_walkforward_results_fails_closed_with_stable_error():
+    """A non-``None``, non-``Mapping`` ``walkforward_results`` (e.g. a
+    list) must raise the stable ``ScorecardInputError``/
+    ``WALKFORWARD_RESULTS_MALFORMED_REASON`` -- never a raw ``AttributeError``
+    from calling ``.keys()`` on something that doesn't have it."""
+    with pytest.raises(ScorecardInputError) as exc_info:
+        _seal(walkforward_results=["not", "a", "mapping"])
+    assert WALKFORWARD_RESULTS_MALFORMED_REASON in str(exc_info.value)
 
 
 def test_all_24_global_corpus_load_failed_claim_conflicting_with_real_completed_h4_fails():
