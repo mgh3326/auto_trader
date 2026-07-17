@@ -53,6 +53,7 @@ _ALLOWED = {
     "datetime",
     "math",
     "re",
+    "types",
     "typing",
     "research_contracts.canonical_hash",
     "research_contracts.honest_offline_gate",

@@ -42,6 +42,8 @@ ACCOUNTING_DRIFT_REASON = ACCOUNTING_INCOMPLETE_REASON
 RUN_ID_DRIFT_REASON = "campaign_run_id_derivation_mismatch"
 HASH_FORMAT_REASON = "hash_field_not_lowercase_64_hex"
 FOLD_ID_SEQUENCE_REASON = "fold_id_sequence_not_canonical_contiguous"
+DATASET_HASH_DRIFT_REASON = "dataset_manifest_hash_not_frozen_production_value"
+SIGNAL_HASH_DRIFT_REASON = "signal_manifest_hash_not_frozen_production_value"
 
 _LOWERCASE_HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -285,6 +287,7 @@ def build_scorecard(
     signal_manifest_hash: str,
     accounting_report: Mapping[str, Any],
     attempt_evidence: Any,
+    walkforward_results: Mapping[str, Any],
     strategies: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
     for hash_value in (full_campaign_hash, dataset_manifest_hash, signal_manifest_hash):
@@ -310,6 +313,21 @@ def build_scorecard(
         accounting_report=accounting_report,
         attempt_evidence=attempt_evidence,
         full_campaign_hash=full_campaign_hash,
+        walkforward_results=walkforward_results,
+    )
+    # The seal's ground-truth envelope also carries the REAL dataset/signal
+    # manifest hashes -- cross-check the caller's own top-level
+    # ``dataset_manifest_hash``/``signal_manifest_hash`` arguments against
+    # them (previously only format-checked, never checked for CONTENT
+    # against the frozen production values -- the same "self-consistent
+    # arbitrary" gap Task 1 closed for ``full_campaign_hash``).
+    _require(
+        dataset_manifest_hash == sealed_accounting.dataset_manifest_hash,
+        DATASET_HASH_DRIFT_REASON,
+    )
+    _require(
+        signal_manifest_hash == sealed_accounting.signal_manifest_hash,
+        SIGNAL_HASH_DRIFT_REASON,
     )
 
     _require(

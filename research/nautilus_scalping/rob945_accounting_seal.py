@@ -1,5 +1,5 @@
-"""ROB-945 (H5, Task 1A) -- seal the exact frozen H4 campaign and the real
-H6 accounting/attempt-evidence contract.
+"""ROB-945 (H5, Task 1A+1B) -- seal the exact frozen H4 campaign and the
+real H6 accounting/attempt-evidence contract.
 
 ``seal_trial_accounting`` is the ONE pure boundary a caller (``rob945_scorecard
 .build_scorecard``) must go through to trust H6 accounting evidence. It never
@@ -22,18 +22,29 @@ also transitively re-validates dataset/signal-manifest hashes, the frozen
 execution-code provenance, and the exact 24 experiment IDs/order -- all are
 inputs to that one hash, so any single-field drift changes it.
 
-Task 1A scope: structural validation only. ``fold_evidence_hash``/
-``run_identity`` are validated here ONLY as opaque well-formed lowercase-hex64
-strings; cross-binding their CONTENT against the real H4
-``ConfigAttemptEvidenceSummary`` (via ``rob944_walkforward
-.summarize_config_attempts_for_h6``) is Task 1B, layered on top of this module
-without changing its existing public contract.
+Every primary (``retry_index == 0``) attempt's ``fold_evidence_hash``/
+``run_identity``/status/reason/scenario evidence is additionally cross-bound
+against the real H4 ``ConfigAttemptEvidenceSummary`` (via
+``rob944_walkforward.summarize_config_attempts_for_h6``) derived from the
+caller-supplied ``walkforward_results`` -- a structurally well-formed but
+forged/stale attempt cannot pass merely because its fields are individually
+well-typed hex64 strings.
+
+Trust boundary: ``missing_experiment_ids``/``duplicate_or_gap_experiment_ids``
+describe exactly what terminal evidence was/wasn't supplied and are fully,
+independently recomputed from ``attempt_evidence`` and cross-checked.
+``actual_registrations``/``extra_experiment_ids``/``mismatch_experiment_ids``
+are H6 REGISTRATION-time facts (registration happens before any attempt
+completes) this seal cannot observe from terminal evidence alone -- they are
+validated for shape/domain-membership where knowable and hashed (tamper-
+evident), never force-equated to a naive recompute from supplied attempts.
 """
 
 from __future__ import annotations
 
 import base64
 import re
+import types
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -45,6 +56,9 @@ from rob944_walkforward import (
     REASON_DATA_GAP_IN_POSITION,
     REASON_GLOBAL_CORPUS_LOAD_FAILED,
     REASON_INSUFFICIENT_TRAIN_EVIDENCE_ALL_FOLDS,
+    WalkForwardResult,
+    _json_safe_float_or_sentinel,
+    summarize_config_attempts_for_h6,
 )
 
 from research_contracts.canonical_hash import canonical_sha256
@@ -53,10 +67,12 @@ __all__ = [
     "ACCOUNTING_INCOMPLETE_REASON",
     "ACCOUNTING_REPORT_MALFORMED_REASON",
     "ATTEMPT_EVIDENCE_MALFORMED_REASON",
+    "CROSS_BIND_MISMATCH_REASON",
     "EXPECTED_PRIMARY_ATTEMPT_COUNT",
     "NOT_FROZEN_PRODUCTION_CAMPAIGN_REASON",
     "PRIMARY_ATTEMPT_NOT_COMPLETED_REASON",
     "RETRIES_PRESENT_REASON",
+    "WALKFORWARD_RESULTS_MALFORMED_REASON",
     "ScorecardInputError",
     "SealedAttempt",
     "SealedScenarioEvidence",
@@ -107,6 +123,8 @@ ATTEMPT_EVIDENCE_MALFORMED_REASON = "h6_attempt_evidence_malformed"
 ACCOUNTING_INCOMPLETE_REASON = "h6_accounting_incomplete"
 PRIMARY_ATTEMPT_NOT_COMPLETED_REASON = "h6_primary_attempt_not_completed"
 RETRIES_PRESENT_REASON = "h6_accounting_has_retries"
+WALKFORWARD_RESULTS_MALFORMED_REASON = "walkforward_results_malformed"
+CROSS_BIND_MISMATCH_REASON = "h4_cross_bind_evidence_mismatch"
 
 
 class ScorecardInputError(ValueError):
@@ -160,6 +178,12 @@ class SealedAttempt:
 class SealedTrialAccounting:
     campaign_run_id: str
     full_campaign_hash: str
+    # The REAL, envelope-derived dataset/signal manifest hashes -- exposed
+    # so a caller (``rob945_scorecard.build_scorecard``) can cross-check its
+    # own ``dataset_manifest_hash``/``signal_manifest_hash`` arguments
+    # against ground truth without a second, redundant envelope build.
+    dataset_manifest_hash: str
+    signal_manifest_hash: str
     report: Mapping[str, Any]
     attempts: tuple[SealedAttempt, ...]
     trial_accounting_hash: str
@@ -175,8 +199,24 @@ def _require_hex64(value: Any, reason: str) -> str:
 
 
 def _validate_report_shape(
-    accounting_report: Any, *, expected_campaign_run_id: str
+    accounting_report: Any, *, expected_campaign_run_id: str, frozen_ids: frozenset[str]
 ) -> dict[str, Any]:
+    """Validates SHAPE/TYPE and, for the two REGISTRATION-time discrepancy
+    lists this seal cannot independently observe from terminal
+    ``attempt_evidence`` alone (``extra_experiment_ids``/
+    ``mismatch_experiment_ids`` -- H6 registers all 24 identities BEFORE any
+    attempt completes, so their presence/absence is trust-boundary data,
+    never recomputed here), domain membership WHERE KNOWABLE: an ``extra``
+    ID must NOT be one of the frozen 24 (by definition "extra" means outside
+    the expected set); a ``mismatch`` ID MUST be one of the frozen 24 (it
+    names an expected identity that drifted). ``missing_experiment_ids``/
+    ``duplicate_or_gap_experiment_ids`` ARE independently recomputable from
+    supplied attempts and are cross-checked for full content equality by the
+    caller after this returns -- this function only validates their shape
+    here. Every discrepancy list is normalized to sorted canonical order
+    (order-insensitive input, order-deterministic hash output) and rejects
+    within-list duplicate entries.
+    """
     _require(isinstance(accounting_report, Mapping), ACCOUNTING_REPORT_MALFORMED_REASON)
     _require(
         set(accounting_report.keys()) == set(_REQUIRED_REPORT_FIELDS),
@@ -198,6 +238,7 @@ def _validate_report_shape(
         value = report[int_field]
         _require(type(value) is int and value >= 0, ACCOUNTING_REPORT_MALFORMED_REASON)
     _require(report["expected_total"] == 24, ACCOUNTING_REPORT_MALFORMED_REASON)
+    _require(report["actual_registrations"] <= 24, ACCOUNTING_REPORT_MALFORMED_REASON)
 
     status_counts = report["status_counts"]
     _require(
@@ -209,6 +250,10 @@ def _validate_report_shape(
         _require(type(count) is int and count >= 0, ACCOUNTING_REPORT_MALFORMED_REASON)
     report["status_counts"] = dict(status_counts)
 
+    _DOMAIN_CHECKS = {
+        "extra_experiment_ids": lambda eid: eid not in frozen_ids,
+        "mismatch_experiment_ids": lambda eid: eid in frozen_ids,
+    }
     for list_field in (
         "missing_experiment_ids",
         "extra_experiment_ids",
@@ -220,7 +265,14 @@ def _validate_report_shape(
             isinstance(value, list) and all(isinstance(v, str) for v in value),
             ACCOUNTING_REPORT_MALFORMED_REASON,
         )
-        report[list_field] = list(value)
+        _require(len(set(value)) == len(value), ACCOUNTING_REPORT_MALFORMED_REASON)
+        domain_check = _DOMAIN_CHECKS.get(list_field)
+        if domain_check is not None:
+            _require(
+                all(domain_check(eid) for eid in value),
+                ACCOUNTING_REPORT_MALFORMED_REASON,
+            )
+        report[list_field] = sorted(value)
 
     _require(
         report["verdict"] in ("complete", "incomplete"),
@@ -339,6 +391,147 @@ def _validate_attempt(
     )
 
 
+# The one documented (status, reason_code) pairing that is NOT cross-bound
+# against a per-config WalkForwardResult: a global corpus-load failure is,
+# by H4's own design, emitted identically for all 24 experiments with no
+# per-config walk-forward ever having run at all -- there is no
+# ConfigAttemptEvidenceSummary to cross-bind against by construction.
+_CROSS_BIND_EXEMPT_STATUS_REASON = ("crashed", REASON_GLOBAL_CORPUS_LOAD_FAILED)
+
+
+def _recompute_fold_evidence_hash_and_run_identity(
+    summary: Any,
+    *,
+    full_campaign_hash: str,
+    campaign_run_id: str,
+    strategy_key: str,
+    experiment_id: str,
+    retry_index: int,
+) -> tuple[str, str]:
+    """Bit-for-bit the SAME recipe as the real H6-build boundary
+    (``run_rob944_campaign._normalized_summary_to_attempt_evidence``) --
+    pinned by a known-vector parity test rather than importing ``app.*``
+    here. ``summary`` is a ``rob944_walkforward.ConfigAttemptEvidenceSummary``
+    (a pure H4 sibling type, not ``app.*``)."""
+    ordered_summaries = sorted(
+        summary.scenario_summaries, key=lambda row: row.scenario_name
+    )
+    ordered_fold_trace = sorted(
+        summary.fold_selection_trace, key=lambda row: row.fold_id
+    )
+
+    fold_evidence_hash = canonical_sha256(
+        {
+            "strategy": summary.strategy,
+            "config_id": summary.config_id,
+            "status": summary.status,
+            "reason_code": summary.reason_code,
+            "scenario_summaries": [
+                {
+                    "scenario_name": row.scenario_name,
+                    "status": row.status,
+                    "reason_code": row.reason_code,
+                    "trade_count": row.trade_count,
+                    "artifact_hash": row.artifact_hash,
+                    "no_trade_reason_counts": row.no_trade_reason_counts,
+                }
+                for row in ordered_summaries
+            ],
+            "fold_selection_trace": [
+                {
+                    "fold_id": row.fold_id,
+                    "fold_selected_config_id": row.fold_selected_config_id,
+                    "eligible_symbols": list(row.eligible_symbols),
+                    "excluded_symbols": [list(pair) for pair in row.excluded_symbols],
+                    "equal_weight_expectancy_bps": _json_safe_float_or_sentinel(
+                        row.equal_weight_expectancy_bps
+                    ),
+                    "pooled_expectancy_bps": _json_safe_float_or_sentinel(
+                        row.pooled_expectancy_bps
+                    ),
+                    "profit_factor": _json_safe_float_or_sentinel(row.profit_factor),
+                    "rejected": row.rejected,
+                    "rejection_reason": row.rejection_reason,
+                    "train_input_hash": row.train_input_hash,
+                    "no_trade_reason_counts": row.no_trade_reason_counts,
+                }
+                for row in ordered_fold_trace
+            ],
+        }
+    )
+    run_identity = canonical_sha256(
+        {
+            "full_campaign_hash": full_campaign_hash,
+            "campaign_run_id": campaign_run_id,
+            "strategy_key": strategy_key,
+            "experiment_id": experiment_id,
+            "retry_index": retry_index,
+            "config_id": summary.config_id,
+            "status": summary.status,
+            "fold_evidence_hash": fold_evidence_hash,
+        }
+    )
+    return fold_evidence_hash, run_identity
+
+
+def _cross_bind_attempt(
+    attempt: SealedAttempt,
+    *,
+    summary: Any,
+    full_campaign_hash: str,
+    campaign_run_id: str,
+    strategy_key: str,
+) -> None:
+    recomputed_fold_hash, recomputed_run_identity = (
+        _recompute_fold_evidence_hash_and_run_identity(
+            summary,
+            full_campaign_hash=full_campaign_hash,
+            campaign_run_id=campaign_run_id,
+            strategy_key=strategy_key,
+            experiment_id=attempt.experiment_id,
+            retry_index=attempt.retry_index,
+        )
+    )
+    _require(
+        attempt.status == summary.status and attempt.reason_code == summary.reason_code,
+        CROSS_BIND_MISMATCH_REASON,
+    )
+    _require(
+        attempt.fold_evidence_hash == recomputed_fold_hash, CROSS_BIND_MISMATCH_REASON
+    )
+    _require(
+        attempt.run_identity == recomputed_run_identity, CROSS_BIND_MISMATCH_REASON
+    )
+
+    summary_scenarios_by_name = {
+        row.scenario_name: row for row in summary.scenario_summaries
+    }
+    for scenario_row in attempt.scenario_evidence:
+        real_row = summary_scenarios_by_name.get(scenario_row.scenario_name)
+        _require(real_row is not None, CROSS_BIND_MISMATCH_REASON)
+        _require(
+            scenario_row.trade_count == real_row.trade_count
+            and scenario_row.artifact_hash == real_row.artifact_hash,
+            CROSS_BIND_MISMATCH_REASON,
+        )
+
+
+def _deep_freeze(obj: Any) -> Any:
+    """Recursively converts dict/list into an immutable structure
+    (``types.MappingProxyType`` + ``tuple``) -- a plain ``@dataclass(frozen=
+    True)`` only blocks attribute REBINDING (``sealed.report = {...}``), it
+    does nothing to a MUTABLE dict/list living inside an already-frozen
+    dataclass field (``sealed.report["status_counts"]["completed"] = 999``
+    would otherwise silently corrupt state the already-computed
+    ``trial_accounting_hash`` claims to represent). Mirrors
+    ``rob944_frozen_campaign._freeze``."""
+    if isinstance(obj, dict):
+        return types.MappingProxyType({k: _deep_freeze(v) for k, v in obj.items()})
+    if isinstance(obj, list | tuple):
+        return tuple(_deep_freeze(v) for v in obj)
+    return obj
+
+
 def _is_contiguous_from_zero(sorted_unique_indices: list[int]) -> bool:
     return sorted_unique_indices == list(range(len(sorted_unique_indices)))
 
@@ -369,6 +562,7 @@ def seal_trial_accounting(
     accounting_report: Mapping[str, Any],
     attempt_evidence: Sequence[Mapping[str, Any]],
     full_campaign_hash: str,
+    walkforward_results: Mapping[str, Any],
 ) -> SealedTrialAccounting:
     """The one pure boundary for H6 accounting/attempt-evidence trust.
 
@@ -376,6 +570,16 @@ def seal_trial_accounting(
     is compared against a FRESH, real ``build_production_frozen_campaign_envelope()``
     hash (never the caller's own claimed payload) -- see the module
     docstring's ``ultrathink`` note.
+
+    ``walkforward_results`` (Task 1B) MUST be exactly
+    ``{"S1": WalkForwardResult, "S2": WalkForwardResult}`` -- every primary
+    (``retry_index == 0``) attempt's opaque ``fold_evidence_hash``/
+    ``run_identity``/status/reason/scenario evidence is cross-bound against
+    the real H4 ``ConfigAttemptEvidenceSummary`` derived from it (via
+    ``rob944_walkforward.summarize_config_attempts_for_h6``), except the one
+    documented ``("crashed", REASON_GLOBAL_CORPUS_LOAD_FAILED)`` sentinel
+    (see ``_CROSS_BIND_EXEMPT_STATUS_REASON``), which by construction has no
+    per-config walk-forward result to cross-bind against.
     """
     _require_hex64(full_campaign_hash, NOT_FROZEN_PRODUCTION_CAMPAIGN_REASON)
 
@@ -396,7 +600,9 @@ def seal_trial_accounting(
     frozen_id_set = frozenset(frozen_experiment_ids)
 
     report = _validate_report_shape(
-        accounting_report, expected_campaign_run_id=true_campaign_run_id
+        accounting_report,
+        expected_campaign_run_id=true_campaign_run_id,
+        frozen_ids=frozen_id_set,
     )
 
     _require(
@@ -409,15 +615,55 @@ def seal_trial_accounting(
         for a in attempt_evidence
     ]
 
-    _require(
-        len(sealed_attempts_raw) == report["total_attempts"],
-        ACCOUNTING_REPORT_MALFORMED_REASON,
-    )
-
     by_experiment: dict[str, list[SealedAttempt]] = {}
     for a in sealed_attempts_raw:
         by_experiment.setdefault(a.experiment_id, []).append(a)
 
+    # Task 1B: mandatory cross-bind of every primary attempt's opaque
+    # evidence against the real H4 ConfigAttemptEvidenceSummary.
+    _require(
+        set(walkforward_results.keys()) == {"S1", "S2"},
+        WALKFORWARD_RESULTS_MALFORMED_REASON,
+    )
+    for wf_result in walkforward_results.values():
+        _require(
+            type(wf_result) is WalkForwardResult, WALKFORWARD_RESULTS_MALFORMED_REASON
+        )
+    experiment_id_to_config_id = dict(
+        zip(frozen_experiment_ids, frozen_campaign.CANONICAL_ROW_ORDER, strict=True)
+    )
+    rows = envelope.to_dict()["rows"]
+    experiment_id_to_strategy_key = dict(
+        zip(frozen_experiment_ids, (row["strategy_key"] for row in rows), strict=True)
+    )
+    summaries_by_strategy_config: dict[tuple[str, str], Any] = {}
+    for strategy, wf_result in walkforward_results.items():
+        for summary in summarize_config_attempts_for_h6(wf_result):
+            summaries_by_strategy_config[(strategy, summary.config_id)] = summary
+
+    for a in sealed_attempts_raw:
+        if a.retry_index != 0:
+            continue  # only primaries are cross-bound; see module docstring
+        if (a.status, a.reason_code) == _CROSS_BIND_EXEMPT_STATUS_REASON:
+            continue
+        config_id = experiment_id_to_config_id[a.experiment_id]
+        strategy = config_id[:2]
+        summary = summaries_by_strategy_config.get((strategy, config_id))
+        _require(summary is not None, CROSS_BIND_MISMATCH_REASON)
+        _cross_bind_attempt(
+            a,
+            summary=summary,
+            full_campaign_hash=true_full_campaign_hash,
+            campaign_run_id=true_campaign_run_id,
+            strategy_key=experiment_id_to_strategy_key[a.experiment_id],
+        )
+
+    # `missing_experiment_ids`/`duplicate_or_gap_experiment_ids` describe
+    # exactly what terminal evidence WAS/WASN'T supplied -- fully, exactly
+    # recomputable from `sealed_attempts_raw` and `frozen_experiment_ids`
+    # alone, independent of any H6 registration-time bookkeeping this seal
+    # never observes. Both are ALWAYS strictly cross-checked (already
+    # normalized to sorted order by `_validate_report_shape`).
     recomputed_missing = sorted(
         eid
         for eid in frozen_experiment_ids
@@ -429,42 +675,76 @@ def seal_trial_accounting(
         if not _is_contiguous_from_zero(sorted({r.retry_index for r in rows}))
         or len(rows) != len({r.retry_index for r in rows})
     )
-    recomputed_primary_attempts = sum(
-        1 for rows in by_experiment.values() if any(r.retry_index == 0 for r in rows)
-    )
-    recomputed_actual_registrations = len(by_experiment)
-    recomputed_status_counts = dict.fromkeys(_CLOSED_STATUSES, 0)
-    for a in sealed_attempts_raw:
-        recomputed_status_counts[a.status] += 1
-
     _require(
         report["missing_experiment_ids"] == recomputed_missing,
         ACCOUNTING_REPORT_MALFORMED_REASON,
     )
-    # `extra_experiment_ids` can never be nonempty here: `_validate_attempt`
-    # already rejects any experiment_id outside the frozen 24 as malformed.
-    _require(report["extra_experiment_ids"] == [], ACCOUNTING_REPORT_MALFORMED_REASON)
     _require(
-        sorted(report["duplicate_or_gap_experiment_ids"]) == recomputed_dup_or_gap,
+        report["duplicate_or_gap_experiment_ids"] == recomputed_dup_or_gap,
         ACCOUNTING_REPORT_MALFORMED_REASON,
     )
+
+    # `actual_registrations` is a REGISTRATION-time fact (H6 predeclares all
+    # 24 identities before any attempt completes) this seal cannot observe
+    # from terminal evidence -- bounded, never force-equated: it can never
+    # be less than the distinct experiments for which evidence WAS supplied
+    # (evidence cannot exist for something never registered), and never
+    # exceed the frozen 24 (already checked in `_validate_report_shape`).
     _require(
-        report["primary_attempts"] == recomputed_primary_attempts,
+        len(by_experiment) <= report["actual_registrations"],
         ACCOUNTING_REPORT_MALFORMED_REASON,
     )
-    _require(
-        report["actual_registrations"] == recomputed_actual_registrations,
-        ACCOUNTING_REPORT_MALFORMED_REASON,
-    )
-    _require(
-        report["retry_attempts"]
-        == len(sealed_attempts_raw) - recomputed_primary_attempts,
-        ACCOUNTING_REPORT_MALFORMED_REASON,
-    )
-    _require(
-        report["status_counts"] == recomputed_status_counts,
-        ACCOUNTING_REPORT_MALFORMED_REASON,
-    )
+
+    gapped_ids = frozenset(recomputed_dup_or_gap)
+    if not gapped_ids:
+        # No gap/duplicate ambiguity -- every aggregate count is fully,
+        # exactly recomputable from the supplied attempts and cross-checked.
+        recomputed_primary_attempts = sum(
+            1
+            for rows in by_experiment.values()
+            if any(r.retry_index == 0 for r in rows)
+        )
+        recomputed_status_counts = dict.fromkeys(_CLOSED_STATUSES, 0)
+        for a in sealed_attempts_raw:
+            recomputed_status_counts[a.status] += 1
+        _require(
+            len(sealed_attempts_raw) == report["total_attempts"],
+            ACCOUNTING_REPORT_MALFORMED_REASON,
+        )
+        _require(
+            report["primary_attempts"] == recomputed_primary_attempts,
+            ACCOUNTING_REPORT_MALFORMED_REASON,
+        )
+        _require(
+            report["retry_attempts"]
+            == len(sealed_attempts_raw) - recomputed_primary_attempts,
+            ACCOUNTING_REPORT_MALFORMED_REASON,
+        )
+        _require(
+            report["status_counts"] == recomputed_status_counts,
+            ACCOUNTING_REPORT_MALFORMED_REASON,
+        )
+    else:
+        # H6's own real counting convention for a gapped/duplicated group is
+        # not independently recomputable here (it may exclude that group's
+        # rows from its counters entirely rather than tallying them at face
+        # value) -- validate the report's own aggregate counts for INTERNAL
+        # arithmetic self-consistency only, and that they don't claim more
+        # attempts than were actually supplied. The gap/dup identification
+        # itself (above) remains strictly, independently cross-checked.
+        _require(
+            report["total_attempts"]
+            == report["primary_attempts"] + report["retry_attempts"],
+            ACCOUNTING_REPORT_MALFORMED_REASON,
+        )
+        _require(
+            sum(report["status_counts"].values()) == report["total_attempts"],
+            ACCOUNTING_REPORT_MALFORMED_REASON,
+        )
+        _require(
+            report["total_attempts"] <= len(sealed_attempts_raw),
+            ACCOUNTING_REPORT_MALFORMED_REASON,
+        )
 
     recomputed_complete = (
         not recomputed_missing
@@ -516,7 +796,9 @@ def seal_trial_accounting(
     return SealedTrialAccounting(
         campaign_run_id=true_campaign_run_id,
         full_campaign_hash=full_campaign_hash,
-        report=dict(report),
+        dataset_manifest_hash=envelope.dataset_manifest_hash,
+        signal_manifest_hash=envelope.signal_manifest_hash,
+        report=_deep_freeze(report),
         attempts=normalized_attempts,
         trial_accounting_hash=trial_accounting_hash,
         accounting_complete=accounting_complete,

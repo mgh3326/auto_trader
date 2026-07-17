@@ -14,7 +14,26 @@ import json
 import math
 
 import pytest
-from rob944_frozen_campaign import build_production_frozen_campaign_envelope
+import rob941_frozen_scope as frozen_scope
+import rob944_folds as foldmod
+from rob944_frozen_campaign import (
+    CANONICAL_ROW_ORDER,
+    PRODUCTION_S1_STRATEGY_KEY,
+    PRODUCTION_S2_STRATEGY_KEY,
+    build_production_frozen_campaign_envelope,
+)
+from rob944_selection import (
+    INSUFFICIENT_ELIGIBLE_SYMBOLS_REASON,
+    INSUFFICIENT_SYMBOL_EVIDENCE_REASON,
+    ConfigSelectionOutcome,
+    FoldSelectionTrace,
+)
+from rob944_walkforward import (
+    ConfigAttemptResult,
+    FoldWalkForwardResult,
+    WalkForwardResult,
+    summarize_config_attempts_for_h6,
+)
 from rob945_scenario_metrics import FoldStabilityRow, StrategyScenarioAggregate
 from rob945_scorecard import (
     HASH_DRIFT_REASON,
@@ -23,6 +42,7 @@ from rob945_scorecard import (
     render_markdown,
 )
 from rob945_signal_concurrency import StrategyConcurrencyEvidence
+from run_rob944_campaign import _summary_to_attempt_evidence
 
 from research_contracts.canonical_hash import canonical_sha256
 
@@ -31,11 +51,24 @@ _SYMBOLS = ("BTCUSDT", "XRPUSDT", "DOGEUSDT", "SOLUSDT")
 # ROB-945 Task 1: ``build_scorecard`` now seals accounting/attempt-evidence
 # against the REAL production frozen campaign (never a caller-self-consistent
 # fake) -- fixtures below use the actual envelope/hash/run-id/experiment-ids
-# rather than a fabricated ``exp-00..23`` roster.
+# rather than a fabricated ``exp-00..23`` roster, and derive REAL
+# cross-bindable ``AttemptEvidence`` from a real (0-scenario-winner, no
+# corpus) ``WalkForwardResult`` per strategy via the actual H6-build
+# boundary -- mirrors ``test_rob945_accounting_seal.py``'s fixtures.
 _ENVELOPE = build_production_frozen_campaign_envelope()
 _REAL_FULL_CAMPAIGN_HASH = _ENVELOPE.full_campaign_hash()
 _REAL_FULL_CAMPAIGN_PAYLOAD = _ENVELOPE.to_dict()
 _REAL_FROZEN_EXPERIMENT_IDS = tuple(_REAL_FULL_CAMPAIGN_PAYLOAD["experiment_ids"])
+_REAL_DATASET_MANIFEST_HASH = _ENVELOPE.dataset_manifest_hash
+_REAL_SIGNAL_MANIFEST_HASH = _ENVELOPE.signal_manifest_hash
+
+_EXPERIMENT_ID_TO_CONFIG_ID = dict(
+    zip(_REAL_FROZEN_EXPERIMENT_IDS, CANONICAL_ROW_ORDER, strict=True)
+)
+_STRATEGY_KEY = {"S1": PRODUCTION_S1_STRATEGY_KEY, "S2": PRODUCTION_S2_STRATEGY_KEY}
+_REAL_FOLDS = foldmod.generate_frozen_fold_schedule(
+    frozen_scope.WINDOW_START_MS, frozen_scope.WINDOW_END_MS
+)
 
 
 def _symbol_metrics_all_present():
@@ -153,36 +186,102 @@ def _hex64(seed: str) -> str:
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()
 
 
-def _sealed_attempt(
-    experiment_id, campaign_run_id, *, retry_index=0, status="completed"
-):
-    seed = f"{experiment_id}:{retry_index}"
-    return {
-        "attempt_key": {
-            "campaign_run_id": campaign_run_id,
-            "experiment_id": experiment_id,
-            "retry_index": retry_index,
-        },
-        "status": status,
-        "reason_code": None,
-        "fold_evidence_hash": _hex64(f"fold:{seed}"),
-        "run_identity": _hex64(f"run:{seed}"),
-        "scenario_evidence": [
-            {
-                "scenario_name": name,
-                "trade_count": 3,
-                "artifact_hash": _hex64(f"{seed}-{name}"),
-            }
-            for name in ("base", "primary_stress", "upward_stress")
-        ],
-    }
+def _config_ids_for(strategy):
+    return tuple(f"{strategy}-{i:02d}" for i in range(12))
+
+
+def _rejected_candidate(config_id, seed):
+    return ConfigSelectionOutcome(
+        config_id=config_id,
+        eligible_symbols=(),
+        excluded_symbols=tuple(
+            (symbol, INSUFFICIENT_SYMBOL_EVIDENCE_REASON)
+            for symbol in frozen_scope.UNIVERSE
+        ),
+        equal_weight_expectancy_bps=None,
+        pooled_expectancy_bps=None,
+        profit_factor=0.0,
+        rejected=True,
+        rejection_reason=INSUFFICIENT_ELIGIBLE_SYMBOLS_REASON,
+        train_input_hash=_hex64(f"train:{seed}"),
+        no_trade_reason_counts={},
+    )
+
+
+def _build_walkforward_result(strategy, *, status_overrides=None):
+    """A real, hand-assembled ``WalkForwardResult`` over the REAL 8-fold
+    schedule (mirrors ``test_rob945_accounting_seal.py``) -- no corpus, no
+    network. Every config defaults to attempt-level ``status="completed"``."""
+    status_overrides = status_overrides or {}
+    config_ids = _config_ids_for(strategy)
+
+    fold_results = []
+    for fold in _REAL_FOLDS:
+        candidates = tuple(
+            _rejected_candidate(config_id, f"{fold.fold_id}:{config_id}")
+            for config_id in config_ids
+        )
+        trace = FoldSelectionTrace(
+            strategy=strategy, candidates=candidates, selected_config_id=None
+        )
+        fold_results.append(
+            FoldWalkForwardResult(fold=fold, selection_trace=trace, oos_outcomes=())
+        )
+
+    attempts = []
+    for config_id in config_ids:
+        status, reason_code = status_overrides.get(config_id, ("completed", None))
+        attempts.append(
+            ConfigAttemptResult(
+                strategy=strategy,
+                config_id=config_id,
+                status=status,
+                reason_code=reason_code,
+                selected_in_folds=(),
+                crash_log=(),
+                gap_rejection_log=(),
+            )
+        )
+    return WalkForwardResult(
+        strategy=strategy,
+        folds=tuple(fold_results),
+        config_attempts=tuple(attempts),
+        concatenated_oos_ledgers={},
+    )
+
+
+DEFAULT_WALKFORWARD_RESULTS = {
+    "S1": _build_walkforward_result("S1"),
+    "S2": _build_walkforward_result("S2"),
+}
+
+
+def _real_attempts_for(campaign_run_id, walkforward_results):
+    """Derive the REAL 24 ``AttemptEvidence`` dicts (via the actual H6-build
+    boundary) from a ``{"S1": WalkForwardResult, "S2": WalkForwardResult}``
+    mapping."""
+    attempts = []
+    for strategy in ("S1", "S2"):
+        wf_result = walkforward_results[strategy]
+        for summary in summarize_config_attempts_for_h6(wf_result):
+            experiment_id = next(
+                eid
+                for eid, cid in _EXPERIMENT_ID_TO_CONFIG_ID.items()
+                if cid == summary.config_id
+            )
+            evidence = _summary_to_attempt_evidence(
+                summary,
+                strategy_key=_STRATEGY_KEY[strategy],
+                experiment_id=experiment_id,
+                full_campaign_hash=_REAL_FULL_CAMPAIGN_HASH,
+                campaign_run_id=campaign_run_id,
+            )
+            attempts.append(evidence.model_dump())
+    return attempts
 
 
 def _sealed_24_attempts(campaign_run_id):
-    return [
-        _sealed_attempt(eid, campaign_run_id, retry_index=0, status="completed")
-        for eid in _REAL_FROZEN_EXPERIMENT_IDS
-    ]
+    return _real_attempts_for(campaign_run_id, DEFAULT_WALKFORWARD_RESULTS)
 
 
 def _clean_accounting_report(campaign_run_id, **overrides):
@@ -212,10 +311,11 @@ def _base_kwargs():
         "full_campaign_hash": full_campaign_hash,
         "full_campaign_payload": payload,
         "campaign_run_id": campaign_run_id,
-        "dataset_manifest_hash": "b" * 64,
-        "signal_manifest_hash": "c" * 64,
+        "dataset_manifest_hash": _REAL_DATASET_MANIFEST_HASH,
+        "signal_manifest_hash": _REAL_SIGNAL_MANIFEST_HASH,
         "accounting_report": _clean_accounting_report(campaign_run_id),
         "attempt_evidence": _sealed_24_attempts(campaign_run_id),
+        "walkforward_results": DEFAULT_WALKFORWARD_RESULTS,
         "strategies": {"S1": _strategy_evidence(), "S2": _strategy_evidence()},
     }
 
@@ -501,6 +601,26 @@ def test_hash_format_rejects_non_hex_or_wrong_length():
     kwargs2["dataset_manifest_hash"] = "b" * 63
     with pytest.raises(ScorecardInputError):
         build_scorecard(**kwargs2)
+
+
+def test_dataset_manifest_hash_content_drift_from_the_real_frozen_value_fails_closed():
+    """A well-FORMATTED (64 lowercase hex) but WRONG dataset_manifest_hash
+    must fail closed -- previously only format was checked, never content
+    against the real frozen H1 manifest hash embedded in the production
+    envelope (the caller could pass ANY well-formed hex64 value)."""
+    kwargs = _base_kwargs()
+    kwargs["dataset_manifest_hash"] = "b" * 64  # well-formed, but not real
+    with pytest.raises(ScorecardInputError) as exc_info:
+        build_scorecard(**kwargs)
+    assert "dataset_manifest_hash" in str(exc_info.value)
+
+
+def test_signal_manifest_hash_content_drift_from_the_real_frozen_value_fails_closed():
+    kwargs = _base_kwargs()
+    kwargs["signal_manifest_hash"] = "c" * 64  # well-formed, but not real
+    with pytest.raises(ScorecardInputError) as exc_info:
+        build_scorecard(**kwargs)
+    assert "signal_manifest_hash" in str(exc_info.value)
 
 
 def test_campaign_run_id_drift_fails_closed():
