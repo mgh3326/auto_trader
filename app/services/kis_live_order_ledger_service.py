@@ -80,7 +80,16 @@ class KISLiveOrderLedgerService:
             if row.correlation_id is not None
             else literal(False)
         )
-        if row.order_no is None and row.correlation_id is None:
+        idempotency_match = (
+            OrderProposalRung.idempotency_key == row.idempotency_key
+            if row.idempotency_key is not None
+            else literal(False)
+        )
+        if (
+            row.order_no is None
+            and row.correlation_id is None
+            and row.idempotency_key is None
+        ):
             return False
         stmt = (
             select(
@@ -88,10 +97,11 @@ class KISLiveOrderLedgerService:
                 OrderProposalRung.state,
                 broker_match.label("broker_match"),
                 correlation_match.label("correlation_match"),
+                idempotency_match.label("idempotency_match"),
             )
             .join(OrderProposal, OrderProposalRung.proposal_pk == OrderProposal.id)
             .where(
-                or_(broker_match, correlation_match),
+                or_(broker_match, correlation_match, idempotency_match),
                 OrderProposal.account_mode == "kis_live",
                 OrderProposal.symbol == row.symbol,
                 OrderProposal.market == row.instrument_type,
@@ -100,14 +110,16 @@ class KISLiveOrderLedgerService:
         matches = list((await self._db.execute(stmt)).all())
         broker_ids = {match.id for match in matches if match.broker_match}
         correlation_ids = {match.id for match in matches if match.correlation_match}
-        evidence_sets = [ids for ids in (broker_ids, correlation_ids) if ids]
-        if not (
-            bool(evidence_sets)
-            and all(ids == evidence_sets[0] for ids in evidence_sets)
-            and len(evidence_sets[0]) == 1
-        ):
+        idempotency_ids = {match.id for match in matches if match.idempotency_match}
+        evidence_sets = [
+            ids for ids in (broker_ids, correlation_ids, idempotency_ids) if ids
+        ]
+        if not evidence_sets:
             return False
-        rung_id = next(iter(evidence_sets[0]))
+        intersection = set.intersection(*evidence_sets)
+        if len(intersection) != 1:
+            return False
+        rung_id = next(iter(intersection))
         return next(match.state for match in matches if match.id == rung_id) in (
             _PROPOSAL_EVIDENCE_ACCEPTING_STATES
         )
