@@ -30,3 +30,6 @@
 - spread/data-age는 **서버 관측값만** 판정에 사용한다. caller/LLM이 spread·age를 입력할 수 없고,
   관측 실패 시 0/0으로 합성하지 않고 `market_conditions_unavailable`로 fail-close 한다(ROB-841).
 - 같은 날 결과는 `session_tag="llm"`로 분리 집계(규칙 baseline과 비교; surfacing은 D-PR2).
+
+## MCP 배포 반영 절차
+MCP 배포 반영 절차 = ops/native/scripts sync → mcp 재기동, BINANCE_*는 래퍼의 접두사 export에 의존. `BINANCE_*` 접두사(예: `BINANCE_FUTURES_DEMO_ENABLED` 등)를 통해 노출되는 환경 변수들은 MCP 기동 래퍼의 접두사 export 기능을 거쳐 `os.environ`에 공급되므로, 배포 시 스크립트 동기화와 MCP 재기동이 필수적이다.
