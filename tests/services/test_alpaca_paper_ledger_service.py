@@ -1409,6 +1409,27 @@ async def test_record_status_without_cancel_evidence_derives_anomaly():
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+async def test_record_status_does_not_update_final_reconciled_row():
+    from app.models.review import AlpacaPaperOrderLedger
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(lifecycle_state="final_reconciled", record_kind="execution")
+    db = _mock_db_with_row(row)
+
+    await AlpacaPaperLedgerService(db).record_status(
+        "test-client-001",
+        order={"id": "bid1", "status": "filled", "filled_qty": "1"},
+    )
+
+    update_stmt = db.execute.call_args_list[1].args[0]
+    compiled = str(update_stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "lifecycle_state NOT IN" in compiled
+    assert "final_reconciled" in compiled
+    assert AlpacaPaperOrderLedger.__tablename__ in compiled
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_record_cancel_transitions_to_canceled_if_order_status_is_canceled():
     from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
 

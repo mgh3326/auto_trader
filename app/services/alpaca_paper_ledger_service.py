@@ -82,6 +82,17 @@ RECORD_KIND_EXECUTION = "execution"
 RECORD_KIND_RECONCILE = "reconcile"
 RECORD_KIND_ANOMALY = "anomaly"
 
+RECONCILE_TERMINAL_LIFECYCLE_STATES: frozenset[str] = frozenset(
+    {
+        LIFECYCLE_FILLED,
+        LIFECYCLE_POSITION_RECONCILED,
+        LIFECYCLE_CLOSED,
+        LIFECYCLE_FINAL_RECONCILED,
+        LIFECYCLE_CANCELED,
+        LIFECYCLE_ANOMALY,
+    }
+)
+
 # ---------------------------------------------------------------------------
 # Sensitive key patterns — redact before any JSON persistence
 # ---------------------------------------------------------------------------
@@ -989,11 +1000,13 @@ class AlpacaPaperLedgerService:
         client_order_id: str,
         event_key: str,
         raw_response: dict[str, Any] | None,
+        *,
+        row: AlpacaPaperOrderLedger | None = None,
     ) -> None:
         if raw_response is None:
             return
         sanitized = _redact_sensitive_keys(raw_response)
-        row = await self._require_row(client_order_id)
+        row = row or await self._require_row(client_order_id)
         existing: dict[str, Any] = dict(row.raw_responses or {})
         target_key = event_key
         suffix = 2
@@ -1388,7 +1401,11 @@ class AlpacaPaperLedgerService:
         """Update lifecycle state from a status-check response."""
         if lifecycle_state_override not in {None, LIFECYCLE_SUBMITTED}:
             raise ValueError("status lifecycle override may only retain submitted")
-        target_row = await self._require_row(client_order_id)
+        target_row = await self.get_execution_by_client_order_id(client_order_id)
+        if target_row is None:
+            raise LedgerNotFoundError(
+                f"No execution row found for client_order_id={client_order_id!r}"
+            )
 
         order_status = order.get("status")
         filled_qty_raw = order.get("filled_qty") or order.get("filled_quantity")
@@ -1429,14 +1446,21 @@ class AlpacaPaperLedgerService:
                 f"anomaly: order_status={order_status!r} during status check"
             )
 
-        await self._db.execute(
+        update_result = await self._db.execute(
             update(AlpacaPaperOrderLedger)
-            .where(AlpacaPaperOrderLedger.id == target_row.id)
+            .where(
+                AlpacaPaperOrderLedger.id == target_row.id,
+                AlpacaPaperOrderLedger.lifecycle_state.not_in(
+                    RECONCILE_TERMINAL_LIFECYCLE_STATES
+                ),
+            )
             .values(**update_vals)
         )
 
-        if raw_response is not None:
-            await self._accumulate_raw_response(client_order_id, "status", raw_response)
+        if raw_response is not None and getattr(update_result, "rowcount", 1) != 0:
+            await self._accumulate_raw_response(
+                client_order_id, "status", raw_response, row=target_row
+            )
 
         if commit:
             await self._db.commit()

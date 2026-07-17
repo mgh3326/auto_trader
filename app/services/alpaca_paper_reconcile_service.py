@@ -5,7 +5,11 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from app.services.alpaca_paper_ledger_service import KNOWN_OPEN_BROKER_STATUSES
+from app.services.alpaca_paper_ledger_service import (
+    KNOWN_OPEN_BROKER_STATUSES,
+    LIFECYCLE_SUBMITTED,
+    RECORD_KIND_EXECUTION,
+)
 from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
     FillEvidence,
     FillVerdict,
@@ -13,7 +17,14 @@ from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
 )
 
 _TERMINAL_STATES = frozenset(
-    {"filled", "position_reconciled", "closed", "final_reconciled", "canceled"}
+    {
+        "filled",
+        "position_reconciled",
+        "closed",
+        "final_reconciled",
+        "canceled",
+        "anomaly",
+    }
 )
 
 
@@ -39,8 +50,34 @@ def normalize_alpaca_order_for_classify(
     )
     filled_qty = _decimal(getattr(order, "filled_qty", None)) or cumulative
     avg_price = _decimal(getattr(order, "filled_avg_price", None))
-    if avg_price is None and relevant:
-        avg_price = _decimal(getattr(relevant[-1], "price", None))
+    if avg_price is None:
+        priced_fills = [
+            (
+                _decimal(getattr(fill, "qty", None)),
+                _decimal(getattr(fill, "price", None)),
+            )
+            for fill in relevant
+        ]
+        total_qty = sum(
+            (
+                qty
+                for qty, price in priced_fills
+                if qty is not None and price is not None
+            ),
+            start=Decimal("0"),
+        )
+        if total_qty > 0:
+            avg_price = (
+                sum(
+                    (
+                        qty * price
+                        for qty, price in priced_fills
+                        if qty is not None and price is not None
+                    ),
+                    start=Decimal("0"),
+                )
+                / total_qty
+            )
     return {
         "odno": order.id,
         "ord_qty": getattr(order, "qty", None),
@@ -64,11 +101,16 @@ class AlpacaPaperReconcileService:
         dry_run: bool = True,
         limit: int = 100,
     ) -> dict[str, Any]:
-        rows = await self._ledger.list_recent(limit=limit)
+        if client_order_id is not None:
+            row = await self._ledger.get_execution_by_client_order_id(client_order_id)
+            rows = [row] if row is not None else []
+        else:
+            rows = await self._ledger.list_recent(limit=limit)
         candidates = [
             row
             for row in rows
-            if getattr(row, "lifecycle_state", None) not in _TERMINAL_STATES
+            if getattr(row, "record_kind", None) == RECORD_KIND_EXECUTION
+            and getattr(row, "lifecycle_state", None) not in _TERMINAL_STATES
             and (symbol is None or getattr(row, "execution_symbol", None) == symbol)
             and (
                 client_order_id is None
@@ -115,7 +157,14 @@ class AlpacaPaperReconcileService:
         ) <= 0 or getattr(order, "filled_avg_price", None) is None:
             try:
                 fills = await self._broker.list_fills(limit=100)
-            except Exception:
+            except Exception as exc:
+                if str(getattr(order, "status", "")).lower() == "filled":
+                    result.update(
+                        action="noop_requires_manual_review",
+                        requires_manual_review=True,
+                        reason=str(exc) or exc.__class__.__name__,
+                    )
+                    return result
                 fills = None
         evidence: FillEvidence = classify_fill_evidence(
             order_no=order.id, rows=[normalize_alpaca_order_for_classify(order, fills)]
@@ -167,7 +216,9 @@ class AlpacaPaperReconcileService:
         await self._ledger.record_status(
             row.client_order_id,
             {
-                "status": order.status,
+                "status": "partially_filled"
+                if evidence.verdict is FillVerdict.PARTIAL
+                else order.status,
                 "filled_qty": str(broker_qty),
                 "filled_avg_price": str(evidence.avg_price),
                 "id": order.id,
@@ -175,6 +226,9 @@ class AlpacaPaperReconcileService:
             raw_response={
                 "reconcile_order": normalize_alpaca_order_for_classify(order, fills)
             },
+            lifecycle_state_override=(
+                LIFECYCLE_SUBMITTED if evidence.verdict is FillVerdict.PARTIAL else None
+            ),
         )
         return result
 
