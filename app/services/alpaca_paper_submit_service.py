@@ -33,6 +33,7 @@ from app.services.alpaca_paper_ledger_service import (
     KNOWN_OPEN_BROKER_STATUSES,
     LIFECYCLE_SUBMITTED,
     AlpacaPaperLedgerService,
+    _redact_sensitive_text,
     is_inflight_execution,
     normalize_known_broker_order_status,
 )
@@ -54,6 +55,29 @@ if TYPE_CHECKING:
     from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
 
 BrokerFactory = Callable[[], "AlpacaPaperBrokerService"]
+
+
+def _extract_and_sanitize_error_body(exc: Exception) -> str:
+    """Extract, sanitize, and truncate the error body from AlpacaPaperRequestError.
+
+    1. Excerpts the raw response body from HTTP status prefix.
+    2. Sanitizes sensitive text using existing ledger utility.
+    3. Conservatively masks any remaining alphanumeric tokens of length 20+ to protect secrets/account IDs.
+    4. Truncates to 500 characters.
+    """
+    import re
+
+    msg = str(exc)
+    body = msg
+    if msg.startswith("HTTP "):
+        parts = msg.split(": ", 1)
+        if len(parts) > 1:
+            body = parts[1]
+
+    redacted = _redact_sensitive_text(body) or ""
+    masked = re.sub(r"[A-Za-z0-9]{20,}", "[MASKED_TOKEN]", redacted)
+    return masked[:500]
+
 
 # Default bound on how old the market-data source timestamp may be at submit time.
 DEFAULT_QUOTE_MAX_AGE = timedelta(minutes=5)
@@ -604,10 +628,11 @@ class AlpacaPaperSubmitCoordinator:
                 # Deterministic client rejection — terminal. Book it so retries
                 # replay the failure instead of re-POSTing.
                 try:
+                    body_excerpt = _extract_and_sanitize_error_body(exc)
                     await self._ledger.record_submit_failure(
                         coid,
                         order_status="rejected",
-                        error_summary=f"broker_rejected: HTTP {status}",
+                        error_summary=f"broker_rejected: HTTP {status} \u2014 {body_excerpt}",
                     )
                 except Exception:  # noqa: BLE001 - persistence best-effort
                     # Even if we cannot persist the terminal outcome, the in-flight
