@@ -9,13 +9,14 @@ gate artifact/path.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 
 import pytest
+from rob944_frozen_campaign import build_production_frozen_campaign_envelope
 from rob945_scenario_metrics import FoldStabilityRow, StrategyScenarioAggregate
 from rob945_scorecard import (
-    ACCOUNTING_DRIFT_REASON,
     HASH_DRIFT_REASON,
     ScorecardInputError,
     build_scorecard,
@@ -26,6 +27,15 @@ from rob945_signal_concurrency import StrategyConcurrencyEvidence
 from research_contracts.canonical_hash import canonical_sha256
 
 _SYMBOLS = ("BTCUSDT", "XRPUSDT", "DOGEUSDT", "SOLUSDT")
+
+# ROB-945 Task 1: ``build_scorecard`` now seals accounting/attempt-evidence
+# against the REAL production frozen campaign (never a caller-self-consistent
+# fake) -- fixtures below use the actual envelope/hash/run-id/experiment-ids
+# rather than a fabricated ``exp-00..23`` roster.
+_ENVELOPE = build_production_frozen_campaign_envelope()
+_REAL_FULL_CAMPAIGN_HASH = _ENVELOPE.full_campaign_hash()
+_REAL_FULL_CAMPAIGN_PAYLOAD = _ENVELOPE.to_dict()
+_REAL_FROZEN_EXPERIMENT_IDS = tuple(_REAL_FULL_CAMPAIGN_PAYLOAD["experiment_ids"])
 
 
 def _symbol_metrics_all_present():
@@ -124,7 +134,7 @@ def _strategy_evidence():
 
 
 def _full_campaign_payload():
-    return {"window_start_iso": "2025-07-01T00:00:00Z", "universe": list(_SYMBOLS)}
+    return _REAL_FULL_CAMPAIGN_PAYLOAD
 
 
 def _derive_campaign_run_id(full_campaign_hash):
@@ -139,16 +149,64 @@ def _derive_campaign_run_id(full_campaign_hash):
     return f"rob944-primary-{suffix}"
 
 
-def _sealed_24_attempts():
+def _hex64(seed: str) -> str:
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+
+def _sealed_attempt(
+    experiment_id, campaign_run_id, *, retry_index=0, status="completed"
+):
+    seed = f"{experiment_id}:{retry_index}"
+    return {
+        "attempt_key": {
+            "campaign_run_id": campaign_run_id,
+            "experiment_id": experiment_id,
+            "retry_index": retry_index,
+        },
+        "status": status,
+        "reason_code": None,
+        "fold_evidence_hash": _hex64(f"fold:{seed}"),
+        "run_identity": _hex64(f"run:{seed}"),
+        "scenario_evidence": [
+            {
+                "scenario_name": name,
+                "trade_count": 3,
+                "artifact_hash": _hex64(f"{seed}-{name}"),
+            }
+            for name in ("base", "primary_stress", "upward_stress")
+        ],
+    }
+
+
+def _sealed_24_attempts(campaign_run_id):
     return [
-        {"experiment_id": f"exp-{i:02d}", "retry_index": 0, "status": "completed"}
-        for i in range(24)
+        _sealed_attempt(eid, campaign_run_id, retry_index=0, status="completed")
+        for eid in _REAL_FROZEN_EXPERIMENT_IDS
     ]
+
+
+def _clean_accounting_report(campaign_run_id, **overrides):
+    report = {
+        "campaign_run_id": campaign_run_id,
+        "expected_total": 24,
+        "actual_registrations": 24,
+        "primary_attempts": 24,
+        "total_attempts": 24,
+        "retry_attempts": 0,
+        "status_counts": {"completed": 24, "rejected": 0, "crashed": 0, "timeout": 0},
+        "missing_experiment_ids": [],
+        "extra_experiment_ids": [],
+        "mismatch_experiment_ids": [],
+        "duplicate_or_gap_experiment_ids": [],
+        "verdict": "complete",
+    }
+    report.update(overrides)
+    return report
 
 
 def _base_kwargs():
     payload = _full_campaign_payload()
-    full_campaign_hash = canonical_sha256(payload)
+    full_campaign_hash = _REAL_FULL_CAMPAIGN_HASH
     campaign_run_id = _derive_campaign_run_id(full_campaign_hash)
     return {
         "full_campaign_hash": full_campaign_hash,
@@ -156,11 +214,8 @@ def _base_kwargs():
         "campaign_run_id": campaign_run_id,
         "dataset_manifest_hash": "b" * 64,
         "signal_manifest_hash": "c" * 64,
-        "accounting_report": {
-            "verdict": "complete",
-            "campaign_run_id": campaign_run_id,
-        },
-        "attempt_evidence": _sealed_24_attempts(),
+        "accounting_report": _clean_accounting_report(campaign_run_id),
+        "attempt_evidence": _sealed_24_attempts(campaign_run_id),
         "strategies": {"S1": _strategy_evidence(), "S2": _strategy_evidence()},
     }
 
@@ -180,11 +235,33 @@ def test_hash_drift_between_provided_and_recomputed_full_campaign_hash_fails_clo
 
 
 def test_accounting_incomplete_verdict_propagates_to_incomplete_reason():
+    """A genuinely well-formed but incomplete H6 accounting report (one
+    frozen experiment ID never registered) is NOT a raise -- it seals as
+    ``campaign_verdict == "incomplete"``, never ``historical_pass``/``fail``,
+    per the malformed-vs-well-formed-incomplete distinction (ROB-945 Task 1,
+    RED case 10)."""
     kwargs = _base_kwargs()
-    kwargs["accounting_report"] = {"verdict": "incomplete", "campaign_run_id": "x"}
-    with pytest.raises(ScorecardInputError) as exc_info:
-        build_scorecard(**kwargs)
-    assert ACCOUNTING_DRIFT_REASON in str(exc_info.value)
+    campaign_run_id = kwargs["campaign_run_id"]
+    missing_id = _REAL_FROZEN_EXPERIMENT_IDS[-1]
+    kwargs["attempt_evidence"] = [
+        a
+        for a in _sealed_24_attempts(campaign_run_id)
+        if a["attempt_key"]["experiment_id"] != missing_id
+    ]
+    kwargs["accounting_report"] = _clean_accounting_report(
+        campaign_run_id,
+        actual_registrations=23,
+        primary_attempts=23,
+        total_attempts=23,
+        status_counts={"completed": 23, "rejected": 0, "crashed": 0, "timeout": 0},
+        missing_experiment_ids=[missing_id],
+        verdict="incomplete",
+    )
+    envelope = build_scorecard(**kwargs)
+    body = envelope["scorecard_payload"]
+    assert body["campaign_verdict"] == "incomplete"
+    assert body["lineage"]["accounting_complete"] is False
+    assert body["lineage"]["accounting_performance_usable"] is False
 
 
 def test_missing_strategy_fails_closed():
@@ -392,14 +469,14 @@ def test_campaign_verdict_aggregates_across_both_strategies():
 
 def test_attempt_evidence_wrong_count_fails_closed():
     kwargs = _base_kwargs()
-    kwargs["attempt_evidence"] = _sealed_24_attempts()[:23]
+    kwargs["attempt_evidence"] = _sealed_24_attempts(kwargs["campaign_run_id"])[:23]
     with pytest.raises(ScorecardInputError):
         build_scorecard(**kwargs)
 
 
 def test_attempt_evidence_duplicate_experiment_id_fails_closed():
     kwargs = _base_kwargs()
-    attempts = _sealed_24_attempts()
+    attempts = _sealed_24_attempts(kwargs["campaign_run_id"])
     attempts[1] = dict(attempts[0])
     kwargs["attempt_evidence"] = attempts
     with pytest.raises(ScorecardInputError):
@@ -408,8 +485,8 @@ def test_attempt_evidence_duplicate_experiment_id_fails_closed():
 
 def test_attempt_evidence_nonzero_retry_index_fails_closed():
     kwargs = _base_kwargs()
-    attempts = _sealed_24_attempts()
-    attempts[0]["retry_index"] = 1
+    attempts = _sealed_24_attempts(kwargs["campaign_run_id"])
+    attempts[0]["attempt_key"]["retry_index"] = 1
     kwargs["attempt_evidence"] = attempts
     with pytest.raises(ScorecardInputError):
         build_scorecard(**kwargs)

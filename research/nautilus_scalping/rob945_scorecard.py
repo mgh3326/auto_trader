@@ -12,12 +12,17 @@ or references a ROB-905 ``validated_signal_gate.v1`` artifact/path.
 
 from __future__ import annotations
 
-import base64
 import re
 from collections.abc import Mapping
 from typing import Any
 
 import rob941_frozen_scope as frozen
+from rob945_accounting_seal import (
+    ACCOUNTING_INCOMPLETE_REASON,
+    ScorecardInputError,
+    derive_campaign_run_id,
+    seal_trial_accounting,
+)
 from rob945_canonical_payload import to_canonical_payload
 from rob945_pbo_grid import PboAuxiliaryEvidence
 from rob945_scenario_metrics import FoldStabilityRow, StrategyScenarioAggregate
@@ -31,64 +36,19 @@ GENERATOR_VERSION = "rob945-h5-scorecard/1.0.0"
 READINESS = "historical_screen_only"
 
 HASH_DRIFT_REASON = "full_campaign_hash_drift"
-ACCOUNTING_DRIFT_REASON = "h6_accounting_incomplete"
+# Kept importable under its original name for backward compatibility;
+# single source of truth is now ``rob945_accounting_seal.ACCOUNTING_INCOMPLETE_REASON``.
+ACCOUNTING_DRIFT_REASON = ACCOUNTING_INCOMPLETE_REASON
 RUN_ID_DRIFT_REASON = "campaign_run_id_derivation_mismatch"
 HASH_FORMAT_REASON = "hash_field_not_lowercase_64_hex"
 FOLD_ID_SEQUENCE_REASON = "fold_id_sequence_not_canonical_contiguous"
-ACCOUNTING_ATTEMPTS_REASON = "h6_accounting_attempts_not_sealed_24"
 
 _LOWERCASE_HEX_64 = re.compile(r"^[0-9a-f]{64}$")
-EXPECTED_PRIMARY_ATTEMPT_COUNT = 24
 
-
-def _derive_campaign_run_id(full_campaign_hash: str) -> str:
-    """Bit-for-bit the SAME recipe as
-    ``run_rob944_campaign._derive_primary_campaign_run_id`` /
-    ``rob944_campaign_controller._derive_expected_campaign_run_id``: SHA-256
-    of ``{"full_campaign_hash": ..., "kind": "primary_run"}`` -> raw 32
-    bytes -> unpadded URL-safe base64 (43 chars) -> ``"rob944-primary-"``
-    prefix (15 chars) -> 58 chars total. Re-derived here (never trusted
-    from the caller) as the third independent cross-check this lineage
-    already requires."""
-    digest_hex = canonical_sha256(
-        {"full_campaign_hash": full_campaign_hash, "kind": "primary_run"}
-    )
-    raw = bytes.fromhex(digest_hex)
-    suffix = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
-    return f"rob944-primary-{suffix}"
-
-
-def _validate_attempt_evidence(attempt_evidence: Any) -> None:
-    """``attempt_evidence`` is a SEPARATE sealed tuple of exactly 24
-    canonical primary ``AttemptEvidence``-shaped records -- the canonical
-    ``CampaignCompletenessReport`` DTO itself has no ``attempts`` field, so
-    this is never invented as a key inside ``accounting_report``; it is its
-    own explicit input, cross-hashed alongside the report."""
-    if (
-        not isinstance(attempt_evidence, list | tuple)
-        or len(attempt_evidence) != EXPECTED_PRIMARY_ATTEMPT_COUNT
-    ):
-        raise ScorecardInputError(ACCOUNTING_ATTEMPTS_REASON)
-    seen_experiment_ids: set[str] = set()
-    for attempt in attempt_evidence:
-        if not isinstance(attempt, Mapping):
-            raise ScorecardInputError(ACCOUNTING_ATTEMPTS_REASON)
-        experiment_id = attempt.get("experiment_id")
-        retry_index = attempt.get("retry_index")
-        status = attempt.get("status")
-        if (
-            not isinstance(experiment_id, str)
-            or not experiment_id
-            or retry_index != 0
-            or not isinstance(status, str)
-            or not status
-        ):
-            raise ScorecardInputError(ACCOUNTING_ATTEMPTS_REASON)
-        if experiment_id in seen_experiment_ids:
-            raise ScorecardInputError(ACCOUNTING_ATTEMPTS_REASON)
-        seen_experiment_ids.add(experiment_id)
-    if len(seen_experiment_ids) != EXPECTED_PRIMARY_ATTEMPT_COUNT:
-        raise ScorecardInputError(ACCOUNTING_ATTEMPTS_REASON)
+# ``ScorecardInputError`` now lives in ``rob945_accounting_seal`` (the
+# lower-level sealing boundary); re-exported here so existing callers/tests
+# importing it from this module keep working unchanged.
+_derive_campaign_run_id = derive_campaign_run_id
 
 
 _REQUIRED_STRATEGIES = ("S1", "S2")
@@ -126,12 +86,6 @@ _DISCLOSURES: dict[str, Any] = {
     "s2_spec_deviation_register_visible": True,
     "not_validated_signal_gate": True,
 }
-
-
-class ScorecardInputError(ValueError):
-    """The sealed H5 evidence input failed a fail-closed boundary check --
-    mismatched identity, hash drift, incomplete accounting, missing fold/
-    symbol/scenario coverage, or partial scenario evidence."""
 
 
 def _require(condition: bool, reason: str) -> None:
@@ -342,9 +296,21 @@ def build_scorecard(
     expected_campaign_run_id = _derive_campaign_run_id(full_campaign_hash)
     _require(campaign_run_id == expected_campaign_run_id, RUN_ID_DRIFT_REASON)
 
-    accounting_complete = accounting_report.get("verdict") == "complete"
-    _require(accounting_complete, ACCOUNTING_DRIFT_REASON)
-    _validate_attempt_evidence(attempt_evidence)
+    # Sealed H6 accounting/attempt-evidence boundary (ROB-945 Task 1): the
+    # ONLY authority for H6 completeness -- never a bare
+    # ``accounting_report.get("verdict") == "complete"`` string check, and
+    # never a caller-trusted ``full_campaign_hash`` (re-pinned inside the
+    # seal against a fresh real production envelope). A well-formed report
+    # that is merely INCOMPLETE (missing/extra/mismatch/gap evidence, or a
+    # primary attempt that didn't complete) is not a raise here -- it
+    # propagates into ``campaign_verdict`` as ``incomplete`` below, per the
+    # "malformed raises, well-formed-incomplete seals as incomplete"
+    # distinction (Task 1, RED case 10).
+    sealed_accounting = seal_trial_accounting(
+        accounting_report=accounting_report,
+        attempt_evidence=attempt_evidence,
+        full_campaign_hash=full_campaign_hash,
+    )
 
     _require(
         set(strategies.keys()) == set(_REQUIRED_STRATEGIES),
@@ -359,7 +325,13 @@ def build_scorecard(
     strategy_verdicts = [
         strategy_payloads[s]["verdict"]["verdict"] for s in _REQUIRED_STRATEGIES
     ]
-    if any(v == "incomplete" for v in strategy_verdicts):
+    if not sealed_accounting.performance_usable:
+        # Campaign-level H6 accounting evidence gap: neither strategy's OOS
+        # evidence can be trusted as "the complete 24-experiment campaign"
+        # regardless of what each strategy's own scenario/fold evidence
+        # otherwise shows.
+        campaign_verdict = "incomplete"
+    elif any(v == "incomplete" for v in strategy_verdicts):
         campaign_verdict = "incomplete"
     elif any(v == "historical_fail" for v in strategy_verdicts):
         campaign_verdict = "historical_fail"
@@ -385,16 +357,13 @@ def build_scorecard(
             "campaign_run_id": campaign_run_id,
             "dataset_manifest_hash": dataset_manifest_hash,
             "signal_manifest_hash": signal_manifest_hash,
-            # hashes the FULL sealed evidence (report + all 24 attempt
+            # From the sealed accounting boundary -- hashes the FULL,
+            # frozen-order-normalized evidence (report + all attempt
             # records), never just a bare {"verdict": "complete"} string.
-            "trial_accounting_hash": canonical_sha256(
-                to_canonical_payload(
-                    {
-                        "report": dict(accounting_report),
-                        "attempts": [dict(a) for a in attempt_evidence],
-                    }
-                )
-            ),
+            "trial_accounting_hash": sealed_accounting.trial_accounting_hash,
+            "accounting_complete": sealed_accounting.accounting_complete,
+            "accounting_performance_usable": sealed_accounting.performance_usable,
+            "accounting_reason_codes": list(sealed_accounting.reason_codes),
         },
         "strategies": strategy_payloads,
         "signal_concurrency_overall": {

@@ -12,6 +12,7 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
 _MODULES = [
+    "rob945_accounting_seal.py",
     "rob945_canonical_payload.py",
     "rob945_capture.py",
     "rob945_signal_concurrency.py",
@@ -58,7 +59,9 @@ _ALLOWED = {
     "rob940_engine",
     "rob941_frozen_scope",
     "rob944_folds",
+    "rob944_frozen_campaign",
     "rob944_walkforward",
+    "rob945_accounting_seal",
     "rob945_canonical_payload",
     "rob945_capture",
     "rob945_pbo_builder",
