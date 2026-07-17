@@ -137,6 +137,7 @@ def test_recent_fills_returns_200_with_items():
     assert data["count"] == 1
     assert data["items"][0]["symbol"] == "005930"
     assert data["items"][0]["source"] == "reconciler"
+    assert data["items"][0]["trade_day_kst"] == "20260510"
     # K2: enriched fields
     assert "data_state" in data
     assert "source_breakdown" in data

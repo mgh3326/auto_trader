@@ -7,7 +7,16 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
+
+from app.core.timezone import trade_day_kst
 
 Broker = Literal["kis", "upbit", "toss"]
 ReconcileRunBroker = Literal["kis", "upbit"]
@@ -91,6 +100,12 @@ class ExecutionLedgerRead(BaseModel):
     cost_basis_notional: Decimal | None = None
     realized_profit: Decimal | None = None
     realized_profit_rate: Decimal | None = None
+
+    @computed_field
+    @property
+    def trade_day_kst(self) -> str:
+        """Explicit KST grouping key for API consumers of UTC TIMESTAMPTZ fills."""
+        return trade_day_kst(self.filled_at)
 
 
 class SourceBreakdown(BaseModel):

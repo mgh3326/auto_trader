@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -18,6 +19,8 @@ from app.schemas.execution_ledger import (
 from app.services.execution_ledger.normalizers import to_execution_ledger_upsert
 from app.services.execution_ledger.repository import ExecutionLedgerRepository
 from app.services.filled_orders_service import fetch_filled_orders
+
+logger = logging.getLogger(__name__)
 
 Broker = Literal["kis", "upbit"]
 FilledOrdersFetcher = Callable[..., Awaitable[dict[str, Any]]]
@@ -162,9 +165,21 @@ class ExecutionLedgerReconciler:
             )
         rows = result.get("orders") or result.get("items") or []
         upserts: list[ExecutionLedgerUpsert] = []
+        malformed_filled_at_rows = 0
         for row in rows:
-            upsert = to_execution_ledger_upsert(
-                row, broker=broker, source_run_id=source_run_id
-            )
+            try:
+                upsert = to_execution_ledger_upsert(
+                    row, broker=broker, source_run_id=source_run_id
+                )
+            except ValueError as exc:
+                if "filled_at" not in str(exc):
+                    raise
+                malformed_filled_at_rows += 1
+                continue
             upserts.append(upsert)
+        if malformed_filled_at_rows:
+            logger.warning(
+                "execution ledger skipped %d malformed filled_at row(s)",
+                malformed_filled_at_rows,
+            )
         return upserts

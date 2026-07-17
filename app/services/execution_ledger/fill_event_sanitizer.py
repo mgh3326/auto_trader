@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.timezone import trade_day_kst
+
 
 def derive_market(instrument_type: str) -> str:
     """``instrument_type`` 컬럼을 poller 친화적인 market 코드로 변환.
@@ -63,6 +65,7 @@ def sanitize_fill(row: Any) -> dict[str, Any]:
         ),
         "source": row.source,
         "filled_at": row.filled_at.isoformat(),
+        "trade_day_kst": trade_day_kst(row.filled_at),
         "created_at": row.created_at.isoformat(),
     }
 
