@@ -865,6 +865,15 @@ async def _reconcile_one_ledger_row(
         trade_id=trade_id,
         journal_id=journal_id,
     )
+    # Historical terminal rows are handled by the repair pre-pass. A fill
+    # booked during this scan must project immediately in the same reconcile.
+    converged = await _converge_kis_proposal_rung(
+        row,
+        ledger_status=new_status,
+        filled_qty=broker_cum,
+    )
+    if converged is not None:
+        base["proposal_rung"] = converged
     base["action"] = f"booked_{new_status}"
     base["trade_id"] = trade_id
     base["journal_id"] = journal_id
