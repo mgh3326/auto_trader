@@ -464,6 +464,12 @@ def test_68bp_gate_applies_to_absolute_target_price_too():
 # 13/17/22bp cost scenarios + fee/funding no-double-count (AC6)
 # --------------------------------------------------------------------------- #
 def test_13_17_22_cost_scenarios_share_trade_path_differ_only_in_net():
+    # NOTE (ROB-942 R1 correction): this pins the narrow case where the
+    # single trade never triggers AC8's cost-included daily stop, so all
+    # three scenarios' independent runs happen to walk the same path. It is
+    # NOT a general "scenarios always share a path" guarantee -- see
+    # test_cost_scenario_dependent_daily_stop_diverges_trade_count below for
+    # the case where they provably do not.
     specs = [(100, 100, 100, 100), (100.5, 102.0, 100.4, 101.9)]
     bars = _mk(0, specs)
     sig = _sig(signal_ts=0, sl=1000.0, tp=200.0, timeout=1)
@@ -520,6 +526,86 @@ def test_funding_applied_exactly_once_via_lookup():
     assert calls == [("XRPUSDT", "long", 0, MIN)]
     assert t.funding_bps == 3.0  # long pays: sum(rate_bps)
     assert t.net_bps == t.gross_bps - t.all_in_bps - 3.0
+
+
+# --------------------------------------------------------------------------- #
+# ROB-942 R1 correction: cost-scenario path divergence is an intended
+# consequence of AC8's cost-included daily stop, not a bug -- and the 68bp
+# entry-eligibility gate itself does NOT vary by scenario. See the
+# rob940_cost_model / rob940_engine module docstrings for the full writeup.
+# --------------------------------------------------------------------------- #
+def test_68bp_gate_is_identical_across_all_cost_scenarios():
+    specs = [(100, 100, 100, 100), (100, 100.1, 99.9, 100)]
+    bars = _mk(0, specs)
+    for scenario in cm.COST_SCENARIOS:
+        sig_pass = _sig(signal_ts=0, tp=68.0, sl=100.0, timeout=1)
+        result_pass = run_symbol_stream(bars, [sig_pass], scenario)
+        assert len(result_pass.trades) == 1, scenario.name
+
+        sig_fail = _sig(signal_ts=0, tp=67.99, sl=100.0, timeout=1)
+        result_fail = run_symbol_stream(bars, [sig_fail], scenario)
+        assert result_fail.trades == (), scenario.name
+        assert result_fail.no_trades[0].reason == "tp_below_min_distance"
+
+
+def test_cost_scenario_dependent_daily_stop_diverges_trade_count():
+    # trade1: SL touch at sl_distance=1000bps -> gross=-1000bps exactly.
+    # trade2: timeout exit at sl_distance=25bps with gross=-3bps (no SL touch).
+    # trade3: clean TP hit (gap-through), scenario-independent outcome.
+    #
+    # cumulative R after trade1+trade2 = -1.12 - 0.041*all_in_bps:
+    #   base(13)    -> -1.653  (> -2.0, NOT halted -> trade3 fires)
+    #   primary(17) -> -1.817  (> -2.0, NOT halted -> trade3 fires)
+    #   upward(22)  -> -2.022  (<= -2.0, HALTED -> trade3 blocked)
+    # This is the reproduction from the R1 verify report (base/primary=3
+    # trades, upward=2 trades) with hand-derived, exactly-reproducible bars.
+    specs = [
+        (100, 100, 100, 100),  # idx0: trade1 entry (flat)
+        (91, 91.5, 90, 90.5),  # idx1: trade1 SL touch, low<=90
+        (100, 100, 100, 100),  # idx2: trade2 entry (flat)
+        (99.97, 99.97, 99.97, 99.97),  # idx3: trade2 timeout deadline (open=99.97)
+        (100, 100, 100, 100),  # idx4: trade3 entry (flat)
+        (102, 102, 102, 102),  # idx5: trade3 deadline, gaps through TP=101
+    ]
+    bars = _mk(0, specs)
+    sig1 = _sig(signal_ts=0, side="long", sl=1000.0, tp=100000.0, timeout=5, cooldown=0)
+    sig2 = _sig(
+        signal_ts=2 * MIN, side="long", sl=25.0, tp=100000.0, timeout=1, cooldown=0
+    )
+    sig3 = _sig(
+        signal_ts=4 * MIN, side="long", sl=1000.0, tp=100.0, timeout=1, cooldown=0
+    )
+    signals = [sig1, sig2, sig3]
+
+    results = {s.name: run_symbol_stream(bars, signals, s) for s in cm.COST_SCENARIOS}
+    base, primary, upward = (
+        results["base"],
+        results["primary_stress"],
+        results["upward_stress"],
+    )
+
+    # trade1/trade2 are eligibility-identical (same 68bp gate, no halt yet
+    # reached) across all three scenarios -- only the count diverges via AC8.
+    for r in (base, primary, upward):
+        assert len(r.trades) >= 2
+        assert r.trades[0].exit_reason == "stop_loss"
+        assert r.trades[0].exit_ts == base.trades[0].exit_ts == 1 * MIN
+        assert r.trades[1].exit_reason == "timeout"
+        assert r.trades[1].exit_ts == base.trades[1].exit_ts == 3 * MIN
+
+    assert len(base.trades) == 3
+    assert len(primary.trades) == 3
+    assert len(upward.trades) == 2
+    assert upward.no_trades[-1].reason == "daily_stop_active"
+    assert base.no_trades == ()
+    assert primary.no_trades == ()
+
+    r1 = base.trades[0].net_bps / 1000.0
+    r2 = base.trades[1].net_bps / 25.0
+    assert r1 + r2 > -2.0  # base: not halted after trade1+trade2
+    r1u = upward.trades[0].net_bps / 1000.0
+    r2u = upward.trades[1].net_bps / 25.0
+    assert r1u + r2u <= -2.0  # upward: halted after trade1+trade2
 
 
 # --------------------------------------------------------------------------- #

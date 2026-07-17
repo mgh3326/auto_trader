@@ -43,6 +43,7 @@ _ALLOWED = {
     "collections.abc",
     "dataclasses",
     "datetime",
+    "math",
     "typing",
     "research_contracts.canonical_hash",
     "rob940_bars_agg",

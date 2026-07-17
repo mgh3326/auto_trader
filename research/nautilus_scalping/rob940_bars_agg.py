@@ -17,6 +17,7 @@ No DB/network/app/broker imports — pure stdlib, deterministic given its input.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -31,6 +32,14 @@ class Bar1m:
     low: float
     close: float
     volume: float
+
+    def __post_init__(self) -> None:
+        # ROB-942 R1 M1: reject NaN/+-Inf at the input boundary (fail-closed)
+        # before any downstream aggregation/engine/ledger code can see it.
+        for field_name in ("open", "high", "low", "close", "volume"):
+            value = getattr(self, field_name)
+            if not math.isfinite(value):
+                raise ValueError(f"Bar1m.{field_name} must be finite, got {value!r}")
 
 
 @dataclass(frozen=True)

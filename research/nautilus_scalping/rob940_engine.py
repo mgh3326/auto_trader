@@ -56,6 +56,38 @@ write-up):
   * ``fold_id`` is a pass-through field for H4 (walk-forward runner); this
     engine does not compute or validate fold boundaries.
 
+ROB-942 R1 correction (cost-scenario path divergence, 2026-07-17): each call
+to ``run_symbol_stream`` is an INDEPENDENT simulation over its own fresh
+``_DayState`` — there is no shared/cached path across scenarios. Passing a
+different ``cost_scenario`` does not just change ``net_bps`` after the fact;
+``state.daily_r`` (fed by that scenario's own ``net_bps``) is part of the
+loop's own control flow (AC8's ``<=-2.0R`` halt), so a higher-cost scenario
+CAN cross the halt threshold sooner than a lower-cost one on the exact same
+``bars_1m``/``signals`` input, producing a different trade COUNT (a shorter
+path) for that invocation only. Signal eligibility itself does not diverge:
+``MIN_TP_DISTANCE_BPS`` (68bp) is one fixed value independent of
+``cost_scenario``, so every scenario sees the same set of candidate entries
+before any cost-driven halt can prune them. Callers (H4/H5) MUST treat the
+three cost-scenario ledgers as three separate runs to compare, never as a
+single reference path with net-only revaluation. See
+``rob940_cost_model`` module docstring and the
+``test_68bp_gate_is_identical_across_all_cost_scenarios`` /
+``test_cost_scenario_dependent_daily_stop_diverges_trade_count`` regressions
+in ``tests/test_rob940_engine.py``.
+
+Caller preconditions (H4, not enforced here — documented per R1 M2/M3):
+  * ``signals`` for a given symbol SHOULD NOT contain duplicate
+    ``signal_ts`` values. The cooldown/position gate
+    (``entry_idx < earliest_allowed_entry_idx``) assumes at most one signal
+    per bar per symbol; two same-``signal_ts`` signals combined with an
+    immediate same-bar exit and ``cooldown_bars=0`` could otherwise slip a
+    second entry into what should be a single-position stream.
+  * ``sorted(signals, key=lambda s: s.signal_ts)`` (Python's stable sort) is
+    the engine's ONLY tie-break for same-``signal_ts`` signals — it resolves
+    ties by INPUT ORDER, not by any semantic priority. AC1's "same
+    bars/config -> same bytes" determinism claim holds only if H4 presents
+    ``signals`` in a canonical, reproducible order.
+
 No DB/network/app/broker/order/fill/scheduler imports — pure stdlib plus the
 existing research_contracts canonical-hash authority (itself stdlib-only),
 deterministic given its input.
@@ -63,6 +95,7 @@ deterministic given its input.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -110,6 +143,12 @@ class SignalEvent:
     def __post_init__(self) -> None:
         if self.side not in ("long", "short"):
             raise ValueError(f"unknown side {self.side!r}")
+        # ROB-942 R1 M1: `nan <= 0` is False, so a bare `<= 0` check silently
+        # let NaN/+-Inf through; check finiteness explicitly and first.
+        if not math.isfinite(self.sl_distance_bps):
+            raise ValueError(
+                f"sl_distance_bps must be finite, got {self.sl_distance_bps!r}"
+            )
         if self.sl_distance_bps <= 0:
             raise ValueError("sl_distance_bps must be positive")
         has_bps = self.tp_distance_bps is not None
@@ -118,8 +157,16 @@ class SignalEvent:
             raise ValueError(
                 "exactly one of tp_distance_bps/tp_target_price must be set"
             )
+        if has_bps and not math.isfinite(self.tp_distance_bps):
+            raise ValueError(
+                f"tp_distance_bps must be finite, got {self.tp_distance_bps!r}"
+            )
         if has_bps and self.tp_distance_bps <= 0:
             raise ValueError("tp_distance_bps must be positive")
+        if has_target and not math.isfinite(self.tp_target_price):
+            raise ValueError(
+                f"tp_target_price must be finite, got {self.tp_target_price!r}"
+            )
         if has_target and self.tp_target_price <= 0:
             raise ValueError("tp_target_price must be positive")
         if self.timeout_bars < 1:
