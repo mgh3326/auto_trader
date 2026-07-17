@@ -6,6 +6,7 @@ import pytest
 from app.core.timezone import KST
 from app.services.kis_websocket import KISExecutionWebSocket
 from app.services.kis_websocket_internal import parsers as parsers_module
+from app.services.kis_websocket_internal.events import build_lifecycle_event
 from tests.services.kis_websocket import (
     build_domestic_message,
     build_official_h0gscni0_message,
@@ -85,12 +86,73 @@ class TestExtractTimestampKST:
 
     def test_full_14_digit_timestamp_unaffected_by_now(self, client, monkeypatch):
         # Full YYYYMMDDHHMMSS tokens must not regress: they carry their own
-        # date and are unaffected by "now" framing.
+        # date and are unaffected by "now" framing. ROB-957: KIS 14-digit
+        # tokens are KST wall-clock (confirmed prod evidence, ROB-958) and
+        # must be tz-aware, not naive.
         self._freeze(monkeypatch, utc_now=datetime(2026, 7, 16, 15, 20, 0, tzinfo=UTC))
 
         result = client._extract_timestamp("20260716153045")
 
-        assert result == "2026-07-16T15:30:45"
+        parsed = datetime.fromisoformat(result)
+        assert parsed.tzinfo is not None
+        assert parsed.astimezone(KST).strftime("%Y-%m-%d") == "2026-07-16"
+        assert parsed.astimezone(KST).strftime("%H:%M:%S") == "15:30:45"
+
+    def test_full_14_digit_timestamp_evening_window_not_misattributed_to_next_utc_day(
+        self, client, monkeypatch
+    ):
+        # ROB-957: a 14-digit token reported inside KST 15:00-23:59 is the
+        # window where naive-then-assume-UTC downstream handling
+        # (events.py _resolve_occurred_at) would shift the fill forward by
+        # 9h, rolling it onto the wrong KST calendar date. With the fix,
+        # the KST-aware value must convert to the correct UTC instant.
+        self._freeze(monkeypatch, utc_now=datetime(2026, 7, 16, 15, 20, 0, tzinfo=UTC))
+
+        result = client._extract_timestamp("20260716223000")
+
+        parsed = datetime.fromisoformat(result)
+        assert parsed.tzinfo is not None
+        assert parsed.astimezone(UTC).isoformat() == "2026-07-16T13:30:00+00:00"
+        assert (
+            parsed.astimezone(KST).strftime("%Y-%m-%d %H:%M:%S")
+            == "2026-07-16 22:30:00"
+        )
+
+    def test_full_14_digit_timestamp_near_kst_midnight_is_kst_aware(
+        self, client, monkeypatch
+    ):
+        self._freeze(monkeypatch, utc_now=datetime(2026, 7, 16, 15, 20, 0, tzinfo=UTC))
+
+        result = client._extract_timestamp("20260717000030")
+
+        parsed = datetime.fromisoformat(result)
+        assert parsed.tzinfo is not None
+        assert (
+            parsed.astimezone(KST).strftime("%Y-%m-%d %H:%M:%S")
+            == "2026-07-17 00:00:30"
+        )
+
+    def test_full_14_digit_timestamp_via_full_message_parse_not_misattributed_forward(
+        self, client, monkeypatch
+    ):
+        # End-to-end: a domestic execution message with a 14-digit KST
+        # ord_tmd inside the 15:00-23:59 misattribution window must produce
+        # a filled_at that events.py's naive->UTC fallback does not shift
+        # onto the wrong KST calendar date.
+        self._freeze(monkeypatch, utc_now=datetime(2026, 7, 16, 15, 20, 0, tzinfo=UTC))
+
+        message = build_domestic_message(
+            symbol="005930",
+            filled_qty="10",
+            filled_price="70000",
+            ord_tmd="20260716223000",
+        )
+        result = client._parse_message(message)
+
+        assert result is not None
+        event = build_lifecycle_event(result, account_mode="kis_mock")
+        assert event.occurred_at.astimezone(KST).strftime("%Y-%m-%d") == "2026-07-16"
+        assert event.occurred_at.astimezone(KST).strftime("%H:%M:%S") == "22:30:00"
 
     def test_already_iso_timestamp_passthrough_unaffected(self, client, monkeypatch):
         self._freeze(monkeypatch, utc_now=datetime(2026, 7, 16, 15, 20, 0, tzinfo=UTC))
