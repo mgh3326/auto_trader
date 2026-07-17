@@ -173,6 +173,96 @@ def test_validate_frozen_scope_rejects_missing_funding_symbol():
         tampered.validate_frozen_scope()
 
 
+# --------------------------------------------------------------------------- #
+# captain review (pre-R2 narrow integrity correction): universe/eligibility
+# duplicate-safe coverage. set()-based comparison and a value-only per-entry
+# eligibility loop both silently accept a duplicate/missing/reordered entry
+# whenever the resulting SET of symbols still happens to equal the frozen
+# universe -- these prove the exact-count, exact-order, exact-coverage
+# contract, not just "the right symbols appear somewhere".
+# --------------------------------------------------------------------------- #
+def test_validate_frozen_scope_rejects_duplicate_universe_entry_with_correct_multiset():
+    m = _manifest()
+    # 5 entries: BTCUSDT appears twice, but set(universe) is still exactly the
+    # frozen 4-symbol set -- a set()-based check cannot see this duplicate.
+    tampered = CorpusManifest(
+        window_start_iso=m.window_start_iso,
+        window_end_iso=m.window_end_iso,
+        universe=(*m.universe, "BTCUSDT"),
+        eligibility=m.eligibility,
+        klines=m.klines,
+        funding=m.funding,
+    )
+    with pytest.raises(ValueError, match="universe"):
+        tampered.validate_frozen_scope()
+
+
+def test_validate_frozen_scope_rejects_universe_out_of_canonical_order():
+    m = _manifest()
+    # same 4 symbols, same set -- but every manifest-producing call site in
+    # this codebase constructs universe=frozen.UNIVERSE verbatim, so canonical
+    # order IS the deterministic contract, not merely "same set".
+    reordered = tuple(reversed(m.universe))
+    assert set(reordered) == set(scope.UNIVERSE)  # sanity: same set, different order
+    assert reordered != scope.UNIVERSE
+    tampered = CorpusManifest(
+        window_start_iso=m.window_start_iso,
+        window_end_iso=m.window_end_iso,
+        universe=reordered,
+        eligibility=m.eligibility,
+        klines=m.klines,
+        funding=m.funding,
+    )
+    with pytest.raises(ValueError, match="universe"):
+        tampered.validate_frozen_scope()
+
+
+def test_validate_frozen_scope_rejects_missing_eligibility_entry():
+    m = _manifest()
+    # drop SOLUSDT's eligibility record entirely -- the remaining 3 entries are
+    # each individually correct, so a value-only per-entry loop never raises.
+    dropped = tuple(e for e in m.eligibility if e.symbol != "SOLUSDT")
+    assert len(dropped) == 3
+    tampered = CorpusManifest(
+        window_start_iso=m.window_start_iso,
+        window_end_iso=m.window_end_iso,
+        universe=m.universe,
+        eligibility=dropped,
+        klines=m.klines,
+        funding=m.funding,
+    )
+    with pytest.raises(ValueError, match="eligibility"):
+        tampered.validate_frozen_scope()
+
+
+def test_validate_frozen_scope_rejects_duplicate_eligibility_entry_with_valid_values():
+    m = _manifest()
+    # BTCUSDT's (individually correct) eligibility record duplicated in place
+    # of SOLUSDT's -- every entry present has a value-correct match against
+    # frozen.eligibility(), so the old per-entry-only loop never raises, even
+    # though SOLUSDT eligibility is now completely absent.
+    btc_record = next(e for e in m.eligibility if e.symbol == "BTCUSDT")
+    substituted = tuple(
+        btc_record if e.symbol == "SOLUSDT" else e for e in m.eligibility
+    )
+    assert sorted(e.symbol for e in substituted) == [
+        "BTCUSDT",
+        "BTCUSDT",
+        "DOGEUSDT",
+        "XRPUSDT",
+    ]
+    tampered = CorpusManifest(
+        window_start_iso=m.window_start_iso,
+        window_end_iso=m.window_end_iso,
+        universe=m.universe,
+        eligibility=substituted,
+        klines=m.klines,
+        funding=m.funding,
+    )
+    with pytest.raises(ValueError, match="eligibility"):
+        tampered.validate_frozen_scope()
+
+
 def test_validate_frozen_scope_rejects_tampered_btc_eligibility():
     m = _manifest()
     bad_eligibility = tuple(

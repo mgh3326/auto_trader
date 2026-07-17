@@ -207,10 +207,19 @@ class CorpusManifest:
                 f"manifest window [{self.window_start_iso}, {self.window_end_iso}) deviates from "
                 f"frozen scope [{frozen.WINDOW_START_ISO}, {frozen.WINDOW_END_ISO})"
             )
-        if set(self.universe) != set(frozen.UNIVERSE):
+        # Captain review (pre-R2 narrow integrity correction): exact tuple
+        # equality, not set() equality. set(self.universe) == set(frozen.UNIVERSE)
+        # is true even when self.universe has a duplicate entry (as long as the
+        # DISTINCT symbols present still equal the frozen 4) or is reordered --
+        # every manifest-producing call site in this codebase constructs
+        # universe=frozen.UNIVERSE verbatim, so canonical order+count IS the
+        # deterministic contract, not merely "the right symbols appear
+        # somewhere". This single comparison catches duplicate/missing/extra/
+        # reordered in one shot.
+        if self.universe != frozen.UNIVERSE:
             raise ValueError(
-                f"manifest universe {sorted(self.universe)} deviates from frozen universe "
-                f"{sorted(frozen.UNIVERSE)}"
+                f"manifest universe {list(self.universe)} deviates from frozen "
+                f"universe {list(frozen.UNIVERSE)} (exactly once each, canonical order)"
             )
         # R1 I1 loader-hardening follow-up: exactly one kline + one funding
         # entry per frozen symbol -- no duplicate/missing/extra. A duplicate
@@ -227,6 +236,20 @@ class CorpusManifest:
             raise ValueError(
                 f"manifest funding covers {funding_symbols}, expected exactly "
                 f"{sorted(frozen.UNIVERSE)} (no duplicate/missing/extra)"
+            )
+        # Captain review: coverage BEFORE per-entry value checks. The old code
+        # only ever looped over whatever entries WERE present and checked their
+        # VALUES -- a missing symbol was invisible (nothing to iterate), and a
+        # duplicate entry for one symbol substituted in place of a missing one
+        # was invisible too (every present entry individually value-matches its
+        # own claimed symbol). Exact-tuple coverage, checked first, catches
+        # both before any per-entry value comparison runs.
+        eligibility_symbols = tuple(e.symbol for e in self.eligibility)
+        if eligibility_symbols != frozen.UNIVERSE:
+            raise ValueError(
+                f"manifest eligibility symbols {list(eligibility_symbols)} deviate "
+                f"from frozen universe {list(frozen.UNIVERSE)} (exactly once each, "
+                f"canonical order)"
             )
         for e in self.eligibility:
             expected = frozen.eligibility(e.symbol)
