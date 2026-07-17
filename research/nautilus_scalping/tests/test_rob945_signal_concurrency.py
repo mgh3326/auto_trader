@@ -84,10 +84,14 @@ def test_same_timestamp_different_fold_never_merges():
     assert s1.numerator == 0
 
 
-def test_zero_denominator_is_null_rate_with_stable_reason():
+def test_zero_denominator_keeps_denominator_zero_with_null_rate_and_stable_reason():
+    """Final ruling (orch-fable-answer-rob945c-20260718.md, Q1=A FINAL): the
+    zero-signal row preserves the observed count (denominator=0, a plain
+    int, never null) -- only the RATE (0/0) is undefined."""
     report = compute_signal_concurrency(_both_strategies())
     s1 = report.per_strategy_by_name["S1"]
-    assert s1.denominator is None
+    assert s1.denominator == 0
+    assert type(s1.denominator) is int
     assert s1.rate is None
     assert s1.reason == "no_entry_signal_minutes"
 

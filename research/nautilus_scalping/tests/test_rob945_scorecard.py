@@ -87,10 +87,15 @@ def _symbol_metrics_all_present():
 
 
 def _scenario(
-    scenario_name, net_expectancy_bps=10.0, profit_factor=2.0, trade_count=20
+    scenario_name,
+    net_expectancy_bps=10.0,
+    profit_factor=2.0,
+    trade_count=20,
+    strategy="S1",
+    no_trade_reason_counts=None,
 ):
     return StrategyScenarioAggregate(
-        strategy="S1",
+        strategy=strategy,
         scenario_name=scenario_name,
         trade_count=trade_count,
         net_expectancy_bps=net_expectancy_bps,
@@ -106,6 +111,7 @@ def _scenario(
         symbol_metrics=_symbol_metrics_all_present(),
         incomplete=False,
         incomplete_reason=None,
+        no_trade_reason_counts=no_trade_reason_counts or {},
     )
 
 
@@ -318,6 +324,34 @@ def _base_kwargs():
         "walkforward_results": DEFAULT_WALKFORWARD_RESULTS,
         "strategies": {"S1": _strategy_evidence(), "S2": _strategy_evidence()},
     }
+
+
+def test_zero_denominator_concurrency_renders_as_json_zero_never_null():
+    """I-1 final ruling regression (orch-fable-answer-rob945c-20260718.md,
+    Q1=A FINAL): a zero-signal-minute strategy must render
+    ``denominator: 0`` (not JSON ``null``) with ``rate: null`` in both the
+    JSON payload and the Markdown render."""
+    kwargs = _base_kwargs()
+    zero_concurrency = StrategyConcurrencyEvidence(
+        strategy="S1",
+        numerator=0,
+        denominator=0,
+        rate=None,
+        reason="no_entry_signal_minutes",
+        distinct_symbol_count_histogram={1: 0, 2: 0, 3: 0, 4: 0},
+    )
+    kwargs["strategies"]["S1"]["signal_concurrency"] = zero_concurrency
+    envelope = build_scorecard(**kwargs)
+    concurrency_json = envelope["scorecard_payload"]["strategies"]["S1"][
+        "signal_concurrency"
+    ]
+    assert concurrency_json["denominator"] == 0
+    assert concurrency_json["rate"] is None
+    assert concurrency_json["reason"] == "no_entry_signal_minutes"
+    overall = envelope["scorecard_payload"]["signal_concurrency_overall"]
+    assert overall["denominator"] == 2  # S1:0 + S2:2 (S2 keeps the default fixture)
+    markdown = render_markdown(envelope)
+    assert "denominator=0" in markdown
 
 
 def test_build_scorecard_returns_a_json_serializable_envelope_with_no_nan_or_inf():
@@ -637,3 +671,518 @@ def test_mapping_key_order_does_not_affect_the_hash():
     e1 = build_scorecard(**kwargs)
     e2 = build_scorecard(**kwargs_reordered)
     assert e1["scorecard_artifact_hash"] == e2["scorecard_artifact_hash"]
+
+
+# ===========================================================================
+# Final-fix -- I-4: daily-stop counts, 3/3/2 deltas, ex-BTC subtotal, S2
+# spec-deviation register (mechanically derived, machine-visible, rendered
+# in both JSON and Markdown; never a new pass threshold).
+# ===========================================================================
+
+
+def _strategy_evidence_with(
+    strategy="S1",
+    *,
+    trade_counts=None,
+    no_trade_reason_counts_by_scenario=None,
+):
+    trade_counts = trade_counts or {}
+    no_trade_reason_counts_by_scenario = no_trade_reason_counts_by_scenario or {}
+    return {
+        "scenarios": {
+            name: _scenario(
+                name,
+                strategy=strategy,
+                trade_count=trade_counts.get(name, 20),
+                no_trade_reason_counts=no_trade_reason_counts_by_scenario.get(name, {}),
+            )
+            for name in ("base", "primary_stress", "upward_stress")
+        },
+        "fold_stability": _fold_rows(),
+        "signal_concurrency": _concurrency(),
+        "pbo": _pbo(),
+    }
+
+
+def test_daily_stop_active_count_is_derived_from_no_trade_reason_counts():
+    kwargs = _base_kwargs()
+    kwargs["strategies"]["S1"] = _strategy_evidence_with(
+        "S1",
+        no_trade_reason_counts_by_scenario={
+            "primary_stress": {"daily_stop_active": 4, "cooldown_active": 2}
+        },
+    )
+    envelope = build_scorecard(**kwargs)
+    scenario_json = envelope["scorecard_payload"]["strategies"]["S1"]["scenarios"][
+        "primary_stress"
+    ]
+    assert scenario_json["daily_stop_active_count"] == 4
+    assert scenario_json["no_trade_reason_counts"] == {
+        "daily_stop_active": 4,
+        "cooldown_active": 2,
+    }
+    base_json = envelope["scorecard_payload"]["strategies"]["S1"]["scenarios"]["base"]
+    assert base_json["daily_stop_active_count"] == 0
+    markdown = render_markdown(envelope)
+    assert "daily_stop_active_count" in markdown or "daily_stop" in markdown
+
+
+def test_full_no_trade_reason_counts_histogram_renders_in_markdown_and_changes_with_json():
+    """Render EVERY new field from JSON in Markdown, not just the derived
+    daily_stop_active_count -- the full canonical histogram too, without
+    Markdown recomputing anything. Non-vacuous: mutating the underlying
+    counts changes both JSON and Markdown consistently."""
+    kwargs = _base_kwargs()
+    kwargs["strategies"]["S1"] = _strategy_evidence_with(
+        "S1",
+        no_trade_reason_counts_by_scenario={
+            "primary_stress": {"daily_stop_active": 4, "cooldown_active": 2}
+        },
+    )
+    envelope = build_scorecard(**kwargs)
+    scenario_json = envelope["scorecard_payload"]["strategies"]["S1"]["scenarios"][
+        "primary_stress"
+    ]
+    markdown = render_markdown(envelope)
+    assert str(scenario_json["no_trade_reason_counts"]) in markdown
+    assert "cooldown_active" in markdown
+
+    kwargs2 = _base_kwargs()
+    kwargs2["strategies"]["S1"] = _strategy_evidence_with(
+        "S1",
+        no_trade_reason_counts_by_scenario={
+            "primary_stress": {"daily_stop_active": 9, "tp_below_min_distance": 1}
+        },
+    )
+    envelope2 = build_scorecard(**kwargs2)
+    markdown2 = render_markdown(envelope2)
+    assert markdown2 != markdown
+    assert "tp_below_min_distance" in markdown2
+    assert "cooldown_active" not in markdown2
+
+
+def test_scenario_trade_count_deltas_preserve_the_independent_3_3_2_vector():
+    """The known independent H2 fixture (3/3/2 trade counts across base/
+    primary_stress/upward_stress) must remain VISIBLY 3/3/2 in the deltas --
+    never path-equalized/silently revalued to match one scenario."""
+    kwargs = _base_kwargs()
+    kwargs["strategies"]["S1"] = _strategy_evidence_with(
+        "S1", trade_counts={"base": 3, "primary_stress": 3, "upward_stress": 2}
+    )
+    envelope = build_scorecard(**kwargs)
+    strategy_json = envelope["scorecard_payload"]["strategies"]["S1"]
+    deltas = strategy_json["scenario_trade_count_deltas"]
+    assert deltas["base_minus_primary_stress"] == 0
+    assert deltas["primary_stress_minus_upward_stress"] == 1
+    assert deltas["base_minus_upward_stress"] == 1
+    markdown = render_markdown(envelope)
+    assert "scenario_trade_count_deltas" in markdown or "trade_count_delta" in markdown
+
+
+def test_scenario_trade_count_deltas_change_when_underlying_counts_change():
+    """Non-vacuous mutation proof: changing ONLY the underlying trade
+    counts must change the emitted deltas."""
+    kwargs = _base_kwargs()
+    kwargs["strategies"]["S1"] = _strategy_evidence_with(
+        "S1", trade_counts={"base": 10, "primary_stress": 10, "upward_stress": 10}
+    )
+    envelope_equal = build_scorecard(**kwargs)
+    deltas_equal = envelope_equal["scorecard_payload"]["strategies"]["S1"][
+        "scenario_trade_count_deltas"
+    ]
+    assert deltas_equal == {
+        "base_minus_primary_stress": 0,
+        "primary_stress_minus_upward_stress": 0,
+        "base_minus_upward_stress": 0,
+    }
+
+    kwargs2 = _base_kwargs()
+    kwargs2["strategies"]["S1"] = _strategy_evidence_with(
+        "S1", trade_counts={"base": 10, "primary_stress": 8, "upward_stress": 5}
+    )
+    envelope_diverged = build_scorecard(**kwargs2)
+    deltas_diverged = envelope_diverged["scorecard_payload"]["strategies"]["S1"][
+        "scenario_trade_count_deltas"
+    ]
+    assert deltas_diverged != deltas_equal
+    assert deltas_diverged == {
+        "base_minus_primary_stress": 2,
+        "primary_stress_minus_upward_stress": 3,
+        "base_minus_upward_stress": 5,
+    }
+
+
+def test_ex_btc_reference_subtotal_excludes_btc_and_is_reference_only():
+    kwargs = _base_kwargs()
+    envelope = build_scorecard(**kwargs)
+    scenario_json = envelope["scorecard_payload"]["strategies"]["S1"]["scenarios"][
+        "base"
+    ]
+    subtotal = scenario_json["ex_btc_reference_subtotal"]
+    assert "BTCUSDT" not in subtotal["symbols"]
+    assert set(subtotal["symbols"]) == {"XRPUSDT", "DOGEUSDT", "SOLUSDT"}
+    assert subtotal["trade_count"] == 15  # 3 symbols x 5 trades each (fixture)
+    assert subtotal["signal_count"] == 15
+    assert subtotal["net_pnl_bps"] == pytest.approx(150.0)
+    assert subtotal["pooled_expectancy_bps"] == pytest.approx(10.0)
+    assert subtotal["reference_only"] is True
+    assert subtotal["has_pass_rule"] is False
+    markdown = render_markdown(envelope)
+    assert (
+        "ex_btc_reference_subtotal" in markdown
+        or "ex-BTC" in markdown.lower()
+        or "ex_btc" in markdown.lower()
+    )
+
+
+def test_ex_btc_reference_subtotal_changes_when_underlying_symbol_rows_change():
+    """Non-vacuous mutation proof: the subtotal must reflect a changed
+    symbol row, not a frozen/cached value."""
+
+    def _symbol_metrics_with_xrp_zero_trades():
+        from rob945_scenario_metrics import SymbolScenarioMetrics
+
+        rows = []
+        for s in _SYMBOLS:
+            if s == "XRPUSDT":
+                rows.append(
+                    SymbolScenarioMetrics(
+                        symbol=s,
+                        trade_count=0,
+                        signal_count=1,
+                        net_expectancy_bps=None,
+                        net_pnl_bps=0.0,
+                    )
+                )
+            else:
+                rows.append(
+                    SymbolScenarioMetrics(
+                        symbol=s,
+                        trade_count=5,
+                        signal_count=5,
+                        net_expectancy_bps=10.0,
+                        net_pnl_bps=50.0,
+                    )
+                )
+        return tuple(rows)
+
+    kwargs = _base_kwargs()
+    mutated_scenario = StrategyScenarioAggregate(
+        strategy="S1",
+        scenario_name="base",
+        trade_count=20,
+        net_expectancy_bps=None,
+        pooled_expectancy_bps=10.0,
+        profit_factor=2.0,
+        win_rate=0.6,
+        net_pnl_bps=200.0,
+        timeout_ratio=0.1,
+        mdd_r=1.5,
+        mdd_reason=None,
+        monthly_concentration=0.3,
+        monthly_concentration_reason=None,
+        symbol_metrics=_symbol_metrics_with_xrp_zero_trades(),
+        incomplete=True,
+        incomplete_reason="insufficient_oos_symbol_evidence",
+    )
+    kwargs["strategies"]["S1"]["scenarios"]["base"] = mutated_scenario
+    envelope = build_scorecard(**kwargs)
+    subtotal = envelope["scorecard_payload"]["strategies"]["S1"]["scenarios"]["base"][
+        "ex_btc_reference_subtotal"
+    ]
+    assert subtotal["trade_count"] == 10  # DOGE+SOL only now (5 each), XRP zeroed
+    assert subtotal["net_pnl_bps"] == pytest.approx(100.0)
+
+
+def test_s2_spec_deviation_register_present_only_for_s2_with_rejection_counts():
+    kwargs = _base_kwargs()
+    kwargs["strategies"]["S2"] = _strategy_evidence_with(
+        "S2",
+        no_trade_reason_counts_by_scenario={
+            "primary_stress": {"target_direction_invalid": 7, "tp_above_max": 2},
+            "upward_stress": {"target_direction_invalid": 3},
+        },
+    )
+    envelope = build_scorecard(**kwargs)
+    s1_json = envelope["scorecard_payload"]["strategies"]["S1"]
+    s2_json = envelope["scorecard_payload"]["strategies"]["S2"]
+    # Captain precision: S1 must OMIT the key entirely, never carry it as None.
+    assert "spec_deviation_register" not in s1_json
+    register = s2_json["spec_deviation_register"]
+    assert "direction-validity gate" in register["statement"]
+    assert "label contamination" in register["statement"]
+    assert (
+        register["rejection_counts_by_scenario"]["primary_stress"][
+            "target_direction_invalid"
+        ]
+        == 7
+    )
+    assert (
+        register["rejection_counts_by_scenario"]["primary_stress"]["tp_above_max"] == 2
+    )
+    assert register["total_rejection_counts"]["target_direction_invalid"] == 10
+    markdown = render_markdown(envelope)
+    assert "target_direction_invalid" in markdown
+
+
+def test_symbol_metrics_duplicate_symbol_fails_closed():
+    """Captain precision: exact frozen symbol ORDER/no-duplicates -- set
+    equality alone would accept a duplicate BTCUSDT row silently replacing
+    SOLUSDT."""
+    from rob945_scenario_metrics import SymbolScenarioMetrics
+
+    kwargs = _base_kwargs()
+    duplicated_symbol_metrics = tuple(
+        SymbolScenarioMetrics(
+            symbol="BTCUSDT" if s == "SOLUSDT" else s,
+            trade_count=5,
+            signal_count=5,
+            net_expectancy_bps=10.0,
+            net_pnl_bps=50.0,
+        )
+        for s in _SYMBOLS
+    )
+    mutated = StrategyScenarioAggregate(
+        strategy="S1",
+        scenario_name="base",
+        trade_count=20,
+        net_expectancy_bps=10.0,
+        pooled_expectancy_bps=10.0,
+        profit_factor=2.0,
+        win_rate=0.6,
+        net_pnl_bps=200.0,
+        timeout_ratio=0.1,
+        mdd_r=1.5,
+        mdd_reason=None,
+        monthly_concentration=0.3,
+        monthly_concentration_reason=None,
+        symbol_metrics=duplicated_symbol_metrics,
+        incomplete=False,
+        incomplete_reason=None,
+    )
+    kwargs["strategies"]["S1"]["scenarios"]["base"] = mutated
+    with pytest.raises(ScorecardInputError):
+        build_scorecard(**kwargs)
+
+
+def test_symbol_metrics_out_of_order_fails_closed():
+    """Same frozen SET, wrong order -- must still fail closed (set
+    equality alone is not enough)."""
+    from rob945_scenario_metrics import SymbolScenarioMetrics
+
+    kwargs = _base_kwargs()
+    reversed_symbol_metrics = tuple(
+        SymbolScenarioMetrics(
+            symbol=s,
+            trade_count=5,
+            signal_count=5,
+            net_expectancy_bps=10.0,
+            net_pnl_bps=50.0,
+        )
+        for s in reversed(_SYMBOLS)
+    )
+    mutated = StrategyScenarioAggregate(
+        strategy="S1",
+        scenario_name="base",
+        trade_count=20,
+        net_expectancy_bps=10.0,
+        pooled_expectancy_bps=10.0,
+        profit_factor=2.0,
+        win_rate=0.6,
+        net_pnl_bps=200.0,
+        timeout_ratio=0.1,
+        mdd_r=1.5,
+        mdd_reason=None,
+        monthly_concentration=0.3,
+        monthly_concentration_reason=None,
+        symbol_metrics=reversed_symbol_metrics,
+        incomplete=False,
+        incomplete_reason=None,
+    )
+    kwargs["strategies"]["S1"]["scenarios"]["base"] = mutated
+    with pytest.raises(ScorecardInputError):
+        build_scorecard(**kwargs)
+
+
+def test_ex_btc_reference_subtotal_symbols_are_exactly_xrp_doge_sol_in_frozen_order():
+    kwargs = _base_kwargs()
+    envelope = build_scorecard(**kwargs)
+    subtotal = envelope["scorecard_payload"]["strategies"]["S1"]["scenarios"]["base"][
+        "ex_btc_reference_subtotal"
+    ]
+    assert subtotal["symbols"] == ["XRPUSDT", "DOGEUSDT", "SOLUSDT"]
+
+
+def test_scenarios_and_rejection_counts_render_in_frozen_scenario_order_regardless_of_input():
+    """Captain precision: emit scenarios/rejection_counts_by_scenario in
+    _REQUIRED_SCENARIOS order, independent of the caller Mapping's own
+    insertion order."""
+    kwargs = _base_kwargs()
+    reversed_evidence = _strategy_evidence_with(
+        "S2",
+        no_trade_reason_counts_by_scenario={
+            "primary_stress": {"target_direction_invalid": 7},
+            "upward_stress": {"target_direction_invalid": 3},
+        },
+    )
+    # Reverse the caller's own scenarios mapping insertion order.
+    reversed_evidence["scenarios"] = dict(
+        reversed(list(reversed_evidence["scenarios"].items()))
+    )
+    kwargs["strategies"]["S2"] = reversed_evidence
+    envelope = build_scorecard(**kwargs)
+    s2_json = envelope["scorecard_payload"]["strategies"]["S2"]
+    assert list(s2_json["scenarios"].keys()) == [
+        "base",
+        "primary_stress",
+        "upward_stress",
+    ]
+    assert list(
+        s2_json["spec_deviation_register"]["rejection_counts_by_scenario"].keys()
+    ) == ["base", "primary_stress", "upward_stress"]
+
+
+# ===========================================================================
+# Final-fix -- I-5 / Task 6.1: top-level campaign_reason_codes
+# ===========================================================================
+
+
+def test_campaign_reason_codes_empty_for_a_genuine_clean_historical_pass():
+    kwargs = _base_kwargs()
+    envelope = build_scorecard(**kwargs)
+    body = envelope["scorecard_payload"]
+    assert body["campaign_verdict"] == "historical_pass"
+    assert body["campaign_reason_codes"] == []
+    markdown = render_markdown(envelope)
+    assert "campaign_reason_codes" in markdown
+
+
+def test_campaign_reason_codes_dedupe_when_both_strategies_share_a_reason():
+    kwargs = _base_kwargs()
+    kwargs["strategies"]["S1"]["capture_valid"] = False
+    kwargs["strategies"]["S2"]["capture_valid"] = False
+    envelope = build_scorecard(**kwargs)
+    body = envelope["scorecard_payload"]
+    assert body["campaign_verdict"] == "incomplete"
+    assert body["campaign_reason_codes"] == ["capture_invalid"]
+
+
+def test_campaign_reason_codes_sorted_when_strategies_have_distinct_reasons():
+    kwargs = _base_kwargs()
+    kwargs["strategies"]["S1"]["capture_valid"] = False
+    kwargs["strategies"]["S2"]["pbo_valid"] = False
+    envelope = build_scorecard(**kwargs)
+    body = envelope["scorecard_payload"]
+    assert body["campaign_verdict"] == "incomplete"
+    assert body["campaign_reason_codes"] == ["capture_invalid", "pbo_grid_invalid"]
+
+
+def test_campaign_reason_codes_incomplete_precedence_only_driving_incomplete_reasons():
+    """When campaign_verdict is 'incomplete' (S1 incomplete, S2 would
+    otherwise historical_fail), ONLY the driving INCOMPLETE strategy's
+    reason codes are included -- S2's fail reasons never leak in, since
+    incomplete precedence means they never drove the campaign verdict."""
+    kwargs = _base_kwargs()
+    kwargs["strategies"]["S1"]["capture_valid"] = False
+    kwargs["strategies"]["S2"]["scenarios"]["primary_stress"] = _scenario(
+        "primary_stress", net_expectancy_bps=1.0, strategy="S2"
+    )
+    envelope = build_scorecard(**kwargs)
+    body = envelope["scorecard_payload"]
+    assert body["campaign_verdict"] == "incomplete"
+    assert body["campaign_reason_codes"] == ["capture_invalid"]
+    assert "expectancy_below_5bp_threshold" not in body["campaign_reason_codes"]
+
+
+def test_campaign_reason_codes_include_accounting_incomplete_reason():
+    kwargs = _base_kwargs()
+    kwargs["accounting_report"] = _clean_accounting_report(
+        _derive_campaign_run_id(_REAL_FULL_CAMPAIGN_HASH),
+        actual_registrations=25,
+        extra_experiment_ids=["some-unexpected-registered-id"],
+        verdict="incomplete",
+    )
+    envelope = build_scorecard(**kwargs)
+    body = envelope["scorecard_payload"]
+    assert body["campaign_verdict"] == "incomplete"
+    assert set(body["campaign_reason_codes"]) & set(
+        body["lineage"]["accounting_reason_codes"]
+    )
+
+
+def test_campaign_reason_codes_historical_fail_only_from_failing_strategies():
+    """Both strategies accounting-complete; S1 fails one criterion, S2
+    passes cleanly -- campaign_verdict is historical_fail and
+    campaign_reason_codes carries ONLY S1's fail reasons."""
+    kwargs = _base_kwargs()
+    kwargs["strategies"]["S1"]["scenarios"]["primary_stress"] = _scenario(
+        "primary_stress", net_expectancy_bps=1.0, strategy="S1"
+    )
+    envelope = build_scorecard(**kwargs)
+    body = envelope["scorecard_payload"]
+    assert body["campaign_verdict"] == "historical_fail"
+    assert body["campaign_reason_codes"] == ["expectancy_below_5bp_threshold"]
+    markdown = render_markdown(envelope)
+    assert "expectancy_below_5bp_threshold" in markdown
+
+
+def test_campaign_reason_codes_union_accounting_incomplete_plus_strategy_incomplete():
+    """Captain precision: sealed accounting incomplete AND a strategy ALSO
+    incomplete -> the union of BOTH sets of reasons, never just one side.
+    A THIRD strategy that would otherwise have been historical_fail (S2,
+    low expectancy) must still be excluded entirely -- incomplete
+    precedence means its fail reasons never drove the campaign verdict."""
+    kwargs = _base_kwargs()
+    kwargs["accounting_report"] = _clean_accounting_report(
+        _derive_campaign_run_id(_REAL_FULL_CAMPAIGN_HASH),
+        actual_registrations=25,
+        extra_experiment_ids=["some-unexpected-registered-id"],
+        verdict="incomplete",
+    )
+    kwargs["strategies"]["S1"]["capture_valid"] = False
+    kwargs["strategies"]["S2"]["scenarios"]["primary_stress"] = _scenario(
+        "primary_stress", net_expectancy_bps=1.0, strategy="S2"
+    )
+    envelope = build_scorecard(**kwargs)
+    body = envelope["scorecard_payload"]
+    assert body["campaign_verdict"] == "incomplete"
+    accounting_reasons = set(body["lineage"]["accounting_reason_codes"])
+    assert accounting_reasons  # sanity: the forged report really is incomplete
+    expected = sorted(accounting_reasons | {"capture_invalid"})
+    assert body["campaign_reason_codes"] == expected
+    assert "expectancy_below_5bp_threshold" not in body["campaign_reason_codes"]
+
+
+def test_campaign_reason_codes_deterministic_regardless_of_strategies_mapping_order():
+    kwargs = _base_kwargs()
+    kwargs["strategies"]["S1"]["capture_valid"] = False
+    kwargs["strategies"]["S2"]["pbo_valid"] = False
+    forward = build_scorecard(**kwargs)
+
+    kwargs_reversed = _base_kwargs()
+    kwargs_reversed["strategies"]["S1"]["capture_valid"] = False
+    kwargs_reversed["strategies"]["S2"]["pbo_valid"] = False
+    kwargs_reversed["strategies"] = dict(
+        reversed(list(kwargs_reversed["strategies"].items()))
+    )
+    reversed_envelope = build_scorecard(**kwargs_reversed)
+
+    assert (
+        forward["scorecard_payload"]["campaign_reason_codes"]
+        == reversed_envelope["scorecard_payload"]["campaign_reason_codes"]
+        == ["capture_invalid", "pbo_grid_invalid"]
+    )
+
+
+def test_markdown_renders_the_exact_json_campaign_reason_codes_array():
+    import json
+
+    kwargs = _base_kwargs()
+    kwargs["strategies"]["S1"]["capture_valid"] = False
+    kwargs["strategies"]["S2"]["pbo_valid"] = False
+    envelope = build_scorecard(**kwargs)
+    body = envelope["scorecard_payload"]
+    markdown = render_markdown(envelope)
+    expected_json_array = json.dumps(body["campaign_reason_codes"])
+    assert '"capture_invalid"' in expected_json_array  # sanity: real JSON syntax
+    assert f"campaign_reason_codes: {expected_json_array}" in markdown

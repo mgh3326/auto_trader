@@ -21,11 +21,14 @@ to distinguish "no signal at all" from "signal existed but was gated out".
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 import rob941_frozen_scope as frozen
+from rob940_cost_model import COST_SCENARIOS, FEE_ROUND_TRIP_BPS
+from rob940_cost_model import gross_bps as _cost_model_gross_bps
+from rob940_cost_model import net_bps as _cost_model_net_bps
 from rob940_engine import SignalEvent, TradeRecord
 
 INSUFFICIENT_OOS_SYMBOL_EVIDENCE_REASON = "insufficient_oos_symbol_evidence"
@@ -39,8 +42,49 @@ FROZEN_UNIVERSE: tuple[str, ...] = (
     frozen.UNIVERSE
 )  # ("BTCUSDT", "XRPUSDT", "DOGEUSDT", "SOLUSDT")
 
+# Frozen scenario -> all_in_bps authority (rob940_cost_model.COST_SCENARIOS).
+_ALL_IN_BPS_BY_SCENARIO: dict[str, float] = {
+    s.name: s.all_in_bps for s in COST_SCENARIOS
+}
+_COST_SCENARIO_BY_NAME = {s.name: s for s in COST_SCENARIOS}
+
+# The closed set of no_trade_reason_counts KEYS this system can ever
+# legitimately produce -- literal hand-verified duplicate of the same
+# closed set established in rob945_h6_summary_contract.py (H2's bare-string
+# no-fill reasons, H4's funding-gate reasons, H3 S2's 6-code rejection set)
+# -- an arbitrary caller-injected key must never be hashed/exposed.
+_KNOWN_NO_TRADE_REASONS: frozenset[str] = frozenset(
+    {
+        "next_bar_unavailable",
+        "daily_stop_active",
+        "daily_entry_cap",
+        "cooldown_active",
+        "tp_below_min_distance",
+        "funding_evidence_unavailable",
+        "expected_funding_cost_above_3bps",
+        "confirmation_failed",
+        "target_direction_invalid",
+        "tp_above_max",
+        "tp_below_r_min_sl",
+        "tp_below_abs_floor",
+    }
+)
+
 
 def _assert_finite(value: float, *, context: str) -> None:
+    # Captain scope reminder (Task 3 final-fix): exact/plain runtime types,
+    # not only math.isfinite()/isinstance() -- a bool IS finite and IS an
+    # int/float subclass (so it would silently pass isfinite AND could
+    # coincidentally equal an expected value via `True == 1.0`), a plain
+    # int can masquerade as float and pass a `==`-based expected-value
+    # check (`10 == 10.0`), and a str raw input would otherwise leak an
+    # uncontrolled TypeError out of math.isfinite() itself. type(x) is
+    # float (never isinstance) is checked FIRST, before finiteness.
+    if type(value) is not float:
+        raise ValueError(
+            f"compute_scenario_metrics: raw economic input at {context} must be an "
+            "exact float"
+        )
     if not math.isfinite(value):
         raise ValueError(
             f"compute_scenario_metrics: non-finite raw economic input at {context} "
@@ -49,7 +93,15 @@ def _assert_finite(value: float, *, context: str) -> None:
         )
 
 
-def _validate_trades(strategy: str, ledger: Sequence[TradeRecord]) -> None:
+def _validate_trades(
+    strategy: str,
+    scenario_name: str,
+    ledger: Sequence[TradeRecord],
+    *,
+    fold_selected_config: Mapping[str, str],
+) -> None:
+    expected_all_in_bps = _ALL_IN_BPS_BY_SCENARIO[scenario_name]
+    cost_scenario = _COST_SCENARIO_BY_NAME[scenario_name]
     seen_identity: set[tuple[str, str, str, str | None, int]] = set()
     for trade in ledger:
         if trade.strategy != strategy:
@@ -84,6 +136,11 @@ def _validate_trades(strategy: str, ledger: Sequence[TradeRecord]) -> None:
             _assert_finite(getattr(trade, field_name), context=f"trade.{field_name}")
         for price_field in ("entry_price", "exit_price"):
             price = getattr(trade, price_field)
+            if type(price) is not float:
+                raise ValueError(
+                    f"compute_scenario_metrics: trade.{price_field} must be an exact "
+                    "float"
+                )
             if not math.isfinite(price) or price <= 0:
                 raise ValueError(
                     f"compute_scenario_metrics: trade.{price_field} must be finite and "
@@ -91,7 +148,9 @@ def _validate_trades(strategy: str, ledger: Sequence[TradeRecord]) -> None:
                 )
         for ts_field in ("signal_ts", "entry_ts", "exit_ts"):
             ts_value = getattr(trade, ts_field)
-            if isinstance(ts_value, bool) or not isinstance(ts_value, int):
+            # type(...) is not int (never isinstance) rejects bool AND any
+            # int subclass uniformly.
+            if type(ts_value) is not int:
                 raise ValueError(
                     f"compute_scenario_metrics: trade.{ts_field} must be a plain int, "
                     f"got {ts_value!r}"
@@ -113,8 +172,67 @@ def _validate_trades(strategy: str, ledger: Sequence[TradeRecord]) -> None:
                 f"outside the closed set {sorted(_CLOSED_EXIT_REASONS)!r}"
             )
 
+        # Task 3 final-fix: economic identity re-derivation -- fee_bps/
+        # all_in_bps must match the frozen scenario authority exactly, and
+        # gross_bps/net_bps must equal what rob940_cost_model would
+        # actually derive from this trade's own prices/side/funding --
+        # never a caller-forged/double-fee-subtracted value.
+        if trade.fee_bps != FEE_ROUND_TRIP_BPS:
+            raise ValueError(
+                f"compute_scenario_metrics: trade.fee_bps must be exactly "
+                f"{FEE_ROUND_TRIP_BPS!r}, got {trade.fee_bps!r}"
+            )
+        if trade.all_in_bps != expected_all_in_bps:
+            raise ValueError(
+                f"compute_scenario_metrics: trade.all_in_bps must be exactly "
+                f"{expected_all_in_bps!r} for scenario {scenario_name!r}, got "
+                f"{trade.all_in_bps!r}"
+            )
+        recomputed_gross_bps = _cost_model_gross_bps(
+            trade.side, trade.entry_price, trade.exit_price
+        )
+        if trade.gross_bps != recomputed_gross_bps:
+            raise ValueError(
+                "compute_scenario_metrics: trade.gross_bps does not match the "
+                "recomputed rob940_cost_model.gross_bps derivation from its own "
+                "side/entry_price/exit_price"
+            )
+        recomputed_net_bps = _cost_model_net_bps(
+            trade.gross_bps, cost_scenario, trade.funding_bps
+        )
+        if trade.net_bps != recomputed_net_bps:
+            raise ValueError(
+                "compute_scenario_metrics: trade.net_bps does not match the "
+                "recomputed rob940_cost_model.net_bps derivation -- no double-fee "
+                "subtraction or forged value is trusted"
+            )
 
-def _validate_signals(strategy: str, captured_signals: Sequence[SignalEvent]) -> None:
+        # Every trade must use a fold in the exact frozen fold map and the
+        # exact config selected for that fold -- reject unregistered folds/
+        # Every trade must use a fold in the exact frozen fold map and the
+        # exact config selected for that fold -- fail closed (never
+        # opt-in/skippable): an unregistered fold or config-drifted trade is
+        # rejected outright, rather than silently dropped.
+        if trade.fold_id not in fold_selected_config:
+            raise ValueError(
+                f"compute_scenario_metrics: trade.fold_id {trade.fold_id!r} is not "
+                "a registered fold in fold_selected_config"
+            )
+        if trade.config_id != fold_selected_config[trade.fold_id]:
+            raise ValueError(
+                f"compute_scenario_metrics: trade.config_id {trade.config_id!r} does "
+                f"not match fold {trade.fold_id!r}'s selected config "
+                f"{fold_selected_config[trade.fold_id]!r} -- config drift rejected"
+            )
+
+
+def _validate_signals(
+    strategy: str,
+    captured_signals: Sequence[SignalEvent],
+    *,
+    fold_selected_config: Mapping[str, str],
+) -> None:
+    seen_identity: set[tuple[str, str, str, str | None, int]] = set()
     for signal in captured_signals:
         if signal.strategy != strategy:
             raise ValueError(
@@ -126,6 +244,71 @@ def _validate_signals(strategy: str, captured_signals: Sequence[SignalEvent]) ->
                 f"compute_scenario_metrics: signal symbol {signal.symbol!r} is outside "
                 f"the frozen universe {FROZEN_UNIVERSE!r}"
             )
+        # Captain scope reminder: exact/plain runtime types -- a bool is
+        # both a valid int (signal_ts) and a valid float (sl_distance_bps)
+        # to isinstance/math.isfinite, so type(x) is T (never isinstance)
+        # is required here too, matching the trade-side hardening above.
+        if type(signal.signal_ts) is not int:
+            raise ValueError(
+                f"compute_scenario_metrics: signal.signal_ts must be a plain int, got "
+                f"{signal.signal_ts!r}"
+            )
+        if type(signal.sl_distance_bps) is not float:
+            raise ValueError(
+                "compute_scenario_metrics: signal.sl_distance_bps must be an exact float"
+            )
+        # Task 3 final-fix: captured signals are held to the SAME fail-closed
+        # fold/config registration as trades -- caller omission of usable
+        # evidence must never bypass validation.
+        if signal.fold_id not in fold_selected_config:
+            raise ValueError(
+                f"compute_scenario_metrics: signal.fold_id {signal.fold_id!r} is not a "
+                "registered fold in fold_selected_config"
+            )
+        if signal.config_id != fold_selected_config[signal.fold_id]:
+            raise ValueError(
+                f"compute_scenario_metrics: signal.config_id {signal.config_id!r} does "
+                f"not match fold {signal.fold_id!r}'s selected config "
+                f"{fold_selected_config[signal.fold_id]!r} -- config drift rejected"
+            )
+        # Task 3 final-fix: a duplicate captured-signal identity fails
+        # closed UNCONDITIONALLY -- even when both copies agree on
+        # sl_distance_bps (previously only a VALUE mismatch was flagged, as
+        # merely "ambiguous" evidence in ``_build_signal_sl_lookup``).
+        identity = (
+            signal.strategy,
+            signal.config_id,
+            signal.symbol,
+            signal.fold_id,
+            signal.signal_ts,
+        )
+        if identity in seen_identity:
+            raise ValueError(
+                f"compute_scenario_metrics: duplicate captured_signals identity "
+                f"{identity!r}"
+            )
+        seen_identity.add(identity)
+
+
+def _validate_no_trade_reason_counts(
+    no_trade_reason_counts: Mapping[str, int] | None,
+) -> dict[str, int]:
+    if no_trade_reason_counts is None:
+        return {}
+    normalized: dict[str, int] = {}
+    for key, value in dict(no_trade_reason_counts).items():
+        if type(key) is not str or key not in _KNOWN_NO_TRADE_REASONS:
+            raise ValueError(
+                "compute_scenario_metrics: no_trade_reason_counts has a key outside "
+                "the closed known-reasons allowlist"
+            )
+        if type(value) is not int or value < 0:
+            raise ValueError(
+                f"compute_scenario_metrics: no_trade_reason_counts[{key!r}] must be a "
+                f"nonnegative plain int, got {value!r}"
+            )
+        normalized[key] = value
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -155,6 +338,7 @@ class StrategyScenarioAggregate:
     symbol_metrics: tuple[SymbolScenarioMetrics, ...] = field(default_factory=tuple)
     incomplete: bool = False
     incomplete_reason: str | None = None
+    no_trade_reason_counts: dict[str, int] = field(default_factory=dict)
 
 
 def _canonical_trade_sort_key(
@@ -304,9 +488,29 @@ def compute_scenario_metrics(
     scenario_name: str,
     ledger: Sequence[TradeRecord],
     captured_signals: Sequence[SignalEvent],
+    fold_selected_config: Mapping[str, str],
+    no_trade_reason_counts: Mapping[str, int] | None = None,
 ) -> StrategyScenarioAggregate:
-    _validate_trades(strategy, ledger)
-    _validate_signals(strategy, captured_signals)
+    """``fold_selected_config`` is REQUIRED and fail-closed (Task 3
+    final-fix, captain scope reminder): every trade AND every captured
+    signal must use a fold in this exact frozen fold map and the exact
+    config selected for that fold. There is no opt-in/omission path -- a
+    caller cannot bypass registration validation merely by not supplying
+    the map."""
+    if scenario_name not in _ALL_IN_BPS_BY_SCENARIO:
+        raise ValueError(
+            f"compute_scenario_metrics: scenario_name must be one of "
+            f"{sorted(_ALL_IN_BPS_BY_SCENARIO)!r}, got {scenario_name!r}"
+        )
+    _validate_trades(
+        strategy, scenario_name, ledger, fold_selected_config=fold_selected_config
+    )
+    _validate_signals(
+        strategy, captured_signals, fold_selected_config=fold_selected_config
+    )
+    validated_no_trade_reason_counts = _validate_no_trade_reason_counts(
+        no_trade_reason_counts
+    )
     trade_count = len(ledger)
     net_pnl_bps = sum(trade.net_bps for trade in ledger)
     gross_profit_bps = sum(trade.net_bps for trade in ledger if trade.net_bps > 0)
@@ -383,4 +587,5 @@ def compute_scenario_metrics(
         symbol_metrics=tuple(symbol_metrics),
         incomplete=incomplete,
         incomplete_reason=incomplete_reason,
+        no_trade_reason_counts=validated_no_trade_reason_counts,
     )

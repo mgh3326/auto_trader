@@ -11,8 +11,10 @@ pre-engine OOS ``SignalEvent`` batch (captured via ``rob945_capture``).
 - denominator: unique ``(strategy, fold_id, minute)`` with a valid entry
   signal from >=1 distinct symbol.
 - numerator: same set restricted to >=2 distinct symbols.
-- rate = numerator / denominator; ``denominator == 0`` -> ``None`` rate +
-  stable reason ``no_entry_signal_minutes``.
+- rate = numerator / denominator; ``denominator == 0`` -> denominator STAYS
+  ``0`` (a real observed count), only ``rate`` is ``None``, with stable
+  reason ``no_entry_signal_minutes`` (final ruling,
+  orch-fable-answer-rob945c-20260718.md, Q1=A FINAL).
 - per-strategy ``distinct_symbol_count`` histogram over buckets 1..4.
 - the overall row is REFERENCE ONLY: it sums per-strategy numerator/
   denominator and carries no separate pass rule.
@@ -41,7 +43,7 @@ _REQUIRED_STRATEGIES = ("S1", "S2")
 class StrategyConcurrencyEvidence:
     strategy: str
     numerator: int
-    denominator: int | None
+    denominator: int
     rate: float | None
     reason: str | None
     distinct_symbol_count_histogram: dict[int, int] = field(default_factory=dict)
@@ -105,10 +107,15 @@ def _evidence_for_one_strategy(
             histogram[count] += 1
 
     if denominator == 0:
+        # Final ruling (orch-fable-answer-rob945c-20260718.md, Q1=A FINAL):
+        # denominator preserves the observed count (0 is a real, known fact
+        # -- there were zero entry-signal minutes) -- only the RATE (0/0) is
+        # undefined. The original rob945 "0 -> null" language referred to
+        # rate, not this field.
         return StrategyConcurrencyEvidence(
             strategy=strategy,
             numerator=0,
-            denominator=None,
+            denominator=0,
             rate=None,
             reason=NO_ENTRY_SIGNAL_MINUTES_REASON,
             distinct_symbol_count_histogram=histogram,
@@ -137,7 +144,9 @@ def compute_signal_concurrency(
         for strategy in _REQUIRED_STRATEGIES
     )
     overall_numerator = sum(evidence.numerator for evidence in per_strategy)
-    overall_denominator = sum(evidence.denominator or 0 for evidence in per_strategy)
+    # denominator is always a plain int now (never None) -- natural integer
+    # sum, no null-masking.
+    overall_denominator = sum(evidence.denominator for evidence in per_strategy)
     return SignalConcurrencyReport(
         per_strategy=per_strategy,
         overall_numerator=overall_numerator,

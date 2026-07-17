@@ -12,6 +12,7 @@ or references a ROB-905 ``validated_signal_gate.v1`` artifact/path.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
 from typing import Any
@@ -89,10 +90,52 @@ _DISCLOSURES: dict[str, Any] = {
     "not_validated_signal_gate": True,
 }
 
+# I-4 final-fix: S2's spec-deviation register content (Fable ruling,
+# orch-fable-answer-rob943-s2-20260717.md, Q1=A final) -- machine-visible,
+# never silently expanded/invented beyond this exact statement.
+_S2_SPEC_DEVIATION_STATEMENT = (
+    "original three gates plus a direction-validity gate by Fable ruling, "
+    "to prevent label contamination"
+)
+# H3 S2's exact closed 6-code pre-execution rejection set (mirrors
+# rob944_walkforward.H3_GENERATOR_REJECTION_REASONS -- literal hand-verified
+# duplicate, same pattern as other H5 closed-reason allowlists).
+_S2_REJECTION_REASONS: tuple[str, ...] = (
+    "confirmation_failed",
+    "next_bar_unavailable",
+    "target_direction_invalid",
+    "tp_above_max",
+    "tp_below_r_min_sl",
+    "tp_below_abs_floor",
+)
+
 
 def _require(condition: bool, reason: str) -> None:
     if not condition:
         raise ScorecardInputError(reason)
+
+
+def _ex_btc_reference_subtotal_payload(
+    aggregate: StrategyScenarioAggregate,
+) -> dict[str, Any]:
+    """I-4 final-fix: a reference-only 3-symbol (XRP/DOGE/SOL) subtotal,
+    mechanically derived from the already-validated per-symbol rows --
+    never a new pass rule. ``symbols`` preserves the frozen-universe order
+    (``symbol_metrics`` is itself built in that order) minus BTCUSDT."""
+    rows = [m for m in aggregate.symbol_metrics if m.symbol != "BTCUSDT"]
+    trade_count = sum(m.trade_count for m in rows)
+    signal_count = sum(m.signal_count for m in rows)
+    net_pnl_bps = sum(m.net_pnl_bps for m in rows)
+    pooled_expectancy_bps = net_pnl_bps / trade_count if trade_count else None
+    return {
+        "symbols": [m.symbol for m in rows],
+        "trade_count": trade_count,
+        "signal_count": signal_count,
+        "net_pnl_bps": net_pnl_bps,
+        "pooled_expectancy_bps": pooled_expectancy_bps,
+        "reference_only": True,
+        "has_pass_rule": False,
+    }
 
 
 def _scenario_aggregate_payload(aggregate: StrategyScenarioAggregate) -> dict[str, Any]:
@@ -121,6 +164,63 @@ def _scenario_aggregate_payload(aggregate: StrategyScenarioAggregate) -> dict[st
         ],
         "incomplete": aggregate.incomplete,
         "incomplete_reason": aggregate.incomplete_reason,
+        # I-4 final-fix: mechanically derived from the H4-exposed
+        # no_trade_reason_counts histogram -- never a caller-authored bool.
+        "no_trade_reason_counts": dict(
+            sorted(aggregate.no_trade_reason_counts.items())
+        ),
+        "daily_stop_active_count": aggregate.no_trade_reason_counts.get(
+            "daily_stop_active", 0
+        ),
+        "ex_btc_reference_subtotal": _ex_btc_reference_subtotal_payload(aggregate),
+    }
+
+
+def _scenario_trade_count_deltas_payload(
+    scenarios: Mapping[str, StrategyScenarioAggregate],
+) -> dict[str, int]:
+    """I-4 final-fix: explicit, deterministic pairwise trade-count deltas --
+    the known independent H2 3/3/2 fixture must remain VISIBLY 3/3/2 here,
+    never silently path-equalized. No new pass threshold."""
+    return {
+        "base_minus_primary_stress": (
+            scenarios["base"].trade_count - scenarios["primary_stress"].trade_count
+        ),
+        "primary_stress_minus_upward_stress": (
+            scenarios["primary_stress"].trade_count
+            - scenarios["upward_stress"].trade_count
+        ),
+        "base_minus_upward_stress": (
+            scenarios["base"].trade_count - scenarios["upward_stress"].trade_count
+        ),
+    }
+
+
+def _s2_spec_deviation_register_payload(
+    scenarios: Mapping[str, StrategyScenarioAggregate],
+) -> dict[str, Any]:
+    """I-4 final-fix: S2-only machine-visible register of the frozen
+    direction-validity-gate disclosure plus per-scenario/total rejection
+    counts, derived from the H4-exposed no_trade_reason_counts histograms.
+    S1 must not carry this key at all."""
+    rejection_counts_by_scenario = {
+        scenario_name: {
+            reason: aggregate.no_trade_reason_counts.get(reason, 0)
+            for reason in _S2_REJECTION_REASONS
+        }
+        for scenario_name, aggregate in scenarios.items()
+    }
+    total_rejection_counts = {
+        reason: sum(
+            aggregate.no_trade_reason_counts.get(reason, 0)
+            for aggregate in scenarios.values()
+        )
+        for reason in _S2_REJECTION_REASONS
+    }
+    return {
+        "statement": _S2_SPEC_DEVIATION_STATEMENT,
+        "rejection_counts_by_scenario": rejection_counts_by_scenario,
+        "total_rejection_counts": total_rejection_counts,
     }
 
 
@@ -172,14 +272,23 @@ def _validate_and_build_strategy(
         set(scenarios.keys()) == set(_REQUIRED_SCENARIOS),
         f"missing_or_extra_scenario_names_for_{strategy}",
     )
+    # Captain precision: normalize ONCE into the exact canonical scenario
+    # order -- every downstream use (payload, deltas, S2 register) consumes
+    # this SAME order, so a caller supplying scenarios in a different
+    # Mapping insertion order can never leak into any output ordering.
+    scenarios = {name: scenarios[name] for name in _REQUIRED_SCENARIOS}
     for scenario_name, aggregate in scenarios.items():
         _require(
             aggregate.scenario_name == scenario_name,
             f"scenario_name_mismatch_for_{strategy}_{scenario_name}",
         )
-        symbol_set = {m.symbol for m in aggregate.symbol_metrics}
+        # Captain precision: exact frozen symbol ORDER, not just set
+        # equality -- a duplicate/reordered symbol_metrics tuple (same set)
+        # must still fail closed, so ex_btc_reference_subtotal's filtered
+        # list is guaranteed to be exactly [XRP, DOGE, SOL] once each.
+        symbol_order = tuple(m.symbol for m in aggregate.symbol_metrics)
         _require(
-            symbol_set == set(_REQUIRED_SYMBOLS),
+            symbol_order == _REQUIRED_SYMBOLS,
             f"missing_symbol_coverage_for_{strategy}_{scenario_name}",
         )
 
@@ -251,11 +360,12 @@ def _validate_and_build_strategy(
         accounting_incomplete_reason=incomplete_reason,
     )
 
-    return {
+    strategy_payload = {
         "strategy": strategy,
         "scenarios": {
             name: _scenario_aggregate_payload(agg) for name, agg in scenarios.items()
         },
+        "scenario_trade_count_deltas": _scenario_trade_count_deltas_payload(scenarios),
         "fold_stability": _fold_stability_payload(fold_stability),
         "positive_oos_fold_count": positive_oos_fold_count,
         "zero_oos_fold_count": zero_oos_fold_count,
@@ -270,6 +380,13 @@ def _validate_and_build_strategy(
             "reason_codes": list(verdict.reason_codes),
         },
     }
+    # I-4 final-fix / captain precision: S2-only spec-deviation register --
+    # S1 must OMIT the key entirely (never carry it present-but-None).
+    if strategy == "S2":
+        strategy_payload["spec_deviation_register"] = (
+            _s2_spec_deviation_register_payload(scenarios)
+        )
+    return strategy_payload
 
 
 def _symbol_universe_payload() -> list[dict[str, Any]]:
@@ -343,25 +460,47 @@ def build_scorecard(
     strategy_verdicts = [
         strategy_payloads[s]["verdict"]["verdict"] for s in _REQUIRED_STRATEGIES
     ]
-    if not sealed_accounting.performance_usable:
-        # Campaign-level H6 accounting evidence gap: neither strategy's OOS
-        # evidence can be trusted as "the complete 24-experiment campaign"
-        # regardless of what each strategy's own scenario/fold evidence
-        # otherwise shows.
+    # I-5 / Task 6.1 final-fix: a top-level, sorted/deduplicated union of
+    # ONLY the reasons that actually DROVE campaign_verdict -- never a
+    # non-driving strategy's reasons (incomplete precedence means a
+    # strategy that would merely have failed never contributes once
+    # ANOTHER strategy/accounting gap already made the campaign
+    # incomplete).
+    campaign_reason_codes: set[str] = set()
+    accounting_incomplete = not sealed_accounting.performance_usable
+    if accounting_incomplete or any(v == "incomplete" for v in strategy_verdicts):
+        # Campaign-level H6 accounting evidence gap and/or a strategy-level
+        # incomplete both drive this verdict -- captain precision: when
+        # BOTH apply simultaneously, the union of BOTH sets of reasons is
+        # required (neither side alone), while any OTHER strategy's
+        # historical_fail reasons remain excluded (incomplete precedence).
         campaign_verdict = "incomplete"
-    elif any(v == "incomplete" for v in strategy_verdicts):
-        campaign_verdict = "incomplete"
+        if accounting_incomplete:
+            campaign_reason_codes.update(sealed_accounting.reason_codes)
+        for s in _REQUIRED_STRATEGIES:
+            if strategy_payloads[s]["verdict"]["verdict"] == "incomplete":
+                campaign_reason_codes.update(
+                    strategy_payloads[s]["verdict"]["reason_codes"]
+                )
     elif any(v == "historical_fail" for v in strategy_verdicts):
         campaign_verdict = "historical_fail"
+        for s in _REQUIRED_STRATEGIES:
+            if strategy_payloads[s]["verdict"]["verdict"] == "historical_fail":
+                campaign_reason_codes.update(
+                    strategy_payloads[s]["verdict"]["reason_codes"]
+                )
     else:
         campaign_verdict = "historical_pass"
+        # empty -- a genuine historical_pass has no driving reason.
 
+    # I-1 final correction: denominator is always a plain int now (never
+    # None/null) -- natural integer sum, no null-masking.
     overall_numerator = sum(
-        strategy_payloads[s]["signal_concurrency"]["numerator"] or 0
+        strategy_payloads[s]["signal_concurrency"]["numerator"]
         for s in _REQUIRED_STRATEGIES
     )
     overall_denominator = sum(
-        strategy_payloads[s]["signal_concurrency"]["denominator"] or 0
+        strategy_payloads[s]["signal_concurrency"]["denominator"]
         for s in _REQUIRED_STRATEGIES
     )
 
@@ -370,6 +509,7 @@ def build_scorecard(
         "generator_version": GENERATOR_VERSION,
         "readiness": READINESS,
         "campaign_verdict": campaign_verdict,
+        "campaign_reason_codes": sorted(campaign_reason_codes),
         "lineage": {
             "full_campaign_hash": full_campaign_hash,
             "campaign_run_id": campaign_run_id,
@@ -421,6 +561,9 @@ def render_markdown(envelope: Mapping[str, Any]) -> str:
     lines.append("")
     lines.append(f"readiness: `{body['readiness']}`")
     lines.append("")
+    lines.append(f"**campaign_verdict: {body['campaign_verdict']}**")
+    lines.append(f"campaign_reason_codes: {json.dumps(body['campaign_reason_codes'])}")
+    lines.append("")
     lineage = body["lineage"]
     lines.append("## Lineage")
     for key in (
@@ -469,6 +612,42 @@ def render_markdown(envelope: Mapping[str, Any]) -> str:
                 )
                 + " |"
             )
+        lines.append("")
+        # I-4 final-fix: daily-stop counts and the reference-only ex-BTC
+        # subtotal, per scenario -- JSON source of truth, Markdown only
+        # renders it.
+        for scenario_name in ("base", "primary_stress", "upward_stress"):
+            s = evidence["scenarios"][scenario_name]
+            subtotal = s["ex_btc_reference_subtotal"]
+            lines.append(
+                f"- {scenario_name}: daily_stop_active_count={s['daily_stop_active_count']} "
+                f"no_trade_reason_counts={s['no_trade_reason_counts']} "
+                f"ex_btc_reference_subtotal(reference_only={subtotal['reference_only']}, "
+                f"has_pass_rule={subtotal['has_pass_rule']}): "
+                f"trades={subtotal['trade_count']} signals={subtotal['signal_count']} "
+                f"net_pnl_bps={_fmt(subtotal['net_pnl_bps'])} "
+                f"pooled_expectancy_bps={_fmt(subtotal['pooled_expectancy_bps'])} "
+                f"symbols={subtotal['symbols']}"
+            )
+        lines.append("")
+        deltas = evidence["scenario_trade_count_deltas"]
+        lines.append(
+            "scenario_trade_count_deltas: "
+            f"base_minus_primary_stress={deltas['base_minus_primary_stress']} "
+            "primary_stress_minus_upward_stress="
+            f"{deltas['primary_stress_minus_upward_stress']} "
+            f"base_minus_upward_stress={deltas['base_minus_upward_stress']}"
+        )
+        if "spec_deviation_register" in evidence:
+            register = evidence["spec_deviation_register"]
+            lines.append(f"spec_deviation_register: {register['statement']}")
+            lines.append(
+                f"  total_rejection_counts: {register['total_rejection_counts']}"
+            )
+            for scenario_name, counts in register[
+                "rejection_counts_by_scenario"
+            ].items():
+                lines.append(f"  {scenario_name}: {counts}")
         lines.append("")
         lines.append(
             f"positive OOS folds: {evidence['positive_oos_fold_count']} / "
