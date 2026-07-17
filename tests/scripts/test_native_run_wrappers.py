@@ -60,6 +60,7 @@ def _uv_stub_dir(tmp_path: Path) -> Path:
         'echo "MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN:-unset}"\n'
         'echo "AUTO_TRADER_CURRENT=${AUTO_TRADER_CURRENT:-unset}"\n'
         'echo "PWD=$(pwd)"\n'
+        "env\n"
     )
     stub.chmod(0o755)
     return bin_dir
@@ -148,6 +149,33 @@ def test_run_mcp_cds_into_color_current(tmp_path: Path) -> None:
     proc = _run(RUN_MCP, "green", {}, tmp_path)
     assert proc.returncode == 0
     assert "current-green" in proc.stdout
+
+
+def test_run_mcp_exports_binance_env_vars(tmp_path: Path) -> None:
+    color = "blue"
+    base = _build_base(tmp_path, color)
+    env_file = base / "shared" / ".env.prod.native"
+    env_file.write_text(
+        "MCP_SOME_VAR=mcp_val\n"
+        "BINANCE_FUTURES_DEMO_ENABLED=true\n"
+        "BINANCE_SOME_OTHER=binance_val\n"
+        "OTHER_VAR=should_not_export\n"
+    )
+    bin_dir = _uv_stub_dir(tmp_path)
+    env = {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "HOME": str(tmp_path),
+        "AUTO_TRADER_BASE": str(base),
+        "AUTO_TRADER_COLOR": color,
+    }
+    proc = subprocess.run(
+        ["bash", str(RUN_MCP)], check=False, capture_output=True, text=True, env=env
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "MCP_SOME_VAR=mcp_val" in proc.stdout
+    assert "BINANCE_FUTURES_DEMO_ENABLED=true" in proc.stdout
+    assert "BINANCE_SOME_OTHER=binance_val" in proc.stdout
+    assert "OTHER_VAR" not in proc.stdout
 
 
 # ----- run-mcp-profile -------------------------------------------------------
