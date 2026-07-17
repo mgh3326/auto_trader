@@ -53,6 +53,19 @@ async def test_get_trading_policy_returns_crash_day_advisory_with_version_echo()
 
 
 @pytest.mark.asyncio
+async def test_get_trading_policy_returns_user_stances_advisory_with_version_echo():
+    out = await get_trading_policy(market="kr", lane="buy")
+    assert out["success"] is True
+    stances = {s["id"]: s for s in out["user_stances"]}
+    stance = stances["ai-demand-real-value-selective"]
+    assert stance["review_date"] == "2026-10-17"
+    # advisory keys are echoed with the same version/content_hash stamp as
+    # every other section of the response (ROB-948, matching ROB-932).
+    assert out["version"]
+    assert out["content_hash"]
+
+
+@pytest.mark.asyncio
 async def test_get_trading_policy_unknown_key_explicit_error():
     out = await get_trading_policy(market="jp", lane="buy")
     assert out["success"] is False

@@ -163,3 +163,47 @@ def test_crash_day_missing_block_rejected():
     del raw["crash_day"]
     with pytest.raises(ValidationError):
         TradingPolicyDocument.model_validate(raw)
+
+
+def test_user_stance_ai_demand_selective_parses():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    stances = {stance.id: stance for stance in doc.user_stances}
+    stance = stances["ai-demand-real-value-selective"]
+
+    assert stance.stance.startswith("AI 수요는 실사용 관점에서 실재")
+    assert len(stance.implications) == 4
+    assert (
+        "3배 레버리지 ETF(SOXL류)는 눌림 보유 수단에서 기본 제외 (변동성 감쇠)"
+        in stance.implications
+    )
+    assert stance.risk_scenario.startswith("효율 충격")
+    assert stance.review_condition.startswith("하이퍼스케일러 AI capex 감소 가이던스")
+    assert stance.review_date == "2026-10-17"
+
+
+def test_user_stance_extra_key_rejected():
+    raw = _raw()
+    raw["user_stances"][0]["bogus"] = 1
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_user_stance_missing_required_field_rejected():
+    raw = _raw()
+    del raw["user_stances"][0]["risk_scenario"]
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_user_stance_invalid_review_date_rejected():
+    raw = _raw()
+    raw["user_stances"][0]["review_date"] = "not-a-date"
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_user_stances_missing_block_rejected():
+    raw = _raw()
+    del raw["user_stances"]
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)

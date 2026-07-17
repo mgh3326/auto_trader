@@ -115,6 +115,21 @@ def test_get_policy_for_crash_day_present_regardless_of_market_lane():
     assert us_sell == crypto_discovery
 
 
+def test_get_policy_for_includes_user_stances_advisory():
+    view = svc.get_policy_for("kr", "buy")
+    stances = {s["id"]: s for s in view["user_stances"]}
+    stance = stances["ai-demand-real-value-selective"]
+    assert stance["review_date"] == "2026-10-17"
+    assert stance["risk_scenario"].startswith("효율 충격")
+
+
+def test_get_policy_for_user_stances_present_regardless_of_market_lane():
+    # user_stances is global advisory context, not market/lane-scoped.
+    us_sell = svc.get_policy_for("us", "sell")["user_stances"]
+    crypto_discovery = svc.get_policy_for("crypto", "discovery")["user_stances"]
+    assert us_sell == crypto_discovery
+
+
 def test_sector_cluster_for():
     assert svc.sector_cluster_for("반도체") == "semis_memory"
     assert svc.sector_cluster_for("Financial Services") == "financials"
