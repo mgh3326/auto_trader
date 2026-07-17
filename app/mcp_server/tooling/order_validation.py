@@ -874,7 +874,7 @@ async def _get_balance_for_order(market_type: str, is_mock: bool = False) -> flo
     # failed responses raise so _check_balance_and_warn retains its fail-closed
     # handling; never coerce a failed read to zero.
     kis = _create_kis_client(is_mock=is_mock)
-    buyable_amount = await _call_kis(kis.inquire_mock_overseas_buyable_amount)
+    buyable_amount = await kis.inquire_mock_overseas_buyable_amount()
     orderable = buyable_amount.get("ovrs_ord_psbl_amt")
     if orderable is None:
         raise RuntimeError("VTTS3007R response missing verified USD orderable cash")

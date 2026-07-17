@@ -791,7 +791,14 @@ class AccountClient:
         )
         if response.get("rt_cd") != "0":
             raise RuntimeError(f"{response.get('msg_cd')} {response.get('msg1')}")
-        output = response.get("output")
+        output = next(
+            (
+                candidate
+                for key in ("output", "output1", "output2")
+                if isinstance(candidate := response.get(key), dict)
+            ),
+            None,
+        )
         if not isinstance(output, dict):
             raise RuntimeError("VTTS3007R response missing output")
         parsed = parse_mock_overseas_buyable_amount_response(output)
