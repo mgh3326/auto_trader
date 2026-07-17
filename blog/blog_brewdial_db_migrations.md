@@ -12,7 +12,7 @@
 
 ## 1막: CouchDB — 로컬에서 시작하다
 
-처음 저장소를 고를 때의 논리는 ADR에 그대로 남아 있습니다(`docs/decisions/0002-couchdb-foundation.md`). 요약하면 이렇습니다.
+처음 저장소를 고를 때의 논리는 ADR에 그대로 남아 있습니다. 요약하면 이렇습니다.
 
 - 데이터가 자연스럽게 문서 모양입니다. 레시피는 중첩된 파라미터와 스텝 배열을, 피드백은 중첩된 별점 객체를 품고 있어서, 이 규모에서 관계형으로 분해하는 건 "payoff 없는 요식행위"라고 판단했습니다.
 - CouchDB는 안정적인 HTTP API를 그대로 노출합니다. 웹 앱, MCP 서버, 에이전트가 전부 같은 프로토콜로 붙을 수 있고 드라이버 브리징이 필요 없습니다.
@@ -54,7 +54,7 @@ read-modify-write + 409 재시도가 `create sequence` 한 줄이 되는 순간,
 
 Supabase를 고른 이유는 명확했습니다. 무료이고, PostgREST 덕에 브라우저에서 anon 키로 바로 붙을 수 있고, RLS(Row Level Security)로 익명 쓰기 규칙을 서버 없이 강제할 수 있고, 밑바닥이 진짜 Postgres라 시퀀스와 CHECK 제약이 공짜로 생깁니다. "서버 없는 정적 SPA + 호스팅 DB" 요구에 이보다 잘 맞는 조합을 찾기 어려웠습니다.
 
-문제는 데이터를 옮기는 쪽이었습니다. 문서 모델 두 달치의 자유는 관계형으로 눕히는 순간 전부 청구서가 되어 돌아왔습니다. 마이그레이션 스크립트(`supabase/migrate-couch-to-supabase.mjs`)의 헤더가 그 청구서 목록입니다.
+문제는 데이터를 옮기는 쪽이었습니다. 문서 모델 두 달치의 자유는 관계형으로 눕히는 순간 전부 청구서가 되어 돌아왔습니다. 한 번만 돌리고 버릴 마이그레이션 스크립트를 하나 짰는데, 그 헤더 주석이 곧 청구서 목록이었습니다.
 
 ```javascript
 // One-time migration: CouchDB `coffee` -> Supabase (Postgres).
@@ -148,7 +148,7 @@ Supabase가 편했던 이유가 그대로 부채 목록이 된 겁니다. 백엔
 ![CouchDB에서 Supabase를 거쳐 OCI PostgreSQL까지의 여정](images/brewdial_db_journey.png)
 *세 정거장의 공통점: 이사 당일까지는 다음 이사 계획이 없었다는 것*
 
-자체 운영이라고 해서 거창한 건 없습니다. Docker도 안 씁니다. systemd 유닛 하나가 전부입니다(`deploy/oci/brewdial-api.service`).
+자체 운영이라고 해서 거창한 건 없습니다. Docker도 안 씁니다. systemd 유닛 하나가 전부입니다.
 
 ```ini
 [Unit]
@@ -187,7 +187,7 @@ ssh opc@<host> 'cd /opt/brewdial && pnpm install && \
   sudo systemctl restart brewdial-api && curl -s localhost:3020/api/health'
 ```
 
-재미있는 건 네트워크 구성입니다. 이 서버는 <b>인바운드 포트를 하나도 열지 않습니다(SSH 제외).</b> Postgres는 `127.0.0.1`에만 바인딩되고, API 서버도 `127.0.0.1:3020`에만 바인딩됩니다. 외부 서빙은 Cloudflare Tunnel이 맡습니다(`deploy/oci/cloudflared-config.example.yml`).
+재미있는 건 네트워크 구성입니다. 이 서버는 <b>인바운드 포트를 하나도 열지 않습니다(SSH 제외).</b> Postgres는 `127.0.0.1`에만 바인딩되고, API 서버도 `127.0.0.1:3020`에만 바인딩됩니다. 외부 서빙은 Cloudflare Tunnel이 맡습니다.
 
 ```yaml
 # Hides the OCI origin: cloudflared makes OUTBOUND connections to Cloudflare,
