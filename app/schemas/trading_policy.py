@@ -8,6 +8,7 @@ fails loudly instead of silently dropping a key.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -186,6 +187,28 @@ class CrashDayPolicy(BaseModel):
     actions: CrashDayActions
 
 
+class UserStance(BaseModel):
+    """ROB-948 — user investment-stance advisory. Cited by session judgment
+    (upside/downside weighting) alongside other advisory context; does not
+    override fail-closed risk guards (loss-cut sizing, ladder guards) in
+    code. Same advisory-only pattern as ROB-932 crash_day."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    stance: str
+    implications: list[str]
+    risk_scenario: str
+    review_condition: str
+    review_date: str
+
+    @field_validator("review_date")
+    @classmethod
+    def validate_review_date_parses(cls, value: str) -> str:
+        date.fromisoformat(value)
+        return value
+
+
 class TradingPolicyDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -200,3 +223,4 @@ class TradingPolicyDocument(BaseModel):
     market_rules: dict[Literal["crypto"], CryptoMarketRules]
     market_overrides: dict[Market, dict[str, ThresholdValue]]
     crash_day: CrashDayPolicy
+    user_stances: list[UserStance]
