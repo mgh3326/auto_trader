@@ -569,11 +569,11 @@ allowlist.
     on success; `{"success": False, "error": str}` on failure.
   - **No broker mutation.** No order mutation. No DB write.
 
-**Sanitized fill shape (20 keys, identical to the CLI output):**
+**Sanitized fill shape (21 keys, identical to the CLI output):**
 `ledger_id`, `event_key`, `broker`, `account_mode`, `venue`, `instrument_type`,
 `market`, `symbol`, `raw_symbol`, `side`, `filled_qty`, `filled_price`,
 `filled_notional`, `currency`, `broker_order_id`, `fill_seq`, `correlation_id`,
-`source`, `filled_at`, `created_at`. **`raw_payload_json` is never emitted**
+`source`, `filled_at`, `trade_day_kst`, `created_at`. **`raw_payload_json` is never emitted**
 (security constraint — same as the CLI).
 
 **Validation errors:**

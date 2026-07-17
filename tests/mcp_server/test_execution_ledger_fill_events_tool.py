@@ -37,6 +37,7 @@ EXPECTED_FILL_KEYS: set[str] = {
     "correlation_id",
     "source",
     "filled_at",
+    "trade_day_kst",
     "created_at",
 }
 
@@ -169,6 +170,7 @@ async def test_tool_returns_sanitized_fills_with_expected_shape(
     assert fill["market"] == "crypto"
     assert fill["filled_qty"] == "0.01"
     assert fill["correlation_id"] == "corr-uuid-1"
+    assert fill["trade_day_kst"] == "20260707"
 
     # repo가 호출되었는지 + source 기본값 websocket이 그대로 전달되었는지
     assert len(fake_repo.calls) == 1

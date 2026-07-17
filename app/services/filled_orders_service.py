@@ -41,9 +41,9 @@ def _resolve_kst_window(
 def _parse_upbit_fill_datetime(value: object) -> datetime | None:
     """Strictly parse an Upbit fill timestamp for window filtering.
 
-    Execution-ledger normalizers may default malformed provider timestamps to
-    ``now`` for persistence compatibility, but the legacy n8n filled-orders
-    surface must skip rows whose provider timestamp cannot be parsed.
+    Execution-ledger normalizers fail closed on malformed provider timestamps,
+    and the legacy n8n filled-orders surface likewise skips rows whose provider
+    timestamp cannot be parsed.
     """
     text = str(value or "").strip()
     if not text:

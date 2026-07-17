@@ -35,6 +35,7 @@ EXPECTED_FILL_KEYS: set[str] = {
     "correlation_id",
     "source",
     "filled_at",
+    "trade_day_kst",
     "created_at",
 }
 
@@ -220,6 +221,7 @@ async def test_collect_emits_exact_shape_for_crypto_row(
     assert fill["filled_notional"] == "1000000"
     assert fill["correlation_id"] == "corr-uuid-1"
     assert fill["filled_at"] == "2026-07-07T00:00:00+00:00"
+    assert fill["trade_day_kst"] == "20260707"
     assert fill["created_at"] == "2026-07-07T00:00:01+00:00"
 
     # JSON 직렬화 가능 + secret 값 누출 없음

@@ -2,7 +2,7 @@
 
 The CLI (``scripts/list_recent_fill_events.py``) and the MCP tool
 (``app/mcp_server/tooling/execution_ledger_events.py``) both need to render
-``ExecutionLedger`` rows into the same 20-key triage-friendly dict shape.
+``ExecutionLedger`` rows into the same 21-key triage-friendly dict shape.
 
 That shape lives here as the **single source of truth**: both callers import
 ``sanitize_fill`` / ``derive_market`` from this module so the JSON output stays
