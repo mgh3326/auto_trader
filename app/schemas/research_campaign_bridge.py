@@ -97,19 +97,50 @@ class AttemptEvidence(BaseModel):
 class CampaignCompletenessReport(BaseModel):
     """ROB-946 §9 completeness DTO — no winner-only filter.
 
-    ``verdict`` is ``"complete"`` iff every one of ``expected_total`` (always
-    24) experiment_ids has at least one terminal (any of the 4 statuses)
-    attempt AND no duplicate logical attempt was detected. A campaign where
-    every attempt is ``rejected``/``crashed``/``timeout`` is still "complete"
+    R1 Important-3/4 remediation: completeness is now derived from a
+    bidirectional diff between the 24 EXPECTED identities (re-derived from
+    caller-supplied ``StrategyExperimentIdentity`` specs via the SAME
+    canonical-hash authority used at registration, never trusted as a bare
+    caller-supplied id string) and the ACTUAL registered rows found for those
+    strategies:
+
+    * ``missing_experiment_ids`` — an expected identity with no registration
+      at all, OR one that is registered but has no ``retry_index=0`` (primary)
+      terminal attempt recorded — a campaign with only a ``retry_index=1``
+      attempt and no primary is "missing", not "complete" (R1 Important-3).
+    * ``extra_experiment_ids`` — a registered row (within the expected
+      strategy_key scope) that does not correspond to ANY expected identity.
+    * ``mismatch_experiment_ids`` — an expected identity's ``params`` slot
+      (matched by ``params_hash``) IS registered, but under a DIFFERENT overall
+      ``experiment_id`` — i.e. some OTHER component drifted from what was
+      expected (R1 Important-4).
+    * ``duplicate_or_gap_experiment_ids`` — the recorded retry-index sequence
+      for an otherwise-correctly-registered experiment is non-contiguous from
+      0 (a gap) or contains a raw-row duplicate. A duplicate retry INDEX for
+      one experiment cannot occur while ROB-846's own
+      ``uq_research_backtest_runs_experiment_idempotency`` constraint holds
+      (the idempotency key embeds the retry index) — this branch is kept as
+      defense-in-depth against that invariant ever being weakened, while the
+      gap check is independently reachable today.
+
+    ``verdict`` is ``"complete"`` iff ALL four of the above lists are empty —
+    every expected identity has a primary attempt, nothing extra or drifted
+    was found, and no gap/duplicate was observed. A campaign where every
+    attempt is ``rejected``/``crashed``/``timeout`` is still "complete"
     evidence — ``completed`` is not a pass filter here.
     """
 
     campaign_run_id: str
     expected_total: int
-    experiments_with_attempts: int
+    actual_registrations: int
+    primary_attempts: int
+    total_attempts: int
+    retry_attempts: int
     status_counts: dict[str, int]
     missing_experiment_ids: list[str]
-    duplicate_logical_attempts: list[str]
+    extra_experiment_ids: list[str]
+    mismatch_experiment_ids: list[str]
+    duplicate_or_gap_experiment_ids: list[str]
     verdict: Literal["complete", "incomplete"]
 
     model_config = ConfigDict(extra="forbid")
