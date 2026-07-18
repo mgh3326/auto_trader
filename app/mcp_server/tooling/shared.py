@@ -6,7 +6,9 @@ import datetime
 import logging
 import math
 import re
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+import pandas as pd
 
 from app.core.symbol import to_db_symbol
 from app.mcp_server.env_utils import _env_int
@@ -14,28 +16,7 @@ from app.mcp_server.tick_size import adjust_tick_size_kr
 from app.models.manual_holdings import MarketType
 from app.services.domain_errors import DomainServiceError
 
-if TYPE_CHECKING:
-    import pandas as pd
-
 logger = logging.getLogger(__name__)
-
-# ROB-964: ``shared`` is imported by nearly every MCP tool module, but pandas is
-# only needed by the value normalizers below. Importing pandas eagerly pulled
-# the pyarrow/numpy chain (~seconds cold) into every tool's import — charged to
-# each xdist worker's first test even when it never touches a DataFrame. Defer
-# it to first normalizer use; production screener paths already hold pandas
-# loaded, so this is just a cached ``sys.modules`` lookup there.
-_pd: Any = None
-
-
-def _pandas() -> Any:
-    global _pd
-    if _pd is None:
-        import pandas as pd
-
-        _pd = pd
-    return _pd
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -214,13 +195,13 @@ def normalize_value(value: Any) -> Any:
     if value is None:
         return None
     try:
-        if _pandas().isna(value):
+        if pd.isna(value):
             return None
     except Exception:
         pass
     if isinstance(value, (datetime.date, datetime.datetime, datetime.time)):
         return value.isoformat()
-    if isinstance(value, _pandas().Timedelta):
+    if isinstance(value, pd.Timedelta):
         return value.total_seconds()
     if hasattr(value, "item"):
         try:
@@ -476,7 +457,7 @@ def _to_optional_consensus_count(value: Any) -> int | None:
     if normalized in (None, ""):
         return None
     try:
-        if _pandas().isna(normalized):
+        if pd.isna(normalized):
             return None
     except Exception:
         pass
@@ -498,7 +479,7 @@ def _to_optional_consensus_upside(value: Any) -> float | None:
         return None
     if isinstance(value, (int, float)):
         try:
-            if _pandas().isna(value):
+            if pd.isna(value):
                 return None
         except Exception:
             pass
