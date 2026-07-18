@@ -100,9 +100,26 @@ jobs:
       # single committed .test_durations covers the whole suite. Running with
       # --splits/--group would only record that shard's subset. No --cov here
       # (durations only). Mirrors the command documented in test.yml.
+      #
+      # Exit code 1 (test failures) is tolerated: unsharded, every test file
+      # shares ONE postgres, so files that the 4-shard split normally isolates
+      # into separate jobs collide here (advisory-lock deadlocks, cross-file
+      # row contamination — observed in runs 29641342852 / 29642419871 with a
+      # different flaky set each time). Correctness gating belongs to test.yml;
+      # this job only needs per-test durations, which pytest-split records for
+      # failed tests too. Exit codes >= 2 (interrupted / internal error /
+      # collection error) still fail the job so a partial run never ships.
       run: |
+        set +e
         uv run pytest tests/ -m "not live" --store-durations -n 4 --dist=loadfile \
           -o faulthandler_timeout=120 -ra
+        status=$?
+        if [ "$status" -eq 1 ]; then
+          echo "::warning title=durations refresh::test failures tolerated (exit 1); durations were still recorded"
+        elif [ "$status" -ne 0 ]; then
+          echo "pytest exited with $status (interrupted/internal/collection error) — aborting refresh"
+          exit "$status"
+        fi
 
     - name: Detect .test_durations changes
       id: diff
@@ -117,6 +134,12 @@ jobs:
           echo "before_entries=$before" >> "$GITHUB_OUTPUT"
           echo "after_entries=$after" >> "$GITHUB_OUTPUT"
           echo "Recorded duration entries: $before -> $after"
+          # A large entry-count drop means the run recorded only part of the
+          # suite (legit test removals shrink it far less) — never PR that.
+          if [ "$after" -lt $(( before * 9 / 10 )) ]; then
+            echo "Entry count dropped >10% ($before -> $after) — refusing to open a PR with partial durations."
+            exit 1
+          fi
         fi
 
     - name: Open auto-PR with refreshed durations
