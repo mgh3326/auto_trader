@@ -580,3 +580,221 @@ def test_h6_typed_validation_exceptions_roll_back_exit_4_never_generic_6(
     assert events == ["rollback"]
     assert exc_name in buf_err.getvalue()
     assert not output_dir.exists()
+
+
+# ---------------------------------------------------------------------------
+# Captain same-pass checklist follow-up (2026-07-18): the 24-ID gate's
+# len/duplicate branch (distinct from the recomputation-divergence branch
+# already covered), bridge-unavailable/opt-in-false session-factory-zero
+# evidence at the CLI layer specifically, and empirical_success=False exit-5
+# preservation through a full (non-empirical-success) publish.
+# ---------------------------------------------------------------------------
+
+
+def test_run_preflight_rejects_duplicate_experiment_ids_before_session_factory_constructed(
+    monkeypatch,
+):
+    """Exercises len(experiment_ids) != 24 or len(set(...)) != 24 --
+    distinct from the recomputation-divergence branch already covered by
+    test_run_preflight_checks_24_unique_experiment_ids_before_session_factory_constructed."""
+    import app.core.db
+
+    def _poisoned_session_factory(*args, **kwargs):
+        raise AssertionError(
+            "AsyncSessionLocal must never be constructed when the 24-unique-ID "
+            "count/duplicate gate fails"
+        )
+
+    monkeypatch.setattr(app.core.db, "AsyncSessionLocal", _poisoned_session_factory)
+
+    from rob944_frozen_campaign import build_production_frozen_campaign_envelope
+
+    real_envelope = build_production_frozen_campaign_envelope()
+    real_hash = real_envelope.full_campaign_hash()
+    real_plain = real_envelope.to_dict()
+    rigged_ids = list(real_plain["experiment_ids"])
+    rigged_ids[1] = rigged_ids[0]  # force a duplicate -> 24 total, 23 unique
+    rigged_plain = dict(real_plain)
+    rigged_plain["experiment_ids"] = rigged_ids
+
+    class _FakeEnvelope:
+        def full_campaign_hash(self):
+            return real_hash
+
+        def to_dict(self):
+            return rigged_plain
+
+    import rob944_frozen_campaign
+
+    monkeypatch.setattr(
+        rob944_frozen_campaign,
+        "build_production_frozen_campaign_envelope",
+        lambda: _FakeEnvelope(),
+    )
+
+    from run_rob940_empirical_materializer import main
+    from run_rob944_campaign import _derive_primary_campaign_run_id
+
+    campaign_run_id = _derive_primary_campaign_run_id(real_hash)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        exit_code = main(
+            [
+                "--run",
+                "--expected-full-campaign-hash",
+                real_hash,
+                "--campaign-run-id",
+                campaign_run_id,
+                "--output-dir",
+                "/tmp/rob960-cli-test-should-not-be-created-4",
+            ]
+        )
+    assert exit_code == 4
+    assert "24 unique experiment IDs" in buf.getvalue()
+
+
+def test_run_opt_in_not_set_fails_before_session_factory_constructed_at_cli(
+    monkeypatch,
+):
+    import app.core.db
+
+    def _poisoned_session_factory(*args, **kwargs):
+        raise AssertionError(
+            "AsyncSessionLocal must never be constructed when opt-in is unset"
+        )
+
+    monkeypatch.setattr(app.core.db, "AsyncSessionLocal", _poisoned_session_factory)
+    monkeypatch.delenv("ROB944_RESEARCH_WRITE_OPT_IN", raising=False)
+
+    from rob944_frozen_campaign import build_production_frozen_campaign_envelope
+    from run_rob940_empirical_materializer import main
+    from run_rob944_campaign import _derive_primary_campaign_run_id
+
+    envelope = build_production_frozen_campaign_envelope()
+    full_hash = envelope.full_campaign_hash()
+    campaign_run_id = _derive_primary_campaign_run_id(full_hash)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        exit_code = main(
+            [
+                "--run",
+                "--expected-full-campaign-hash",
+                full_hash,
+                "--campaign-run-id",
+                campaign_run_id,
+                "--output-dir",
+                "/tmp/rob960-cli-test-should-not-be-created-5",
+            ]
+        )
+    assert exit_code == 2
+
+
+def test_run_bridge_unavailable_fails_before_session_factory_constructed_at_cli(
+    monkeypatch,
+):
+    import app.core.db
+
+    def _poisoned_session_factory(*args, **kwargs):
+        raise AssertionError(
+            "AsyncSessionLocal must never be constructed when the H6 bridge is "
+            "unavailable"
+        )
+
+    monkeypatch.setattr(app.core.db, "AsyncSessionLocal", _poisoned_session_factory)
+    monkeypatch.setenv("ROB944_RESEARCH_WRITE_OPT_IN", "true")
+
+    import run_rob944_campaign
+
+    def _raise_import_error():
+        raise ImportError("simulated H6 bridge unavailable")
+
+    monkeypatch.setattr(
+        run_rob944_campaign, "_import_campaign_controller", _raise_import_error
+    )
+
+    from rob944_frozen_campaign import build_production_frozen_campaign_envelope
+    from run_rob940_empirical_materializer import main
+    from run_rob944_campaign import _derive_primary_campaign_run_id
+
+    envelope = build_production_frozen_campaign_envelope()
+    full_hash = envelope.full_campaign_hash()
+    campaign_run_id = _derive_primary_campaign_run_id(full_hash)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        exit_code = main(
+            [
+                "--run",
+                "--expected-full-campaign-hash",
+                full_hash,
+                "--campaign-run-id",
+                campaign_run_id,
+                "--output-dir",
+                "/tmp/rob960-cli-test-should-not-be-created-6",
+            ]
+        )
+    assert exit_code == 2
+
+
+def test_empirical_success_false_still_completes_publish_and_exits_5(
+    monkeypatch, tmp_path
+):
+    """H4's own 0/5 empirical-success convention (accounting complete AND
+    scorecard published, but not every primary attempt completed) must
+    survive unchanged: commit + publish both happen, no rollback, exit 5."""
+    events = []
+    session = _OrderSpySession(events)
+
+    class _FakeIncompleteOutcome(_FakeCompleteOutcome):
+        empirical_success = False
+
+    _wire_common_fakes(monkeypatch, events, session=session)
+
+    import rob960_empirical_orchestrator
+
+    async def _fake_orch(session_arg, controller, **kwargs):
+        return _FakeIncompleteOutcome()
+
+    monkeypatch.setattr(
+        rob960_empirical_orchestrator, "run_empirical_campaign_with_capture", _fake_orch
+    )
+
+    import rob945_scorecard
+
+    monkeypatch.setattr(
+        rob945_scorecard,
+        "build_scorecard",
+        lambda **kwargs: {"scorecard_artifact_hash": "h", "scorecard_payload": {}},
+    )
+    monkeypatch.setattr(rob945_scorecard, "render_markdown", lambda envelope: "# md")
+
+    import rob960_scorecard_writer
+
+    monkeypatch.setattr(
+        rob960_scorecard_writer,
+        "stage_scorecard_files",
+        lambda envelope, markdown, output_dir: output_dir.parent / ".staging-fake",
+    )
+    monkeypatch.setattr(
+        rob960_scorecard_writer,
+        "publish_staged_scorecard",
+        lambda staging_dir, output_dir: (
+            output_dir / "scorecard.json",
+            output_dir / "scorecard.md",
+        ),
+    )
+
+    from run_rob940_empirical_materializer import main
+
+    output_dir = tmp_path / "out"
+    buf_out = io.StringIO()
+    with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(io.StringIO()):
+        exit_code = main(_pinned_run_args(output_dir))
+
+    assert exit_code == 5
+    assert "commit" in events
+    assert "rollback" not in events
+    summary = json.loads(buf_out.getvalue())
+    assert summary["empirical_success"] is False
