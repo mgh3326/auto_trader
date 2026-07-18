@@ -1,0 +1,147 @@
+name: Refresh test durations
+
+# Weekly self-healing refresh of .test_durations (ROB-963).
+#
+# .test_durations feeds pytest-split's 4-shard balance in test.yml. As tests are
+# added, unrecorded entries fall back to an even-split assumption and the shards
+# drift out of balance (worst shard decides the whole test job's wall-clock).
+# This job re-runs the full suite with --store-durations and opens an auto-PR
+# with the diff so the file never goes stale without manual intervention.
+
+on:
+  schedule:
+    # Mondays 18:10 UTC (~03:10 KST Tue) — off-peak, once a week.
+    - cron: '10 18 * * 1'
+  workflow_dispatch: {}
+
+concurrency:
+  group: test-durations-refresh
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh-durations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHON_VERSION: "3.13"
+
+    # Same service container + env-setup pattern as the `test` job in test.yml.
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install UV
+      run: pip install uv
+
+    - name: Install redis-server (ROB-892 real-Redis acceptance)
+      # ROB-892: the gate-acceptance suite spawns its own disposable redis-server
+      # on a random port. The binary must exist in CI or that fixture fails loudly.
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq redis-server redis-tools
+        redis-server --version
+        redis-cli --version
+
+    - name: Load cached venv
+      id: cached-uv-dependencies
+      uses: actions/cache@v5
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+
+    - name: Install dependencies
+      run: uv sync --group test
+
+    - name: Wait for PostgreSQL to be ready
+      run: |
+        for i in {1..30}; do
+          if pg_isready -h localhost -p 5432 -U postgres; then
+            echo "PostgreSQL is ready!"
+            exit 0
+          fi
+          echo "Waiting for PostgreSQL... ($i/30)"
+          sleep 1
+        done
+        echo "PostgreSQL failed to start"
+        exit 1
+
+    - name: Set environment variables from env.example
+      run: |
+        chmod +x scripts/setup-test-env.sh
+        bash scripts/setup-test-env.sh
+
+    - name: Regenerate .test_durations (full suite, unsharded)
+      env:
+        COVERAGE_CORE: sysmon
+      # Unsharded on purpose: --store-durations must observe EVERY test so the
+      # single committed .test_durations covers the whole suite. Running with
+      # --splits/--group would only record that shard's subset. No --cov here
+      # (durations only). Mirrors the command documented in test.yml.
+      run: |
+        uv run pytest tests/ -m "not live" --store-durations -n 4 --dist=loadfile \
+          -o faulthandler_timeout=120 -ra
+
+    - name: Detect .test_durations changes
+      id: diff
+      run: |
+        if git diff --quiet -- .test_durations; then
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+          echo "No .test_durations changes — nothing to PR."
+        else
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          before=$(git show HEAD:.test_durations | grep -c '::' || true)
+          after=$(grep -c '::' .test_durations || true)
+          echo "before_entries=$before" >> "$GITHUB_OUTPUT"
+          echo "after_entries=$after" >> "$GITHUB_OUTPUT"
+          echo "Recorded duration entries: $before -> $after"
+        fi
+
+    - name: Open auto-PR with refreshed durations
+      if: steps.diff.outputs.changed == 'true'
+      uses: peter-evans/create-pull-request@v7
+      with:
+        # Falls back to the default GITHUB_TOKEN when no PAT is configured. NOTE:
+        # PRs opened with GITHUB_TOKEN do NOT trigger the Test workflow. Set a
+        # repo secret DURATIONS_REFRESH_TOKEN (a PAT/bot token with repo scope)
+        # if you want CI to run automatically on the refresh PR.
+        token: ${{ secrets.DURATIONS_REFRESH_TOKEN || secrets.GITHUB_TOKEN }}
+        commit-message: "chore(ci): refresh .test_durations (pytest-split shard balance)"
+        branch: ci/test-durations-refresh
+        delete-branch: true
+        base: main
+        title: "chore(ci): refresh .test_durations"
+        body: |
+          Automated weekly refresh of `.test_durations` (ROB-963).
+
+          `.test_durations` feeds pytest-split's 4-shard balance in `test.yml`. As
+          tests are added, unrecorded entries fall back to an even-split assumption
+          and the shards drift out of balance (the slowest shard decides the whole
+          test job's wall-clock). This PR re-runs the full suite with
+          `--store-durations` and commits the result.
+
+          - recorded duration entries: `${{ steps.diff.outputs.before_entries }}` → `${{ steps.diff.outputs.after_entries }}`
+
+          Generated by `.github/workflows/test-durations-refresh.yml`.
