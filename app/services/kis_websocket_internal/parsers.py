@@ -615,7 +615,17 @@ class ExecutionMessageParser:
                     .isoformat()
                 )
             if len(cleaned) == 14:
-                return datetime.strptime(cleaned, "%Y%m%d%H%M%S").isoformat()
+                # KIS 14-digit YYYYMMDDHHMMSS fields are KST wall-clock
+                # time, same as the 6-digit HHMMSS fields above; return
+                # KST-aware so events.py's naive->UTC fallback doesn't
+                # misattribute. (ROB-958's prod evidence was overseas
+                # 6-digit ord_tmd, but it establishes KIS echoes KST
+                # regardless of digit width; domestic 14-digit is KST too.)
+                return (
+                    datetime.strptime(cleaned, "%Y%m%d%H%M%S")
+                    .replace(tzinfo=KST)
+                    .isoformat()
+                )
         return cleaned
 
     def _find_hhmmss_token(
