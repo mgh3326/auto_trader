@@ -202,6 +202,20 @@ def test_helper_session_fixture_is_ddl_free():
     assert "ALTER TABLE" not in src
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _serialize_against_review_dml_modules():
+    """ROB-968: this module's Task-6 test hammers TRUNCATE on review.* tables.
+
+    Across xdist workers that AccessExclusiveLock deadlocks sibling modules'
+    multi-table review DML (paper_cohort runner files, runs 29643108579 /
+    29643559556). Take the shared OS file lock so opted-in modules never
+    overlap this one; see tests/_xdist_serial.
+    """
+    from tests._xdist_serial import hold_review_tables_lock
+
+    yield from hold_review_tables_lock()
+
+
 # --------------------------------------------------------------------------- #
 # Task 6: concurrency — the advisory-lock serialization the real fixtures use  #
 # must let concurrent TRUNCATE + read complete without a deadlock escaping.    #
