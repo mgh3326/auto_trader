@@ -152,6 +152,9 @@ jobs:
         # if you want CI to run automatically on the refresh PR.
         token: ${{ secrets.DURATIONS_REFRESH_TOKEN || secrets.GITHUB_TOKEN }}
         commit-message: "chore(ci): refresh .test_durations (pytest-split shard balance)"
+        # The suite mutates tracked files as a side effect (.smoke-out/*.json);
+        # commit ONLY the durations file so the auto-PR never picks them up.
+        add-paths: .test_durations
         branch: ci/test-durations-refresh
         delete-branch: true
         base: main
