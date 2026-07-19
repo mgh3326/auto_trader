@@ -131,7 +131,12 @@ def realized_funding_bps(side: Side, crossings: Sequence[FundingCrossing]) -> fl
     Longs pay when the realized rate is positive (shorts receive); the
     convention flips sign for shorts.
     """
-    total_rate = sum(c.rate_bps for c in crossings)
+    # ROB-962: seed with 0.0 so an empty `crossings` yields exact float 0.0,
+    # not plain int 0 (Python's unseeded `sum(())` is `int 0`, and `0 == 0.0`
+    # silently hides the type drift) -- H5's compute_scenario_metrics
+    # requires every raw economic field to be an exact float (type(x) is
+    # float, never isinstance).
+    total_rate = sum((c.rate_bps for c in crossings), 0.0)
     if side == "long":
         return total_rate
     if side == "short":

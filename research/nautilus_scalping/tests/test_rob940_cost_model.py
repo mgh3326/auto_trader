@@ -57,8 +57,36 @@ def test_realized_funding_bps_sign_convention_long_pays_short_receives():
     assert cm.realized_funding_bps("short", crossings) == -3.0
 
 
-def test_realized_funding_bps_no_crossings_is_zero():
-    assert cm.realized_funding_bps("long", []) == 0.0
+def test_realized_funding_bps_no_crossings_is_exact_float_zero():
+    # ROB-962: `0 == 0.0` in Python, so a bare `== 0.0` assertion previously
+    # passed even when the empty-sum authority returned plain `int 0` --
+    # H5's compute_scenario_metrics requires an exact `float` (type(x) is
+    # float, never isinstance), so the RUNTIME TYPE must be pinned here too.
+    long_value = cm.realized_funding_bps("long", [])
+    assert type(long_value) is float
+    assert long_value.hex() == (0.0).hex()
+
+    # short negates the (empty) sum -- 0.0 negates to -0.0, a distinct bit
+    # pattern but still an exact float zero (`type(x) is float`, `x == 0.0`).
+    short_value = cm.realized_funding_bps("short", [])
+    assert type(short_value) is float
+    assert short_value == 0.0
+    assert short_value.hex() in ((0.0).hex(), (-0.0).hex())
+
+
+def test_realized_funding_bps_nonempty_crossings_still_exact_float():
+    # Non-empty-crossing sums must remain exact float (unchanged sign/value
+    # behavior) alongside the empty-crossing fix above.
+    crossings = [
+        cm.FundingCrossing(ts=1, rate_bps=2.0),
+        cm.FundingCrossing(ts=2, rate_bps=1.0),
+    ]
+    long_value = cm.realized_funding_bps("long", crossings)
+    short_value = cm.realized_funding_bps("short", crossings)
+    assert type(long_value) is float
+    assert type(short_value) is float
+    assert long_value == 3.0
+    assert short_value == -3.0
 
 
 def test_net_bps_subtracts_all_in_and_funding_exactly_once_no_fee_double_count():

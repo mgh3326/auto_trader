@@ -906,3 +906,68 @@ def test_rejects_bool_sl_distance_bps_on_a_captured_signal():
             captured_signals=[signal],
             fold_selected_config=_FOLD_MAP,
         )
+
+
+def test_real_engine_zero_funding_crossing_trade_passes_compute_scenario_metrics():
+    """ROB-962 regression -- the actual production H2->H5 boundary defect
+    (ROB-940 empirical exit 6): a REAL ``rob940_engine.run_symbol_stream``
+    trade with no ``funding_lookup`` (the default path, zero funding
+    crossings) must carry an exact ``float`` ``funding_bps`` -- never a
+    hand-built ``TradeRecord`` fixture like every other test in this file --
+    and the real ``compute_scenario_metrics`` must ACCEPT it, not raise
+    ``ValueError: ... trade.funding_bps must be an exact float``.
+    """
+    from rob940_bars_agg import Bar1m
+    from rob940_engine import SignalEvent as EngineSignalEvent
+    from rob940_engine import run_symbol_stream
+
+    min_ms = 60_000
+    ts0 = 1_000 * min_ms
+    bars = [
+        Bar1m(
+            ts=ts0 + i * min_ms,
+            open=100.0,
+            high=101.0,
+            low=99.0,
+            close=100.0,
+            volume=1.0,
+        )
+        for i in range(20)
+    ]
+    sig = EngineSignalEvent(
+        strategy="S1",
+        config_id="S1-00",
+        symbol="XRPUSDT",
+        signal_ts=ts0,
+        side="long",
+        sl_distance_bps=200.0,
+        tp_distance_bps=300.0,
+        timeout_bars=10,
+        cooldown_bars=0,
+        fold_id="fold-00",
+    )
+    scenario = cost_model.COST_SCENARIO_PRIMARY_STRESS
+
+    # No funding_lookup supplied -- the engine's own default (`crossings =
+    # ()`), the exact production route the forensic report traced to
+    # `int 0`. This is a real engine call, never a hand-built TradeRecord.
+    engine_result = run_symbol_stream(bars, [sig], scenario)
+    assert len(engine_result.trades) == 1
+    trade = engine_result.trades[0]
+    assert type(trade.funding_bps) is float
+    assert trade.funding_bps == 0.0
+
+    # Real call-through: pre-ROB-962-fix this raised
+    # ValueError("... trade.funding_bps must be an exact float").
+    result = compute_scenario_metrics(
+        strategy="S1",
+        scenario_name=scenario.name,
+        ledger=[trade],
+        captured_signals=[],
+        fold_selected_config={"fold-00": "S1-00"},
+    )
+    assert result.trade_count == 1
+    # Unchanged numeric identity: compute_scenario_metrics's aggregate
+    # net_pnl_bps for this single-trade ledger equals the trade's own
+    # (engine-computed) net_bps -- the fix changes no value, only the type.
+    assert result.net_pnl_bps == trade.net_bps
