@@ -1375,9 +1375,13 @@ async def _validate_sell_side(
 def _kis_mock_us_orderable_unsupported() -> bool:
     """KIS 모의투자가 해외(USD) orderable-cash 서비스를 제공하지 않는지 여부.
 
-    OPSQ0002 "없는 서비스 코드" — 2026-05-27 live smoke로 확정. capability_matrix를
-    권위 소스로 사용하므로, 미래에 US mock cash 어댑터가 생겨 account_cash_read=True가
-    되면 이 가드는 자동으로 완화된다.
+    폐기 근거(ROB-951): `inquire_overseas_margin`(OPSQ0002 "없는 서비스 코드",
+    2026-05-27 live smoke)만이 mock US cash 경로였을 때 이 가드가 매수를 차단했다.
+    2026-07-17 probe로 `VTTS3007R`이 mock 호스트에서 USD orderable cash를 반환함이
+    확인되어 `inquire_mock_overseas_buyable_amount()`로 배선됐고, capability_matrix의
+    `kis_mock.account_cash_read`가 True로 flip되면서 이 가드는 완화된 상태다.
+    capability_matrix가 권위 소스이므로 여기 하드코딩된 판단은 없다 — 배선이
+    되돌려지면 matrix flip만으로 가드가 다시 닫힌다.
     """
     from app.services.us_dual_paper.capability_matrix import get_capability_matrix
 
