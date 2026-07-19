@@ -12,7 +12,6 @@ from app.schemas.us_dual_paper import (
 )
 from app.services.us_dual_paper.adapters.base import BrokerPreviewAdapter
 
-_USD_NATIONS = {"미국", "US", "USA"}
 _US_EXCHANGE_CODES = ("NASD", "NYSE", "AMEX")
 _KIS_MOCK_ENV_KEYS = (
     "KIS_MOCK_ENABLED",
@@ -32,18 +31,12 @@ def _to_float(value: Any) -> float | None:
         return None
 
 
-def _is_usd_row(row: Mapping[str, Any]) -> bool:
-    crcy = str(row.get("crcy_cd") or "").strip().upper()
-    natn = str(row.get("natn_name") or "").strip().upper()
-    return crcy == "USD" and (not natn or natn in {n.upper() for n in _USD_NATIONS})
-
-
 def _default_kis_client() -> Any:
     # Mock vs live is decided by the CLIENT INSTANCE (host), not the per-call
     # is_mock arg (which only selects the TR id). The module-level `kis`
     # singleton is a LIVE-host client, so mock TRs sent through it are rejected
     # by the live server (EGW02005). A KISClient(is_mock=True) targets the mock
-    # host (openapivts) where overseas balance reads succeed.
+    # host (openapivts) where VTTS3007R and overseas holdings reads succeed.
     from app.services.brokers.kis.client import KISClient  # local import
 
     return KISClient(is_mock=True)
@@ -78,15 +71,20 @@ class KisMockUsAdapter(BrokerPreviewAdapter):
         cash_usd: float | None = None
         buying_power_usd: float | None = None
         try:
-            # KIS mock does NOT offer overseas foreign-margin (OPSQ0002 "no such
-            # service code"); treat USD cash/buying-power as best-effort.
-            rows = await self._kis_client.inquire_overseas_margin(is_mock=True)
-            for row in rows or []:
-                if isinstance(row, Mapping) and _is_usd_row(row):
-                    cash_usd = _to_float(row.get("frcr_dncl_amt1"))
-                    buying_power_usd = _to_float(row.get("frcr_ord_psbl_amt1"))
-                    break
-        except Exception:  # mock lacks overseas margin — holdings still read below
+            # ROB-951: KIS mock does NOT offer overseas foreign-margin (OPSQ0002
+            # "no such service code"). USD buying power comes from the same
+            # mock-only TR the order preflight gate uses (VTTS3007R), so the
+            # public ``kis_mock.account_cash_read`` capability is honest.
+            buyable = await self._kis_client.inquire_mock_overseas_buyable_amount()
+            if isinstance(buyable, Mapping):
+                # ``ord_psbl_frcr_amt`` (parsed as ``ovrs_ord_psbl_amt``) is the
+                # verified USD orderable cash — the identical convention as
+                # ``order_validation._get_available_cash``. VTTS3007R exposes no
+                # separate deposit balance, so cash and buying power share it.
+                buying_power_usd = _to_float(buyable.get("ovrs_ord_psbl_amt"))
+                cash_usd = buying_power_usd
+        except Exception:
+            # Fail-closed: an unreadable balance stays unknown (None), never 0.
             cash_usd = None
             buying_power_usd = None
         holdings = await self._kis_client.fetch_my_us_stocks(is_mock=True)
