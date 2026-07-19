@@ -1,15 +1,16 @@
 """ROB-960 -- frozen H1-H6/H5 source bytes must stay unchanged.
 
-ROB-970 R1 authorized the H4-bound diagnostic-evidence hardening repair at
-``02c6ca9f`` (Critical-1 fail-closed redaction, Q1=A cap=32 bounded
-diagnostic evidence, Q2=C-modified replay-divergence observation -- all
-Fable-approved per ``orch-fable-answer-rob970-r1-20260719.md``, on top of
-the original ROB-970 S2 confirmation_failed timestamp root fix at
-``da557e36``) as the new byte authority and retained this guard class --
-superseding the prior ROB-970 authority (``da557e36``) and, before that,
-ROB-962 (``237cd38a``, the exact-float ``0.0`` cost-model seed). Only the
-guards' self-referential re-pin metadata are excluded; every other frozen
-predecessor byte remains protected.
+ROB-970 R2 authorized a second H4-bound diagnostic-evidence hardening
+repair at ``2219dca8`` (frame-aware bounded traceback truncation, one
+production cap enforced at every trust boundary including the app service
+assembly layer, a closed app-schema persistence bypass, the Q2=C-modified
+canonical-byte replay-divergence contract rework, and a real -- not
+simulated -- observer-effect-0 proof; all per the R2 captain/audit
+continuation) as the new byte authority -- superseding the R1 authority
+(``02c6ca9f``), the original ROB-970 S2 confirmation_failed timestamp root
+fix (``da557e36``), and, before that, ROB-962 (``237cd38a``, the exact-float
+``0.0`` cost-model seed). Only the guards' self-referential re-pin metadata
+are excluded; every other frozen predecessor byte remains protected.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ import subprocess
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_FROZEN_BYTE_AUTHORITY = "02c6ca9f984dcca463f879bcdd9e8ff456f8e85d"
+_FROZEN_BYTE_AUTHORITY = "2219dca85283f64debd098ed4c780d4f9779fd3d"
 
 _FROZEN_PATHS = (
     "research/nautilus_scalping",

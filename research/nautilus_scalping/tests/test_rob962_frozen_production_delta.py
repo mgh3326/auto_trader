@@ -1,15 +1,20 @@
-"""ROB-970 R1 permits one exact post-ROB-970 production-source repair window.
+"""ROB-970 R1/R2 permits one exact post-ROB-970 production-source repair window.
 
 ROB-970's own re-pin tip (``cc462d94``, which already includes its
 authorized S2 timestamp root fix + original Q2/Q3 diagnostic-evidence
-boundary) is the new comparison base -- ROB-970 R1 supersedes that single-
-change-window check because the Critical-1 fail-closed redaction hardening,
-Q1=A cap=32 bounded diagnostic evidence, and Q2=C-modified replay-divergence
-observation (all Fable-approved, ``orch-fable-answer-rob970-r1-
-20260719.md``) are intentionally lineage-changing now (``rob944_walkforward.py``
-and friends are themselves part of the hashed frozen-campaign source
-provenance). Test files are reviewable support changes; every production
-add/modify/delete/rename/copy/type-change remains in scope.
+boundary) is the comparison base -- ROB-970 R1, and now R2 on top of it,
+supersede that single-change-window check because the Critical-1
+fail-closed redaction hardening, Q1=A cap=32 bounded diagnostic evidence,
+the Q2=C-modified replay-divergence observation, and (R2) the frame-aware
+truncation/canonical-byte replay/app-service-boundary/real-observer-effect-0
+hardening (all Fable/audit-approved) are intentionally lineage-changing now
+(``rob944_walkforward.py`` and friends are themselves part of the hashed
+frozen-campaign source provenance). Test files are reviewable support
+changes; every production add/modify/delete/rename/copy/type-change remains
+in scope. The set of AUTHORIZED production files is unchanged from R1 (R2
+did not touch ``rob944_walkforward.py`` again), but ``_FULL_CAMPAIGN_HASH``
+moved because several of the R2-touched files are themselves part of the
+hashed provenance.
 """
 
 from __future__ import annotations
@@ -24,7 +29,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _ROB960_MERGE_HEAD = "cc462d949c60d74f5edcfc2d3005b3e4033446ce"
 _COST_MODEL_PATH = "research/nautilus_scalping/rob940_cost_model.py"
 _COST_MODEL_SHA256 = "a5db97037a4fa3acd3712bbe82ec8d69eea4d3545d926de30d752398a3ea5366"
-_FULL_CAMPAIGN_HASH = "bb9f6f92141c3b6cc6bf76020ca3c050c34c4d81cb1ff5dd8413e1214cf46675"
+_FULL_CAMPAIGN_HASH = "605d5e30b57656d9e43ff55134baaa093883ce1f1aa6ffc4c467f0105d49f152"
 _AUTHORIZED_PRODUCTION_CHANGES = [
     ("M", ("app/schemas/research_campaign_bridge.py",)),
     ("M", ("app/services/research_campaign_bridge.py",)),
