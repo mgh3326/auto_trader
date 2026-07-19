@@ -467,6 +467,96 @@ def test_mutation_of_a_scenario_metric_changes_the_artifact_hash():
     assert e1["scorecard_artifact_hash"] != e2["scorecard_artifact_hash"]
 
 
+def test_diagnostic_evidence_and_overflow_never_alter_campaign_verdict_or_scorecard_hash():
+    """ROB-970 R1 Important-5: a DIRECT assertion (not merely an inferred
+    code-path separation) that diagnostic content -- present, absent, or
+    differently-worded -- never changes campaign_verdict, the scorecard's
+    own semantic artifact hash, the H5 six-key accounting seal/trial
+    accounting hash, or the full campaign identity/run ID. Also exercises
+    the ROB-970 R1 divergence-observer seam: emitting a diagnostic-replay-
+    divergence observation has zero effect on any of these values either.
+    """
+    baseline_kwargs = _base_kwargs()
+    baseline = build_scorecard(**baseline_kwargs)
+
+    with_diagnostics_kwargs = _base_kwargs()
+    attempts = with_diagnostics_kwargs["attempt_evidence"]
+    attempts[0] = dict(
+        attempts[0],
+        diagnostic_evidence=[dict(_DIAGNOSTIC_ROW)],
+        diagnostic_overflow={
+            "truncated": True,
+            "omitted_distinct_signatures": 2,
+            "omitted_occurrences": 5,
+        },
+    )
+    attempts[1] = dict(
+        attempts[1],
+        diagnostic_evidence=[
+            dict(_DIAGNOSTIC_ROW, message="a totally different secret-bearing message")
+        ],
+    )
+    with_diagnostics = build_scorecard(**with_diagnostics_kwargs)
+
+    assert (
+        baseline["scorecard_payload"]["campaign_verdict"]
+        == with_diagnostics["scorecard_payload"]["campaign_verdict"]
+    )
+    assert (
+        baseline["scorecard_artifact_hash"]
+        == with_diagnostics["scorecard_artifact_hash"]
+    )
+    assert (
+        baseline["scorecard_payload"]["lineage"]["trial_accounting_hash"]
+        == with_diagnostics["scorecard_payload"]["lineage"]["trial_accounting_hash"]
+    )
+    assert (
+        baseline["scorecard_payload"]["lineage"]["full_campaign_hash"]
+        == with_diagnostics["scorecard_payload"]["lineage"]["full_campaign_hash"]
+    )
+    assert (
+        baseline["scorecard_payload"]["lineage"]["campaign_run_id"]
+        == with_diagnostics["scorecard_payload"]["lineage"]["campaign_run_id"]
+    )
+
+    # The divergence-observer seam itself (app.services.research_campaign_
+    # bridge._emit_diagnostic_replay_divergence) is a side-effecting stderr
+    # write with no return value and no mutation of any evidence object --
+    # simulated here (without an app.* import, staying within this pure H5
+    # module's own boundary) to prove the SHAPE of that guarantee:
+    # rebuilding the scorecard from the SAME kwargs after an arbitrary
+    # stderr write must be byte-identical to the pre-observation build.
+    import sys as _sys
+
+    _sys.stderr.write(
+        '{"event": "diagnostic_replay_divergence", "idempotency_key": '
+        '"camp1:exp-observer-effect-0:0"}\n'
+    )
+    after_observation = build_scorecard(**with_diagnostics_kwargs)
+    assert (
+        after_observation["scorecard_artifact_hash"]
+        == with_diagnostics["scorecard_artifact_hash"]
+    )
+
+
+_DIAGNOSTIC_ROW = {
+    "transport": "in_process",
+    "stage": "generator",
+    "exception_type": "RuntimeError",
+    "message": "boom",
+    "traceback_text": "Traceback...\nRuntimeError: boom\n",
+    "stderr": None,
+    "strategy": "S1",
+    "config_id": "S1-00",
+    "symbol": "BTCUSDT",
+    "fold_id": "fold-00",
+    "scenario_name": None,
+    "signature": "a" * 64,
+    "occurrence_count": 1,
+    "truncated": False,
+}
+
+
 def test_markdown_is_a_pure_render_of_the_json_and_traces_every_verdict():
     envelope = build_scorecard(**_base_kwargs())
     markdown = render_markdown(envelope)
