@@ -17,6 +17,7 @@ from app.mcp_server.tooling.alpaca_paper_orders import (
     SUBMIT_MAX_NOTIONAL_USD,
     SUBMIT_MAX_QTY,
     alpaca_paper_cancel_order,
+    alpaca_paper_reconcile_orders,
     alpaca_paper_submit_order,
     reset_alpaca_paper_orders_service_factory,
     set_alpaca_paper_orders_service_factory,
@@ -79,9 +80,11 @@ def test_module_exposes_expected_surface() -> None:
     assert _orders_mod.ALPACA_PAPER_MUTATING_TOOL_NAMES == {
         "alpaca_paper_submit_order",
         "alpaca_paper_cancel_order",
+        "alpaca_paper_reconcile_orders",
     }
     assert callable(_orders_mod.alpaca_paper_submit_order)
     assert callable(_orders_mod.alpaca_paper_cancel_order)
+    assert callable(_orders_mod.alpaca_paper_reconcile_orders)
     assert callable(_orders_mod.set_alpaca_paper_orders_service_factory)
     assert callable(_orders_mod.reset_alpaca_paper_orders_service_factory)
     assert callable(_orders_mod.register_alpaca_paper_orders_tools)
@@ -133,6 +136,18 @@ class FakeOrdersService(FakeAlpacaPaperService):
             status="canceled",
             limit_price=Decimal("1.00"),
         )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_mutation_requires_confirm_when_not_dry_run() -> None:
+    payload = await alpaca_paper_reconcile_orders(dry_run=False, confirm=False)
+
+    assert payload == {
+        "success": False,
+        "dry_run": False,
+        "blocked_reason": "confirmation_required",
+    }
 
 
 @pytest.fixture

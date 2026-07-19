@@ -272,7 +272,13 @@ async def test_list_fills_uses_activities_executions_endpoint():
 
     after = datetime(2024, 1, 1, tzinfo=UTC)
     until = datetime(2024, 1, 2, tzinfo=UTC)
-    fills = await svc.list_fills(after=after, until=until, limit=100)
+    fills = await svc.list_fills(
+        after=after,
+        until=until,
+        page_token="fill-previous-page",
+        page_size=100,
+        direction="desc",
+    )
 
     call_args = transport.request.call_args
     assert call_args[0][0] == "GET"
@@ -280,7 +286,10 @@ async def test_list_fills_uses_activities_executions_endpoint():
     params = call_args[1]["params"]
     assert "after" in params
     assert "until" in params
-    assert params["limit"] == 100
+    assert params["page_token"] == "fill-previous-page"
+    assert params["page_size"] == 100
+    assert params["direction"] == "desc"
+    assert "limit" not in params
     assert len(fills) == 1
     assert fills[0].symbol == "AAPL"
 

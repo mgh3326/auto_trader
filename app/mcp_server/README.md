@@ -439,6 +439,33 @@ not part of the default or `hermes-paper-kis` surfaces.
 - `alpaca_paper_ledger_get(client_order_id)`
 - `alpaca_paper_execution_preflight_check(...)`
 
+### Alpaca paper fill reconcile (DB-writing mutation, ROB-953)
+
+`alpaca_paper_reconcile_orders(symbol=None, client_order_id=None, dry_run=True,
+confirm=False, limit=100)` is **not** part of the read-only surface above. It is
+a **DB-writing mutation** classified in `MUTATION_TOOLS`, denied by the
+read-only settings profile, and exposed on the **DEFAULT** profile behind
+`settings.alpaca_paper_default_tools_enabled` (default off) — not `us-paper`
+only. Broker access is read-only (it never submits, replaces, or cancels), but
+it writes lifecycle state to `review.alpaca_paper_order_ledger`.
+
+It is the confirm-gated, evidence-first fill-booking tool for manually
+submitted Alpaca paper orders. It queries the broker by the ledger
+`client_order_id`, normalizes the order/fill evidence through the shared fill
+classifier, and only books confirmed cumulative fills. `dry_run=True` returns
+transition plans without ledger writes; `dry_run=False` requires `confirm=True`.
+
+Evidence handling is fail-closed. For `status=filled`, the tool always walks the
+complete FILL activity feed with Alpaca `page_token` pagination, even when the
+order already includes `filled_qty` and `filled_avg_price`. The row is left
+unchanged and returned with `requires_manual_review=true` when the broker read
+fails, the order is missing, or the observed fills are empty, incomplete, or do
+not sum to the order's cumulative `filled_qty`. The reported `action` and the
+persisted `lifecycle_state` are derived from the confirmed write result, so they
+cannot disagree. The tool books to `filled` / `partial` / `anomaly` / `canceled`
+only; it deliberately does not infer position or final reconciliation without
+independent evidence.
+
 `alpaca_paper_execution_preflight_check` is a read-only runner gate for the
 later automated paper cycle. It reads recent ledger rows and accepts optional
 caller-supplied read-only `open_orders`, `positions`, and `approval_packet`

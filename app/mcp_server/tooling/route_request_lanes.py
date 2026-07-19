@@ -190,7 +190,9 @@ MUTATION_TOOLS: frozenset[str] = frozenset(
     | KIWOOM_MOCK_TOOL_NAMES
     | KIWOOM_MOCK_US_MUTATION_TOOL_NAMES
     | MIRROR_COUNTERFACTUAL_TOOL_NAMES
-    # ROB-908: Alpaca paper confirm-gated order mutations (submit/cancel). Flag-
+    # ROB-908/ROB-953: Alpaca paper confirm-gated mutations — submit/cancel plus
+    # alpaca_paper_reconcile_orders, which reads the broker read-only but WRITES
+    # lifecycle state to review.alpaca_paper_order_ledger. Flag-
     # gated in DEFAULT (settings.alpaca_paper_default_tools_enabled, default off);
     # the read/preview/us_dual/ledger surface is read-only and lives in
     # READ_ONLY_ADVISORY_TOOLS. The automated-submit tool is not registered in
@@ -282,7 +284,8 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         # (ALPACA_PAPER_PREVIEW_TOOL_NAMES — no side effects, does not submit),
         # and the read-only us_dual capability/state/preview trio
         # (US_DUAL_PAPER_TOOL_NAMES, submit_enabled always False). The
-        # confirm-gated submit/cancel mutations live in MUTATION_TOOLS.
+        # confirm-gated submit/cancel mutations and the DB-writing
+        # alpaca_paper_reconcile_orders live in MUTATION_TOOLS.
         *ALPACA_PAPER_READONLY_TOOL_NAMES,
         *ALPACA_PAPER_PREVIEW_TOOL_NAMES,
         *US_DUAL_PAPER_TOOL_NAMES,
