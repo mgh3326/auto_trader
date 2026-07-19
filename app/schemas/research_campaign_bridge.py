@@ -26,9 +26,34 @@ __all__ = [
     "AttemptKey",
     "CampaignCompletenessReport",
     "ChildFailureDiagnostic",
+    "ChildFailureDiagnosticOverflow",
     "ScenarioEvidence",
     "ScenarioName",
 ]
+
+
+class ChildFailureDiagnosticOverflow(BaseModel):
+    """ROB-970 R1 (Q1=A, cap=32, Fable-approved
+    ``orch-fable-answer-rob970-r1-20260719.md``) -- closed-shape,
+    diagnostics-only overflow accounting for anything beyond the first 32
+    DISTINCT signatures (in canonical/first-seen execution order).
+    Deliberately carries NO hash/identity role -- excluded from every
+    semantic hash/fingerprint/verdict, exactly like ``ChildFailureDiagnostic``
+    itself. Exactly these three fields, nothing more."""
+
+    truncated: bool
+    omitted_distinct_signatures: int = Field(ge=0)
+    omitted_occurrences: int = Field(ge=0)
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @model_validator(mode="after")
+    def _validate(self) -> ChildFailureDiagnosticOverflow:
+        if self.omitted_distinct_signatures > self.omitted_occurrences:
+            raise ValueError(
+                "omitted_distinct_signatures cannot exceed omitted_occurrences"
+            )
+        return self
 
 
 class ChildFailureDiagnostic(BaseModel):
@@ -129,6 +154,13 @@ class AttemptEvidence(BaseModel):
     # semantic seal (see terminal_evidence_fingerprint, which deliberately
     # never reads this field).
     diagnostic_evidence: tuple[ChildFailureDiagnostic, ...] = ()
+    # ROB-970 R1 (Q1=A, cap=32): honest overflow accounting -- equally
+    # additive/persistence-only, equally excluded from every semantic seal.
+    diagnostic_overflow: ChildFailureDiagnosticOverflow = Field(
+        default_factory=lambda: ChildFailureDiagnosticOverflow(
+            truncated=False, omitted_distinct_signatures=0, omitted_occurrences=0
+        )
+    )
 
     model_config = ConfigDict(extra="forbid")
 

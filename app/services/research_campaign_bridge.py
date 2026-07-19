@@ -39,6 +39,9 @@ ROB-905 import — see the extended
 
 from __future__ import annotations
 
+import json
+import sys
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -255,8 +258,92 @@ def _diagnostic_evidence_payload(evidence: AttemptEvidence) -> list[dict]:
     ]
 
 
+def _diagnostic_overflow_payload(evidence: AttemptEvidence) -> dict:
+    """ROB-970 R1 (Q1=A, cap=32): honest overflow accounting -- carried into
+    ``raw_payload`` alongside ``diagnostic_evidence``, equally excluded from
+    ``terminal_evidence_fingerprint``."""
+    overflow = evidence.diagnostic_overflow
+    return {
+        "truncated": overflow.truncated,
+        "omitted_distinct_signatures": overflow.omitted_distinct_signatures,
+        "omitted_occurrences": overflow.omitted_occurrences,
+    }
+
+
+def _diagnostic_fingerprint(evidence: AttemptEvidence) -> str:
+    """ROB-970 R1 (Q2=C-modified, Fable-approved
+    ``orch-fable-answer-rob970-r1-20260719.md``): canonical fingerprint of
+    JUST the sanitized/bounded diagnostic evidence + overflow metadata --
+    deliberately separate from ``terminal_evidence_fingerprint`` (semantic
+    identity). Used ONLY to detect replay divergence, never as a semantic
+    hash/identity input."""
+    return canonical_sha256(
+        {
+            "diagnostic_evidence": _diagnostic_evidence_payload(evidence),
+            "diagnostic_overflow": _diagnostic_overflow_payload(evidence),
+        }
+    )
+
+
 def _stored_fingerprint(row: ResearchBacktestRun) -> object:
     return (row.raw_payload or {}).get("h6_evidence_fingerprint")
+
+
+def _stored_diagnostic_fingerprint(row: ResearchBacktestRun) -> object:
+    return (row.raw_payload or {}).get("diagnostic_fingerprint")
+
+
+def _emit_diagnostic_replay_divergence(
+    *,
+    idempotency_key: str,
+    stored_diagnostic_fingerprint: object,
+    new_diagnostic_fingerprint: str,
+    stored_distinct_signature_count: int,
+    new_distinct_signature_count: int,
+) -> None:
+    """ROB-970 R1 (Q2=C-modified): semantic-identical replay is, by
+    determinism, expected to produce IDENTICAL diagnostics (same code, same
+    input, same failure, same traceback) -- a divergence here is evidence of
+    NONDETERMINISM, not a legitimate "late-arriving diagnostics" case.
+    Never merged (would hide the nondeterminism) and never silently
+    discarded (the R1 Important-2 bug) -- loudly surfaced instead. The
+    original row is NEVER mutated (append-only trial-row invariance holds);
+    this is observation-only, impossible to miss, sanitized (stable
+    digests/counts/context only, never raw diagnostic text), and never a
+    fail-stop (unlike ``TerminalEvidenceMismatch``, which remains reserved
+    for genuine semantic-identity mismatches)."""
+    payload = {
+        "event": "diagnostic_replay_divergence",
+        "idempotency_key": idempotency_key,
+        "stored_diagnostic_fingerprint": stored_diagnostic_fingerprint,
+        "new_diagnostic_fingerprint": new_diagnostic_fingerprint,
+        "stored_distinct_signature_count": stored_distinct_signature_count,
+        "new_distinct_signature_count": new_distinct_signature_count,
+    }
+    sys.stderr.write(json.dumps(payload, sort_keys=True) + "\n")
+    sys.stderr.flush()
+
+
+def _check_diagnostic_divergence(
+    row: ResearchBacktestRun, evidence: AttemptEvidence, *, idempotency_key: str
+) -> None:
+    """Compare the REPLAY's diagnostic content against what is already
+    durably stored for this attempt key. Byte-identical (canonical-
+    serialized) diagnostics are a write-free no-op -- nothing is emitted.
+    Any divergence emits the loud observation above; the caller's row is
+    returned completely unchanged either way."""
+    new_fingerprint = _diagnostic_fingerprint(evidence)
+    stored_fingerprint = _stored_diagnostic_fingerprint(row)
+    if stored_fingerprint == new_fingerprint:
+        return
+    stored_evidence = (row.raw_payload or {}).get("diagnostic_evidence") or []
+    _emit_diagnostic_replay_divergence(
+        idempotency_key=idempotency_key,
+        stored_diagnostic_fingerprint=stored_fingerprint,
+        new_diagnostic_fingerprint=new_fingerprint,
+        stored_distinct_signature_count=len(stored_evidence),
+        new_distinct_signature_count=len(evidence.diagnostic_evidence),
+    )
 
 
 async def record_attempt(
@@ -307,6 +394,15 @@ async def record_attempt(
     )
     if existing is not None:
         if _stored_fingerprint(existing) == fingerprint:
+            # ROB-970 R1 (Q2=C-modified): semantic identity matches -- this
+            # IS a legitimate replay. Diagnostics are additive/persistence-
+            # only, so they are checked SEPARATELY: byte-identical is a
+            # true write-free no-op; any divergence is surfaced loudly
+            # (never merged, never silently discarded) while the original
+            # row is returned completely untouched either way.
+            _check_diagnostic_divergence(
+                existing, evidence, idempotency_key=idempotency_key
+            )
             return existing
         raise TerminalEvidenceMismatch(
             f"attempt {idempotency_key!r} was already recorded with different "
@@ -343,6 +439,8 @@ async def record_attempt(
             "run_identity": evidence.run_identity,
             "scenario_evidence": _scenario_evidence_payload(evidence),
             "diagnostic_evidence": _diagnostic_evidence_payload(evidence),
+            "diagnostic_overflow": _diagnostic_overflow_payload(evidence),
+            "diagnostic_fingerprint": _diagnostic_fingerprint(evidence),
         },
     )
     returned = await registry.record_trial(
@@ -360,6 +458,13 @@ async def record_attempt(
             "writer with different terminal evidence (post-delegate); this "
             "call's evidence was NOT recorded — the existing row is unchanged"
         )
+    # ROB-970 R1 (Q2=C-modified): the post-delegate winner row may not be the
+    # one THIS call tried to insert (a concurrent race) -- same diagnostic
+    # divergence check applies here too, never a fail-stop. When ``returned``
+    # IS the row this very call just inserted, its stored diagnostic
+    # fingerprint trivially equals this evidence's own, so the check is a
+    # guaranteed no-op observation-wise.
+    _check_diagnostic_divergence(returned, evidence, idempotency_key=idempotency_key)
     return returned
 
 

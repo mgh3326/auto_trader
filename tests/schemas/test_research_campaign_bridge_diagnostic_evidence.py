@@ -12,6 +12,7 @@ from app.schemas.research_campaign_bridge import (
     AttemptEvidence,
     AttemptKey,
     ChildFailureDiagnostic,
+    ChildFailureDiagnosticOverflow,
     ScenarioEvidence,
 )
 
@@ -106,3 +107,61 @@ def test_attempt_evidence_still_forbids_extra_top_level_fields():
             scenario_evidence=_scenario_evidence(),
             unexpected_field="nope",
         )
+
+
+# -- ROB-970 R1 (Q1=A, cap=32): diagnostic_overflow ------------------------
+
+
+def _overflow(**overrides) -> ChildFailureDiagnosticOverflow:
+    base = {
+        "truncated": True,
+        "omitted_distinct_signatures": 3,
+        "omitted_occurrences": 9,
+    }
+    base.update(overrides)
+    return ChildFailureDiagnosticOverflow(**base)
+
+
+def test_attempt_evidence_defaults_diagnostic_overflow_to_empty():
+    evidence = AttemptEvidence(
+        attempt_key=AttemptKey(campaign_run_id="run-1", experiment_id="exp-1"),
+        status="completed",
+        run_identity="r" * 64,
+        scenario_evidence=_scenario_evidence(),
+    )
+    assert evidence.diagnostic_overflow == ChildFailureDiagnosticOverflow(
+        truncated=False, omitted_distinct_signatures=0, omitted_occurrences=0
+    )
+
+
+def test_attempt_evidence_accepts_diagnostic_overflow():
+    overflow = _overflow()
+    evidence = AttemptEvidence(
+        attempt_key=AttemptKey(campaign_run_id="run-1", experiment_id="exp-1"),
+        status="crashed",
+        reason_code="child_execution_crashed",
+        run_identity="r" * 64,
+        scenario_evidence=_scenario_evidence(),
+        diagnostic_overflow=overflow,
+    )
+    assert evidence.diagnostic_overflow == overflow
+
+
+def test_diagnostic_overflow_rejects_negative_omitted_distinct_signatures():
+    with pytest.raises(ValidationError):
+        _overflow(omitted_distinct_signatures=-1)
+
+
+def test_diagnostic_overflow_rejects_negative_omitted_occurrences():
+    with pytest.raises(ValidationError):
+        _overflow(omitted_occurrences=-1)
+
+
+def test_diagnostic_overflow_rejects_distinct_exceeding_occurrences():
+    with pytest.raises(ValidationError):
+        _overflow(omitted_distinct_signatures=10, omitted_occurrences=5)
+
+
+def test_diagnostic_overflow_rejects_extra_fields():
+    with pytest.raises(ValidationError):
+        _overflow(unexpected_field="nope")
