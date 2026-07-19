@@ -10,6 +10,15 @@ import pytest
 
 from app.services.brokers.alpaca.schemas import Order
 
+TERMINAL_STATES = {
+    "filled",
+    "position_reconciled",
+    "closed",
+    "final_reconciled",
+    "canceled",
+    "anomaly",
+}
+
 
 @dataclass
 class Row:
@@ -19,15 +28,33 @@ class Row:
     lifecycle_state: str = "submitted"
     filled_qty: Decimal = Decimal("0")
     record_kind: str = "execution"
+    cancel_status: str | None = None
+    canceled_at: Any = None
 
 
 class Ledger:
+    """Fake ledger that persists through the *real* lifecycle derivation.
+
+    Using the production mapping here is what makes the action-vs-persisted-state
+    assertions meaningful: a hand-rolled fake mapping would re-introduce exactly
+    the divergence these tests exist to catch.
+    """
+
     def __init__(self, rows: list[Row]) -> None:
         self.rows = rows
         self.status_calls: list[dict[str, Any]] = []
 
-    async def list_recent(self, limit: int) -> list[Row]:
-        return self.rows[:limit]
+    async def list_reconcile_candidates(
+        self, limit: int = 100, symbol: str | None = None
+    ) -> list[Row]:
+        eligible = [
+            row
+            for row in self.rows
+            if row.record_kind == "execution"
+            and row.lifecycle_state not in TERMINAL_STATES
+            and (symbol is None or row.execution_symbol == symbol)
+        ]
+        return eligible[:limit]
 
     async def get_execution_by_client_order_id(
         self, client_order_id: str
@@ -45,6 +72,8 @@ class Ledger:
     async def record_status(
         self, client_order_id: str, order: dict[str, Any], **_: Any
     ) -> Row:
+        from app.services.alpaca_paper_ledger_service import derive_lifecycle_state
+
         self.status_calls.append(order)
         row = next(
             r
@@ -52,12 +81,11 @@ class Ledger:
             if r.client_order_id == client_order_id and r.record_kind == "execution"
         )
         row.filled_qty = Decimal(str(order["filled_qty"]))
-        row.lifecycle_state = (
-            "filled"
-            if order["status"] == "filled"
-            else "submitted"
-            if order["status"] == "partially_filled"
-            else "anomaly"
+        row.lifecycle_state = derive_lifecycle_state(
+            order["status"],
+            row.filled_qty,
+            has_cancel_evidence=row.cancel_status is not None
+            or row.canceled_at is not None,
         )
         return row
 
@@ -252,7 +280,7 @@ def test_normalize_alpaca_order_uses_quantity_weighted_fill_average() -> None:
         normalize_alpaca_order_for_classify,
     )
 
-    order = filled_order(qty="0")
+    order = filled_order(qty="0.010")
     order.filled_avg_price = None
     normalized = normalize_alpaca_order_for_classify(
         order,
@@ -313,3 +341,298 @@ async def test_reconcile_specific_old_client_order_uses_direct_ledger_and_broker
     assert result["count"] == 1
     assert result["reconciled"][0]["ledger_id"] == 201
     assert len(ledger.status_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# ROB-953 R3 (1) — the reported action and the persisted lifecycle_state are
+# derived from one mapping, so they must agree for EVERY transition shape.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("broker_status", "qty", "order_qty", "cancel_status", "expected_label"),
+    [
+        # broker agrees the order is done and the quantity backs it up
+        ("filled", "0.014", "0.014", None, "filled"),
+        # broker reports filled but only a partial quantity is evidenced
+        ("filled", "0.007", "0.014", None, "partial"),
+        ("partially_filled", "0.007", "0.014", None, "partial"),
+        # an open status carrying a fill is a contradiction, never a fill
+        ("accepted", "0.014", "0.014", None, "anomaly"),
+        ("new", "0.014", "0.014", None, "anomaly"),
+        ("accepted", "0.007", "0.014", None, "partial"),
+        # terminal non-fill statuses reporting a full quantity
+        ("rejected", "0.014", "0.014", None, "anomaly"),
+        ("expired", "0.014", "0.014", None, "anomaly"),
+        ("canceled", "0.014", "0.014", None, "anomaly"),
+        # canceled *with* cancel evidence on the row is a legitimate cancel
+        ("canceled", "0.014", "0.014", "canceled", "canceled"),
+    ],
+)
+async def test_reported_action_always_matches_persisted_lifecycle_state(
+    broker_status: str,
+    qty: str,
+    order_qty: str,
+    cancel_status: str | None,
+    expected_label: str,
+) -> None:
+    """Regression for the round-1/2 defect class: response said one thing, the
+    ledger row said another (booked_filled persisted as anomaly, and inverse)."""
+    from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
+
+    ledger = Ledger([Row(cancel_status=cancel_status)])
+    order = filled_order(status=broker_status, qty=qty)
+    order.qty = Decimal(order_qty)
+
+    result = await AlpacaPaperReconcileService(ledger, Broker(order)).reconcile(
+        dry_run=False
+    )
+    outcome = result["reconciled"][0]
+
+    assert outcome["action"] == f"booked_{expected_label}"
+    assert outcome["transition_depth"] == expected_label
+    # the persisted row is the ground truth the action claims to describe
+    assert outcome["lifecycle_state"] == ledger.rows[0].lifecycle_state
+    assert outcome["persisted_lifecycle_state"] == ledger.rows[0].lifecycle_state
+    assert outcome.get("requires_manual_review") is not True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("broker_status", ["filled", "rejected", "accepted"])
+async def test_dry_run_plan_matches_the_state_a_real_run_would_persist(
+    broker_status: str,
+) -> None:
+    from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
+
+    def run(dry_run: bool) -> Any:
+        return AlpacaPaperReconcileService(
+            Ledger([Row()]), Broker(filled_order(status=broker_status))
+        ).reconcile(dry_run=dry_run)
+
+    planned = (await run(True))["reconciled"][0]
+    booked = (await run(False))["reconciled"][0]
+
+    assert planned["lifecycle_state"] == booked["lifecycle_state"]
+    assert planned["action"] == booked["action"].replace("booked_", "would_book_")
+
+
+def test_resolve_transition_labels_cover_every_derivable_state() -> None:
+    """No lifecycle state the resolver can produce may fall through unlabelled."""
+    from app.services.alpaca_paper_ledger_service import derive_lifecycle_state
+    from app.services.alpaca_paper_reconcile_service import (
+        _LIFECYCLE_ACTION_LABELS,
+        resolve_transition,
+    )
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import FillVerdict
+
+    statuses = [
+        "filled",
+        "partially_filled",
+        "accepted",
+        "new",
+        "pending_new",
+        "rejected",
+        "expired",
+        "canceled",
+        "suspended",
+        "weird_unknown_status",
+    ]
+    for status in statuses:
+        for verdict in (FillVerdict.FILLED, FillVerdict.PARTIAL):
+            for cancel_evidence in (True, False):
+                transition = resolve_transition(
+                    verdict=verdict,
+                    broker_status=status,
+                    filled_qty=Decimal("1"),
+                    has_cancel_evidence=cancel_evidence,
+                )
+                assert transition.lifecycle_state in _LIFECYCLE_ACTION_LABELS
+                # the resolver's state is literally what record_status derives
+                assert transition.lifecycle_state == derive_lifecycle_state(
+                    transition.broker_status,
+                    Decimal("1"),
+                    has_cancel_evidence=cancel_evidence,
+                )
+
+
+# ---------------------------------------------------------------------------
+# ROB-953 R3 (4) — fill-set completeness gates the weighted average
+# ---------------------------------------------------------------------------
+
+
+def _fill(order_id: str, qty: str, price: str, cum: str, fill_id: str = "f1") -> Any:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        id=fill_id,
+        order_id=order_id,
+        qty=Decimal(qty),
+        price=Decimal(price),
+        cum_qty=Decimal(cum),
+        transaction_time=None,
+    )
+
+
+class FillsBroker(Broker):
+    def __init__(self, order: Order | None, pages: list[list[Any]]) -> None:
+        super().__init__(order)
+        self.pages = pages
+        self.calls: list[dict[str, Any]] = []
+
+    async def list_fills(self, **kwargs: Any) -> list[Any]:
+        self.calls.append(kwargs)
+        index = len(self.calls) - 1
+        return self.pages[index] if index < len(self.pages) else []
+
+
+@pytest.mark.asyncio
+async def test_incomplete_fill_set_requires_manual_review_without_transition() -> None:
+    """Σ(fill qty) < the order's cumulative filled_qty means fills were truncated;
+    averaging over them would book a wrong price."""
+    from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
+
+    order = filled_order(qty="0.014")
+    order.filled_avg_price = None
+    ledger = Ledger([Row()])
+    broker = FillsBroker(order, [[_fill(order.id, "0.007", "100", "0.007")]])
+
+    result = await AlpacaPaperReconcileService(ledger, broker).reconcile(dry_run=False)
+    outcome = result["reconciled"][0]
+
+    assert outcome["action"] == "noop_requires_manual_review"
+    assert outcome["requires_manual_review"] is True
+    assert outcome["reason"] == "incomplete_fill_set"
+    assert outcome["fill_set_complete"] is False
+    assert ledger.rows[0].lifecycle_state == "submitted"
+    assert ledger.status_calls == []
+
+
+@pytest.mark.asyncio
+async def test_filled_status_with_empty_fills_requires_manual_review() -> None:
+    """status=filled with no quantity and no fills is a contradiction, not a
+    silent noop_pending (which left real fills unbooked forever)."""
+    from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
+
+    order = filled_order(qty="0")
+    order.filled_qty = None
+    order.filled_avg_price = None
+    ledger = Ledger([Row()])
+
+    result = await AlpacaPaperReconcileService(ledger, Broker(order)).reconcile(
+        dry_run=False
+    )
+    outcome = result["reconciled"][0]
+
+    assert outcome["action"] == "noop_requires_manual_review"
+    assert outcome["requires_manual_review"] is True
+    assert ledger.status_calls == []
+
+
+@pytest.mark.asyncio
+async def test_filled_status_with_zero_qty_and_no_fills_requires_manual_review() -> (
+    None
+):
+    from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
+
+    order = filled_order(status="filled", qty="0")
+    order.filled_avg_price = None
+    ledger = Ledger([Row()])
+
+    result = await AlpacaPaperReconcileService(ledger, Broker(order)).reconcile(
+        dry_run=False
+    )
+    outcome = result["reconciled"][0]
+
+    assert outcome["action"] == "noop_requires_manual_review"
+    assert outcome["reason"] == "filled_status_without_fill_evidence"
+    assert ledger.status_calls == []
+
+
+@pytest.mark.asyncio
+async def test_complete_fill_set_books_exact_quantity_weighted_average() -> None:
+    from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
+
+    order = filled_order(qty="0.010")
+    order.qty = Decimal("0.010")
+    order.filled_avg_price = None
+    ledger = Ledger([Row()])
+    broker = FillsBroker(
+        order,
+        [
+            [
+                _fill(order.id, "0.005", "100", "0.005", fill_id="a"),
+                _fill(order.id, "0.005", "110", "0.010", fill_id="b"),
+            ]
+        ],
+    )
+
+    result = await AlpacaPaperReconcileService(ledger, broker).reconcile(dry_run=False)
+    outcome = result["reconciled"][0]
+
+    assert outcome["fill_set_complete"] is True
+    assert outcome["action"] == "booked_filled"
+    assert Decimal(outcome["avg_price"]) == Decimal("105")
+    assert ledger.rows[0].lifecycle_state == "filled"
+
+
+@pytest.mark.asyncio
+async def test_fill_pages_are_walked_until_the_set_is_complete() -> None:
+    """A single 100-row page must not cap the fill set."""
+    from datetime import UTC, datetime
+
+    from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
+
+    order = filled_order(qty="100.5")
+    order.qty = Decimal("100.5")
+    order.filled_avg_price = None
+
+    page_one = []
+    for index in range(100):
+        fill = _fill(order.id, "1", "100", str(index + 1), fill_id=f"p1-{index}")
+        fill.transaction_time = datetime(2026, 7, 18, 12, index % 60, tzinfo=UTC)
+        page_one.append(fill)
+    page_two = [_fill(order.id, "0.5", "200", "100.5", fill_id="p2-0")]
+
+    broker = FillsBroker(order, [page_one, page_two])
+    ledger = Ledger([Row()])
+
+    result = await AlpacaPaperReconcileService(ledger, broker).reconcile(dry_run=False)
+    outcome = result["reconciled"][0]
+
+    assert len(broker.calls) == 2
+    assert outcome["fill_set_complete"] is True
+    assert outcome["action"] == "booked_filled"
+    # (100 * 100 + 0.5 * 200) / 100.5
+    assert Decimal(outcome["avg_price"]) == (Decimal("10100") / Decimal("100.5"))
+
+
+# ---------------------------------------------------------------------------
+# ROB-953 R3 (5) — eligibility filters run before the bulk limit
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bulk_limit_applies_after_eligibility_filters() -> None:
+    """200 newer preview/terminal rows must not hide the 201st open execution."""
+    from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
+
+    noise = [
+        Row(
+            id=index,
+            client_order_id=f"noise-{index}",
+            record_kind="preview" if index % 2 else "execution",
+            lifecycle_state="previewed" if index % 2 else "filled",
+        )
+        for index in range(200)
+    ]
+    eligible = Row(id=201, client_order_id="rob73-08ebbf8c64e2dd93")
+    ledger = Ledger([*noise, eligible])
+
+    result = await AlpacaPaperReconcileService(
+        ledger, Broker(filled_order())
+    ).reconcile(dry_run=False, limit=100)
+
+    assert result["count"] == 1
+    assert result["reconciled"][0]["ledger_id"] == 201
+    assert eligible.lifecycle_state == "filled"

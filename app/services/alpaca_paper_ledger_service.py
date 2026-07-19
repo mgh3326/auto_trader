@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -82,6 +82,8 @@ RECORD_KIND_EXECUTION = "execution"
 RECORD_KIND_RECONCILE = "reconcile"
 RECORD_KIND_ANOMALY = "anomaly"
 
+# ROB-953: states a reconcile pass never re-opens as a *booking candidate*.
+# Used for candidate selection only — not as a write guard.
 RECONCILE_TERMINAL_LIFECYCLE_STATES: frozenset[str] = frozenset(
     {
         LIFECYCLE_FILLED,
@@ -90,6 +92,23 @@ RECONCILE_TERMINAL_LIFECYCLE_STATES: frozenset[str] = frozenset(
         LIFECYCLE_FINAL_RECONCILED,
         LIFECYCLE_CANCELED,
         LIFECYCLE_ANOMALY,
+    }
+)
+
+# ROB-953: states from which a status write must never resurrect a row. Only
+# *completed* downstream states qualify — position/close/final bookkeeping has
+# already consumed the row, so re-deriving a state from a late broker read would
+# corrupt it.
+#
+# Deliberately EXCLUDES anomaly/canceled/filled: those are terminal outcomes but
+# remain legitimately re-transitionable (anomaly -> canceled once cancel evidence
+# lands, filled -> anomaly on contradicting evidence). An earlier revision of
+# this PR guarded on the full terminal set and silently broke anomaly -> canceled.
+RECONCILE_IMMUTABLE_LIFECYCLE_STATES: frozenset[str] = frozenset(
+    {
+        LIFECYCLE_POSITION_RECONCILED,
+        LIFECYCLE_CLOSED,
+        LIFECYCLE_FINAL_RECONCILED,
     }
 )
 
@@ -226,6 +245,12 @@ def _derive_lifecycle_state(
     if status in _ANOMALY_STATUSES:
         return LIFECYCLE_ANOMALY
     return LIFECYCLE_ANOMALY
+
+
+# ROB-953: public handle on the canonical mapping. The reconcile service derives
+# the state it reports from this exact function, so a reported action can never
+# diverge from what ``record_status`` persists.
+derive_lifecycle_state = _derive_lifecycle_state
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +430,35 @@ class AlpacaPaperLedgerService:
         if lifecycle_state is not None:
             stmt = stmt.where(AlpacaPaperOrderLedger.lifecycle_state == lifecycle_state)
         stmt = stmt.limit(limit)
+        result = await self._db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_reconcile_candidates(
+        self,
+        limit: int = 100,
+        symbol: str | None = None,
+    ) -> list[AlpacaPaperOrderLedger]:
+        """Execution rows still eligible for fill booking, newest first.
+
+        ROB-953: eligibility (``record_kind``, non-terminal lifecycle, optional
+        symbol) is filtered in SQL *before* ``limit``. Selecting the newest N rows
+        first and filtering afterwards made an older open execution unrecoverable
+        as soon as N newer preview/terminal rows existed.
+        """
+        conditions: list[Any] = [
+            AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
+            AlpacaPaperOrderLedger.lifecycle_state.not_in(
+                RECONCILE_TERMINAL_LIFECYCLE_STATES
+            ),
+        ]
+        if symbol is not None:
+            conditions.append(AlpacaPaperOrderLedger.execution_symbol == symbol)
+        stmt = (
+            select(AlpacaPaperOrderLedger)
+            .where(*conditions)
+            .order_by(AlpacaPaperOrderLedger.created_at.desc())
+            .limit(limit)
+        )
         result = await self._db.execute(stmt)
         return list(result.scalars().all())
 
@@ -1446,14 +1500,27 @@ class AlpacaPaperLedgerService:
                 f"anomaly: order_status={order_status!r} during status check"
             )
 
+        # ROB-953 optimistic write guard, evaluated in SQL against the *live* row
+        # rather than the possibly-stale row read above.
+        guard_predicates: list[Any] = [
+            AlpacaPaperOrderLedger.lifecycle_state.not_in(
+                RECONCILE_IMMUTABLE_LIFECYCLE_STATES
+            )
+        ]
+        if filled_qty is not None:
+            # Cumulative fills are monotonic at the broker. Under concurrent
+            # partial-fill reconciles, a stale lower reading must not overwrite a
+            # higher already-persisted quantity (0.8 then 0.7 -> keep 0.8).
+            guard_predicates.append(
+                or_(
+                    AlpacaPaperOrderLedger.filled_qty.is_(None),
+                    AlpacaPaperOrderLedger.filled_qty <= filled_qty,
+                )
+            )
+
         update_result = await self._db.execute(
             update(AlpacaPaperOrderLedger)
-            .where(
-                AlpacaPaperOrderLedger.id == target_row.id,
-                AlpacaPaperOrderLedger.lifecycle_state.not_in(
-                    RECONCILE_TERMINAL_LIFECYCLE_STATES
-                ),
-            )
+            .where(AlpacaPaperOrderLedger.id == target_row.id, *guard_predicates)
             .values(**update_vals)
         )
 
@@ -1766,6 +1833,9 @@ __all__ = [
     "ApprovalProvenance",
     "CANONICAL_LIFECYCLE_STATES",
     "EXECUTED_LIFECYCLE_STATES",
+    "RECONCILE_IMMUTABLE_LIFECYCLE_STATES",
+    "RECONCILE_TERMINAL_LIFECYCLE_STATES",
+    "derive_lifecycle_state",
     "LIFECYCLE_ANOMALY",
     "LIFECYCLE_CANCELED",
     "LIFECYCLE_CLOSED",

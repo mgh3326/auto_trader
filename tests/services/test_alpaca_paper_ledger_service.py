@@ -1374,6 +1374,16 @@ def test_service_is_valid_python():
 @pytest.mark.asyncio
 @pytest.mark.unit
 async def test_record_status_with_cancel_evidence_derives_canceled():
+    """ROB-953: asserts the TRANSITION, not just the SET clause.
+
+    Do not trust a green CI here on the SET value alone — the previous version of
+    this test only compiled `update_params["lifecycle_state"]` and therefore
+    stayed green while a WHERE guard silently filtered the anomaly row out,
+    blocking the legitimate anomaly -> canceled transition entirely. A false
+    green. The WHERE clause is now asserted alongside the SET clause, and
+    `test_record_status_anomaly_to_canceled_transition_actually_lands` proves the
+    same path against a real row.
+    """
     from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
 
     row = _make_row(cancel_status="canceled", lifecycle_state="anomaly")
@@ -1385,8 +1395,21 @@ async def test_record_status_with_cancel_evidence_derives_canceled():
         order={"id": "bid1", "status": "canceled", "filled_qty": "0"},
     )
     update_stmt = db.execute.call_args_list[1].args[0]
-    update_params = update_stmt.compile().params
-    assert update_params["lifecycle_state"] == "canceled"
+    compiled = update_stmt.compile()
+    assert compiled.params["lifecycle_state"] == "canceled"
+
+    # The row's CURRENT state (anomaly) must not be excluded by the write guard,
+    # or the derived "canceled" would never be applied to any row.
+    guarded_states = {
+        state
+        for key, value in compiled.params.items()
+        if key.startswith("lifecycle_state_") and isinstance(value, list)
+        for state in value
+    }
+    assert guarded_states, "expected an immutable-state guard in the WHERE clause"
+    assert "anomaly" not in guarded_states
+    assert "canceled" not in guarded_states
+    assert guarded_states == {"position_reconciled", "closed", "final_reconciled"}
 
 
 @pytest.mark.asyncio
