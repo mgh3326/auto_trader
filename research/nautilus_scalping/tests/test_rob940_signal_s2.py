@@ -26,6 +26,8 @@ from rob940_signal_s2 import (
     count_rejection_reasons,
     generate_s2_signals,
 )
+from rob944_walkforward import _validate_generated_rejections
+from run_rob944_campaign import _s2_rejections_to_no_trade_records
 
 _C = FrozenSignalConstants
 _BUCKET_MS = 5 * 60_000
@@ -301,6 +303,58 @@ def test_rejection_dataclass_has_reason_field_for_aggregation():
         reason="target_direction_invalid",
     )
     assert count_rejection_reasons((rc, rc)) == {"target_direction_invalid": 2}
+
+
+def test_s2_00_confirmation_failure_uses_confirmation_close_to_avoid_real_collision():
+    """Exact ROB-970 collision shape: the confirmation for shock A is also
+    shock B, and B fails confirmation one bar later.  A's target gate and
+    B's failure must never claim the same observable decision timestamp.
+    """
+    cfg = get_s2_config("S2-00")
+    bars = _zigzag_then_shock(
+        shock_close=99.9,
+        confirm_close=100.6,
+        confirm_high=100.6,
+        confirm_low=99.95,
+    )
+    bars[-1] = dataclasses.replace(bars[-1], volume=250.0)
+    shock_idx = _FLAT_N + 47
+    # This is B's failed confirmation: B is a positive shock at t, and the
+    # next bar violates its high<=shock-high confirmation condition.
+    bars.append(_bar(shock_idx + 2, 100.6, 100.8, 100.0, 100.2, 100.0))
+    result = generate_s2_signals(
+        bars,
+        [
+            Bar1m(
+                ts=bars[-2].close_ts,
+                open=101.0,
+                high=101.0,
+                low=100.9,
+                close=100.95,
+                volume=10.0,
+            )
+        ],
+        cfg,
+        symbol="BTCUSDT",
+        fold_id="fold-00",
+    )
+    rejections = _s2_rejections_to_no_trade_records(result.rejections)
+    reasons_at_first_confirmation = {
+        row.reason for row in rejections if row.signal_ts == bars[-2].close_ts
+    }
+    assert reasons_at_first_confirmation == {"target_direction_invalid"}
+    assert [row.reason for row in rejections if row.signal_ts == bars[-1].close_ts] == [
+        "confirmation_failed"
+    ]
+    _validate_generated_rejections(
+        rejections,
+        strategy="S2",
+        config_id="S2-00",
+        symbol="BTCUSDT",
+        fold_id="fold-00",
+        window_start_ms=0,
+        window_end_ms=bars[-1].close_ts,
+    )
 
 
 # ---------------------------------------------------------------------------
