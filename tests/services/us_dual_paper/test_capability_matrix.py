@@ -28,12 +28,11 @@ def test_matrix_entry_is_long_limit_paper_only(scope):
 
 
 @pytest.mark.unit
-def test_kis_mock_overseas_cash_and_open_orders_unsupported():
-    # Verified by live smoke: KIS mock has no overseas foreign-margin service
-    # (OPSQ0002) and blocks overseas pending-orders inquiry (TTTS3018R) in mock.
-    # Matrix must state this honestly rather than claim cash read works.
+def test_kis_mock_overseas_cash_read_supported_but_open_orders_unsupported():
+    # ROB-951 verified VTTS3007R mock-US buying power. Pending-order inquiry
+    # (TTTS3018R) remains unsupported, so only cash-read capability flips.
     entry = get_capability_matrix()["kis_mock"]
-    assert entry["account_cash_read"] is False
+    assert entry["account_cash_read"] is True
     assert entry["open_orders_read"] is False
     assert entry["positions_read"] is True  # holdings read works on mock host
 

@@ -21,13 +21,7 @@ from app.mcp_server.tooling.market_session import (
     kr_market_data_state,
 )
 from app.mcp_server.tooling.portfolio_cash import (
-    extract_usd_orderable_from_row as _extract_usd_orderable_from_row,
-)
-from app.mcp_server.tooling.portfolio_cash import (
     get_cash_balance_impl,
-)
-from app.mcp_server.tooling.portfolio_cash import (
-    select_usd_row_for_us_order as _select_usd_row_for_us_order,
 )
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
@@ -875,14 +869,16 @@ async def _get_balance_for_order(market_type: str, is_mock: bool = False) -> flo
         # (already net of pending buys; no extra subtraction).
         return await _live_kis_orderable("kis_overseas")
 
-    # mock US: KIS 모의투자엔 해외 orderable-cash 서비스가 없음(OPSQ0002). ROB-417
-    # 조기 가드가 _check_balance_and_warn에서 선제 차단하므로 여기 도달은 방어적.
+    # ROB-951: mock US is deliberately isolated from the live path above.
+    # VTTS3007R's ord_psbl_frcr_amt is verified USD orderable cash. Missing or
+    # failed responses raise so _check_balance_and_warn retains its fail-closed
+    # handling; never coerce a failed read to zero.
     kis = _create_kis_client(is_mock=is_mock)
-    margin_data = await _call_kis(kis.inquire_overseas_margin, is_mock=is_mock)
-    usd_row = _select_usd_row_for_us_order(margin_data)
-    if usd_row is None:
-        raise RuntimeError("USD margin data not found in KIS overseas margin")
-    return _extract_usd_orderable_from_row(usd_row)
+    buyable_amount = await kis.inquire_mock_overseas_buyable_amount()
+    orderable = buyable_amount.get("ovrs_ord_psbl_amt")
+    if orderable is None:
+        raise RuntimeError("VTTS3007R response missing verified USD orderable cash")
+    return float(orderable)
 
 
 async def _record_order_history(
@@ -1379,9 +1375,13 @@ async def _validate_sell_side(
 def _kis_mock_us_orderable_unsupported() -> bool:
     """KIS 모의투자가 해외(USD) orderable-cash 서비스를 제공하지 않는지 여부.
 
-    OPSQ0002 "없는 서비스 코드" — 2026-05-27 live smoke로 확정. capability_matrix를
-    권위 소스로 사용하므로, 미래에 US mock cash 어댑터가 생겨 account_cash_read=True가
-    되면 이 가드는 자동으로 완화된다.
+    폐기 근거(ROB-951): `inquire_overseas_margin`(OPSQ0002 "없는 서비스 코드",
+    2026-05-27 live smoke)만이 mock US cash 경로였을 때 이 가드가 매수를 차단했다.
+    2026-07-17 probe로 `VTTS3007R`이 mock 호스트에서 USD orderable cash를 반환함이
+    확인되어 `inquire_mock_overseas_buyable_amount()`로 배선됐고, capability_matrix의
+    `kis_mock.account_cash_read`가 True로 flip되면서 이 가드는 완화된 상태다.
+    capability_matrix가 권위 소스이므로 여기 하드코딩된 판단은 없다 — 배선이
+    되돌려지면 matrix flip만으로 가드가 다시 닫힌다.
     """
     from app.services.us_dual_paper.capability_matrix import get_capability_matrix
 

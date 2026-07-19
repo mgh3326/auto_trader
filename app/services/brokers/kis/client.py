@@ -334,6 +334,9 @@ class KISClient(BaseKISClient):
     ) -> list[dict[str, Any]]:
         return await self._account.inquire_overseas_margin(is_mock)
 
+    async def inquire_mock_overseas_buyable_amount(self) -> dict[str, Any]:
+        return await self._account.inquire_mock_overseas_buyable_amount()
+
     async def inquire_integrated_margin(
         self,
         is_mock: bool = False,

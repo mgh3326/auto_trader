@@ -12,6 +12,31 @@ if TYPE_CHECKING:
     from .protocols import KISClientProtocol
 
 
+def parse_mock_overseas_buyable_amount_response(
+    output: dict[str, Any],
+) -> dict[str, Any]:
+    """Parse VTTS3007R fields without changing live TTTC0869R parsing."""
+
+    def optional_float(value: Any) -> float | None:
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        # VTTS3007R names its USD orderable cash differently from the live
+        # foreign-margin and integrated-margin TRs. Keep this parser isolated.
+        "ovrs_ord_psbl_amt": optional_float(
+            output.get("ord_psbl_frcr_amt") or output.get("ovrs_ord_psbl_amt")
+        ),
+        "sll_ruse_psbl_amt": optional_float(output.get("sll_ruse_psbl_amt")),
+        "exrt": optional_float(output.get("exrt")),
+        "raw": output,
+    }
+
+
 def extract_domestic_cash_summary_from_integrated_margin(
     margin_data: dict[str, Any],
 ) -> dict[str, Any]:
@@ -732,6 +757,54 @@ class AccountClient:
             )
 
         return results
+
+    async def inquire_mock_overseas_buyable_amount(self) -> dict[str, Any]:
+        """Read mock-US USD buying power through VTTS3007R only.
+
+        This intentionally has no live mode: the live path continues to use
+        ``inquire_overseas_margin`` and its existing parsing unchanged.
+        """
+        await self._parent._ensure_token()
+        cano, acnt_prdt_cd = self._resolve_account_parts()
+        tr_id = constants.OVERSEAS_BUYABLE_AMOUNT_TR_MOCK
+        headers = self._parent._hdr_base | {
+            "authorization": f"Bearer {self._settings.kis_access_token}",
+            "tr_id": tr_id,
+        }
+        params = {
+            "CANO": cano,
+            "ACNT_PRDT_CD": acnt_prdt_cd,
+            "OVRS_EXCG_CD": "NASD",
+            # The inquiry is read-only; a one-dollar AAPL reference price
+            # returns the account-level USD orderable amount used by preflight.
+            "OVRS_ORD_UNPR": "1",
+            "ITEM_CD": "AAPL",
+        }
+        response = await self._parent._request_with_rate_limit(
+            "GET",
+            self._parent._kis_url(constants.OVERSEAS_BUYABLE_AMOUNT_URL),
+            headers=headers,
+            params=params,
+            timeout=5,
+            api_name="inquire_mock_overseas_buyable_amount",
+            tr_id=tr_id,
+        )
+        if response.get("rt_cd") != "0":
+            raise RuntimeError(f"{response.get('msg_cd')} {response.get('msg1')}")
+        output = next(
+            (
+                candidate
+                for key in ("output", "output1", "output2")
+                if isinstance(candidate := response.get(key), dict)
+            ),
+            None,
+        )
+        if not isinstance(output, dict):
+            raise RuntimeError("VTTS3007R response missing output")
+        parsed = parse_mock_overseas_buyable_amount_response(output)
+        if parsed["ovrs_ord_psbl_amt"] is None:
+            raise RuntimeError("VTTS3007R response missing ord_psbl_frcr_amt")
+        return parsed
 
     async def inquire_integrated_margin(
         self,

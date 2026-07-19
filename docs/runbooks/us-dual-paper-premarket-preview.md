@@ -58,12 +58,17 @@ Each broker (`alpaca_paper` and `kis_mock`) is evaluated independently and repor
 한국투자증권 **모의투자(mock)** does not expose the full overseas account surface. These are
 broker-side limits, not defects, and the preview handles them gracefully:
 
-- **USD cash / buying-power is unavailable.** The overseas foreign-margin service returns
-  `OPSQ0002 없는 서비스 코드` in mock. `kis_mock` therefore reports `cash_usd: null`,
-  `buying_power_usd: null`, and a `buying_power_unavailable` warning. The KIS-side
-  buying-power check is **skipped** (the local `--notional-cap` still applies), so a
-  `kis_mock` `previewed` status means caps + parameter checks passed, **not** that funds
-  were confirmed. Confirm KIS funds manually before any (separate, confirm-gated) submit.
+- **USD cash / buying-power reads via VTTS3007R (ROB-951).** The overseas foreign-margin
+  service still returns `OPSQ0002 없는 서비스 코드` in mock, but `kis_mock` no longer relies
+  on it — it queries the same mock-only orderable-cash TR (`VTTS3007R`,
+  `inquire_mock_overseas_buyable_amount`) the order preflight gate uses, and reports
+  `cash_usd` / `buying_power_usd` as the parsed `ord_psbl_frcr_amt` value. The KIS-side
+  buying-power check now **runs**: a `kis_mock` `previewed` status means caps + parameter
+  checks **and** confirmed available USD funds passed. `cash_usd: null` /
+  `buying_power_usd: null` still occurs — but only when the VTTS3007R call fails, returns a
+  non-zero `rt_cd`, or omits the expected field — and is treated as fail-closed
+  "balance unknown" (never assumed to be `0` or unlimited); confirm KIS funds manually in
+  that case before any (separate, confirm-gated) submit.
 - **Overseas holdings/positions DO read** on the mock host (`openapivts`), so
   `position_count` is populated.
 - **Overseas pending-orders inquiry is blocked** in mock (`TTTS3018R` not available), so
@@ -89,7 +94,7 @@ For AI or agentic workers, three read-only tools are exposed on the MCP server:
 When inspecting preview packets, confirm the following:
 1. `limit_price_source`: Verify the source of the limit price (e.g., `operator_input`).
 2. `notional_cap_usd`: Confirm that the cap matches your intended max exposure per trade.
-3. `account_state.buying_power_usd`: Verify buying power where available. **`alpaca_paper`** reports a number; **`kis_mock`** reports `null` (overseas margin unsupported, see §4) — confirm KIS funds manually before any submit.
+3. `account_state.buying_power_usd`: Verify buying power where available. **`alpaca_paper`** reports a number; **`kis_mock`** reports the VTTS3007R-derived orderable USD amount (see §4) and is now enforced by the buying-power check — a `kis_mock` `null` means the balance read failed and is fail-closed "unknown", not "unlimited"; confirm KIS funds manually in that case before any submit.
 
 ---
 

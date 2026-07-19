@@ -139,3 +139,23 @@ def test_redaction_masks_account_and_secret_values(probe_module):
     assert "secret-token" not in rendered
     assert "secret-app-secret" not in rendered
     assert "[REDACTED]" in rendered
+
+
+def test_parse_cash_fields_includes_vtts3007_raw_fields(probe_module):
+    payload = {
+        "rt_cd": "0",
+        "output": {
+            "ord_psbl_frcr_amt": "99996.18",
+            "sll_ruse_psbl_amt": "13.95",
+            "exrt": "1488.88",
+        },
+    }
+
+    assert probe_module.parse_cash_fields(payload) == {
+        "stck_cash_ord_psbl_amt": None,
+        "usd_ord_psbl_amt": None,
+        "usd_balance": None,
+        "overseas_orderable_amount": 99996.18,
+        "sll_ruse_psbl_amt": 13.95,
+        "exrt": 1488.88,
+    }
