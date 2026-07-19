@@ -80,6 +80,11 @@ def get_policy_for(market: str, lane: str) -> dict[str, Any]:
             "unit": spec.unit,
             "semantics": spec.semantics,
             "of": spec.of,
+            "one_share_exception": (
+                spec.one_share_exception.model_dump()
+                if spec.one_share_exception is not None
+                else None
+            ),
             "source": source,
         }
     decision_rules = {

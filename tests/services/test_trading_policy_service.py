@@ -5,7 +5,7 @@ from app.services import trading_policy_service as svc
 
 def test_version_stamp_has_version_and_hash():
     stamp = svc.policy_version_stamp()
-    assert stamp["version"] == "2026-07-17.2"
+    assert stamp["version"] == "2026-07-17.3"
     assert len(stamp["content_hash"]) == 12
 
 
@@ -15,7 +15,7 @@ def test_content_hash_stable_across_calls():
 
 def test_get_policy_for_buy_kr_includes_cap_and_version():
     view = svc.get_policy_for("kr", "buy")
-    assert view["version"] == "2026-07-17.2"
+    assert view["version"] == "2026-07-17.3"
     assert view["content_hash"]
     t = view["thresholds"]
     # buy lane references these (playbook lane tags)
@@ -31,7 +31,7 @@ def test_get_policy_for_buy_kr_includes_cap_and_version():
 def test_get_policy_for_crypto_buy_exposes_report_derived_market_rules():
     view = svc.get_policy_for("crypto", "buy")
 
-    assert view["version"] == "2026-07-17.2"
+    assert view["version"] == "2026-07-17.3"
     assert set(view["market_rules"]) == {
         "recovery_gate",
         "support_resistance",
@@ -128,6 +128,28 @@ def test_get_policy_for_user_stances_present_regardless_of_market_lane():
     us_sell = svc.get_policy_for("us", "sell")["user_stances"]
     crypto_discovery = svc.get_policy_for("crypto", "discovery")["user_stances"]
     assert us_sell == crypto_discovery
+
+
+def test_get_policy_for_includes_us_notional_usd_range_with_one_share_exception():
+    view = svc.get_policy_for("us", "buy")
+    t = view["thresholds"]
+    us_range = t["buy.per_symbol_notional_usd_range"]
+
+    assert us_range["value"] == [150, 450]
+    assert us_range["unit"] == "usd"
+    assert us_range["one_share_exception"] == {
+        "enabled": True,
+        "absolute_ceiling_usd": 700,
+        "max_deep_rungs": 1,
+    }
+
+
+def test_get_policy_for_kr_notional_krw_range_has_no_one_share_exception():
+    view = svc.get_policy_for("kr", "buy")
+    kr_range = view["thresholds"]["buy.per_symbol_notional_krw_range"]
+
+    assert kr_range["value"] == [200000, 400000]
+    assert kr_range["one_share_exception"] is None
 
 
 def test_sector_cluster_for():

@@ -15,7 +15,7 @@ def _raw() -> dict:
 
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-07-17.2"
+    assert doc.version == "2026-07-17.3"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -205,5 +205,50 @@ def test_user_stance_invalid_review_date_rejected():
 def test_user_stances_missing_block_rejected():
     raw = _raw()
     del raw["user_stances"]
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_kr_notional_range_semantics_scoped_to_kr_lane():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    kr_range = doc.thresholds["buy.per_symbol_notional_krw_range"]
+
+    assert kr_range.value == [200000, 400000]
+    assert "KR lane only" in kr_range.semantics
+
+
+def test_us_notional_usd_range_parses_with_one_share_exception():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    us_range = doc.thresholds["buy.per_symbol_notional_usd_range"]
+
+    assert us_range.lanes == ["buy", "discovery"]
+    assert us_range.value == [150, 450]
+    assert us_range.unit == "usd"
+    exception = us_range.one_share_exception
+    assert exception is not None
+    assert exception.enabled is True
+    assert exception.absolute_ceiling_usd == 700
+    assert exception.max_deep_rungs == 1
+
+
+def test_other_thresholds_default_one_share_exception_to_none():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    assert doc.thresholds["screen.rsi_max"].one_share_exception is None
+
+
+def test_us_notional_usd_range_one_share_exception_extra_key_rejected():
+    raw = _raw()
+    raw["thresholds"]["buy.per_symbol_notional_usd_range"]["one_share_exception"][
+        "bogus"
+    ] = 1
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_us_notional_usd_range_one_share_exception_missing_required_field_rejected():
+    raw = _raw()
+    del raw["thresholds"]["buy.per_symbol_notional_usd_range"]["one_share_exception"][
+        "max_deep_rungs"
+    ]
     with pytest.raises(ValidationError):
         TradingPolicyDocument.model_validate(raw)
