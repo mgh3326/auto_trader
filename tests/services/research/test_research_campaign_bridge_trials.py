@@ -25,6 +25,7 @@ from app.schemas.research_backtest import StrategyExperimentIdentity
 from app.schemas.research_campaign_bridge import (
     AttemptEvidence,
     AttemptKey,
+    ChildFailureDiagnostic,
     ScenarioEvidence,
 )
 from app.services import research_campaign_bridge as bridge
@@ -35,6 +36,7 @@ from app.services.research_campaign_bridge import (
     TerminalEvidenceMismatch,
     campaign_completeness_report,
     record_attempt,
+    terminal_evidence_fingerprint,
 )
 from app.services.research_db_write_guard import (
     ResearchDbPolicy,
@@ -218,6 +220,158 @@ async def test_divergent_scenario_trade_counts_are_preserved_not_collapsed(
     assert by_name["primary_stress"]["trade_count"] == 3
     assert by_name["upward_stress"]["trade_count"] == 2
     assert len(by_name) == 3  # no collapse into a single reference count
+
+
+# --------------------------------------------------------------------------- #
+# ROB-970 (Q2/Q3, Fable-approved orch-fable-answer-rob970-20260719.md):
+# diagnostic_evidence round-trips into H6's persisted raw_payload, and never
+# influences terminal_evidence_fingerprint (observer-effect-0).
+# --------------------------------------------------------------------------- #
+
+
+def _diagnostic(**overrides) -> ChildFailureDiagnostic:
+    base = {
+        "transport": "in_process",
+        "stage": "generator",
+        "exception_type": "RuntimeError",
+        "message": "boom: synthetic signal-generation failure",
+        "traceback_text": "Traceback (most recent call last):\nRuntimeError: boom\n",
+        "stderr": None,
+        "strategy": "S1",
+        "config_id": "S1-00",
+        "symbol": "BTCUSDT",
+        "fold_id": "fold-00",
+        "scenario_name": None,
+        "signature": "a" * 64,
+        "occurrence_count": 3,
+        "truncated": False,
+    }
+    base.update(overrides)
+    return ChildFailureDiagnostic(**base)
+
+
+@pytest.mark.unit
+def test_terminal_evidence_fingerprint_is_unaffected_by_diagnostic_evidence() -> None:
+    """Observer-effect-0: the fingerprint used for idempotent replay
+    detection must be IDENTICAL regardless of diagnostic_evidence content --
+    diagnostic evidence has no semantic-identity role."""
+    without = _evidence("camp1", "e" * 64, run_identity="run-fixed")
+    with_one = without.model_copy(update={"diagnostic_evidence": (_diagnostic(),)})
+    with_different = without.model_copy(
+        update={
+            "diagnostic_evidence": (
+                _diagnostic(message="a totally different secret-bearing message"),
+            )
+        }
+    )
+    fp_without = terminal_evidence_fingerprint(without)
+    fp_with_one = terminal_evidence_fingerprint(with_one)
+    fp_with_different = terminal_evidence_fingerprint(with_different)
+    assert fp_without == fp_with_one == fp_with_different
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_diagnostic_evidence_round_trips_into_raw_payload(
+    registry_tables,
+) -> None:
+    session = registry_tables
+    _spec, experiment_id = await _register(session)
+    diag = _diagnostic()
+    evidence = _evidence("camp1", experiment_id, run_identity="run-diag-1")
+    evidence = evidence.model_copy(update={"diagnostic_evidence": (diag,)})
+
+    row = await record_attempt(
+        session,
+        experiment_id=experiment_id,
+        evidence=evidence,
+        strategy_name="S1",
+        timeframe="15m",
+        runner="pytest",
+        guard_opt_in_enabled=True,
+        guard_policy=_POLICY,
+    )
+
+    stored = row.raw_payload["diagnostic_evidence"]
+    assert len(stored) == 1
+    stored_diag = stored[0]
+    assert stored_diag["transport"] == "in_process"
+    assert stored_diag["stage"] == "generator"
+    assert stored_diag["exception_type"] == "RuntimeError"
+    assert stored_diag["config_id"] == "S1-00"
+    assert stored_diag["occurrence_count"] == 3
+    assert stored_diag["stderr"] is None
+    # the persisted idempotency fingerprint is unaffected by diagnostic
+    # content -- matches the fingerprint of the SAME evidence with no
+    # diagnostic_evidence at all.
+    without_diag = evidence.model_copy(update={"diagnostic_evidence": ()})
+    assert row.raw_payload["h6_evidence_fingerprint"] == terminal_evidence_fingerprint(
+        without_diag
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_diagnostic_evidence_absent_persists_empty_list_not_missing_key(
+    registry_tables,
+) -> None:
+    session = registry_tables
+    _spec, experiment_id = await _register(session)
+    evidence = _evidence("camp1", experiment_id, run_identity="run-diag-2")
+
+    row = await record_attempt(
+        session,
+        experiment_id=experiment_id,
+        evidence=evidence,
+        strategy_name="S1",
+        timeframe="15m",
+        runner="pytest",
+        guard_opt_in_enabled=True,
+        guard_policy=_POLICY,
+    )
+    assert row.raw_payload["diagnostic_evidence"] == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_replay_with_different_diagnostic_evidence_still_replays_not_mismatch(
+    registry_tables,
+) -> None:
+    """Observer-effect-0 end-to-end: a replay under the SAME attempt key
+    whose only difference is diagnostic_evidence content must still be
+    treated as an identical replay (same fingerprint), never
+    TerminalEvidenceMismatch."""
+    session = registry_tables
+    _spec, experiment_id = await _register(session)
+    evidence = _evidence("camp1", experiment_id, run_identity="run-diag-3")
+
+    first = await record_attempt(
+        session,
+        experiment_id=experiment_id,
+        evidence=evidence,
+        strategy_name="S1",
+        timeframe="15m",
+        runner="pytest",
+        guard_opt_in_enabled=True,
+        guard_policy=_POLICY,
+    )
+    replay_with_diag = evidence.model_copy(
+        update={"diagnostic_evidence": (_diagnostic(),)}
+    )
+    second = await record_attempt(
+        session,
+        experiment_id=experiment_id,
+        evidence=replay_with_diag,
+        strategy_name="S1",
+        timeframe="15m",
+        runner="pytest",
+        guard_opt_in_enabled=True,
+        guard_policy=_POLICY,
+    )
+    assert first.id == second.id
+    # the ORIGINAL row's raw_payload is never mutated by a later replay
+    # carrying different (non-semantic) diagnostic content.
+    assert second.raw_payload["diagnostic_evidence"] == []
 
 
 # --------------------------------------------------------------------------- #

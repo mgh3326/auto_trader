@@ -229,6 +229,32 @@ def _scenario_evidence_payload(evidence: AttemptEvidence) -> list[dict]:
     ]
 
 
+def _diagnostic_evidence_payload(evidence: AttemptEvidence) -> list[dict]:
+    """ROB-970 (Q2, Fable-approved): additive, persistence-only child-
+    failure evidence -- carried into ``raw_payload`` but deliberately NEVER
+    referenced by ``terminal_evidence_fingerprint`` (see that function,
+    unchanged by this addition)."""
+    return [
+        {
+            "transport": d.transport,
+            "stage": d.stage,
+            "exception_type": d.exception_type,
+            "message": d.message,
+            "traceback_text": d.traceback_text,
+            "stderr": d.stderr,
+            "strategy": d.strategy,
+            "config_id": d.config_id,
+            "symbol": d.symbol,
+            "fold_id": d.fold_id,
+            "scenario_name": d.scenario_name,
+            "signature": d.signature,
+            "occurrence_count": d.occurrence_count,
+            "truncated": d.truncated,
+        }
+        for d in evidence.diagnostic_evidence
+    ]
+
+
 def _stored_fingerprint(row: ResearchBacktestRun) -> object:
     return (row.raw_payload or {}).get("h6_evidence_fingerprint")
 
@@ -316,6 +342,7 @@ async def record_attempt(
             "fold_evidence_hash": evidence.fold_evidence_hash,
             "run_identity": evidence.run_identity,
             "scenario_evidence": _scenario_evidence_payload(evidence),
+            "diagnostic_evidence": _diagnostic_evidence_payload(evidence),
         },
     )
     returned = await registry.record_trial(

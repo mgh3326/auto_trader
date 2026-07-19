@@ -18,13 +18,59 @@ from app.schemas.research_backtest import TrialStatus
 ScenarioName = Literal["base", "primary_stress", "upward_stress"]
 _EXPECTED_SCENARIO_NAMES = frozenset({"base", "primary_stress", "upward_stress"})
 
+DiagnosticTransport = Literal["in_process"]
+DiagnosticStage = Literal["generator", "funding_gate", "engine"]
+
 __all__ = [
     "AttemptEvidence",
     "AttemptKey",
     "CampaignCompletenessReport",
+    "ChildFailureDiagnostic",
     "ScenarioEvidence",
     "ScenarioName",
 ]
+
+
+class ChildFailureDiagnostic(BaseModel):
+    """ROB-970 (Q2/Q3, Fable-approved
+    ``orch-fable-answer-rob970-20260719.md``) -- one deduped, sanitized,
+    bounded child-failure diagnostic record, carried from the research H4
+    walk-forward layer into H6's persisted ``raw_payload``.
+
+    Deliberately carries NO hash/identity role of its own: excluded from
+    ``terminal_evidence_fingerprint`` and every other semantic seal (fixed
+    ``reason_code``, ``fold_evidence_hash``, ``run_identity``) -- additive,
+    persistence-only evidence.
+
+    Q3: the only transport with a real capture path today is
+    ``"in_process"`` (same-process signal-generator/funding-gate/engine
+    callbacks) -- for that transport ``stderr`` must be ``None`` (no real
+    child stderr stream exists; never fabricated by duplicating
+    ``traceback_text`` into it).
+    """
+
+    transport: DiagnosticTransport
+    stage: DiagnosticStage
+    exception_type: str = Field(min_length=1)
+    message: str
+    traceback_text: str = Field(min_length=1)
+    stderr: str | None = None
+    strategy: str = Field(min_length=1)
+    config_id: str = Field(min_length=1)
+    symbol: str | None = None
+    fold_id: str | None = None
+    scenario_name: str | None = None
+    signature: str = Field(min_length=1)
+    occurrence_count: int = Field(ge=1)
+    truncated: bool
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @model_validator(mode="after")
+    def _validate(self) -> ChildFailureDiagnostic:
+        if self.transport == "in_process" and self.stderr is not None:
+            raise ValueError("in_process transport must never fabricate a stderr value")
+        return self
 
 
 class ScenarioEvidence(BaseModel):
@@ -78,6 +124,11 @@ class AttemptEvidence(BaseModel):
     fold_evidence_hash: str | None = None
     run_identity: str = Field(min_length=1)
     scenario_evidence: tuple[ScenarioEvidence, ScenarioEvidence, ScenarioEvidence]
+    # ROB-970 (Q2, Fable-approved): additive, persistence-only child-failure
+    # evidence -- never an input to run_identity/fold_evidence_hash/any
+    # semantic seal (see terminal_evidence_fingerprint, which deliberately
+    # never reads this field).
+    diagnostic_evidence: tuple[ChildFailureDiagnostic, ...] = ()
 
     model_config = ConfigDict(extra="forbid")
 
