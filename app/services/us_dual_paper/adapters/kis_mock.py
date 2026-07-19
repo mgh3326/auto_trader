@@ -79,7 +79,7 @@ class KisMockUsAdapter(BrokerPreviewAdapter):
             if isinstance(buyable, Mapping):
                 # ``ord_psbl_frcr_amt`` (parsed as ``ovrs_ord_psbl_amt``) is the
                 # verified USD orderable cash — the identical convention as
-                # ``order_validation._get_available_cash``. VTTS3007R exposes no
+                # ``order_validation._get_balance_for_order``. VTTS3007R exposes no
                 # separate deposit balance, so cash and buying power share it.
                 buying_power_usd = _to_float(buyable.get("ovrs_ord_psbl_amt"))
                 cash_usd = buying_power_usd
