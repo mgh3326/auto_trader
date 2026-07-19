@@ -1,18 +1,11 @@
 """ROB-945 (H5) -- frozen H4/H1/H2/H3/H6 source bytes must stay unchanged.
 
-ROB-970 R2 authorized a third H4-bound diagnostic-evidence hardening
-repair at ``a3182f35`` (a pre-finalization stop-gate: the genuine
-model_construct/TOCTOU service-boundary close, the shared
-``research_contracts.diagnostic_evidence_policy`` cap authority, the
-canonical-byte replay contract via ``research_contracts.canonical_hash``,
-a real non-vacuous observer-effect-0 integration test, hostile-frame-
-filename/boundary-truncation-order fixes, and a full persistence-chain
-test) as the new byte authority -- superseding the second R2 authority
-(``2219dca8``), the R1 authority (``02c6ca9f``), the original ROB-970 S2
-confirmation_failed timestamp root fix (``da557e36``), and, before that,
-ROB-962 (``237cd38a``, the exact-float ``0.0`` cost-model seed). Only the
-guards' self-referential re-pin metadata are excluded; every other frozen
-predecessor byte remains protected.
+ROB-970's authorized additive A-E closure at ``7f22c10c`` is the new byte
+authority. It closes the final secret-free service/stored replay boundaries
+and strengthens the observer-effect, sanitizer-regression, and full-chain
+proofs atop the prior ``a3182f35`` authority. Only the guards'
+self-referential re-pin metadata are excluded; every other frozen predecessor
+byte remains protected.
 """
 
 from __future__ import annotations
@@ -21,7 +14,7 @@ import subprocess
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_FROZEN_BYTE_AUTHORITY = "a3182f3504230ad018e9cfbaf3677cdccbfc88ae"
+_FROZEN_BYTE_AUTHORITY = "7f22c10c4ffc1a33e23dcd0975317a9ca5534b18"
 
 _FROZEN_PATHS = (
     "research/nautilus_scalping",
