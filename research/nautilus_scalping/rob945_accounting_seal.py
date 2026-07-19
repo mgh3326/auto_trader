@@ -50,6 +50,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import rob944_frozen_campaign as frozen_campaign
+from rob944_diagnostic_evidence import MAX_DISTINCT_SIGNATURES
 from rob944_walkforward import (
     REASON_CHILD_EXECUTION_CRASHED,
     REASON_CHILD_EXECUTION_TIMEOUT,
@@ -329,6 +330,9 @@ def _validate_diagnostic_evidence_shape(value: Any) -> None:
     fail-closed against malformed/injected content) WITHOUT ever folding it
     into ``SealedAttempt``/any hash input. Additive, persistence-only."""
     _require(isinstance(value, list | tuple), ATTEMPT_EVIDENCE_MALFORMED_REASON)
+    # R2 audit (one cap policy, MAX_DISTINCT_SIGNATURES=32, at every trust
+    # boundary -- never only the producer helper).
+    _require(len(value) <= MAX_DISTINCT_SIGNATURES, ATTEMPT_EVIDENCE_MALFORMED_REASON)
     for row in value:
         _require(isinstance(row, Mapping), ATTEMPT_EVIDENCE_MALFORMED_REASON)
         _require(
@@ -403,6 +407,10 @@ def _validate_diagnostic_overflow_shape(value: Any) -> None:
         omitted_distinct_signatures <= omitted_occurrences,
         ATTEMPT_EVIDENCE_MALFORMED_REASON,
     )
+    # R2 audit: truncated is a DERIVED fact, never an independent caller
+    # assertion.
+    truncated = value["truncated"]
+    _require(truncated == (omitted_occurrences > 0), ATTEMPT_EVIDENCE_MALFORMED_REASON)
 
 
 def _validate_attempt(

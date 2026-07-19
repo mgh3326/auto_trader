@@ -1654,6 +1654,51 @@ def test_rejects_diagnostic_overflow_with_negative_counts():
         _seal(attempt_evidence=attempts)
 
 
+def test_rejects_diagnostic_evidence_longer_than_the_cap_at_h5_seal():
+    """R2 audit: the H5 seal carve-out must independently fail closed if
+    len(diagnostic_evidence) > 32, not only the producer helper."""
+    attempts = _all_24_completed_attempts()
+    attempts[0]["diagnostic_evidence"] = [
+        dict(_DIAGNOSTIC_ROW, signature=("a" * 63) + str(i)) for i in range(33)
+    ]
+    with pytest.raises(ScorecardInputError):
+        _seal(attempt_evidence=attempts)
+
+
+def test_accepts_diagnostic_evidence_exactly_at_the_cap_at_h5_seal():
+    attempts = _all_24_completed_attempts()
+    attempts[0]["diagnostic_evidence"] = [
+        dict(_DIAGNOSTIC_ROW, signature=("a" * 63) + str(i)) for i in range(32)
+    ]
+    sealed = _seal(attempt_evidence=attempts)
+    assert sealed.trial_accounting_hash  # seals successfully
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {
+            "truncated": False,
+            "omitted_distinct_signatures": 0,
+            "omitted_occurrences": 1,
+        },
+        {"truncated": True, "omitted_distinct_signatures": 0, "omitted_occurrences": 0},
+        {
+            "truncated": False,
+            "omitted_distinct_signatures": 1,
+            "omitted_occurrences": 1,
+        },
+    ],
+)
+def test_rejects_diagnostic_overflow_with_inconsistent_truncated_flag_at_h5_seal(
+    overrides,
+):
+    attempts = _all_24_completed_attempts()
+    attempts[0]["diagnostic_overflow"] = dict(overrides)
+    with pytest.raises(ScorecardInputError):
+        _seal(attempt_evidence=attempts)
+
+
 def test_normalized_attempts_are_in_frozen_experiment_order():
     attempts = list(reversed(_all_24_completed_attempts()))
     sealed = _seal(attempt_evidence=attempts)

@@ -42,7 +42,11 @@ from typing import Any
 
 import rob941_frozen_scope as frozen
 import rob944_folds as foldmod
-from rob944_diagnostic_evidence import ChildFailureEvidence, DiagnosticOverflowMetadata
+from rob944_diagnostic_evidence import (
+    MAX_DISTINCT_SIGNATURES,
+    ChildFailureEvidence,
+    DiagnosticOverflowMetadata,
+)
 from rob944_gap_funding import (
     REASON_DATA_GAP_IN_POSITION,
     REASON_EXPECTED_FUNDING_COST_ABOVE_3BPS,
@@ -195,6 +199,10 @@ def _normalize_diagnostic_evidence(
 ) -> tuple[ChildFailureEvidence, ...]:
     if type(raw_value) is not tuple:
         _fail(f"{context} must be an exact tuple")
+    # R2 audit (one cap policy, MAX_DISTINCT_SIGNATURES=32, at every trust
+    # boundary -- never only the producer helper).
+    if len(raw_value) > MAX_DISTINCT_SIGNATURES:
+        _fail(f"{context} must have at most {MAX_DISTINCT_SIGNATURES} entries")
     return tuple(
         _normalize_child_failure_evidence(row, context=f"{context}#{idx}")
         for idx, row in enumerate(raw_value)
@@ -225,6 +233,12 @@ def _normalize_diagnostic_overflow(
         _fail(
             f"{context} omitted_distinct_signatures cannot exceed omitted_occurrences"
         )
+    # R2 audit: truncated is a DERIVED fact, never an independent caller
+    # assertion -- truncated is False iff both omitted counts are zero;
+    # truncated is True iff omitted_occurrences > 0 (equivalent given the
+    # distinct<=occurrences invariant just enforced above).
+    if truncated != (omitted_occurrences > 0):
+        _fail(f"{context} truncated must be exactly (omitted_occurrences > 0)")
     return DiagnosticOverflowMetadata(
         truncated=truncated,
         omitted_distinct_signatures=omitted_distinct_signatures,

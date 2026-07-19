@@ -39,6 +39,7 @@ ROB-905 import — see the extended
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 
@@ -55,8 +56,11 @@ from app.schemas.research_backtest import (
     StrategyExperimentIdentity,
 )
 from app.schemas.research_campaign_bridge import (
+    MAX_DISTINCT_SIGNATURES,
     AttemptEvidence,
     CampaignCompletenessReport,
+    ChildFailureDiagnostic,
+    ChildFailureDiagnosticOverflow,
 )
 from app.services import strategy_experiment_registry as registry
 from app.services.research_canonical_hash import (
@@ -75,6 +79,7 @@ __all__ = [
     "CampaignBridgeError",
     "CampaignDuplicateSpecError",
     "CampaignSpecCountError",
+    "DiagnosticEvidenceBoundaryViolation",
     "RunnerNameTooLongError",
     "TerminalEvidenceMismatch",
     "campaign_completeness_report",
@@ -112,6 +117,20 @@ class TerminalEvidenceMismatch(CampaignBridgeError):
     evidence than the stored trial — fail closed, never silently replayed or
     duplicated. Raised on EITHER the pre-check path (sequential replay) or
     the post-delegate path (a concurrent race whose winner row diverges)."""
+
+
+class DiagnosticEvidenceBoundaryViolation(CampaignBridgeError):
+    """ROB-970 R2 audit (item 2/3, 5th and final trust boundary) —
+    ``AttemptEvidence`` is NOT frozen (only its ``ChildFailureDiagnostic``/
+    ``ChildFailureDiagnosticOverflow`` leaves are), so a caller can reassign
+    ``.diagnostic_evidence``/``.diagnostic_overflow`` AFTER construction —
+    including via ``model_construct``, which skips every validator — and
+    bypass every earlier boundary (research H6 normalization -> CLI
+    conversion -> H5 seal carve-out -> app Pydantic schema) entirely. This
+    service, as the last step before ``raw_payload`` persistence, never
+    trusts that an already-constructed ``AttemptEvidence`` still satisfies
+    the cap/consistency/shape invariants at the moment it is actually used —
+    it re-checks them itself, right before assembly."""
 
 
 def terminal_evidence_fingerprint(evidence: AttemptEvidence) -> str:
@@ -232,6 +251,50 @@ def _scenario_evidence_payload(evidence: AttemptEvidence) -> list[dict]:
     ]
 
 
+def _assert_diagnostic_evidence_service_boundary(evidence: AttemptEvidence) -> None:
+    """ROB-970 R2 audit — the 5th and final trust boundary. Re-validates the
+    SAME invariants the app schema's own constructors already enforce,
+    because ``AttemptEvidence`` itself is not frozen and its diagnostic
+    fields can be reassigned post-construction to arbitrary, unvalidated
+    content (including via ``model_construct``). Never trusts isinstance
+    alone to imply "still passed its own validators" for the overflow shape
+    -- ``model_construct`` produces a real instance of the right type while
+    skipping every validator, so the truncated/omitted-occurrences
+    consistency check is re-asserted explicitly here too."""
+    if len(evidence.diagnostic_evidence) > MAX_DISTINCT_SIGNATURES:
+        raise DiagnosticEvidenceBoundaryViolation(
+            "diagnostic_evidence exceeds the "
+            f"{MAX_DISTINCT_SIGNATURES}-entry cap at the service assembly "
+            "boundary — refusing to persist"
+        )
+    for item in evidence.diagnostic_evidence:
+        if not isinstance(item, ChildFailureDiagnostic):
+            raise DiagnosticEvidenceBoundaryViolation(
+                "a diagnostic_evidence entry is not a validated "
+                "ChildFailureDiagnostic instance at the service assembly "
+                "boundary — refusing to persist"
+            )
+    overflow = evidence.diagnostic_overflow
+    if not isinstance(overflow, ChildFailureDiagnosticOverflow):
+        raise DiagnosticEvidenceBoundaryViolation(
+            "diagnostic_overflow is not a validated "
+            "ChildFailureDiagnosticOverflow instance at the service assembly "
+            "boundary — refusing to persist"
+        )
+    if overflow.truncated != (overflow.omitted_occurrences > 0):
+        raise DiagnosticEvidenceBoundaryViolation(
+            "diagnostic_overflow.truncated is inconsistent with "
+            "omitted_occurrences at the service assembly boundary — "
+            "refusing to persist"
+        )
+    if overflow.omitted_distinct_signatures > overflow.omitted_occurrences:
+        raise DiagnosticEvidenceBoundaryViolation(
+            "diagnostic_overflow.omitted_distinct_signatures exceeds "
+            "omitted_occurrences at the service assembly boundary — "
+            "refusing to persist"
+        )
+
+
 def _diagnostic_evidence_payload(evidence: AttemptEvidence) -> list[dict]:
     """ROB-970 (Q2, Fable-approved): additive, persistence-only child-
     failure evidence -- carried into ``raw_payload`` but deliberately NEVER
@@ -275,8 +338,13 @@ def _diagnostic_fingerprint(evidence: AttemptEvidence) -> str:
     ``orch-fable-answer-rob970-r1-20260719.md``): canonical fingerprint of
     JUST the sanitized/bounded diagnostic evidence + overflow metadata --
     deliberately separate from ``terminal_evidence_fingerprint`` (semantic
-    identity). Used ONLY to detect replay divergence, never as a semantic
-    hash/identity input."""
+    identity). Persisted alongside ``diagnostic_evidence``/
+    ``diagnostic_overflow`` purely as a derived, informational observation
+    (R2 audit) -- it is NEVER read back as the comparison authority; see
+    ``_check_diagnostic_divergence``, which compares canonical BYTES
+    reconstructed directly from the stored/incoming diagnostic shape
+    instead, so a field that was never persisted correctly (or at all, on a
+    pre-ROB-970 row) can never silently defeat divergence detection."""
     return canonical_sha256(
         {
             "diagnostic_evidence": _diagnostic_evidence_payload(evidence),
@@ -289,34 +357,75 @@ def _stored_fingerprint(row: ResearchBacktestRun) -> object:
     return (row.raw_payload or {}).get("h6_evidence_fingerprint")
 
 
-def _stored_diagnostic_fingerprint(row: ResearchBacktestRun) -> object:
-    return (row.raw_payload or {}).get("diagnostic_fingerprint")
+_DEFAULT_DIAGNOSTIC_OVERFLOW_PAYLOAD = {
+    "truncated": False,
+    "omitted_distinct_signatures": 0,
+    "omitted_occurrences": 0,
+}
+
+
+def _stored_diagnostic_evidence_payload(row: ResearchBacktestRun) -> list[dict]:
+    """R2 audit: legacy/absent-field normalization -- a row with no
+    ``diagnostic_evidence`` key at all (a pre-ROB-970 row, migration-free)
+    is treated identically to one explicitly storing an empty list."""
+    return (row.raw_payload or {}).get("diagnostic_evidence") or []
+
+
+def _stored_diagnostic_overflow_payload(row: ResearchBacktestRun) -> dict:
+    """Same legacy/absent-field normalization for overflow metadata."""
+    return (row.raw_payload or {}).get("diagnostic_overflow") or dict(
+        _DEFAULT_DIAGNOSTIC_OVERFLOW_PAYLOAD
+    )
+
+
+def _canonical_diagnostic_bytes(
+    diagnostic_evidence_payload: list[dict], diagnostic_overflow_payload: dict
+) -> bytes:
+    """ROB-970 R2 audit (Q2=C-modified rework) -- the SOLE comparison
+    authority for replay-divergence detection: canonical (sorted-key,
+    compact-separator) serialized bytes of the diagnostic shape itself,
+    reconstructed fresh on both sides every time. Never a persisted
+    ``diagnostic_fingerprint`` string (see that function's docstring) --
+    that field is at most a derived observation, kept for external
+    inspection only, and is never read back for comparison here."""
+    return json.dumps(
+        {
+            "diagnostic_evidence": diagnostic_evidence_payload,
+            "diagnostic_overflow": diagnostic_overflow_payload,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
 
 
 def _emit_diagnostic_replay_divergence(
     *,
     idempotency_key: str,
-    stored_diagnostic_fingerprint: object,
-    new_diagnostic_fingerprint: str,
+    stored_bytes: bytes,
+    incoming_bytes: bytes,
     stored_distinct_signature_count: int,
     new_distinct_signature_count: int,
 ) -> None:
-    """ROB-970 R1 (Q2=C-modified): semantic-identical replay is, by
+    """ROB-970 R1/R2 (Q2=C-modified): semantic-identical replay is, by
     determinism, expected to produce IDENTICAL diagnostics (same code, same
     input, same failure, same traceback) -- a divergence here is evidence of
     NONDETERMINISM, not a legitimate "late-arriving diagnostics" case.
     Never merged (would hide the nondeterminism) and never silently
     discarded (the R1 Important-2 bug) -- loudly surfaced instead. The
     original row is NEVER mutated (append-only trial-row invariance holds);
-    this is observation-only, impossible to miss, sanitized (stable
-    digests/counts/context only, never raw diagnostic text), and never a
-    fail-stop (unlike ``TerminalEvidenceMismatch``, which remains reserved
-    for genuine semantic-identity mismatches)."""
+    this is observation-only, impossible to miss, and bounded/sanitized (R2
+    audit: only stable SHA-256 digests + counts -- never the raw
+    idempotency_key, never raw stored/incoming diagnostic content) -- and
+    never a fail-stop (unlike ``TerminalEvidenceMismatch``, which remains
+    reserved for genuine semantic-identity mismatches; see the caller for
+    the non-fail-stop-on-emission-failure contract)."""
     payload = {
         "event": "diagnostic_replay_divergence",
-        "idempotency_key": idempotency_key,
-        "stored_diagnostic_fingerprint": stored_diagnostic_fingerprint,
-        "new_diagnostic_fingerprint": new_diagnostic_fingerprint,
+        "idempotency_key_digest": hashlib.sha256(
+            idempotency_key.encode("utf-8")
+        ).hexdigest(),
+        "stored_diagnostic_digest": hashlib.sha256(stored_bytes).hexdigest(),
+        "incoming_diagnostic_digest": hashlib.sha256(incoming_bytes).hexdigest(),
         "stored_distinct_signature_count": stored_distinct_signature_count,
         "new_distinct_signature_count": new_distinct_signature_count,
     }
@@ -328,22 +437,38 @@ def _check_diagnostic_divergence(
     row: ResearchBacktestRun, evidence: AttemptEvidence, *, idempotency_key: str
 ) -> None:
     """Compare the REPLAY's diagnostic content against what is already
-    durably stored for this attempt key. Byte-identical (canonical-
-    serialized) diagnostics are a write-free no-op -- nothing is emitted.
-    Any divergence emits the loud observation above; the caller's row is
-    returned completely unchanged either way."""
-    new_fingerprint = _diagnostic_fingerprint(evidence)
-    stored_fingerprint = _stored_diagnostic_fingerprint(row)
-    if stored_fingerprint == new_fingerprint:
-        return
-    stored_evidence = (row.raw_payload or {}).get("diagnostic_evidence") or []
-    _emit_diagnostic_replay_divergence(
-        idempotency_key=idempotency_key,
-        stored_diagnostic_fingerprint=stored_fingerprint,
-        new_diagnostic_fingerprint=new_fingerprint,
-        stored_distinct_signature_count=len(stored_evidence),
-        new_distinct_signature_count=len(evidence.diagnostic_evidence),
+    durably stored for this attempt key via DIRECT canonical-byte
+    comparison (R2 audit: never via a persisted fingerprint field, never via
+    any DB update/``FOR UPDATE``/retry -- a pure read-then-observe). Byte-
+    identical (including legacy/absent-field normalization) is a write-free
+    no-op -- nothing is emitted. Any divergence emits the loud observation
+    above; the caller's row is returned completely unchanged either way. An
+    observation EMISSION failure is deliberately non-fail-stop (R2 audit):
+    it must never turn a diagnostic-only divergence into a failed attempt
+    -- best-effort telemetry only, never allowed to propagate."""
+    stored_evidence_payload = _stored_diagnostic_evidence_payload(row)
+    stored_overflow_payload = _stored_diagnostic_overflow_payload(row)
+    incoming_evidence_payload = _diagnostic_evidence_payload(evidence)
+    incoming_overflow_payload = _diagnostic_overflow_payload(evidence)
+
+    stored_bytes = _canonical_diagnostic_bytes(
+        stored_evidence_payload, stored_overflow_payload
     )
+    incoming_bytes = _canonical_diagnostic_bytes(
+        incoming_evidence_payload, incoming_overflow_payload
+    )
+    if stored_bytes == incoming_bytes:
+        return
+    try:
+        _emit_diagnostic_replay_divergence(
+            idempotency_key=idempotency_key,
+            stored_bytes=stored_bytes,
+            incoming_bytes=incoming_bytes,
+            stored_distinct_signature_count=len(stored_evidence_payload),
+            new_distinct_signature_count=len(incoming_evidence_payload),
+        )
+    except Exception:
+        pass
 
 
 async def record_attempt(
@@ -379,6 +504,7 @@ async def record_attempt(
             f"runner {runner!r} ({len(runner)} chars) exceeds the "
             f"{_MAX_RUNNER_LENGTH}-char DB column limit"
         )
+    _assert_diagnostic_evidence_service_boundary(evidence)
 
     experiment = await _get_experiment_by_id(session, experiment_id)
     if experiment is None:

@@ -126,6 +126,11 @@ def test_capture_bounds_and_truncates_oversized_message_with_marker():
     assert evidence.truncated is True
     assert len(evidence.message) < 10_000
     assert evidence.message.startswith("x")
+    # R2 audit: an explicit, visible truncation marker must actually be
+    # present -- not merely a boolean flag -- and total length must respect
+    # the bound.
+    assert evidence.message.endswith("...<truncated>...")
+    assert len(evidence.message) <= 500
 
 
 def test_capture_bounds_traceback_but_retains_type_message_and_failing_frame():
@@ -158,6 +163,83 @@ def test_capture_bounds_traceback_but_retains_type_message_and_failing_frame():
     # outermost/oldest frames.
     assert "deep failure at the bottom" in evidence.traceback_text
     assert "RuntimeError" in evidence.traceback_text
+
+
+def _compile_and_call(source: str, func_name: str):
+    """Compile+exec a SOURCE STRING as a synthetic module, with ``linecache``
+    populated so the raised exception's traceback formatter actually
+    retrieves and includes the REAL source line text (Python's traceback
+    module only shows source context it can look up via linecache -- a bare
+    ``compile(..., "<string>", ...)`` with no linecache entry silently omits
+    it, which would make this repro a no-op). This reproduces a genuine
+    oversized/unsafe SOURCE line inside the traceback's own frame context,
+    matching the captain's exact repro shape."""
+    import linecache
+
+    # Deliberately NOT cleaned up in a `finally` here -- the raised exception
+    # must still propagate to the CALLER with linecache intact so its
+    # traceback formatter can retrieve the fake source line; popping the
+    # cache entry before the caller captures the traceback would silently
+    # make this repro a no-op (the exact bug this test file hit once).
+    filename = f"<diagnostic-evidence-test-{id(source)}>"
+    lines = source.splitlines(keepends=True)
+    linecache.cache[filename] = (len(source), None, lines, filename)
+    namespace: dict = {}
+    code = compile(source, filename, "exec")
+    exec(code, namespace)  # noqa: S102 -- deliberate, test-only, no untrusted input
+    namespace[func_name]()
+
+
+def test_frame_aware_truncation_preserves_innermost_frame_header_despite_huge_source_line():
+    """R2 audit repro: a failing source line carrying a ~6000-char comment
+    must never push the innermost ``File ... line N, in boom`` frame header
+    out of the bounded traceback via blind character-count tail-slicing."""
+    huge_comment = "x" * 6000
+    source = f'def boom():\n    raise ValueError("safe")  # {huge_comment}\n'
+    try:
+        _compile_and_call(source, "boom")
+    except ValueError as exc:
+        evidence = capture_child_failure_evidence(
+            exc,
+            transport="in_process",
+            stage="engine",
+            strategy="S1",
+            config_id="S1-00",
+        )
+    assert evidence.truncated is True
+    assert len(evidence.traceback_text) <= 4000 + len("...<truncated>...")
+    assert "ValueError" in evidence.traceback_text
+    assert "safe" in evidence.traceback_text
+    # the innermost failing frame's header must survive -- this is the
+    # exact assertion the R1 evidence failed.
+    assert "line 2, in boom" in evidence.traceback_text
+    assert huge_comment not in evidence.traceback_text  # still bounded per-line
+
+
+def test_neutralize_non_frame_lines_redacts_unsafe_content_in_source_context_lines():
+    """R2 audit repro: an indented SOURCE line is not automatically safe --
+    ``capture_locals=False`` only guarantees no runtime VALUES appear, but
+    the literal source text (e.g. a careless comment) can itself carry
+    secret-shaped content and must still be redacted."""
+    source = (
+        "def boom():\n"
+        '    raise ValueError("safe-message")  # SECRET-CREDENTIAL-BLOB-RAW-999\n'
+    )
+    try:
+        _compile_and_call(source, "boom")
+    except ValueError as exc:
+        evidence = capture_child_failure_evidence(
+            exc,
+            transport="in_process",
+            stage="engine",
+            strategy="S1",
+            config_id="S1-00",
+        )
+    assert "SECRET-CREDENTIAL-BLOB-RAW-999" not in evidence.traceback_text
+    assert "SECRET-CREDENTIAL-BLOB-RAW-999" not in evidence.message
+    # frame identity still survives.
+    assert "ValueError" in evidence.traceback_text
+    assert "line 2, in boom" in evidence.traceback_text
 
 
 def test_merge_aggregates_repeated_identical_signature_with_occurrence_count():

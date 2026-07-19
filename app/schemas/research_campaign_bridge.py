@@ -9,6 +9,7 @@ judgement belongs to a separate downstream consumer (H5), never this schema.
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -20,6 +21,52 @@ _EXPECTED_SCENARIO_NAMES = frozenset({"base", "primary_stress", "upward_stress"}
 
 DiagnosticTransport = Literal["in_process"]
 DiagnosticStage = Literal["generator", "funding_gate", "engine"]
+
+# ROB-970 R1 (Q1=A, cap=32): the ONE production cap policy -- imported
+# nowhere else in this schema, redeclared here as the schema's own
+# authority so `app/schemas` never depends on `research/nautilus_scalping`
+# (the reverse-only import boundary this bridge already keeps).
+MAX_DISTINCT_SIGNATURES = 32
+
+# R2 Critical: an independent, app-side re-implementation of the same
+# residual-unsafe-content check the research capture module applies BEFORE
+# building a ChildFailureEvidence (rob944_diagnostic_evidence._looks_unsafe_
+# residual) -- this schema must never simply TRUST that a caller already
+# sanitized message/traceback_text, since a directly (hostile or buggy)
+# constructed ChildFailureDiagnostic bypasses that capture path entirely.
+# Deliberately duplicated rather than imported: app/schemas must not import
+# research/nautilus_scalping (the reverse already holds the other way).
+_RESIDUAL_KV_SECRET_RE = re.compile(
+    r"(?i)\b\w*(?:secret|token|passwd|password|api[_-]?key|access[_-]?key|dsn|"
+    r"credential)\w*\b['\"]?\s*[:=]\s*(?!<redacted)['\"]?\S"
+)
+_RESIDUAL_DICT_LITERAL_RE = re.compile(
+    r"\{(?:[^{}]|\n){0,2000}?['\"]\s*:\s*['\"][^{}]*?\}"
+)
+_RESIDUAL_DATACLASS_REPR_RE = re.compile(
+    r"\b[A-Z][A-Za-z0-9_]*\((?:[a-zA-Z_][a-zA-Z0-9_]*=[^(){}]*?,\s*){1,}"
+    r"[a-zA-Z_][a-zA-Z0-9_]*=[^(){}]*?\)"
+)
+_RESIDUAL_SHOUTY_SECRET_RE = re.compile(
+    r"\b(?:SECRET|CREDENTIAL|PRIVATE[_-]?KEY|CLIENT[_-]?SECRET|PASSWORD|"
+    r"API[_-]?KEY|ACCESS[_-]?KEY)[A-Z_-]*\b"
+)
+_DSN_URL_RE = re.compile(r"(?i)\b\w+://[^\s\"']*:[^\s\"'@]*@[^\s\"']+")
+_BEARER_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_\-.]{10,}\b")
+_ABS_PATH_RE = re.compile(r"(?<![\w./])/(?:[\w.\-]+/)+[\w.\-]+")
+
+
+def _looks_unsafe(text: str) -> bool:
+    return bool(
+        _RESIDUAL_KV_SECRET_RE.search(text)
+        or _RESIDUAL_DICT_LITERAL_RE.search(text)
+        or _RESIDUAL_DATACLASS_REPR_RE.search(text)
+        or _RESIDUAL_SHOUTY_SECRET_RE.search(text)
+        or _DSN_URL_RE.search(text)
+        or _BEARER_JWT_RE.search(text)
+        or _ABS_PATH_RE.search(text)
+    )
+
 
 __all__ = [
     "AttemptEvidence",
@@ -53,6 +100,10 @@ class ChildFailureDiagnosticOverflow(BaseModel):
             raise ValueError(
                 "omitted_distinct_signatures cannot exceed omitted_occurrences"
             )
+        # R2 audit: truncated is a DERIVED fact, never an independent
+        # caller-asserted boolean.
+        if self.truncated != (self.omitted_occurrences > 0):
+            raise ValueError("truncated must be exactly (omitted_occurrences > 0)")
         return self
 
 
@@ -95,6 +146,16 @@ class ChildFailureDiagnostic(BaseModel):
     def _validate(self) -> ChildFailureDiagnostic:
         if self.transport == "in_process" and self.stderr is not None:
             raise ValueError("in_process transport must never fabricate a stderr value")
+        # R2 Critical: close the persistence-boundary bypass -- a directly
+        # (hostile or buggy) constructed ChildFailureDiagnostic must still
+        # fail closed if message/traceback_text carries secret/env-dump/
+        # DSN/JWT/absolute-path/raw-record content, never merely trusting
+        # that the caller already ran it through the research sanitizer.
+        if _looks_unsafe(self.message) or _looks_unsafe(self.traceback_text):
+            raise ValueError(
+                "message/traceback_text still looks unsafe (secret/env-dump/DSN/"
+                "JWT/path/raw-record shaped) -- refusing to construct"
+            )
         return self
 
 
@@ -174,6 +235,15 @@ class AttemptEvidence(BaseModel):
             )
         if self.status != "completed" and self.reason_code is None:
             raise ValueError("reason_code is required for non-completed statuses")
+        # R2 audit: the app schema itself must independently enforce the
+        # single production cap -- never trust that only the research H6/CLI
+        # producer already bounded it.
+        if len(self.diagnostic_evidence) > MAX_DISTINCT_SIGNATURES:
+            raise ValueError(
+                "diagnostic_evidence must have at most "
+                f"{MAX_DISTINCT_SIGNATURES} entries, got "
+                f"{len(self.diagnostic_evidence)}"
+            )
         return self
 
 

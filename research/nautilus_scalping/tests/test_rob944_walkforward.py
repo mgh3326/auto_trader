@@ -40,6 +40,8 @@ from rob944_walkforward import (
     summarize_config_attempts_for_h6,
 )
 
+from research_contracts.canonical_hash import canonical_sha256
+
 _SYMBOLS = ("BTCUSDT", "XRPUSDT", "DOGEUSDT", "SOLUSDT")
 _DAY_MS = 86_400_000
 _HOUR_MS = 3_600_000
@@ -2325,17 +2327,35 @@ def test_engine_catch_records_typed_diagnostic_evidence():
 def test_run_scenario_without_diagnostic_notes_kwarg_is_unaffected():
     """Backward compatibility: every existing caller (rob960_pbo_evaluator,
     the rest of this test file) omits ``diagnostic_notes`` entirely -- the
-    return shape/behavior must stay byte-identical."""
+    return shape/behavior must stay byte-identical.
+
+    R2 audit item 5 (observer-effect-0, "successful capture/no-capture
+    WalkForwardResult canonical payload/hash"): the SAME simulated crash is
+    also run with the diagnostic side-channel genuinely WIRED
+    (``diagnostic_notes={}``, so it IS populated) and a canonical hash of
+    the semantic-only fields of both outcomes is asserted byte-identical --
+    not just spot-checked field by field -- while confirming the diagnostic
+    channel really did differ (empty vs. populated)."""
     bars = _flat_bars(0, 2 * 60_000)
     sidecar = _permissive_funding_sidecars()["BTCUSDT"]
 
     def _boom(*args, **kwargs):
         raise RuntimeError("simulated crash, no diagnostic_notes passed")
 
+    def _semantic_payload(outcome):
+        return {
+            "scenario_name": outcome.scenario_name,
+            "status": outcome.status,
+            "trade_count": outcome.trade_count,
+            "artifact_hash": outcome.artifact_hash,
+            "error_reason": outcome.error_reason,
+            "no_trade_reason_counts": outcome.no_trade_reason_counts,
+        }
+
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(rob944_walkforward, "_apply_funding_gate", _boom)
     try:
-        outcome, filtered = _run_scenario(
+        no_capture, filtered = _run_scenario(
             bars,
             (),
             COST_SCENARIOS[0],
@@ -2346,10 +2366,32 @@ def test_run_scenario_without_diagnostic_notes_kwarg_is_unaffected():
             symbol="BTCUSDT",
             fold_id="fold-00",
         )
+        diagnostic_notes: dict[str, list[ChildFailureEvidence]] = {}
+        with_capture, filtered_with_capture = _run_scenario(
+            bars,
+            (),
+            COST_SCENARIOS[0],
+            sidecar,
+            (),
+            strategy="S1",
+            config_id="S1-00",
+            symbol="BTCUSDT",
+            fold_id="fold-00",
+            diagnostic_notes=diagnostic_notes,
+        )
     finally:
         monkeypatch.undo()
-    assert outcome.status == "crashed"
+    assert no_capture.status == "crashed"
     assert filtered is None
+    assert filtered_with_capture is None
+    # the diagnostic side-channel genuinely differs (not wired vs. wired-
+    # and-populated) -- otherwise this wouldn't be a real observer-effect-0
+    # proof.
+    assert diagnostic_notes["S1-00"]
+    # ...yet the outcome's own SEMANTIC canonical hash is byte-identical.
+    assert canonical_sha256(_semantic_payload(no_capture)) == canonical_sha256(
+        _semantic_payload(with_capture)
+    )
 
 
 def test_generator_catch_records_typed_diagnostic_evidence_train_and_oos():

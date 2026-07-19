@@ -1003,8 +1003,17 @@ def _normalize_child_failure_evidence_row(row, *, context: str):
 
 
 def _normalize_diagnostic_evidence_tuple(raw_value, *, context: str):
+    from rob944_diagnostic_evidence import MAX_DISTINCT_SIGNATURES
+
     if type(raw_value) is not tuple:
         raise ValueError(f"{context} must be an exact tuple -- refusing to persist")
+    # R2 audit (one cap policy at every trust boundary, never only the
+    # producer helper).
+    if len(raw_value) > MAX_DISTINCT_SIGNATURES:
+        raise ValueError(
+            f"{context} must have at most {MAX_DISTINCT_SIGNATURES} entries -- "
+            "refusing to persist"
+        )
     return tuple(
         _normalize_child_failure_evidence_row(row, context=f"{context}#{idx}")
         for idx, row in enumerate(raw_value)
@@ -1020,7 +1029,7 @@ def _normalize_diagnostic_overflow(raw_value, *, context: str):
         raise ValueError(
             f"{context} must be an exact DiagnosticOverflowMetadata -- refusing to persist"
         )
-    _assert_exact_bool(raw_value.truncated, context=f"{context} truncated")
+    truncated = _assert_exact_bool(raw_value.truncated, context=f"{context} truncated")
     omitted_distinct_signatures = _assert_exact_int(
         raw_value.omitted_distinct_signatures,
         context=f"{context} omitted_distinct_signatures",
@@ -1035,6 +1044,13 @@ def _normalize_diagnostic_overflow(raw_value, *, context: str):
     if omitted_distinct_signatures > omitted_occurrences:
         raise ValueError(
             f"{context} omitted_distinct_signatures cannot exceed omitted_occurrences"
+        )
+    # R2 audit: truncated is a DERIVED fact, never an independent caller
+    # assertion.
+    if truncated != (omitted_occurrences > 0):
+        raise ValueError(
+            f"{context} truncated must be exactly (omitted_occurrences > 0) -- "
+            "refusing to persist"
         )
     return raw_value
 

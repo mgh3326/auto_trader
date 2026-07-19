@@ -12,8 +12,10 @@ winner-only filter — R1 Important-3/4).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import uuid
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -351,6 +353,133 @@ async def test_diagnostic_evidence_absent_persists_empty_list_not_missing_key(
     assert row.raw_payload["diagnostic_evidence"] == []
 
 
+# --------------------------------------------------------------------------- #
+# R2 audit item 2/3 (5th boundary): AttemptEvidence is NOT frozen (only its
+# ChildFailureDiagnostic/ChildFailureDiagnosticOverflow leaves are), so a
+# caller could reassign `.diagnostic_evidence`/`.diagnostic_overflow` AFTER
+# construction, bypassing every Pydantic validator entirely (research H6 ->
+# CLI -> H5 seal -> app schema all already checked -- this is the 5th and
+# final "service assembly/persistence" boundary, which must not simply trust
+# that an already-constructed AttemptEvidence still satisfies the cap/
+# consistency invariants at the moment it is actually persisted).
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_service_boundary_rejects_diagnostic_evidence_forged_over_cap_post_construction(
+    registry_tables,
+) -> None:
+    session = registry_tables
+    _spec, experiment_id = await _register(session)
+    evidence = _evidence("camp1", experiment_id, run_identity="run-forge-1")
+    # Forge past the cap via direct attribute assignment -- AttemptEvidence
+    # is not frozen, so this bypasses the schema's own model_validator.
+    evidence.diagnostic_evidence = tuple(
+        _diagnostic(signature=("a" * 63) + str(i)) for i in range(33)
+    )
+
+    with pytest.raises(bridge.DiagnosticEvidenceBoundaryViolation):
+        await record_attempt(
+            session,
+            experiment_id=experiment_id,
+            evidence=evidence,
+            strategy_name="S1",
+            timeframe="15m",
+            runner="pytest",
+            guard_opt_in_enabled=True,
+            guard_policy=_POLICY,
+        )
+    count = await session.scalar(
+        select(func.count())
+        .select_from(ResearchBacktestRun)
+        .where(
+            ResearchBacktestRun.strategy_experiment_id
+            == (await bridge._get_experiment_by_id(session, experiment_id)).id
+        )
+    )
+    assert count == 0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_service_boundary_rejects_diagnostic_evidence_entries_of_the_wrong_type(
+    registry_tables,
+) -> None:
+    """Forging non-``ChildFailureDiagnostic`` entries into the tuple (e.g.
+    plain dicts) must fail closed at the service boundary rather than being
+    blindly iterated and persisted."""
+    session = registry_tables
+    _spec, experiment_id = await _register(session)
+    evidence = _evidence("camp1", experiment_id, run_identity="run-forge-2")
+    evidence.diagnostic_evidence = ({"message": "not a real diagnostic"},)
+
+    with pytest.raises(bridge.DiagnosticEvidenceBoundaryViolation):
+        await record_attempt(
+            session,
+            experiment_id=experiment_id,
+            evidence=evidence,
+            strategy_name="S1",
+            timeframe="15m",
+            runner="pytest",
+            guard_opt_in_enabled=True,
+            guard_policy=_POLICY,
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_service_boundary_rejects_diagnostic_overflow_forged_inconsistent_post_construction(
+    registry_tables,
+) -> None:
+    """``ChildFailureDiagnosticOverflow`` itself is frozen, but a caller can
+    still swap ``evidence.diagnostic_overflow`` wholesale for an unvalidated
+    instance built via ``model_construct`` (which skips every validator)."""
+    session = registry_tables
+    _spec, experiment_id = await _register(session)
+    evidence = _evidence("camp1", experiment_id, run_identity="run-forge-3")
+    evidence.diagnostic_overflow = ChildFailureDiagnosticOverflow.model_construct(
+        truncated=True, omitted_distinct_signatures=0, omitted_occurrences=0
+    )
+
+    with pytest.raises(bridge.DiagnosticEvidenceBoundaryViolation):
+        await record_attempt(
+            session,
+            experiment_id=experiment_id,
+            evidence=evidence,
+            strategy_name="S1",
+            timeframe="15m",
+            runner="pytest",
+            guard_opt_in_enabled=True,
+            guard_policy=_POLICY,
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_service_boundary_accepts_genuinely_well_formed_diagnostic_evidence(
+    registry_tables,
+) -> None:
+    """Control case: legitimate, unmutated evidence must not be rejected by
+    the new service-boundary guard."""
+    session = registry_tables
+    _spec, experiment_id = await _register(session)
+    evidence = _evidence("camp1", experiment_id, run_identity="run-forge-4")
+    evidence = evidence.model_copy(update={"diagnostic_evidence": (_diagnostic(),)})
+
+    row = await record_attempt(
+        session,
+        experiment_id=experiment_id,
+        evidence=evidence,
+        strategy_name="S1",
+        timeframe="15m",
+        runner="pytest",
+        guard_opt_in_enabled=True,
+        guard_policy=_POLICY,
+    )
+    assert len(row.raw_payload["diagnostic_evidence"]) == 1
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_replay_with_different_diagnostic_evidence_still_replays_not_mismatch(
@@ -400,7 +529,14 @@ async def test_replay_with_different_diagnostic_evidence_still_replays_not_misma
     captured = capsys.readouterr()
     payload = json.loads(captured.err.strip())
     assert payload["event"] == "diagnostic_replay_divergence"
-    assert payload["idempotency_key"] == evidence.attempt_key.idempotency_key()
+    # R2 audit: never the raw idempotency_key -- only a stable digest of it.
+    assert "idempotency_key" not in payload
+    assert (
+        payload["idempotency_key_digest"]
+        == hashlib.sha256(
+            evidence.attempt_key.idempotency_key().encode("utf-8")
+        ).hexdigest()
+    )
 
 
 @pytest.mark.integration
@@ -481,6 +617,217 @@ async def test_replay_divergent_diagnostic_overflow_emits_observation(
     assert payload["event"] == "diagnostic_replay_divergence"
 
 
+# --------------------------------------------------------------------------- #
+# R2 audit item 4 (Q2=C-modified canonical-byte replay contract): each
+# divergence DIMENSION, exercised independently, emits EXACTLY one typed
+# observation -- new/missing signature, wording, occurrence count, and
+# per-record truncation flag (empty<->nonempty and overflow metadata are
+# already covered by the two tests immediately above).
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "dimension,mutate",
+    [
+        ("new_signature", lambda d: d.model_copy(update={"signature": "b" * 64})),
+        (
+            "wording",
+            lambda d: d.model_copy(update={"message": "a wholly different message"}),
+        ),
+        ("occurrence_count", lambda d: d.model_copy(update={"occurrence_count": 99})),
+        ("record_truncation", lambda d: d.model_copy(update={"truncated": True})),
+    ],
+)
+async def test_each_diagnostic_divergence_dimension_emits_exactly_one_observation(
+    registry_tables, capsys, dimension, mutate
+) -> None:
+    session = registry_tables
+    _spec, experiment_id = await _register(session)
+    base_diag = _diagnostic()
+    evidence = _evidence(
+        "camp1", experiment_id, run_identity=f"run-dim-{dimension}"
+    ).model_copy(update={"diagnostic_evidence": (base_diag,)})
+
+    await record_attempt(
+        session,
+        experiment_id=experiment_id,
+        evidence=evidence,
+        strategy_name="S1",
+        timeframe="15m",
+        runner="pytest",
+        guard_opt_in_enabled=True,
+        guard_policy=_POLICY,
+    )
+    capsys.readouterr()
+
+    divergent = evidence.model_copy(
+        update={"diagnostic_evidence": (mutate(base_diag),)}
+    )
+    await record_attempt(
+        session,
+        experiment_id=experiment_id,
+        evidence=divergent,
+        strategy_name="S1",
+        timeframe="15m",
+        runner="pytest",
+        guard_opt_in_enabled=True,
+        guard_policy=_POLICY,
+    )
+    captured = capsys.readouterr()
+    lines = [line for line in captured.err.splitlines() if line.strip()]
+    assert len(lines) == 1
+    assert json.loads(lines[0])["event"] == "diagnostic_replay_divergence"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_nonempty_to_empty_diagnostic_evidence_emits_exactly_one_observation(
+    registry_tables, capsys
+) -> None:
+    """The reverse direction of the empty->nonempty case already covered
+    above: a replay that DROPS previously-recorded diagnostics is equally a
+    divergence (never silently accepted as "no diagnostics == nothing to
+    compare"), and still never mutates the original row."""
+    session = registry_tables
+    _spec, experiment_id = await _register(session)
+    evidence = _evidence(
+        "camp1", experiment_id, run_identity="run-nonempty-to-empty"
+    ).model_copy(update={"diagnostic_evidence": (_diagnostic(),)})
+
+    original = await record_attempt(
+        session,
+        experiment_id=experiment_id,
+        evidence=evidence,
+        strategy_name="S1",
+        timeframe="15m",
+        runner="pytest",
+        guard_opt_in_enabled=True,
+        guard_policy=_POLICY,
+    )
+    capsys.readouterr()
+
+    replay_empty = evidence.model_copy(update={"diagnostic_evidence": ()})
+    second = await record_attempt(
+        session,
+        experiment_id=experiment_id,
+        evidence=replay_empty,
+        strategy_name="S1",
+        timeframe="15m",
+        runner="pytest",
+        guard_opt_in_enabled=True,
+        guard_policy=_POLICY,
+    )
+    assert second.id == original.id
+    assert len(second.raw_payload["diagnostic_evidence"]) == 1  # original untouched
+
+    captured = capsys.readouterr()
+    lines = [line for line in captured.err.splitlines() if line.strip()]
+    assert len(lines) == 1
+    assert json.loads(lines[0])["event"] == "diagnostic_replay_divergence"
+
+
+@pytest.mark.unit
+def test_legacy_row_missing_diagnostic_keys_normalizes_to_default_write_free_noop() -> (
+    None
+):
+    """R2 audit: legacy/absent-field normalization -- a row persisted BEFORE
+    ROB-970 (no ``diagnostic_evidence``/``diagnostic_overflow`` keys in
+    ``raw_payload`` at all, a migration-free older row) must canonicalize
+    IDENTICALLY to a row explicitly storing empty/default diagnostics, and
+    an incoming evidence with empty/default diagnostics must byte-match
+    that same reconstruction -- the exact comparison
+    ``_check_diagnostic_divergence`` performs.
+
+    (This is a pure unit test of the normalization helpers, not an
+    integration test through ``record_attempt``: ``research.backtest_runs``
+    enforces an append-only DB trigger that rejects any UPDATE, so a
+    "legacy row" cannot be simulated by mutating an already-recorded row --
+    which is itself a live confirmation of the append-only invariant this
+    whole design depends on.)"""
+    legacy_row = SimpleNamespace(
+        raw_payload={
+            "h6_evidence_fingerprint": "f" * 64,
+            "campaign_run_id": "camp1",
+            "retry_index": 0,
+            # no diagnostic_evidence / diagnostic_overflow keys at all.
+        }
+    )
+    explicit_default_row = SimpleNamespace(
+        raw_payload={
+            "h6_evidence_fingerprint": "f" * 64,
+            "campaign_run_id": "camp1",
+            "retry_index": 0,
+            "diagnostic_evidence": [],
+            "diagnostic_overflow": {
+                "truncated": False,
+                "omitted_distinct_signatures": 0,
+                "omitted_occurrences": 0,
+            },
+        }
+    )
+    legacy_bytes = bridge._canonical_diagnostic_bytes(
+        bridge._stored_diagnostic_evidence_payload(legacy_row),
+        bridge._stored_diagnostic_overflow_payload(legacy_row),
+    )
+    explicit_bytes = bridge._canonical_diagnostic_bytes(
+        bridge._stored_diagnostic_evidence_payload(explicit_default_row),
+        bridge._stored_diagnostic_overflow_payload(explicit_default_row),
+    )
+    assert legacy_bytes == explicit_bytes
+
+    evidence = _evidence("camp1", "e" * 64, run_identity="run-legacy-normalize")
+    incoming_bytes = bridge._canonical_diagnostic_bytes(
+        bridge._diagnostic_evidence_payload(evidence),
+        bridge._diagnostic_overflow_payload(evidence),
+    )
+    assert incoming_bytes == legacy_bytes
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_observation_emission_failure_never_turns_divergence_into_a_failed_attempt(
+    registry_tables, monkeypatch
+) -> None:
+    """R2 audit: non-fail-stop by deliberate contract -- an observation
+    write/handler failure must NOT turn a diagnostic-only divergence into a
+    failed attempt. The original row must still be returned untouched."""
+    session = registry_tables
+    _spec, experiment_id = await _register(session)
+    evidence = _evidence("camp1", experiment_id, run_identity="run-observer-fail")
+
+    original = await record_attempt(
+        session,
+        experiment_id=experiment_id,
+        evidence=evidence,
+        strategy_name="S1",
+        timeframe="15m",
+        runner="pytest",
+        guard_opt_in_enabled=True,
+        guard_policy=_POLICY,
+    )
+
+    def _broken_emit(**kwargs):
+        raise RuntimeError("simulated observation-emission failure")
+
+    monkeypatch.setattr(bridge, "_emit_diagnostic_replay_divergence", _broken_emit)
+
+    divergent = evidence.model_copy(update={"diagnostic_evidence": (_diagnostic(),)})
+    second = await record_attempt(
+        session,
+        experiment_id=experiment_id,
+        evidence=divergent,
+        strategy_name="S1",
+        timeframe="15m",
+        runner="pytest",
+        guard_opt_in_enabled=True,
+        guard_policy=_POLICY,
+    )
+    assert second.id == original.id
+    assert second.raw_payload["diagnostic_evidence"] == []  # original untouched
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_replay_divergence_observation_never_leaks_raw_diagnostic_text(
@@ -501,7 +848,14 @@ async def test_replay_divergence_observation_never_leaks_raw_diagnostic_text(
         guard_policy=_POLICY,
     )
     capsys.readouterr()
-    secret_message = "SECRET-NEVER-IN-OBSERVATION-abc123"
+    # R2 audit: a genuinely secret-SHAPED literal (e.g. "SECRET-...") is now
+    # rejected at ChildFailureDiagnostic construction itself (the app schema
+    # trust boundary) before it can even reach the observation path. This
+    # test targets a DIFFERENT guarantee -- that the observation emitter
+    # itself never echoes raw diagnostic message text, digest-only -- so it
+    # uses a safe-shaped-but-unique marker that legitimately passes schema
+    # construction.
+    secret_message = "distinctive-marker-9f3a2b1c-should-never-appear-in-observation"
     replay_with_diag = evidence.model_copy(
         update={"diagnostic_evidence": (_diagnostic(message=secret_message),)}
     )
@@ -562,57 +916,83 @@ async def test_replay_semantic_mismatch_still_raises_terminal_evidence_mismatch(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_two_sequential_divergent_replays_each_emit_their_own_observation(
+async def test_two_genuinely_simultaneous_divergent_replays_each_emit_exactly_one_observation(
     registry_tables, capsys
 ) -> None:
-    """Concurrency proxy: independent divergent replays must each produce
-    their OWN observation -- no loss, no dedupe inflation/suppression."""
-    session = registry_tables
-    _spec, experiment_id = await _register(session)
-    evidence = _evidence("camp1", experiment_id, run_identity="run-diag-concurrent")
+    """R2 audit: replaces the former SEQUENTIAL "concurrency proxy" test --
+    two independent test-DB sessions issue GENUINELY simultaneous (via
+    ``asyncio.gather`` over two independent sessions/tasks, not sequential
+    awaits on one shared session) divergent replays against the SAME
+    already-recorded attempt key. Both must observe (never lose, never
+    dedupe-collapse) their own divergence, and the original row's
+    raw_payload bytes must remain byte-for-byte unchanged by either."""
+    from app.core.db import engine
 
-    await record_attempt(
-        session,
-        experiment_id=experiment_id,
-        evidence=evidence,
-        strategy_name="S1",
-        timeframe="15m",
-        runner="pytest",
-        guard_opt_in_enabled=True,
-        guard_policy=_POLICY,
+    session_maker = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    async with session_maker() as setup:
+        _spec, experiment_id = await _register(setup)
+        await setup.commit()
+
+    evidence = _evidence(
+        "camp-concurrent-diag", experiment_id, run_identity="run-concurrent-diag"
     )
-    capsys.readouterr()
+    async with session_maker() as seed:
+        original = await record_attempt(
+            seed,
+            experiment_id=experiment_id,
+            evidence=evidence,
+            strategy_name="S1",
+            timeframe="15m",
+            runner="pytest",
+            guard_opt_in_enabled=True,
+            guard_policy=_POLICY,
+        )
+        original_raw_payload = dict(original.raw_payload)
+        original_id = original.id
+        await seed.commit()
+
     replay_a = evidence.model_copy(
-        update={"diagnostic_evidence": (_diagnostic(message="divergence A"),)}
+        update={
+            "diagnostic_evidence": (_diagnostic(message="concurrent divergence A"),)
+        }
     )
     replay_b = evidence.model_copy(
-        update={"diagnostic_evidence": (_diagnostic(message="divergence B"),)}
+        update={
+            "diagnostic_evidence": (_diagnostic(message="concurrent divergence B"),)
+        }
     )
-    await record_attempt(
-        session,
-        experiment_id=experiment_id,
-        evidence=replay_a,
-        strategy_name="S1",
-        timeframe="15m",
-        runner="pytest",
-        guard_opt_in_enabled=True,
-        guard_policy=_POLICY,
-    )
-    await record_attempt(
-        session,
-        experiment_id=experiment_id,
-        evidence=replay_b,
-        strategy_name="S1",
-        timeframe="15m",
-        runner="pytest",
-        guard_opt_in_enabled=True,
-        guard_policy=_POLICY,
-    )
+
+    async def worker(replay_evidence):
+        async with session_maker() as s:
+            row = await record_attempt(
+                s,
+                experiment_id=experiment_id,
+                evidence=replay_evidence,
+                strategy_name="S1",
+                timeframe="15m",
+                runner="pytest",
+                guard_opt_in_enabled=True,
+                guard_policy=_POLICY,
+            )
+            await s.commit()
+            return row.id
+
+    capsys.readouterr()
+    ids = await asyncio.gather(worker(replay_a), worker(replay_b))
+    assert ids == [original_id, original_id]
+
     captured = capsys.readouterr()
     lines = [line for line in captured.err.splitlines() if line.strip()]
-    assert len(lines) == 2
-    for line in lines:
-        assert json.loads(line)["event"] == "diagnostic_replay_divergence"
+    assert len(lines) == 2  # no loss
+    events = [json.loads(line) for line in lines]
+    assert all(e["event"] == "diagnostic_replay_divergence" for e in events)
+    # no dedupe-collapse: two DISTINCT incoming digests observed.
+    assert len({e["incoming_diagnostic_digest"] for e in events}) == 2
+
+    async with session_maker() as check:
+        final = await check.get(ResearchBacktestRun, original_id)
+        assert final.raw_payload == original_raw_payload
 
 
 # --------------------------------------------------------------------------- #

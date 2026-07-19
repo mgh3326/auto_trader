@@ -1522,6 +1522,47 @@ def test_normalize_config_attempt_evidence_summary_rejects_non_exact_overflow_ty
         cli._normalize_config_attempt_evidence_summary(summary, context="test")
 
 
+def test_normalize_rejects_diagnostic_evidence_longer_than_the_cap():
+    """R2 audit: the REAL H6-build boundary must independently fail closed
+    if len(diagnostic_evidence) > 32, not only the producer helper."""
+    from dataclasses import replace
+
+    too_many = tuple(
+        _fake_diagnostic_evidence(signature=("a" * 63) + str(i)) for i in range(33)
+    )
+    summary = replace(_fake_summary(), diagnostic_evidence=too_many)
+    with pytest.raises(ValueError):
+        cli._normalize_config_attempt_evidence_summary(summary, context="test")
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {
+            "truncated": False,
+            "omitted_distinct_signatures": 0,
+            "omitted_occurrences": 1,
+        },
+        {"truncated": True, "omitted_distinct_signatures": 0, "omitted_occurrences": 0},
+        {
+            "truncated": False,
+            "omitted_distinct_signatures": 1,
+            "omitted_occurrences": 1,
+        },
+    ],
+)
+def test_normalize_rejects_diagnostic_overflow_with_inconsistent_truncated_flag(
+    overrides,
+):
+    from dataclasses import replace
+
+    summary = replace(
+        _fake_summary(), diagnostic_overflow=_fake_diagnostic_overflow(**overrides)
+    )
+    with pytest.raises(ValueError):
+        cli._normalize_config_attempt_evidence_summary(summary, context="test")
+
+
 def test_summary_to_attempt_evidence_run_identity_changes_with_lineage_facts():
     summary = _fake_summary()
     base = cli._summary_to_attempt_evidence(

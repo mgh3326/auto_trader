@@ -466,6 +466,64 @@ def test_rejects_negative_omitted_counts_in_diagnostic_overflow():
         )
 
 
+def test_rejects_diagnostic_evidence_longer_than_the_cap():
+    """R2 audit: every trust boundary must independently fail closed if
+    ``len(diagnostic_evidence) > 32``, not only the producer helper."""
+    from dataclasses import replace
+
+    too_many = tuple(
+        _child_failure_evidence(signature=_hex64(f"forged-sig-{i}")) for i in range(33)
+    )
+    summary = replace(_well_formed_summary(), diagnostic_evidence=too_many)
+    with pytest.raises(H6SummaryContractError):
+        normalize_and_validate_h6_summary(
+            summary, expected_strategy="S1", expected_config_id="S1-00"
+        )
+
+
+def test_accepts_diagnostic_evidence_exactly_at_the_cap():
+    from dataclasses import replace
+
+    exactly_32 = tuple(
+        _child_failure_evidence(signature=_hex64(f"forged-sig-{i}")) for i in range(32)
+    )
+    summary = replace(_well_formed_summary(), diagnostic_evidence=exactly_32)
+    normalized = normalize_and_validate_h6_summary(
+        summary, expected_strategy="S1", expected_config_id="S1-00"
+    )
+    assert len(normalized.diagnostic_evidence) == 32
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {
+            "truncated": False,
+            "omitted_distinct_signatures": 0,
+            "omitted_occurrences": 1,
+        },
+        {"truncated": True, "omitted_distinct_signatures": 0, "omitted_occurrences": 0},
+        {
+            "truncated": False,
+            "omitted_distinct_signatures": 1,
+            "omitted_occurrences": 1,
+        },
+    ],
+)
+def test_rejects_diagnostic_overflow_with_inconsistent_truncated_flag(overrides):
+    """``truncated`` must be exactly ``omitted_occurrences > 0`` -- never a
+    caller-asserted boolean independent of the actual counts."""
+    from dataclasses import replace
+
+    summary = replace(
+        _well_formed_summary(), diagnostic_overflow=_overflow(**overrides)
+    )
+    with pytest.raises(H6SummaryContractError):
+        normalize_and_validate_h6_summary(
+            summary, expected_strategy="S1", expected_config_id="S1-00"
+        )
+
+
 def test_diagnostic_overflow_never_alters_fold_evidence_hash_or_run_identity():
     from dataclasses import replace
 

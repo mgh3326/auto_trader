@@ -179,63 +179,105 @@ def _finalize_message(raw_message: str) -> str:
     return sanitized
 
 
-def _finalize_traceback(raw_traceback: str, raw_message: str, safe_message: str) -> str:
-    """The raw traceback's own trailing exception line duplicates
-    ``str(exc)`` -- replace that occurrence with the ALREADY-finalized safe
-    message first (so a message that needed full sentinel replacement
-    doesn't leave its raw text sitting in the traceback too), then apply the
-    same structural + residual-fail-closed treatment to whatever remains.
-    ``capture_locals=False`` means every OTHER line is static source text
-    (frame headers/``File "..."``/source lines) -- never a runtime value --
-    so only non-frame lines are neutralized on a residual hit, preserving
-    every failing frame."""
-    text = raw_traceback
-    if raw_message and raw_message in text:
-        text = text.replace(raw_message, safe_message)
-    text = _sanitize(text)
-    if _looks_unsafe_residual(text):
-        text = _neutralize_non_frame_lines(text)
-    return text
-
-
 _FRAME_LIKE_LINE_RE = re.compile(
     r'^(\s*File "|Traceback \(most recent call last\)|\s*\^|\s*~|\s*$|'
     r"The above exception was the direct cause|"
     r"During handling of the above exception|\[Previous line repeated)"
 )
 
+# R2 audit fix: any SINGLE traceback line (almost always a source-context
+# line under a frame header) is bounded BEFORE frame-aware reconstruction,
+# so one pathological line (e.g. an oversized inline comment) can never by
+# itself consume the whole traceback budget and push the innermost failing
+# frame's OWN header line out of the retained window via blind character-
+# count slicing.
+_MAX_LINE_CHARS = 300
 
-def _neutralize_non_frame_lines(text: str) -> str:
-    """Preserve every frame/header line (source text only, never a runtime
-    value under ``capture_locals=False``) and replace every OTHER line
-    (typically a chained exception's own secret-bearing message line) with
-    the fixed sentinel."""
+
+def _bound_line(line: str) -> str:
+    if len(line) <= _MAX_LINE_CHARS:
+        return line
+    return line[: _MAX_LINE_CHARS - len(_TRUNCATION_MARKER)] + _TRUNCATION_MARKER
+
+
+def _bound_lines(text: str) -> tuple[str, bool]:
+    lines = text.split("\n")
+    bounded = [_bound_line(line) for line in lines]
+    return "\n".join(bounded), bounded != lines
+
+
+def _neutralize_unsafe_lines(text: str) -> str:
+    """R2 audit fix: a frame HEADER line (``File "...", line N, in name``)
+    and pure traceback furniture are always preserved verbatim (frame
+    identity must survive). Every OTHER line -- including an indented
+    SOURCE-CONTEXT line -- is NOT automatically safe: ``capture_locals=False``
+    only guarantees no runtime local VALUES appear, but the literal source
+    TEXT (e.g. a careless comment) can itself carry secret-shaped content.
+    Each such line is checked independently and replaced with the sentinel
+    if it still looks unsafe, never blanket-trusted merely for being
+    indented."""
     out_lines = []
-    for line in text.splitlines():
-        if _FRAME_LIKE_LINE_RE.match(line) or (
-            out_lines
-            and line.startswith((" ", "\t"))
-            and not line.strip().startswith("^")
-        ):
+    for line in text.split("\n"):
+        if _FRAME_LIKE_LINE_RE.match(line):
             out_lines.append(line)
-        else:
+        elif _looks_unsafe_residual(line):
             out_lines.append(_SENTINEL_UNSAFE_MESSAGE)
+        else:
+            out_lines.append(line)
     return "\n".join(out_lines)
 
 
+def _finalize_traceback(
+    raw_traceback: str, raw_message: str, safe_message: str
+) -> tuple[str, bool]:
+    """The raw traceback's own trailing exception line duplicates
+    ``str(exc)`` -- replace that occurrence with the ALREADY-finalized safe
+    message first (so a message that needed full sentinel replacement
+    doesn't leave its raw text sitting in the traceback too). Structural
+    redaction runs next, then per-line bounding (so no single pathological
+    line can consume the whole budget -- reported back, since clipping ONE
+    oversized line is itself a real truncation event even when the OVERALL
+    text ends up under the total-length cap), then a per-line residual-
+    fail-closed sweep (never blanket-trusting indented source-context
+    lines)."""
+    text = raw_traceback
+    if raw_message and raw_message in text:
+        text = text.replace(raw_message, safe_message)
+    text = _sanitize(text)
+    text, line_truncated = _bound_lines(text)
+    return _neutralize_unsafe_lines(text), line_truncated
+
+
 def _bound_head(text: str, limit: int) -> tuple[str, bool]:
+    """Head-bound with an EXPLICIT, visible truncation marker -- the total
+    returned length never exceeds ``limit``."""
     if len(text) <= limit:
         return text, False
-    return text[:limit], True
+    keep = max(limit - len(_TRUNCATION_MARKER), 0)
+    return text[:keep] + _TRUNCATION_MARKER, True
 
 
-def _bound_tail(text: str, limit: int) -> tuple[str, bool]:
-    """Keep the END of the text (innermost/failing frames + the final
-    exception line), never the start -- a truncated Python traceback's most
-    diagnostic content is always at the bottom."""
+def _bound_tail_by_line(text: str, limit: int) -> tuple[str, bool]:
+    """Frame-aware tail-bound: accumulate WHOLE lines from the end (never a
+    mid-line character cut, which could otherwise slice straight through a
+    frame header line if a PRECEDING line happens to be huge) until the
+    budget is exhausted. The innermost (last) frame header and the final
+    exception line are the most recently accumulated and therefore always
+    survive; only whole EARLIER lines are dropped."""
     if len(text) <= limit:
         return text, False
-    return _TRUNCATION_MARKER + text[-limit:], True
+    lines = text.split("\n")
+    budget = max(limit - len(_TRUNCATION_MARKER), 0)
+    kept: list[str] = []
+    total = 0
+    for line in reversed(lines):
+        addition = len(line) + 1  # +1 for the newline that joins it back in
+        if kept and total + addition > budget:
+            break
+        kept.append(line)
+        total += addition
+    kept.reverse()
+    return _TRUNCATION_MARKER + "\n".join(kept), True
 
 
 @dataclass(frozen=True)
@@ -305,10 +347,12 @@ def capture_child_failure_evidence(
     raw_traceback = "".join(te.format())
 
     safe_message = _finalize_message(raw_message)
-    safe_traceback = _finalize_traceback(raw_traceback, raw_message, safe_message)
+    safe_traceback, line_truncated = _finalize_traceback(
+        raw_traceback, raw_message, safe_message
+    )
 
     message, message_truncated = _bound_head(safe_message, _MAX_MESSAGE_CHARS)
-    traceback_text, traceback_truncated = _bound_tail(
+    traceback_text, tail_truncated = _bound_tail_by_line(
         safe_traceback, _MAX_TRACEBACK_CHARS
     )
 
@@ -330,7 +374,7 @@ def capture_child_failure_evidence(
         scenario_name=scenario_name,
         signature=signature,
         occurrence_count=1,
-        truncated=message_truncated or traceback_truncated,
+        truncated=message_truncated or line_truncated or tail_truncated,
     )
 
 
@@ -354,12 +398,12 @@ class DiagnosticOverflowMetadata:
 
 def accumulate_diagnostic_evidence(
     events: Sequence[ChildFailureEvidence],
-    *,
-    max_distinct: int = MAX_DISTINCT_SIGNATURES,
 ) -> tuple[tuple[ChildFailureEvidence, ...], DiagnosticOverflowMetadata]:
     """Fold ``events`` (in the order captured -- canonical execution order)
-    into a BOUNDED tuple of at most ``max_distinct`` distinct signatures,
-    plus honest overflow metadata for anything beyond the cap.
+    into a BOUNDED tuple of at most ``MAX_DISTINCT_SIGNATURES`` (=32,
+    Fable-approved, R2-confirmed the ONLY production cap policy -- no
+    caller-selectable override) distinct signatures, plus honest overflow
+    metadata for anything beyond the cap.
 
     A recurrence of an already-RETAINED signature only bumps its
     ``occurrence_count`` -- the FIRST-seen deterministic context is
@@ -406,7 +450,7 @@ def accumulate_diagnostic_evidence(
             omitted_occurrences += 1
             truncated = True
             continue
-        if len(evidence) < max_distinct:
+        if len(evidence) < MAX_DISTINCT_SIGNATURES:
             evidence = evidence + (new,)
             continue
         omitted_signatures.add(new.signature)
