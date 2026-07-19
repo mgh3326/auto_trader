@@ -60,6 +60,7 @@ _ALLOWED = {
     "types",
     "typing",
     "research_contracts.canonical_hash",
+    "research_contracts.diagnostic_evidence_policy",
     "canonical_hash",
     "funding_oi_archive",
     "rob940_bars_agg",

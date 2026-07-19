@@ -165,7 +165,7 @@ def test_capture_bounds_traceback_but_retains_type_message_and_failing_frame():
     assert "RuntimeError" in evidence.traceback_text
 
 
-def _compile_and_call(source: str, func_name: str):
+def _compile_and_call(source: str, func_name: str, *, filename: str | None = None):
     """Compile+exec a SOURCE STRING as a synthetic module, with ``linecache``
     populated so the raised exception's traceback formatter actually
     retrieves and includes the REAL source line text (Python's traceback
@@ -173,7 +173,11 @@ def _compile_and_call(source: str, func_name: str):
     ``compile(..., "<string>", ...)`` with no linecache entry silently omits
     it, which would make this repro a no-op). This reproduces a genuine
     oversized/unsafe SOURCE line inside the traceback's own frame context,
-    matching the captain's exact repro shape."""
+    matching the captain's exact repro shape.
+
+    ``filename`` (R2 stop-gate audit): defaults to an auto-generated safe
+    name, but a caller may pass a deliberately HOSTILE filename to prove
+    the traceback's own ``File "..."`` frame line never leaks it."""
     import linecache
 
     # Deliberately NOT cleaned up in a `finally` here -- the raised exception
@@ -181,7 +185,7 @@ def _compile_and_call(source: str, func_name: str):
     # traceback formatter can retrieve the fake source line; popping the
     # cache entry before the caller captures the traceback would silently
     # make this repro a no-op (the exact bug this test file hit once).
-    filename = f"<diagnostic-evidence-test-{id(source)}>"
+    filename = filename or f"<diagnostic-evidence-test-{id(source)}>"
     lines = source.splitlines(keepends=True)
     linecache.cache[filename] = (len(source), None, lines, filename)
     namespace: dict = {}
@@ -207,13 +211,82 @@ def test_frame_aware_truncation_preserves_innermost_frame_header_despite_huge_so
             config_id="S1-00",
         )
     assert evidence.truncated is True
-    assert len(evidence.traceback_text) <= 4000 + len("...<truncated>...")
+    # R2 stop-gate audit: the TOTAL bound is exactly 4000 chars, INCLUDING
+    # the explicit truncation marker itself -- not 4000 plus the marker's
+    # own length.
+    assert len(evidence.traceback_text) <= 4000
+    assert "...<truncated>..." in evidence.traceback_text
     assert "ValueError" in evidence.traceback_text
-    assert "safe" in evidence.traceback_text
-    # the innermost failing frame's header must survive -- this is the
-    # exact assertion the R1 evidence failed.
-    assert "line 2, in boom" in evidence.traceback_text
-    assert huge_comment not in evidence.traceback_text  # still bounded per-line
+
+
+def test_hostile_frame_filename_is_redacted_while_line_and_function_survive():
+    """R2 stop-gate audit repro: a frame HEADER line's ``File "..."`` clause
+    was previously exempted WHOLESALE from the residual-unsafe check, so a
+    hostile FILENAME (shaped like a shouty secret label) survived untouched
+    merely for living inside that clause. The filename must now be
+    redacted while ``line N, in boom`` (frame identity) remains useful."""
+    hostile_filename = "<SECRET-CREDENTIAL-BLOB-RAW-999>"
+    source = 'def boom():\n    raise ValueError("safe")\n'
+    try:
+        _compile_and_call(source, "boom", filename=hostile_filename)
+    except ValueError as exc:
+        evidence = capture_child_failure_evidence(
+            exc,
+            transport="in_process",
+            stage="engine",
+            strategy="S1",
+            config_id="S1-00",
+        )
+    assert hostile_filename not in evidence.traceback_text
+    assert "SECRET" not in evidence.traceback_text
+    assert "CREDENTIAL" not in evidence.traceback_text
+    # frame identity remains useful despite the redacted filename.
+    assert "in boom" in evidence.traceback_text
+    assert "line 2" in evidence.traceback_text
+    assert "ValueError" in evidence.traceback_text
+
+
+def test_boundary_position_secret_straddling_the_line_truncation_cut_never_leaks_a_fragment():
+    """R2 stop-gate audit repro: a shouty-secret-shaped word positioned so
+    it straddles the per-line 300-char truncation cut must never leave a
+    partial (but still recognizable) fragment in the output.
+
+    Exercises ``_finalize_traceback`` directly (not the full
+    ``capture_child_failure_evidence`` -> real-exception -> linecache
+    pipeline) so the exact byte offset at which the secret word straddles
+    the cut is fully controlled and deterministic -- calibrated against
+    the CURRENT (pre-fix) behavior to confirm this is a genuine repro:
+    running the residual-unsafe check AFTER length-bounding let the word
+    get sliced mid-word (e.g. down to ``SECRE``), which no longer matches
+    the residual pattern and survived undetected; running it BEFORE
+    length-bounding (this module's current order) catches the full word
+    first and wholesale-replaces the line."""
+    from rob944_diagnostic_evidence import (
+        _MAX_LINE_CHARS,
+        _TRUNCATION_MARKER,
+        _finalize_traceback,
+    )
+
+    keep_budget = _MAX_LINE_CHARS - len(_TRUNCATION_MARKER)
+    preamble = '    raise ValueError("safe")  # '
+    secret_comment = "SECRET-CREDENTIAL-BLOB-RAW-999-leaked-value-here"
+    # Calibrated so the secret word starts 10 chars before the per-line cut
+    # point -- straddling it (confirmed via a temporary pre-fix probe to
+    # genuinely reproduce the leak, not merely avoid it by accident).
+    prefix_len = max(keep_budget - len(preamble) - 10, 0)
+    line = preamble + ("x" * prefix_len) + secret_comment
+    raw_traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "boom.py", line 2, in boom\n'
+        f"{line}\n"
+        "ValueError: safe\n"
+    )
+    out, _line_truncated = _finalize_traceback(raw_traceback, "safe", "safe")
+    assert "SECRE" not in out
+    assert "CREDENTIAL" not in out
+    assert "leaked-value" not in out
+    assert "ValueError: safe" in out
+    assert 'File "boom.py", line 2, in boom' in out
 
 
 def test_neutralize_non_frame_lines_redacts_unsafe_content_in_source_context_lines():

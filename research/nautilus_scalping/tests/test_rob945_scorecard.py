@@ -467,17 +467,22 @@ def test_mutation_of_a_scenario_metric_changes_the_artifact_hash():
     assert e1["scorecard_artifact_hash"] != e2["scorecard_artifact_hash"]
 
 
-def test_diagnostic_evidence_and_overflow_never_alter_campaign_verdict_or_scorecard_hash(
-    capsys,
-):
-    """ROB-970 R1 Important-5 / R2 audit item 5: a DIRECT assertion (not
-    merely an inferred code-path separation) that diagnostic content --
-    present, absent, or differently-worded -- never changes
-    campaign_verdict, the scorecard's own semantic artifact hash, the H5
-    six-key accounting seal/trial accounting hash, or the full campaign
-    identity/run ID. Also exercises the REAL production replay-divergence
-    observer seam (never a simulated stderr write): the observation firing
-    for real has zero effect on any of these values either.
+def test_diagnostic_evidence_and_overflow_never_alter_campaign_verdict_or_scorecard_hash():
+    """ROB-970 R1 Important-5: a DIRECT assertion (not merely an inferred
+    code-path separation) that diagnostic content -- present, absent, or
+    differently-worded -- never changes campaign_verdict, the scorecard's
+    own semantic artifact hash, the H5 six-key accounting seal/trial
+    accounting hash, or the full campaign identity/run ID.
+
+    R2 stop-gate audit: the REAL production replay-divergence observer
+    seam is exercised elsewhere, through actual ``record_attempt`` in the
+    OWNING app/service integration suite
+    (``tests/services/research/test_research_campaign_bridge_observer_effect.py``)
+    -- never here. A pure H5 module test calling a private app-service
+    function on a hand-built ``SimpleNamespace`` fake row is vacuous (the
+    fake row/incoming evidence are unrelated to the scorecard kwargs
+    rebuilt afterward) and improperly imports ``app.*`` runtime code into
+    a module that must stay free of it.
     """
     baseline_kwargs = _base_kwargs()
     baseline = build_scorecard(**baseline_kwargs)
@@ -519,89 +524,6 @@ def test_diagnostic_evidence_and_overflow_never_alter_campaign_verdict_or_scorec
     )
     assert (
         baseline["scorecard_payload"]["lineage"]["campaign_run_id"]
-        == with_diagnostics["scorecard_payload"]["lineage"]["campaign_run_id"]
-    )
-
-    # R2 audit item 5: exercise the REAL production replay-divergence
-    # observation seam (``app.services.research_campaign_bridge``) -- the
-    # actual function object, not a re-implementation or a hand-typed
-    # stderr line. ``_check_diagnostic_divergence`` only reads
-    # ``row.raw_payload`` (a plain dict), so a lightweight fake "stored row"
-    # exercises the real seam with no DB/session needed, while staying
-    # within this test module's existing pure-python style. A stored row
-    # with NO diagnostics genuinely diverges from an incoming evidence WITH
-    # diagnostics -- invoking the real observer for real -- and every H5
-    # scorecard hash/verdict/campaign-identity value asserted above must
-    # still rebuild byte-identical afterward.
-    from types import SimpleNamespace
-
-    from app.schemas.research_campaign_bridge import (
-        AttemptEvidence as _AppAttemptEvidence,
-    )
-    from app.schemas.research_campaign_bridge import AttemptKey as _AppAttemptKey
-    from app.schemas.research_campaign_bridge import (
-        ChildFailureDiagnostic as _AppChildFailureDiagnostic,
-    )
-    from app.schemas.research_campaign_bridge import (
-        ScenarioEvidence as _AppScenarioEvidence,
-    )
-    from app.services.research_campaign_bridge import _check_diagnostic_divergence
-
-    stored_row = SimpleNamespace(
-        raw_payload={
-            "h6_evidence_fingerprint": "f" * 64,
-            "campaign_run_id": "camp1",
-            "retry_index": 0,
-            "diagnostic_evidence": [],
-            "diagnostic_overflow": {
-                "truncated": False,
-                "omitted_distinct_signatures": 0,
-                "omitted_occurrences": 0,
-            },
-        }
-    )
-    incoming_evidence = _AppAttemptEvidence(
-        attempt_key=_AppAttemptKey(
-            campaign_run_id="camp1", experiment_id="e" * 64, retry_index=0
-        ),
-        status="completed",
-        run_identity="r" * 64,
-        scenario_evidence=(
-            _AppScenarioEvidence(scenario_name="base", trade_count=0),
-            _AppScenarioEvidence(scenario_name="primary_stress", trade_count=0),
-            _AppScenarioEvidence(scenario_name="upward_stress", trade_count=0),
-        ),
-        diagnostic_evidence=(_AppChildFailureDiagnostic(**_DIAGNOSTIC_ROW),),
-    )
-    capsys.readouterr()
-    _check_diagnostic_divergence(
-        stored_row,
-        incoming_evidence,
-        idempotency_key="camp1:exp-observer-effect-0:0",
-    )
-    captured = capsys.readouterr()
-    observation = json.loads(captured.err.strip())
-    assert observation["event"] == "diagnostic_replay_divergence"
-
-    after_observation = build_scorecard(**with_diagnostics_kwargs)
-    assert (
-        after_observation["scorecard_payload"]["campaign_verdict"]
-        == with_diagnostics["scorecard_payload"]["campaign_verdict"]
-    )
-    assert (
-        after_observation["scorecard_artifact_hash"]
-        == with_diagnostics["scorecard_artifact_hash"]
-    )
-    assert (
-        after_observation["scorecard_payload"]["lineage"]["trial_accounting_hash"]
-        == with_diagnostics["scorecard_payload"]["lineage"]["trial_accounting_hash"]
-    )
-    assert (
-        after_observation["scorecard_payload"]["lineage"]["full_campaign_hash"]
-        == with_diagnostics["scorecard_payload"]["lineage"]["full_campaign_hash"]
-    )
-    assert (
-        after_observation["scorecard_payload"]["lineage"]["campaign_run_id"]
         == with_diagnostics["scorecard_payload"]["lineage"]["campaign_run_id"]
     )
 

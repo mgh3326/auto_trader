@@ -15,6 +15,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.research_backtest import TrialStatus
+from research_contracts.diagnostic_evidence_policy import (
+    MAX_DISTINCT_SIGNATURES as MAX_DISTINCT_SIGNATURES,
+)
 
 ScenarioName = Literal["base", "primary_stress", "upward_stress"]
 _EXPECTED_SCENARIO_NAMES = frozenset({"base", "primary_stress", "upward_stress"})
@@ -22,11 +25,22 @@ _EXPECTED_SCENARIO_NAMES = frozenset({"base", "primary_stress", "upward_stress"}
 DiagnosticTransport = Literal["in_process"]
 DiagnosticStage = Literal["generator", "funding_gate", "engine"]
 
-# ROB-970 R1 (Q1=A, cap=32): the ONE production cap policy -- imported
-# nowhere else in this schema, redeclared here as the schema's own
-# authority so `app/schemas` never depends on `research/nautilus_scalping`
-# (the reverse-only import boundary this bridge already keeps).
-MAX_DISTINCT_SIGNATURES = 32
+# R2 audit: hard schema bounds mirroring the research producer's own
+# ``_MAX_MESSAGE_CHARS``/``_MAX_TRACEBACK_CHARS`` -- the app schema must
+# independently refuse an oversized value (audit reproduced acceptance of a
+# 100,000-character value today), never merely trust that the producer
+# already bounded it.
+_MAX_MESSAGE_CHARS = 500
+_MAX_TRACEBACK_CHARS = 4000
+
+# ROB-970 R2 audit: the ONE production cap policy -- a single
+# cross-boundary-safe authority in ``research_contracts`` (the SAME module
+# ``rob944_diagnostic_evidence`` imports it from), so `app/schemas` and
+# `research/nautilus_scalping` can never independently drift to two
+# different cap literals. `app/schemas` still never imports
+# `research/nautilus_scalping` directly (the reverse-only import boundary
+# this bridge already keeps) -- `research_contracts` is the shared,
+# dependency-free meeting point.
 
 # R2 Critical: an independent, app-side re-implementation of the same
 # residual-unsafe-content check the research capture module applies BEFORE
@@ -128,8 +142,8 @@ class ChildFailureDiagnostic(BaseModel):
     transport: DiagnosticTransport
     stage: DiagnosticStage
     exception_type: str = Field(min_length=1)
-    message: str
-    traceback_text: str = Field(min_length=1)
+    message: str = Field(max_length=_MAX_MESSAGE_CHARS)
+    traceback_text: str = Field(min_length=1, max_length=_MAX_TRACEBACK_CHARS)
     stderr: str | None = None
     strategy: str = Field(min_length=1)
     config_id: str = Field(min_length=1)

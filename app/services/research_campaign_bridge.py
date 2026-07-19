@@ -43,6 +43,7 @@ import hashlib
 import json
 import sys
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -56,7 +57,6 @@ from app.schemas.research_backtest import (
     StrategyExperimentIdentity,
 )
 from app.schemas.research_campaign_bridge import (
-    MAX_DISTINCT_SIGNATURES,
     AttemptEvidence,
     CampaignCompletenessReport,
     ChildFailureDiagnostic,
@@ -64,6 +64,7 @@ from app.schemas.research_campaign_bridge import (
 )
 from app.services import strategy_experiment_registry as registry
 from app.services.research_canonical_hash import (
+    canonical_json,
     canonical_sha256,
     compute_identity_hashes,
     derive_experiment_id,
@@ -120,17 +121,29 @@ class TerminalEvidenceMismatch(CampaignBridgeError):
 
 
 class DiagnosticEvidenceBoundaryViolation(CampaignBridgeError):
-    """ROB-970 R2 audit (item 2/3, 5th and final trust boundary) —
-    ``AttemptEvidence`` is NOT frozen (only its ``ChildFailureDiagnostic``/
-    ``ChildFailureDiagnosticOverflow`` leaves are), so a caller can reassign
-    ``.diagnostic_evidence``/``.diagnostic_overflow`` AFTER construction —
-    including via ``model_construct``, which skips every validator — and
-    bypass every earlier boundary (research H6 normalization -> CLI
-    conversion -> H5 seal carve-out -> app Pydantic schema) entirely. This
-    service, as the last step before ``raw_payload`` persistence, never
-    trusts that an already-constructed ``AttemptEvidence`` still satisfies
-    the cap/consistency/shape invariants at the moment it is actually used —
-    it re-checks them itself, right before assembly."""
+    """ROB-970 R2 audit (5th and final trust boundary, hardened again after
+    a second audit pass) — ``AttemptEvidence`` is NOT frozen (only its
+    ``ChildFailureDiagnostic``/``ChildFailureDiagnosticOverflow`` leaves
+    are), so a caller can reassign ``.diagnostic_evidence``/
+    ``.diagnostic_overflow`` AFTER construction, and a LEAF built via
+    ``ChildFailureDiagnostic.model_construct(...)``/
+    ``ChildFailureDiagnosticOverflow.model_construct(...)`` is a genuine
+    ``isinstance``-passing instance of the right type while having skipped
+    every validator entirely (an ``isinstance`` check alone does not prove
+    "this leaf's own validators actually ran"). This service, as the last
+    step before ``raw_payload`` persistence, never trusts either a bare
+    ``isinstance`` check or the caller's own (potentially still-mutable,
+    still-reassignable across this call's own ``await`` points — a TOCTOU
+    window) evidence object — it builds one independently revalidated,
+    effectively-immutable snapshot via a full ``model_dump()`` ->
+    ``model_validate()`` round-trip BEFORE the first ``await``, and every
+    later fingerprint/assembly/persistence step in this call reads ONLY
+    that snapshot. See ``_revalidate_evidence_snapshot``.
+
+    Also raised (R2 stop-gate audit item B) when a STORED
+    ``diagnostic_evidence``/``diagnostic_overflow`` value is PRESENT but
+    malformed (not genuinely absent) -- corrupted persisted data must
+    loudly surface, never silently default to empty/closed-default shape."""
 
 
 def terminal_evidence_fingerprint(evidence: AttemptEvidence) -> str:
@@ -251,48 +264,42 @@ def _scenario_evidence_payload(evidence: AttemptEvidence) -> list[dict]:
     ]
 
 
-def _assert_diagnostic_evidence_service_boundary(evidence: AttemptEvidence) -> None:
-    """ROB-970 R2 audit — the 5th and final trust boundary. Re-validates the
-    SAME invariants the app schema's own constructors already enforce,
-    because ``AttemptEvidence`` itself is not frozen and its diagnostic
-    fields can be reassigned post-construction to arbitrary, unvalidated
-    content (including via ``model_construct``). Never trusts isinstance
-    alone to imply "still passed its own validators" for the overflow shape
-    -- ``model_construct`` produces a real instance of the right type while
-    skipping every validator, so the truncated/omitted-occurrences
-    consistency check is re-asserted explicitly here too."""
-    if len(evidence.diagnostic_evidence) > MAX_DISTINCT_SIGNATURES:
+def _revalidate_evidence_snapshot(evidence: AttemptEvidence) -> AttemptEvidence:
+    """ROB-970 R2 audit — the 5th and final trust boundary, hardened.
+
+    A bare ``isinstance(leaf, ChildFailureDiagnostic)`` check is
+    insufficient: ``ChildFailureDiagnostic.model_construct(...)`` (and
+    ``ChildFailureDiagnosticOverflow.model_construct(...)``) produce a
+    genuine instance of the right type while skipping every validator
+    (cap, length, unsafe-content, truncated-consistency) entirely.
+
+    ``model_dump()`` recursively flattens EVERY nested model (including
+    ``model_construct``-built leaves, and even a leaf replaced outright by
+    an unrelated plain dict) down to plain JSON-safe data; ``model_validate``
+    then reconstructs the WHOLE tree via each model's own real constructor,
+    re-running every validator regardless of how the original object (or
+    any of its leaves) was built. This one round-trip closes the
+    ``model_construct`` bypass AND every forged-shape/wrong-type case in a
+    single mechanism — no separate isinstance/cap/consistency checks are
+    needed here any more; the schema's own validators ARE the boundary.
+
+    The returned snapshot is a NEW, independent object. The caller MUST use
+    ONLY this returned value for everything from this point on — never the
+    original ``evidence`` parameter again — because this call is made
+    BEFORE the first ``await`` in ``record_attempt``: if a caller (or
+    anything else holding a reference to the original object) reassigns
+    `.diagnostic_evidence`/`.diagnostic_overflow` on the ORIGINAL object
+    during one of this call's later `await` points, that mutation can
+    never reach persistence (TOCTOU closed by never reading the original
+    object again)."""
+    try:
+        return AttemptEvidence.model_validate(evidence.model_dump())
+    except ValidationError as exc:
         raise DiagnosticEvidenceBoundaryViolation(
-            "diagnostic_evidence exceeds the "
-            f"{MAX_DISTINCT_SIGNATURES}-entry cap at the service assembly "
-            "boundary — refusing to persist"
-        )
-    for item in evidence.diagnostic_evidence:
-        if not isinstance(item, ChildFailureDiagnostic):
-            raise DiagnosticEvidenceBoundaryViolation(
-                "a diagnostic_evidence entry is not a validated "
-                "ChildFailureDiagnostic instance at the service assembly "
-                "boundary — refusing to persist"
-            )
-    overflow = evidence.diagnostic_overflow
-    if not isinstance(overflow, ChildFailureDiagnosticOverflow):
-        raise DiagnosticEvidenceBoundaryViolation(
-            "diagnostic_overflow is not a validated "
-            "ChildFailureDiagnosticOverflow instance at the service assembly "
-            "boundary — refusing to persist"
-        )
-    if overflow.truncated != (overflow.omitted_occurrences > 0):
-        raise DiagnosticEvidenceBoundaryViolation(
-            "diagnostic_overflow.truncated is inconsistent with "
-            "omitted_occurrences at the service assembly boundary — "
-            "refusing to persist"
-        )
-    if overflow.omitted_distinct_signatures > overflow.omitted_occurrences:
-        raise DiagnosticEvidenceBoundaryViolation(
-            "diagnostic_overflow.omitted_distinct_signatures exceeds "
-            "omitted_occurrences at the service assembly boundary — "
-            "refusing to persist"
-        )
+            "evidence failed re-validation at the service assembly boundary "
+            f"(forged shape, model_construct bypass, or cap/consistency "
+            f"violation): {exc}"
+        ) from exc
 
 
 def _diagnostic_evidence_payload(evidence: AttemptEvidence) -> list[dict]:
@@ -363,39 +370,90 @@ _DEFAULT_DIAGNOSTIC_OVERFLOW_PAYLOAD = {
     "omitted_occurrences": 0,
 }
 
+# A sentinel distinct from any real stored value (including ``None``) so a
+# key that is GENUINELY ABSENT can be told apart from one that is PRESENT
+# with an explicit (possibly malformed) value -- see the R2 stop-gate audit
+# item B: ``.get(key) or default`` masks ``{}``/``""``/``0``/``False``/
+# ``None`` as "missing" even though they are actually present-but-malformed.
+_MISSING = object()
+
 
 def _stored_diagnostic_evidence_payload(row: ResearchBacktestRun) -> list[dict]:
-    """R2 audit: legacy/absent-field normalization -- a row with no
-    ``diagnostic_evidence`` key at all (a pre-ROB-970 row, migration-free)
-    is treated identically to one explicitly storing an empty list."""
-    return (row.raw_payload or {}).get("diagnostic_evidence") or []
+    """R2 audit: legacy/absent-field normalization applies ONLY when the key
+    is genuinely absent (a pre-ROB-970 row, migration-free) -- that case
+    normalizes to an empty list. A PRESENT value that is malformed (not a
+    list, or a list containing an entry that fails the app schema's own
+    ``ChildFailureDiagnostic`` validation) is never silently treated as
+    "missing" -- it raises ``DiagnosticEvidenceBoundaryViolation``, loudly
+    surfacing the corruption instead of defaulting past it."""
+    raw_payload = row.raw_payload or {}
+    value = raw_payload.get("diagnostic_evidence", _MISSING)
+    if value is _MISSING:
+        return []
+    if not isinstance(value, list):
+        raise DiagnosticEvidenceBoundaryViolation(
+            "stored diagnostic_evidence is present but malformed (expected a "
+            f"list, got {type(value).__name__}) -- refusing to silently "
+            "treat as legacy-absent"
+        )
+    try:
+        validated = [ChildFailureDiagnostic.model_validate(item) for item in value]
+    except ValidationError as exc:
+        raise DiagnosticEvidenceBoundaryViolation(
+            f"stored diagnostic_evidence contains a malformed entry: {exc}"
+        ) from exc
+    return [item.model_dump() for item in validated]
 
 
 def _stored_diagnostic_overflow_payload(row: ResearchBacktestRun) -> dict:
-    """Same legacy/absent-field normalization for overflow metadata."""
-    return (row.raw_payload or {}).get("diagnostic_overflow") or dict(
-        _DEFAULT_DIAGNOSTIC_OVERFLOW_PAYLOAD
-    )
+    """Same absent-vs-malformed distinction for overflow metadata --
+    genuinely absent normalizes to the closed default shape; a PRESENT
+    value (even ``{}``/``0``/``False``/``None``) that fails the app
+    schema's own ``ChildFailureDiagnosticOverflow`` validation raises
+    rather than silently defaulting."""
+    raw_payload = row.raw_payload or {}
+    value = raw_payload.get("diagnostic_overflow", _MISSING)
+    if value is _MISSING:
+        return dict(_DEFAULT_DIAGNOSTIC_OVERFLOW_PAYLOAD)
+    try:
+        validated = ChildFailureDiagnosticOverflow.model_validate(value)
+    except ValidationError as exc:
+        raise DiagnosticEvidenceBoundaryViolation(
+            f"stored diagnostic_overflow is present but malformed: {exc}"
+        ) from exc
+    return validated.model_dump()
 
 
 def _canonical_diagnostic_bytes(
     diagnostic_evidence_payload: list[dict], diagnostic_overflow_payload: dict
 ) -> bytes:
     """ROB-970 R2 audit (Q2=C-modified rework) -- the SOLE comparison
-    authority for replay-divergence detection: canonical (sorted-key,
-    compact-separator) serialized bytes of the diagnostic shape itself,
-    reconstructed fresh on both sides every time. Never a persisted
-    ``diagnostic_fingerprint`` string (see that function's docstring) --
-    that field is at most a derived observation, kept for external
-    inspection only, and is never read back for comparison here."""
-    return json.dumps(
+    authority for replay-divergence detection: canonical bytes via the
+    repository's OWN canonical-JSON authority
+    (``research_contracts.canonical_hash.canonical_json``, the same one
+    ``terminal_evidence_fingerprint``/identity hashing already uses),
+    reconstructed fresh on both sides every time -- never ad-hoc
+    ``json.dumps`` (a stop-gate audit found the two byte streams differ),
+    and never a persisted ``diagnostic_fingerprint`` string (see that
+    function's docstring) -- that field is at most a derived observation,
+    kept for external inspection only, and is never read back for
+    comparison here."""
+    return canonical_json(
         {
             "diagnostic_evidence": diagnostic_evidence_payload,
             "diagnostic_overflow": diagnostic_overflow_payload,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
+        }
     ).encode("utf-8")
+
+
+def _canonical_raw_payload_bytes(row: ResearchBacktestRun) -> bytes:
+    """The complete stored ``raw_payload`` (not just the diagnostic slice),
+    canonical-byte encoded via the SAME authority -- used by tests to
+    snapshot/assert full-row byte identity before/after a replay (R2 audit:
+    dict equality is insufficient -- two dicts can compare equal while
+    still differing in float/Decimal/type representation that a canonical
+    encoder would catch)."""
+    return canonical_json(row.raw_payload or {}).encode("utf-8")
 
 
 def _emit_diagnostic_replay_divergence(
@@ -433,6 +491,37 @@ def _emit_diagnostic_replay_divergence(
     sys.stderr.flush()
 
 
+def _emit_diagnostic_replay_divergence_observer_failure(
+    *,
+    idempotency_key: str,
+    stored_bytes: bytes,
+    incoming_bytes: bytes,
+    observer_exception_type: str,
+) -> None:
+    """ROB-970 R2 audit -- the primary observation above failed to emit.
+    The divergence itself must still be loudly surfaced (never silently
+    swallowed into nothing), via a SEPARATE, equally bounded/sanitized
+    fallback event carrying a typed reason plus the same digest/count
+    context -- never the raw exception text (which could itself carry
+    arbitrary, unbounded, possibly secret-bearing content from an unknown
+    failure). This fallback itself is wrapped so it can NEVER raise --
+    the attempt remains non-fail-stop no matter what fails."""
+    payload = {
+        "event": "diagnostic_replay_divergence_observer_failed",
+        "idempotency_key_digest": hashlib.sha256(
+            idempotency_key.encode("utf-8")
+        ).hexdigest(),
+        "stored_diagnostic_digest": hashlib.sha256(stored_bytes).hexdigest(),
+        "incoming_diagnostic_digest": hashlib.sha256(incoming_bytes).hexdigest(),
+        "observer_exception_type": observer_exception_type,
+    }
+    try:
+        sys.stderr.write(json.dumps(payload, sort_keys=True) + "\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
 def _check_diagnostic_divergence(
     row: ResearchBacktestRun, evidence: AttemptEvidence, *, idempotency_key: str
 ) -> None:
@@ -442,10 +531,18 @@ def _check_diagnostic_divergence(
     any DB update/``FOR UPDATE``/retry -- a pure read-then-observe). Byte-
     identical (including legacy/absent-field normalization) is a write-free
     no-op -- nothing is emitted. Any divergence emits the loud observation
-    above; the caller's row is returned completely unchanged either way. An
-    observation EMISSION failure is deliberately non-fail-stop (R2 audit):
-    it must never turn a diagnostic-only divergence into a failed attempt
-    -- best-effort telemetry only, never allowed to propagate."""
+    above; the caller's row is returned completely unchanged either way. If
+    the PRIMARY observation itself fails to emit, a bounded fallback event
+    is emitted instead (never silently swallowed into nothing) -- but
+    either way this remains deliberately non-fail-stop (R2 audit): it must
+    never turn a diagnostic-only divergence into a failed attempt.
+
+    A genuinely malformed PRESENT (not absent) stored value is a different,
+    more severe case -- corrupted persisted data, not a legitimate
+    diagnostic divergence -- and is allowed to raise
+    ``DiagnosticEvidenceBoundaryViolation`` up through this call rather
+    than being silently defaulted or folded into the non-fail-stop
+    observation contract."""
     stored_evidence_payload = _stored_diagnostic_evidence_payload(row)
     stored_overflow_payload = _stored_diagnostic_overflow_payload(row)
     incoming_evidence_payload = _diagnostic_evidence_payload(evidence)
@@ -467,8 +564,13 @@ def _check_diagnostic_divergence(
             stored_distinct_signature_count=len(stored_evidence_payload),
             new_distinct_signature_count=len(incoming_evidence_payload),
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        _emit_diagnostic_replay_divergence_observer_failure(
+            idempotency_key=idempotency_key,
+            stored_bytes=stored_bytes,
+            incoming_bytes=incoming_bytes,
+            observer_exception_type=type(exc).__name__,
+        )
 
 
 async def record_attempt(
@@ -504,7 +606,11 @@ async def record_attempt(
             f"runner {runner!r} ({len(runner)} chars) exceeds the "
             f"{_MAX_RUNNER_LENGTH}-char DB column limit"
         )
-    _assert_diagnostic_evidence_service_boundary(evidence)
+    # R2 audit: build the one revalidated, effectively-immutable snapshot
+    # BEFORE the first `await` below, and rebind `evidence` to it -- every
+    # subsequent line in this function must read only this snapshot, never
+    # the caller's original (mutable, TOCTOU-exposed) object.
+    evidence = _revalidate_evidence_snapshot(evidence)
 
     experiment = await _get_experiment_by_id(session, experiment_id)
     if experiment is None:

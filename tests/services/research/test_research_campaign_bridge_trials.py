@@ -19,7 +19,28 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
+
+# research/nautilus_scalping is on sys.path via this directory's own
+# conftest.py bootstrap (see tests/services/research/conftest.py) -- R2
+# stop-gate audit item E's full persistence-chain test needs the REAL
+# research H4 capture/summarize functions, not a re-implementation.
+import rob941_frozen_scope as frozen_scope
+import rob944_folds as foldmod
 from pydantic import ValidationError
+from rob944_diagnostic_evidence import capture_child_failure_evidence
+from rob944_selection import (
+    INSUFFICIENT_ELIGIBLE_SYMBOLS_REASON,
+    INSUFFICIENT_SYMBOL_EVIDENCE_REASON,
+    ConfigSelectionOutcome,
+    FoldSelectionTrace,
+)
+from rob944_walkforward import (
+    ConfigAttemptResult,
+    FoldWalkForwardResult,
+    WalkForwardResult,
+    summarize_config_attempts_for_h6,
+)
+from run_rob944_campaign import _summary_to_attempt_evidence
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -480,6 +501,154 @@ async def test_service_boundary_accepts_genuinely_well_formed_diagnostic_evidenc
     assert len(row.raw_payload["diagnostic_evidence"]) == 1
 
 
+# --------------------------------------------------------------------------- #
+# R2 audit (stop-gate) item A: isinstance alone accepts a genuinely
+# ``model_construct``-built leaf (a real instance of the right type that
+# skipped every validator). These integration tests forge the bypass with
+# ``model_construct`` specifically (not plain attribute reassignment, which
+# the earlier tests above already cover) and drive it through the REAL
+# ``record_attempt`` path.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_model_construct_diagnostic_with_raw_secret_content_rejected_before_persistence(
+    registry_tables, capsys
+) -> None:
+    session = registry_tables
+    _spec, experiment_id = await _register(session)
+    evidence = _evidence("camp1", experiment_id, run_identity="run-model-construct-1")
+    hostile_diag = ChildFailureDiagnostic.model_construct(
+        transport="in_process",
+        stage="generator",
+        exception_type="RuntimeError",
+        message="secret_key=sk-RAWSECRET123abc",
+        traceback_text="Traceback...\n  api_key=sk-RAWSECRET456\nValueError: x\n",
+        stderr=None,
+        strategy="S1",
+        config_id="S1-00",
+        symbol="BTCUSDT",
+        fold_id="fold-00",
+        scenario_name=None,
+        signature="a" * 64,
+        occurrence_count=1,
+        truncated=False,
+    )
+    evidence.diagnostic_evidence = (hostile_diag,)
+    before = await session.scalar(select(func.count()).select_from(ResearchBacktestRun))
+
+    capsys.readouterr()
+    with pytest.raises(bridge.DiagnosticEvidenceBoundaryViolation):
+        await record_attempt(
+            session,
+            experiment_id=experiment_id,
+            evidence=evidence,
+            strategy_name="S1",
+            timeframe="15m",
+            runner="pytest",
+            guard_opt_in_enabled=True,
+            guard_policy=_POLICY,
+        )
+    after = await session.scalar(select(func.count()).select_from(ResearchBacktestRun))
+    assert after == before  # zero new trial rows
+
+    captured = capsys.readouterr()
+    assert "sk-RAWSECRET123abc" not in captured.err
+    assert "sk-RAWSECRET456" not in captured.err
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {
+            "truncated": False,
+            "omitted_distinct_signatures": -1,
+            "omitted_occurrences": 0,
+        },
+        {
+            "truncated": False,
+            "omitted_distinct_signatures": 0,
+            "omitted_occurrences": -1,
+        },
+        {"truncated": True, "omitted_distinct_signatures": 0, "omitted_occurrences": 0},
+        {
+            "truncated": False,
+            "omitted_distinct_signatures": 5,
+            "omitted_occurrences": 1,
+        },
+    ],
+)
+async def test_model_construct_overflow_with_forged_shape_rejected_before_persistence(
+    registry_tables, overrides
+) -> None:
+    session = registry_tables
+    _spec, experiment_id = await _register(session)
+    evidence = _evidence("camp1", experiment_id, run_identity="run-model-construct-2")
+    evidence.diagnostic_overflow = ChildFailureDiagnosticOverflow.model_construct(
+        **overrides
+    )
+    before = await session.scalar(select(func.count()).select_from(ResearchBacktestRun))
+
+    with pytest.raises(bridge.DiagnosticEvidenceBoundaryViolation):
+        await record_attempt(
+            session,
+            experiment_id=experiment_id,
+            evidence=evidence,
+            strategy_name="S1",
+            timeframe="15m",
+            runner="pytest",
+            guard_opt_in_enabled=True,
+            guard_policy=_POLICY,
+        )
+    after = await session.scalar(select(func.count()).select_from(ResearchBacktestRun))
+    assert after == before
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_model_construct_genuinely_valid_diagnostic_still_persists(
+    registry_tables,
+) -> None:
+    """Control: a ``model_construct``-built leaf that HAPPENS to carry
+    genuinely valid, safe content must still be accepted -- the boundary
+    rejects invalid shape/content, not the construction method itself."""
+    session = registry_tables
+    _spec, experiment_id = await _register(session)
+    evidence = _evidence("camp1", experiment_id, run_identity="run-model-construct-3")
+    safe_diag = ChildFailureDiagnostic.model_construct(
+        transport="in_process",
+        stage="generator",
+        exception_type="RuntimeError",
+        message="boom: synthetic signal-generation failure",
+        traceback_text="Traceback (most recent call last):\nRuntimeError: boom\n",
+        stderr=None,
+        strategy="S1",
+        config_id="S1-00",
+        symbol="BTCUSDT",
+        fold_id="fold-00",
+        scenario_name=None,
+        signature="a" * 64,
+        occurrence_count=1,
+        truncated=False,
+    )
+    evidence.diagnostic_evidence = (safe_diag,)
+
+    row = await record_attempt(
+        session,
+        experiment_id=experiment_id,
+        evidence=evidence,
+        strategy_name="S1",
+        timeframe="15m",
+        runner="pytest",
+        guard_opt_in_enabled=True,
+        guard_policy=_POLICY,
+    )
+    assert len(row.raw_payload["diagnostic_evidence"]) == 1
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_replay_with_different_diagnostic_evidence_still_replays_not_mismatch(
@@ -650,7 +819,7 @@ async def test_each_diagnostic_divergence_dimension_emits_exactly_one_observatio
         "camp1", experiment_id, run_identity=f"run-dim-{dimension}"
     ).model_copy(update={"diagnostic_evidence": (base_diag,)})
 
-    await record_attempt(
+    original = await record_attempt(
         session,
         experiment_id=experiment_id,
         evidence=evidence,
@@ -660,12 +829,16 @@ async def test_each_diagnostic_divergence_dimension_emits_exactly_one_observatio
         guard_opt_in_enabled=True,
         guard_policy=_POLICY,
     )
+    # R2 stop-gate audit item B: snapshot the COMPLETE stored raw_payload
+    # via the same canonical-bytes authority BEFORE the divergent replay --
+    # dict equality is insufficient.
+    original_bytes = bridge._canonical_raw_payload_bytes(original)
     capsys.readouterr()
 
     divergent = evidence.model_copy(
         update={"diagnostic_evidence": (mutate(base_diag),)}
     )
-    await record_attempt(
+    replayed = await record_attempt(
         session,
         experiment_id=experiment_id,
         evidence=divergent,
@@ -679,6 +852,8 @@ async def test_each_diagnostic_divergence_dimension_emits_exactly_one_observatio
     lines = [line for line in captured.err.splitlines() if line.strip()]
     assert len(lines) == 1
     assert json.loads(lines[0])["event"] == "diagnostic_replay_divergence"
+    assert replayed.id == original.id
+    assert bridge._canonical_raw_payload_bytes(replayed) == original_bytes
 
 
 @pytest.mark.integration
@@ -706,6 +881,7 @@ async def test_nonempty_to_empty_diagnostic_evidence_emits_exactly_one_observati
         guard_opt_in_enabled=True,
         guard_policy=_POLICY,
     )
+    original_bytes = bridge._canonical_raw_payload_bytes(original)
     capsys.readouterr()
 
     replay_empty = evidence.model_copy(update={"diagnostic_evidence": ()})
@@ -721,6 +897,7 @@ async def test_nonempty_to_empty_diagnostic_evidence_emits_exactly_one_observati
     )
     assert second.id == original.id
     assert len(second.raw_payload["diagnostic_evidence"]) == 1  # original untouched
+    assert bridge._canonical_raw_payload_bytes(second) == original_bytes
 
     captured = capsys.readouterr()
     lines = [line for line in captured.err.splitlines() if line.strip()]
@@ -785,14 +962,80 @@ def test_legacy_row_missing_diagnostic_keys_normalizes_to_default_write_free_noo
     assert incoming_bytes == legacy_bytes
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "malformed_diagnostic_evidence",
+    ["", 0, False, None, {"not": "a list"}],
+)
+def test_present_malformed_diagnostic_evidence_raises_never_silently_defaults(
+    malformed_diagnostic_evidence,
+) -> None:
+    """R2 stop-gate audit item B: ``.get(key) or default`` masked ``{}``/
+    ``""``/``0``/``False``/``None`` as "missing" even though the key is
+    genuinely PRESENT with a malformed value. Only a genuinely ABSENT key
+    normalizes -- a present-but-malformed value must raise
+    ``DiagnosticEvidenceBoundaryViolation`` through the actual comparison
+    helper, never silently default to an empty list."""
+    row = SimpleNamespace(
+        raw_payload={"diagnostic_evidence": malformed_diagnostic_evidence}
+    )
+    with pytest.raises(bridge.DiagnosticEvidenceBoundaryViolation):
+        bridge._stored_diagnostic_evidence_payload(row)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "malformed_diagnostic_overflow",
+    ["", 0, False, None, {}],
+)
+def test_present_malformed_diagnostic_overflow_raises_never_silently_defaults(
+    malformed_diagnostic_overflow,
+) -> None:
+    """Same absent-vs-malformed distinction for overflow metadata -- an
+    explicitly PRESENT ``{}`` (missing all 3 required keys) is just as
+    malformed as ``""``/``0``/``False``/``None`` and must raise, never
+    silently normalize to the closed default shape (that default is
+    reserved for a GENUINELY ABSENT key)."""
+    row = SimpleNamespace(
+        raw_payload={"diagnostic_overflow": malformed_diagnostic_overflow}
+    )
+    with pytest.raises(bridge.DiagnosticEvidenceBoundaryViolation):
+        bridge._stored_diagnostic_overflow_payload(row)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_check_diagnostic_divergence_raises_on_present_malformed_stored_overflow(
+    registry_tables,
+) -> None:
+    """The absent-vs-malformed distinction exercised through the actual
+    comparison path (``_check_diagnostic_divergence``), not just the
+    helper functions directly."""
+    session = registry_tables
+    _spec, experiment_id = await _register(session)
+    evidence = _evidence("camp1", experiment_id, run_identity="run-malformed-stored")
+    corrupted_row = SimpleNamespace(
+        raw_payload={
+            "diagnostic_evidence": [],
+            "diagnostic_overflow": "",  # present, genuinely malformed
+        }
+    )
+    with pytest.raises(bridge.DiagnosticEvidenceBoundaryViolation):
+        bridge._check_diagnostic_divergence(
+            corrupted_row, evidence, idempotency_key="camp1:whatever:0"
+        )
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_observation_emission_failure_never_turns_divergence_into_a_failed_attempt(
-    registry_tables, monkeypatch
+    registry_tables, monkeypatch, capsys
 ) -> None:
     """R2 audit: non-fail-stop by deliberate contract -- an observation
     write/handler failure must NOT turn a diagnostic-only divergence into a
-    failed attempt. The original row must still be returned untouched."""
+    failed attempt. The original row must still be returned untouched, AND
+    a bounded, secret-free FALLBACK event must fire exactly once (never
+    silently swallowed into nothing)."""
     session = registry_tables
     _spec, experiment_id = await _register(session)
     evidence = _evidence("camp1", experiment_id, run_identity="run-observer-fail")
@@ -813,6 +1056,7 @@ async def test_observation_emission_failure_never_turns_divergence_into_a_failed
 
     monkeypatch.setattr(bridge, "_emit_diagnostic_replay_divergence", _broken_emit)
 
+    capsys.readouterr()
     divergent = evidence.model_copy(update={"diagnostic_evidence": (_diagnostic(),)})
     second = await record_attempt(
         session,
@@ -826,6 +1070,14 @@ async def test_observation_emission_failure_never_turns_divergence_into_a_failed
     )
     assert second.id == original.id
     assert second.raw_payload["diagnostic_evidence"] == []  # original untouched
+
+    captured = capsys.readouterr()
+    lines = [line for line in captured.err.splitlines() if line.strip()]
+    assert len(lines) == 1
+    fallback = json.loads(lines[0])
+    assert fallback["event"] == "diagnostic_replay_divergence_observer_failed"
+    assert fallback["observer_exception_type"] == "RuntimeError"
+    assert "simulated observation-emission failure" not in json.dumps(fallback)
 
 
 @pytest.mark.integration
@@ -948,7 +1200,10 @@ async def test_two_genuinely_simultaneous_divergent_replays_each_emit_exactly_on
             guard_opt_in_enabled=True,
             guard_policy=_POLICY,
         )
-        original_raw_payload = dict(original.raw_payload)
+        # R2 stop-gate audit item B: snapshot the COMPLETE stored
+        # raw_payload via the canonical-bytes authority -- dict equality is
+        # insufficient.
+        original_bytes = bridge._canonical_raw_payload_bytes(original)
         original_id = original.id
         await seed.commit()
 
@@ -992,7 +1247,7 @@ async def test_two_genuinely_simultaneous_divergent_replays_each_emit_exactly_on
 
     async with session_maker() as check:
         final = await check.get(ResearchBacktestRun, original_id)
-        assert final.raw_payload == original_raw_payload
+        assert bridge._canonical_raw_payload_bytes(final) == original_bytes
 
 
 # --------------------------------------------------------------------------- #
@@ -1796,3 +2051,147 @@ async def test_completeness_surfaces_identity_component_drift_as_mismatch(
     assert expected_id in report.mismatch_experiment_ids
     assert expected_id not in report.missing_experiment_ids
     assert report.verdict == "incomplete"
+
+
+# --------------------------------------------------------------------------- #
+# R2 stop-gate audit item E: a NORMAL (non-hostile-construction) full        #
+# persistence chain -- sanitized capture -> H6 summary -> CLI                #
+# AttemptEvidence -> app schema/service -> actual local-test-DB              #
+# raw_payload. Complements (does not replace) the direct hostile-schema      #
+# rejection tests elsewhere in this file/tests/schemas/.                     #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_full_chain_capture_to_h6_to_cli_to_app_to_local_test_db_raw_payload(
+    registry_tables,
+) -> None:
+    secret = "sk-RAWSECRET-CHAIN-E2E-999"
+
+    def _raise_with_secret():
+        raise RuntimeError(f"api_key={secret} boom")
+
+    try:
+        _raise_with_secret()
+    except RuntimeError as exc:
+        captured = capture_child_failure_evidence(
+            exc,
+            transport="in_process",
+            stage="generator",
+            strategy="S1",
+            config_id="S1-00",
+            symbol="BTCUSDT",
+            fold_id="fold-00",
+        )
+    # boundary 1: sanitized capture (research H4 catch site).
+    assert secret not in captured.message
+    assert secret not in captured.traceback_text
+
+    # `_summary_to_attempt_evidence` requires EXACTLY the 8 canonical fold
+    # IDs represented in the trace (empty is only exempted for the exact
+    # global-corpus-load-failure sentinel) -- build a real, minimal
+    # candidate for each of the 8 real folds, matching
+    # ``research/nautilus_scalping/tests/test_rob945_scorecard.py``'s own
+    # no-corpus/rejected-candidate fixture pattern.
+    real_folds = foldmod.generate_frozen_fold_schedule(
+        frozen_scope.WINDOW_START_MS, frozen_scope.WINDOW_END_MS
+    )
+    fold_results = []
+    for fold in real_folds:
+        candidate = ConfigSelectionOutcome(
+            config_id="S1-00",
+            eligible_symbols=(),
+            excluded_symbols=tuple(
+                (symbol, INSUFFICIENT_SYMBOL_EVIDENCE_REASON)
+                for symbol in frozen_scope.UNIVERSE
+            ),
+            equal_weight_expectancy_bps=None,
+            pooled_expectancy_bps=None,
+            profit_factor=0.0,
+            rejected=True,
+            rejection_reason=INSUFFICIENT_ELIGIBLE_SYMBOLS_REASON,
+            train_input_hash=hashlib.sha256(fold.fold_id.encode()).hexdigest(),
+            no_trade_reason_counts={},
+        )
+        trace = FoldSelectionTrace(
+            strategy="S1", candidates=(candidate,), selected_config_id=None
+        )
+        fold_results.append(
+            FoldWalkForwardResult(fold=fold, selection_trace=trace, oos_outcomes=())
+        )
+    attempt = ConfigAttemptResult(
+        strategy="S1",
+        config_id="S1-00",
+        status="crashed",
+        reason_code=None,
+        selected_in_folds=(),
+        crash_log=(f"api_key={secret} boom",),
+        gap_rejection_log=(),
+        diagnostic_evidence=(captured,),
+    )
+    wf_result = WalkForwardResult(
+        strategy="S1",
+        folds=tuple(fold_results),
+        config_attempts=(attempt,),
+        concatenated_oos_ledgers={},
+    )
+
+    # boundary 2: H6 summary.
+    summaries = summarize_config_attempts_for_h6(wf_result)
+    summary = next(s for s in summaries if s.config_id == "S1-00")
+    assert summary.diagnostic_evidence
+    assert secret not in json.dumps(
+        [
+            {
+                "message": e.message,
+                "traceback_text": e.traceback_text,
+            }
+            for e in summary.diagnostic_evidence
+        ]
+    )
+    # crash_log is raw/unsanitized BY DESIGN (existing, unrelated behavior)
+    # -- it is never persisted into diagnostic_evidence and never reaches
+    # raw_payload; only asserted here to prove diagnostic_evidence is a
+    # SEPARATE, actually-sanitized carrier, not merely coincidentally clean.
+    assert secret in attempt.crash_log[0]
+
+    _spec, experiment_id = await _register(registry_tables)
+    campaign_run_id = "camp-chain-e2e-" + uuid.uuid4().hex[:8]
+
+    # boundary 3: CLI AttemptEvidence conversion.
+    evidence = _summary_to_attempt_evidence(
+        summary,
+        strategy_key=_spec.strategy_key,
+        experiment_id=experiment_id,
+        full_campaign_hash="a" * 64,
+        campaign_run_id=campaign_run_id,
+    )
+    assert evidence.diagnostic_evidence
+    assert secret not in json.dumps(
+        [d.model_dump() for d in evidence.diagnostic_evidence]
+    )
+
+    # boundary 4/5: app schema/service -> actual local-test-DB raw_payload.
+    row = await record_attempt(
+        registry_tables,
+        experiment_id=experiment_id,
+        evidence=evidence,
+        strategy_name="S1",
+        timeframe="15m",
+        runner="pytest",
+        guard_opt_in_enabled=True,
+        guard_policy=_POLICY,
+    )
+    assert secret not in json.dumps(row.raw_payload)
+    stored_diagnostics = row.raw_payload["diagnostic_evidence"]
+    assert stored_diagnostics
+    diag = stored_diagnostics[0]
+    assert diag["stage"] == "generator"
+    assert diag["exception_type"] == "RuntimeError"
+    assert diag["strategy"] == "S1"
+    assert diag["config_id"] == "S1-00"
+    assert diag["symbol"] == "BTCUSDT"
+    assert diag["fold_id"] == "fold-00"
+    assert diag["occurrence_count"] >= 1
+    assert "api_key=<redacted>" in diag["message"] or "boom" in diag["message"]

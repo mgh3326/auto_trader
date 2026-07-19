@@ -263,3 +263,45 @@ def test_child_failure_diagnostic_accepts_genuinely_safe_content():
     )
     assert diag.message
     assert diag.traceback_text
+
+
+# -- R2 audit (stop-gate) item A: hard schema length bounds -----------------
+# Audit reproduced acceptance of a 100,000-character value today; the app
+# schema must independently refuse an oversized message/traceback_text,
+# mirroring the research producer's own _MAX_MESSAGE_CHARS=500/
+# _MAX_TRACEBACK_CHARS=4000, never merely trusting the producer already
+# bounded it.
+
+
+def test_child_failure_diagnostic_accepts_message_exactly_at_the_500_char_cap():
+    diag = _diagnostic(message="x" * 500)
+    assert len(diag.message) == 500
+
+
+def test_child_failure_diagnostic_rejects_message_one_char_over_the_500_char_cap():
+    with pytest.raises(ValidationError):
+        _diagnostic(message="x" * 501)
+
+
+def test_child_failure_diagnostic_rejects_grossly_oversized_message():
+    """Audit repro: a 100,000-character message was accepted before this
+    hard bound existed."""
+    with pytest.raises(ValidationError):
+        _diagnostic(message="x" * 100_000)
+
+
+def test_child_failure_diagnostic_accepts_traceback_text_exactly_at_the_4000_char_cap():
+    diag = _diagnostic(traceback_text="x" * 4000)
+    assert len(diag.traceback_text) == 4000
+
+
+def test_child_failure_diagnostic_rejects_traceback_text_one_char_over_the_4000_char_cap():
+    with pytest.raises(ValidationError):
+        _diagnostic(traceback_text="x" * 4001)
+
+
+def test_child_failure_diagnostic_rejects_grossly_oversized_traceback_text():
+    """Audit repro: a 100,000-character traceback_text was accepted before
+    this hard bound existed."""
+    with pytest.raises(ValidationError):
+        _diagnostic(traceback_text="x" * 100_000)

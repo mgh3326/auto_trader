@@ -30,6 +30,9 @@ from dataclasses import dataclass
 from typing import Literal
 
 from research_contracts.canonical_hash import canonical_sha256
+from research_contracts.diagnostic_evidence_policy import (
+    MAX_DISTINCT_SIGNATURES as MAX_DISTINCT_SIGNATURES,
+)
 
 __all__ = [
     "MAX_DISTINCT_SIGNATURES",
@@ -55,6 +58,14 @@ _SENTINEL_UNSAFE_MESSAGE = "<redacted-unsafe-exception-message>"
 # Absolute filesystem path inside a `File "..."` traceback frame line -- keep
 # only the bare filename; the worktree/host path never survives sanitization.
 _FILE_FRAME_RE = re.compile(r'File "[^"]*[\\/]([^\\/"]+)"')
+# The (already directory-stripped, by the time this runs) bare filename
+# inside a `File "..."` frame line -- R2 stop-gate audit: a hostile
+# FILENAME itself (e.g. a synthetic module named after a secret) is not
+# automatically safe merely for living inside a `File "..."` clause, so it
+# must still be checked/redacted -- while `, line N, in func_name` (matched
+# by this same frame line, outside the quoted span) always survives
+# verbatim, since frame identity must remain useful.
+_FILE_FRAME_BARE_RE = re.compile(r'File "([^"]+)"')
 # Any other absolute-looking POSIX path fragment that isn't inside a `File
 # "..."` frame (defense in depth) -- collapse to its bare last component.
 _BARE_ABS_PATH_RE = re.compile(r"(?<![\w./])/(?:[\w.\-]+/)+([\w.\-]+)")
@@ -206,19 +217,46 @@ def _bound_lines(text: str) -> tuple[str, bool]:
     return "\n".join(bounded), bounded != lines
 
 
+_FILE_FRAME_LINE_START_RE = re.compile(r'^\s*File "')
+
+
+def _neutralize_frame_line_filename(line: str) -> str:
+    """R2 stop-gate audit: a ``File "..."`` frame HEADER line's
+    ``, line N, in func_name`` suffix must survive verbatim (frame identity
+    -- this is the whole point of exempting frame lines from the blanket
+    residual sweep below), but the FILENAME itself living inside the quoted
+    span is NOT automatically safe merely for being there -- a synthetic or
+    hostile module name (e.g. shaped like a shouty secret label) is checked
+    and, if unsafe, ONLY the filename portion is replaced with the
+    sentinel; the rest of the line (line number, function name) is
+    untouched."""
+
+    def _replace(m: re.Match) -> str:
+        filename = m.group(1)
+        if _looks_unsafe_residual(filename):
+            filename = _SENTINEL_UNSAFE_MESSAGE
+        return f'File "{filename}"'
+
+    return _FILE_FRAME_BARE_RE.sub(_replace, line, count=1)
+
+
 def _neutralize_unsafe_lines(text: str) -> str:
     """R2 audit fix: a frame HEADER line (``File "...", line N, in name``)
     and pure traceback furniture are always preserved verbatim (frame
-    identity must survive). Every OTHER line -- including an indented
-    SOURCE-CONTEXT line -- is NOT automatically safe: ``capture_locals=False``
-    only guarantees no runtime local VALUES appear, but the literal source
-    TEXT (e.g. a careless comment) can itself carry secret-shaped content.
-    Each such line is checked independently and replaced with the sentinel
-    if it still looks unsafe, never blanket-trusted merely for being
-    indented."""
+    identity must survive) -- EXCEPT the filename inside a ``File "..."``
+    clause, which gets its own targeted check (see
+    ``_neutralize_frame_line_filename``). Every OTHER line -- including an
+    indented SOURCE-CONTEXT line -- is NOT automatically safe:
+    ``capture_locals=False`` only guarantees no runtime local VALUES
+    appear, but the literal source TEXT (e.g. a careless comment) can
+    itself carry secret-shaped content. Each such line is checked
+    independently and replaced with the sentinel if it still looks unsafe,
+    never blanket-trusted merely for being indented."""
     out_lines = []
     for line in text.split("\n"):
-        if _FRAME_LIKE_LINE_RE.match(line):
+        if _FILE_FRAME_LINE_START_RE.match(line):
+            out_lines.append(_neutralize_frame_line_filename(line))
+        elif _FRAME_LIKE_LINE_RE.match(line):
             out_lines.append(line)
         elif _looks_unsafe_residual(line):
             out_lines.append(_SENTINEL_UNSAFE_MESSAGE)
@@ -234,18 +272,21 @@ def _finalize_traceback(
     ``str(exc)`` -- replace that occurrence with the ALREADY-finalized safe
     message first (so a message that needed full sentinel replacement
     doesn't leave its raw text sitting in the traceback too). Structural
-    redaction runs next, then per-line bounding (so no single pathological
-    line can consume the whole budget -- reported back, since clipping ONE
-    oversized line is itself a real truncation event even when the OVERALL
-    text ends up under the total-length cap), then a per-line residual-
-    fail-closed sweep (never blanket-trusting indented source-context
-    lines)."""
+    redaction runs next, then the per-line residual-fail-closed sweep runs
+    on the FULL, UNTRUNCATED lines (R2 stop-gate audit: running this sweep
+    AFTER length-bounding let a shouty-secret word straddling the per-line
+    cut survive as an undetectable partial fragment -- neither the
+    truncated remainder nor the discarded tail alone matched the residual
+    pattern, even though the untruncated line would have) -- length
+    bounding runs LAST, only on content already proven safe (either
+    genuinely safe original text, or the fixed-length sentinel)."""
     text = raw_traceback
     if raw_message and raw_message in text:
         text = text.replace(raw_message, safe_message)
     text = _sanitize(text)
+    text = _neutralize_unsafe_lines(text)
     text, line_truncated = _bound_lines(text)
-    return _neutralize_unsafe_lines(text), line_truncated
+    return text, line_truncated
 
 
 def _bound_head(text: str, limit: int) -> tuple[str, bool]:
@@ -376,9 +417,6 @@ def capture_child_failure_evidence(
         occurrence_count=1,
         truncated=message_truncated or line_truncated or tail_truncated,
     )
-
-
-MAX_DISTINCT_SIGNATURES = 32
 
 
 @dataclass(frozen=True)
