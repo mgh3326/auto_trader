@@ -1011,6 +1011,34 @@ def _normalize_diagnostic_evidence_tuple(raw_value, *, context: str):
     )
 
 
+def _normalize_diagnostic_overflow(raw_value, *, context: str):
+    """ROB-970 R1 (Q1=A, cap=32): honest overflow accounting -- exact-type/
+    field-checked, unchanged. Additive, persistence-only."""
+    from rob944_diagnostic_evidence import DiagnosticOverflowMetadata
+
+    if type(raw_value) is not DiagnosticOverflowMetadata:
+        raise ValueError(
+            f"{context} must be an exact DiagnosticOverflowMetadata -- refusing to persist"
+        )
+    _assert_exact_bool(raw_value.truncated, context=f"{context} truncated")
+    omitted_distinct_signatures = _assert_exact_int(
+        raw_value.omitted_distinct_signatures,
+        context=f"{context} omitted_distinct_signatures",
+    )
+    if omitted_distinct_signatures < 0:
+        raise ValueError(f"{context} omitted_distinct_signatures must be >= 0")
+    omitted_occurrences = _assert_exact_int(
+        raw_value.omitted_occurrences, context=f"{context} omitted_occurrences"
+    )
+    if omitted_occurrences < 0:
+        raise ValueError(f"{context} omitted_occurrences must be >= 0")
+    if omitted_distinct_signatures > omitted_occurrences:
+        raise ValueError(
+            f"{context} omitted_distinct_signatures cannot exceed omitted_occurrences"
+        )
+    return raw_value
+
+
 def _normalize_config_attempt_evidence_summary(summary, *, context: str):
     """THE single normalization entry point (captain normalization-scope
     clarification, 2026-07-17): every container is required to be its
@@ -1076,6 +1104,9 @@ def _normalize_config_attempt_evidence_summary(summary, *, context: str):
     diagnostic_evidence = _normalize_diagnostic_evidence_tuple(
         summary.diagnostic_evidence, context=f"{context} diagnostic_evidence"
     )
+    diagnostic_overflow = _normalize_diagnostic_overflow(
+        summary.diagnostic_overflow, context=f"{context} diagnostic_overflow"
+    )
     return ConfigAttemptEvidenceSummary(
         strategy=strategy,
         config_id=config_id,
@@ -1084,6 +1115,7 @@ def _normalize_config_attempt_evidence_summary(summary, *, context: str):
         scenario_summaries=scenario_summaries,
         fold_selection_trace=fold_selection_trace,
         diagnostic_evidence=diagnostic_evidence,
+        diagnostic_overflow=diagnostic_overflow,
     )
 
 
@@ -1170,6 +1202,7 @@ def _normalized_summary_to_attempt_evidence(
         AttemptEvidence,
         AttemptKey,
         ChildFailureDiagnostic,
+        ChildFailureDiagnosticOverflow,
         ScenarioEvidence,
     )
     from research_contracts.canonical_hash import canonical_sha256
@@ -1375,6 +1408,14 @@ def _normalized_summary_to_attempt_evidence(
                 truncated=d.truncated,
             )
             for d in summary.diagnostic_evidence
+        ),
+        # ROB-970 R1 (Q1=A, cap=32): same additive treatment as
+        # diagnostic_evidence -- carried through UNCHANGED, never referenced
+        # by fold_evidence_hash/run_identity above.
+        diagnostic_overflow=ChildFailureDiagnosticOverflow(
+            truncated=summary.diagnostic_overflow.truncated,
+            omitted_distinct_signatures=summary.diagnostic_overflow.omitted_distinct_signatures,
+            omitted_occurrences=summary.diagnostic_overflow.omitted_occurrences,
         ),
     )
 

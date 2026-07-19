@@ -67,8 +67,9 @@ from rob940_engine import (
 from rob941_funding_sidecar import FundingSidecar
 from rob944_diagnostic_evidence import (
     ChildFailureEvidence,
+    DiagnosticOverflowMetadata,
+    accumulate_diagnostic_evidence,
     capture_child_failure_evidence,
-    merge_child_failure_evidence,
 )
 from rob944_folds import Fold
 from rob944_gap_funding import (
@@ -402,6 +403,12 @@ class ConfigAttemptResult:
     # of its own (never an input to reason_code/artifact_hash/any H5/H6
     # semantic seal); see rob944_diagnostic_evidence.ChildFailureEvidence.
     diagnostic_evidence: tuple[ChildFailureEvidence, ...] = ()
+    # ROB-970 R1 (Q1=A, cap=32): honest overflow accounting for anything
+    # beyond the first 32 distinct signatures -- equally additive/
+    # persistence-only, equally excluded from every semantic seal.
+    diagnostic_overflow: DiagnosticOverflowMetadata = DiagnosticOverflowMetadata(
+        truncated=False, omitted_distinct_signatures=0, omitted_occurrences=0
+    )
 
 
 @dataclass(frozen=True)
@@ -1460,15 +1467,16 @@ def run_walkforward(
         else:
             status = "completed"
             reason_code = None
-        # ROB-970 (Q2): dedupe every captured child-failure evidence for
-        # this config (across every fold/symbol/scenario it was hit in) by
-        # stable signature -- a recurring root cause collapses to ONE entry
-        # with an incrementing occurrence_count, never N near-duplicate rows.
-        diagnostic_evidence: tuple[ChildFailureEvidence, ...] = ()
-        for evidence in diagnostic_notes[cid]:
-            diagnostic_evidence = merge_child_failure_evidence(
-                diagnostic_evidence, evidence
-            )
+        # ROB-970 R1 (Q1=A, cap=32): dedupe every captured child-failure
+        # evidence for this config (across every fold/symbol/scenario it was
+        # hit in) by stable signature -- a recurring root cause collapses to
+        # ONE entry with an incrementing occurrence_count, never N near-
+        # duplicate rows -- bounded to the first 32 distinct signatures
+        # (canonical/first-seen execution order), with honest overflow
+        # metadata for anything beyond the cap. Never an unbounded carrier.
+        diagnostic_evidence, diagnostic_overflow = accumulate_diagnostic_evidence(
+            diagnostic_notes[cid]
+        )
         config_attempts.append(
             ConfigAttemptResult(
                 strategy=strategy,
@@ -1479,6 +1487,7 @@ def run_walkforward(
                 crash_log=crash_log,
                 gap_rejection_log=gap_rejection_log,
                 diagnostic_evidence=diagnostic_evidence,
+                diagnostic_overflow=diagnostic_overflow,
             )
         )
 
@@ -1586,6 +1595,11 @@ class ConfigAttemptEvidenceSummary:
     # ConfigAttemptResult.diagnostic_evidence -- additive, never part of
     # fold_evidence_hash/run_identity/any H5 semantic seal.
     diagnostic_evidence: tuple[ChildFailureEvidence, ...] = ()
+    # ROB-970 R1 (Q1=A, cap=32): carried straight from
+    # ConfigAttemptResult.diagnostic_overflow -- equally additive/excluded.
+    diagnostic_overflow: DiagnosticOverflowMetadata = DiagnosticOverflowMetadata(
+        truncated=False, omitted_distinct_signatures=0, omitted_occurrences=0
+    )
 
 
 def _combine_scenario_outcomes(
@@ -1750,6 +1764,7 @@ def summarize_config_attempts_for_h6(
                 scenario_summaries=scenario_rows,
                 fold_selection_trace=tuple(fold_selection_trace),
                 diagnostic_evidence=attempt.diagnostic_evidence,
+                diagnostic_overflow=attempt.diagnostic_overflow,
             )
         )
     return tuple(summaries)

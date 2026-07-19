@@ -373,6 +373,38 @@ def _validate_diagnostic_evidence_shape(value: Any) -> None:
         _require(type(row["truncated"]) is bool, ATTEMPT_EVIDENCE_MALFORMED_REASON)
 
 
+_DIAGNOSTIC_OVERFLOW_KEY = "diagnostic_overflow"
+_DIAGNOSTIC_OVERFLOW_KEYS = frozenset(
+    {"truncated", "omitted_distinct_signatures", "omitted_occurrences"}
+)
+
+
+def _validate_diagnostic_overflow_shape(value: Any) -> None:
+    """ROB-970 R1 (Q1=A, cap=32): honest overflow accounting is equally
+    additive/persistence-only -- validated on its OWN closed shape, never
+    folded into ``SealedAttempt``/any hash input."""
+    _require(isinstance(value, Mapping), ATTEMPT_EVIDENCE_MALFORMED_REASON)
+    _require(
+        set(value.keys()) == _DIAGNOSTIC_OVERFLOW_KEYS,
+        ATTEMPT_EVIDENCE_MALFORMED_REASON,
+    )
+    _require(type(value["truncated"]) is bool, ATTEMPT_EVIDENCE_MALFORMED_REASON)
+    omitted_distinct_signatures = value["omitted_distinct_signatures"]
+    _require(
+        type(omitted_distinct_signatures) is int and omitted_distinct_signatures >= 0,
+        ATTEMPT_EVIDENCE_MALFORMED_REASON,
+    )
+    omitted_occurrences = value["omitted_occurrences"]
+    _require(
+        type(omitted_occurrences) is int and omitted_occurrences >= 0,
+        ATTEMPT_EVIDENCE_MALFORMED_REASON,
+    )
+    _require(
+        omitted_distinct_signatures <= omitted_occurrences,
+        ATTEMPT_EVIDENCE_MALFORMED_REASON,
+    )
+
+
 def _validate_attempt(
     attempt: Any, *, expected_campaign_run_id: str, frozen_ids: frozenset[str]
 ) -> SealedAttempt:
@@ -388,6 +420,12 @@ def _validate_attempt(
     if _DIAGNOSTIC_EVIDENCE_KEY in attempt:
         _validate_diagnostic_evidence_shape(attempt[_DIAGNOSTIC_EVIDENCE_KEY])
         attempt = {k: v for k, v in attempt.items() if k != _DIAGNOSTIC_EVIDENCE_KEY}
+    # ROB-970 R1 (Q1=A, cap=32): same carve-out treatment for the honest
+    # overflow metadata -- separated and shape-validated BEFORE the six-key
+    # exact check, never folded into it.
+    if _DIAGNOSTIC_OVERFLOW_KEY in attempt:
+        _validate_diagnostic_overflow_shape(attempt[_DIAGNOSTIC_OVERFLOW_KEY])
+        attempt = {k: v for k, v in attempt.items() if k != _DIAGNOSTIC_OVERFLOW_KEY}
     _require(
         set(attempt.keys())
         == {

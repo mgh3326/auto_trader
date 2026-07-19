@@ -2247,7 +2247,7 @@ def test_funding_gate_catch_records_typed_diagnostic_evidence():
     sidecar = _permissive_funding_sidecars()["BTCUSDT"]
 
     def _boom(*args, **kwargs):
-        raise RuntimeError("simulated funding-gate crash SECRET-XYZ")
+        raise RuntimeError("simulated funding-gate crash")
 
     import pytest as _pytest
 

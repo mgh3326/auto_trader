@@ -399,6 +399,110 @@ def test_diagnostic_evidence_never_alters_fold_evidence_hash_or_run_identity():
     assert identity_with == identity_without == identity_different
 
 
+# -- ROB-970 R1 (Q1=A, cap=32): diagnostic_overflow passthrough ------------
+
+
+def _overflow(**overrides):
+    from rob944_diagnostic_evidence import DiagnosticOverflowMetadata
+
+    base = {
+        "truncated": True,
+        "omitted_distinct_signatures": 3,
+        "omitted_occurrences": 7,
+    }
+    base.update(overrides)
+    return DiagnosticOverflowMetadata(**base)
+
+
+def test_diagnostic_overflow_passes_through_normalization_unchanged():
+    from dataclasses import replace
+
+    summary = replace(_well_formed_summary(), diagnostic_overflow=_overflow())
+    normalized = normalize_and_validate_h6_summary(
+        summary, expected_strategy="S1", expected_config_id="S1-00"
+    )
+    assert normalized.diagnostic_overflow == _overflow()
+
+
+def test_diagnostic_overflow_defaults_to_empty_when_absent():
+    from rob944_diagnostic_evidence import DiagnosticOverflowMetadata
+
+    summary = _well_formed_summary()
+    normalized = normalize_and_validate_h6_summary(
+        summary, expected_strategy="S1", expected_config_id="S1-00"
+    )
+    assert normalized.diagnostic_overflow == DiagnosticOverflowMetadata(
+        truncated=False, omitted_distinct_signatures=0, omitted_occurrences=0
+    )
+
+
+def test_rejects_non_exact_diagnostic_overflow_type():
+    from dataclasses import replace
+
+    summary = replace(
+        _well_formed_summary(),
+        diagnostic_overflow={
+            "truncated": True,
+            "omitted_distinct_signatures": 1,
+            "omitted_occurrences": 1,
+        },
+    )
+    with pytest.raises(H6SummaryContractError):
+        normalize_and_validate_h6_summary(
+            summary, expected_strategy="S1", expected_config_id="S1-00"
+        )
+
+
+def test_rejects_negative_omitted_counts_in_diagnostic_overflow():
+    from dataclasses import replace
+
+    summary = replace(
+        _well_formed_summary(),
+        diagnostic_overflow=_overflow(omitted_distinct_signatures=-1),
+    )
+    with pytest.raises(H6SummaryContractError):
+        normalize_and_validate_h6_summary(
+            summary, expected_strategy="S1", expected_config_id="S1-00"
+        )
+
+
+def test_diagnostic_overflow_never_alters_fold_evidence_hash_or_run_identity():
+    from dataclasses import replace
+
+    common_kwargs = {
+        "full_campaign_hash": _FULL_CAMPAIGN_HASH,
+        "campaign_run_id": _CAMPAIGN_RUN_ID,
+        "strategy_key": _STRATEGY_KEY["S1"],
+        "experiment_id": "exp-overflow-observer-effect-0",
+        "retry_index": 0,
+    }
+    without_overflow = normalize_and_validate_h6_summary(
+        _well_formed_summary(
+            status="crashed", reason_code=REASON_CHILD_EXECUTION_CRASHED
+        ),
+        expected_strategy="S1",
+        expected_config_id="S1-00",
+    )
+    with_overflow = normalize_and_validate_h6_summary(
+        replace(
+            _well_formed_summary(
+                status="crashed", reason_code=REASON_CHILD_EXECUTION_CRASHED
+            ),
+            diagnostic_overflow=_overflow(),
+        ),
+        expected_strategy="S1",
+        expected_config_id="S1-00",
+    )
+    hash_without, identity_without = _recompute_fold_evidence_hash_and_run_identity(
+        without_overflow, **common_kwargs
+    )
+    hash_with, identity_with = _recompute_fold_evidence_hash_and_run_identity(
+        with_overflow, **common_kwargs
+    )
+    assert hash_without == hash_with
+    assert identity_without == identity_with
+
+
 # -- Fold cardinality (the literal I2 repro: one fold missing => 7 rows) --
 
 

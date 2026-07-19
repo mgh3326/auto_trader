@@ -42,7 +42,7 @@ from typing import Any
 
 import rob941_frozen_scope as frozen
 import rob944_folds as foldmod
-from rob944_diagnostic_evidence import ChildFailureEvidence
+from rob944_diagnostic_evidence import ChildFailureEvidence, DiagnosticOverflowMetadata
 from rob944_gap_funding import (
     REASON_DATA_GAP_IN_POSITION,
     REASON_EXPECTED_FUNDING_COST_ABOVE_3BPS,
@@ -198,6 +198,37 @@ def _normalize_diagnostic_evidence(
     return tuple(
         _normalize_child_failure_evidence(row, context=f"{context}#{idx}")
         for idx, row in enumerate(raw_value)
+    )
+
+
+def _normalize_diagnostic_overflow(
+    raw_value: Any, *, context: str
+) -> DiagnosticOverflowMetadata:
+    """ROB-970 R1 (Q1=A, cap=32): the honest overflow accounting is equally
+    additive/persistence-only -- exact-type gated, never touched by any
+    semantic hash."""
+    if type(raw_value) is not DiagnosticOverflowMetadata:
+        _fail(f"{context} must be an exact DiagnosticOverflowMetadata")
+    truncated = _assert_exact_bool(raw_value.truncated, context=f"{context} truncated")
+    omitted_distinct_signatures = _assert_exact_int(
+        raw_value.omitted_distinct_signatures,
+        context=f"{context} omitted_distinct_signatures",
+    )
+    if omitted_distinct_signatures < 0:
+        _fail(f"{context} omitted_distinct_signatures must be >= 0")
+    omitted_occurrences = _assert_exact_int(
+        raw_value.omitted_occurrences, context=f"{context} omitted_occurrences"
+    )
+    if omitted_occurrences < 0:
+        _fail(f"{context} omitted_occurrences must be >= 0")
+    if omitted_distinct_signatures > omitted_occurrences:
+        _fail(
+            f"{context} omitted_distinct_signatures cannot exceed omitted_occurrences"
+        )
+    return DiagnosticOverflowMetadata(
+        truncated=truncated,
+        omitted_distinct_signatures=omitted_distinct_signatures,
+        omitted_occurrences=omitted_occurrences,
     )
 
 
@@ -506,6 +537,9 @@ def normalize_and_validate_h6_summary(
     normalized_diagnostic_evidence = _normalize_diagnostic_evidence(
         raw.diagnostic_evidence, context="diagnostic_evidence"
     )
+    normalized_diagnostic_overflow = _normalize_diagnostic_overflow(
+        raw.diagnostic_overflow, context="diagnostic_overflow"
+    )
 
     return ConfigAttemptEvidenceSummary(
         strategy=strategy,
@@ -519,4 +553,5 @@ def normalize_and_validate_h6_summary(
             sorted(normalized_fold_rows, key=lambda row: row.fold_id)
         ),
         diagnostic_evidence=normalized_diagnostic_evidence,
+        diagnostic_overflow=normalized_diagnostic_overflow,
     )

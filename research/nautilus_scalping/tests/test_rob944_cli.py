@@ -1461,6 +1461,67 @@ def test_normalize_config_attempt_evidence_summary_rejects_non_exact_diagnostic_
         cli._normalize_config_attempt_evidence_summary(summary, context="test")
 
 
+def _fake_diagnostic_overflow(**overrides):
+    from rob944_diagnostic_evidence import DiagnosticOverflowMetadata
+
+    base = {
+        "truncated": True,
+        "omitted_distinct_signatures": 3,
+        "omitted_occurrences": 9,
+    }
+    base.update(overrides)
+    return DiagnosticOverflowMetadata(**base)
+
+
+def test_summary_to_attempt_evidence_carries_diagnostic_overflow_through():
+    from dataclasses import replace
+
+    summary = replace(_fake_summary(), diagnostic_overflow=_fake_diagnostic_overflow())
+    evidence = cli._summary_to_attempt_evidence(
+        summary,
+        strategy_key="ROB940-S1-DONCHIAN-15M",
+        experiment_id="exp-abc",
+        full_campaign_hash="h" * 64,
+        campaign_run_id="run-001",
+    )
+    assert evidence.diagnostic_overflow.truncated is True
+    assert evidence.diagnostic_overflow.omitted_distinct_signatures == 3
+    assert evidence.diagnostic_overflow.omitted_occurrences == 9
+
+
+def test_summary_to_attempt_evidence_diagnostic_overflow_never_alters_lineage_hashes():
+    from dataclasses import replace
+
+    lineage_kwargs = {
+        "strategy_key": "ROB940-S1-DONCHIAN-15M",
+        "experiment_id": "exp-abc",
+        "full_campaign_hash": "h" * 64,
+        "campaign_run_id": "run-001",
+    }
+    without = cli._summary_to_attempt_evidence(_fake_summary(), **lineage_kwargs)
+    with_overflow = cli._summary_to_attempt_evidence(
+        replace(_fake_summary(), diagnostic_overflow=_fake_diagnostic_overflow()),
+        **lineage_kwargs,
+    )
+    assert without.run_identity == with_overflow.run_identity
+    assert without.fold_evidence_hash == with_overflow.fold_evidence_hash
+
+
+def test_normalize_config_attempt_evidence_summary_rejects_non_exact_overflow_type():
+    from dataclasses import replace
+
+    summary = replace(
+        _fake_summary(),
+        diagnostic_overflow={
+            "truncated": True,
+            "omitted_distinct_signatures": 1,
+            "omitted_occurrences": 1,
+        },
+    )
+    with pytest.raises(ValueError):
+        cli._normalize_config_attempt_evidence_summary(summary, context="test")
+
+
 def test_summary_to_attempt_evidence_run_identity_changes_with_lineage_facts():
     summary = _fake_summary()
     base = cli._summary_to_attempt_evidence(

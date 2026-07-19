@@ -1595,6 +1595,65 @@ def test_six_key_seal_still_rejects_a_genuinely_unknown_seventh_key():
         _seal(attempt_evidence=attempts)
 
 
+# ---------------------------------------------------------------------------
+# ROB-970 R1 (Q1=A, cap=32): diagnostic_overflow is equally additive/
+# persistence-only -- separately carved out from the six-key seal, same
+# treatment as diagnostic_evidence.
+# ---------------------------------------------------------------------------
+
+_DIAGNOSTIC_OVERFLOW = {
+    "truncated": True,
+    "omitted_distinct_signatures": 3,
+    "omitted_occurrences": 9,
+}
+
+
+def test_diagnostic_overflow_present_seals_successfully_and_is_observer_effect_0():
+    without = _all_24_completed_attempts()
+    with_overflow = _all_24_completed_attempts()
+    with_overflow[0]["diagnostic_overflow"] = dict(_DIAGNOSTIC_OVERFLOW)
+    with_overflow[1]["diagnostic_overflow"] = dict(
+        _DIAGNOSTIC_OVERFLOW, omitted_occurrences=99
+    )
+    sealed_without = _seal(attempt_evidence=without)
+    sealed_with = _seal(attempt_evidence=with_overflow)
+    assert sealed_without.trial_accounting_hash == sealed_with.trial_accounting_hash
+
+
+def test_diagnostic_overflow_absent_key_and_empty_dict_seal_identically():
+    absent = _all_24_completed_attempts()
+    explicit_absent = _all_24_completed_attempts()
+    for attempt in explicit_absent:
+        attempt.pop("diagnostic_overflow", None)
+    assert (
+        _seal(attempt_evidence=absent).trial_accounting_hash
+        == _seal(attempt_evidence=explicit_absent).trial_accounting_hash
+    )
+
+
+def test_rejects_diagnostic_overflow_that_is_not_a_mapping():
+    attempts = _all_24_completed_attempts()
+    attempts[0]["diagnostic_overflow"] = ["not", "a", "mapping"]
+    with pytest.raises(ScorecardInputError):
+        _seal(attempt_evidence=attempts)
+
+
+def test_rejects_diagnostic_overflow_with_unknown_extra_key():
+    attempts = _all_24_completed_attempts()
+    attempts[0]["diagnostic_overflow"] = dict(_DIAGNOSTIC_OVERFLOW, injected="nope")
+    with pytest.raises(ScorecardInputError):
+        _seal(attempt_evidence=attempts)
+
+
+def test_rejects_diagnostic_overflow_with_negative_counts():
+    attempts = _all_24_completed_attempts()
+    attempts[0]["diagnostic_overflow"] = dict(
+        _DIAGNOSTIC_OVERFLOW, omitted_distinct_signatures=-1
+    )
+    with pytest.raises(ScorecardInputError):
+        _seal(attempt_evidence=attempts)
+
+
 def test_normalized_attempts_are_in_frozen_experiment_order():
     attempts = list(reversed(_all_24_completed_attempts()))
     sealed = _seal(attempt_evidence=attempts)
