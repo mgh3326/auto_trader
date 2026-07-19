@@ -564,17 +564,13 @@ async def test_filled_status_with_empty_fills_requires_manual_review() -> None:
     ledger = Ledger([Row()])
     broker = FillsBroker(order, [])
 
-    result = await AlpacaPaperReconcileService(ledger, broker).reconcile(
-        dry_run=False
-    )
+    result = await AlpacaPaperReconcileService(ledger, broker).reconcile(dry_run=False)
     outcome = result["reconciled"][0]
 
     assert outcome["action"] == "noop_requires_manual_review"
     assert outcome["requires_manual_review"] is True
     assert outcome["reason"] == "incomplete_fill_set"
-    assert broker.calls == [
-        {"page_token": None, "page_size": 100, "direction": "desc"}
-    ]
+    assert broker.calls == [{"page_token": None, "page_size": 100, "direction": "desc"}]
     assert ledger.status_calls == []
 
 

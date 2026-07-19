@@ -13,6 +13,7 @@ from app.services.alpaca_paper_ledger_service import (
     LIFECYCLE_SUBMITTED,
     RECONCILE_TERMINAL_LIFECYCLE_STATES,
     RECORD_KIND_EXECUTION,
+    StatusWriteResult,
     derive_lifecycle_state,
 )
 from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
@@ -242,10 +243,15 @@ class AlpacaPaperReconcileService:
     async def _load_order_fills(self, order: Any) -> list[Any]:
         """Page every FILL activity, then keep the ones belonging to ``order``."""
         collected: dict[str, Any] = {}
-        after: Any = None
+        page_token: str | None = None
         for _ in range(_MAX_FILL_PAGES):
             page = list(
-                await self._broker.list_fills(after=after, limit=_FILL_PAGE_LIMIT) or []
+                await self._broker.list_fills(
+                    page_token=page_token,
+                    page_size=_FILL_PAGE_LIMIT,
+                    direction="desc",
+                )
+                or []
             )
             for fill in page:
                 fill_id = getattr(fill, "id", None)
@@ -254,19 +260,16 @@ class AlpacaPaperReconcileService:
                 )
             if len(page) < _FILL_PAGE_LIMIT:
                 break
-            next_after = max(
-                (
-                    stamp
-                    for stamp in (
-                        getattr(fill, "transaction_time", None) for fill in page
-                    )
-                    if stamp is not None
-                ),
-                default=None,
+            last_activity_id = getattr(page[-1], "id", None)
+            next_page_token = (
+                str(last_activity_id) if last_activity_id is not None else None
             )
-            if next_after is None or next_after == after:
-                break
-            after = next_after
+            if next_page_token is None or next_page_token == page_token:
+                raise RuntimeError("fill_pagination_token_missing")
+            page_token = next_page_token
+        else:
+            # Never treat a bounded/truncated account activity feed as complete.
+            raise RuntimeError("fill_pagination_limit_exceeded")
         return [
             fill
             for fill in collected.values()
@@ -300,10 +303,13 @@ class AlpacaPaperReconcileService:
         cumulative = _decimal(getattr(order, "filled_qty", None))
         broker_avg = _decimal(getattr(order, "filled_avg_price", None))
 
-        # Fills are only read when the order alone cannot prove the fill: either
-        # it reports no cumulative quantity at all, or it reports one without a
-        # price to value it at.
-        needs_fills = cumulative is None or (cumulative > 0 and broker_avg is None)
+        # A terminal filled status must be backed by the complete activity set,
+        # even when the order payload already carries qty/average fields.
+        needs_fills = (
+            broker_status == "filled"
+            or cumulative is None
+            or (cumulative > 0 and broker_avg is None)
+        )
         fills: list[Any] = []
         if needs_fills:
             try:
@@ -357,12 +363,12 @@ class AlpacaPaperReconcileService:
             ),
         )
         result["transition_depth"] = transition.label
-        result["lifecycle_state"] = transition.lifecycle_state
-        result["action"] = transition.action(dry_run=dry_run)
         if dry_run:
+            result["lifecycle_state"] = transition.lifecycle_state
+            result["action"] = transition.action(dry_run=True)
             return result
 
-        await self._ledger.record_status(
+        status_write = await self._ledger.record_status(
             row.client_order_id,
             {
                 "status": transition.broker_status,
@@ -377,19 +383,50 @@ class AlpacaPaperReconcileService:
                     normalize_alpaca_order_for_classify(order, fills)
                 )
             },
+            return_write_result=True,
         )
-        # Re-read the EXECUTION row explicitly. record_status returns whichever
-        # row for this client_order_id is newest regardless of record_kind, so a
-        # sibling plan/preview row would otherwise look like a rejected write.
-        confirmed = await self._ledger.get_execution_by_client_order_id(
-            row.client_order_id
-        )
+        if isinstance(status_write, StatusWriteResult):
+            write_applied = status_write.applied
+            confirmed = status_write.row
+        else:
+            # Lightweight test doubles retain the historical row return contract.
+            write_applied = True
+            confirmed = status_write
+
         persisted = getattr(confirmed, "lifecycle_state", None)
+        persisted_qty = _decimal(getattr(confirmed, "filled_qty", None))
+        persisted_avg = _decimal(getattr(confirmed, "filled_avg_price", None))
+        result["lifecycle_state"] = persisted
         result["persisted_lifecycle_state"] = persisted
-        if persisted is not None and persisted != transition.lifecycle_state:
-            # The write guard rejected this update (stale quantity or a completed
-            # row). Surface it instead of reporting a booking that did not land.
-            result.update(requires_manual_review=True, stale_write_rejected=True)
+        if persisted_qty is not None:
+            result["filled_qty"] = str(persisted_qty)
+        if persisted_avg is not None:
+            result["avg_price"] = str(persisted_avg)
+
+        write_confirmed = (
+            write_applied
+            and persisted == transition.lifecycle_state
+            and persisted_qty == broker_qty
+        )
+        if not write_confirmed:
+            # The SQL guard rejected the attempt, or a later concurrent write is
+            # already visible. Report the fresh row, never the precomputed intent.
+            result.update(
+                action="noop_stale_write_rejected",
+                transition_depth=(
+                    _LIFECYCLE_ACTION_LABELS.get(persisted, persisted or "none")
+                ),
+                delta_qty="0",
+                requires_manual_review=True,
+                stale_write_rejected=True,
+            )
+            return result
+
+        persisted_label = _LIFECYCLE_ACTION_LABELS.get(
+            persisted, persisted or transition.label
+        )
+        result["transition_depth"] = persisted_label
+        result["action"] = f"booked_{persisted_label}"
         return result
 
 

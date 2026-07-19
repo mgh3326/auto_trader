@@ -344,6 +344,14 @@ class SellReservationClaim:
     source_available: Decimal | None = None
 
 
+@dataclass(frozen=True)
+class StatusWriteResult:
+    """Fresh execution row plus the conditional UPDATE outcome."""
+
+    applied: bool
+    row: AlpacaPaperOrderLedger
+
+
 def is_inflight_execution(row: Any) -> bool:
     """True when an execution row is a claimed-but-not-yet-recorded submit.
 
@@ -1451,7 +1459,8 @@ class AlpacaPaperLedgerService:
         *,
         commit: bool = True,
         lifecycle_state_override: str | None = None,
-    ) -> AlpacaPaperOrderLedger:
+        return_write_result: bool = False,
+    ) -> AlpacaPaperOrderLedger | StatusWriteResult:
         """Update lifecycle state from a status-check response."""
         if lifecycle_state_override not in {None, LIFECYCLE_SUBMITTED}:
             raise ValueError("status lifecycle override may only retain submitted")
@@ -1523,16 +1532,26 @@ class AlpacaPaperLedgerService:
             .where(AlpacaPaperOrderLedger.id == target_row.id, *guard_predicates)
             .values(**update_vals)
         )
+        rowcount = getattr(update_result, "rowcount", None)
+        write_applied = rowcount is None or rowcount > 0
 
-        if raw_response is not None and getattr(update_result, "rowcount", 1) != 0:
+        if raw_response is not None and write_applied:
             await self._accumulate_raw_response(
                 client_order_id, "status", raw_response, row=target_row
             )
 
         if commit:
             await self._db.commit()
+        else:
+            await self._db.flush()
+
+        if return_write_result:
+            # expire_on_commit=False keeps target_row stale after a competing
+            # session wins. Refresh the execution row before reporting the write.
+            await self._db.refresh(target_row)
+            return StatusWriteResult(applied=write_applied, row=target_row)
+        if commit:
             return await self._require_row(client_order_id)
-        await self._db.flush()
         return target_row
 
     async def record_cancel(
@@ -1858,6 +1877,7 @@ __all__ = [
     "RECORD_KIND_RECONCILE",
     "RECORD_KIND_VALIDATION_ATTEMPT",
     "SellReservationClaim",
+    "StatusWriteResult",
     "SubmitClaim",
     "_derive_lifecycle_state",
     "_redact_sensitive_keys",

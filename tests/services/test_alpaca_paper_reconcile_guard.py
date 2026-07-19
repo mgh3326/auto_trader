@@ -361,7 +361,7 @@ async def test_reconcile_response_reflects_competing_final_state(db_session):
     assert outcome["action"] == "noop_stale_write_rejected"
     assert outcome["lifecycle_state"] == "final_reconciled"
     assert outcome["persisted_lifecycle_state"] == "final_reconciled"
-    assert outcome["filled_qty"] == "0.8"
+    assert Decimal(outcome["filled_qty"]) == Decimal("0.8")
     assert outcome["stale_write_rejected"] is True
 
 
@@ -394,5 +394,5 @@ async def test_reconcile_response_reflects_competing_higher_quantity(db_session)
     assert outcome["action"] == "noop_stale_write_rejected"
     assert outcome["lifecycle_state"] == "submitted"
     assert outcome["persisted_lifecycle_state"] == "submitted"
-    assert outcome["filled_qty"] == "0.8"
+    assert Decimal(outcome["filled_qty"]) == Decimal("0.8")
     assert outcome["stale_write_rejected"] is True

@@ -455,12 +455,13 @@ submitted Alpaca paper orders. It queries the broker by the ledger
 classifier, and only books confirmed cumulative fills. `dry_run=True` returns
 transition plans without ledger writes; `dry_run=False` requires `confirm=True`.
 
-Evidence handling is fail-closed. The row is left unchanged and returned with
-`requires_manual_review=true` when the broker read fails, the order is missing,
-the observed fills do not sum to the order's cumulative `filled_qty` (a
-truncated fill page would otherwise yield a wrong weighted average), or the
-broker reports `status=filled` with no bookable quantity. The reported `action`
-and the persisted `lifecycle_state` are derived from a single mapping, so they
+Evidence handling is fail-closed. For `status=filled`, the tool always walks the
+complete FILL activity feed with Alpaca `page_token` pagination, even when the
+order already includes `filled_qty` and `filled_avg_price`. The row is left
+unchanged and returned with `requires_manual_review=true` when the broker read
+fails, the order is missing, or the observed fills are empty, incomplete, or do
+not sum to the order's cumulative `filled_qty`. The reported `action` and the
+persisted `lifecycle_state` are derived from the confirmed write result, so they
 cannot disagree. The tool books to `filled` / `partial` / `anomaly` / `canceled`
 only; it deliberately does not infer position or final reconciliation without
 independent evidence.
