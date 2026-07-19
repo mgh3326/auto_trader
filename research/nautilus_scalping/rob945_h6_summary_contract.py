@@ -42,6 +42,7 @@ from typing import Any
 
 import rob941_frozen_scope as frozen
 import rob944_folds as foldmod
+from rob944_diagnostic_evidence import ChildFailureEvidence
 from rob944_gap_funding import (
     REASON_DATA_GAP_IN_POSITION,
     REASON_EXPECTED_FUNDING_COST_ABOVE_3BPS,
@@ -147,6 +148,57 @@ def _assert_hex64(value: Any, *, context: str) -> str:
     if type(value) is not str or not _HEX64_RE.match(value):
         _fail(f"{context} must be a lowercase 64-hex digest")
     return value
+
+
+_KNOWN_DIAGNOSTIC_TRANSPORTS = frozenset({"in_process"})
+_KNOWN_DIAGNOSTIC_STAGES = frozenset({"generator", "funding_gate", "engine"})
+
+
+def _normalize_child_failure_evidence(
+    row: Any, *, context: str
+) -> ChildFailureEvidence:
+    """ROB-970 (Q2, Fable-approved): additive, persistence-only diagnostic
+    evidence -- exact-type gated the same way every other H6 row is, but
+    deliberately carries NO hash/identity role (never touched by
+    ``_recompute_fold_evidence_hash_and_run_identity``)."""
+    if type(row) is not ChildFailureEvidence:
+        _fail(f"{context} must be an exact ChildFailureEvidence")
+    transport = _assert_exact_str(row.transport, context=f"{context} transport")
+    if transport not in _KNOWN_DIAGNOSTIC_TRANSPORTS:
+        _fail(f"{context} transport is outside the closed known-transport set")
+    stage = _assert_exact_str(row.stage, context=f"{context} stage")
+    if stage not in _KNOWN_DIAGNOSTIC_STAGES:
+        _fail(f"{context} stage is outside the closed known-stage set")
+    _assert_exact_str(row.exception_type, context=f"{context} exception_type")
+    _assert_exact_str(row.message, context=f"{context} message")
+    _assert_exact_str(row.traceback_text, context=f"{context} traceback_text")
+    _assert_exact_str_or_none(row.stderr, context=f"{context} stderr")
+    if transport == "in_process" and row.stderr is not None:
+        _fail(f"{context} in_process transport must never fabricate a stderr value")
+    _assert_exact_str(row.strategy, context=f"{context} strategy")
+    _assert_exact_str(row.config_id, context=f"{context} config_id")
+    _assert_exact_str_or_none(row.symbol, context=f"{context} symbol")
+    _assert_exact_str_or_none(row.fold_id, context=f"{context} fold_id")
+    _assert_exact_str_or_none(row.scenario_name, context=f"{context} scenario_name")
+    _assert_hex64(row.signature, context=f"{context} signature")
+    occurrence_count = _assert_exact_int(
+        row.occurrence_count, context=f"{context} occurrence_count"
+    )
+    if occurrence_count < 1:
+        _fail(f"{context} occurrence_count must be >= 1")
+    _assert_exact_bool(row.truncated, context=f"{context} truncated")
+    return row
+
+
+def _normalize_diagnostic_evidence(
+    raw_value: Any, *, context: str
+) -> tuple[ChildFailureEvidence, ...]:
+    if type(raw_value) is not tuple:
+        _fail(f"{context} must be an exact tuple")
+    return tuple(
+        _normalize_child_failure_evidence(row, context=f"{context}#{idx}")
+        for idx, row in enumerate(raw_value)
+    )
 
 
 def _attempt_allowed_reasons_by_status() -> dict[str, frozenset]:
@@ -451,6 +503,10 @@ def normalize_and_validate_h6_summary(
         reason_code=reason_code,
     )
 
+    normalized_diagnostic_evidence = _normalize_diagnostic_evidence(
+        raw.diagnostic_evidence, context="diagnostic_evidence"
+    )
+
     return ConfigAttemptEvidenceSummary(
         strategy=strategy,
         config_id=config_id,
@@ -462,4 +518,5 @@ def normalize_and_validate_h6_summary(
         fold_selection_trace=tuple(
             sorted(normalized_fold_rows, key=lambda row: row.fold_id)
         ),
+        diagnostic_evidence=normalized_diagnostic_evidence,
     )

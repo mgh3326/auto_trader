@@ -1367,6 +1367,100 @@ def test_summary_to_attempt_evidence_binds_full_lineage_deterministically():
     assert len(evidence1.scenario_evidence) == 3
 
 
+# ---------------------------------------------------------------------------
+# ROB-970 (Q2/Q3, Fable-approved orch-fable-answer-rob970-20260719.md):
+# diagnostic_evidence passthrough into the REAL H6-build boundary's
+# AttemptEvidence, with observer-effect-0 on run_identity/fold_evidence_hash.
+# ---------------------------------------------------------------------------
+
+
+def _fake_diagnostic_evidence(**overrides):
+    from rob944_diagnostic_evidence import ChildFailureEvidence
+
+    base = {
+        "transport": "in_process",
+        "stage": "generator",
+        "exception_type": "RuntimeError",
+        "message": "boom",
+        "traceback_text": "Traceback...\nRuntimeError: boom\n",
+        "stderr": None,
+        "strategy": "S1",
+        "config_id": "S1-00",
+        "symbol": "BTCUSDT",
+        "fold_id": "fold-00",
+        "scenario_name": None,
+        "signature": "a" * 64,
+        "occurrence_count": 1,
+        "truncated": False,
+    }
+    base.update(overrides)
+    return ChildFailureEvidence(**base)
+
+
+def test_summary_to_attempt_evidence_carries_diagnostic_evidence_through():
+    from dataclasses import replace
+
+    summary = replace(
+        _fake_summary(), diagnostic_evidence=(_fake_diagnostic_evidence(),)
+    )
+    evidence = cli._summary_to_attempt_evidence(
+        summary,
+        strategy_key="ROB940-S1-DONCHIAN-15M",
+        experiment_id="exp-abc",
+        full_campaign_hash="h" * 64,
+        campaign_run_id="run-001",
+    )
+    assert len(evidence.diagnostic_evidence) == 1
+    diag = evidence.diagnostic_evidence[0]
+    assert diag.stage == "generator"
+    assert diag.exception_type == "RuntimeError"
+    assert diag.config_id == "S1-00"
+
+
+def test_summary_to_attempt_evidence_diagnostic_evidence_never_alters_lineage_hashes():
+    """Observer-effect-0 at the REAL H6-build boundary: the same summary
+    with vs. without diagnostic_evidence, and with two DIFFERENT diagnostic
+    payloads, must all produce IDENTICAL run_identity/fold_evidence_hash."""
+    from dataclasses import replace
+
+    lineage_kwargs = {
+        "strategy_key": "ROB940-S1-DONCHIAN-15M",
+        "experiment_id": "exp-abc",
+        "full_campaign_hash": "h" * 64,
+        "campaign_run_id": "run-001",
+    }
+    without = cli._summary_to_attempt_evidence(_fake_summary(), **lineage_kwargs)
+    with_one = cli._summary_to_attempt_evidence(
+        replace(_fake_summary(), diagnostic_evidence=(_fake_diagnostic_evidence(),)),
+        **lineage_kwargs,
+    )
+    with_different = cli._summary_to_attempt_evidence(
+        replace(
+            _fake_summary(),
+            diagnostic_evidence=(
+                _fake_diagnostic_evidence(message="a totally different secret text"),
+            ),
+        ),
+        **lineage_kwargs,
+    )
+    assert without.run_identity == with_one.run_identity == with_different.run_identity
+    assert (
+        without.fold_evidence_hash
+        == with_one.fold_evidence_hash
+        == with_different.fold_evidence_hash
+    )
+
+
+def test_normalize_config_attempt_evidence_summary_rejects_non_exact_diagnostic_type():
+    from dataclasses import replace
+
+    summary = replace(
+        _fake_summary(), diagnostic_evidence=[_fake_diagnostic_evidence()]
+    )
+    with pytest.raises(ValueError):
+        cli._normalize_config_attempt_evidence_summary(summary, context="test")
+
+
 def test_summary_to_attempt_evidence_run_identity_changes_with_lineage_facts():
     summary = _fake_summary()
     base = cli._summary_to_attempt_evidence(
