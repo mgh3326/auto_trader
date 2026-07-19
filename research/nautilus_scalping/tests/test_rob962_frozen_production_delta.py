@@ -1,13 +1,15 @@
-"""ROB-970 permits one exact post-ROB-962 production-source repair window.
+"""ROB-970 R1 permits one exact post-ROB-970 production-source repair window.
 
-ROB-962's own merge (``5be26f42``, which already includes its authorized
-cost-model repair) is the new comparison base -- ROB-970 supersedes the
-ROB-962-era single-change check because the S2 confirmation_failed timestamp
-root fix plus the new Q2/Q3 diagnostic-evidence capture/carrier boundary
-(both Fable-approved, ``orch-fable-answer-rob970-20260719.md``) are
-intentionally lineage-changing now. Test files are reviewable support
-changes; every production add/modify/delete/rename/copy/type-change remains
-in scope.
+ROB-970's own re-pin tip (``cc462d94``, which already includes its
+authorized S2 timestamp root fix + original Q2/Q3 diagnostic-evidence
+boundary) is the new comparison base -- ROB-970 R1 supersedes that single-
+change-window check because the Critical-1 fail-closed redaction hardening,
+Q1=A cap=32 bounded diagnostic evidence, and Q2=C-modified replay-divergence
+observation (all Fable-approved, ``orch-fable-answer-rob970-r1-
+20260719.md``) are intentionally lineage-changing now (``rob944_walkforward.py``
+and friends are themselves part of the hashed frozen-campaign source
+provenance). Test files are reviewable support changes; every production
+add/modify/delete/rename/copy/type-change remains in scope.
 """
 
 from __future__ import annotations
@@ -19,15 +21,14 @@ from pathlib import Path, PurePosixPath
 from rob944_frozen_campaign import build_production_frozen_campaign_envelope
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_ROB960_MERGE_HEAD = "5be26f42b3e9ef058117820100e663b394c387de"
+_ROB960_MERGE_HEAD = "cc462d949c60d74f5edcfc2d3005b3e4033446ce"
 _COST_MODEL_PATH = "research/nautilus_scalping/rob940_cost_model.py"
 _COST_MODEL_SHA256 = "a5db97037a4fa3acd3712bbe82ec8d69eea4d3545d926de30d752398a3ea5366"
-_FULL_CAMPAIGN_HASH = "c821c4afdd4c3e7dbeebb766097aab54e36661070fd6b4dfa716278828773971"
+_FULL_CAMPAIGN_HASH = "bb9f6f92141c3b6cc6bf76020ca3c050c34c4d81cb1ff5dd8413e1214cf46675"
 _AUTHORIZED_PRODUCTION_CHANGES = [
-    ("A", ("research/nautilus_scalping/rob944_diagnostic_evidence.py",)),
     ("M", ("app/schemas/research_campaign_bridge.py",)),
     ("M", ("app/services/research_campaign_bridge.py",)),
-    ("M", ("research/nautilus_scalping/rob940_signal_s2.py",)),
+    ("M", ("research/nautilus_scalping/rob944_diagnostic_evidence.py",)),
     ("M", ("research/nautilus_scalping/rob944_walkforward.py",)),
     ("M", ("research/nautilus_scalping/rob945_accounting_seal.py",)),
     ("M", ("research/nautilus_scalping/rob945_h6_summary_contract.py",)),
@@ -104,7 +105,7 @@ def _is_test_path(path: str) -> bool:
     return "tests" in PurePosixPath(path).parts or path in _TEST_SUPPORT_PATHS
 
 
-def test_rob970_repair_is_the_only_post_rob962_production_delta():
+def test_rob970_r1_repair_is_the_only_post_rob970_production_delta():
     production_changes = [
         change
         for change in _changes_since_rob960()

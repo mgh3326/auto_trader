@@ -1,11 +1,13 @@
 """ROB-945 (H5) -- frozen H4/H1/H2/H3/H6 source bytes must stay unchanged.
 
-ROB-970 authorized the H3-bound repair at ``da557e36`` (the S2
-confirmation_failed timestamp root fix, plus the new Q2/Q3 diagnostic-
-evidence capture/carrier boundary, both Fable-approved per
-``orch-fable-answer-rob970-20260719.md``) as the new byte authority and
-retained this guard class -- superseding the prior ROB-962 authority
-(``237cd38a``, the exact-float ``0.0`` cost-model seed). Only the two
+ROB-970 R1 authorized the H4-bound diagnostic-evidence hardening repair at
+``02c6ca9f`` (Critical-1 fail-closed redaction, Q1=A cap=32 bounded
+diagnostic evidence, Q2=C-modified replay-divergence observation -- all
+Fable-approved per ``orch-fable-answer-rob970-r1-20260719.md``, on top of
+the original ROB-970 S2 confirmation_failed timestamp root fix at
+``da557e36``) as the new byte authority and retained this guard class --
+superseding the prior ROB-970 authority (``da557e36``) and, before that,
+ROB-962 (``237cd38a``, the exact-float ``0.0`` cost-model seed). Only the
 guards' self-referential re-pin metadata are excluded; every other frozen
 predecessor byte remains protected.
 """
@@ -16,7 +18,7 @@ import subprocess
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_FROZEN_BYTE_AUTHORITY = "da557e369f0e99c6013baad6055e5be3022646fe"
+_FROZEN_BYTE_AUTHORITY = "02c6ca9f984dcca463f879bcdd9e8ff456f8e85d"
 
 _FROZEN_PATHS = (
     "research/nautilus_scalping",
@@ -53,9 +55,9 @@ def test_h1_through_h6_owned_paths_are_byte_identical_to_the_required_starting_h
     # is forbidden.
     changed = _git_diff_names(diff_filter="MDRCT")
     assert changed == [], (
-        "after the authorized ROB-970 H3-bound repair, no later change may "
-        "modify/delete/rename a frozen H1-H6 byte; unexpected diff vs "
-        f"{_FROZEN_BYTE_AUTHORITY}: {changed}"
+        "after the authorized ROB-970 R1 diagnostic-evidence hardening "
+        "repair, no later change may modify/delete/rename a frozen H1-H6 "
+        f"byte; unexpected diff vs {_FROZEN_BYTE_AUTHORITY}: {changed}"
     )
 
 
