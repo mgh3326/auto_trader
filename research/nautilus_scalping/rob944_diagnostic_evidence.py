@@ -25,15 +25,18 @@ from __future__ import annotations
 
 import re
 import traceback
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
 from research_contracts.canonical_hash import canonical_sha256
 
 __all__ = [
+    "MAX_DISTINCT_SIGNATURES",
     "ChildFailureEvidence",
+    "DiagnosticOverflowMetadata",
+    "accumulate_diagnostic_evidence",
     "capture_child_failure_evidence",
-    "merge_child_failure_evidence",
 ]
 
 Transport = Literal["in_process"]
@@ -42,6 +45,12 @@ Stage = Literal["generator", "funding_gate", "engine"]
 _MAX_MESSAGE_CHARS = 500
 _MAX_TRACEBACK_CHARS = 4000
 _TRUNCATION_MARKER = "...<truncated>..."
+# Q3 (Fable-approved orch-fable-answer-rob970-r1-20260719.md): structural
+# redaction removes KNOWN patterns first; if the result still LOOKS unsafe
+# (a residual fail-closed check), the ENTIRE message is replaced with this
+# fixed sentinel rather than left partially exposed. Never novel-encoding
+# fail-OPEN.
+_SENTINEL_UNSAFE_MESSAGE = "<redacted-unsafe-exception-message>"
 
 # Absolute filesystem path inside a `File "..."` traceback frame line -- keep
 # only the bare filename; the worktree/host path never survives sanitization.
@@ -50,12 +59,55 @@ _FILE_FRAME_RE = re.compile(r'File "[^"]*[\\/]([^\\/"]+)"')
 # "..."` frame (defense in depth) -- collapse to its bare last component.
 _BARE_ABS_PATH_RE = re.compile(r"(?<![\w./])/(?:[\w.\-]+/)+([\w.\-]+)")
 
+# Unquoted `key=value`/`key: value` secret-shaped assignment (mixed-case key
+# names via `(?i)`).
 _SECRET_KV_RE = re.compile(
-    r"(?i)\b(secret|token|password|passwd|api[_-]?key|access[_-]?key|dsn)\b"
-    r"(\s*[:=]\s*)(\S+)"
+    r"(?i)\b(\w*(?:secret|token|passwd|password|api[_-]?key|access[_-]?key|dsn|"
+    r"credential)\w*)\b(\s*[:=]\s*)(\S+)"
+)
+# Quoted key/value secret-shaped assignment -- dict-repr/env-dump style, e.g.
+# `'OPENAI_API_KEY': 'sk-...'` or `"secret_token": "..."` (R1 Critical-1's
+# exact adversarial repro: the OLD unquoted-only regex missed this shape).
+_SECRET_QUOTED_KV_RE = re.compile(
+    r"(?i)(['\"])(\w*(?:secret|token|passwd|password|api[_-]?key|access[_-]?key|"
+    r"dsn|credential)\w*)\1(\s*[:=]\s*)(['\"])[^'\"]*\4"
 )
 _DSN_URL_RE = re.compile(r"(?i)\b\w+://[^\s\"']*:[^\s\"'@]*@[^\s\"']+")
 _BEARER_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_\-.]{10,}\b")
+# A `{...}` span containing at least one quoted `'key': 'value'`-shaped pair
+# -- a dict/env-dump repr, redacted wholesale regardless of key names (fail-
+# closed: we don't know what else the dict carries).
+_DICT_LITERAL_RE = re.compile(r"\{(?:[^{}]|\n){0,2000}?\}")
+_DICT_LITERAL_HAS_KV_RE = re.compile(r"['\"]\s*:\s*['\"]")
+# A `ClassName(field=value, field=value, ...)`-shaped repr (2+ kwargs) --
+# generic raw-record redaction (Bar1m/TradeRecord/NoTradeRecord/SignalEvent/
+# etc.) without hardcoding any specific class name.
+_DATACLASS_REPR_RE = re.compile(
+    r"\b[A-Z][A-Za-z0-9_]*\((?:[a-zA-Z_][a-zA-Z0-9_]*=[^(){}]*?,\s*){1,}"
+    r"[a-zA-Z_][a-zA-Z0-9_]*=[^(){}]*?\)"
+)
+
+# Residual fail-closed detectors (Q3): run AFTER structural redaction. Each
+# pattern's trigger requires an actual non-placeholder value immediately
+# following, so an ALREADY-safely-redacted `key: <redacted>` never
+# re-triggers a full-message wipe.
+_RESIDUAL_KV_SECRET_RE = re.compile(
+    r"(?i)\b\w*(?:secret|token|passwd|password|api[_-]?key|access[_-]?key|dsn|"
+    r"credential)\w*\b['\"]?\s*[:=]\s*(?!<redacted)['\"]?\S"
+)
+_RESIDUAL_DICT_LITERAL_RE = re.compile(
+    r"\{(?:[^{}]|\n){0,2000}?['\"]\s*:\s*['\"][^{}]*?\}"
+)
+_RESIDUAL_DATACLASS_REPR_RE = _DATACLASS_REPR_RE
+# A domain-agnostic backstop for genuinely novel/unrecognized encodings: a
+# SHOUTY (all-caps, 4+ letters) secret-vocabulary word. Ordinary messages in
+# this codebase's vocabulary never shout these words in caps -- a hit here
+# means the structural patterns above didn't recognize the surrounding
+# shape, not that the content is actually safe.
+_RESIDUAL_SHOUTY_SECRET_RE = re.compile(
+    r"\b(?:SECRET|CREDENTIAL|PRIVATE[_-]?KEY|CLIENT[_-]?SECRET|PASSWORD|"
+    r"API[_-]?KEY|ACCESS[_-]?KEY)[A-Z_-]*\b"
+)
 
 
 def _redact_dsn_urls(text: str) -> str:
@@ -63,11 +115,28 @@ def _redact_dsn_urls(text: str) -> str:
 
 
 def _redact_secret_kv(text: str) -> str:
+    text = _SECRET_QUOTED_KV_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}{m.group(1)}{m.group(3)}<redacted>", text
+    )
     return _SECRET_KV_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>", text)
 
 
 def _redact_bearer_jwt(text: str) -> str:
     return _BEARER_JWT_RE.sub("<redacted-token>", text)
+
+
+def _redact_dict_literals(text: str) -> str:
+    def _replace(m: re.Match) -> str:
+        chunk = m.group(0)
+        if _DICT_LITERAL_HAS_KV_RE.search(chunk):
+            return "<redacted-dict>"
+        return chunk
+
+    return _DICT_LITERAL_RE.sub(_replace, text)
+
+
+def _redact_dataclass_reprs(text: str) -> str:
+    return _DATACLASS_REPR_RE.sub("<redacted-record>", text)
 
 
 def _redact_paths(text: str) -> str:
@@ -76,13 +145,82 @@ def _redact_paths(text: str) -> str:
 
 
 def _sanitize(text: str) -> str:
-    """Order matters: redact DSNs/secrets/tokens BEFORE paths, so a secret
-    embedded inside a path-shaped string (e.g. a DSN with a leading `/`) is
-    still caught by the more specific patterns first."""
+    """Order matters: redact DSNs/secrets/tokens/dict-literals/records BEFORE
+    paths, so a secret embedded inside a path-shaped string (e.g. a DSN with
+    a leading `/`) is still caught by the more specific patterns first."""
     text = _redact_dsn_urls(text)
     text = _redact_secret_kv(text)
     text = _redact_bearer_jwt(text)
+    text = _redact_dict_literals(text)
+    text = _redact_dataclass_reprs(text)
     return _redact_paths(text)
+
+
+def _looks_unsafe_residual(text: str) -> bool:
+    """Q3 fail-closed residual check: after structural redaction, does the
+    text STILL look like it carries a secret/env-dump/raw-record shape? A
+    real hit here means structural redaction missed a genuinely
+    novel/unrecognized encoding -- never fail open."""
+    return bool(
+        _RESIDUAL_KV_SECRET_RE.search(text)
+        or _RESIDUAL_DICT_LITERAL_RE.search(text)
+        or _RESIDUAL_DATACLASS_REPR_RE.search(text)
+        or _RESIDUAL_SHOUTY_SECRET_RE.search(text)
+    )
+
+
+def _finalize_message(raw_message: str) -> str:
+    """Structural redaction, then the fail-closed residual check -- on a
+    residual hit, the message is replaced WHOLESALE (never left partially
+    exposed)."""
+    sanitized = _sanitize(raw_message)
+    if _looks_unsafe_residual(sanitized):
+        return _SENTINEL_UNSAFE_MESSAGE
+    return sanitized
+
+
+def _finalize_traceback(raw_traceback: str, raw_message: str, safe_message: str) -> str:
+    """The raw traceback's own trailing exception line duplicates
+    ``str(exc)`` -- replace that occurrence with the ALREADY-finalized safe
+    message first (so a message that needed full sentinel replacement
+    doesn't leave its raw text sitting in the traceback too), then apply the
+    same structural + residual-fail-closed treatment to whatever remains.
+    ``capture_locals=False`` means every OTHER line is static source text
+    (frame headers/``File "..."``/source lines) -- never a runtime value --
+    so only non-frame lines are neutralized on a residual hit, preserving
+    every failing frame."""
+    text = raw_traceback
+    if raw_message and raw_message in text:
+        text = text.replace(raw_message, safe_message)
+    text = _sanitize(text)
+    if _looks_unsafe_residual(text):
+        text = _neutralize_non_frame_lines(text)
+    return text
+
+
+_FRAME_LIKE_LINE_RE = re.compile(
+    r'^(\s*File "|Traceback \(most recent call last\)|\s*\^|\s*~|\s*$|'
+    r"The above exception was the direct cause|"
+    r"During handling of the above exception|\[Previous line repeated)"
+)
+
+
+def _neutralize_non_frame_lines(text: str) -> str:
+    """Preserve every frame/header line (source text only, never a runtime
+    value under ``capture_locals=False``) and replace every OTHER line
+    (typically a chained exception's own secret-bearing message line) with
+    the fixed sentinel."""
+    out_lines = []
+    for line in text.splitlines():
+        if _FRAME_LIKE_LINE_RE.match(line) or (
+            out_lines
+            and line.startswith((" ", "\t"))
+            and not line.strip().startswith("^")
+        ):
+            out_lines.append(line)
+        else:
+            out_lines.append(_SENTINEL_UNSAFE_MESSAGE)
+    return "\n".join(out_lines)
 
 
 def _bound_head(text: str, limit: int) -> tuple[str, bool]:
@@ -166,12 +304,12 @@ def capture_child_failure_evidence(
     raw_message = str(exc)
     raw_traceback = "".join(te.format())
 
-    sanitized_message = _sanitize(raw_message)
-    sanitized_traceback = _sanitize(raw_traceback)
+    safe_message = _finalize_message(raw_message)
+    safe_traceback = _finalize_traceback(raw_traceback, raw_message, safe_message)
 
-    message, message_truncated = _bound_head(sanitized_message, _MAX_MESSAGE_CHARS)
+    message, message_truncated = _bound_head(safe_message, _MAX_MESSAGE_CHARS)
     traceback_text, traceback_truncated = _bound_tail(
-        sanitized_traceback, _MAX_TRACEBACK_CHARS
+        safe_traceback, _MAX_TRACEBACK_CHARS
     )
 
     signature = _compute_signature(
@@ -196,17 +334,56 @@ def capture_child_failure_evidence(
     )
 
 
-def merge_child_failure_evidence(
-    existing: tuple[ChildFailureEvidence, ...],
-    new: ChildFailureEvidence,
-) -> tuple[ChildFailureEvidence, ...]:
-    """Fold ``new`` into ``existing`` by stable signature. A recurrence of an
-    already-seen signature only bumps ``occurrence_count`` -- the FIRST-seen
-    deterministic context (symbol/fold_id/scenario_name/representative
-    message+traceback) is preserved, never overwritten by a later duplicate.
-    A new signature is appended as its own entry."""
-    for idx, current in enumerate(existing):
-        if current.signature == new.signature:
+MAX_DISTINCT_SIGNATURES = 32
+
+
+@dataclass(frozen=True)
+class DiagnosticOverflowMetadata:
+    """ROB-970 R1 (Q1=A, cap=32, Fable-approved
+    ``orch-fable-answer-rob970-r1-20260719.md``): closed-shape,
+    diagnostics-only overflow accounting for anything beyond the first 32
+    DISTINCT signatures (in canonical/first-seen execution order).
+    Deliberately carries NO hash/identity role -- excluded from every
+    semantic hash/fingerprint/verdict, exactly like ``ChildFailureEvidence``
+    itself. Exactly these three fields, nothing more."""
+
+    truncated: bool
+    omitted_distinct_signatures: int
+    omitted_occurrences: int
+
+
+def accumulate_diagnostic_evidence(
+    events: Sequence[ChildFailureEvidence],
+    *,
+    max_distinct: int = MAX_DISTINCT_SIGNATURES,
+) -> tuple[tuple[ChildFailureEvidence, ...], DiagnosticOverflowMetadata]:
+    """Fold ``events`` (in the order captured -- canonical execution order)
+    into a BOUNDED tuple of at most ``max_distinct`` distinct signatures,
+    plus honest overflow metadata for anything beyond the cap.
+
+    A recurrence of an already-RETAINED signature only bumps its
+    ``occurrence_count`` -- the FIRST-seen deterministic context is
+    preserved, never overwritten. A recurrence of an already-OMITTED
+    signature (the cap was already full when it first appeared) only bumps
+    ``omitted_occurrences`` -- it does NOT count again toward
+    ``omitted_distinct_signatures``. A genuinely NEW signature arriving
+    after the cap is full is never silently dropped without a trace: it
+    bumps both ``omitted_distinct_signatures`` and ``omitted_occurrences``
+    and sets ``truncated=True``.
+    """
+    evidence: tuple[ChildFailureEvidence, ...] = ()
+    omitted_signatures: set[str] = set()
+    truncated = False
+    omitted_distinct_signatures = 0
+    omitted_occurrences = 0
+
+    for new in events:
+        matched_idx = next(
+            (i for i, cur in enumerate(evidence) if cur.signature == new.signature),
+            None,
+        )
+        if matched_idx is not None:
+            current = evidence[matched_idx]
             bumped = ChildFailureEvidence(
                 transport=current.transport,
                 stage=current.stage,
@@ -223,5 +400,23 @@ def merge_child_failure_evidence(
                 occurrence_count=current.occurrence_count + 1,
                 truncated=current.truncated,
             )
-            return existing[:idx] + (bumped,) + existing[idx + 1 :]
-    return existing + (new,)
+            evidence = evidence[:matched_idx] + (bumped,) + evidence[matched_idx + 1 :]
+            continue
+        if new.signature in omitted_signatures:
+            omitted_occurrences += 1
+            truncated = True
+            continue
+        if len(evidence) < max_distinct:
+            evidence = evidence + (new,)
+            continue
+        omitted_signatures.add(new.signature)
+        omitted_distinct_signatures += 1
+        omitted_occurrences += 1
+        truncated = True
+
+    overflow = DiagnosticOverflowMetadata(
+        truncated=truncated,
+        omitted_distinct_signatures=omitted_distinct_signatures,
+        omitted_occurrences=omitted_occurrences,
+    )
+    return evidence, overflow

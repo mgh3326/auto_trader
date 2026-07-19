@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import pytest
 from rob944_diagnostic_evidence import (
+    MAX_DISTINCT_SIGNATURES,
     ChildFailureEvidence,
+    DiagnosticOverflowMetadata,
+    accumulate_diagnostic_evidence,
     capture_child_failure_evidence,
-    merge_child_failure_evidence,
 )
 
 
@@ -178,14 +180,16 @@ def test_merge_aggregates_repeated_identical_signature_with_occurrence_count():
         symbol="ETHUSDT",
         fold_id="fold-01",
     )
-    merged = merge_child_failure_evidence((), e1)
-    merged = merge_child_failure_evidence(merged, e2)
+    merged, overflow = accumulate_diagnostic_evidence([e1, e2])
     assert len(merged) == 1
     assert merged[0].occurrence_count == 2
     # first-seen deterministic context is preserved, never overwritten by a
     # later duplicate.
     assert merged[0].symbol == "BTCUSDT"
     assert merged[0].fold_id == "fold-00"
+    assert overflow == DiagnosticOverflowMetadata(
+        truncated=False, omitted_distinct_signatures=0, omitted_occurrences=0
+    )
 
 
 def test_merge_keeps_distinct_signatures_separate():
@@ -203,10 +207,151 @@ def test_merge_keeps_distinct_signatures_separate():
         strategy="S2",
         config_id="S2-00",
     )
-    merged = merge_child_failure_evidence((), e1)
-    merged = merge_child_failure_evidence(merged, e2)
+    merged, overflow = accumulate_diagnostic_evidence([e1, e2])
     assert len(merged) == 2
     assert {m.occurrence_count for m in merged} == {1}
+    assert overflow.truncated is False
+
+
+def test_capture_redacts_quoted_env_dump_style_secret_keys():
+    """R1 Critical-1 exact adversarial repro: a quoted dict-repr env dump
+    (``{'OPENAI_API_KEY': '...'}``) is NOT caught by the old narrow
+    unquoted-``key=value`` regex."""
+    exc = _boom(
+        "env={'OPENAI_API_KEY': 'sk-live-RAWSECRET123', 'TOKEN': 'opaque-secret'} "
+        "raw_row=Bar1m(ts=123,open=99.1,high=100.2,low=98.7,close=100.0,volume=42.0)"
+    )
+    evidence = capture_child_failure_evidence(
+        exc,
+        transport="in_process",
+        stage="generator",
+        strategy="S1",
+        config_id="S1-00",
+    )
+    for leaked in ("sk-live-RAWSECRET123", "opaque-secret", "99.1", "100.2", "42.0"):
+        assert leaked not in evidence.message
+        assert leaked not in evidence.traceback_text
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # mixed-case key names
+        "Api_Key=sk-mixedCaseSecret1",
+        "Password: hunter2mixedcase",
+        "DSN: postgresql://user:hunter2mixed@host:5432/db",
+        # quoted, single-quoted, and dict-style forms
+        "config={'password': 'p4ssw0rd-quoted'}",
+        '{"secret_token": "double-quoted-secret-value"}',
+        # env-dump-shaped multi-key dict
+        "{'AWS_SECRET_ACCESS_KEY': 'AKIA-FAKE-SECRET', 'DB_PASSWORD': 'p4ss'}",
+        # JWT-shaped credential
+        "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payloadpart",
+        # absolute path
+        "/Users/mgh3326/work/auto_trader.rob-970/.env contains SECRET=abc123",
+    ],
+)
+def test_capture_redacts_every_secret_shaped_form(message):
+    exc = _boom(message)
+    evidence = capture_child_failure_evidence(
+        exc,
+        transport="in_process",
+        stage="engine",
+        strategy="S1",
+        config_id="S1-00",
+    )
+    for leaked in (
+        "sk-mixedCaseSecret1",
+        "hunter2mixedcase",
+        "hunter2mixed",
+        "p4ssw0rd-quoted",
+        "double-quoted-secret-value",
+        "AKIA-FAKE-SECRET",
+        "p4ss",
+        "payloadpart",
+        "/Users/mgh3326",
+        "abc123",
+    ):
+        assert leaked not in evidence.message
+        assert leaked not in evidence.traceback_text
+
+
+def test_capture_redacts_raw_market_corpus_row_reprs():
+    exc = _boom(
+        "unexpected row TradeRecord(entry_ts=123,symbol='BTCUSDT',side='long',"
+        "entry_price=100.5,exit_price=101.2,net_bps=12.3)"
+    )
+    evidence = capture_child_failure_evidence(
+        exc,
+        transport="in_process",
+        stage="engine",
+        strategy="S2",
+        config_id="S2-00",
+    )
+    for leaked in ("100.5", "101.2", "12.3", "BTCUSDT"):
+        assert leaked not in evidence.message
+
+
+def test_capture_fails_closed_with_sentinel_on_unrecognized_residual_secret_shape():
+    """Q3 (Fable-approved): structural redaction removes KNOWN patterns; a
+    genuinely novel/unrecognized shape that STILL looks unsafe after
+    structural redaction must fail closed -- the WHOLE message is replaced
+    with the fixed sentinel, never left partially exposed."""
+    exc = _boom(
+        "novel-encoding-format !!SECRET-CREDENTIAL-BLOB!! "
+        "client_secret::: 'zzz-never-matched-by-any-known-pattern-zzz' unresolved"
+    )
+    evidence = capture_child_failure_evidence(
+        exc,
+        transport="in_process",
+        stage="generator",
+        strategy="S1",
+        config_id="S1-00",
+    )
+    assert evidence.message == "<redacted-unsafe-exception-message>"
+    assert "zzz-never-matched-by-any-known-pattern-zzz" not in evidence.message
+    # type/failing-frame identity survive even when the message is sentineled.
+    assert evidence.exception_type == "ValueError"
+    assert evidence.traceback_text
+    assert "ValueError" in evidence.traceback_text
+
+
+def test_capture_does_not_over_redact_an_already_safe_message():
+    """The residual fail-closed check must not misfire on a message that
+    was ALREADY safely and fully redacted -- only genuinely unsafe leftover
+    content triggers the full-message sentinel."""
+    exc = _boom("plain safe message about S2 confirmation_failed at fold-00")
+    evidence = capture_child_failure_evidence(
+        exc,
+        transport="in_process",
+        stage="generator",
+        strategy="S1",
+        config_id="S1-00",
+    )
+    assert evidence.message != "<redacted-unsafe-exception-message>"
+    assert "confirmation_failed" in evidence.message
+
+
+def test_capture_never_leaks_locals_env_or_raw_row_via_capture_locals_false():
+    """capture_locals=False is permanent -- a local variable holding a raw
+    secret/corpus row must never appear via frame-local dumps."""
+
+    def _raise_with_local_secret():
+        local_secret_var = "LOCAL-VAR-SECRET-NEVER-SHOWN"  # noqa: F841
+        raise ValueError("generic failure message")
+
+    try:
+        _raise_with_local_secret()
+    except ValueError as exc:
+        evidence = capture_child_failure_evidence(
+            exc,
+            transport="in_process",
+            stage="engine",
+            strategy="S1",
+            config_id="S1-00",
+        )
+    assert "LOCAL-VAR-SECRET-NEVER-SHOWN" not in evidence.traceback_text
+    assert "LOCAL-VAR-SECRET-NEVER-SHOWN" not in evidence.message
 
 
 def test_only_in_process_transport_supported_today_and_stderr_is_never_fabricated():
@@ -227,3 +372,133 @@ def test_only_in_process_transport_supported_today_and_stderr_is_never_fabricate
             strategy="S1",
             config_id="S1-00",
         )
+
+
+# ---------------------------------------------------------------------------
+# ROB-970 R1 (Q1=A, cap=32, Fable-approved orch-fable-answer-rob970-r1-
+# 20260719.md): bounded distinct-signature collection with honest overflow
+# metadata -- first-32-distinct in canonical (first-seen) order, never an
+# unbounded carrier.
+# ---------------------------------------------------------------------------
+
+
+def _distinct_evidence(n: int) -> list[ChildFailureEvidence]:
+    return [
+        capture_child_failure_evidence(
+            _boom(f"distinct cause #{i}"),
+            transport="in_process",
+            stage="generator",
+            strategy="S1",
+            config_id="S1-00",
+        )
+        for i in range(n)
+    ]
+
+
+def test_max_distinct_signatures_constant_is_32():
+    assert MAX_DISTINCT_SIGNATURES == 32
+
+
+def test_cap_boundary_31_distinct_all_retained_no_overflow():
+    events = _distinct_evidence(31)
+    merged, overflow = accumulate_diagnostic_evidence(events)
+    assert len(merged) == 31
+    assert overflow == DiagnosticOverflowMetadata(
+        truncated=False, omitted_distinct_signatures=0, omitted_occurrences=0
+    )
+
+
+def test_cap_boundary_32_distinct_all_retained_no_overflow():
+    events = _distinct_evidence(32)
+    merged, overflow = accumulate_diagnostic_evidence(events)
+    assert len(merged) == 32
+    assert overflow == DiagnosticOverflowMetadata(
+        truncated=False, omitted_distinct_signatures=0, omitted_occurrences=0
+    )
+
+
+def test_cap_boundary_33_distinct_first_32_retained_33rd_overflows():
+    events = _distinct_evidence(33)
+    merged, overflow = accumulate_diagnostic_evidence(events)
+    assert len(merged) == 32
+    # canonical (first-seen execution) order -- the FIRST 32, not an
+    # arbitrary/sorted subset.
+    assert [e.signature for e in merged] == [e.signature for e in events[:32]]
+    assert overflow == DiagnosticOverflowMetadata(
+        truncated=True, omitted_distinct_signatures=1, omitted_occurrences=1
+    )
+
+
+def test_cap_repeated_signature_before_cap_is_full_bumps_occurrence_not_overflow():
+    events = _distinct_evidence(31)
+    events.append(events[0])  # repeat of an already-retained signature
+    merged, overflow = accumulate_diagnostic_evidence(events)
+    assert len(merged) == 31
+    assert merged[0].occurrence_count == 2
+    assert overflow == DiagnosticOverflowMetadata(
+        truncated=False, omitted_distinct_signatures=0, omitted_occurrences=0
+    )
+
+
+def test_cap_repeated_signature_after_cap_full_bumps_omitted_occurrences_not_distinct():
+    events = _distinct_evidence(33)  # 32 retained, #33 overflows
+    events.append(events[32])  # a SECOND occurrence of the already-omitted #33
+    merged, overflow = accumulate_diagnostic_evidence(events)
+    assert len(merged) == 32
+    assert overflow == DiagnosticOverflowMetadata(
+        truncated=True, omitted_distinct_signatures=1, omitted_occurrences=2
+    )
+
+
+def test_cap_two_new_distinct_signatures_beyond_cap_each_count_once():
+    events = _distinct_evidence(34)  # 32 retained, #33 and #34 overflow
+    merged, overflow = accumulate_diagnostic_evidence(events)
+    assert len(merged) == 32
+    assert overflow == DiagnosticOverflowMetadata(
+        truncated=True, omitted_distinct_signatures=2, omitted_occurrences=2
+    )
+
+
+def test_cap_boundary_replay_merge_is_deterministic_and_observer_effect_0():
+    """Feeding the same 40 distinct events in two independently-built but
+    identically-ordered runs must produce byte-identical evidence/overflow --
+    no wall-clock/UUID/hash-seed-dependent behavior."""
+    events_a = _distinct_evidence(40)
+    events_b = _distinct_evidence(40)  # independently captured, same messages
+    merged_a, overflow_a = accumulate_diagnostic_evidence(events_a)
+    merged_b, overflow_b = accumulate_diagnostic_evidence(events_b)
+    assert [e.signature for e in merged_a] == [e.signature for e in merged_b]
+    assert (
+        overflow_a
+        == overflow_b
+        == DiagnosticOverflowMetadata(
+            truncated=True, omitted_distinct_signatures=8, omitted_occurrences=8
+        )
+    )
+
+
+def test_serialized_capped_payload_size_is_bounded():
+    """Even with far more distinct failures than the cap, the serialized
+    size of the retained evidence stays bounded (never proportional to the
+    number of distinct failures encountered)."""
+    import json
+
+    events = _distinct_evidence(500)
+    merged, overflow = accumulate_diagnostic_evidence(events)
+    assert len(merged) == MAX_DISTINCT_SIGNATURES
+    serialized = json.dumps(
+        [
+            {
+                "transport": e.transport,
+                "stage": e.stage,
+                "exception_type": e.exception_type,
+                "message": e.message,
+                "traceback_text": e.traceback_text,
+                "occurrence_count": e.occurrence_count,
+            }
+            for e in merged
+        ]
+    )
+    # bounded by cap * per-entry max content, NOT by the 500 distinct inputs.
+    assert len(serialized) < MAX_DISTINCT_SIGNATURES * 5_000
+    assert overflow.omitted_distinct_signatures == 500 - MAX_DISTINCT_SIGNATURES
