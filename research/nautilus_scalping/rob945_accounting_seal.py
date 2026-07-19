@@ -300,10 +300,94 @@ def _validate_report_shape(
     return report
 
 
+_DIAGNOSTIC_EVIDENCE_KEY = "diagnostic_evidence"
+_DIAGNOSTIC_ROW_KEYS = frozenset(
+    {
+        "transport",
+        "stage",
+        "exception_type",
+        "message",
+        "traceback_text",
+        "stderr",
+        "strategy",
+        "config_id",
+        "symbol",
+        "fold_id",
+        "scenario_name",
+        "signature",
+        "occurrence_count",
+        "truncated",
+    }
+)
+_KNOWN_DIAGNOSTIC_TRANSPORTS = frozenset({"in_process"})
+_KNOWN_DIAGNOSTIC_STAGES = frozenset({"generator", "funding_gate", "engine"})
+
+
+def _validate_diagnostic_evidence_shape(value: Any) -> None:
+    """ROB-970 (Q2, Fable-approved): the six-key semantic seal below stays
+    EXACT -- this validates ``diagnostic_evidence``'s own shape (still
+    fail-closed against malformed/injected content) WITHOUT ever folding it
+    into ``SealedAttempt``/any hash input. Additive, persistence-only."""
+    _require(isinstance(value, list | tuple), ATTEMPT_EVIDENCE_MALFORMED_REASON)
+    for row in value:
+        _require(isinstance(row, Mapping), ATTEMPT_EVIDENCE_MALFORMED_REASON)
+        _require(
+            set(row.keys()) == _DIAGNOSTIC_ROW_KEYS,
+            ATTEMPT_EVIDENCE_MALFORMED_REASON,
+        )
+        _require(
+            row["transport"] in _KNOWN_DIAGNOSTIC_TRANSPORTS,
+            ATTEMPT_EVIDENCE_MALFORMED_REASON,
+        )
+        _require(
+            row["stage"] in _KNOWN_DIAGNOSTIC_STAGES, ATTEMPT_EVIDENCE_MALFORMED_REASON
+        )
+        _require(
+            isinstance(row["exception_type"], str) and row["exception_type"] != "",
+            ATTEMPT_EVIDENCE_MALFORMED_REASON,
+        )
+        _require(isinstance(row["message"], str), ATTEMPT_EVIDENCE_MALFORMED_REASON)
+        _require(
+            isinstance(row["traceback_text"], str) and row["traceback_text"] != "",
+            ATTEMPT_EVIDENCE_MALFORMED_REASON,
+        )
+        _require(
+            row["stderr"] is None or isinstance(row["stderr"], str),
+            ATTEMPT_EVIDENCE_MALFORMED_REASON,
+        )
+        if row["transport"] == "in_process":
+            _require(row["stderr"] is None, ATTEMPT_EVIDENCE_MALFORMED_REASON)
+        _require(isinstance(row["strategy"], str), ATTEMPT_EVIDENCE_MALFORMED_REASON)
+        _require(isinstance(row["config_id"], str), ATTEMPT_EVIDENCE_MALFORMED_REASON)
+        for key in ("symbol", "fold_id", "scenario_name"):
+            _require(
+                row[key] is None or isinstance(row[key], str),
+                ATTEMPT_EVIDENCE_MALFORMED_REASON,
+            )
+        _require(isinstance(row["signature"], str), ATTEMPT_EVIDENCE_MALFORMED_REASON)
+        occurrence_count = row["occurrence_count"]
+        _require(
+            type(occurrence_count) is int and occurrence_count >= 1,
+            ATTEMPT_EVIDENCE_MALFORMED_REASON,
+        )
+        _require(type(row["truncated"]) is bool, ATTEMPT_EVIDENCE_MALFORMED_REASON)
+
+
 def _validate_attempt(
     attempt: Any, *, expected_campaign_run_id: str, frozen_ids: frozenset[str]
 ) -> SealedAttempt:
     _require(isinstance(attempt, Mapping), ATTEMPT_EVIDENCE_MALFORMED_REASON)
+    # ROB-970 (Q2, Fable-approved orch-fable-answer-rob970-20260719.md):
+    # ``diagnostic_evidence`` is additive, persistence-only evidence with NO
+    # semantic-identity role -- it is explicitly separated out and validated
+    # on its OWN (still fail-closed against malformed content) BEFORE the
+    # six-key exact check below, so the seal's own key set NEVER silently
+    # widens and diagnostic content NEVER enters SealedAttempt/any hash
+    # input. Absent entirely (an older attempt payload predating this field)
+    # is equally valid -- treated as "no diagnostic evidence captured".
+    if _DIAGNOSTIC_EVIDENCE_KEY in attempt:
+        _validate_diagnostic_evidence_shape(attempt[_DIAGNOSTIC_EVIDENCE_KEY])
+        attempt = {k: v for k, v in attempt.items() if k != _DIAGNOSTIC_EVIDENCE_KEY}
     _require(
         set(attempt.keys())
         == {

@@ -1510,6 +1510,91 @@ def test_reordered_attempt_input_yields_identical_hash():
     assert sealed1.trial_accounting_hash == sealed2.trial_accounting_hash
 
 
+# ---------------------------------------------------------------------------
+# ROB-970 (Q2, Fable-approved orch-fable-answer-rob970-20260719.md):
+# diagnostic_evidence is additive/persistence-only -- the six-key semantic
+# seal below must stay EXACT (never silently widened), and diagnostic
+# content must never alter trial_accounting_hash (observer-effect-0).
+# ---------------------------------------------------------------------------
+
+_DIAGNOSTIC_ROW = {
+    "transport": "in_process",
+    "stage": "generator",
+    "exception_type": "RuntimeError",
+    "message": "boom",
+    "traceback_text": "Traceback...\nRuntimeError: boom\n",
+    "stderr": None,
+    "strategy": "S1",
+    "config_id": "S1-00",
+    "symbol": "BTCUSDT",
+    "fold_id": "fold-00",
+    "scenario_name": None,
+    "signature": "a" * 64,
+    "occurrence_count": 1,
+    "truncated": False,
+}
+
+
+def test_diagnostic_evidence_present_seals_successfully_and_is_observer_effect_0():
+    without = _all_24_completed_attempts()
+    with_diag = _all_24_completed_attempts()
+    with_diag[0]["diagnostic_evidence"] = [dict(_DIAGNOSTIC_ROW)]
+    with_diag[1]["diagnostic_evidence"] = [
+        dict(_DIAGNOSTIC_ROW, message="a totally different secret message")
+    ]
+    sealed_without = _seal(attempt_evidence=without)
+    sealed_with = _seal(attempt_evidence=with_diag)
+    assert sealed_without.trial_accounting_hash == sealed_with.trial_accounting_hash
+
+
+def test_diagnostic_evidence_absent_key_and_empty_list_seal_identically():
+    absent = _all_24_completed_attempts()  # real model_dump() already includes []
+    explicit_absent = _all_24_completed_attempts()
+    for attempt in explicit_absent:
+        del attempt["diagnostic_evidence"]
+    assert (
+        _seal(attempt_evidence=absent).trial_accounting_hash
+        == _seal(attempt_evidence=explicit_absent).trial_accounting_hash
+    )
+
+
+def test_rejects_diagnostic_evidence_that_is_not_a_list_or_tuple():
+    attempts = _all_24_completed_attempts()
+    attempts[0]["diagnostic_evidence"] = {"not": "a list"}
+    with pytest.raises(ScorecardInputError):
+        _seal(attempt_evidence=attempts)
+
+
+def test_rejects_diagnostic_evidence_row_with_unknown_extra_key():
+    attempts = _all_24_completed_attempts()
+    attempts[0]["diagnostic_evidence"] = [dict(_DIAGNOSTIC_ROW, injected="nope")]
+    with pytest.raises(ScorecardInputError):
+        _seal(attempt_evidence=attempts)
+
+
+def test_rejects_diagnostic_evidence_row_with_unknown_stage():
+    attempts = _all_24_completed_attempts()
+    attempts[0]["diagnostic_evidence"] = [dict(_DIAGNOSTIC_ROW, stage="database")]
+    with pytest.raises(ScorecardInputError):
+        _seal(attempt_evidence=attempts)
+
+
+def test_rejects_diagnostic_evidence_row_with_fabricated_in_process_stderr():
+    attempts = _all_24_completed_attempts()
+    attempts[0]["diagnostic_evidence"] = [dict(_DIAGNOSTIC_ROW, stderr="fabricated")]
+    with pytest.raises(ScorecardInputError):
+        _seal(attempt_evidence=attempts)
+
+
+def test_six_key_seal_still_rejects_a_genuinely_unknown_seventh_key():
+    """The exact-key check itself is NOT relaxed -- only diagnostic_evidence
+    is specifically carved out; any OTHER unexpected key is still rejected."""
+    attempts = _all_24_completed_attempts()
+    attempts[0]["some_other_injected_field"] = "nope"
+    with pytest.raises(ScorecardInputError):
+        _seal(attempt_evidence=attempts)
+
+
 def test_normalized_attempts_are_in_frozen_experiment_order():
     attempts = list(reversed(_all_24_completed_attempts()))
     sealed = _seal(attempt_evidence=attempts)
