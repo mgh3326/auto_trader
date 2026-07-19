@@ -37,6 +37,25 @@ US/해외 (`equity_us`) 및 crypto (`crypto`) live 주문 전송 시, fill/journ
 - **`anomaly`**
   - reconcile 수행 중 에러 발생.
 
+## `journals_closed=0` 진단 (ROB-955)
+
+매도 verdict가 `filled`/`partial`인데도 `journals_closed=0` (`security_pnl_usd=null` 등
+저널 기반 필드가 비는 경우)는 **두 가지 서로 다른 원인**에서 발생한다. 운영자가
+구분하지 않으면 둘 다 "저널 누락(버그)"으로 오독하기 쉽다.
+
+| 원인 | 판별 | 조치 |
+|------|------|------|
+| **A. 데이터 공백** — 매수 저널 원천이 아예 없음(저널 시스템 도입 이전 legacy 포지션 등) | `SELECT ... FROM review.trade_journals WHERE symbol = '<SYM>' AND status = 'active'` 이 **0행** | retro(trade_retrospectives) 수기 보정으로 정본화. 자동 백필은 하지 않음(ROB-955에서 백필 안 함으로 확정) |
+| **B. FIFO 부분매도 < 랏 (의도된 설계)** | 활성 저널이 **실재**하지만, 매도 수량이 가장 오래된 활성 저널의 `quantity`(랏 크기)보다 작음 | **정상 동작, 무조치.** `_close_journals_on_sell` (`app/mcp_server/tooling/order_journal.py`)의 FIFO 워크가 no-lot-splitting 정책상 아무 랏도 소비하지 않고 멈춘 것 — 버그 아님 |
+
+원인 B의 예: 활성 KIS BAC 저널(qty 3)에 매도 qty 2 < 3 → FIFO break, 저널 미종결.
+원인 A의 예: XOM/AMZN 등 `review.trade_journals` 행 자체가 0인 심볼.
+
+**향후 개선안 (스코프 밖):** reconcile 응답에 `no_active_journal`(원인 A) vs
+`partial_sell_below_lot`(원인 B)을 구분하는 진단 필드를 추가하면 운영자가 SQL
+없이도 원인을 즉시 구분할 수 있다. 코드 변경이 필요해 이 문서화 전용 이슈
+(ROB-959)의 스코프 밖이며 별도 이슈로 후속 검토.
+
 ## Migration & Deployment
 운영 적용 시, 아래 Alembic 명령어를 수행하여 `review.live_order_ledger` 테이블을 생성해야 합니다:
 ```bash
