@@ -1,9 +1,13 @@
-"""ROB-962 permits one exact post-ROB-960 production-source repair.
+"""ROB-970 permits one exact post-ROB-962 production-source repair window.
 
-The ROB-960 merge is the comparison base.  ROB-962 supersedes the two older
-historical frozen-byte guards because the cost-model source is intentionally
-lineage-changing now.  Test files are reviewable support changes; every
-production add/modify/delete/rename/copy/type-change remains in scope.
+ROB-962's own merge (``5be26f42``, which already includes its authorized
+cost-model repair) is the new comparison base -- ROB-970 supersedes the
+ROB-962-era single-change check because the S2 confirmation_failed timestamp
+root fix plus the new Q2/Q3 diagnostic-evidence capture/carrier boundary
+(both Fable-approved, ``orch-fable-answer-rob970-20260719.md``) are
+intentionally lineage-changing now. Test files are reviewable support
+changes; every production add/modify/delete/rename/copy/type-change remains
+in scope.
 """
 
 from __future__ import annotations
@@ -15,11 +19,20 @@ from pathlib import Path, PurePosixPath
 from rob944_frozen_campaign import build_production_frozen_campaign_envelope
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_ROB960_MERGE_HEAD = "81815cb112269d1cdcb4ac786978d112d2f92a52"
+_ROB960_MERGE_HEAD = "5be26f42b3e9ef058117820100e663b394c387de"
 _COST_MODEL_PATH = "research/nautilus_scalping/rob940_cost_model.py"
 _COST_MODEL_SHA256 = "a5db97037a4fa3acd3712bbe82ec8d69eea4d3545d926de30d752398a3ea5366"
-_FULL_CAMPAIGN_HASH = "fb66d90dfb776ad445040097657fc39f46f208ee46b9526318d4d607f601a8f7"
-_AUTHORIZED_PRODUCTION_CHANGE = ("M", (_COST_MODEL_PATH,))
+_FULL_CAMPAIGN_HASH = "c821c4afdd4c3e7dbeebb766097aab54e36661070fd6b4dfa716278828773971"
+_AUTHORIZED_PRODUCTION_CHANGES = [
+    ("A", ("research/nautilus_scalping/rob944_diagnostic_evidence.py",)),
+    ("M", ("app/schemas/research_campaign_bridge.py",)),
+    ("M", ("app/services/research_campaign_bridge.py",)),
+    ("M", ("research/nautilus_scalping/rob940_signal_s2.py",)),
+    ("M", ("research/nautilus_scalping/rob944_walkforward.py",)),
+    ("M", ("research/nautilus_scalping/rob945_accounting_seal.py",)),
+    ("M", ("research/nautilus_scalping/rob945_h6_summary_contract.py",)),
+    ("M", ("research/nautilus_scalping/run_rob944_campaign.py",)),
+]
 _FROZEN_PATHS = (
     "research/nautilus_scalping",
     "app/services/rob944_campaign_controller.py",
@@ -91,13 +104,13 @@ def _is_test_path(path: str) -> bool:
     return "tests" in PurePosixPath(path).parts or path in _TEST_SUPPORT_PATHS
 
 
-def test_rob962_repair_is_the_only_post_rob960_production_delta():
+def test_rob970_repair_is_the_only_post_rob962_production_delta():
     production_changes = [
         change
         for change in _changes_since_rob960()
         if not all(_is_test_path(path) for path in change[1])
     ]
-    assert production_changes == [_AUTHORIZED_PRODUCTION_CHANGE]
+    assert production_changes == sorted(_AUTHORIZED_PRODUCTION_CHANGES)
 
 
 def test_rob962_cost_model_bytes_and_derived_lineage_are_exactly_refrozen():
