@@ -62,6 +62,7 @@ _ALLOWED = {
     "rob940_cost_model",
     "rob940_engine",
     "rob941_frozen_scope",
+    "rob944_diagnostic_evidence",
     "rob944_folds",
     "rob944_frozen_campaign",
     "rob944_gap_funding",

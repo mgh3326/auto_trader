@@ -26,6 +26,12 @@ from rob940_signal_s2 import (
     count_rejection_reasons,
     generate_s2_signals,
 )
+from rob944_walkforward import (
+    ForgedSignalError,
+    _assert_no_signal_rejection_ts_collision,
+    _validate_generated_rejections,
+)
+from run_rob944_campaign import _s2_rejections_to_no_trade_records
 
 _C = FrozenSignalConstants
 _BUCKET_MS = 5 * 60_000
@@ -301,6 +307,141 @@ def test_rejection_dataclass_has_reason_field_for_aggregation():
         reason="target_direction_invalid",
     )
     assert count_rejection_reasons((rc, rc)) == {"target_direction_invalid": 2}
+
+
+def test_s2_00_confirmation_failure_uses_confirmation_close_to_avoid_real_collision():
+    """Exact ROB-970 collision shape: the confirmation for shock A is also
+    shock B, and B fails confirmation one bar later.  A's target gate and
+    B's failure must never claim the same observable decision timestamp.
+    """
+    cfg = get_s2_config("S2-00")
+    bars = _zigzag_then_shock(
+        shock_close=99.9,
+        confirm_close=100.6,
+        confirm_high=100.6,
+        confirm_low=99.95,
+    )
+    bars[-1] = dataclasses.replace(bars[-1], volume=250.0)
+    shock_idx = _FLAT_N + 47
+    # This is B's failed confirmation: B is a positive shock at t, and the
+    # next bar violates its high<=shock-high confirmation condition.
+    bars.append(_bar(shock_idx + 2, 100.6, 100.8, 100.0, 100.2, 100.0))
+    result = generate_s2_signals(
+        bars,
+        [
+            Bar1m(
+                ts=bars[-2].close_ts,
+                open=101.0,
+                high=101.0,
+                low=100.9,
+                close=100.95,
+                volume=10.0,
+            )
+        ],
+        cfg,
+        symbol="BTCUSDT",
+        fold_id="fold-00",
+    )
+    rejections = _s2_rejections_to_no_trade_records(result.rejections)
+    reasons_at_first_confirmation = {
+        row.reason for row in rejections if row.signal_ts == bars[-2].close_ts
+    }
+    assert reasons_at_first_confirmation == {"target_direction_invalid"}
+    assert [row.reason for row in rejections if row.signal_ts == bars[-1].close_ts] == [
+        "confirmation_failed"
+    ]
+    _validate_generated_rejections(
+        rejections,
+        strategy="S2",
+        config_id="S2-00",
+        symbol="BTCUSDT",
+        fold_id="fold-00",
+        window_start_ms=0,
+        window_end_ms=bars[-1].close_ts,
+    )
+
+
+def test_s2_00_generator_cross_list_accepted_signal_and_next_confirmation_failure_use_distinct_timestamps():
+    """ROB-970 R1 Important-3: the CROSS-LIST collision shape -- shock A's
+    confirmation bar is ACCEPTED as a real signal, and that SAME bar is also
+    shock B, whose own confirmation fails one bar later. On the OLD (pre-
+    ROB-970) shock-bar-close authority, B's failed-confirmation rejection
+    would have claimed the SAME signal_ts as A's real accepted signal --
+    the real H4 cross-list guard (``_assert_no_signal_rejection_ts_collision``)
+    must RED on that reconstructed old-authority pair and GREEN on the
+    actual HEAD output. Never forged generic S1 rows -- the real S2
+    generator output, exercised through the unmodified H4 guard.
+    """
+    cfg = get_s2_config("S2-00")
+    bars = _zigzag_then_shock(
+        shock_close=99.9,
+        confirm_close=100.6,
+        confirm_high=100.6,
+        confirm_low=99.95,
+    )
+    bars[-1] = dataclasses.replace(bars[-1], volume=250.0)
+    # A's confirmation bar close == B's shock-bar close (old authority).
+    shock_a_confirm_ts = bars[-1].close_ts
+    shock_idx = _FLAT_N + 47
+    # B's failed confirmation: B is a positive shock at A's confirm bar,
+    # and the next bar violates its high<=shock-high confirmation condition.
+    bars.append(_bar(shock_idx + 2, 100.6, 100.8, 100.0, 100.2, 100.0))
+
+    result = generate_s2_signals(
+        bars,
+        [
+            Bar1m(
+                ts=shock_a_confirm_ts,
+                open=99.70,
+                high=99.9,
+                low=99.6,
+                close=99.8,
+                volume=10.0,
+            )
+        ],
+        cfg,
+        symbol="BTCUSDT",
+        fold_id="fold-00",
+    )
+    assert len(result.signals) == 1
+    accepted = result.signals[0]
+    assert accepted.side == "long"
+    assert accepted.signal_ts == shock_a_confirm_ts
+
+    rejections = _s2_rejections_to_no_trade_records(result.rejections)
+    b_rejections = [r for r in rejections if r.reason == "confirmation_failed"]
+    assert len(b_rejections) == 1
+    b_rejection = b_rejections[0]
+    # HEAD: B's rejection uses ITS OWN confirmation bar's close -- distinct
+    # from A's accepted signal_ts.
+    assert b_rejection.signal_ts == bars[-1].close_ts
+    assert b_rejection.signal_ts != accepted.signal_ts
+
+    # Real H4 cross-list guard GREEN on the actual HEAD output.
+    _assert_no_signal_rejection_ts_collision(
+        result.signals,
+        rejections,
+        strategy="S2",
+        config_id="S2-00",
+        symbol="BTCUSDT",
+        fold_id="fold-00",
+    )
+
+    # RED reconstruction: the OLD (shock-bar-close) authority's rejection
+    # would have shared A's accepted signal_ts -- runs the REAL,
+    # unmodified H4 guard on that reconstructed row.
+    old_style_b_rejection = dataclasses.replace(
+        b_rejection, signal_ts=shock_a_confirm_ts
+    )
+    with pytest.raises(ForgedSignalError):
+        _assert_no_signal_rejection_ts_collision(
+            result.signals,
+            (old_style_b_rejection,),
+            strategy="S2",
+            config_id="S2-00",
+            symbol="BTCUSDT",
+            fold_id="fold-00",
+        )
 
 
 # ---------------------------------------------------------------------------

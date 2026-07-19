@@ -467,6 +467,85 @@ def test_mutation_of_a_scenario_metric_changes_the_artifact_hash():
     assert e1["scorecard_artifact_hash"] != e2["scorecard_artifact_hash"]
 
 
+def test_diagnostic_evidence_and_overflow_never_alter_campaign_verdict_or_scorecard_hash():
+    """ROB-970 R1 Important-5: a DIRECT assertion (not merely an inferred
+    code-path separation) that diagnostic content -- present, absent, or
+    differently-worded -- never changes campaign_verdict, the scorecard's
+    own semantic artifact hash, the H5 six-key accounting seal/trial
+    accounting hash, or the full campaign identity/run ID.
+
+    R2 stop-gate audit: the REAL production replay-divergence observer
+    seam is exercised elsewhere, through actual ``record_attempt`` in the
+    OWNING app/service integration suite
+    (``tests/services/research/test_research_campaign_bridge_observer_effect.py``)
+    -- never here. A pure H5 module test calling a private app-service
+    function on a hand-built ``SimpleNamespace`` fake row is vacuous (the
+    fake row/incoming evidence are unrelated to the scorecard kwargs
+    rebuilt afterward) and improperly imports ``app.*`` runtime code into
+    a module that must stay free of it.
+    """
+    baseline_kwargs = _base_kwargs()
+    baseline = build_scorecard(**baseline_kwargs)
+
+    with_diagnostics_kwargs = _base_kwargs()
+    attempts = with_diagnostics_kwargs["attempt_evidence"]
+    attempts[0] = dict(
+        attempts[0],
+        diagnostic_evidence=[dict(_DIAGNOSTIC_ROW)],
+        diagnostic_overflow={
+            "truncated": True,
+            "omitted_distinct_signatures": 2,
+            "omitted_occurrences": 5,
+        },
+    )
+    attempts[1] = dict(
+        attempts[1],
+        diagnostic_evidence=[
+            dict(_DIAGNOSTIC_ROW, message="a totally different secret-bearing message")
+        ],
+    )
+    with_diagnostics = build_scorecard(**with_diagnostics_kwargs)
+
+    assert (
+        baseline["scorecard_payload"]["campaign_verdict"]
+        == with_diagnostics["scorecard_payload"]["campaign_verdict"]
+    )
+    assert (
+        baseline["scorecard_artifact_hash"]
+        == with_diagnostics["scorecard_artifact_hash"]
+    )
+    assert (
+        baseline["scorecard_payload"]["lineage"]["trial_accounting_hash"]
+        == with_diagnostics["scorecard_payload"]["lineage"]["trial_accounting_hash"]
+    )
+    assert (
+        baseline["scorecard_payload"]["lineage"]["full_campaign_hash"]
+        == with_diagnostics["scorecard_payload"]["lineage"]["full_campaign_hash"]
+    )
+    assert (
+        baseline["scorecard_payload"]["lineage"]["campaign_run_id"]
+        == with_diagnostics["scorecard_payload"]["lineage"]["campaign_run_id"]
+    )
+
+
+_DIAGNOSTIC_ROW = {
+    "transport": "in_process",
+    "stage": "generator",
+    "exception_type": "RuntimeError",
+    "message": "boom",
+    "traceback_text": "Traceback...\nRuntimeError: boom\n",
+    "stderr": None,
+    "strategy": "S1",
+    "config_id": "S1-00",
+    "symbol": "BTCUSDT",
+    "fold_id": "fold-00",
+    "scenario_name": None,
+    "signature": "a" * 64,
+    "occurrence_count": 1,
+    "truncated": False,
+}
+
+
 def test_markdown_is_a_pure_render_of_the_json_and_traces_every_verdict():
     envelope = build_scorecard(**_base_kwargs())
     markdown = render_markdown(envelope)

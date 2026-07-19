@@ -270,6 +270,297 @@ def test_rejects_non_exact_config_attempt_evidence_summary_type():
         )
 
 
+# -- ROB-970 (Q2, Fable-approved): diagnostic_evidence passthrough --------
+
+
+def _child_failure_evidence(**overrides):
+    from rob944_diagnostic_evidence import ChildFailureEvidence
+
+    base = {
+        "transport": "in_process",
+        "stage": "generator",
+        "exception_type": "RuntimeError",
+        "message": "boom",
+        "traceback_text": "Traceback (most recent call last):\nRuntimeError: boom\n",
+        "stderr": None,
+        "strategy": "S1",
+        "config_id": "S1-00",
+        "symbol": "BTCUSDT",
+        "fold_id": "fold-00",
+        "scenario_name": None,
+        "signature": _hex64("boom-signature"),
+        "occurrence_count": 1,
+        "truncated": False,
+    }
+    base.update(overrides)
+    return ChildFailureEvidence(**base)
+
+
+def test_diagnostic_evidence_passes_through_normalization_unchanged():
+    evidence = _child_failure_evidence()
+    summary = _well_formed_summary(
+        status="crashed",
+        reason_code=REASON_CHILD_EXECUTION_CRASHED,
+    )
+    from dataclasses import replace
+
+    summary = replace(summary, diagnostic_evidence=(evidence,))
+    normalized = normalize_and_validate_h6_summary(
+        summary, expected_strategy="S1", expected_config_id="S1-00"
+    )
+    assert normalized.diagnostic_evidence == (evidence,)
+
+
+def test_diagnostic_evidence_defaults_to_empty_tuple_when_absent():
+    summary = _well_formed_summary()
+    normalized = normalize_and_validate_h6_summary(
+        summary, expected_strategy="S1", expected_config_id="S1-00"
+    )
+    assert normalized.diagnostic_evidence == ()
+
+
+def test_rejects_non_exact_tuple_diagnostic_evidence():
+    from dataclasses import replace
+
+    summary = replace(
+        _well_formed_summary(), diagnostic_evidence=[_child_failure_evidence()]
+    )
+    with pytest.raises(H6SummaryContractError):
+        normalize_and_validate_h6_summary(
+            summary, expected_strategy="S1", expected_config_id="S1-00"
+        )
+
+
+def test_rejects_non_exact_child_failure_evidence_entry_type():
+    from dataclasses import replace
+
+    summary = replace(
+        _well_formed_summary(),
+        diagnostic_evidence=({"stage": "generator"},),
+    )
+    with pytest.raises(H6SummaryContractError):
+        normalize_and_validate_h6_summary(
+            summary, expected_strategy="S1", expected_config_id="S1-00"
+        )
+
+
+def test_diagnostic_evidence_never_alters_fold_evidence_hash_or_run_identity():
+    """Observer-effect-0 at the H5 recompute boundary: the SAME semantic
+    summary with vs. without diagnostic_evidence must hash/run-identity
+    IDENTICALLY -- diagnostic content has no seal role."""
+    from dataclasses import replace
+
+    with_diag = normalize_and_validate_h6_summary(
+        replace(
+            _well_formed_summary(
+                status="crashed", reason_code=REASON_CHILD_EXECUTION_CRASHED
+            ),
+            diagnostic_evidence=(_child_failure_evidence(message="one message"),),
+        ),
+        expected_strategy="S1",
+        expected_config_id="S1-00",
+    )
+    without_diag = normalize_and_validate_h6_summary(
+        _well_formed_summary(
+            status="crashed", reason_code=REASON_CHILD_EXECUTION_CRASHED
+        ),
+        expected_strategy="S1",
+        expected_config_id="S1-00",
+    )
+    different_diag = normalize_and_validate_h6_summary(
+        replace(
+            _well_formed_summary(
+                status="crashed", reason_code=REASON_CHILD_EXECUTION_CRASHED
+            ),
+            diagnostic_evidence=(
+                _child_failure_evidence(message="a totally different message"),
+            ),
+        ),
+        expected_strategy="S1",
+        expected_config_id="S1-00",
+    )
+    common_kwargs = {
+        "full_campaign_hash": _FULL_CAMPAIGN_HASH,
+        "campaign_run_id": _CAMPAIGN_RUN_ID,
+        "strategy_key": _STRATEGY_KEY["S1"],
+        "experiment_id": "exp-observer-effect-0",
+        "retry_index": 0,
+    }
+    hash_with, identity_with = _recompute_fold_evidence_hash_and_run_identity(
+        with_diag, **common_kwargs
+    )
+    hash_without, identity_without = _recompute_fold_evidence_hash_and_run_identity(
+        without_diag, **common_kwargs
+    )
+    hash_different, identity_different = _recompute_fold_evidence_hash_and_run_identity(
+        different_diag, **common_kwargs
+    )
+    assert hash_with == hash_without == hash_different
+    assert identity_with == identity_without == identity_different
+
+
+# -- ROB-970 R1 (Q1=A, cap=32): diagnostic_overflow passthrough ------------
+
+
+def _overflow(**overrides):
+    from rob944_diagnostic_evidence import DiagnosticOverflowMetadata
+
+    base = {
+        "truncated": True,
+        "omitted_distinct_signatures": 3,
+        "omitted_occurrences": 7,
+    }
+    base.update(overrides)
+    return DiagnosticOverflowMetadata(**base)
+
+
+def test_diagnostic_overflow_passes_through_normalization_unchanged():
+    from dataclasses import replace
+
+    summary = replace(_well_formed_summary(), diagnostic_overflow=_overflow())
+    normalized = normalize_and_validate_h6_summary(
+        summary, expected_strategy="S1", expected_config_id="S1-00"
+    )
+    assert normalized.diagnostic_overflow == _overflow()
+
+
+def test_diagnostic_overflow_defaults_to_empty_when_absent():
+    from rob944_diagnostic_evidence import DiagnosticOverflowMetadata
+
+    summary = _well_formed_summary()
+    normalized = normalize_and_validate_h6_summary(
+        summary, expected_strategy="S1", expected_config_id="S1-00"
+    )
+    assert normalized.diagnostic_overflow == DiagnosticOverflowMetadata(
+        truncated=False, omitted_distinct_signatures=0, omitted_occurrences=0
+    )
+
+
+def test_rejects_non_exact_diagnostic_overflow_type():
+    from dataclasses import replace
+
+    summary = replace(
+        _well_formed_summary(),
+        diagnostic_overflow={
+            "truncated": True,
+            "omitted_distinct_signatures": 1,
+            "omitted_occurrences": 1,
+        },
+    )
+    with pytest.raises(H6SummaryContractError):
+        normalize_and_validate_h6_summary(
+            summary, expected_strategy="S1", expected_config_id="S1-00"
+        )
+
+
+def test_rejects_negative_omitted_counts_in_diagnostic_overflow():
+    from dataclasses import replace
+
+    summary = replace(
+        _well_formed_summary(),
+        diagnostic_overflow=_overflow(omitted_distinct_signatures=-1),
+    )
+    with pytest.raises(H6SummaryContractError):
+        normalize_and_validate_h6_summary(
+            summary, expected_strategy="S1", expected_config_id="S1-00"
+        )
+
+
+def test_rejects_diagnostic_evidence_longer_than_the_cap():
+    """R2 audit: every trust boundary must independently fail closed if
+    ``len(diagnostic_evidence) > 32``, not only the producer helper."""
+    from dataclasses import replace
+
+    too_many = tuple(
+        _child_failure_evidence(signature=_hex64(f"forged-sig-{i}")) for i in range(33)
+    )
+    summary = replace(_well_formed_summary(), diagnostic_evidence=too_many)
+    with pytest.raises(H6SummaryContractError):
+        normalize_and_validate_h6_summary(
+            summary, expected_strategy="S1", expected_config_id="S1-00"
+        )
+
+
+def test_accepts_diagnostic_evidence_exactly_at_the_cap():
+    from dataclasses import replace
+
+    exactly_32 = tuple(
+        _child_failure_evidence(signature=_hex64(f"forged-sig-{i}")) for i in range(32)
+    )
+    summary = replace(_well_formed_summary(), diagnostic_evidence=exactly_32)
+    normalized = normalize_and_validate_h6_summary(
+        summary, expected_strategy="S1", expected_config_id="S1-00"
+    )
+    assert len(normalized.diagnostic_evidence) == 32
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {
+            "truncated": False,
+            "omitted_distinct_signatures": 0,
+            "omitted_occurrences": 1,
+        },
+        {"truncated": True, "omitted_distinct_signatures": 0, "omitted_occurrences": 0},
+        {
+            "truncated": False,
+            "omitted_distinct_signatures": 1,
+            "omitted_occurrences": 1,
+        },
+    ],
+)
+def test_rejects_diagnostic_overflow_with_inconsistent_truncated_flag(overrides):
+    """``truncated`` must be exactly ``omitted_occurrences > 0`` -- never a
+    caller-asserted boolean independent of the actual counts."""
+    from dataclasses import replace
+
+    summary = replace(
+        _well_formed_summary(), diagnostic_overflow=_overflow(**overrides)
+    )
+    with pytest.raises(H6SummaryContractError):
+        normalize_and_validate_h6_summary(
+            summary, expected_strategy="S1", expected_config_id="S1-00"
+        )
+
+
+def test_diagnostic_overflow_never_alters_fold_evidence_hash_or_run_identity():
+    from dataclasses import replace
+
+    common_kwargs = {
+        "full_campaign_hash": _FULL_CAMPAIGN_HASH,
+        "campaign_run_id": _CAMPAIGN_RUN_ID,
+        "strategy_key": _STRATEGY_KEY["S1"],
+        "experiment_id": "exp-overflow-observer-effect-0",
+        "retry_index": 0,
+    }
+    without_overflow = normalize_and_validate_h6_summary(
+        _well_formed_summary(
+            status="crashed", reason_code=REASON_CHILD_EXECUTION_CRASHED
+        ),
+        expected_strategy="S1",
+        expected_config_id="S1-00",
+    )
+    with_overflow = normalize_and_validate_h6_summary(
+        replace(
+            _well_formed_summary(
+                status="crashed", reason_code=REASON_CHILD_EXECUTION_CRASHED
+            ),
+            diagnostic_overflow=_overflow(),
+        ),
+        expected_strategy="S1",
+        expected_config_id="S1-00",
+    )
+    hash_without, identity_without = _recompute_fold_evidence_hash_and_run_identity(
+        without_overflow, **common_kwargs
+    )
+    hash_with, identity_with = _recompute_fold_evidence_hash_and_run_identity(
+        with_overflow, **common_kwargs
+    )
+    assert hash_without == hash_with
+    assert identity_without == identity_with
+
+
 # -- Fold cardinality (the literal I2 repro: one fold missing => 7 rows) --
 
 

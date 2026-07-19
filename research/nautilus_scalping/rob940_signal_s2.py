@@ -208,7 +208,12 @@ def generate_s2_signals(
                             strategy="S2",
                             config_id=config.config_id,
                             symbol=symbol,
-                            signal_ts=shock_bar.close_ts,
+                            # Confirmation failure becomes observable only
+                            # after this confirmation bar closes.  Use the
+                            # same decision-time authority as every other
+                            # S2 outcome so a bar that is itself the next
+                            # shock cannot collide with this rejection.
+                            signal_ts=signal_ts,
                             side=pending_direction,
                             reason="confirmation_failed",
                             fold_id=fold_id,

@@ -957,6 +957,104 @@ def _normalize_fold_selection_evidence_summary(row, *, context: str):
     )
 
 
+_KNOWN_DIAGNOSTIC_TRANSPORTS = frozenset({"in_process"})
+_KNOWN_DIAGNOSTIC_STAGES = frozenset({"generator", "funding_gate", "engine"})
+
+
+def _normalize_child_failure_evidence_row(row, *, context: str):
+    """ROB-970 (Q2, Fable-approved): one caller-owned ``ChildFailureEvidence``
+    -> exact-type/field-checked, unchanged. Additive, persistence-only --
+    never touches any hash/identity payload downstream."""
+    from rob944_diagnostic_evidence import ChildFailureEvidence
+
+    if type(row) is not ChildFailureEvidence:
+        raise ValueError(
+            f"{context} must be an exact ChildFailureEvidence -- refusing to persist"
+        )
+    transport = _assert_exact_str(row.transport, context=f"{context} transport")
+    if transport not in _KNOWN_DIAGNOSTIC_TRANSPORTS:
+        raise ValueError(
+            f"{context} transport is outside the closed known-transport set"
+        )
+    stage = _assert_exact_str(row.stage, context=f"{context} stage")
+    if stage not in _KNOWN_DIAGNOSTIC_STAGES:
+        raise ValueError(f"{context} stage is outside the closed known-stage set")
+    _assert_exact_str(row.exception_type, context=f"{context} exception_type")
+    _assert_exact_str(row.message, context=f"{context} message")
+    _assert_exact_str(row.traceback_text, context=f"{context} traceback_text")
+    stderr = _assert_exact_str_or_none(row.stderr, context=f"{context} stderr")
+    if transport == "in_process" and stderr is not None:
+        raise ValueError(
+            f"{context} in_process transport must never fabricate a stderr value"
+        )
+    _assert_exact_str(row.strategy, context=f"{context} strategy")
+    _assert_exact_str(row.config_id, context=f"{context} config_id")
+    _assert_exact_str_or_none(row.symbol, context=f"{context} symbol")
+    _assert_exact_str_or_none(row.fold_id, context=f"{context} fold_id")
+    _assert_exact_str_or_none(row.scenario_name, context=f"{context} scenario_name")
+    _assert_exact_str(row.signature, context=f"{context} signature")
+    occurrence_count = _assert_exact_int(
+        row.occurrence_count, context=f"{context} occurrence_count"
+    )
+    if occurrence_count < 1:
+        raise ValueError(f"{context} occurrence_count must be >= 1")
+    _assert_exact_bool(row.truncated, context=f"{context} truncated")
+    return row
+
+
+def _normalize_diagnostic_evidence_tuple(raw_value, *, context: str):
+    from rob944_diagnostic_evidence import MAX_DISTINCT_SIGNATURES
+
+    if type(raw_value) is not tuple:
+        raise ValueError(f"{context} must be an exact tuple -- refusing to persist")
+    # R2 audit (one cap policy at every trust boundary, never only the
+    # producer helper).
+    if len(raw_value) > MAX_DISTINCT_SIGNATURES:
+        raise ValueError(
+            f"{context} must have at most {MAX_DISTINCT_SIGNATURES} entries -- "
+            "refusing to persist"
+        )
+    return tuple(
+        _normalize_child_failure_evidence_row(row, context=f"{context}#{idx}")
+        for idx, row in enumerate(raw_value)
+    )
+
+
+def _normalize_diagnostic_overflow(raw_value, *, context: str):
+    """ROB-970 R1 (Q1=A, cap=32): honest overflow accounting -- exact-type/
+    field-checked, unchanged. Additive, persistence-only."""
+    from rob944_diagnostic_evidence import DiagnosticOverflowMetadata
+
+    if type(raw_value) is not DiagnosticOverflowMetadata:
+        raise ValueError(
+            f"{context} must be an exact DiagnosticOverflowMetadata -- refusing to persist"
+        )
+    truncated = _assert_exact_bool(raw_value.truncated, context=f"{context} truncated")
+    omitted_distinct_signatures = _assert_exact_int(
+        raw_value.omitted_distinct_signatures,
+        context=f"{context} omitted_distinct_signatures",
+    )
+    if omitted_distinct_signatures < 0:
+        raise ValueError(f"{context} omitted_distinct_signatures must be >= 0")
+    omitted_occurrences = _assert_exact_int(
+        raw_value.omitted_occurrences, context=f"{context} omitted_occurrences"
+    )
+    if omitted_occurrences < 0:
+        raise ValueError(f"{context} omitted_occurrences must be >= 0")
+    if omitted_distinct_signatures > omitted_occurrences:
+        raise ValueError(
+            f"{context} omitted_distinct_signatures cannot exceed omitted_occurrences"
+        )
+    # R2 audit: truncated is a DERIVED fact, never an independent caller
+    # assertion.
+    if truncated != (omitted_occurrences > 0):
+        raise ValueError(
+            f"{context} truncated must be exactly (omitted_occurrences > 0) -- "
+            "refusing to persist"
+        )
+    return raw_value
+
+
 def _normalize_config_attempt_evidence_summary(summary, *, context: str):
     """THE single normalization entry point (captain normalization-scope
     clarification, 2026-07-17): every container is required to be its
@@ -1019,6 +1117,12 @@ def _normalize_config_attempt_evidence_summary(summary, *, context: str):
     fold_selection_trace = tuple(
         sorted(normalized_fold_rows, key=lambda row: row.fold_id)
     )
+    diagnostic_evidence = _normalize_diagnostic_evidence_tuple(
+        summary.diagnostic_evidence, context=f"{context} diagnostic_evidence"
+    )
+    diagnostic_overflow = _normalize_diagnostic_overflow(
+        summary.diagnostic_overflow, context=f"{context} diagnostic_overflow"
+    )
     return ConfigAttemptEvidenceSummary(
         strategy=strategy,
         config_id=config_id,
@@ -1026,6 +1130,8 @@ def _normalize_config_attempt_evidence_summary(summary, *, context: str):
         reason_code=reason_code,
         scenario_summaries=scenario_summaries,
         fold_selection_trace=fold_selection_trace,
+        diagnostic_evidence=diagnostic_evidence,
+        diagnostic_overflow=diagnostic_overflow,
     )
 
 
@@ -1111,6 +1217,8 @@ def _normalized_summary_to_attempt_evidence(
     from app.schemas.research_campaign_bridge import (
         AttemptEvidence,
         AttemptKey,
+        ChildFailureDiagnostic,
+        ChildFailureDiagnosticOverflow,
         ScenarioEvidence,
     )
     from research_contracts.canonical_hash import canonical_sha256
@@ -1294,6 +1402,36 @@ def _normalized_summary_to_attempt_evidence(
                 artifact_hash=row.artifact_hash,
             )
             for row in ordered_summaries
+        ),
+        # ROB-970 (Q2, Fable-approved): additive, persistence-only -- carried
+        # through UNCHANGED from the already-normalized summary; deliberately
+        # never referenced by fold_evidence_hash/run_identity above.
+        diagnostic_evidence=tuple(
+            ChildFailureDiagnostic(
+                transport=d.transport,
+                stage=d.stage,
+                exception_type=d.exception_type,
+                message=d.message,
+                traceback_text=d.traceback_text,
+                stderr=d.stderr,
+                strategy=d.strategy,
+                config_id=d.config_id,
+                symbol=d.symbol,
+                fold_id=d.fold_id,
+                scenario_name=d.scenario_name,
+                signature=d.signature,
+                occurrence_count=d.occurrence_count,
+                truncated=d.truncated,
+            )
+            for d in summary.diagnostic_evidence
+        ),
+        # ROB-970 R1 (Q1=A, cap=32): same additive treatment as
+        # diagnostic_evidence -- carried through UNCHANGED, never referenced
+        # by fold_evidence_hash/run_identity above.
+        diagnostic_overflow=ChildFailureDiagnosticOverflow(
+            truncated=summary.diagnostic_overflow.truncated,
+            omitted_distinct_signatures=summary.diagnostic_overflow.omitted_distinct_signatures,
+            omitted_occurrences=summary.diagnostic_overflow.omitted_occurrences,
         ),
     )
 
