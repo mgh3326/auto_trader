@@ -21,7 +21,7 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from app.models.review import AlpacaPaperOrderLedger
 from app.models.trading import InstrumentType
@@ -36,6 +36,8 @@ _COIDS = (
     "rob953-guard-final-reconciled",
     "rob953-guard-monotonic",
     "rob953-guard-filled-revisable",
+    "rob953-guard-final-race",
+    "rob953-guard-monotonic-race",
 )
 
 
@@ -189,7 +191,66 @@ class _FakeBroker:
         return self._order
 
     async def list_fills(self, **_):
-        return []
+        from types import SimpleNamespace
+
+        return [
+            SimpleNamespace(
+                id="fill-1",
+                order_id=self._order.id,
+                qty=self._order.filled_qty,
+                price=self._order.filled_avg_price,
+                cum_qty=self._order.filled_qty,
+            )
+        ]
+
+
+class _CompetingBroker(_FakeBroker):
+    """Commits a competing lifecycle write after reconcile loaded its stale row."""
+
+    def __init__(
+        self,
+        order,
+        *,
+        client_order_id: str,
+        lifecycle_state: str,
+        filled_qty: str,
+    ) -> None:
+        super().__init__(order)
+        self._client_order_id = client_order_id
+        self._lifecycle_state = lifecycle_state
+        self._filled_qty = Decimal(filled_qty)
+
+    async def get_order_by_client_order_id(self, _):
+        from app.core.db import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as competing_session:
+            await competing_session.execute(
+                update(AlpacaPaperOrderLedger)
+                .where(
+                    AlpacaPaperOrderLedger.client_order_id == self._client_order_id,
+                    AlpacaPaperOrderLedger.record_kind == "execution",
+                )
+                .values(
+                    lifecycle_state=self._lifecycle_state,
+                    filled_qty=self._filled_qty,
+                    filled_avg_price=Decimal("353.156"),
+                )
+            )
+            await competing_session.commit()
+        return self._order
+
+
+async def _fresh_state(client_order_id: str) -> AlpacaPaperOrderLedger:
+    from app.core.db import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as fresh_session:
+        result = await fresh_session.execute(
+            select(AlpacaPaperOrderLedger).where(
+                AlpacaPaperOrderLedger.client_order_id == client_order_id,
+                AlpacaPaperOrderLedger.record_kind == "execution",
+            )
+        )
+        return result.scalar_one()
 
 
 def _order(status: str = "filled", filled_qty: str = "1"):
@@ -269,3 +330,69 @@ async def test_sibling_preview_row_does_not_fake_a_rejected_write(db_session):
     assert outcome["persisted_lifecycle_state"] == "filled"
     assert outcome.get("stale_write_rejected") is not True
     assert outcome.get("requires_manual_review") is not True
+
+
+async def test_reconcile_response_reflects_competing_final_state(db_session):
+    """A rejected write must not report booked_filled from a stale identity map."""
+    from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
+
+    coid = "rob953-guard-final-race"
+    await _seed(
+        db_session,
+        coid,
+        lifecycle_state="submitted",
+        filled_qty=Decimal("0"),
+    )
+    broker = _CompetingBroker(
+        _order(status="filled", filled_qty="1"),
+        client_order_id=coid,
+        lifecycle_state="final_reconciled",
+        filled_qty="0.8",
+    )
+
+    result = await AlpacaPaperReconcileService(
+        AlpacaPaperLedgerService(db_session), broker
+    ).reconcile(client_order_id=coid, dry_run=False)
+
+    outcome = result["reconciled"][0]
+    persisted = await _fresh_state(coid)
+    assert persisted.lifecycle_state == "final_reconciled"
+    assert persisted.filled_qty == Decimal("0.8")
+    assert outcome["action"] == "noop_stale_write_rejected"
+    assert outcome["lifecycle_state"] == "final_reconciled"
+    assert outcome["persisted_lifecycle_state"] == "final_reconciled"
+    assert outcome["filled_qty"] == "0.8"
+    assert outcome["stale_write_rejected"] is True
+
+
+async def test_reconcile_response_reflects_competing_higher_quantity(db_session):
+    """A stale 0.7 attempt must report the already-persisted 0.8, not a booking."""
+    from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
+
+    coid = "rob953-guard-monotonic-race"
+    await _seed(
+        db_session,
+        coid,
+        lifecycle_state="submitted",
+        filled_qty=Decimal("0"),
+    )
+    broker = _CompetingBroker(
+        _order(status="partially_filled", filled_qty="0.7"),
+        client_order_id=coid,
+        lifecycle_state="submitted",
+        filled_qty="0.8",
+    )
+
+    result = await AlpacaPaperReconcileService(
+        AlpacaPaperLedgerService(db_session), broker
+    ).reconcile(client_order_id=coid, dry_run=False)
+
+    outcome = result["reconciled"][0]
+    persisted = await _fresh_state(coid)
+    assert persisted.lifecycle_state == "submitted"
+    assert persisted.filled_qty == Decimal("0.8")
+    assert outcome["action"] == "noop_stale_write_rejected"
+    assert outcome["lifecycle_state"] == "submitted"
+    assert outcome["persisted_lifecycle_state"] == "submitted"
+    assert outcome["filled_qty"] == "0.8"
+    assert outcome["stale_write_rejected"] is True

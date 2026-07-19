@@ -93,12 +93,38 @@ class Ledger:
 class Broker:
     def __init__(self, order: Order | None) -> None:
         self.order = order
+        self.fill_calls: list[dict[str, Any]] = []
 
     async def get_order_by_client_order_id(self, _: str) -> Order | None:
         return self.order
 
-    async def list_fills(self, **_: Any) -> list[Any]:
-        return []
+    async def list_fills(
+        self,
+        *,
+        page_token: str | None = None,
+        page_size: int = 100,
+        direction: str = "desc",
+    ) -> list[Any]:
+        self.fill_calls.append(
+            {
+                "page_token": page_token,
+                "page_size": page_size,
+                "direction": direction,
+            }
+        )
+        if page_token is not None or self.order is None:
+            return []
+        qty = Decimal(str(self.order.filled_qty or 0))
+        if qty <= 0:
+            return []
+        return [
+            _fill(
+                self.order.id,
+                str(qty),
+                str(self.order.filled_avg_price or Decimal("353.156")),
+                str(qty),
+            )
+        ]
 
 
 def filled_order(*, status: str = "filled", qty: str = "0.014") -> Order:
@@ -475,15 +501,36 @@ def _fill(order_id: str, qty: str, price: str, cum: str, fill_id: str = "f1") ->
 
 
 class FillsBroker(Broker):
-    def __init__(self, order: Order | None, pages: list[list[Any]]) -> None:
+    """Alpaca-semantic activity fake: desc pages continue after page_token."""
+
+    def __init__(self, order: Order | None, activities: list[Any]) -> None:
         super().__init__(order)
-        self.pages = pages
+        self.activities = activities
         self.calls: list[dict[str, Any]] = []
 
-    async def list_fills(self, **kwargs: Any) -> list[Any]:
-        self.calls.append(kwargs)
-        index = len(self.calls) - 1
-        return self.pages[index] if index < len(self.pages) else []
+    async def list_fills(
+        self,
+        *,
+        page_token: str | None = None,
+        page_size: int = 100,
+        direction: str = "desc",
+    ) -> list[Any]:
+        assert direction == "desc"
+        self.calls.append(
+            {
+                "page_token": page_token,
+                "page_size": page_size,
+                "direction": direction,
+            }
+        )
+        start = 0
+        if page_token is not None:
+            start = next(
+                index + 1
+                for index, activity in enumerate(self.activities)
+                if str(activity.id) == page_token
+            )
+        return self.activities[start : start + page_size]
 
 
 @pytest.mark.asyncio
@@ -495,7 +542,7 @@ async def test_incomplete_fill_set_requires_manual_review_without_transition() -
     order = filled_order(qty="0.014")
     order.filled_avg_price = None
     ledger = Ledger([Row()])
-    broker = FillsBroker(order, [[_fill(order.id, "0.007", "100", "0.007")]])
+    broker = FillsBroker(order, [_fill(order.id, "0.007", "100", "0.007")])
 
     result = await AlpacaPaperReconcileService(ledger, broker).reconcile(dry_run=False)
     outcome = result["reconciled"][0]
@@ -510,22 +557,24 @@ async def test_incomplete_fill_set_requires_manual_review_without_transition() -
 
 @pytest.mark.asyncio
 async def test_filled_status_with_empty_fills_requires_manual_review() -> None:
-    """status=filled with no quantity and no fills is a contradiction, not a
-    silent noop_pending (which left real fills unbooked forever)."""
+    """A broker average cannot substitute for the required fill activity set."""
     from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
 
-    order = filled_order(qty="0")
-    order.filled_qty = None
-    order.filled_avg_price = None
+    order = filled_order(qty="1")
     ledger = Ledger([Row()])
+    broker = FillsBroker(order, [])
 
-    result = await AlpacaPaperReconcileService(ledger, Broker(order)).reconcile(
+    result = await AlpacaPaperReconcileService(ledger, broker).reconcile(
         dry_run=False
     )
     outcome = result["reconciled"][0]
 
     assert outcome["action"] == "noop_requires_manual_review"
     assert outcome["requires_manual_review"] is True
+    assert outcome["reason"] == "incomplete_fill_set"
+    assert broker.calls == [
+        {"page_token": None, "page_size": 100, "direction": "desc"}
+    ]
     assert ledger.status_calls == []
 
 
@@ -560,10 +609,8 @@ async def test_complete_fill_set_books_exact_quantity_weighted_average() -> None
     broker = FillsBroker(
         order,
         [
-            [
-                _fill(order.id, "0.005", "100", "0.005", fill_id="a"),
-                _fill(order.id, "0.005", "110", "0.010", fill_id="b"),
-            ]
+            _fill(order.id, "0.005", "100", "0.005", fill_id="a"),
+            _fill(order.id, "0.005", "110", "0.010", fill_id="b"),
         ],
     )
 
@@ -594,13 +641,16 @@ async def test_fill_pages_are_walked_until_the_set_is_complete() -> None:
         page_one.append(fill)
     page_two = [_fill(order.id, "0.5", "200", "100.5", fill_id="p2-0")]
 
-    broker = FillsBroker(order, [page_one, page_two])
+    broker = FillsBroker(order, [*page_one, *page_two])
     ledger = Ledger([Row()])
 
     result = await AlpacaPaperReconcileService(ledger, broker).reconcile(dry_run=False)
     outcome = result["reconciled"][0]
 
     assert len(broker.calls) == 2
+    assert [call["page_token"] for call in broker.calls] == [None, "p1-99"]
+    assert all(call["page_size"] == 100 for call in broker.calls)
+    assert all(call["direction"] == "desc" for call in broker.calls)
     assert outcome["fill_set_complete"] is True
     assert outcome["action"] == "booked_filled"
     # (100 * 100 + 0.5 * 200) / 100.5
