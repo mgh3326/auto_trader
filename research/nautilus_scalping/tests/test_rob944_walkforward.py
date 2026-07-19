@@ -20,6 +20,7 @@ import rob944_walkforward
 from rob940_cost_model import COST_SCENARIO_PRIMARY_STRESS, COST_SCENARIOS
 from rob940_engine import Bar1m, NoTradeRecord, SignalEvent
 from rob941_funding_sidecar import FundingSidecar
+from rob944_diagnostic_evidence import ChildFailureEvidence
 from rob944_folds import Fold
 from rob944_walkforward import (
     REASON_CHILD_EXECUTION_CRASHED,
@@ -2229,6 +2230,303 @@ def test_engine_stage_timeout_preserves_both_funding_and_pre_execution_rejection
     assert filtered is None
     assert outcome.no_trade_reason_counts.get("target_direction_invalid") == 1
     assert outcome.no_trade_reason_counts.get("funding_evidence_unavailable") == 1
+
+
+# ---------------------------------------------------------------------------
+# ROB-970 (Q2/Q3, Fable-approved orch-fable-answer-rob970-20260719.md):
+# typed, sanitized child-failure diagnostic evidence captured at the FIRST
+# generator/funding-gate/engine catch, carried via an optional side-channel
+# (never altering _run_scenario's/_crash_outcome's own return shape) into
+# ConfigAttemptResult/ConfigAttemptEvidenceSummary -- separate from any fixed
+# reason code or semantic hash.
+# ---------------------------------------------------------------------------
+
+
+def test_funding_gate_catch_records_typed_diagnostic_evidence():
+    bars = _flat_bars(0, 2 * 60_000)
+    sidecar = _permissive_funding_sidecars()["BTCUSDT"]
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated funding-gate crash SECRET-XYZ")
+
+    import pytest as _pytest
+
+    monkeypatch = _pytest.MonkeyPatch()
+    monkeypatch.setattr(rob944_walkforward, "_apply_funding_gate", _boom)
+    try:
+        diagnostic_notes: dict[str, list[ChildFailureEvidence]] = {}
+        outcome, filtered = _run_scenario(
+            bars,
+            (),
+            COST_SCENARIOS[0],
+            sidecar,
+            (),
+            strategy="S1",
+            config_id="S1-00",
+            symbol="BTCUSDT",
+            fold_id="fold-00",
+            diagnostic_notes=diagnostic_notes,
+        )
+    finally:
+        monkeypatch.undo()
+    assert outcome.status == "crashed"
+    assert filtered is None
+    entries = diagnostic_notes["S1-00"]
+    assert len(entries) == 1
+    evidence = entries[0]
+    assert evidence.transport == "in_process"
+    assert evidence.stage == "funding_gate"
+    assert evidence.exception_type == "RuntimeError"
+    assert "simulated funding-gate crash" in evidence.message
+    assert evidence.traceback_text
+    assert evidence.stderr is None
+    assert evidence.strategy == "S1"
+    assert evidence.config_id == "S1-00"
+    assert evidence.occurrence_count == 1
+    # the RAW exception text survives in the diagnostic carrier (this is the
+    # whole point) but never in the fixed reason/status.
+    assert outcome.error_reason is not None
+
+
+def test_engine_catch_records_typed_diagnostic_evidence():
+    bars = _flat_bars(0, 2 * 60_000)
+    sidecar_no_rate = FundingSidecar.from_rows("BTCUSDT", [])
+    sig = _make_signal("BTCUSDT", 0, config_id="S1-00", fold_id="fold-00")
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated engine crash")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(rob944_walkforward, "run_symbol_stream", _boom)
+    try:
+        diagnostic_notes: dict[str, list[ChildFailureEvidence]] = {}
+        outcome, filtered = _run_scenario(
+            bars,
+            (sig,),
+            COST_SCENARIOS[0],
+            sidecar_no_rate,
+            (),
+            strategy="S1",
+            config_id="S1-00",
+            symbol="BTCUSDT",
+            fold_id="fold-00",
+            diagnostic_notes=diagnostic_notes,
+        )
+    finally:
+        monkeypatch.undo()
+    assert outcome.status == "crashed"
+    assert filtered is None
+    entries = diagnostic_notes["S1-00"]
+    assert len(entries) == 1
+    assert entries[0].stage == "engine"
+    assert entries[0].exception_type == "RuntimeError"
+
+
+def test_run_scenario_without_diagnostic_notes_kwarg_is_unaffected():
+    """Backward compatibility: every existing caller (rob960_pbo_evaluator,
+    the rest of this test file) omits ``diagnostic_notes`` entirely -- the
+    return shape/behavior must stay byte-identical."""
+    bars = _flat_bars(0, 2 * 60_000)
+    sidecar = _permissive_funding_sidecars()["BTCUSDT"]
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated crash, no diagnostic_notes passed")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(rob944_walkforward, "_apply_funding_gate", _boom)
+    try:
+        outcome, filtered = _run_scenario(
+            bars,
+            (),
+            COST_SCENARIOS[0],
+            sidecar,
+            (),
+            strategy="S1",
+            config_id="S1-00",
+            symbol="BTCUSDT",
+            fold_id="fold-00",
+        )
+    finally:
+        monkeypatch.undo()
+    assert outcome.status == "crashed"
+    assert filtered is None
+
+
+def test_generator_catch_records_typed_diagnostic_evidence_train_and_oos():
+    def _raising_gen(symbol, bars_slice, fold_id):
+        raise RuntimeError("boom: synthetic signal-generation failure")
+
+    diagnostic_notes: dict[str, list[ChildFailureEvidence]] = {}
+    _evaluate_fold_train(
+        "S1",
+        [ConfigSpec(config_id="S1-00", generate_signals=_raising_gen)],
+        {s: _flat_bars(0, _WINDOW_END) for s in _SYMBOLS},
+        _permissive_funding_sidecars(),
+        _no_gaps(),
+        _FOLD_0,
+        {},
+        {},
+        diagnostic_notes,
+    )
+    train_entries = diagnostic_notes["S1-00"]
+    assert train_entries
+    assert train_entries[0].stage == "generator"
+    assert train_entries[0].exception_type == "RuntimeError"
+    assert train_entries[0].fold_id == "fold-00"
+
+    diagnostic_notes_oos: dict[str, list[ChildFailureEvidence]] = {}
+    _evaluate_fold_oos(
+        "S1",
+        ConfigSpec(config_id="S1-00", generate_signals=_raising_gen),
+        {s: _flat_bars(0, _WINDOW_END) for s in _SYMBOLS},
+        _permissive_funding_sidecars(),
+        _no_gaps(),
+        _FOLD_0,
+        {},
+        {},
+        diagnostic_notes_oos,
+    )
+    oos_entries = diagnostic_notes_oos["S1-00"]
+    assert oos_entries
+    assert oos_entries[0].stage == "generator"
+
+
+def test_walkforward_end_to_end_crashed_attempt_carries_diagnostic_evidence():
+    def _raising_gen(symbol, bars_slice, fold_id):
+        raise RuntimeError("boom: synthetic signal-generation failure")
+
+    specs = [
+        ConfigSpec(config_id=f"S1-{i:02d}", generate_signals=_raising_gen)
+        for i in range(12)
+    ]
+    bars_1m = {s: _flat_bars(0, _WINDOW_END) for s in _SYMBOLS}
+    result = run_walkforward(
+        strategy="S1",
+        configs=tuple(specs),
+        bars_1m=bars_1m,
+        funding_sidecars=_permissive_funding_sidecars(),
+        gap_ranges=_no_gaps(),
+        fold_schedule=(_FOLD_0, _FOLD_1),
+    )
+    assert all(a.status == "crashed" for a in result.config_attempts)
+    for attempt in result.config_attempts:
+        assert attempt.diagnostic_evidence
+        assert all(
+            isinstance(e, ChildFailureEvidence) for e in attempt.diagnostic_evidence
+        )
+        assert attempt.diagnostic_evidence[0].exception_type == "RuntimeError"
+
+    summaries = summarize_config_attempts_for_h6(result)
+    for summary in summaries:
+        assert summary.diagnostic_evidence
+        assert summary.reason_code == REASON_CHILD_EXECUTION_CRASHED  # unchanged, fixed
+
+
+def test_repeated_identical_generator_failure_across_folds_dedupes_to_one_entry():
+    """The SAME root cause recurring across every fold/symbol collapses to
+    ONE diagnostic entry with an incrementing occurrence_count, never N
+    near-duplicate rows -- Fable Q2 dedupe condition."""
+
+    def _raising_gen(symbol, bars_slice, fold_id):
+        raise RuntimeError("boom: synthetic signal-generation failure")
+
+    specs = [
+        ConfigSpec(config_id=f"S1-{i:02d}", generate_signals=_raising_gen)
+        for i in range(12)
+    ]
+    bars_1m = {s: _flat_bars(0, _WINDOW_END) for s in _SYMBOLS}
+    result = run_walkforward(
+        strategy="S1",
+        configs=tuple(specs),
+        bars_1m=bars_1m,
+        funding_sidecars=_permissive_funding_sidecars(),
+        gap_ranges=_no_gaps(),
+        fold_schedule=(_FOLD_0, _FOLD_1),
+    )
+    attempt = next(a for a in result.config_attempts if a.config_id == "S1-00")
+    # every symbol (4) hits the SAME generator failure at TRAIN in fold-00
+    # alone -- must dedupe to exactly one signature, not one row per symbol.
+    assert len(attempt.diagnostic_evidence) == 1
+    assert attempt.diagnostic_evidence[0].occurrence_count > 1
+
+
+def test_diagnostic_evidence_never_leaks_secret_text_that_crash_log_itself_carries():
+    """crash_log intentionally keeps raw text (unchanged, existing
+    behavior); the NEW diagnostic carrier must still be sanitized -- proving
+    the two serve different purposes (raw internal note vs. persistable
+    evidence)."""
+
+    def _raising_gen(symbol, bars_slice, fold_id):
+        raise RuntimeError("token=eyJhbGciOiJIUzI1NiJ9.leaked-secret-payload")
+
+    specs = [
+        ConfigSpec(config_id=f"S1-{i:02d}", generate_signals=_raising_gen)
+        for i in range(12)
+    ]
+    bars_1m = {s: _flat_bars(0, _WINDOW_END) for s in _SYMBOLS}
+    result = run_walkforward(
+        strategy="S1",
+        configs=tuple(specs),
+        bars_1m=bars_1m,
+        funding_sidecars=_permissive_funding_sidecars(),
+        gap_ranges=_no_gaps(),
+        fold_schedule=(_FOLD_0, _FOLD_1),
+    )
+    attempt = next(a for a in result.config_attempts if a.config_id == "S1-00")
+    for evidence in attempt.diagnostic_evidence:
+        assert "eyJhbGciOiJIUzI1NiJ9.leaked-secret-payload" not in evidence.message
+        assert (
+            "eyJhbGciOiJIUzI1NiJ9.leaked-secret-payload" not in evidence.traceback_text
+        )
+
+
+def test_diagnostic_evidence_never_changes_fixed_reason_code_or_status():
+    """Observer-effect-0: two runs whose ONLY difference is the raw
+    exception message (secret-bearing vs. not) produce identical
+    status/reason_code -- the diagnostic carrier can never influence
+    semantic identity."""
+
+    def _gen_a(symbol, bars_slice, fold_id):
+        raise RuntimeError("SECRET-A-token")
+
+    def _gen_b(symbol, bars_slice, fold_id):
+        raise RuntimeError("totally different message, no secret")
+
+    bars_1m = {s: _flat_bars(0, _WINDOW_END) for s in _SYMBOLS}
+
+    result_a = run_walkforward(
+        strategy="S1",
+        configs=tuple(
+            ConfigSpec(config_id=f"S1-{i:02d}", generate_signals=_gen_a)
+            for i in range(12)
+        ),
+        bars_1m=bars_1m,
+        funding_sidecars=_permissive_funding_sidecars(),
+        gap_ranges=_no_gaps(),
+        fold_schedule=(_FOLD_0, _FOLD_1),
+    )
+    result_b = run_walkforward(
+        strategy="S1",
+        configs=tuple(
+            ConfigSpec(config_id=f"S1-{i:02d}", generate_signals=_gen_b)
+            for i in range(12)
+        ),
+        bars_1m=bars_1m,
+        funding_sidecars=_permissive_funding_sidecars(),
+        gap_ranges=_no_gaps(),
+        fold_schedule=(_FOLD_0, _FOLD_1),
+    )
+    summaries_a = {s.config_id: s for s in summarize_config_attempts_for_h6(result_a)}
+    summaries_b = {s.config_id: s for s in summarize_config_attempts_for_h6(result_b)}
+    for cid in summaries_a:
+        assert summaries_a[cid].status == summaries_b[cid].status
+        assert summaries_a[cid].reason_code == summaries_b[cid].reason_code
+        # diagnostic content itself legitimately differs -- only semantic
+        # identity is required to match.
+        assert (
+            summaries_a[cid].diagnostic_evidence[0].message
+            != summaries_b[cid].diagnostic_evidence[0].message
+        )
 
 
 def test_crashed_scenario_artifact_hash_changes_when_preserved_histogram_changes():

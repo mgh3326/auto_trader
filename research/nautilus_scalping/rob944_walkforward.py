@@ -65,6 +65,11 @@ from rob940_engine import (
     run_symbol_stream,
 )
 from rob941_funding_sidecar import FundingSidecar
+from rob944_diagnostic_evidence import (
+    ChildFailureEvidence,
+    capture_child_failure_evidence,
+    merge_child_failure_evidence,
+)
 from rob944_folds import Fold
 from rob944_gap_funding import (
     REASON_DATA_GAP_IN_POSITION,
@@ -392,6 +397,11 @@ class ConfigAttemptResult:
     selected_in_folds: tuple[str, ...]
     crash_log: tuple[str, ...]
     gap_rejection_log: tuple[str, ...]
+    # ROB-970 (Q2, Fable-approved): typed, sanitized, deduped child-failure
+    # evidence -- additive, persistence-only. Carries NO hash/identity role
+    # of its own (never an input to reason_code/artifact_hash/any H5/H6
+    # semantic seal); see rob944_diagnostic_evidence.ChildFailureEvidence.
+    diagnostic_evidence: tuple[ChildFailureEvidence, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -624,9 +634,18 @@ def _run_scenario(
     symbol: str,
     fold_id: str,
     pre_execution_rejections: Sequence[NoTradeRecord] = (),
+    diagnostic_notes: dict[str, list[ChildFailureEvidence]] | None = None,
 ) -> tuple[ScenarioRunOutcome, EngineResult | None]:
     """Run ONE independent scenario invocation (fresh engine state, ROB-942
     R1 discipline).
+
+    ``diagnostic_notes`` (ROB-970, Q2, optional, default ``None``): when
+    provided, a funding-gate or engine catch here ALSO captures typed,
+    sanitized ChildFailureEvidence at the point of failure (the only place
+    the live exception object exists) into this side-channel -- the
+    function's own return shape is untouched either way, so every existing
+    caller that omits it (rob960_pbo_evaluator, most of this module's own
+    tests) is byte-identically unaffected.
 
     Any exception becomes a ``crashed``/``timeout`` terminal outcome, never
     a silent skip. If ANY resulting trade touches a data gap, the WHOLE
@@ -653,6 +672,20 @@ def _run_scenario(
             bars_slice, signals, sidecar
         )
     except Exception as exc:  # noqa: BLE001 -- deliberate: any child failure becomes terminal crashed/timeout evidence, never a silent skip
+        _record_diagnostic_note(
+            diagnostic_notes,
+            config_id,
+            capture_child_failure_evidence(
+                exc,
+                transport="in_process",
+                stage="funding_gate",
+                strategy=strategy,
+                config_id=config_id,
+                symbol=symbol,
+                fold_id=fold_id,
+                scenario_name=cost_scenario.name,
+            ),
+        )
         preserved = _no_trade_reason_counts(
             EngineResult(trades=(), no_trades=tuple(pre_execution_rejections))
         )
@@ -676,6 +709,20 @@ def _run_scenario(
             bars_slice, ordered_signals, cost_scenario, funding_lookup=funding_lookup
         )
     except Exception as exc:  # noqa: BLE001 -- deliberate: any child failure becomes terminal crashed/timeout evidence, never a silent skip
+        _record_diagnostic_note(
+            diagnostic_notes,
+            config_id,
+            capture_child_failure_evidence(
+                exc,
+                transport="in_process",
+                stage="engine",
+                strategy=strategy,
+                config_id=config_id,
+                symbol=symbol,
+                fold_id=fold_id,
+                scenario_name=cost_scenario.name,
+            ),
+        )
         preserved = _no_trade_reason_counts(
             EngineResult(
                 trades=(),
@@ -743,6 +790,21 @@ def _record_crash_note(
     is_timeout: bool,
 ) -> None:
     crash_notes.setdefault(config_id, []).append((message, is_timeout))
+
+
+def _record_diagnostic_note(
+    diagnostic_notes: dict[str, list[ChildFailureEvidence]] | None,
+    config_id: str,
+    evidence: ChildFailureEvidence,
+) -> None:
+    """ROB-970 (Q2): ``diagnostic_notes`` is an OPTIONAL side-channel (never
+    a required param anywhere) so every existing caller that doesn't care
+    about diagnostic evidence is byte-identically unaffected. A ``None``
+    channel means "no diagnostic sink was wired at this call site" -- not an
+    error, just a silent no-op, exactly like an absent logger."""
+    if diagnostic_notes is None:
+        return
+    diagnostic_notes.setdefault(config_id, []).append(evidence)
 
 
 def _record_gap_note(
@@ -953,6 +1015,7 @@ def _train_evidence_for_symbol(
     gap_ranges: dict[str, tuple[tuple[int, int], ...]],
     crash_notes: dict[str, list[tuple[str, bool]]],
     gap_notes: dict[str, list[str]],
+    diagnostic_notes: dict[str, list[ChildFailureEvidence]] | None = None,
 ) -> SymbolTrainEvidence:
     """``train_bars`` (already sliced) and ``static_input_hash`` (the
     config-independent half of the train-input fingerprint) are precomputed
@@ -1002,6 +1065,19 @@ def _train_evidence_for_symbol(
             f"{fold.fold_id}/{symbol}/train/generate_signals: {exc}",
             is_timeout=isinstance(exc, TimeoutError),
         )
+        _record_diagnostic_note(
+            diagnostic_notes,
+            config_spec.config_id,
+            capture_child_failure_evidence(
+                exc,
+                transport="in_process",
+                stage="generator",
+                strategy=strategy,
+                config_id=config_spec.config_id,
+                symbol=symbol,
+                fold_id=fold.fold_id,
+            ),
+        )
         status = "timeout" if isinstance(exc, TimeoutError) else "crashed"
         reason_code = (
             REASON_CHILD_EXECUTION_TIMEOUT
@@ -1047,6 +1123,7 @@ def _train_evidence_for_symbol(
         symbol=symbol,
         fold_id=fold.fold_id,
         pre_execution_rejections=rejections,
+        diagnostic_notes=diagnostic_notes,
     )
     if outcome.status == "rejected":
         _record_gap_note(
@@ -1101,6 +1178,7 @@ def _evaluate_fold_train(
     fold: Fold,
     crash_notes: dict[str, list[tuple[str, bool]]],
     gap_notes: dict[str, list[str]],
+    diagnostic_notes: dict[str, list[ChildFailureEvidence]] | None = None,
 ) -> list[ConfigTrainCandidate]:
     # Captain performance correction (2026-07-17): bar-slicing and the
     # config-independent static train-input fingerprint are IDENTICAL across
@@ -1136,6 +1214,7 @@ def _evaluate_fold_train(
                     gap_ranges,
                     crash_notes,
                     gap_notes,
+                    diagnostic_notes,
                 )
             )
     return [
@@ -1156,6 +1235,7 @@ def _evaluate_fold_oos(
     fold: Fold,
     crash_notes: dict[str, list[tuple[str, bool]]],
     gap_notes: dict[str, list[str]],
+    diagnostic_notes: dict[str, list[ChildFailureEvidence]] | None = None,
 ) -> tuple[tuple[ScenarioRunOutcome, ...], dict[str, list[TradeRecord]]]:
     outcomes: list[ScenarioRunOutcome] = []
     ledgers: dict[str, list[TradeRecord]] = {s.name: [] for s in COST_SCENARIOS}
@@ -1200,6 +1280,19 @@ def _evaluate_fold_oos(
                 f"{fold.fold_id}/{symbol}/oos/generate_signals: {exc}",
                 is_timeout=isinstance(exc, TimeoutError),
             )
+            _record_diagnostic_note(
+                diagnostic_notes,
+                config_spec.config_id,
+                capture_child_failure_evidence(
+                    exc,
+                    transport="in_process",
+                    stage="generator",
+                    strategy=strategy,
+                    config_id=config_spec.config_id,
+                    symbol=symbol,
+                    fold_id=fold.fold_id,
+                ),
+            )
             for scenario in COST_SCENARIOS:
                 outcomes.append(
                     _crash_outcome(
@@ -1230,6 +1323,7 @@ def _evaluate_fold_oos(
                 symbol=symbol,
                 fold_id=fold.fold_id,
                 pre_execution_rejections=rejections,
+                diagnostic_notes=diagnostic_notes,
             )
             outcomes.append(outcome)
             if outcome.status == "rejected":
@@ -1286,6 +1380,9 @@ def run_walkforward(
     selected_in_folds: dict[str, list[str]] = {cid: [] for cid in config_ids}
     crash_notes: dict[str, list[tuple[str, bool]]] = {cid: [] for cid in config_ids}
     gap_notes: dict[str, list[str]] = {cid: [] for cid in config_ids}
+    diagnostic_notes: dict[str, list[ChildFailureEvidence]] = {
+        cid: [] for cid in config_ids
+    }
     ever_eligible: dict[str, bool] = dict.fromkeys(config_ids, False)
     concatenated_by_scenario: dict[str, list[TradeRecord]] = {
         s.name: [] for s in COST_SCENARIOS
@@ -1301,6 +1398,7 @@ def run_walkforward(
             fold,
             crash_notes,
             gap_notes,
+            diagnostic_notes,
         )
         trace = select_fold_config(strategy, candidates)
         for outcome in trace.candidates:
@@ -1321,6 +1419,7 @@ def run_walkforward(
                 fold,
                 crash_notes,
                 gap_notes,
+                diagnostic_notes,
             )
             selected_in_folds[trace.selected_config_id].append(fold.fold_id)
             for scenario_name, trades in ledgers.items():
@@ -1361,6 +1460,15 @@ def run_walkforward(
         else:
             status = "completed"
             reason_code = None
+        # ROB-970 (Q2): dedupe every captured child-failure evidence for
+        # this config (across every fold/symbol/scenario it was hit in) by
+        # stable signature -- a recurring root cause collapses to ONE entry
+        # with an incrementing occurrence_count, never N near-duplicate rows.
+        diagnostic_evidence: tuple[ChildFailureEvidence, ...] = ()
+        for evidence in diagnostic_notes[cid]:
+            diagnostic_evidence = merge_child_failure_evidence(
+                diagnostic_evidence, evidence
+            )
         config_attempts.append(
             ConfigAttemptResult(
                 strategy=strategy,
@@ -1370,6 +1478,7 @@ def run_walkforward(
                 selected_in_folds=tuple(selected_in_folds[cid]),
                 crash_log=crash_log,
                 gap_rejection_log=gap_rejection_log,
+                diagnostic_evidence=diagnostic_evidence,
             )
         )
 
@@ -1473,6 +1582,10 @@ class ConfigAttemptEvidenceSummary:
     reason_code: str | None
     scenario_summaries: tuple[ScenarioEvidenceSummary, ...]
     fold_selection_trace: tuple[FoldSelectionEvidenceSummary, ...] = ()
+    # ROB-970 (Q2, Fable-approved): carried straight from
+    # ConfigAttemptResult.diagnostic_evidence -- additive, never part of
+    # fold_evidence_hash/run_identity/any H5 semantic seal.
+    diagnostic_evidence: tuple[ChildFailureEvidence, ...] = ()
 
 
 def _combine_scenario_outcomes(
@@ -1552,9 +1665,16 @@ def summarize_config_attempts_for_h6(
 
     Security: only ``ScenarioRunOutcome.artifact_hash`` (a SHA-256 digest,
     preimage-resistant, itself bound only to stable identity/status/reason,
-    never raw exception text) and fixed reason codes cross into the returned
-    summary -- raw exception/log text (``ConfigAttemptResult.crash_log``,
-    ``ScenarioRunOutcome.error_reason``) never does.
+    never raw exception text) and fixed reason codes cross into the
+    returned summary's SEMANTIC fields -- ``ConfigAttemptResult.crash_log``/
+    ``ScenarioRunOutcome.error_reason`` (raw, unbounded, unsanitized) still
+    never do. ROB-970 (Q2, Fable-approved): ``attempt.diagnostic_evidence``
+    -- already typed, sanitized, bounded, and deduped at capture time (see
+    ``rob944_diagnostic_evidence``) -- DOES cross into
+    ``ConfigAttemptEvidenceSummary.diagnostic_evidence``, but this is an
+    additive, persistence-only carrier with no hash/identity role: it is
+    never an input to ``reason_code``/``artifact_hash``/``fold_evidence_hash``/
+    ``run_identity``/any H5 semantic seal.
     """
     by_config_scenario: dict[str, dict[str, list[ScenarioRunOutcome]]] = {
         a.config_id: {s.name: [] for s in COST_SCENARIOS}
@@ -1629,6 +1749,7 @@ def summarize_config_attempts_for_h6(
                 reason_code=reason_code,
                 scenario_summaries=scenario_rows,
                 fold_selection_trace=tuple(fold_selection_trace),
+                diagnostic_evidence=attempt.diagnostic_evidence,
             )
         )
     return tuple(summaries)
