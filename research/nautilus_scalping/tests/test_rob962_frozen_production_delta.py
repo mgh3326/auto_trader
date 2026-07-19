@@ -2,19 +2,23 @@
 
 ROB-970's own re-pin tip (``cc462d94``, which already includes its
 authorized S2 timestamp root fix + original Q2/Q3 diagnostic-evidence
-boundary) is the comparison base -- ROB-970 R1, and now R2 on top of it,
-supersede that single-change-window check because the Critical-1
+boundary) is the comparison base -- ROB-970 R1, and now R2 (two passes: the
+initial audit response, then a further pre-finalization stop-gate) on top
+of it, supersede that single-change-window check because the Critical-1
 fail-closed redaction hardening, Q1=A cap=32 bounded diagnostic evidence,
 the Q2=C-modified replay-divergence observation, and (R2) the frame-aware
 truncation/canonical-byte replay/app-service-boundary/real-observer-effect-0
-hardening (all Fable/audit-approved) are intentionally lineage-changing now
+hardening -- plus the stop-gate's genuine model_construct/TOCTOU close, the
+shared ``research_contracts.diagnostic_evidence_policy`` cap authority
+(a brand-new file under a frozen path), the hostile-frame-filename/
+boundary-truncation fixes, and the full persistence-chain test (all
+Fable/audit-approved) -- are intentionally lineage-changing now
 (``rob944_walkforward.py`` and friends are themselves part of the hashed
 frozen-campaign source provenance). Test files are reviewable support
 changes; every production add/modify/delete/rename/copy/type-change remains
-in scope. The set of AUTHORIZED production files is unchanged from R1 (R2
-did not touch ``rob944_walkforward.py`` again), but ``_FULL_CAMPAIGN_HASH``
-moved because several of the R2-touched files are themselves part of the
-hashed provenance.
+in scope. ``_FULL_CAMPAIGN_HASH`` did NOT move again in the stop-gate pass
+(none of its touched files this round feed the envelope's hash inputs
+differently than before).
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ _COST_MODEL_PATH = "research/nautilus_scalping/rob940_cost_model.py"
 _COST_MODEL_SHA256 = "a5db97037a4fa3acd3712bbe82ec8d69eea4d3545d926de30d752398a3ea5366"
 _FULL_CAMPAIGN_HASH = "605d5e30b57656d9e43ff55134baaa093883ce1f1aa6ffc4c467f0105d49f152"
 _AUTHORIZED_PRODUCTION_CHANGES = [
+    ("A", ("research_contracts/diagnostic_evidence_policy.py",)),
     ("M", ("app/schemas/research_campaign_bridge.py",)),
     ("M", ("app/services/research_campaign_bridge.py",)),
     ("M", ("research/nautilus_scalping/rob944_diagnostic_evidence.py",)),
