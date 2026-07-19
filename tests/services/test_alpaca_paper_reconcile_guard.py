@@ -30,6 +30,8 @@ from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
 pytestmark = [pytest.mark.asyncio]
 
 _COIDS = (
+    "rob953-guard-e2e",
+    "rob953-guard-sibling-rows",
     "rob953-guard-anomaly-cancel",
     "rob953-guard-final-reconciled",
     "rob953-guard-monotonic",
@@ -170,3 +172,100 @@ async def test_equal_and_increasing_filled_qty_still_apply(db_session):
     row = await _state(db_session, coid)
     assert row.filled_qty == Decimal("0.9")
     assert row.lifecycle_state == "filled"
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: the real reconcile service against the real ledger service.
+# The unit suite drives a fake ledger, so this is the only place the two real
+# implementations meet — which is where record_status' return-row semantics bite.
+# ---------------------------------------------------------------------------
+
+
+class _FakeBroker:
+    def __init__(self, order):
+        self._order = order
+
+    async def get_order_by_client_order_id(self, _):
+        return self._order
+
+    async def list_fills(self, **_):
+        return []
+
+
+def _order(status: str = "filled", filled_qty: str = "1"):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        id="broker-order-1",
+        client_order_id="rob953-guard-sibling-rows",
+        qty=Decimal("1"),
+        filled_qty=Decimal(filled_qty),
+        filled_avg_price=Decimal("353.156"),
+        status=status,
+    )
+
+
+async def test_reconcile_books_through_the_real_ledger_service(db_session):
+    from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
+
+    coid = "rob953-guard-e2e"
+    await _seed(db_session, coid, lifecycle_state="submitted")
+
+    result = await AlpacaPaperReconcileService(
+        AlpacaPaperLedgerService(db_session), _FakeBroker(_order())
+    ).reconcile(client_order_id=coid, dry_run=False)
+
+    outcome = result["reconciled"][0]
+    row = await _state(db_session, coid)
+    assert outcome["action"] == "booked_filled"
+    assert row.lifecycle_state == "filled"
+    assert row.filled_qty == Decimal("1")
+    # a successful booking must not be flagged as rejected
+    assert outcome.get("stale_write_rejected") is not True
+    assert outcome.get("requires_manual_review") is not True
+    assert outcome["persisted_lifecycle_state"] == "filled"
+
+
+async def test_sibling_preview_row_does_not_fake_a_rejected_write(db_session):
+    """A newer non-execution row sharing the client_order_id must not be mistaken
+    for the execution row when confirming what was persisted."""
+    from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
+
+    coid = "rob953-guard-sibling-rows"
+    await _seed(db_session, coid, lifecycle_state="submitted")
+    # a preview row created *after* the execution row, same client_order_id
+    sibling = AlpacaPaperOrderLedger(
+        client_order_id=coid,
+        lifecycle_correlation_id=coid,
+        record_kind="preview",
+        broker="alpaca",
+        account_mode="alpaca_paper",
+        lifecycle_state="previewed",
+        execution_symbol="ISRG",
+        execution_venue="alpaca_paper",
+        instrument_type=InstrumentType.equity_us,
+        side="buy",
+        order_type="limit",
+        time_in_force="day",
+    )
+    db_session.add(sibling)
+    await db_session.commit()
+
+    result = await AlpacaPaperReconcileService(
+        AlpacaPaperLedgerService(db_session), _FakeBroker(_order())
+    ).reconcile(client_order_id=coid, dry_run=False)
+
+    outcome = result["reconciled"][0]
+    execution = (
+        await db_session.execute(
+            select(AlpacaPaperOrderLedger).where(
+                AlpacaPaperOrderLedger.client_order_id == coid,
+                AlpacaPaperOrderLedger.record_kind == "execution",
+            )
+        )
+    ).scalar_one()
+
+    assert execution.lifecycle_state == "filled"
+    assert outcome["persisted_lifecycle_state"] == "filled"
+    assert outcome.get("stale_write_rejected") is not True
+    assert outcome.get("requires_manual_review") is not True

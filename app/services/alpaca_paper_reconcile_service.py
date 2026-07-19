@@ -46,6 +46,14 @@ _LIFECYCLE_ACTION_LABELS: dict[str, str] = {
 }
 
 
+def _json_safe(payload: dict[str, Any]) -> dict[str, Any]:
+    """Stringify Decimals so the evidence can land in the JSONB raw_responses."""
+    return {
+        key: str(value) if isinstance(value, Decimal) else value
+        for key, value in payload.items()
+    }
+
+
 def _decimal(value: Any) -> Decimal | None:
     if value is None:
         return None
@@ -354,7 +362,7 @@ class AlpacaPaperReconcileService:
         if dry_run:
             return result
 
-        updated = await self._ledger.record_status(
+        await self._ledger.record_status(
             row.client_order_id,
             {
                 "status": transition.broker_status,
@@ -362,11 +370,21 @@ class AlpacaPaperReconcileService:
                 "filled_avg_price": str(evidence.avg_price),
                 "id": order.id,
             },
+            # raw_response is persisted to a JSONB column: Decimal is not JSON
+            # serializable, so the evidence is stringified here.
             raw_response={
-                "reconcile_order": normalize_alpaca_order_for_classify(order, fills)
+                "reconcile_order": _json_safe(
+                    normalize_alpaca_order_for_classify(order, fills)
+                )
             },
         )
-        persisted = getattr(updated, "lifecycle_state", None)
+        # Re-read the EXECUTION row explicitly. record_status returns whichever
+        # row for this client_order_id is newest regardless of record_kind, so a
+        # sibling plan/preview row would otherwise look like a rejected write.
+        confirmed = await self._ledger.get_execution_by_client_order_id(
+            row.client_order_id
+        )
+        persisted = getattr(confirmed, "lifecycle_state", None)
         result["persisted_lifecycle_state"] = persisted
         if persisted is not None and persisted != transition.lifecycle_state:
             # The write guard rejected this update (stale quantity or a completed
