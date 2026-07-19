@@ -43,7 +43,6 @@ import hashlib
 import json
 import sys
 
-from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -92,6 +91,12 @@ __all__ = [
 _EXPECTED_CAMPAIGN_SIZE = 24
 # research.backtest_runs.runner is VARCHAR(16) — reject before the DB does.
 _MAX_RUNNER_LENGTH = 16
+_ATTEMPT_BOUNDARY_PUBLIC_TEXT = (
+    "attempt evidence rejected at the diagnostic persistence boundary"
+)
+_STORED_BOUNDARY_PUBLIC_TEXT = (
+    "stored trial diagnostics rejected at the replay boundary"
+)
 
 
 class CampaignBridgeError(Exception):
@@ -134,11 +139,12 @@ class DiagnosticEvidenceBoundaryViolation(CampaignBridgeError):
     step before ``raw_payload`` persistence, never trusts either a bare
     ``isinstance`` check or the caller's own (potentially still-mutable,
     still-reassignable across this call's own ``await`` points — a TOCTOU
-    window) evidence object — it builds one independently revalidated,
-    effectively-immutable snapshot via a full ``model_dump()`` ->
-    ``model_validate()`` round-trip BEFORE the first ``await``, and every
-    later fingerprint/assembly/persistence step in this call reads ONLY
-    that snapshot. See ``_revalidate_evidence_snapshot``.
+    window) evidence object. It first exact-type-gates the outer carrier,
+    diagnostic tuple/leaves, and overflow carrier, then builds one
+    independently revalidated snapshot via a warning-free ``model_dump()``
+    -> ``model_validate()`` round-trip BEFORE the first ``await``. Every
+    later fingerprint/assembly/persistence step reads ONLY that snapshot.
+    See ``_revalidate_evidence_snapshot``.
 
     Also raised (R2 stop-gate audit item B) when a STORED
     ``diagnostic_evidence``/``diagnostic_overflow`` value is PRESENT but
@@ -273,15 +279,14 @@ def _revalidate_evidence_snapshot(evidence: AttemptEvidence) -> AttemptEvidence:
     genuine instance of the right type while skipping every validator
     (cap, length, unsafe-content, truncated-consistency) entirely.
 
-    ``model_dump()`` recursively flattens EVERY nested model (including
-    ``model_construct``-built leaves, and even a leaf replaced outright by
-    an unrelated plain dict) down to plain JSON-safe data; ``model_validate``
-    then reconstructs the WHOLE tree via each model's own real constructor,
-    re-running every validator regardless of how the original object (or
-    any of its leaves) was built. This one round-trip closes the
-    ``model_construct`` bypass AND every forged-shape/wrong-type case in a
-    single mechanism — no separate isinstance/cap/consistency checks are
-    needed here any more; the schema's own validators ARE the boundary.
+    Before any serializer can run, exact concrete-type checks reject an
+    outer subclass, a non-tuple diagnostic collection, non-authoritative
+    leaves, or a non-authoritative overflow carrier. The warning-free
+    ``model_dump()`` then recursively flattens an exact carrier (including
+    exact ``model_construct``-built leaves) to plain data; ``model_validate``
+    reconstructs the whole tree and reruns every cap, length, safety, and
+    overflow-consistency validator. All failures collapse to one fixed
+    public exception outside the active validation context.
 
     The returned snapshot is a NEW, independent object. The caller MUST use
     ONLY this returned value for everything from this point on — never the
@@ -293,13 +298,47 @@ def _revalidate_evidence_snapshot(evidence: AttemptEvidence) -> AttemptEvidence:
     never reach persistence (TOCTOU closed by never reading the original
     object again)."""
     try:
-        return AttemptEvidence.model_validate(evidence.model_dump())
-    except ValidationError as exc:
+        exact_carriers = (
+            type(evidence) is AttemptEvidence
+            and type(evidence.diagnostic_evidence) is tuple
+            and all(
+                type(item) is ChildFailureDiagnostic
+                for item in evidence.diagnostic_evidence
+            )
+            and type(evidence.diagnostic_overflow) is ChildFailureDiagnosticOverflow
+        )
+    except Exception:  # noqa: BLE001 -- hostile forged carrier, fixed rejection below
+        exact_carriers = False
+    if not exact_carriers:
         raise DiagnosticEvidenceBoundaryViolation(
-            "evidence failed re-validation at the service assembly boundary "
-            f"(forged shape, model_construct bypass, or cap/consistency "
-            f"violation): {exc}"
-        ) from exc
+            _ATTEMPT_BOUNDARY_PUBLIC_TEXT
+        ) from None
+
+    dumped: object = None
+    try:
+        # Exact outer/leaf/carrier types above make this the authoritative
+        # serializers' path. Warnings are suppressed by construction so a
+        # forged model_construct value can never be rendered to stderr.
+        dumped = evidence.model_dump(mode="python", warnings="none")
+    except Exception:  # noqa: BLE001 -- fixed secret-free trust-boundary failure
+        pass
+    if type(dumped) is not dict:
+        raise DiagnosticEvidenceBoundaryViolation(
+            _ATTEMPT_BOUNDARY_PUBLIC_TEXT
+        ) from None
+
+    snapshot: AttemptEvidence | None = None
+    try:
+        snapshot = AttemptEvidence.model_validate(dumped)
+    except Exception:  # noqa: BLE001 -- never retain/render hostile validation input
+        pass
+    if snapshot is None:
+        # Deliberately raised outside the active validation ``except`` so the
+        # raw Pydantic exception is not retained as public ``__context__``.
+        raise DiagnosticEvidenceBoundaryViolation(
+            _ATTEMPT_BOUNDARY_PUBLIC_TEXT
+        ) from None
+    return snapshot
 
 
 def _diagnostic_evidence_payload(evidence: AttemptEvidence) -> list[dict]:
@@ -361,7 +400,7 @@ def _diagnostic_fingerprint(evidence: AttemptEvidence) -> str:
 
 
 def _stored_fingerprint(row: ResearchBacktestRun) -> object:
-    return (row.raw_payload or {}).get("h6_evidence_fingerprint")
+    return _stored_raw_payload(row).get("h6_evidence_fingerprint")
 
 
 _DEFAULT_DIAGNOSTIC_OVERFLOW_PAYLOAD = {
@@ -378,6 +417,16 @@ _DEFAULT_DIAGNOSTIC_OVERFLOW_PAYLOAD = {
 _MISSING = object()
 
 
+def _stored_raw_payload(row: ResearchBacktestRun) -> dict:
+    """Return only the exact JSONB mapping boundary; falsey is not absent."""
+    raw_payload = row.raw_payload
+    if type(raw_payload) is not dict:
+        raise DiagnosticEvidenceBoundaryViolation(
+            _STORED_BOUNDARY_PUBLIC_TEXT
+        ) from None
+    return raw_payload
+
+
 def _stored_diagnostic_evidence_payload(row: ResearchBacktestRun) -> list[dict]:
     """R2 audit: legacy/absent-field normalization applies ONLY when the key
     is genuinely absent (a pre-ROB-970 row, migration-free) -- that case
@@ -386,23 +435,24 @@ def _stored_diagnostic_evidence_payload(row: ResearchBacktestRun) -> list[dict]:
     ``ChildFailureDiagnostic`` validation) is never silently treated as
     "missing" -- it raises ``DiagnosticEvidenceBoundaryViolation``, loudly
     surfacing the corruption instead of defaulting past it."""
-    raw_payload = row.raw_payload or {}
+    raw_payload = _stored_raw_payload(row)
     value = raw_payload.get("diagnostic_evidence", _MISSING)
     if value is _MISSING:
         return []
-    if not isinstance(value, list):
+    if type(value) is not list or any(type(item) is not dict for item in value):
         raise DiagnosticEvidenceBoundaryViolation(
-            "stored diagnostic_evidence is present but malformed (expected a "
-            f"list, got {type(value).__name__}) -- refusing to silently "
-            "treat as legacy-absent"
-        )
+            _STORED_BOUNDARY_PUBLIC_TEXT
+        ) from None
+    validated: list[ChildFailureDiagnostic] | None = None
     try:
         validated = [ChildFailureDiagnostic.model_validate(item) for item in value]
-    except ValidationError as exc:
+    except Exception:  # noqa: BLE001 -- never retain/render hostile stored input
+        pass
+    if validated is None:
         raise DiagnosticEvidenceBoundaryViolation(
-            f"stored diagnostic_evidence contains a malformed entry: {exc}"
-        ) from exc
-    return [item.model_dump() for item in validated]
+            _STORED_BOUNDARY_PUBLIC_TEXT
+        ) from None
+    return [item.model_dump(warnings="none") for item in validated]
 
 
 def _stored_diagnostic_overflow_payload(row: ResearchBacktestRun) -> dict:
@@ -411,17 +461,24 @@ def _stored_diagnostic_overflow_payload(row: ResearchBacktestRun) -> dict:
     value (even ``{}``/``0``/``False``/``None``) that fails the app
     schema's own ``ChildFailureDiagnosticOverflow`` validation raises
     rather than silently defaulting."""
-    raw_payload = row.raw_payload or {}
+    raw_payload = _stored_raw_payload(row)
     value = raw_payload.get("diagnostic_overflow", _MISSING)
     if value is _MISSING:
         return dict(_DEFAULT_DIAGNOSTIC_OVERFLOW_PAYLOAD)
+    if type(value) is not dict:
+        raise DiagnosticEvidenceBoundaryViolation(
+            _STORED_BOUNDARY_PUBLIC_TEXT
+        ) from None
+    validated: ChildFailureDiagnosticOverflow | None = None
     try:
         validated = ChildFailureDiagnosticOverflow.model_validate(value)
-    except ValidationError as exc:
+    except Exception:  # noqa: BLE001 -- never retain/render hostile stored input
+        pass
+    if validated is None:
         raise DiagnosticEvidenceBoundaryViolation(
-            f"stored diagnostic_overflow is present but malformed: {exc}"
-        ) from exc
-    return validated.model_dump()
+            _STORED_BOUNDARY_PUBLIC_TEXT
+        ) from None
+    return validated.model_dump(warnings="none")
 
 
 def _canonical_diagnostic_bytes(
@@ -453,7 +510,7 @@ def _canonical_raw_payload_bytes(row: ResearchBacktestRun) -> bytes:
     dict equality is insufficient -- two dicts can compare equal while
     still differing in float/Decimal/type representation that a canonical
     encoder would catch)."""
-    return canonical_json(row.raw_payload or {}).encode("utf-8")
+    return canonical_json(_stored_raw_payload(row)).encode("utf-8")
 
 
 def _emit_diagnostic_replay_divergence(
@@ -496,7 +553,8 @@ def _emit_diagnostic_replay_divergence_observer_failure(
     idempotency_key: str,
     stored_bytes: bytes,
     incoming_bytes: bytes,
-    observer_exception_type: str,
+    stored_distinct_signature_count: int,
+    new_distinct_signature_count: int,
 ) -> None:
     """ROB-970 R2 audit -- the primary observation above failed to emit.
     The divergence itself must still be loudly surfaced (never silently
@@ -508,12 +566,14 @@ def _emit_diagnostic_replay_divergence_observer_failure(
     the attempt remains non-fail-stop no matter what fails."""
     payload = {
         "event": "diagnostic_replay_divergence_observer_failed",
+        "reason": "primary_observer_emission_failed",
         "idempotency_key_digest": hashlib.sha256(
             idempotency_key.encode("utf-8")
         ).hexdigest(),
         "stored_diagnostic_digest": hashlib.sha256(stored_bytes).hexdigest(),
         "incoming_diagnostic_digest": hashlib.sha256(incoming_bytes).hexdigest(),
-        "observer_exception_type": observer_exception_type,
+        "stored_distinct_signature_count": stored_distinct_signature_count,
+        "new_distinct_signature_count": new_distinct_signature_count,
     }
     try:
         sys.stderr.write(json.dumps(payload, sort_keys=True) + "\n")
@@ -564,12 +624,13 @@ def _check_diagnostic_divergence(
             stored_distinct_signature_count=len(stored_evidence_payload),
             new_distinct_signature_count=len(incoming_evidence_payload),
         )
-    except Exception as exc:
+    except Exception:
         _emit_diagnostic_replay_divergence_observer_failure(
             idempotency_key=idempotency_key,
             stored_bytes=stored_bytes,
             incoming_bytes=incoming_bytes,
-            observer_exception_type=type(exc).__name__,
+            stored_distinct_signature_count=len(stored_evidence_payload),
+            new_distinct_signature_count=len(incoming_evidence_payload),
         )
 
 
@@ -606,11 +667,10 @@ async def record_attempt(
             f"runner {runner!r} ({len(runner)} chars) exceeds the "
             f"{_MAX_RUNNER_LENGTH}-char DB column limit"
         )
-    # R2 audit: build the one revalidated, effectively-immutable snapshot
-    # BEFORE the first `await` below, and rebind `evidence` to it -- every
-    # subsequent line in this function must read only this snapshot, never
-    # the caller's original (mutable, TOCTOU-exposed) object.
-    evidence = _revalidate_evidence_snapshot(evidence)
+    # Build the independently validated snapshot BEFORE the first await.
+    # Keep it under a distinct name so every later read is visibly detached
+    # from the caller-owned, still-mutable original carrier.
+    evidence_snapshot = _revalidate_evidence_snapshot(evidence)
 
     experiment = await _get_experiment_by_id(session, experiment_id)
     if experiment is None:
@@ -618,8 +678,8 @@ async def record_attempt(
             f"experiment_id {experiment_id!r} is not registered"
         )
 
-    idempotency_key = evidence.attempt_key.idempotency_key()
-    fingerprint = terminal_evidence_fingerprint(evidence)
+    idempotency_key = evidence_snapshot.attempt_key.idempotency_key()
+    fingerprint = terminal_evidence_fingerprint(evidence_snapshot)
 
     existing = await _find_trial_by_attempt_key(
         session, experiment_pk=experiment.id, idempotency_key=idempotency_key
@@ -633,7 +693,7 @@ async def record_attempt(
             # (never merged, never silently discarded) while the original
             # row is returned completely untouched either way.
             _check_diagnostic_divergence(
-                existing, evidence, idempotency_key=idempotency_key
+                existing, evidence_snapshot, idempotency_key=idempotency_key
             )
             return existing
         raise TerminalEvidenceMismatch(
@@ -650,13 +710,13 @@ async def record_attempt(
     # experiment_id would only be *practically*, not *provably*, unique).
     run_id = "rob946-" + canonical_sha256(
         {
-            "campaign_run_id": evidence.attempt_key.campaign_run_id,
+            "campaign_run_id": evidence_snapshot.attempt_key.campaign_run_id,
             "experiment_id": experiment_id,
-            "retry_index": evidence.attempt_key.retry_index,
+            "retry_index": evidence_snapshot.attempt_key.retry_index,
         }
     )
     request = BacktestTrialRequest(
-        status=evidence.status,
+        status=evidence_snapshot.status,
         strategy_name=strategy_name,
         timeframe=timeframe,
         runner=runner,
@@ -664,15 +724,15 @@ async def record_attempt(
         idempotency_key=idempotency_key,
         raw_payload={
             "h6_evidence_fingerprint": fingerprint,
-            "campaign_run_id": evidence.attempt_key.campaign_run_id,
-            "retry_index": evidence.attempt_key.retry_index,
-            "reason_code": evidence.reason_code,
-            "fold_evidence_hash": evidence.fold_evidence_hash,
-            "run_identity": evidence.run_identity,
-            "scenario_evidence": _scenario_evidence_payload(evidence),
-            "diagnostic_evidence": _diagnostic_evidence_payload(evidence),
-            "diagnostic_overflow": _diagnostic_overflow_payload(evidence),
-            "diagnostic_fingerprint": _diagnostic_fingerprint(evidence),
+            "campaign_run_id": evidence_snapshot.attempt_key.campaign_run_id,
+            "retry_index": evidence_snapshot.attempt_key.retry_index,
+            "reason_code": evidence_snapshot.reason_code,
+            "fold_evidence_hash": evidence_snapshot.fold_evidence_hash,
+            "run_identity": evidence_snapshot.run_identity,
+            "scenario_evidence": _scenario_evidence_payload(evidence_snapshot),
+            "diagnostic_evidence": _diagnostic_evidence_payload(evidence_snapshot),
+            "diagnostic_overflow": _diagnostic_overflow_payload(evidence_snapshot),
+            "diagnostic_fingerprint": _diagnostic_fingerprint(evidence_snapshot),
         },
     )
     returned = await registry.record_trial(
@@ -696,7 +756,9 @@ async def record_attempt(
     # IS the row this very call just inserted, its stored diagnostic
     # fingerprint trivially equals this evidence's own, so the check is a
     # guaranteed no-op observation-wise.
-    _check_diagnostic_divergence(returned, evidence, idempotency_key=idempotency_key)
+    _check_diagnostic_divergence(
+        returned, evidence_snapshot, idempotency_key=idempotency_key
+    )
     return returned
 
 

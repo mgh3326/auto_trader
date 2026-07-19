@@ -27,6 +27,7 @@ scorecard is rebuilt afterward.
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 
 import pytest
 import pytest_asyncio
@@ -62,20 +63,27 @@ from rob944_walkforward import (
     WalkForwardResult,
     summarize_config_attempts_for_h6,
 )
-from rob945_accounting_seal import seal_trial_accounting
+from rob945_accounting_seal import derive_campaign_run_id, seal_trial_accounting
 from rob945_scenario_metrics import FoldStabilityRow, StrategyScenarioAggregate
 from rob945_scenario_metrics import SymbolScenarioMetrics as _SymbolScenarioMetrics
 from rob945_scorecard import build_scorecard
 from rob945_signal_concurrency import StrategyConcurrencyEvidence
 from run_rob944_campaign import _summary_to_attempt_evidence
-from sqlalchemy import text
+from sqlalchemy import select, text
 
+from app.models.research_backtest import (
+    ResearchBacktestRun,
+    ResearchStrategyExperiment,
+)
 from app.schemas.research_backtest import StrategyExperimentIdentity
 from app.schemas.research_campaign_bridge import ChildFailureDiagnosticOverflow
-from app.services import research_campaign_bridge as bridge
-from app.services.research_campaign_bridge import record_attempt
+from app.services.research_campaign_bridge import (
+    campaign_completeness_report,
+    record_attempt,
+    register_campaign_experiments,
+)
 from app.services.research_db_write_guard import ResearchDbPolicy, ResearchDbTarget
-from research_contracts.canonical_hash import canonical_sha256
+from research_contracts.canonical_hash import canonical_json, canonical_sha256
 
 _POLICY = ResearchDbPolicy.of(
     ResearchDbTarget(host="localhost", database_name="test_db")
@@ -95,19 +103,7 @@ _REAL_FOLDS = foldmod.generate_frozen_fold_schedule(
 )
 
 
-def _derive_campaign_run_id(full_campaign_hash: str) -> str:
-    import base64
-
-    digest_hex = canonical_sha256(
-        {"full_campaign_hash": full_campaign_hash, "kind": "primary_run"}
-    )
-    suffix = (
-        base64.urlsafe_b64encode(bytes.fromhex(digest_hex)).decode("ascii").rstrip("=")
-    )
-    return f"rob944-primary-{suffix}"
-
-
-_CAMPAIGN_RUN_ID = _derive_campaign_run_id(_REAL_FULL_CAMPAIGN_HASH)
+_CAMPAIGN_RUN_ID = derive_campaign_run_id(_REAL_FULL_CAMPAIGN_HASH)
 
 
 def _real_24_identities() -> list[tuple[str, str, StrategyExperimentIdentity]]:
@@ -222,9 +218,9 @@ def _symbol_metrics_all_present():
     )
 
 
-def _scenario(scenario_name, net_expectancy_bps=10.0):
+def _scenario(strategy, scenario_name, net_expectancy_bps=10.0):
     return StrategyScenarioAggregate(
-        strategy="S1",
+        strategy=strategy,
         scenario_name=scenario_name,
         trade_count=20,
         net_expectancy_bps=net_expectancy_bps,
@@ -244,11 +240,11 @@ def _scenario(scenario_name, net_expectancy_bps=10.0):
     )
 
 
-def _fold_rows():
+def _fold_rows(strategy):
     return tuple(
         FoldStabilityRow(
             fold_id=f"fold-{i:02d}",
-            selected_config_id="S1-03",
+            selected_config_id=f"{strategy}-03",
             trade_count=5,
             net_expectancy_bps=2.0,
             net_pnl_bps=10.0,
@@ -260,9 +256,9 @@ def _fold_rows():
     )
 
 
-def _concurrency():
+def _concurrency(strategy):
     return StrategyConcurrencyEvidence(
-        strategy="S1",
+        strategy=strategy,
         numerator=1,
         denominator=2,
         rate=0.5,
@@ -271,11 +267,11 @@ def _concurrency():
     )
 
 
-def _pbo():
+def _pbo(strategy):
     from rob945_pbo_grid import PboAuxiliaryEvidence
 
     return PboAuxiliaryEvidence(
-        strategy="S1",
+        strategy=strategy,
         value=0.4,
         reason_codes=(),
         slices=4,
@@ -285,47 +281,37 @@ def _pbo():
     )
 
 
-def _strategy_evidence():
+def _strategy_evidence(strategy):
     return {
         "scenarios": {
-            "base": _scenario("base"),
-            "primary_stress": _scenario("primary_stress"),
-            "upward_stress": _scenario("upward_stress", net_expectancy_bps=1.0),
+            "base": _scenario(strategy, "base"),
+            "primary_stress": _scenario(strategy, "primary_stress"),
+            "upward_stress": _scenario(
+                strategy, "upward_stress", net_expectancy_bps=1.0
+            ),
         },
-        "fold_stability": _fold_rows(),
-        "signal_concurrency": _concurrency(),
-        "pbo": _pbo(),
+        "fold_stability": _fold_rows(strategy),
+        "signal_concurrency": _concurrency(strategy),
+        "pbo": _pbo(strategy),
     }
 
 
-def _clean_accounting_report():
-    return {
-        "campaign_run_id": _CAMPAIGN_RUN_ID,
-        "expected_total": 24,
-        "actual_registrations": 24,
-        "primary_attempts": 24,
-        "total_attempts": 24,
-        "retry_attempts": 0,
-        "status_counts": {"completed": 24, "rejected": 0, "crashed": 0, "timeout": 0},
-        "missing_experiment_ids": [],
-        "extra_experiment_ids": [],
-        "mismatch_experiment_ids": [],
-        "duplicate_or_gap_experiment_ids": [],
-        "verdict": "complete",
-    }
-
-
-def _scorecard_kwargs(attempt_evidence_dicts: list[dict]) -> dict:
+def _scorecard_kwargs(
+    attempt_evidence_dicts: list[dict], accounting_report: dict
+) -> dict:
     return {
         "full_campaign_hash": _REAL_FULL_CAMPAIGN_HASH,
         "full_campaign_payload": _REAL_FULL_CAMPAIGN_PAYLOAD,
         "campaign_run_id": _CAMPAIGN_RUN_ID,
         "dataset_manifest_hash": _REAL_DATASET_MANIFEST_HASH,
         "signal_manifest_hash": _REAL_SIGNAL_MANIFEST_HASH,
-        "accounting_report": _clean_accounting_report(),
+        "accounting_report": accounting_report,
         "attempt_evidence": attempt_evidence_dicts,
         "walkforward_results": _WALKFORWARD_RESULTS,
-        "strategies": {"S1": _strategy_evidence(), "S2": _strategy_evidence()},
+        "strategies": {
+            "S1": _strategy_evidence("S1"),
+            "S2": _strategy_evidence("S2"),
+        },
     }
 
 
@@ -340,7 +326,7 @@ def _lineage_snapshot(scorecard_envelope: dict) -> dict:
     }
 
 
-def _seal(attempt_evidence_dicts: list[dict]):
+def _seal(attempt_evidence_dicts: list[dict], accounting_report: dict):
     """The explicit H5 six-key sealed-attempts authority
     (``rob945_accounting_seal.seal_trial_accounting``), called directly and
     independently of ``build_scorecard`` (which calls it internally too) --
@@ -348,11 +334,126 @@ def _seal(attempt_evidence_dicts: list[dict]):
     byte identical before/after a replay, not merely inferred from the
     scorecard's own already-byte-compared output."""
     return seal_trial_accounting(
-        accounting_report=_clean_accounting_report(),
+        accounting_report=accounting_report,
         attempt_evidence=attempt_evidence_dicts,
         full_campaign_hash=_REAL_FULL_CAMPAIGN_HASH,
         walkforward_results=_WALKFORWARD_RESULTS,
     )
+
+
+async def _persisted_h5_inputs(
+    session, experiment_ids: tuple[str, ...]
+) -> tuple[list[dict], dict[str, bytes], dict[str, int]]:
+    """Build the six-key H5 attempts only from corresponding persisted rows."""
+    primary_attempt_keys = tuple(
+        f"{_CAMPAIGN_RUN_ID}:{experiment_id}:0" for experiment_id in experiment_ids
+    )
+    result = await session.execute(
+        select(ResearchBacktestRun, ResearchStrategyExperiment)
+        .join(
+            ResearchStrategyExperiment,
+            ResearchBacktestRun.strategy_experiment_id == ResearchStrategyExperiment.id,
+        )
+        .where(
+            ResearchStrategyExperiment.experiment_id.in_(experiment_ids),
+            ResearchBacktestRun.trial_idempotency_key.in_(primary_attempt_keys),
+        )
+    )
+    persisted = list(result.all())
+    assert len(persisted) == 24
+    by_experiment_id = {
+        experiment.experiment_id: (row, experiment) for row, experiment in persisted
+    }
+    assert set(by_experiment_id) == set(experiment_ids)
+
+    attempts: list[dict] = []
+    raw_payload_bytes: dict[str, bytes] = {}
+    row_ids: dict[str, int] = {}
+    for experiment_id in experiment_ids:
+        row, registered_experiment = by_experiment_id[experiment_id]
+        raw_payload = row.raw_payload
+        assert type(raw_payload) is dict
+        assert type(row.trial_status) is str
+        assert type(row.trial_idempotency_key) is str
+        assert registered_experiment.experiment_id == experiment_id
+
+        campaign_run_id = raw_payload["campaign_run_id"]
+        retry_index = raw_payload["retry_index"]
+        assert type(campaign_run_id) is str
+        assert type(retry_index) is int
+        persisted_attempt_key = {
+            "campaign_run_id": campaign_run_id,
+            "experiment_id": registered_experiment.experiment_id,
+            "retry_index": retry_index,
+        }
+        assert row.trial_idempotency_key == (
+            f"{campaign_run_id}:{registered_experiment.experiment_id}:{retry_index}"
+        )
+        attempt = {
+            "attempt_key": persisted_attempt_key,
+            "status": row.trial_status,
+            "reason_code": raw_payload["reason_code"],
+            "fold_evidence_hash": raw_payload["fold_evidence_hash"],
+            "run_identity": raw_payload["run_identity"],
+            "scenario_evidence": raw_payload["scenario_evidence"],
+        }
+        assert set(attempt) == {
+            "attempt_key",
+            "status",
+            "reason_code",
+            "fold_evidence_hash",
+            "run_identity",
+            "scenario_evidence",
+        }
+        attempts.append(attempt)
+        raw_payload_bytes[experiment_id] = canonical_json(raw_payload).encode("utf-8")
+        row_ids[experiment_id] = row.id
+    return attempts, raw_payload_bytes, row_ids
+
+
+async def _persisted_observer_snapshot(
+    session,
+    *,
+    expected_specs: list[StrategyExperimentIdentity],
+    experiment_ids: tuple[str, ...],
+) -> dict:
+    attempts, raw_payload_bytes, row_ids = await _persisted_h5_inputs(
+        session, experiment_ids
+    )
+    report = await campaign_completeness_report(
+        session,
+        campaign_run_id=_CAMPAIGN_RUN_ID,
+        expected_specs=expected_specs,
+    )
+    report_payload = report.model_dump(mode="python")
+    assert report.verdict in {"complete", "incomplete"}
+    assert report.expected_total == 24
+    assert report.primary_attempts == 24
+    assert report.total_attempts == 24
+
+    scorecard = build_scorecard(
+        **_scorecard_kwargs(attempts, accounting_report=report_payload)
+    )
+    sealed = _seal(attempts, accounting_report=report_payload)
+    scorecard_payload = scorecard["scorecard_payload"]
+    lineage_surface = scorecard_payload["lineage"]
+    lineage = _lineage_snapshot(scorecard)
+    return {
+        "report_bytes": canonical_json(report_payload).encode("utf-8"),
+        "scorecard_payload_bytes": canonical_json(scorecard_payload).encode("utf-8"),
+        "scorecard_envelope_bytes": canonical_json(scorecard).encode("utf-8"),
+        "sealed_attempt_bytes": canonical_json(
+            [asdict(attempt) for attempt in sealed.attempts]
+        ).encode("utf-8"),
+        "lineage_surface_bytes": canonical_json(lineage_surface).encode("utf-8"),
+        "raw_payload_bytes": raw_payload_bytes,
+        "row_ids": row_ids,
+        "campaign_verdict": lineage["campaign_verdict"],
+        "scorecard_artifact_hash": lineage["scorecard_artifact_hash"],
+        "trial_accounting_hash": sealed.trial_accounting_hash,
+        "full_campaign_hash": lineage["full_campaign_hash"],
+        "campaign_run_id": lineage["campaign_run_id"],
+    }
 
 
 @pytest_asyncio.fixture
@@ -374,8 +475,6 @@ async def test_real_diagnostic_replay_divergence_is_observer_effect_zero_end_to_
 
     identities = _real_24_identities()
     real_specs = [identity for _cid, _strategy, identity in identities]
-    from app.services.research_campaign_bridge import register_campaign_experiments
-
     registered = await register_campaign_experiments(
         session,
         specs=real_specs,
@@ -384,10 +483,9 @@ async def test_real_diagnostic_replay_divergence_is_observer_effect_zero_end_to_
     )
     assert len(registered) == 24
 
-    attempt_evidence_by_config_id: dict[str, dict] = {}
-    experiment_id_by_config_id: dict[str, str] = {}
     target_config_id = "S1-00"
-    target_row = None
+    target_experiment_id = ""
+    baseline_evidence = None
 
     for (config_id, strategy, _identity), experiment_row in zip(
         identities, registered, strict=True
@@ -404,7 +502,7 @@ async def test_real_diagnostic_replay_divergence_is_observer_effect_zero_end_to_
             full_campaign_hash=_REAL_FULL_CAMPAIGN_HASH,
             campaign_run_id=_CAMPAIGN_RUN_ID,
         )
-        row = await record_attempt(
+        await record_attempt(
             session,
             experiment_id=experiment_row.experiment_id,
             evidence=evidence,
@@ -414,33 +512,19 @@ async def test_real_diagnostic_replay_divergence_is_observer_effect_zero_end_to_
             guard_opt_in_enabled=True,
             guard_policy=_POLICY,
         )
-        attempt_evidence_by_config_id[config_id] = evidence.model_dump()
-        experiment_id_by_config_id[config_id] = experiment_row.experiment_id
         if config_id == target_config_id:
-            target_row = row
-    assert target_row is not None
+            target_experiment_id = experiment_row.experiment_id
+            baseline_evidence = evidence
+    assert target_experiment_id
+    assert baseline_evidence is not None
 
-    def _current_scorecard():
-        return build_scorecard(
-            **_scorecard_kwargs(list(attempt_evidence_by_config_id.values()))
-        )
-
-    baseline_scorecard = _current_scorecard()
-    baseline_lineage = _lineage_snapshot(baseline_scorecard)
-    baseline_seal = _seal(list(attempt_evidence_by_config_id.values()))
-    baseline_row_bytes = bridge._canonical_raw_payload_bytes(target_row)
-    target_experiment_id = experiment_id_by_config_id[target_config_id]
-    baseline_evidence = _summary_to_attempt_evidence(
-        next(
-            s
-            for s in summarize_config_attempts_for_h6(_WALKFORWARD_RESULTS["S1"])
-            if s.config_id == target_config_id
-        ),
-        strategy_key=_STRATEGY_KEY["S1"],
-        experiment_id=target_experiment_id,
-        full_campaign_hash=_REAL_FULL_CAMPAIGN_HASH,
-        campaign_run_id=_CAMPAIGN_RUN_ID,
+    experiment_ids = tuple(_ENVELOPE.to_dict()["experiment_ids"])
+    baseline = await _persisted_observer_snapshot(
+        session,
+        expected_specs=real_specs,
+        experiment_ids=experiment_ids,
     )
+    target_row_id = baseline["row_ids"][target_experiment_id]
 
     diagnostic_row = {
         "transport": "in_process",
@@ -512,7 +596,7 @@ async def test_real_diagnostic_replay_divergence_is_observer_effect_zero_end_to_
             guard_policy=_POLICY,
         )
         captured = capsys.readouterr()
-        assert replayed_row.id == target_row.id
+        assert replayed_row.id == target_row_id
 
         if label == "absent_again":
             # byte-identical to baseline -- a genuine write-free no-op,
@@ -524,24 +608,35 @@ async def test_real_diagnostic_replay_divergence_is_observer_effect_zero_end_to_
             event = json.loads(lines[0])
             assert event["event"] == "diagnostic_replay_divergence"
 
-        # (5) the target row's own complete raw_payload never mutates.
-        assert bridge._canonical_raw_payload_bytes(replayed_row) == baseline_row_bytes
-
-        # attempt_evidence_by_config_id[target_config_id] intentionally
-        # stays the ORIGINAL (pre-replay) dict -- the scorecard must be
-        # rebuildable identically whether or not any of these divergent
-        # replays ever happened, using the SAME real production builders.
-        after_scorecard = _current_scorecard()
-        after_lineage = _lineage_snapshot(after_scorecard)
-        assert after_lineage == baseline_lineage, label
-        # (1) complete scorecard semantic payload/envelope, byte-for-byte.
-        assert json.dumps(after_scorecard, sort_keys=True) == json.dumps(
-            baseline_scorecard, sort_keys=True
-        ), label
-        # (3) explicit H5 six-key sealed attempts + trial_accounting_hash,
-        # called directly (not merely inferred from the scorecard above).
-        after_seal = _seal(list(attempt_evidence_by_config_id.values()))
-        assert after_seal.attempts == baseline_seal.attempts, label
+        # Re-query the corresponding persisted rows and real completeness
+        # report for every AFTER build; no disconnected fixture list feeds H5.
+        after = await _persisted_observer_snapshot(
+            session,
+            expected_specs=real_specs,
+            experiment_ids=experiment_ids,
+        )
+        assert after["raw_payload_bytes"] == baseline["raw_payload_bytes"], label
+        assert after["row_ids"] == baseline["row_ids"], label
+        assert after["report_bytes"] == baseline["report_bytes"], label
         assert (
-            after_seal.trial_accounting_hash == baseline_seal.trial_accounting_hash
+            after["scorecard_payload_bytes"] == baseline["scorecard_payload_bytes"]
         ), label
+        assert (
+            after["scorecard_envelope_bytes"] == baseline["scorecard_envelope_bytes"]
+        ), label
+        assert after["sealed_attempt_bytes"] == baseline["sealed_attempt_bytes"], label
+        assert after["lineage_surface_bytes"] == baseline["lineage_surface_bytes"], (
+            label
+        )
+
+        # Separate explicit authority assertions remain visible in addition
+        # to the complete canonical-byte comparisons above.
+        assert after["campaign_verdict"] == baseline["campaign_verdict"], label
+        assert (
+            after["scorecard_artifact_hash"] == baseline["scorecard_artifact_hash"]
+        ), label
+        assert after["trial_accounting_hash"] == baseline["trial_accounting_hash"], (
+            label
+        )
+        assert after["full_campaign_hash"] == baseline["full_campaign_hash"], label
+        assert after["campaign_run_id"] == baseline["campaign_run_id"], label

@@ -217,6 +217,9 @@ def test_frame_aware_truncation_preserves_innermost_frame_header_despite_huge_so
     assert len(evidence.traceback_text) <= 4000
     assert "...<truncated>..." in evidence.traceback_text
     assert "ValueError" in evidence.traceback_text
+    assert "safe" in evidence.traceback_text
+    assert "line 2, in boom" in evidence.traceback_text
+    assert huge_comment not in evidence.traceback_text
 
 
 def test_hostile_frame_filename_is_redacted_while_line_and_function_survive():
