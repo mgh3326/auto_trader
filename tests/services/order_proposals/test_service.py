@@ -17,6 +17,7 @@ from app.services.order_proposals.errors import (
     OrderProposalError,
     OrderProposalInvalidStateTransition,
     OrderProposalNotFound,
+    OrderProposalUnsupportedTargetAction,
 )
 from app.services.order_proposals.service import ExpirySweepResult, RungInput
 
@@ -181,6 +182,84 @@ async def test_target_actions_reject_unsupported_account_market_tuple(
         await OrderProposalsService(db_session).create_proposal(
             **_target_action_create_kwargs(action, account_mode="kis_mock")
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["replace", "cancel"])
+@pytest.mark.parametrize("market", ["equity_kr", "equity_us"])
+async def test_target_actions_allow_toss_live_equities(db_session, action, market):
+    """ROB-972: toss_live x equity_kr/us must be a supported cancel/replace
+    target -- previously SUPPORTED_TARGET_ACTIONS had no toss_live entry at
+    all, so this raised 'cancel unsupported for toss_live/equity_kr' even
+    though the create-time contract message claimed it was allowed.
+    """
+    symbol = "005930" if market == "equity_kr" else "AAPL"
+    group = await OrderProposalsService(db_session).create_proposal(
+        **_target_action_create_kwargs(
+            action,
+            account_mode="toss_live",
+            market=market,
+            symbol=symbol,
+            target_order_snapshot=_target_snapshot_payload(symbol=symbol),
+        )
+    )
+    await db_session.commit()
+    assert group.account_mode == "toss_live"
+    assert group.market == market
+    assert group.action == action
+    assert group.target_broker_order_id == "manual-upbit-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["replace", "cancel"])
+async def test_target_action_rejection_message_matches_capability_set(
+    db_session, action
+):
+    """The rejection message must be derived from the same set the action
+    actually checks membership against -- not a different action's set (the
+    ROB-972 bug: cancel/replace rejections reused place's hardcoded message
+    and falsely advertised toss_live support they didn't have).
+    """
+    with pytest.raises(OrderProposalError) as exc_info:
+        await OrderProposalsService(db_session).create_proposal(
+            **_target_action_create_kwargs(action, account_mode="kis_mock")
+        )
+    assert str(exc_info.value) == (
+        f"unsupported account_mode/market/action: kis_mock/crypto/{action} "
+        "(allowed: kis_live×equity_kr|equity_us, "
+        "toss_live×equity_kr|equity_us, upbit×crypto; "
+        "market aliases kr→equity_kr, us→equity_us)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_target_action_rejection_supported_matrix_is_action_accurate(db_session):
+    with pytest.raises(OrderProposalUnsupportedTargetAction) as exc_info:
+        await OrderProposalsService(db_session).create_proposal(
+            **_target_action_create_kwargs(
+                "cancel", account_mode="toss_live", market="crypto"
+            )
+        )
+    err = exc_info.value
+    assert err.requested == {
+        "account_mode": "toss_live",
+        "market": "crypto",
+        "action": "cancel",
+    }
+    assert {"account_mode": "toss_live", "market": "equity_kr"} in (
+        err.supported_matrix["cancel"]
+    )
+    assert {"account_mode": "toss_live", "market": "equity_us"} in (
+        err.supported_matrix["cancel"]
+    )
+    assert {"account_mode": "toss_live", "market": "crypto"} not in (
+        err.supported_matrix["cancel"]
+    )
+    # replace shares cancel's capability set today but is derived
+    # independently -- assert both explicitly so a future divergence between
+    # the two actions' capability sets is caught here.
+    assert err.supported_matrix["replace"] == err.supported_matrix["cancel"]
+    assert err.supported_matrix["place"] == err.supported_matrix["cancel"]
 
 
 @pytest.mark.asyncio
