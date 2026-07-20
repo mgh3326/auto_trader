@@ -13,7 +13,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1086,17 +1086,16 @@ _ALPACA_PAPER_CANCEL_TERMINAL = frozenset({"canceled"})
 # execution row". AlpacaPaperLedgerService.record_final_reconcile() flips
 # record_kind from 'execution' to 'reconcile' on the *same* row (an in-place
 # UPDATE, not a second INSERT) at the exact moment it books
-# lifecycle_state='final_reconciled' — every other terminal lifecycle_state
-# (filled/position_reconciled/closed/anomaly/canceled) is reached through
-# record_status/record_cancel/record_position_snapshot/record_close/
-# record_submit_failure, none of which ever touch record_kind, so they stay
-# 'execution'. Scanning only 'execution' therefore made every
+# lifecycle_state='final_reconciled' — terminal execution lifecycle states are
+# otherwise reached through record_submit/record_submit_failure/record_status/
+# record_cancel/record_position_snapshot/record_close, none of which ever touch
+# record_kind, so they stay 'execution'. Scanning only 'execution' therefore made every
 # final_reconciled roundtrip invisible to the due-list. 'reconcile' is safe
 # to add here: it is never produced by an INSERT (only this one UPDATE path),
 # so it cannot introduce a second row for an order already counted under
-# 'execution'. plan/preview/validation_attempt remain excluded — audited
-# against every AlpacaPaperLedgerService.record_* method, none of them ever
-# set a terminal lifecycle_state on those record_kinds.
+# 'execution'. plan/preview/validation_attempt remain excluded because they are
+# bookkeeping rather than confirmed execution rows; failed validation/preview
+# bookkeeping may be `anomaly` but must not create an execution retrospective.
 _ALPACA_PAPER_RECORD_KINDS = frozenset(
     {_ALPACA_PAPER_RECORD_KIND_EXECUTION, _ALPACA_PAPER_RECORD_KIND_RECONCILE}
 )
@@ -1106,6 +1105,89 @@ _GENERIC_LIVE_TERMINAL = _GENERIC_LIVE_DEFAULT_TERMINAL | _GENERIC_LIVE_CANCEL_T
 _TOSS_TERMINAL = _TOSS_DEFAULT_TERMINAL | _TOSS_CANCEL_TERMINAL
 _KIS_MOCK_TERMINAL = _KIS_MOCK_DEFAULT_TERMINAL | _KIS_MOCK_CANCEL_TERMINAL
 _ALPACA_PAPER_TERMINAL = _ALPACA_PAPER_DEFAULT_TERMINAL | _ALPACA_PAPER_CANCEL_TERMINAL
+
+# Representative selection is independent of mutable metadata timestamps.
+# A completed closing leg is the most informative roundtrip summary; then prefer
+# an explicit sell leg, lifecycle maturity, the stable terminal window instant,
+# and finally the immutable primary key as a deterministic tie-break.
+_ALPACA_PAPER_STATE_PRIORITY = {
+    "canceled": 0,
+    "anomaly": 1,
+    "filled": 2,
+    "position_reconciled": 3,
+    "closed": 4,
+    "final_reconciled": 5,
+}
+
+
+def _alpaca_paper_window_at(row: AlpacaPaperOrderLedger) -> datetime:
+    # ROB-954 R3 legacy policy: do not backfill an unknowable historical
+    # transition from mutable updated_at. Pre-migration terminal rows retain
+    # NULL and use immutable created_at, so later metadata writes cannot churn
+    # their retrospective window. New terminal transitions always stamp the
+    # dedicated column in AlpacaPaperLedgerService.
+    return row.terminalized_at or row.created_at
+
+
+def _alpaca_paper_representative_rank(
+    row: AlpacaPaperOrderLedger,
+) -> tuple[int, int, int, datetime, int]:
+    return (
+        int(row.lifecycle_state in {"closed", "final_reconciled"}),
+        int(row.side == "sell" or row.leg_role == "sell"),
+        _ALPACA_PAPER_STATE_PRIORITY.get(row.lifecycle_state, -1),
+        _alpaca_paper_window_at(row),
+        row.id,
+    )
+
+
+def _alpaca_paper_correlation_anomaly(
+    rows: list[AlpacaPaperOrderLedger],
+) -> dict[str, Any] | None:
+    """Describe malformed cross-leg identity without emitting unresolvable dupes.
+
+    One retrospective is uniquely keyed by (correlation_id, account_mode), so
+    emitting an entry per malformed member would create due rows that cannot all
+    be resolved. Keep one deterministic representative and attach every member
+    as anomaly evidence instead; no execution is silently discarded.
+    """
+
+    def instrument_type(row: AlpacaPaperOrderLedger) -> str:
+        return getattr(row.instrument_type, "value", str(row.instrument_type))
+
+    identities = {
+        (
+            row.execution_symbol,
+            row.execution_venue,
+            instrument_type(row),
+            row.account_mode,
+        )
+        for row in rows
+    }
+    if len(identities) <= 1:
+        return None
+
+    members = sorted(rows, key=lambda row: row.id)
+    return {
+        "code": "inconsistent_correlation_group",
+        "group_size": len(members),
+        "ledger_row_ids": [row.id for row in members],
+        "client_order_ids": sorted(row.client_order_id for row in members),
+        "symbols": sorted({row.execution_symbol for row in members}),
+        "execution_venues": sorted({row.execution_venue for row in members}),
+        "instrument_types": sorted({instrument_type(row) for row in members}),
+        "members": [
+            {
+                "ledger_row_id": row.id,
+                "client_order_id": row.client_order_id,
+                "symbol": row.execution_symbol,
+                "side": row.side,
+                "status": row.lifecycle_state,
+            }
+            for row in members
+        ],
+    }
+
 
 # Statuses hidden from `pending` unless include_cancelled=True. Disjoint from the
 # DEFAULT statuses (note: `rejected` is DEFAULT; `cancel_rejected` /
@@ -1421,45 +1503,51 @@ async def build_retrospective_pending(
     # scanning them would double-surface a single execution as multiple
     # due-list entries.
     if account_mode in (None, "alpaca_paper"):
-        # ROB-954 round-2: window anchors on `updated_at`, not `created_at`.
-        # `created_at` is claim time and never changes again; a row claimed
-        # days ago that only becomes terminal today was invisible in today's
-        # window under the old anchor (the REGN long-stall repro — see
-        # test_stale_created_at_with_recent_terminal_transition_surfaces_in_narrow_window).
-        # `updated_at` (NOT NULL, onupdate=func.now()) is bumped by every
-        # ledger write, including the terminal-transition write itself, so it
-        # tracks "when this row last became actionable" the same way
-        # KISMockOrderLedger.reconciled_at is stamped in
-        # apply_lifecycle_transition when next_state is terminal — a
-        # terminal-transition timestamp, not a send-time one.
+        # ROB-954 R3: terminalized_at is the first terminal transition, not the
+        # mutable updated_at. Existing terminal rows have NULL after this
+        # additive migration; created_at is the deliberate stable fallback.
+        # Express the fallback as two indexed branches (terminalized_at has the
+        # R3 index, created_at already has one) rather than COALESCE in WHERE.
+        terminal_window_at = func.coalesce(
+            AlpacaPaperOrderLedger.terminalized_at,
+            AlpacaPaperOrderLedger.created_at,
+        )
         stmt = (
             select(AlpacaPaperOrderLedger)
             .where(
                 AlpacaPaperOrderLedger.record_kind.in_(_ALPACA_PAPER_RECORD_KINDS),
                 AlpacaPaperOrderLedger.lifecycle_state.in_(_ALPACA_PAPER_TERMINAL),
-                AlpacaPaperOrderLedger.updated_at >= window_start,
-                AlpacaPaperOrderLedger.updated_at <= window_end,
+                or_(
+                    and_(
+                        AlpacaPaperOrderLedger.terminalized_at.is_not(None),
+                        AlpacaPaperOrderLedger.terminalized_at >= window_start,
+                        AlpacaPaperOrderLedger.terminalized_at <= window_end,
+                    ),
+                    and_(
+                        AlpacaPaperOrderLedger.terminalized_at.is_(None),
+                        AlpacaPaperOrderLedger.created_at >= window_start,
+                        AlpacaPaperOrderLedger.created_at <= window_end,
+                    ),
+                ),
             )
-            .order_by(AlpacaPaperOrderLedger.updated_at.desc())
+            .order_by(terminal_window_at.desc(), AlpacaPaperOrderLedger.id.desc())
             .limit(_PENDING_LEDGER_FETCH_CAP)
         )
-        # ROB-954 round-2: a buy/sell roundtrip's two execution rows can share
+        # ROB-954 R3: a buy/sell roundtrip's two execution rows can share
         # one lifecycle_correlation_id. review.trade_retrospectives enforces
         # UNIQUE(correlation_id, account_mode) (app/models/review.py), so two
         # independent due entries for the same correlation_id can never both
         # be resolved — saving one retrospective always covers both rows at
-        # once. Collapse to a single due entry per (lifecycle_correlation_id)
-        # before appending, keyed on the row with the latest updated_at (the
-        # most recently terminal-transitioned leg — typically the closing/
-        # sell leg, since it settles after the entry leg).
-        by_correlation: dict[str, AlpacaPaperOrderLedger] = {}
+        # once. Collapse to one deterministic close/sell-first representative;
+        # metadata-only updated_at changes play no role. Identity-inconsistent
+        # groups keep every member in correlation_anomaly evidence below.
+        by_correlation: dict[str, list[AlpacaPaperOrderLedger]] = {}
         for row in (await db.execute(stmt)).scalars().all():
             scanned += 1
-            key = row.lifecycle_correlation_id
-            current = by_correlation.get(key)
-            if current is None or row.updated_at > current.updated_at:
-                by_correlation[key] = row
-        for row in by_correlation.values():
+            key = row.lifecycle_correlation_id or f"ledger-row:{row.id}"
+            by_correlation.setdefault(key, []).append(row)
+        for group in by_correlation.values():
+            row = max(group, key=_alpaca_paper_representative_rank)
             itype = row.instrument_type.value
             market = "crypto" if itype == "crypto" else itype.removeprefix("equity_")
             entry = _pending_entry(
@@ -1472,10 +1560,13 @@ async def build_retrospective_pending(
                 status=row.lifecycle_state,
                 order_ref=row.client_order_id,
                 report_item_uuid=None,
-                trade_date=row.updated_at,
+                trade_date=_alpaca_paper_window_at(row),
                 row_id=row.id,
                 suggested_correlation_id=row.lifecycle_correlation_id,
             )
+            anomaly = _alpaca_paper_correlation_anomaly(group)
+            if anomaly is not None:
+                entry["correlation_anomaly"] = anomaly
             if not _is_covered(entry, covered_cids, covered_item_uuids):
                 pending.append(entry)
 

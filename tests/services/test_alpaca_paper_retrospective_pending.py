@@ -644,6 +644,140 @@ async def test_legacy_null_terminal_timestamp_surfaces_without_window_churn(
     assert await _find(moved, coid) is None
 
 
+@pytest.mark.parametrize(
+    "writer",
+    [
+        "record_submit",
+        "record_submit_failure",
+        "record_status",
+        "record_cancel",
+        "record_position_snapshot",
+        "record_close",
+        "record_final_reconcile",
+    ],
+)
+async def test_every_execution_terminal_write_stamps_once(
+    db_session: AsyncSession, writer: str
+) -> None:
+    """Every execution terminal writer stamps the first transition and retries
+    preserve that exact instant, including terminal-to-terminal paths."""
+    coid = _uniq(f"-{writer}")
+    row = _row(client_order_id=coid, lifecycle_state="submitted")
+    if writer == "record_cancel":
+        row.order_status = "canceled"
+    db_session.add(row)
+    await db_session.commit()
+    ledger = AlpacaPaperLedgerService(db_session)
+
+    async def invoke() -> AlpacaPaperOrderLedger:
+        if writer == "record_submit":
+            return await ledger.record_submit(
+                coid,
+                {
+                    "id": f"broker-{coid}",
+                    "status": "filled",
+                    "filled_qty": "1",
+                    "filled_avg_price": "500",
+                },
+            )
+        if writer == "record_submit_failure":
+            return await ledger.record_submit_failure(
+                coid, error_summary="deterministic rejection"
+            )
+        if writer == "record_status":
+            result = await ledger.record_status(
+                coid,
+                {
+                    "id": f"broker-{coid}",
+                    "status": "filled",
+                    "filled_qty": "1",
+                    "filled_avg_price": "500",
+                },
+            )
+            assert isinstance(result, AlpacaPaperOrderLedger)
+            return result
+        if writer == "record_cancel":
+            return await ledger.record_cancel(coid, cancel_status="canceled")
+        if writer == "record_position_snapshot":
+            return await ledger.record_position_snapshot(coid, position=None)
+        if writer == "record_close":
+            return await ledger.record_close(coid, qty_delta=Decimal("-1"))
+        assert writer == "record_final_reconcile"
+        return await ledger.record_final_reconcile(coid)
+
+    first = await invoke()
+    first_terminalized_at = first.terminalized_at
+    assert first_terminalized_at is not None
+
+    repeated = await invoke()
+    assert repeated.terminalized_at == first_terminalized_at
+
+
+async def test_terminal_insert_writers_stamp_at_insert(
+    db_session: AsyncSession,
+) -> None:
+    """Preview/validation anomaly inserts are terminal bookkeeping writes even
+    though record_kind filtering deliberately keeps them out of due-list scans."""
+    ledger = AlpacaPaperLedgerService(db_session)
+    preview = await ledger.record_preview(
+        client_order_id=_uniq("-preview-anomaly"),
+        execution_symbol="ISRG",
+        execution_venue="alpaca_paper",
+        instrument_type=InstrumentType.equity_us,
+        side="buy",
+        lifecycle_state="anomaly",
+    )
+    validation = await ledger.record_validation_attempt(
+        client_order_id=_uniq("-validation-anomaly"),
+        execution_symbol="ISRG",
+        execution_venue="alpaca_paper",
+        instrument_type=InstrumentType.equity_us,
+        side="buy",
+        validation_outcome="failed",
+    )
+    assert preview.terminalized_at is not None
+    assert validation.terminalized_at is not None
+
+
+async def test_zero_fill_terminal_reconcile_stamps_transition(
+    db_session: AsyncSession,
+) -> None:
+    """ROB-994 expired/rejected/canceled zero-fill booking uses record_status,
+    so the real reconcile integration must also populate terminalized_at."""
+    coid = _uniq("-zero-fill-expired")
+    ledger = AlpacaPaperLedgerService(db_session)
+    claim = await ledger.claim_submit(
+        client_order_id=coid,
+        execution_symbol="ISRG",
+        execution_venue="alpaca_paper",
+        instrument_type=InstrumentType.equity_us,
+        side="buy",
+        requested_qty=Decimal("1"),
+    )
+    assert claim.won is True
+    await ledger.record_submit(coid, {"id": f"broker-{coid}", "status": "new"})
+    expired = Order(
+        id=f"broker-{coid}",
+        client_order_id=coid,
+        symbol="ISRG",
+        qty=Decimal("1"),
+        filled_qty=Decimal("0"),
+        filled_avg_price=None,
+        side="buy",
+        type="limit",
+        time_in_force="day",
+        status="expired",
+    )
+    result = await AlpacaPaperReconcileService(
+        ledger, _FakeAlpacaBroker(expired)
+    ).reconcile(client_order_id=coid, dry_run=False)
+    assert result["reconciled"][0]["action"] == "booked_anomaly"
+    persisted = await ledger.get_execution_by_client_order_id(coid)
+    assert persisted is not None
+    assert persisted.lifecycle_state == "anomaly"
+    assert persisted.terminalized_at is not None
+
+
 # ---------------------------------------------------------------------------
 # HIGH-3 (round-3) — buy/sell roundtrip legs sharing one
 # lifecycle_correlation_id collapse to a single due entry, since

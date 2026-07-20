@@ -47,6 +47,7 @@ def test_alpaca_paper_ledger_model_columns():
         "broker",
         "account_mode",
         "lifecycle_state",
+        "terminalized_at",
         "signal_symbol",
         "signal_venue",
         "execution_symbol",
@@ -128,6 +129,7 @@ def test_alpaca_paper_ledger_partial_unique_indexes():
     # New correlation/record_kind lookup indexes
     assert "ix_alpaca_paper_ledger_correlation_id" in index_names
     assert "ix_alpaca_paper_ledger_record_kind" in index_names
+    assert "ix_alpaca_paper_ledger_terminalized_at" in index_names
 
 
 @pytest.mark.unit
@@ -1400,12 +1402,14 @@ async def test_record_status_with_cancel_evidence_derives_canceled():
 
     # The row's CURRENT state (anomaly) must not be excluded by the write guard,
     # or the derived "canceled" would never be applied to any row.
-    guarded_states = {
-        state
-        for key, value in compiled.params.items()
-        if key.startswith("lifecycle_state_") and isinstance(value, list)
-        for state in value
-    }
+    # Compile WHERE criteria separately: the terminalized_at SET expression also
+    # contains the full terminal-state set, but that CASE is not a write guard.
+    guarded_states = set()
+    for criterion in update_stmt._where_criteria:
+        where_params = criterion.compile().params
+        for key, value in where_params.items():
+            if key.startswith("lifecycle_state_") and isinstance(value, list):
+                guarded_states.update(value)
     assert guarded_states, "expected an immutable-state guard in the WHERE clause"
     assert "anomaly" not in guarded_states
     assert "canceled" not in guarded_states

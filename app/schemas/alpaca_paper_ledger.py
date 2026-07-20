@@ -18,6 +18,7 @@ class AlpacaPaperOrderLedgerRead(BaseModel):
     broker: str
     account_mode: str
     lifecycle_state: str
+    terminalized_at: datetime | None = None
 
     # ROB-90 taxonomy fields
     lifecycle_correlation_id: str
