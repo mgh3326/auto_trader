@@ -117,3 +117,70 @@ async def test_get_position_flat_when_amount_zero(
     result = await client.get_position(symbol="XRPUSDT")
     assert result.position_amt == Decimal("0.0")
     assert result.is_flat is True
+
+
+@pytest.mark.asyncio
+async def test_get_all_positions_omits_symbol_param_and_returns_every_row(
+    client: BinanceFuturesDemoExecutionClient, httpx_mock
+) -> None:
+    """ROB-993 (verify-993-r2-2329.md Finding 2) — account-wide position
+    read used by the strategy loop's broker-flat gate. No ``symbol`` query
+    param; every row Binance returns is surfaced, flat or not."""
+    httpx_mock.add_response(
+        method="GET",
+        url=re.compile(r"^https://demo-fapi\.binance\.com/fapi/v2/positionRisk\?.*$"),
+        status_code=200,
+        json=[
+            {
+                "symbol": "XRPUSDT",
+                "positionAmt": "0.0",
+                "entryPrice": "0.0",
+                "leverage": "1",
+            },
+            {
+                "symbol": "DOGEUSDT",
+                "positionAmt": "5.0",
+                "entryPrice": "0.1",
+                "leverage": "1",
+            },
+        ],
+    )
+    results = await client.get_all_positions()
+    request = httpx_mock.get_requests()[0]
+    assert "symbol=" not in str(request.url)
+
+    assert [r.symbol for r in results] == ["XRPUSDT", "DOGEUSDT"]
+    assert results[0].is_flat is True
+    assert results[1].is_flat is False
+    assert results[1].position_amt == Decimal("5.0")
+
+
+@pytest.mark.asyncio
+async def test_get_all_open_orders_omits_symbol_param_and_returns_every_row(
+    client: BinanceFuturesDemoExecutionClient, httpx_mock
+) -> None:
+    """ROB-993 (verify-993-r2-2329.md Finding 2) — account-wide open-order
+    read used by the strategy loop's broker-flat gate."""
+    httpx_mock.add_response(
+        method="GET",
+        url=re.compile(r"^https://demo-fapi\.binance\.com/fapi/v1/openOrders\?.*$"),
+        status_code=200,
+        json=[
+            {
+                "symbol": "DOGEUSDT",
+                "orderId": 1,
+                "clientOrderId": "stray-doge",
+                "side": "SELL",
+                "origQty": "1.0",
+                "status": "NEW",
+                "reduceOnly": False,
+            }
+        ],
+    )
+    result = await client.get_all_open_orders()
+    request = httpx_mock.get_requests()[0]
+    assert "symbol=" not in str(request.url)
+
+    assert len(result.orders) == 1
+    assert result.orders[0].symbol == "DOGEUSDT"
+    assert result.orders[0].client_order_id == "stray-doge"

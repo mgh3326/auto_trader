@@ -40,6 +40,8 @@ from .kill_switch import (
     evaluate_kill_switch,
 )
 from .sizing import (
+    LEG_NOTIONAL_CAP_MAX_USDT,
+    LEG_NOTIONAL_CAP_MIN_USDT,
     FuturesSizingBlocked,
     assert_leg_notional_cap_locked,
     assert_symbol_allowed,
@@ -295,6 +297,25 @@ async def run_tick(
             signal=signal,
             round_trip=None,
             blocked_reason=f"sizing_blocked:{sizing.reason}",
+        )
+    # ROB-993 R2 adversarial review (verify-993-r2-2329.md, Finding 1):
+    # assert_leg_notional_cap_locked only validated the INPUT cap_usdt.
+    # compute_futures_demo_order_qty floors qty to the symbol's LOT_SIZE
+    # step, which can push the REALIZED notional below the locked $6 floor
+    # even when cap_usdt itself was in [6, 10] (e.g. price=0.51, step=0.1,
+    # cap=6 -> qty=11.7, notional=5.967). Never grow the order past the
+    # cap to compensate — just refuse it.
+    if not (
+        LEG_NOTIONAL_CAP_MIN_USDT <= sizing.notional_usdt <= LEG_NOTIONAL_CAP_MAX_USDT
+    ):
+        return TickOutcome(
+            decision_ts=decision_ts,
+            signal=signal,
+            round_trip=None,
+            blocked_reason=(
+                "sizing_blocked:realized_notional_outside_locked_range:"
+                f"{sizing.notional_usdt}"
+            ),
         )
     qty = quantize_qty(
         sizing.qty,

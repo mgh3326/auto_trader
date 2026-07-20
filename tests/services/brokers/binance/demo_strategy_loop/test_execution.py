@@ -73,7 +73,7 @@ async def test_refuses_open_submit_when_broker_position_not_flat_pre_submit() ->
         )
 
     assert "submit_order" not in execution.call_names()
-    assert "get_position" in execution.call_names()
+    assert "get_all_positions" in execution.call_names()
     assert ledger.rows["open-1"].lifecycle_state not in BLOCKING_ROOT_LIFECYCLE_STATES
 
 
@@ -93,6 +93,85 @@ async def test_refuses_open_submit_when_broker_has_residual_open_orders_pre_subm
             reduce_only=False,
         )
     ]
+    ledger = FakeLedger()
+    session = FakeSession()
+
+    with pytest.raises(RoundTripBlocked):
+        await execute_signal_round_trip(
+            **_round_trip_kwargs(execution, ledger, session)
+        )
+
+    assert "submit_order" not in execution.call_names()
+
+
+@pytest.mark.asyncio
+async def test_refuses_open_submit_when_a_different_symbol_has_existing_position() -> (
+    None
+):
+    """ROB-993 R2 adversarial review (verify-993-r2-2329.md, Finding 2): the
+    broker-flat gate must be account-wide, not scoped to the signal's own
+    symbol — a position on a DIFFERENT symbol (left by another consumer of
+    the shared Demo account) must also block a new open, since the
+    max-concurrent-positions=1 invariant is account-global."""
+    execution = FakeExecutionClient(position_amt_by_symbol={"DOGEUSDT": Decimal("5")})
+    ledger = FakeLedger()
+    session = FakeSession()
+
+    with pytest.raises(RoundTripBlocked):
+        await execute_signal_round_trip(
+            **_round_trip_kwargs(execution, ledger, session)
+        )
+
+    assert "submit_order" not in execution.call_names()
+    assert "get_all_positions" in execution.call_names()
+
+
+@pytest.mark.asyncio
+async def test_refuses_open_submit_when_a_different_symbol_has_residual_open_order() -> (
+    None
+):
+    execution = FakeExecutionClient()
+    execution.open_orders_by_symbol["DOGEUSDT"] = [
+        FuturesDemoOpenOrder(
+            client_order_id="stray-doge",
+            broker_order_id="b1",
+            symbol="DOGEUSDT",
+            side="SELL",
+            qty=Decimal("1"),
+            status="NEW",
+            reduce_only=False,
+        )
+    ]
+    ledger = FakeLedger()
+    session = FakeSession()
+
+    with pytest.raises(RoundTripBlocked):
+        await execute_signal_round_trip(
+            **_round_trip_kwargs(execution, ledger, session)
+        )
+
+    assert "submit_order" not in execution.call_names()
+
+
+@pytest.mark.asyncio
+async def test_refuses_open_submit_when_position_appears_between_order_test_and_submit() -> (
+    None
+):
+    """ROB-993 R2 adversarial review Finding 2: the broker-flat gate must be
+    re-checked fresh immediately before the mutating open submit, not just
+    once right after reservation — a position/order that appears in the
+    gap (order-test, position-mode, leverage, preview all happen in
+    between) must still be caught before any broker mutation."""
+    execution = FakeExecutionClient()
+    real_order_test = execution.order_test
+
+    async def _order_test_then_inject_position(**kwargs):
+        result = await real_order_test(**kwargs)
+        execution.position_amt_by_symbol["XRPUSDT"] = Decimal("1")
+        return result
+
+    execution.order_test = _order_test_then_inject_position  # type: ignore[method-assign]
+
     ledger = FakeLedger()
     session = FakeSession()
 

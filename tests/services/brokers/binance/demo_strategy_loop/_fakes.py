@@ -187,6 +187,26 @@ class FakeExecutionClient:
             orders=self.open_orders_by_symbol.get(symbol, [])
         )
 
+    async def get_all_positions(self) -> list[FuturesDemoPositionResult]:
+        self._record("get_all_positions")
+        return [
+            FuturesDemoPositionResult(
+                symbol=symbol,
+                position_amt=amt,
+                entry_price=Decimal("1"),
+                leverage=1,
+                is_flat=(amt == 0),
+            )
+            for symbol, amt in self.position_amt_by_symbol.items()
+        ]
+
+    async def get_all_open_orders(self) -> FuturesDemoOpenOrdersResult:
+        self._record("get_all_open_orders")
+        all_orders = [
+            order for orders in self.open_orders_by_symbol.values() for order in orders
+        ]
+        return FuturesDemoOpenOrdersResult(orders=all_orders)
+
 
 @dataclass
 class FakeLedgerRow:

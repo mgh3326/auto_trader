@@ -280,3 +280,54 @@ reproduce deliberately mutated/tampered broker responses deterministically
 without any real HTTP/DB) plus additional cases in `test_orchestrator.py`.
 Re-verified against the real `demo-fapi.binance.com` Demo API after the
 fix (clean reconciled round trip, same as §7).
+
+---
+
+## 9. Adversarial-review hardening (R3, verify-993-r2-2329.md)
+
+A second-round review re-attacked the R2-fixed invariants with adjacent
+mutations and found 2 more P1 gaps in the R2 fix itself:
+
+1. **`assert_leg_notional_cap_locked` only validated the INPUT `cap_usdt`,
+   never the REALIZED notional.** `compute_futures_demo_order_qty` floors
+   `qty` to the symbol's LOT_SIZE step, which can push the actual
+   `notional_usdt` below the locked $6 floor even when `cap_usdt` itself
+   was inside `[6, 10]` (repro: price=0.51, step=0.1, cap=6 -> qty=11.7,
+   notional=5.967). `orchestrator.run_tick` now re-checks
+   `sizing.notional_usdt` against `LEG_NOTIONAL_CAP_MIN_USDT`/`_MAX_USDT`
+   *after* the LOT_SIZE floor, refusing (`sizing_blocked:
+   realized_notional_outside_locked_range`) rather than growing the order
+   past the cap to compensate.
+2. **The broker-flat gate was per-symbol and only checked once.** Two
+   sub-gaps, both real for a shared Demo account:
+   - A position/open order on a **different** symbol (e.g. the
+     production demo-scalping bot holding `DOGEUSDT` while this loop
+     trades `XRPUSDT`) was invisible to a `get_position(symbol=...)`/
+     `get_open_orders(symbol=...)` check scoped to the signal's own
+     symbol — even though `max_concurrent_positions=1` is an
+     account-global invariant, not per-symbol.
+   - The gate only ran once, immediately after reservation; four broker
+     calls (position-mode, `set_leverage`, `order_test`, plus the gate
+     itself) separated it from the actual open submit, leaving a window
+     where a position appearing in that gap was only caught *after* the
+     open had already been submitted (via the own-fill-delta check,
+     Finding 2 from R2) rather than blocked before it.
+
+   Fixed by adding `BinanceFuturesDemoExecutionClient.get_all_positions()`
+   / `.get_all_open_orders()` (new, additive-only methods — Binance's
+   `/fapi/v2/positionRisk` and `/fapi/v1/openOrders` both return
+   account-wide data when the `symbol` param is omitted) and calling them
+   **twice**: once right after reservation (as before, now account-wide),
+   and again immediately before the open `submit_order` call (new). This
+   does not close the gate's own narrow snapshot-to-submit TOCTOU window
+   entirely — see §5 — but it converts the two concrete gaps above into
+   `RoundTripBlocked` (zero broker mutation) instead of a post-hoc
+   anomaly.
+
+New regression coverage: `test_execution_client_position.py` (the two new
+account-wide client methods) plus 3 new cases each in `test_execution.py`
+(different-symbol position, different-symbol open order, position
+appearing between `order_test` and submit) and `test_orchestrator.py`
+(realized-notional-below-floor). Re-verified against the real
+`demo-fapi.binance.com` Demo API after the fix (clean reconciled round
+trip, same as §7/§8).

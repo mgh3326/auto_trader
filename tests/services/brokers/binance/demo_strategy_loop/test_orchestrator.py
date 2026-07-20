@@ -369,6 +369,52 @@ async def test_run_tick_sizing_blocked(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_tick_rejects_realized_notional_below_locked_floor(
+    monkeypatch,
+) -> None:
+    """ROB-993 R2 adversarial review (verify-993-r2-2329.md, Finding 1):
+    ``assert_leg_notional_cap_locked`` only validates the INPUT cap_usdt —
+    it never re-checks the REALIZED notional after LOT_SIZE floor. With
+    price=0.51, step=0.1, min_notional=5, cap=6 (a value inside the locked
+    [6,10] range), the real (unmocked) sizing function floors to
+    qty=11.7 / notional=5.967 — below the $6 floor. run_tick must refuse
+    to proceed rather than submit an order smaller than the locked leg
+    size."""
+
+    async def _clean_snapshot(ledger, *, strategy_loop_tag, now):
+        return KillSwitchSnapshot(
+            open_position_count=0, consecutive_stop_losses_today=0
+        )
+
+    async def _filters(client, symbol):
+        return {
+            "step_size": Decimal("0.1"),
+            "min_notional": Decimal("5"),
+            "quantity_precision": 1,
+        }
+
+    async def _price(client, symbol):
+        return Decimal("0.51")
+
+    async def _fail_if_called(*args, **kwargs):
+        raise AssertionError(
+            "execute_signal_round_trip must not run on an undersized order"
+        )
+
+    monkeypatch.setattr(orchestrator, "build_kill_switch_snapshot", _clean_snapshot)
+    monkeypatch.setattr(orchestrator, "fetch_symbol_filters", _filters)
+    monkeypatch.setattr(orchestrator, "fetch_reference_price", _price)
+    monkeypatch.setattr(orchestrator, "execute_signal_round_trip", _fail_if_called)
+
+    outcome = await orchestrator.run_tick(
+        **_common_kwargs(signal_override=_SIGNAL, confirm=True, cap_usdt=Decimal("6"))
+    )
+    assert outcome.round_trip is None
+    assert outcome.blocked_reason is not None
+    assert outcome.blocked_reason.startswith("sizing_blocked:")
+
+
+@pytest.mark.asyncio
 async def test_run_tick_round_trip_blocked_reports_exposure_slot_taken(
     monkeypatch,
 ) -> None:

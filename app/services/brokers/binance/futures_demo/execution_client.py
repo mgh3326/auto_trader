@@ -533,6 +533,35 @@ class BinanceFuturesDemoExecutionClient:
         ]
         return FuturesDemoOpenOrdersResult(orders=orders)
 
+    async def get_all_open_orders(self) -> FuturesDemoOpenOrdersResult:
+        """Query open orders across ALL symbols (read-side; no mutation).
+
+        Signed ``GET /fapi/v1/openOrders`` with no ``symbol`` param —
+        Binance returns every open order on the account regardless of
+        symbol. ROB-993's account-wide broker-flat gate needs this: a
+        single-symbol query cannot see a pre-existing order on a
+        *different* symbol left by another consumer of a shared Demo
+        account (verify-993-r2-2329.md Finding 2).
+        """
+        params = {"recvWindow": str(BINANCE_FUTURES_DEMO_RECV_WINDOW_MS)}
+        signed = _sign_request_params(params=params, api_secret=self._api_secret)
+        resp = await self._client.get(_OPEN_ORDERS_PATH, params=signed)
+        resp.raise_for_status()
+        body = resp.json()
+        orders = [
+            FuturesDemoOpenOrder(
+                client_order_id=str(entry.get("clientOrderId", "")),
+                broker_order_id=str(entry.get("orderId", "")),
+                symbol=str(entry.get("symbol", "")),
+                side=str(entry.get("side", "")),
+                qty=Decimal(str(entry.get("origQty", "0"))),
+                status=str(entry.get("status", "")),
+                reduce_only=bool(entry.get("reduceOnly", False)),
+            )
+            for entry in body
+        ]
+        return FuturesDemoOpenOrdersResult(orders=orders)
+
     async def get_order(
         self,
         *,
@@ -628,6 +657,46 @@ class BinanceFuturesDemoExecutionClient:
             leverage=leverage,
             is_flat=(position_amt == 0),
         )
+
+    async def get_all_positions(self) -> list[FuturesDemoPositionResult]:
+        """Query positions across ALL symbols from ``/fapi/v2/positionRisk``
+        (no ``symbol`` param).
+
+        Binance returns one row per symbol the account has ever touched
+        (most with ``positionAmt=0``); every row is surfaced verbatim,
+        including flat ones — filtering is the caller's job. ROB-993's
+        account-wide broker-flat gate needs this: a single-symbol
+        ``get_position`` cannot see a pre-existing position on a
+        *different* symbol left by another consumer of a shared Demo
+        account (verify-993-r2-2329.md Finding 2).
+        """
+        params = {"recvWindow": str(BINANCE_FUTURES_DEMO_RECV_WINDOW_MS)}
+        signed = _sign_request_params(params=params, api_secret=self._api_secret)
+        resp = await self._client.get(_POSITION_RISK_PATH, params=signed)
+        resp.raise_for_status()
+        body = resp.json()
+        rows = (
+            body if isinstance(body, list) else [body] if isinstance(body, dict) else []
+        )
+        results: list[FuturesDemoPositionResult] = []
+        for entry in rows:
+            position_amt = Decimal(str(entry.get("positionAmt", "0")))
+            entry_price = Decimal(str(entry.get("entryPrice", "0")))
+            leverage_raw = entry.get("leverage", "0")
+            try:
+                leverage = int(Decimal(str(leverage_raw)))
+            except (ValueError, ArithmeticError):
+                leverage = 0
+            results.append(
+                FuturesDemoPositionResult(
+                    symbol=str(entry.get("symbol", "")),
+                    position_amt=position_amt,
+                    entry_price=entry_price,
+                    leverage=leverage,
+                    is_flat=(position_amt == 0),
+                )
+            )
+        return results
 
     async def get_position_mode(self) -> FuturesDemoPositionModeResult:
         """Query the account's position mode (One-way vs Hedge).

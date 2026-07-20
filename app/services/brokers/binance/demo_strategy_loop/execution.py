@@ -59,7 +59,10 @@ from typing import Final
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.brokers.binance.demo.ledger.service import BinanceDemoLedgerService
-from app.services.brokers.binance.futures_demo.dto import FuturesDemoOrderSubmitResult
+from app.services.brokers.binance.futures_demo.dto import (
+    FuturesDemoOrderSubmitResult,
+    FuturesDemoPositionResult,
+)
 from app.services.brokers.binance.futures_demo.errors import (
     BinanceFuturesDemoHedgeModeBlocked,
 )
@@ -155,6 +158,25 @@ def _assert_order_echo(
         )
     if mismatches:
         raise BrokerEchoMismatch(f"{context}: " + "; ".join(mismatches))
+
+
+async def _fetch_account_flat_snapshot(
+    execution: BinanceFuturesDemoExecutionClient,
+) -> tuple[list[FuturesDemoPositionResult], int]:
+    """Fresh, account-wide (ALL symbols) position + open-order snapshot.
+
+    ROB-993 R2 adversarial review (verify-993-r2-2329.md, Finding 2): the
+    max-concurrent-positions=1 invariant is account-global, so the
+    broker-flat gate must look at every symbol the shared Demo account
+    might hold — not just the signal's own symbol, which cannot see a
+    position/order another consumer (a different symbol, a different
+    process) left on the account. Returns ``(nonflat_positions,
+    open_order_count)``.
+    """
+    positions = await execution.get_all_positions()
+    open_orders = await execution.get_all_open_orders()
+    nonflat = [p for p in positions if not p.is_flat]
+    return nonflat, len(open_orders.orders)
 
 
 async def _poll_order_filled(
@@ -285,28 +307,30 @@ async def execute_signal_round_trip(
         )
         await session.commit()
 
-    # 1. Broker-flat pre-submit gate (ROB-993 adversarial review Finding 2).
-    #    A shared-credential Demo account can already carry a position/open
-    #    order from another consumer (the production demo-scalping bot, an
-    #    operator smoke run); this loop's own local ledger reservation
-    #    cannot see that broker-side state. A fresh signed snapshot right
+    # 1. Broker-flat pre-submit gate (ROB-993 adversarial review Finding 2;
+    #    hardened account-wide + re-checked fresh in R2, verify-993-r2-2329.md
+    #    Finding 2). A shared-credential Demo account can already carry a
+    #    position/open order — on ANY symbol, from another consumer (the
+    #    production demo-scalping bot, an operator smoke run, this loop
+    #    trading a different symbol) — that this loop's own local ledger
+    #    reservation cannot see. A fresh account-wide signed snapshot right
     #    after reservation — before ANY other broker call — refuses to
-    #    proceed rather than risk opening on top of / later mis-closing an
-    #    unrelated position.
+    #    proceed rather than risk opening while the account is not flat.
     try:
-        baseline_position = await execution.get_position(symbol=symbol)
-        baseline_open_orders = await execution.get_open_orders(symbol=symbol)
+        nonflat_positions, open_order_count = await _fetch_account_flat_snapshot(
+            execution
+        )
     except Exception:
         await _release("broker_pre_submit_snapshot_failed")
         raise
-    if not baseline_position.is_flat or baseline_open_orders.orders:
+    if nonflat_positions or open_order_count:
         await _release("broker_not_flat_pre_submit")
         raise RoundTripBlocked(
             "broker_not_flat_pre_submit: "
-            f"position_amt={baseline_position.position_amt} "
-            f"open_orders={len(baseline_open_orders.orders)}"
+            f"nonflat_positions={[(p.symbol, str(p.position_amt)) for p in nonflat_positions]} "
+            f"open_orders={open_order_count}"
         )
-    baseline_qty = baseline_position.position_amt
+    baseline_qty = Decimal("0")
 
     # 2. Position-mode check — One-way required (inherited ROB-298 PR 2 boundary).
     try:
@@ -352,6 +376,30 @@ async def execute_signal_round_trip(
         raise
     await ledger.record_validated(client_order_id=open_client_order_id, now=_now_utc())
     await session.commit()
+
+    # 5b. Fresh account-wide flat re-check, immediately before the mutating
+    #     open submit (ROB-993 R2 adversarial review, verify-993-r2-2329.md
+    #     Finding 2). Four broker calls (position-mode, set_leverage,
+    #     order_test, plus the initial gate itself) separate the first flat
+    #     check from the actual submit; re-reading right here shrinks that
+    #     window so a position/order that appeared in the gap is still
+    #     caught before any broker mutation, not just detected after the
+    #     fact via the own-fill-delta check below.
+    try:
+        (
+            fresh_nonflat_positions,
+            fresh_open_order_count,
+        ) = await _fetch_account_flat_snapshot(execution)
+    except Exception:
+        await _release("broker_pre_submit_refresh_failed")
+        raise
+    if fresh_nonflat_positions or fresh_open_order_count:
+        await _release("broker_not_flat_pre_submit_refresh")
+        raise RoundTripBlocked(
+            "broker_not_flat_pre_submit_refresh: "
+            f"nonflat_positions={[(p.symbol, str(p.position_amt)) for p in fresh_nonflat_positions]} "
+            f"open_orders={fresh_open_order_count}"
+        )
 
     # 6. SUBMITTED — signed POST /fapi/v1/order (real Demo placement; open).
     try:
