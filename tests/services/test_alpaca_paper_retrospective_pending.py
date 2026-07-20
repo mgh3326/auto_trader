@@ -18,6 +18,10 @@ in-place by record_final_reconcile()) surface alongside 'execution'; and
 roundtrip buy/sell legs sharing one lifecycle_correlation_id collapse to a
 single due entry.
 
+The terminal window is anchored on the dedicated ``terminalized_at`` transition
+timestamp. Legacy terminal rows created before that nullable column existed use
+the stable ``created_at`` fallback; metadata-only writes must move neither path.
+
 This file's name contains "alpaca_paper" so conftest's
 `_serialize_alpaca_paper_db_suites` automatically cross-worker-locks it
 against every other alpaca_paper suite sharing this table.
@@ -36,8 +40,8 @@ import pytest_asyncio
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.timezone import now_kst
-from app.models.paper_trading import PaperTrade
+from app.core.timezone import KST, now_kst
+from app.models.paper_trading import PaperAccount, PaperTrade
 from app.models.review import AlpacaPaperOrderLedger
 from app.models.trading import InstrumentType
 from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
@@ -49,7 +53,7 @@ from app.services.trade_journal.trade_retrospective_service import (
     save_retrospective,
 )
 
-pytestmark = [pytest.mark.asyncio]
+pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 _PREFIX = "rob954-"
 
@@ -87,6 +91,11 @@ async def _cleanup(db_session: AsyncSession):
         )
         await db_session.execute(
             delete(PaperTrade).where(PaperTrade.correlation_id.like(f"{_PREFIX}%"))
+        )
+        # Prefix-scoped account cleanup closes the leak from the disjoint
+        # PaperTrade coverage test without touching unrelated shared-test rows.
+        await db_session.execute(
+            delete(PaperAccount).where(PaperAccount.name.like(f"{_PREFIX}%"))
         )
         await db_session.commit()
 
@@ -444,7 +453,18 @@ async def test_reconciled_fill_via_real_reconcile_service_surfaces_as_pending(
     )
     assert claim.won is True
 
-    await ledger.record_submit(coid, {"id": f"broker-{coid}", "status": "new"})
+    submitted = await ledger.record_submit(
+        coid, {"id": f"broker-{coid}", "status": "new"}
+    )
+
+    # The claim/submit really happened three days ago. Only the terminal write
+    # produced by the real reconcile below happens today; this makes reverting
+    # the scanner to created_at fail instead of yielding the round-2 false green.
+    stale = now_kst().astimezone(UTC) - timedelta(days=3)
+    submitted.created_at = stale
+    submitted.updated_at = stale
+    await db_session.commit()
+    assert submitted.terminalized_at is None
 
     order = Order(
         id=f"broker-{coid}",
@@ -465,8 +485,8 @@ async def test_reconciled_fill_via_real_reconcile_service_surfaces_as_pending(
 
     # Narrow, realistic (today-only) window — NOT the 2000-2100 span used
     # elsewhere in this file. A wide window can mask the created_at-vs-
-    # updated_at window bug (HIGH-1); a narrow today-only window only passes
-    # if the scan actually anchors on the terminal-transition timestamp.
+    # terminalized_at bug; this only passes when the actual transition is the
+    # window anchor.
     today = now_kst().strftime("%Y-%m-%d")
     result = await _pending_with_retry(
         db_session,
@@ -486,7 +506,7 @@ async def test_reconciled_fill_via_real_reconcile_service_surfaces_as_pending(
 
 
 # ---------------------------------------------------------------------------
-# HIGH-1 (round-2) — window anchors on updated_at (terminal-transition time),
+# HIGH-1 (round-3) — window anchors on terminalized_at (terminal-transition time),
 # not created_at (claim time). A row claimed days ago that only becomes
 # terminal today must surface in today's narrow window; the old created_at
 # anchor silently dropped exactly this shape (the REGN long-stall repro).
@@ -507,7 +527,7 @@ async def test_stale_created_at_with_recent_terminal_transition_surfaces_in_narr
     # Sanity: the setup is genuinely stale before the transition below.
     assert row.created_at.date() < now_kst().date()
 
-    # Real terminal transition today — bumps updated_at via onupdate=func.now(),
+    # Real terminal transition today stamps terminalized_at exactly once;
     # created_at is untouched by the UPDATE and stays stale forever.
     ledger = AlpacaPaperLedgerService(db_session)
     await ledger.record_status(
@@ -530,10 +550,102 @@ async def test_stale_created_at_with_recent_terminal_transition_surfaces_in_narr
     entry = await _find(narrow, coid)
     assert entry is not None, narrow["pending"]
     assert entry["status"] == "filled"
+    transitioned = await ledger.get_execution_by_client_order_id(coid)
+    assert transitioned is not None
+    assert transitioned.terminalized_at is not None
+
+
+async def test_terminal_window_does_not_move_after_metadata_only_writes(
+    db_session: AsyncSession,
+) -> None:
+    """Round-2 real-DB counterexample: reconcile/cancel metadata updates
+    ``updated_at`` but may never re-date an already-terminal execution."""
+    coid = _uniq()
+    terminalized = now_kst().astimezone(UTC) - timedelta(days=3)
+    row = _row(client_order_id=coid, lifecycle_state="filled")
+    row.created_at = terminalized - timedelta(days=2)
+    row.updated_at = terminalized
+    row.terminalized_at = terminalized
+    db_session.add(row)
+    await db_session.commit()
+
+    ledger = AlpacaPaperLedgerService(db_session)
+    await ledger.record_reconcile(coid, reconcile_status="metadata-only")
+    # order_status is not canceled, so this is another metadata-only write.
+    updated = await ledger.record_cancel(coid, cancel_status="not_requested")
+    assert updated.lifecycle_state == "filled"
+    assert updated.terminalized_at == terminalized
+    assert updated.updated_at > terminalized
+
+    old_day = terminalized.astimezone(KST).strftime("%Y-%m-%d")
+    old_window = await _pending_with_retry(
+        db_session,
+        kst_date_from=old_day,
+        kst_date_to=old_day,
+        account_mode="alpaca_paper",
+    )
+    assert await _find(old_window, coid) is not None
+
+    today = now_kst().strftime("%Y-%m-%d")
+    today_window = await _pending_with_retry(
+        db_session,
+        kst_date_from=today,
+        kst_date_to=today,
+        account_mode="alpaca_paper",
+    )
+    assert await _find(today_window, coid) is None
+
+
+async def test_legacy_null_terminal_timestamp_surfaces_without_window_churn(
+    db_session: AsyncSession,
+) -> None:
+    """Pre-migration terminal rows remain visible through created_at fallback.
+
+    The fallback deliberately avoids updated_at: a metadata-only reconcile must
+    not move a legacy NULL row from its original window into today's window.
+    """
+    coid = _uniq()
+    created = now_kst().astimezone(UTC) - timedelta(days=3)
+    row = _row(client_order_id=coid, lifecycle_state="filled")
+    row.created_at = created
+    row.updated_at = created
+    row.terminalized_at = None
+    db_session.add(row)
+    await db_session.commit()
+
+    legacy_day = created.astimezone(KST).strftime("%Y-%m-%d")
+    before = await _pending_with_retry(
+        db_session,
+        kst_date_from=legacy_day,
+        kst_date_to=legacy_day,
+        account_mode="alpaca_paper",
+    )
+    assert await _find(before, coid) is not None
+
+    ledger = AlpacaPaperLedgerService(db_session)
+    updated = await ledger.record_reconcile(coid, reconcile_status="legacy-metadata")
+    assert updated.terminalized_at is None
+
+    still_legacy = await _pending_with_retry(
+        db_session,
+        kst_date_from=legacy_day,
+        kst_date_to=legacy_day,
+        account_mode="alpaca_paper",
+    )
+    assert await _find(still_legacy, coid) is not None
+
+    today = now_kst().strftime("%Y-%m-%d")
+    moved = await _pending_with_retry(
+        db_session,
+        kst_date_from=today,
+        kst_date_to=today,
+        account_mode="alpaca_paper",
+    )
+    assert await _find(moved, coid) is None
 
 
 # ---------------------------------------------------------------------------
-# HIGH-3 (round-2) — buy/sell roundtrip legs sharing one
+# HIGH-3 (round-3) — buy/sell roundtrip legs sharing one
 # lifecycle_correlation_id collapse to a single due entry, since
 # review.trade_retrospectives enforces UNIQUE(correlation_id, account_mode)
 # and one saved retrospective covers both legs at once.
@@ -546,22 +658,22 @@ async def test_shared_correlation_id_roundtrip_collapses_to_one_pending_entry(
     correlation_id = _uniq("-roundtrip")
     buy_coid = _uniq("-buy")
     sell_coid = _uniq("-sell")
-    db_session.add(
-        _row(
-            client_order_id=buy_coid,
-            lifecycle_state="filled",
-            side="buy",
-            lifecycle_correlation_id=correlation_id,
-        )
+    transitioned = now_kst().astimezone(UTC) - timedelta(hours=1)
+    buy = _row(
+        client_order_id=buy_coid,
+        lifecycle_state="filled",
+        side="buy",
+        lifecycle_correlation_id=correlation_id,
     )
-    db_session.add(
-        _row(
-            client_order_id=sell_coid,
-            lifecycle_state="closed",
-            side="sell",
-            lifecycle_correlation_id=correlation_id,
-        )
+    buy.terminalized_at = transitioned
+    sell = _row(
+        client_order_id=sell_coid,
+        lifecycle_state="closed",
+        side="sell",
+        lifecycle_correlation_id=correlation_id,
     )
+    sell.terminalized_at = transitioned
+    db_session.add_all([buy, sell])
     await db_session.commit()
 
     result = await _pending_with_retry(
@@ -574,6 +686,30 @@ async def test_shared_correlation_id_roundtrip_collapses_to_one_pending_entry(
         p for p in result["pending"] if p["suggested_correlation_id"] == correlation_id
     ]
     assert len(matches) == 1, result["pending"]
+    assert matches[0]["order_ref"] == sell_coid
+    assert matches[0]["side"] == "sell"
+    assert matches[0]["status"] == "closed"
+
+    # A later metadata write on the buy leg changes updated_at only. The
+    # representative must remain the deterministic sell/close leg.
+    await AlpacaPaperLedgerService(db_session).record_reconcile(
+        buy_coid, reconcile_status="metadata-only"
+    )
+    after_metadata = await _pending_with_retry(
+        db_session,
+        kst_date_from="2000-01-01",
+        kst_date_to="2100-01-01",
+        account_mode="alpaca_paper",
+    )
+    after_matches = [
+        p
+        for p in after_metadata["pending"]
+        if p["suggested_correlation_id"] == correlation_id
+    ]
+    assert len(after_matches) == 1, after_metadata["pending"]
+    assert after_matches[0]["order_ref"] == sell_coid
+    assert after_matches[0]["side"] == "sell"
+    assert after_matches[0]["status"] == "closed"
 
     await save_retrospective(
         db_session,
@@ -595,3 +731,49 @@ async def test_shared_correlation_id_roundtrip_collapses_to_one_pending_entry(
         p for p in covered["pending"] if p["suggested_correlation_id"] == correlation_id
     ]
     assert matches_after == []
+
+
+async def test_mismatched_symbols_in_one_correlation_surface_anomaly(
+    db_session: AsyncSession,
+) -> None:
+    """A malformed correlation group is one resolvable due entry plus explicit
+    anomaly evidence accounting for every affected execution row."""
+    correlation_id = _uniq("-mismatch")
+    aapl_coid = _uniq("-aapl")
+    msft_coid = _uniq("-msft")
+    transitioned = now_kst().astimezone(UTC) - timedelta(minutes=5)
+    aapl = _row(
+        client_order_id=aapl_coid,
+        lifecycle_state="filled",
+        symbol="AAPL",
+        side="buy",
+        lifecycle_correlation_id=correlation_id,
+    )
+    msft = _row(
+        client_order_id=msft_coid,
+        lifecycle_state="closed",
+        symbol="MSFT",
+        side="sell",
+        lifecycle_correlation_id=correlation_id,
+    )
+    aapl.terminalized_at = transitioned
+    msft.terminalized_at = transitioned
+    db_session.add_all([aapl, msft])
+    await db_session.commit()
+
+    result = await _pending_with_retry(
+        db_session,
+        kst_date_from="2000-01-01",
+        kst_date_to="2100-01-01",
+        account_mode="alpaca_paper",
+    )
+    matches = [
+        p for p in result["pending"] if p["suggested_correlation_id"] == correlation_id
+    ]
+    assert len(matches) == 1, result["pending"]
+    anomaly = matches[0]["correlation_anomaly"]
+    assert anomaly["code"] == "inconsistent_correlation_group"
+    assert anomaly["group_size"] == 2
+    assert anomaly["symbols"] == ["AAPL", "MSFT"]
+    assert anomaly["client_order_ids"] == sorted([aapl_coid, msft_coid])
+    assert len(anomaly["ledger_row_ids"]) == 2
