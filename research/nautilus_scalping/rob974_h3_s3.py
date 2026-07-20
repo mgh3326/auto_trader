@@ -12,7 +12,13 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from rob974_features import FOUR_HOUR_MS, Bar4h, CommonSnapshot, SymbolFeature
+from rob974_features import (
+    FOUR_HOUR_MS,
+    MINUTE_MS,
+    Bar4h,
+    CommonSnapshot,
+    SymbolFeature,
+)
 from rob974_h3_manifest import (
     SYMBOLS,
     S3Config,
@@ -423,12 +429,448 @@ def s3_formula_grid(
     )
 
 
+S3_NO_SIGNAL_REASONS: tuple[str, ...] = (
+    "missing_required_context",
+    "market_regime",
+    "market_breadth",
+    "trend_strength",
+    "efficiency",
+    "pullback_depth",
+    "vwap_reclaim",
+    "momentum",
+    "prior_l_non_breakout",
+    "volatility_percentile",
+    "range_tp_capacity",
+)
+S3_GENERATOR_REJECTION_REASONS: tuple[str, ...] = (
+    "simultaneous_candidate_arbitration_loser",
+)
+
+
+def s3_risk_distances(config: S3Config, a_value: float) -> tuple[float, float]:
+    """Registered fractional SL/TP math with no rounding or extra epsilon."""
+    if type(config) is not S3Config:
+        raise TypeError("config must be exact registered S3Config")
+    assert_registered_config(config)
+    _float(a_value, "A")
+    if a_value < 0.0:
+        raise ValueError("A must not be negative")
+    d_sl = min(max(config.k_SL * a_value, 0.008), 0.020)
+    d_tp = max(0.0068, config.R_TP * d_sl)
+    return d_sl, d_tp
+
+
+@dataclass(frozen=True, slots=True)
+class S3Candidate:
+    """H3-owned accepted-intent payload; CP8 alone adapts it to merged H2."""
+
+    strategy: str
+    config_id: str
+    decision_ts: int
+    symbol: str
+    side: str
+    R: float
+    S: float
+    ER: float
+    Q: float
+    A: float
+    atr20: float
+    close: float
+    vwap12: float
+    vwap24: float
+    market_return_24h: float
+    current_market_return_4h: float
+    volatility_percentile: float
+    volatility_percentile_provenance: str
+    range24: float
+    d_SL: float
+    d_TP: float
+    entry_tick_ts: int
+    entry_deadline_ts: int
+    max_hold_4h_bars: int
+
+    def __post_init__(self) -> None:
+        if _str(self.strategy, "strategy") != "S3":
+            raise ValueError("S3 candidate strategy must be S3")
+        _str(self.config_id, "config_id")
+        _int(self.decision_ts, "decision_ts")
+        if _str(self.symbol, "symbol") not in SYMBOLS:
+            raise ValueError("candidate symbol outside frozen universe")
+        if _str(self.side, "side") not in ("long", "short"):
+            raise ValueError("candidate side must be long or short")
+        for name in (
+            "R",
+            "S",
+            "ER",
+            "Q",
+            "A",
+            "atr20",
+            "close",
+            "vwap12",
+            "vwap24",
+            "market_return_24h",
+            "current_market_return_4h",
+            "volatility_percentile",
+            "range24",
+            "d_SL",
+            "d_TP",
+        ):
+            _float(getattr(self, name), name)
+        if (
+            _str(
+                self.volatility_percentile_provenance,
+                "volatility_percentile_provenance",
+            )
+            != "h1_percentile_30d"
+        ):
+            raise ValueError("S3 percentile provenance drift")
+        _int(self.entry_tick_ts, "entry_tick_ts")
+        _int(self.entry_deadline_ts, "entry_deadline_ts")
+        _int(self.max_hold_4h_bars, "max_hold_4h_bars")
+        if self.entry_tick_ts != self.decision_ts:
+            raise ValueError("entry tick must be the exact decision close")
+        if self.entry_deadline_ts != self.decision_ts + MINUTE_MS:
+            raise ValueError("entry deadline must bound the exact next minute")
+        if self.max_hold_4h_bars != 12:
+            raise ValueError("S3 maximum hold is frozen at twelve 4h bars")
+
+    @property
+    def signal_ts(self) -> int:
+        return self.decision_ts
+
+    @property
+    def identity(self) -> tuple[str, str, int, str, str]:
+        return (
+            self.strategy,
+            self.config_id,
+            self.decision_ts,
+            self.symbol,
+            self.side,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class S3GateOutcome:
+    side: str | None
+    candidate: S3Candidate | None
+    no_signal_reason: str | None
+
+    def __post_init__(self) -> None:
+        if self.side is not None and (
+            type(self.side) is not str or self.side not in ("long", "short")
+        ):
+            raise ValueError("side must be long, short, or None")
+        if self.candidate is not None and type(self.candidate) is not S3Candidate:
+            raise TypeError("candidate must be exact S3Candidate or None")
+        if (self.candidate is None) == (self.no_signal_reason is None):
+            raise ValueError("gate outcome must contain exactly candidate or reason")
+        if self.no_signal_reason is not None and (
+            type(self.no_signal_reason) is not str
+            or self.no_signal_reason not in S3_NO_SIGNAL_REASONS
+        ):
+            raise ValueError("unknown S3 no-signal reason")
+
+
+def _no_signal(reason: str, side: str | None = None) -> S3GateOutcome:
+    return S3GateOutcome(side, None, reason)
+
+
+def evaluate_s3_gates(metrics: S3Metrics, config: S3Config) -> S3GateOutcome:
+    """Evaluate the registered first-failing S3 gates in frozen order."""
+    if type(metrics) is not S3Metrics:
+        raise TypeError("metrics must be exact S3Metrics")
+    if type(config) is not S3Config:
+        raise TypeError("config must be exact registered S3Config")
+    assert_registered_config(config)
+    if metrics.config_id != config.config_id:
+        raise ValueError("metrics/config identity mismatch")
+
+    if metrics.market_return_24h >= 0.0075:
+        side = "long"
+    elif metrics.market_return_24h <= -0.0075:
+        side = "short"
+    else:
+        return _no_signal("market_regime")
+
+    if (metrics.bplus if side == "long" else metrics.bminus) < 2:
+        return _no_signal("market_breadth", side)
+    if (side == "long" and metrics.S < 1.25) or (side == "short" and metrics.S > -1.25):
+        return _no_signal("trend_strength", side)
+    if metrics.ER < config.ER_min:
+        return _no_signal("efficiency", side)
+    pullback = metrics.Qplus if side == "long" else metrics.Qminus
+    if not config.q_min <= pullback <= 1.25:
+        return _no_signal("pullback_depth", side)
+    if (side == "long" and metrics.close <= metrics.vwap12) or (
+        side == "short" and metrics.close >= metrics.vwap12
+    ):
+        return _no_signal("vwap_reclaim", side)
+    if (side == "long" and metrics.close <= metrics.previous_close) or (
+        side == "short" and metrics.close >= metrics.previous_close
+    ):
+        return _no_signal("momentum", side)
+    if (side == "long" and metrics.close >= metrics.prior_l_high) or (
+        side == "short" and metrics.close <= metrics.prior_l_low
+    ):
+        return _no_signal("prior_l_non_breakout", side)
+    if not 20.0 <= metrics.percentile_30d <= 90.0:
+        return _no_signal("volatility_percentile", side)
+    d_sl, d_tp = s3_risk_distances(config, metrics.A)
+    if d_tp > 0.60 * metrics.range24:
+        return _no_signal("range_tp_capacity", side)
+
+    return S3GateOutcome(
+        side,
+        S3Candidate(
+            "S3",
+            config.config_id,
+            metrics.decision_ts,
+            metrics.symbol,
+            side,
+            metrics.R,
+            metrics.S,
+            metrics.ER,
+            pullback,
+            metrics.A,
+            metrics.atr20,
+            metrics.close,
+            metrics.vwap12,
+            metrics.vwap24,
+            metrics.market_return_24h,
+            metrics.current_market_return_4h,
+            metrics.percentile_30d,
+            "h1_percentile_30d",
+            metrics.range24,
+            d_sl,
+            d_tp,
+            metrics.decision_ts,
+            metrics.decision_ts + MINUTE_MS,
+            12,
+        ),
+        None,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class S3RejectedCandidate:
+    candidate: S3Candidate
+    reason: str
+
+    def __post_init__(self) -> None:
+        if type(self.candidate) is not S3Candidate:
+            raise TypeError("rejected candidate must be exact S3Candidate")
+        if (
+            type(self.reason) is not str
+            or self.reason not in S3_GENERATOR_REJECTION_REASONS
+        ):
+            raise ValueError("unknown S3 generator-rejection reason")
+
+
+@dataclass(frozen=True, slots=True)
+class S3ArbitrationResult:
+    winner: S3Candidate
+    rejected: tuple[S3RejectedCandidate, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.winner) is not S3Candidate:
+            raise TypeError("winner must be exact S3Candidate")
+        if type(self.rejected) is not tuple or any(
+            type(item) is not S3RejectedCandidate for item in self.rejected
+        ):
+            raise TypeError("rejected must be a tuple of exact records")
+        rejected_ids = tuple(item.candidate.identity for item in self.rejected)
+        if self.winner.identity in rejected_ids or len(rejected_ids) != len(
+            set(rejected_ids)
+        ):
+            raise ValueError("accepted/rejected candidate collision")
+
+
+def _s3_rank(candidate: S3Candidate) -> tuple[float, float, float, str]:
+    return (-abs(candidate.S), -candidate.ER, -candidate.A, candidate.symbol)
+
+
+def arbitrate_s3_candidates(
+    candidates: Sequence[S3Candidate],
+) -> S3ArbitrationResult:
+    if not isinstance(candidates, Sequence):
+        raise TypeError("candidates must be a sequence")
+    exact = tuple(candidates)
+    if not exact:
+        raise ValueError("cannot arbitrate an empty candidate set")
+    if any(type(candidate) is not S3Candidate for candidate in exact):
+        raise TypeError("candidates must contain exact S3Candidate values")
+    scope = {
+        (candidate.strategy, candidate.config_id, candidate.decision_ts)
+        for candidate in exact
+    }
+    if len(scope) != 1:
+        raise ValueError("simultaneous arbitration scope mismatch")
+    identities = tuple(candidate.identity for candidate in exact)
+    if len(identities) != len(set(identities)):
+        raise ValueError("duplicate simultaneous candidate identity")
+    ordered = tuple(sorted(exact, key=_s3_rank))
+    return S3ArbitrationResult(
+        ordered[0],
+        tuple(
+            S3RejectedCandidate(candidate, "simultaneous_candidate_arbitration_loser")
+            for candidate in ordered[1:]
+        ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class S3UnitDecision:
+    decision_ts: int
+    symbol: str
+    status: str
+    side: str | None
+    candidate: S3Candidate | None
+    no_signal_reason: str | None
+    generator_rejection_reason: str | None
+
+    def __post_init__(self) -> None:
+        _int(self.decision_ts, "decision_ts")
+        if _str(self.symbol, "symbol") not in SYMBOLS:
+            raise ValueError("decision symbol outside frozen universe")
+        if _str(self.status, "status") not in (
+            "NO_SIGNAL",
+            "GENERATOR_REJECTED",
+            "GENERATOR_ACCEPTED",
+        ):
+            raise ValueError("unknown S3 unit status")
+        if self.side is not None and self.side not in ("long", "short"):
+            raise ValueError("invalid decision side")
+        if self.candidate is not None and type(self.candidate) is not S3Candidate:
+            raise TypeError("candidate must be exact S3Candidate or None")
+        if self.no_signal_reason is not None and (
+            type(self.no_signal_reason) is not str
+            or self.no_signal_reason not in S3_NO_SIGNAL_REASONS
+        ):
+            raise ValueError("unknown no-signal reason")
+        if self.generator_rejection_reason is not None and (
+            type(self.generator_rejection_reason) is not str
+            or self.generator_rejection_reason not in S3_GENERATOR_REJECTION_REASONS
+        ):
+            raise ValueError("unknown generator-rejection reason")
+
+
+@dataclass(frozen=True, slots=True)
+class S3GeneratorOutput:
+    decisions: tuple[S3UnitDecision, ...]
+    accepted: tuple[S3Candidate, ...]
+    rejected: tuple[S3RejectedCandidate, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.decisions) is not tuple or type(self.accepted) is not tuple:
+            raise TypeError("generator output containers must be tuples")
+        if type(self.rejected) is not tuple:
+            raise TypeError("generator rejected container must be tuple")
+        if any(type(item) is not S3UnitDecision for item in self.decisions):
+            raise TypeError("decisions must contain exact S3UnitDecision")
+        if any(type(item) is not S3Candidate for item in self.accepted):
+            raise TypeError("accepted must contain exact S3Candidate")
+        if any(type(item) is not S3RejectedCandidate for item in self.rejected):
+            raise TypeError("rejected must contain exact S3RejectedCandidate")
+        accepted_ids = {item.identity for item in self.accepted}
+        rejected_ids = {item.candidate.identity for item in self.rejected}
+        if accepted_ids & rejected_ids:
+            raise ValueError("accepted/rejected candidate collision")
+
+
+def generate_s3_global(
+    feature_context: FeatureContext,
+    emit_window: EmitWindow,
+    config: S3Config,
+) -> S3GeneratorOutput:
+    """Run one account-global S3 invocation across all expected closes/symbols."""
+    units = s3_formula_grid(feature_context, emit_window, config)
+    decisions: list[S3UnitDecision] = []
+    accepted: list[S3Candidate] = []
+    rejected: list[S3RejectedCandidate] = []
+    for decision_ts in expected_decision_closes(emit_window):
+        at_close = tuple(unit for unit in units if unit.decision_ts == decision_ts)
+        gate_outcomes: dict[str, S3GateOutcome] = {}
+        candidates: list[S3Candidate] = []
+        for unit in at_close:
+            if unit.metrics is None:
+                gate_outcomes[unit.symbol] = _no_signal("missing_required_context")
+            else:
+                gate_outcomes[unit.symbol] = evaluate_s3_gates(unit.metrics, config)
+            candidate = gate_outcomes[unit.symbol].candidate
+            if candidate is not None:
+                candidates.append(candidate)
+
+        arbitration = arbitrate_s3_candidates(candidates) if candidates else None
+        winner_id = arbitration.winner.identity if arbitration is not None else None
+        loser_by_id = (
+            {item.candidate.identity: item for item in arbitration.rejected}
+            if arbitration is not None
+            else {}
+        )
+        if arbitration is not None:
+            accepted.append(arbitration.winner)
+            rejected.extend(arbitration.rejected)
+        for unit in at_close:
+            outcome = gate_outcomes[unit.symbol]
+            candidate = outcome.candidate
+            if candidate is None:
+                decisions.append(
+                    S3UnitDecision(
+                        decision_ts,
+                        unit.symbol,
+                        "NO_SIGNAL",
+                        outcome.side,
+                        None,
+                        outcome.no_signal_reason,
+                        None,
+                    )
+                )
+            elif candidate.identity == winner_id:
+                decisions.append(
+                    S3UnitDecision(
+                        decision_ts,
+                        unit.symbol,
+                        "GENERATOR_ACCEPTED",
+                        candidate.side,
+                        candidate,
+                        None,
+                        None,
+                    )
+                )
+            else:
+                loser = loser_by_id[candidate.identity]
+                decisions.append(
+                    S3UnitDecision(
+                        decision_ts,
+                        unit.symbol,
+                        "GENERATOR_REJECTED",
+                        candidate.side,
+                        candidate,
+                        None,
+                        loser.reason,
+                    )
+                )
+    return S3GeneratorOutput(tuple(decisions), tuple(accepted), tuple(rejected))
+
+
 __all__ = [
     "EmitWindow",
     "FeatureContext",
+    "S3ArbitrationResult",
+    "S3Candidate",
     "S3FormulaUnit",
+    "S3GateOutcome",
+    "S3GeneratorOutput",
     "S3Metrics",
+    "S3RejectedCandidate",
+    "S3UnitDecision",
+    "S3_GENERATOR_REJECTION_REASONS",
+    "S3_NO_SIGNAL_REASONS",
+    "arbitrate_s3_candidates",
     "compute_s3_metrics",
+    "evaluate_s3_gates",
     "expected_decision_closes",
+    "generate_s3_global",
     "s3_formula_grid",
+    "s3_risk_distances",
 ]
