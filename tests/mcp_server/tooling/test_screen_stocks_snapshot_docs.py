@@ -39,6 +39,12 @@ def test_discovery_tool_descriptions_guide_selection_and_snapshot_freshness():
     screen_desc = mcp.descriptions["screen_stocks"].lower()
     assert "krx_session_expired" in screen_desc
     assert "screen_stocks_snapshot" in screen_desc
+    assert "get_momentum_candidates" in screen_desc
+
+    health_desc = mcp.descriptions["get_krx_session_health"].lower()
+    assert "read-only" in health_desc
+    assert "krx_session_expired" in health_desc
+    assert "screen_stocks_snapshot" in health_desc
 
     assert "screen_stocks_snapshot" in mcp.descriptions["get_top_stocks"].lower()
     assert (

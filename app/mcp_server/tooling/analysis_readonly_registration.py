@@ -73,6 +73,7 @@ ANALYSIS_READONLY_TOOL_NAMES: set[str] = {
     "get_indicators",
     "screen_stocks",
     "screen_stocks_snapshot",
+    "get_krx_session_health",
     "get_top_stocks",
     "get_news",
     "get_fx_rate",
