@@ -1,3 +1,4 @@
+import functools
 import re
 import uuid
 from datetime import UTC, datetime
@@ -1129,6 +1130,188 @@ async def test_replace_target_drift_is_rejected_without_cancel(
     _, rungs = await service.get_proposal(group.proposal_id)
     assert rungs[0].state == "rejected"
     assert rungs[0].void_reason == f"target_snapshot_mismatch:{field}"
+
+
+def _toss_broker_order(**overrides):
+    values = {
+        "order_id": "broker-1",
+        "symbol": "005930",
+        "side": "SELL",
+        "order_type": "LIMIT",
+        "price": Decimal("70000"),
+        "quantity": Decimal("10"),
+        "execution": {},
+        "status": "PENDING",
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+@pytest.mark.asyncio
+async def test_toss_live_cancel_end_to_end_through_broker_gateway(db_session):
+    """ROB-972 AC3 -- the 07-20 incident scenario: a resting toss_live KR
+    limit order, a cancel proposal, approval, and a fake broker cancel call
+    routed through the *real* broker_gateway dispatch (fetch_target_order /
+    cancel_target_order), not a stand-in fetch_target_fn/cancel_target_fn --
+    only the actual Toss network boundary (TossReadClient.get_order,
+    toss_cancel_order) is faked.
+    """
+    from app.services.order_proposals.broker_gateway import (
+        cancel_target_order,
+        fetch_target_order,
+    )
+
+    service = OrderProposalsService(db_session)
+    approved = _target_snapshot(
+        broker_order_id="broker-1",
+        symbol="005930",
+        side="sell",
+        limit_price="70000",
+        remaining_quantity="10",
+    )
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        action="cancel",
+        target_broker_order_id="broker-1",
+        target_order_snapshot=approved.to_payload(),
+        rungs=[RungInput(0, "sell", Decimal("10"), Decimal("70000"), None)],
+    )
+    await db_session.commit()
+
+    toss_orders = iter(
+        [
+            _toss_broker_order(status="PENDING"),
+            _toss_broker_order(status="CANCELED"),
+        ]
+    )
+
+    class FakeTossClient:
+        async def get_order(self, order_id):
+            assert order_id == "broker-1"
+            return next(toss_orders)
+
+    cancel_calls = []
+
+    async def fake_toss_cancel(**kwargs):
+        cancel_calls.append(kwargs)
+        return {"success": True, "original_order_id": kwargs["order_id"]}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=_forbidden_submit,
+        fetch_target_fn=functools.partial(
+            fetch_target_order, toss_client=FakeTossClient()
+        ),
+        cancel_target_fn=functools.partial(
+            cancel_target_order, toss_cancel_fn=fake_toss_cancel
+        ),
+    )
+
+    assert outcomes[0].result == "cancelled"
+    assert cancel_calls == [
+        {
+            "order_id": "broker-1",
+            "dry_run": False,
+            "confirm": True,
+            "account_mode": "toss_live",
+        }
+    ]
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "cancelled"
+    assert rungs[0].broker_order_id == "broker-1"
+
+
+@pytest.mark.asyncio
+async def test_toss_live_replace_end_to_end_uses_toss_client_order_id(db_session):
+    """ROB-972 regression guard -- _revalidate_replace_rung previously only
+    generated a proposal_client_order_id for account_mode == 'upbit', so a
+    toss_live replace's live submit step would always fail with
+    invalid_toss_client_order_id. Assert the real toss-shaped id reaches
+    place_order_fn and the whole cancel-then-place pipeline converges.
+    """
+    from app.services.order_proposals.broker_gateway import (
+        cancel_target_order,
+        fetch_target_order,
+    )
+    from app.services.order_proposals.revalidation import (
+        _toss_proposal_client_order_id,
+    )
+
+    service = OrderProposalsService(db_session)
+    approved = _target_snapshot(
+        broker_order_id="broker-1",
+        symbol="005930",
+        side="sell",
+        limit_price="70000",
+        remaining_quantity="10",
+    )
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        action="replace",
+        target_broker_order_id="broker-1",
+        target_order_snapshot=approved.to_payload(),
+        rungs=[RungInput(0, "sell", Decimal("10"), Decimal("71000"), None)],
+    )
+    await db_session.commit()
+
+    toss_orders = iter(
+        [
+            _toss_broker_order(status="PENDING"),
+            _toss_broker_order(status="CANCELED"),
+        ]
+    )
+
+    class FakeTossClient:
+        async def get_order(self, order_id):
+            return next(toss_orders)
+
+    async def fake_toss_cancel(**kwargs):
+        return {"success": True}
+
+    submit_calls = []
+
+    async def place_order_fn(**kwargs):
+        if kwargs.get("dry_run"):
+            return {
+                "success": True,
+                "approval_hash": "fresh",
+                "price": "71000",
+                "quantity": "10",
+            }
+        submit_calls.append(kwargs)
+        return {"success": True, "status": "resting", "broker_order_id": "new-1"}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order_fn,
+        fetch_target_fn=functools.partial(
+            fetch_target_order, toss_client=FakeTossClient()
+        ),
+        cancel_target_fn=functools.partial(
+            cancel_target_order, toss_cancel_fn=fake_toss_cancel
+        ),
+    )
+
+    assert outcomes[0].result == "submitted_resting"
+    assert len(submit_calls) == 1
+    expected_client_order_id = _toss_proposal_client_order_id(group.proposal_id, 0)
+    assert submit_calls[0]["proposal_client_order_id"] == expected_client_order_id
+    assert re.fullmatch(r"[a-zA-Z0-9\-_]+", expected_client_order_id)
+    assert len(expected_client_order_id) <= 36
 
 
 def test_toss_decimal_args_are_exact_and_canonical():
