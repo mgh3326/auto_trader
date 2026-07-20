@@ -9,6 +9,8 @@ exit-reason/symbol/direction attribution (THESIS_EXIT is never TIMEOUT).
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 from rob974_h5_contracts import FOLD_IDS, H5InputError, MetricTrade
 from rob974_h5_s3 import (
@@ -209,6 +211,33 @@ class TestPathScenarioMembershipBinding:
         with pytest.raises(H5InputError):
             evaluate_s3_falsification(
                 primary_trades=_uniform_trades(40), upward_trades=wrong_path_upward
+            )
+
+
+class TestStrategyAndSelectedOosMembershipBinding:
+    def test_s3_evaluator_rejects_pure_s4_book(self):
+        def as_s4(trade: MetricTrade) -> MetricTrade:
+            return dataclasses.replace(
+                trade,
+                strategy="S4",
+                config_id="S4-00",
+                dimension="XRP-DOGE",
+                gross_notional=100.0,
+                volatility_percentile=None,
+            )
+
+        with pytest.raises(H5InputError):
+            evaluate_s3_falsification(
+                primary_trades=tuple(as_s4(t) for t in _uniform_trades(40)),
+                upward_trades=tuple(as_s4(t) for t in _upward_trades(10)),
+            )
+
+    def test_s3_evaluator_rejects_mixed_selected_configs(self):
+        primary = list(_uniform_trades(40))
+        primary[-1] = dataclasses.replace(primary[-1], config_id="S3-23")
+        with pytest.raises(H5InputError):
+            evaluate_s3_falsification(
+                primary_trades=tuple(primary), upward_trades=_upward_trades(10)
             )
 
 

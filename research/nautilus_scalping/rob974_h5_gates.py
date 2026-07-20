@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from rob974_h5_contracts import FOLD_IDS, H5InputError, MetricTrade
@@ -36,6 +36,7 @@ __all__ = [
     "WIN_MARGIN_MIN",
     "CommonGateResult",
     "evaluate_common_gates",
+    "validate_selected_oos_membership",
 ]
 
 POOLED_E17_MIN_BPS = 5.0
@@ -71,6 +72,7 @@ class CommonGateResult:
     weighted_pbe: float | None
     win_margin: float | None
     fold_trade_counts: dict[str, int]
+    fold_e17_bps: dict[str, float | None] = field(default_factory=dict)
 
 
 def _utc_month_key(exit_ts_ms: int) -> str:
@@ -86,21 +88,51 @@ def _weight(trade: MetricTrade) -> float:
     return trade.gross_notional if trade.gross_notional is not None else 1.0
 
 
+def validate_selected_oos_membership(
+    *,
+    primary_trades: tuple[MetricTrade, ...],
+    upward_trades: tuple[MetricTrade, ...],
+    authority: str,
+    expected_strategy: str | None = None,
+) -> None:
+    """Bind every scoring consumer to one selected-OOS trade membership.
+
+    D3 has three independent domains and all three are checked here before
+    arithmetic: the registered path, one strategy, and one selected config.
+    A path label by itself cannot prevent a caller from cherry-picking the
+    best rows across the 24 configs or substituting the other strategy's
+    rows.  Empty books remain scoreable as incomplete/failing evidence; any
+    rows that do exist must share the same exact membership.
+    """
+    if any(t.path_scenario != "primary_stress17" for t in primary_trades):
+        raise H5InputError(f"{authority}_primary_path_scenario_mismatch")
+    if any(t.path_scenario != "upward_stress22" for t in upward_trades):
+        raise H5InputError(f"{authority}_upward_path_scenario_mismatch")
+
+    all_trades = primary_trades + upward_trades
+    strategies = {t.strategy for t in all_trades}
+    if expected_strategy is None:
+        if len(strategies) > 1:
+            raise H5InputError(f"{authority}_strategy_domain_mismatch")
+    elif any(t.strategy != expected_strategy for t in all_trades):
+        raise H5InputError(f"{authority}_strategy_domain_mismatch")
+
+    if len({t.config_id for t in all_trades}) > 1:
+        raise H5InputError(f"{authority}_selected_oos_membership_mismatch")
+
+
 def evaluate_common_gates(
     *,
     primary_trades: tuple[MetricTrade, ...],
     upward_trades: tuple[MetricTrade, ...],
 ) -> CommonGateResult:
-    # D3 fail-closed membership binding (adversarial verify R1, finding 1):
-    # a path-scenario swap (e.g. base13 masquerading as the primary17
-    # selected-OOS book, or the upward book carrying primary_stress17) must
-    # be rejected, never silently scored as if it were the correct
-    # membership -- there is no fourth 0bp scenario/base membership/
-    # counterfactual substitute for E0/E17/PF/win-margin/concentration.
-    if any(t.path_scenario != "primary_stress17" for t in primary_trades):
-        raise H5InputError("common_gates_primary_path_scenario_mismatch")
-    if any(t.path_scenario != "upward_stress22" for t in upward_trades):
-        raise H5InputError("common_gates_upward_path_scenario_mismatch")
+    # D3 fail-closed membership binding (adversarial verify R1/R2): path,
+    # strategy, and selected-config membership are one indivisible seal.
+    validate_selected_oos_membership(
+        primary_trades=primary_trades,
+        upward_trades=upward_trades,
+        authority="common_gates",
+    )
 
     reasons: set[str] = set()
 
@@ -162,6 +194,15 @@ def evaluate_common_gates(
     if positive_fold_count < MIN_POSITIVE_FOLDS:
         reasons.add(REASON_INSUFFICIENT_POSITIVE_FOLDS)
 
+    fold_e17_bps = {
+        fold_id: (
+            fold_net_sum[fold_id] / fold_trade_counts[fold_id]
+            if fold_trade_counts[fold_id] > 0
+            else None
+        )
+        for fold_id in FOLD_IDS
+    }
+
     monthly_net: dict[str, float] = defaultdict(float)
     for t in primary_trades:
         monthly_net[_utc_month_key(t.exit_ts)] += t.net_bps
@@ -194,4 +235,5 @@ def evaluate_common_gates(
         weighted_pbe=weighted_pbe,
         win_margin=win_margin,
         fold_trade_counts=fold_trade_counts,
+        fold_e17_bps=fold_e17_bps,
     )

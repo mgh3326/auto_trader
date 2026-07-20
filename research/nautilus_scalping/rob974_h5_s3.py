@@ -26,7 +26,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from rob974_h5_contracts import FOLD_IDS, S3_SYMBOLS, H5InputError, MetricTrade
+from rob974_h5_contracts import FOLD_IDS, S3_SYMBOLS, MetricTrade
+from rob974_h5_gates import validate_selected_oos_membership
 
 __all__ = [
     "S3_FIRST_4H_MINUTES",
@@ -95,13 +96,12 @@ def evaluate_s3_falsification(
     primary_trades: tuple[MetricTrade, ...],
     upward_trades: tuple[MetricTrade, ...],
 ) -> S3FalsificationResult:
-    # D3 fail-closed membership binding (adversarial verify R1, finding 1):
-    # reject a path-scenario swap rather than silently scoring the wrong
-    # membership.
-    if any(t.path_scenario != "primary_stress17" for t in primary_trades):
-        raise H5InputError("s3_falsification_primary_path_scenario_mismatch")
-    if any(t.path_scenario != "upward_stress22" for t in upward_trades):
-        raise H5InputError("s3_falsification_upward_path_scenario_mismatch")
+    validate_selected_oos_membership(
+        primary_trades=primary_trades,
+        upward_trades=upward_trades,
+        authority="s3_falsification",
+        expected_strategy="S3",
+    )
 
     reasons: set[str] = set()
     incomplete_reasons: set[str] = set()

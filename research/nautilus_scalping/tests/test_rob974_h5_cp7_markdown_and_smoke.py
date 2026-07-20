@@ -23,8 +23,10 @@ returns bytes.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
+import pytest
 from rob974_h5_canonical import (
     StrategyCanonicalInputs,
     build_canonical_scorecard,
@@ -34,6 +36,7 @@ from rob974_h5_canonical import (
 from rob974_h5_contracts import (
     FOLD_IDS,
     CampaignEnvelope,
+    H5InputError,
     H6AAccountingSeal,
     MetricTrade,
 )
@@ -653,6 +656,50 @@ class TestContractFixtureCampaignDecisionSmoke:
         md = self._render(s3_inputs, s4_inputs, campaign_decision)
         assert "campaign_decision: both_pass_s3_demo_candidate" in md
         assert "demo_candidate: S3" in md
+
+    @pytest.mark.parametrize(
+        "field",
+        (
+            "campaign_decision",
+            "campaign_historical_verdict",
+            "s3_direct_verdict",
+            "s4_direct_verdict",
+            "demo_candidate",
+            "historical_preferred",
+            "s4_observable_superiority",
+        ),
+    )
+    def test_each_both_pass_campaign_field_is_bound_to_ranked_recomputation(
+        self, field
+    ):
+        s3_inputs = _s3_inputs_with_verdict(passing=True)
+        s4_inputs = _s4_inputs_with_verdict(passing=True)
+        honest = compute_campaign_decision(
+            s3_direct_verdict=s3_inputs.direct_verdict,
+            s4_direct_verdict=s4_inputs.direct_verdict,
+            s3_rank_metrics=_rank_metrics(
+                s3_inputs.common_gates, s3_inputs.falsification
+            ),
+            s4_rank_metrics=_rank_metrics(
+                s4_inputs.common_gates, s4_inputs.falsification
+            ),
+        )
+        forged_values = {
+            "campaign_decision": "both_fail",
+            "campaign_historical_verdict": "historical_fail",
+            "s3_direct_verdict": "historical_fail",
+            "s4_direct_verdict": "historical_fail",
+            "demo_candidate": None,
+            "historical_preferred": (
+                "S4" if honest.historical_preferred == "S3" else "S3"
+            ),
+            "s4_observable_superiority": not honest.s4_observable_superiority,
+        }
+        forged = dataclasses.replace(honest, **{field: forged_values[field]})
+        with pytest.raises(
+            H5InputError, match="canonical_campaign_decision_forged_or_stale"
+        ):
+            self._render(s3_inputs, s4_inputs, forged)
 
     def test_s3_only(self):
         s3_inputs = _s3_inputs_with_verdict(passing=True)

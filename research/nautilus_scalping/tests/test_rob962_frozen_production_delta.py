@@ -63,6 +63,16 @@ _AUTHORIZED_PRODUCTION_CHANGES = [
     ("A", ("research/nautilus_scalping/rob974_h3_s3.py",)),
     ("A", ("research/nautilus_scalping/rob974_h3_s4.py",)),
     ("A", ("research/nautilus_scalping/rob974_h3_smoke.py",)),
+    # ROB-983 authorized additive H5 modules.  The seven literals preserve
+    # the orch-approved checkpoint-per-file layout; no wildcard/prefix can
+    # silently admit a future production module.
+    ("A", ("research/nautilus_scalping/rob974_h5_canonical.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h5_contracts.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h5_dual_evidence.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h5_gates.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h5_markdown.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h5_s3.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h5_s4.py",)),
 ]
 _FROZEN_PATHS = (
     "research/nautilus_scalping",

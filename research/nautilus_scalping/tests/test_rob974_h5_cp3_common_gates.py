@@ -77,11 +77,20 @@ def _passing_primary_trades() -> tuple[MetricTrade, ...]:
     return tuple(trades)
 
 
-def _upward_trades(net_bps: float, count: int = 5) -> tuple[MetricTrade, ...]:
+def _upward_trades(
+    net_bps: float, count: int = 5, *, strategy: str = "S3"
+) -> tuple[MetricTrade, ...]:
+    config_id = f"{strategy}-00"
+    dimension = "XRPUSDT" if strategy == "S3" else "XRP-DOGE"
+    gross_notional = None if strategy == "S3" else 100.0
     return tuple(
         _trade(
             "fold-00",
             net_bps,
+            strategy=strategy,
+            config_id=config_id,
+            dimension=dimension,
+            gross_notional=gross_notional,
             path_scenario="upward_stress22",
             exit_ts=i * _DAY_MS,
         )
@@ -359,7 +368,8 @@ class TestWinMarginAndPbe:
             exit_ts=1,
         )
         result = evaluate_common_gates(
-            primary_trades=(big, small), upward_trades=_upward_trades(1.0)
+            primary_trades=(big, small),
+            upward_trades=_upward_trades(1.0, strategy="S4"),
         )
         big_pbe = (10.0 + 17.0) / (100.0 + 10.0)
         small_pbe = (100.0 + 17.0) / (10.0 + 100.0)
@@ -460,4 +470,62 @@ class TestPathScenarioMembershipBinding:
             evaluate_common_gates(
                 primary_trades=_passing_primary_trades(),
                 upward_trades=wrong_path_upward,
+            )
+
+
+class TestSelectedOosMembershipBinding:
+    """D3 R2 regressions: all metrics must consume one selected-OOS book.
+
+    The path label alone is insufficient: strategy and selected config are
+    equally authoritative membership domains.  Cherry-picking profitable
+    rows from the 24 configs or mixing S3/S4 rows must raise before any gate
+    arithmetic runs.
+    """
+
+    def test_cherry_pick_across_24_configs_rejected(self):
+        primary = tuple(
+            _trade(
+                FOLD_IDS[i % len(FOLD_IDS)],
+                40.0,
+                gross_bps=45.0,
+                config_id=f"S3-{i % 24:02d}",
+                exit_ts=i * _DAY_MS,
+            )
+            for i in range(48)
+        )
+        with pytest.raises(H5InputError):
+            evaluate_common_gates(
+                primary_trades=primary, upward_trades=_upward_trades(10.0)
+            )
+
+    def test_mixed_strategy_primary_book_rejected(self):
+        s4_row = _trade(
+            "fold-00",
+            40.0,
+            strategy="S4",
+            config_id="S4-00",
+            dimension="XRP-DOGE",
+            gross_notional=100.0,
+            exit_ts=999 * _DAY_MS,
+        )
+        with pytest.raises(H5InputError):
+            evaluate_common_gates(
+                primary_trades=_passing_primary_trades() + (s4_row,),
+                upward_trades=_upward_trades(10.0),
+            )
+
+    def test_primary_and_upward_selected_config_mismatch_rejected(self):
+        upward = tuple(
+            _trade(
+                "fold-00",
+                10.0,
+                config_id="S3-01",
+                path_scenario="upward_stress22",
+                exit_ts=i * _DAY_MS,
+            )
+            for i in range(5)
+        )
+        with pytest.raises(H5InputError):
+            evaluate_common_gates(
+                primary_trades=_passing_primary_trades(), upward_trades=upward
             )

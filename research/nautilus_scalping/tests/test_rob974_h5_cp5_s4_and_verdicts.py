@@ -21,6 +21,8 @@ superiority (``s4_shows_observable_superiority``) and both-pass ranking
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 from rob974_h5_contracts import FOLD_IDS, H5InputError, MetricTrade
 from rob974_h5_s4 import (
@@ -227,6 +229,33 @@ class TestPathScenarioMembershipBinding:
         with pytest.raises(H5InputError):
             evaluate_s4_falsification(
                 primary_trades=_uniform_trades(40), upward_trades=wrong_path_upward
+            )
+
+
+class TestStrategyAndSelectedOosMembershipBinding:
+    def test_s4_evaluator_rejects_pure_s3_book(self):
+        def as_s3(trade: MetricTrade) -> MetricTrade:
+            return dataclasses.replace(
+                trade,
+                strategy="S3",
+                config_id="S3-00",
+                dimension="XRPUSDT",
+                gross_notional=None,
+                volatility_percentile=50.0,
+            )
+
+        with pytest.raises(H5InputError):
+            evaluate_s4_falsification(
+                primary_trades=tuple(as_s3(t) for t in _uniform_trades(40)),
+                upward_trades=tuple(as_s3(t) for t in _upward_trades(10)),
+            )
+
+    def test_s4_evaluator_rejects_mixed_selected_configs(self):
+        upward = list(_upward_trades(10))
+        upward[-1] = dataclasses.replace(upward[-1], config_id="S4-23")
+        with pytest.raises(H5InputError):
+            evaluate_s4_falsification(
+                primary_trades=_uniform_trades(40), upward_trades=tuple(upward)
             )
 
 
@@ -613,6 +642,12 @@ _S3_RANK = StrategyRankMetrics(
 _S4_RANK = StrategyRankMetrics(
     min_fold_e17=6.0, pooled_e17=8.0, monthly_concentration=0.4, timeout_ratio=0.2
 )
+_S4_SUPERIOR_RANK = StrategyRankMetrics(
+    min_fold_e17=6.0,
+    pooled_e17=16.0,
+    monthly_concentration=0.4,
+    timeout_ratio=0.12,
+)
 
 
 class TestCampaignDecision:
@@ -762,7 +797,7 @@ class TestObservableS4Superiority:
             s4_direct_verdict="historical_pass",
             s4_observable_superiority=True,
             s3_rank_metrics=_S3_RANK,
-            s4_rank_metrics=_S4_RANK,
+            s4_rank_metrics=_S4_SUPERIOR_RANK,
         )
         result_false = compute_campaign_decision(
             s3_direct_verdict="historical_pass",
@@ -779,6 +814,19 @@ class TestObservableS4Superiority:
         assert result_true.demo_candidate == result_false.demo_candidate == "S3"
         assert result_true.s4_observable_superiority is True
         assert result_false.s4_observable_superiority is False
+
+    def test_supplied_superiority_must_match_rank_recomputation(self):
+        with pytest.raises(
+            H5InputError,
+            match="campaign_s4_observable_superiority_forged_or_stale",
+        ):
+            compute_campaign_decision(
+                s3_direct_verdict="historical_pass",
+                s4_direct_verdict="historical_pass",
+                s4_observable_superiority=True,
+                s3_rank_metrics=_S3_RANK,
+                s4_rank_metrics=_S4_RANK,
+            )
 
 
 class TestRankBothPass:

@@ -31,6 +31,7 @@ import math
 from dataclasses import dataclass
 
 from rob974_h5_contracts import FOLD_IDS, S4_PAIRS, H5InputError, MetricTrade
+from rob974_h5_gates import validate_selected_oos_membership
 
 __all__ = [
     "S4_CORR_MAX",
@@ -156,13 +157,12 @@ def evaluate_s4_falsification(
     primary_trades: tuple[MetricTrade, ...],
     upward_trades: tuple[MetricTrade, ...],
 ) -> S4FalsificationResult:
-    # D3 fail-closed membership binding (adversarial verify R1, finding 1):
-    # reject a path-scenario swap rather than silently scoring the wrong
-    # membership.
-    if any(t.path_scenario != "primary_stress17" for t in primary_trades):
-        raise H5InputError("s4_falsification_primary_path_scenario_mismatch")
-    if any(t.path_scenario != "upward_stress22" for t in upward_trades):
-        raise H5InputError("s4_falsification_upward_path_scenario_mismatch")
+    validate_selected_oos_membership(
+        primary_trades=primary_trades,
+        upward_trades=upward_trades,
+        authority="s4_falsification",
+        expected_strategy="S4",
+    )
 
     reasons: set[str] = set()
     incomplete_reasons: set[str] = set()
@@ -379,6 +379,13 @@ _VALID_DIRECT_VERDICTS = (
     DIRECT_VERDICT_FAIL,
     DIRECT_VERDICT_PASS,
 )
+_VALID_CAMPAIGN_DECISIONS = (
+    CAMPAIGN_DECISION_INCOMPLETE,
+    CAMPAIGN_DECISION_BOTH_FAIL,
+    CAMPAIGN_DECISION_S3_ONLY,
+    CAMPAIGN_DECISION_S4_ONLY_NO_DEMO,
+    CAMPAIGN_DECISION_BOTH_PASS_S3_DEMO_CANDIDATE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -390,6 +397,49 @@ class CampaignDecisionResult:
     demo_candidate: str | None
     historical_preferred: str | None
     s4_observable_superiority: bool | None
+
+    def __post_init__(self) -> None:
+        # Primitive/enum validation belongs on the DTO boundary.  Cross-field
+        # branch consistency is deliberately enforced later by the canonical
+        # scorecard authority, which has the gates/rank evidence needed to
+        # recompute the entire result rather than trusting these labels.
+        _require(
+            type(self.campaign_decision) is str
+            and self.campaign_decision in _VALID_CAMPAIGN_DECISIONS,
+            "campaign_decision_label_unknown",
+        )
+        _require(
+            type(self.campaign_historical_verdict) is str
+            and self.campaign_historical_verdict in _VALID_DIRECT_VERDICTS,
+            "campaign_historical_verdict_unknown",
+        )
+        _require(
+            type(self.s3_direct_verdict) is str
+            and self.s3_direct_verdict in _VALID_DIRECT_VERDICTS,
+            "campaign_decision_s3_verdict_unknown",
+        )
+        _require(
+            type(self.s4_direct_verdict) is str
+            and self.s4_direct_verdict in _VALID_DIRECT_VERDICTS,
+            "campaign_decision_s4_verdict_unknown",
+        )
+        _require(
+            self.demo_candidate is None
+            or type(self.demo_candidate) is str
+            and self.demo_candidate in ("S3", "S4"),
+            "campaign_demo_candidate_unknown",
+        )
+        _require(
+            self.historical_preferred is None
+            or type(self.historical_preferred) is str
+            and self.historical_preferred in ("S3", "S4"),
+            "campaign_historical_preferred_unknown",
+        )
+        _require(
+            self.s4_observable_superiority is None
+            or type(self.s4_observable_superiority) is bool,
+            "campaign_s4_observable_superiority_malformed",
+        )
 
 
 def compute_campaign_decision(
@@ -439,6 +489,20 @@ def compute_campaign_decision(
         historical_preferred = rank_both_pass(
             s3_metrics=s3_rank_metrics, s4_metrics=s4_rank_metrics
         )
+        recomputed_superiority = s4_shows_observable_superiority(
+            pooled_e17_s3=s3_rank_metrics.pooled_e17,
+            pooled_e17_s4=s4_rank_metrics.pooled_e17,
+            min_fold_e17_s3=s3_rank_metrics.min_fold_e17,
+            min_fold_e17_s4=s4_rank_metrics.min_fold_e17,
+            pooled_timeout_s3=s3_rank_metrics.timeout_ratio,
+            pooled_timeout_s4=s4_rank_metrics.timeout_ratio,
+        )
+        if s4_observable_superiority is not None:
+            _require(
+                type(s4_observable_superiority) is bool
+                and s4_observable_superiority is recomputed_superiority,
+                "campaign_s4_observable_superiority_forged_or_stale",
+            )
         return CampaignDecisionResult(
             campaign_decision=CAMPAIGN_DECISION_BOTH_PASS_S3_DEMO_CANDIDATE,
             campaign_historical_verdict=DIRECT_VERDICT_PASS,
@@ -446,7 +510,7 @@ def compute_campaign_decision(
             s4_direct_verdict=s4_direct_verdict,
             demo_candidate="S3",
             historical_preferred=historical_preferred,
-            s4_observable_superiority=s4_observable_superiority,
+            s4_observable_superiority=recomputed_superiority,
         )
     if s3_direct_verdict == DIRECT_VERDICT_PASS:
         return CampaignDecisionResult(

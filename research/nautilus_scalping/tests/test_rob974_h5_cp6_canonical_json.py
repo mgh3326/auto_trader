@@ -12,6 +12,7 @@ every semantic-subtree mutation changing the hash.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 from decimal import Decimal
@@ -439,11 +440,17 @@ class TestCanonicalConsistencyValidation:
     rejected, not silently canonicalized."""
 
     def test_forged_direct_verdict_rejected(self):
-        import dataclasses
-
         s3_inputs = _build_strategy_inputs("S3")
+        s4_inputs = _build_strategy_inputs("S4")
         assert s3_inputs.direct_verdict == "incomplete"
         forged = dataclasses.replace(s3_inputs, direct_verdict="historical_pass")
+        # Keep the campaign decision honest.  This isolates the strategy
+        # direct-verdict comparison: removing that one guard cannot be
+        # masked by the later full-campaign equality check.
+        honest_campaign = compute_campaign_decision(
+            s3_direct_verdict=s3_inputs.direct_verdict,
+            s4_direct_verdict=s4_inputs.direct_verdict,
+        )
         with pytest.raises(H5InputError):
             build_canonical_scorecard(
                 envelope=_envelope(),
@@ -451,10 +458,28 @@ class TestCanonicalConsistencyValidation:
                 envelope_ok=True,
                 envelope_incomplete_reasons=(),
                 s3_inputs=forged,
-                s4_inputs=_build_strategy_inputs("S4"),
-                campaign_decision=compute_campaign_decision(
-                    s3_direct_verdict="historical_pass", s4_direct_verdict="incomplete"
-                ),
+                s4_inputs=s4_inputs,
+                campaign_decision=honest_campaign,
+            )
+
+    def test_forged_s4_direct_verdict_rejected_by_its_own_guard(self):
+        s3_inputs = _build_strategy_inputs("S3")
+        s4_inputs = _build_strategy_inputs("S4")
+        assert s4_inputs.direct_verdict == "incomplete"
+        forged = dataclasses.replace(s4_inputs, direct_verdict="historical_pass")
+        honest_campaign = compute_campaign_decision(
+            s3_direct_verdict=s3_inputs.direct_verdict,
+            s4_direct_verdict=s4_inputs.direct_verdict,
+        )
+        with pytest.raises(H5InputError):
+            build_canonical_scorecard(
+                envelope=_envelope(),
+                h6a_seal=_seal(),
+                envelope_ok=True,
+                envelope_incomplete_reasons=(),
+                s3_inputs=s3_inputs,
+                s4_inputs=forged,
+                campaign_decision=honest_campaign,
             )
 
     def test_campaign_decision_verdict_mismatch_rejected(self):
@@ -509,3 +534,106 @@ class TestCanonicalConsistencyValidation:
             campaign_decision=campaign_decision,
         )
         assert scorecard["campaign_decision"]["campaign_decision"] == "incomplete"
+
+    @pytest.mark.parametrize(
+        ("field", "forged_value"),
+        (
+            ("campaign_decision", "both_pass_s3_demo_candidate"),
+            ("campaign_historical_verdict", "historical_pass"),
+            ("s3_direct_verdict", "historical_pass"),
+            ("s4_direct_verdict", "historical_pass"),
+            ("demo_candidate", "S3"),
+            ("historical_preferred", "S3"),
+            ("s4_observable_superiority", True),
+        ),
+    )
+    def test_each_forged_campaign_field_is_independently_rejected(
+        self, field, forged_value
+    ):
+        s3_inputs = _build_strategy_inputs("S3")
+        s4_inputs = _build_strategy_inputs("S4")
+        honest = compute_campaign_decision(
+            s3_direct_verdict=s3_inputs.direct_verdict,
+            s4_direct_verdict=s4_inputs.direct_verdict,
+        )
+        forged = dataclasses.replace(honest, **{field: forged_value})
+        with pytest.raises(H5InputError):
+            build_canonical_scorecard(
+                envelope=_envelope(),
+                h6a_seal=_seal(),
+                envelope_ok=True,
+                envelope_incomplete_reasons=(),
+                s3_inputs=s3_inputs,
+                s4_inputs=s4_inputs,
+                campaign_decision=forged,
+            )
+
+    def test_common_gate_passed_flag_must_match_reasons(self):
+        s3_inputs = _build_strategy_inputs("S3")
+        assert s3_inputs.common_gates.reasons
+        contradictory_gates = dataclasses.replace(s3_inputs.common_gates, passed=True)
+        contradictory_s3 = dataclasses.replace(
+            s3_inputs, common_gates=contradictory_gates
+        )
+        s4_inputs = _build_strategy_inputs("S4")
+        campaign = compute_campaign_decision(
+            s3_direct_verdict=s3_inputs.direct_verdict,
+            s4_direct_verdict=s4_inputs.direct_verdict,
+        )
+        with pytest.raises(H5InputError):
+            build_canonical_scorecard(
+                envelope=_envelope(),
+                h6a_seal=_seal(),
+                envelope_ok=True,
+                envelope_incomplete_reasons=(),
+                s3_inputs=contradictory_s3,
+                s4_inputs=s4_inputs,
+                campaign_decision=campaign,
+            )
+
+    def test_falsification_passed_flag_must_match_reasons(self):
+        s3_inputs = _build_strategy_inputs("S3")
+        assert s3_inputs.falsification.reasons == ()
+        contradictory_falsification = dataclasses.replace(
+            s3_inputs.falsification, passed=False
+        )
+        contradictory_s3 = dataclasses.replace(
+            s3_inputs, falsification=contradictory_falsification
+        )
+        s4_inputs = _build_strategy_inputs("S4")
+        campaign = compute_campaign_decision(
+            s3_direct_verdict=s3_inputs.direct_verdict,
+            s4_direct_verdict=s4_inputs.direct_verdict,
+        )
+        with pytest.raises(H5InputError):
+            build_canonical_scorecard(
+                envelope=_envelope(),
+                h6a_seal=_seal(),
+                envelope_ok=True,
+                envelope_incomplete_reasons=(),
+                s3_inputs=contradictory_s3,
+                s4_inputs=s4_inputs,
+                campaign_decision=campaign,
+            )
+
+    def test_envelope_claim_must_match_h6a_seal_recomputation(self):
+        s3_inputs = _build_strategy_inputs("S3")
+        s4_inputs = _build_strategy_inputs("S4")
+        unusable_seal = _seal(
+            performance_usable=False,
+            reason_codes=("h6_accounting_incomplete",),
+        )
+        campaign = compute_campaign_decision(
+            s3_direct_verdict=s3_inputs.direct_verdict,
+            s4_direct_verdict=s4_inputs.direct_verdict,
+        )
+        with pytest.raises(H5InputError):
+            build_canonical_scorecard(
+                envelope=_envelope(),
+                h6a_seal=unusable_seal,
+                envelope_ok=True,
+                envelope_incomplete_reasons=(),
+                s3_inputs=s3_inputs,
+                s4_inputs=s4_inputs,
+                campaign_decision=campaign,
+            )

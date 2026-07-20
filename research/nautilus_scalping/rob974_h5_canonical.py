@@ -48,10 +48,12 @@ from rob974_h5_contracts import (
     PATH_SCENARIOS,
     STRATEGIES,
     CampaignEnvelope,
+    EnvelopeValidationResult,
     H5InputError,
     H6AAccountingSeal,
     MetricTrade,
     config_ids_for,
+    validate_envelope_and_accounting,
 )
 from rob974_h5_dual_evidence import (
     PathInvocationEvidence,
@@ -64,6 +66,8 @@ from rob974_h5_s4 import (
     CampaignDecisionResult,
     S4FalsificationResult,
     S4PairExecutorState,
+    StrategyRankMetrics,
+    compute_campaign_decision,
     compute_direct_verdict,
 )
 
@@ -71,12 +75,14 @@ __all__ = [
     "ACTUAL_H4_LEDGER_KEY_NOT_EVALUATED",
     "CLOSED_STATUS_ORDER",
     "SCHEMA_VERSION",
+    "ScorecardConsistencyResult",
     "StrategyCanonicalInputs",
     "build_canonical_scorecard",
     "canonical_json_bytes",
     "chronological_key",
     "hash_canonical_bytes",
     "sort_trades_chronologically",
+    "validate_scorecard_consistency",
 ]
 
 SCHEMA_VERSION = "h5_scorecard_v1"
@@ -223,6 +229,224 @@ class StrategyCanonicalInputs:
     pair_executor_state: S4PairExecutorState | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ScorecardConsistencyResult:
+    """All derived authorities recomputed at the canonical choke point."""
+
+    envelope_validation: EnvelopeValidationResult
+    s3_direct_verdict: str
+    s4_direct_verdict: str
+    campaign_decision: CampaignDecisionResult
+
+
+def _validate_reasons_and_passed(
+    *,
+    authority: str,
+    passed: Any,
+    reasons: Any,
+    incomplete_reasons: Any | None = None,
+) -> None:
+    _require(type(passed) is bool, f"canonical_{authority}_passed_not_bool")
+    _require(
+        type(reasons) is tuple and all(type(reason) is str for reason in reasons),
+        f"canonical_{authority}_reasons_malformed",
+    )
+    _require(
+        reasons == tuple(sorted(set(reasons))),
+        f"canonical_{authority}_reasons_not_canonical",
+    )
+    _require(
+        passed is (not reasons),
+        f"canonical_{authority}_passed_reasons_mismatch",
+    )
+    if incomplete_reasons is not None:
+        _require(
+            type(incomplete_reasons) is tuple
+            and all(type(reason) is str for reason in incomplete_reasons),
+            f"canonical_{authority}_incomplete_reasons_malformed",
+        )
+        _require(
+            incomplete_reasons == tuple(sorted(set(incomplete_reasons))),
+            f"canonical_{authority}_incomplete_reasons_not_canonical",
+        )
+
+
+def _rank_metrics_from_strategy_inputs(
+    inputs: StrategyCanonicalInputs,
+) -> StrategyRankMetrics:
+    gates = inputs.common_gates
+    falsification = inputs.falsification
+    _require(
+        gates.pooled_e17_bps is not None,
+        f"canonical_{inputs.strategy.lower()}_rank_pooled_e17_missing",
+    )
+    pooled_e17 = _exact_float(
+        gates.pooled_e17_bps,
+        f"canonical_{inputs.strategy.lower()}_rank_pooled_e17_malformed",
+    )
+    _require(
+        gates.monthly_concentration is not None,
+        f"canonical_{inputs.strategy.lower()}_rank_concentration_missing",
+    )
+    concentration = _exact_float(
+        gates.monthly_concentration,
+        f"canonical_{inputs.strategy.lower()}_rank_concentration_malformed",
+    )
+    _require(
+        set(gates.fold_e17_bps) == set(FOLD_IDS),
+        f"canonical_{inputs.strategy.lower()}_rank_fold_domain_mismatch",
+    )
+    fold_values: list[float] = []
+    for fold_id in FOLD_IDS:
+        value = gates.fold_e17_bps[fold_id]
+        _require(
+            value is not None,
+            f"canonical_{inputs.strategy.lower()}_rank_fold_e17_missing",
+        )
+        fold_values.append(
+            _exact_float(
+                value,
+                f"canonical_{inputs.strategy.lower()}_rank_fold_e17_malformed",
+            )
+        )
+    timeout_ratio = _exact_float(
+        falsification.pooled_timeout_ratio,
+        f"canonical_{inputs.strategy.lower()}_rank_timeout_malformed",
+    )
+    return StrategyRankMetrics(
+        min_fold_e17=min(fold_values),
+        pooled_e17=pooled_e17,
+        monthly_concentration=concentration,
+        timeout_ratio=timeout_ratio,
+    )
+
+
+def validate_scorecard_consistency(
+    *,
+    envelope: CampaignEnvelope,
+    h6a_seal: H6AAccountingSeal,
+    envelope_ok: bool,
+    envelope_incomplete_reasons: tuple[str, ...],
+    s3_inputs: StrategyCanonicalInputs,
+    s4_inputs: StrategyCanonicalInputs,
+    campaign_decision: CampaignDecisionResult,
+) -> ScorecardConsistencyResult:
+    """Recompute and cross-check every derived scorecard authority once.
+
+    This is the only gate immediately before canonical assembly.  A caller
+    may transport precomputed DTOs, but none of their derived labels is
+    trusted: seal -> envelope, reasons -> ``passed``/direct verdict, and
+    direct verdicts + rank evidence -> the complete campaign result are all
+    recomputed here.  Any contradiction raises instead of reaching JSON or
+    Markdown.
+    """
+    _require(type(envelope_ok) is bool, "canonical_envelope_validation_ok_not_bool")
+    _require(
+        type(envelope_incomplete_reasons) is tuple
+        and all(type(reason) is str for reason in envelope_incomplete_reasons),
+        "canonical_envelope_validation_reasons_malformed",
+    )
+    recomputed_envelope = validate_envelope_and_accounting(envelope, h6a_seal)
+    _require(
+        envelope_ok == recomputed_envelope.ok
+        and envelope_incomplete_reasons == recomputed_envelope.incomplete_reasons,
+        "canonical_envelope_validation_forged_or_stale",
+    )
+
+    _require(
+        type(s3_inputs) is StrategyCanonicalInputs and s3_inputs.strategy == "S3",
+        "canonical_s3_inputs_strategy_mismatch",
+    )
+    _require(
+        type(s4_inputs) is StrategyCanonicalInputs and s4_inputs.strategy == "S4",
+        "canonical_s4_inputs_strategy_mismatch",
+    )
+    _require(
+        type(s3_inputs.common_gates) is CommonGateResult,
+        "canonical_s3_common_gates_type_mismatch",
+    )
+    _require(
+        type(s4_inputs.common_gates) is CommonGateResult,
+        "canonical_s4_common_gates_type_mismatch",
+    )
+    _require(
+        type(s3_inputs.falsification) is S3FalsificationResult,
+        "canonical_s3_falsification_type_mismatch",
+    )
+    _require(
+        type(s4_inputs.falsification) is S4FalsificationResult,
+        "canonical_s4_falsification_type_mismatch",
+    )
+
+    _validate_reasons_and_passed(
+        authority="s3_common_gates",
+        passed=s3_inputs.common_gates.passed,
+        reasons=s3_inputs.common_gates.reasons,
+    )
+    _validate_reasons_and_passed(
+        authority="s4_common_gates",
+        passed=s4_inputs.common_gates.passed,
+        reasons=s4_inputs.common_gates.reasons,
+    )
+    _validate_reasons_and_passed(
+        authority="s3_falsification",
+        passed=s3_inputs.falsification.passed,
+        reasons=s3_inputs.falsification.reasons,
+        incomplete_reasons=s3_inputs.falsification.incomplete_reasons,
+    )
+    _validate_reasons_and_passed(
+        authority="s4_falsification",
+        passed=s4_inputs.falsification.passed,
+        reasons=s4_inputs.falsification.reasons,
+        incomplete_reasons=s4_inputs.falsification.incomplete_reasons,
+    )
+
+    recomputed_s3_verdict = compute_direct_verdict(
+        incomplete_reasons=s3_inputs.falsification.incomplete_reasons,
+        hard_gate_reasons=s3_inputs.common_gates.reasons
+        + s3_inputs.falsification.reasons,
+    )
+    _require(
+        recomputed_s3_verdict == s3_inputs.direct_verdict,
+        "canonical_s3_direct_verdict_forged_or_stale",
+    )
+    recomputed_s4_verdict = compute_direct_verdict(
+        incomplete_reasons=s4_inputs.falsification.incomplete_reasons,
+        hard_gate_reasons=s4_inputs.common_gates.reasons
+        + s4_inputs.falsification.reasons,
+    )
+    _require(
+        recomputed_s4_verdict == s4_inputs.direct_verdict,
+        "canonical_s4_direct_verdict_forged_or_stale",
+    )
+
+    campaign_kwargs: dict[str, Any] = {}
+    if (
+        recomputed_s3_verdict == "historical_pass"
+        and recomputed_s4_verdict == "historical_pass"
+    ):
+        campaign_kwargs = {
+            "s3_rank_metrics": _rank_metrics_from_strategy_inputs(s3_inputs),
+            "s4_rank_metrics": _rank_metrics_from_strategy_inputs(s4_inputs),
+        }
+    recomputed_campaign = compute_campaign_decision(
+        s3_direct_verdict=recomputed_s3_verdict,
+        s4_direct_verdict=recomputed_s4_verdict,
+        **campaign_kwargs,
+    )
+    _require(
+        type(campaign_decision) is CampaignDecisionResult
+        and campaign_decision == recomputed_campaign,
+        "canonical_campaign_decision_forged_or_stale",
+    )
+    return ScorecardConsistencyResult(
+        envelope_validation=recomputed_envelope,
+        s3_direct_verdict=recomputed_s3_verdict,
+        s4_direct_verdict=recomputed_s4_verdict,
+        campaign_decision=recomputed_campaign,
+    )
+
+
 def _canonicalize_common_gates(gates: CommonGateResult) -> dict:
     return {
         "passed": gates.passed,
@@ -289,6 +513,15 @@ def _canonicalize_common_gates(gates: CommonGateResult) -> dict:
             )
             for fold_id in FOLD_IDS
             if fold_id in gates.fold_trade_counts
+        },
+        "fold_e17_bps": {
+            fold_id: (
+                _exact_float(gates.fold_e17_bps[fold_id], "gates_fold_e17_malformed")
+                if gates.fold_e17_bps[fold_id] is not None
+                else None
+            )
+            for fold_id in FOLD_IDS
+            if fold_id in gates.fold_e17_bps
         },
     }
 
@@ -471,7 +704,9 @@ def _canonicalize_pair_executor_state(state: S4PairExecutorState) -> dict:
     }
 
 
-def _canonicalize_strategy(inputs: StrategyCanonicalInputs) -> dict:
+def _canonicalize_strategy(
+    inputs: StrategyCanonicalInputs, *, direct_verdict: str
+) -> dict:
     _require(
         inputs.strategy in STRATEGIES, "strategy_canonical_inputs_strategy_unknown"
     )
@@ -488,7 +723,7 @@ def _canonicalize_strategy(inputs: StrategyCanonicalInputs) -> dict:
             paths_by_key=inputs.paths_by_key,
         ),
         "pbo": _canonicalize_pbo(inputs.pbo),
-        "direct_verdict": inputs.direct_verdict,
+        "direct_verdict": direct_verdict,
     }
     if inputs.pair_executor_state is not None:
         entry["pair_executor_state"] = _canonicalize_pair_executor_state(
@@ -513,37 +748,18 @@ def build_canonical_scorecard(
     permuting how a caller constructed an upstream mapping can never change
     the resulting bytes.
 
-    D13 fix (adversarial verify R1, finding 4): each strategy's
-    ``direct_verdict`` and the campaign decision's embedded verdicts are
-    RECOMPUTED here from the actual ``common_gates``/``falsification``
-    results and compared against the caller-supplied values -- a forged or
-    stale verdict (e.g. "historical_pass" alongside a failing/incomplete
-    gate result) is rejected rather than silently canonicalized."""
-    recomputed_s3_verdict = compute_direct_verdict(
-        incomplete_reasons=s3_inputs.falsification.incomplete_reasons,
-        hard_gate_reasons=s3_inputs.common_gates.reasons
-        + s3_inputs.falsification.reasons,
-    )
-    _require(
-        recomputed_s3_verdict == s3_inputs.direct_verdict,
-        "canonical_s3_direct_verdict_forged_or_stale",
-    )
-    recomputed_s4_verdict = compute_direct_verdict(
-        incomplete_reasons=s4_inputs.falsification.incomplete_reasons,
-        hard_gate_reasons=s4_inputs.common_gates.reasons
-        + s4_inputs.falsification.reasons,
-    )
-    _require(
-        recomputed_s4_verdict == s4_inputs.direct_verdict,
-        "canonical_s4_direct_verdict_forged_or_stale",
-    )
-    _require(
-        campaign_decision.s3_direct_verdict == recomputed_s3_verdict,
-        "canonical_campaign_decision_s3_verdict_mismatch",
-    )
-    _require(
-        campaign_decision.s4_direct_verdict == recomputed_s4_verdict,
-        "canonical_campaign_decision_s4_verdict_mismatch",
+    R3 consistency authority: immediately before any canonical subtree is
+    assembled, recompute and compare seal/envelope, gate flags, direct
+    verdicts, both-pass rank/superiority, and every campaign field.  Only
+    the recomputed values returned here are written below."""
+    consistency = validate_scorecard_consistency(
+        envelope=envelope,
+        h6a_seal=h6a_seal,
+        envelope_ok=envelope_ok,
+        envelope_incomplete_reasons=envelope_incomplete_reasons,
+        s3_inputs=s3_inputs,
+        s4_inputs=s4_inputs,
+        campaign_decision=campaign_decision,
     )
 
     lineage = {
@@ -591,21 +807,26 @@ def build_canonical_scorecard(
         "reason_codes": sorted(h6a_seal.reason_codes),
     }
     envelope_validation = {
-        "ok": envelope_ok,
-        "incomplete_reasons": sorted(envelope_incomplete_reasons),
+        "ok": consistency.envelope_validation.ok,
+        "incomplete_reasons": list(consistency.envelope_validation.incomplete_reasons),
     }
     strategies = {
-        "S3": _canonicalize_strategy(s3_inputs),
-        "S4": _canonicalize_strategy(s4_inputs),
+        "S3": _canonicalize_strategy(
+            s3_inputs, direct_verdict=consistency.s3_direct_verdict
+        ),
+        "S4": _canonicalize_strategy(
+            s4_inputs, direct_verdict=consistency.s4_direct_verdict
+        ),
     }
+    canonical_campaign = consistency.campaign_decision
     campaign = {
-        "campaign_decision": campaign_decision.campaign_decision,
-        "campaign_historical_verdict": campaign_decision.campaign_historical_verdict,
-        "s3_direct_verdict": campaign_decision.s3_direct_verdict,
-        "s4_direct_verdict": campaign_decision.s4_direct_verdict,
-        "demo_candidate": campaign_decision.demo_candidate,
-        "historical_preferred": campaign_decision.historical_preferred,
-        "s4_observable_superiority": campaign_decision.s4_observable_superiority,
+        "campaign_decision": canonical_campaign.campaign_decision,
+        "campaign_historical_verdict": canonical_campaign.campaign_historical_verdict,
+        "s3_direct_verdict": canonical_campaign.s3_direct_verdict,
+        "s4_direct_verdict": canonical_campaign.s4_direct_verdict,
+        "demo_candidate": canonical_campaign.demo_candidate,
+        "historical_preferred": canonical_campaign.historical_preferred,
+        "s4_observable_superiority": canonical_campaign.s4_observable_superiority,
     }
     scorecard = {
         "schema_version": SCHEMA_VERSION,
