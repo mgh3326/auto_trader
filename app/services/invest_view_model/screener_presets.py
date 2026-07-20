@@ -240,9 +240,7 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
             ScreenerFilterChip(label="시가총액", detail="3천억원 이상"),
             ScreenerFilterChip(label="거래대금", detail="10억원 이상"),
             ScreenerFilterChip(label="지지선까지 거리", detail="가까운 순"),
-            ScreenerFilterChip(
-                label="데이터", detail="지연 스냅샷 + 상위 후보 실시간 재검증"
-            ),
+            ScreenerFilterChip(label="데이터", detail="가격·지지선 동시 스냅샷"),
         ],
         metricLabel="지지선까지 거리",
         market="kr",
@@ -554,11 +552,9 @@ _SCREENING_FILTERS: dict[str, dict[str, object]] = {
         "min_market_cap": 1_000_000_000_000.0,
         "limit": 20,
     },
-    # support_proximity is snapshot-only (invest_screener_snapshots supplies
-    # price/quality-filter inputs; the nearest-support distance itself is
-    # computed live, bounded to the top candidates — see
-    # support_proximity_screener.py). min_market_cap/min_turnover here are the
-    # loader's internal quality floors, not a live-screening-provider filter.
+    # support_proximity is snapshot-only: the bounded builder persists price,
+    # normalized market cap, turnover, support, and distance together in
+    # invest_screener_snapshots. The loader only filters/ranks those stored values.
     "support_proximity": {
         "market": "kr",
         "asset_type": "stock",

@@ -45,6 +45,15 @@ class TestMCPTopStocks:
             _no_op_fetch,
         )
 
+        async def _no_normalized_caps(*args, **kwargs):
+            return {}
+
+        monkeypatch.setattr(
+            analysis_tool_handlers,
+            "fetch_normalized_kr_market_caps",
+            _no_normalized_caps,
+        )
+
     async def test_get_top_stocks_us_uses_analysis_screening_rankings_alias(
         self, monkeypatch
     ):
@@ -1066,10 +1075,30 @@ class TestMCPLosers:
         assert float(result["rankings"][0]["change_rate"]) == pytest.approx(-3.0)
         assert float(result["rankings"][1]["change_rate"]) == pytest.approx(-2.0)
 
-    async def test_min_market_cap_drops_only_known_junk_cap_rows(self, monkeypatch):
-        """ROB-976: min_market_cap cuts rows with a KNOWN market_cap below the
-        floor, but never drops a row whose market_cap KIS simply omitted
-        (honest, never fabricated exclusion)."""
+    async def test_min_market_cap_is_fail_closed_on_normalized_snapshot(
+        self, monkeypatch
+    ):
+        """A requested quality floor accepts only normalized snapshot coverage."""
+        import datetime as _dt
+        from decimal import Decimal as _D
+
+        from app.services.market_valuation_snapshots.normalized_market_cap import (
+            NormalizedMarketCap,
+        )
+
+        async def fake_caps(symbols):
+            return {
+                "005930": NormalizedMarketCap(
+                    _D("200000000000000"), _dt.date(2026, 7, 20), "naver_finance"
+                ),
+                "900001": NormalizedMarketCap(
+                    _D("5000000000"), _dt.date(2026, 7, 20), "naver_finance"
+                ),
+            }
+
+        monkeypatch.setattr(
+            analysis_tool_handlers, "fetch_normalized_kr_market_caps", fake_caps
+        )
         tools = build_tools()
 
         class MockKISClient:
@@ -1091,7 +1120,7 @@ class TestMCPLosers:
                         "acml_vol": "1000000",
                         "hts_avls": "5000000000",
                     },
-                    {  # market_cap omitted by KIS — kept (unknown, not fabricated-excluded)
+                    {  # normalized snapshot omitted — fail-closed
                         "stck_shrn_iscd": "900002",
                         "hts_kor_isnm": "미확인",
                         "stck_prpr": "1000",
@@ -1110,10 +1139,10 @@ class TestMCPLosers:
         )
 
         symbols = [r["symbol"] for r in result["rankings"]]
-        assert symbols == ["005930", "900002"]
+        assert symbols == ["005930"]
         assert result["market_cap_filter"] == {
             "min_market_cap": 30_000_000_000.0,
-            "excluded_count": 1,
+            "excluded_count": 2,
         }
 
     async def test_min_market_cap_omitted_keeps_prior_behavior(self, monkeypatch):
@@ -1145,19 +1174,28 @@ class TestMCPLosers:
     async def test_min_market_cap_backfills_when_kis_omits_hts_avls(self, monkeypatch):
         """ROB-976 verify R1 [BLOCKER]: real KIS losers responses reproduced in
         the 07-20 verify report omit hts_avls entirely, making the bare filter
-        a no-op. market_cap must be backfilled (same pipeline as the foreign
-        rankings) before the floor is applied."""
+        a no-op. market_cap must come from the normalized Naver valuation
+        snapshot before the floor is applied."""
+        import datetime as _dt
         from decimal import Decimal as _D
 
-        from app.mcp_server.tooling import foreigners_liquidity
+        from app.services.market_valuation_snapshots.normalized_market_cap import (
+            NormalizedMarketCap,
+        )
 
-        async def fake_fetch(symbols, *, session_factory=None):
-            return (
-                {"900001": _D("5000000000"), "900002": _D("400000000000")},
-                {},
-            )
+        async def fake_fetch(symbols):
+            return {
+                "900001": NormalizedMarketCap(
+                    _D("5000000000"), _dt.date(2026, 7, 20), "naver_finance"
+                ),
+                "900002": NormalizedMarketCap(
+                    _D("400000000000"), _dt.date(2026, 7, 20), "naver_finance"
+                ),
+            }
 
-        monkeypatch.setattr(foreigners_liquidity, "_fetch_market_cap_maps", fake_fetch)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "fetch_normalized_kr_market_caps", fake_fetch
+        )
 
         tools = build_tools()
 
@@ -1198,12 +1236,65 @@ class TestMCPLosers:
         assert result["rankings"][0]["market_cap"] == pytest.approx(4e11)
         assert result["market_cap_filter"]["excluded_count"] == 1
 
+    async def test_min_market_cap_keeps_real_large_cap_with_r2_payload_shape(
+        self, monkeypatch
+    ):
+        """R2 regression: 삼성생명 must use 60.3조 KRW, not the ~399억
+        provider-unit value that previously caused a false exclusion."""
+        import datetime as _dt
+        from decimal import Decimal as _D
+
+        from app.services.market_valuation_snapshots.normalized_market_cap import (
+            NormalizedMarketCap,
+        )
+
+        async def fake_caps(symbols):
+            return {
+                "032830": NormalizedMarketCap(
+                    _D("60300000000000"), _dt.date(2026, 7, 20), "naver_finance"
+                )
+            }
+
+        monkeypatch.setattr(
+            analysis_tool_handlers, "fetch_normalized_kr_market_caps", fake_caps
+        )
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {
+                        "stck_shrn_iscd": "032830",
+                        "hts_kor_isnm": "삼성생명",
+                        "stck_prpr": "301500",
+                        "prdy_ctrt": "-1.2",
+                        "acml_vol": "1000000",
+                        # Reproduce the unnormalized R2 value; it must be ignored.
+                        "hts_avls": "39943178204",
+                    }
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        result = await tools["get_top_stocks"](
+            market="kr",
+            ranking_type="losers",
+            min_market_cap=300_000_000_000.0,
+        )
+
+        assert [row["symbol"] for row in result["rankings"]] == ["032830"]
+        assert result["rankings"][0]["market_cap"] == pytest.approx(60.3e12)
+        assert result["rankings"][0]["market_cap_source"].endswith("naver_finance")
+
     async def test_min_turnover_uses_trade_amount_then_price_times_volume(
         self, monkeypatch
     ):
         """ROB-976: min_turnover checks trade_amount (acml_tr_pbmn) first, and
-        falls back to price*volume when KIS omits trade_amount — never drops a
-        row with neither value available."""
+        falls back to price*volume when KIS omits trade_amount; rows with neither
+        value fail the requested quality gate."""
         tools = build_tools()
 
         class MockKISClient:
@@ -1252,14 +1343,24 @@ class TestMCPLosers:
         real loser, the response must say so (status=degraded) — not the
         generic 'market may be entirely bullish' message, which would hide
         that a filter (not market conditions) produced the empty page."""
+        import datetime as _dt
         from decimal import Decimal as _D
 
-        from app.mcp_server.tooling import foreigners_liquidity
+        from app.services.market_valuation_snapshots.normalized_market_cap import (
+            NormalizedMarketCap,
+        )
 
-        async def fake_fetch(symbols, *, session_factory=None):
-            return ({s: _D("5000000000") for s in symbols}, {})
+        async def fake_fetch(symbols):
+            return {
+                symbol: NormalizedMarketCap(
+                    _D("5000000000"), _dt.date(2026, 7, 20), "naver_finance"
+                )
+                for symbol in symbols
+            }
 
-        monkeypatch.setattr(foreigners_liquidity, "_fetch_market_cap_maps", fake_fetch)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "fetch_normalized_kr_market_caps", fake_fetch
+        )
 
         tools = build_tools()
 

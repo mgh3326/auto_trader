@@ -1,4 +1,4 @@
-"""ROB-976 verify R1: bounded, read-only CLI preview for support_proximity."""
+"""ROB-976 R3 operator CLI: bounded, dry-run default, real commit path."""
 
 from __future__ import annotations
 
@@ -6,80 +6,86 @@ import datetime as dt
 
 import pytest
 
+from app.jobs.support_proximity_snapshots import (
+    SupportProximityBuildResult,
+    SupportProximitySample,
+)
 from scripts import build_support_proximity_snapshot as cli
 
 
-class _FakeCM:
-    async def __aenter__(self) -> object:
-        return object()
+def _result(*, committed: bool, partition: dt.date | None = dt.date(2026, 7, 20)):
+    return SupportProximityBuildResult(
+        market="kr",
+        source_partition_date=partition,
+        candidates_resolved=1 if partition else 0,
+        snapshots_built=1 if partition else 0,
+        supports_built=1 if partition else 0,
+        skipped=0,
+        committed=committed,
+        started_at=dt.datetime(2026, 7, 20, 10, 0, tzinfo=dt.UTC),
+        finished_at=dt.datetime(2026, 7, 20, 10, 1, tzinfo=dt.UTC),
+        samples=(
+            SupportProximitySample(
+                symbol="005930",
+                snapshot_date=dt.date(2026, 7, 20),
+                latest_close="80000",
+                support_price="78500",
+                support_kind="bb_lower",
+                support_strength="strong",
+                dist_to_support_pct="1.8750",
+                market_cap="400000000000000",
+                support_computed_at=dt.datetime(2026, 7, 20, 10, 0, tzinfo=dt.UTC),
+            ),
+        )
+        if partition
+        else (),
+    )
 
-    async def __aexit__(self, *exc: object) -> bool:
-        return False
 
-
-def test_default_market_is_kr():
+def test_defaults_are_bounded_dry_run():
     args = cli.parse_args([])
     assert args.market == "kr"
-    assert args.limit == 30
+    assert args.commit is False
+    assert args.dry_run is True
+    assert args.limit == 10
+    assert args.candidate_pool_limit == 30
 
 
-def test_no_commit_flag_exists():
-    """support_proximity has no persisted artifact — a --commit flag would be
-    dishonest (nothing to commit). Confirm argparse rejects it."""
-    with pytest.raises(SystemExit):
-        cli.parse_args(["--market", "kr", "--commit"])
+def test_commit_is_explicit_opt_in():
+    args = cli.parse_args(["--commit", "--candidate-pool-limit", "10"])
+    assert args.commit is True
+    assert args.dry_run is False
+    assert args.candidate_pool_limit == 10
 
 
 @pytest.mark.asyncio
-async def test_run_returns_1_when_no_partition(monkeypatch):
-    import app.services.invest_view_model.support_proximity_screener as loader_module
+async def test_run_returns_1_when_base_partition_is_missing(monkeypatch, capsys):
+    async def _fake_run(request):
+        assert request.commit is False
+        return _result(committed=False, partition=None)
 
-    async def _fake_loader(*args, **kwargs):
-        return None
+    monkeypatch.setattr(cli.snapshot_job, "run_support_proximity_build", _fake_run)
 
-    monkeypatch.setattr(
-        loader_module, "load_support_proximity_from_snapshots", _fake_loader
-    )
-    monkeypatch.setattr(cli, "AsyncSessionLocal", lambda: _FakeCM())
+    exit_code = await cli.run(cli.parse_args([]))
 
-    args = cli.parse_args(["--market", "kr"])
-    exit_code = await cli.run(args)
     assert exit_code == 1
+    assert "no rows written" in capsys.readouterr().out
 
 
 @pytest.mark.asyncio
-async def test_run_prints_rows_and_returns_0(monkeypatch, capsys):
-    import app.services.invest_view_model.support_proximity_screener as loader_module
-    from app.services.invest_view_model.screener_service import _SnapshotLoadResult
+async def test_run_threads_commit_and_prints_persisted_result(monkeypatch, capsys):
+    async def _fake_run(request):
+        assert request.commit is True
+        assert request.candidate_pool_limit == 10
+        return _result(committed=True)
 
-    async def _fake_loader(*args, **kwargs):
-        return _SnapshotLoadResult(
-            rows=[
-                {
-                    "symbol": "005930",
-                    "name": "삼성전자",
-                    "close": 80000.0,
-                    "support_price": 78500.0,
-                    "support_kind": "bb_lower",
-                    "support_strength": "strong",
-                    "dist_to_support_pct": 1.88,
-                    "market_cap": 4.0e14,
-                }
-            ],
-            partition_date=dt.date(2026, 7, 20),
-            partition_computed_at=None,
-            degradation_reason=None,
-            coverage_label=None,
-        )
+    monkeypatch.setattr(cli.snapshot_job, "run_support_proximity_build", _fake_run)
 
-    monkeypatch.setattr(
-        loader_module, "load_support_proximity_from_snapshots", _fake_loader
+    exit_code = await cli.run(
+        cli.parse_args(["--commit", "--candidate-pool-limit", "10"])
     )
-    monkeypatch.setattr(cli, "AsyncSessionLocal", lambda: _FakeCM())
 
-    args = cli.parse_args(["--market", "kr"])
-    exit_code = await cli.run(args)
     assert exit_code == 0
-    out = capsys.readouterr().out
-    assert "005930" in out
-    assert "dry-run only, no rows written" in out
+    output = capsys.readouterr().out
+    assert "005930" in output
+    assert "committed 1 row" in output

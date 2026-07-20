@@ -4154,10 +4154,12 @@ async def test_support_proximity_preset_missing_snapshot_reports_missing_state()
 async def test_support_proximity_preset_returns_ranked_rows_with_risk_context(
     db_session, monkeypatch
 ) -> None:
-    """End-to-end: build_screener_results -> support_proximity_screener loader ->
-    ScreenerResultRow, with the live get_support_resistance fan-out patched out.
-    Verifies dist_to_support_pct drives metricValueLabel and the support
-    kind/strength surfaces via riskContext (ROB-976 AC1)."""
+    """End-to-end persisted row -> loader -> ScreenerResultRow.
+
+    Verifies the read path performs no support recalculation, stored
+    dist_to_support_pct drives metricValueLabel, and kind/strength surfaces via
+    riskContext (ROB-976 AC1).
+    """
     import datetime as _dt
     import decimal as _dec
 
@@ -4166,68 +4168,15 @@ async def test_support_proximity_preset_returns_ranked_rows_with_risk_context(
     from app.models.invest_screener_snapshot import InvestScreenerSnapshot
     from app.models.kr_symbol_universe import KRSymbolUniverse
     from app.models.market_valuation_snapshot import MarketValuationSnapshot
-    from app.services.invest_screener_snapshots import partition_health
 
     today = _dt.date(2099, 12, 29)
 
-    async def _resolve_raw_latest_partition(
-        session, *, model, date_col, market_col, market, **_kwargs
-    ):
-        newest = (
-            await session.execute(
-                _sa.select(_sa.func.max(date_col)).where(market_col == market)
-            )
-        ).scalar_one_or_none()
-        if newest is None:
-            return None
-        row_count = int(
-            (
-                await session.execute(
-                    _sa.select(_sa.func.count())
-                    .select_from(model)
-                    .where(market_col == market, date_col == newest)
-                )
-            ).scalar()
-            or 0
-        )
-        from app.services.invest_screener_snapshots.partition_health import (
-            HealthyPartition,
-        )
-
-        return HealthyPartition(
-            partition_date=newest,
-            row_count=row_count,
-            coverage_ratio=1.0,
-            is_fallback=False,
-            healthy=True,
-        )
-
-    monkeypatch.setattr(
-        partition_health, "resolve_healthy_partition", _resolve_raw_latest_partition
-    )
-
     import app.mcp_server.tooling.fundamentals._support_resistance as sr_module
 
-    async def _fake_get_support_resistance_impl(
-        symbol: str, market: str | None = None, preloaded_df=None
-    ):
-        return {
-            "symbol": symbol,
-            "current_price": 50000.0,
-            "supports": [
-                {
-                    "price": 49000.0,
-                    "strength": "strong",
-                    "sources": ["bb_lower"],
-                    "distance_pct": -2.0,
-                }
-            ],
-            "resistances": [],
-        }
+    async def _must_not_recalculate(*args, **kwargs):
+        raise AssertionError("support_proximity query attempted live recalculation")
 
-    monkeypatch.setattr(
-        sr_module, "get_support_resistance_impl", _fake_get_support_resistance_impl
-    )
+    monkeypatch.setattr(sr_module, "get_support_resistance_impl", _must_not_recalculate)
 
     async def _purge() -> None:
         await db_session.execute(
@@ -4264,8 +4213,18 @@ async def test_support_proximity_preset_returns_ranked_rows_with_risk_context(
                 change_rate=_dec.Decimal("2.0"),
                 change_amount=_dec.Decimal("1000"),
                 daily_volume=1_000_000,
+                daily_turnover=_dec.Decimal("50000000000"),
+                market_cap=_dec.Decimal("1000000000000"),
+                market_cap_source="naver_finance",
+                market_cap_snapshot_date=today,
+                support_price=_dec.Decimal("49000"),
+                support_kind="bb_lower",
+                support_strength="strong",
+                dist_to_support_pct=_dec.Decimal("2.0"),
+                support_computed_at=_dt.datetime(2099, 12, 29, 5, 0, tzinfo=_dt.UTC),
                 closes_window=[49000, 50000],
                 source="kis",
+                computed_at=_dt.datetime(2099, 12, 29, 5, 0, tzinfo=_dt.UTC),
             )
         )
         db_session.add(

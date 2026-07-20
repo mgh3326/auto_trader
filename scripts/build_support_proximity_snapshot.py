@@ -1,99 +1,119 @@
 #!/usr/bin/env python3
-"""Bounded, read-only preview of the support_proximity screener preset (ROB-976).
+"""Build persisted support-proximity rows (bounded and dry-run by default).
 
-DEFAULTS TO --dry-run (the ONLY mode): support_proximity has no persisted
-artifact of its own. The underlying invest_screener_snapshots partition
-(built by scripts/build_invest_screener_snapshots.py, --market kr --all) is
-the "야간 스냅샷 배치" this preset depends on for candidate price/quality
-inputs; DB writes stay scoped to InvestScreenerSnapshotsRepository.upsert
-(that batch's writer), which this script never calls. This script runs the
-SAME bounded two-stage pipeline the screen_stocks_snapshot MCP tool uses
-(snapshot-only Bollinger proxy -> bounded live get_support_resistance
-re-verification of the top candidates) and prints the ranked result, so an
-operator can smoke-test the preset (or run it nightly to warm the OHLCV
-cache) without going through MCP.
+The ordinary KR screener snapshot must exist first; it supplies the cheap
+candidate proxy.  This command then fetches completed OHLCV only for the bounded
+pool, freezes price/support/distance and normalized market cap together, and
+writes exclusively through ``InvestScreenerSnapshotsRepository.upsert`` when
+``--commit`` is explicitly supplied.
 
 Examples:
-    # KR, default quality floors + limit
     uv run python -m scripts.build_support_proximity_snapshot --market kr
 
-    # Tighter/looser floors, smaller candidate pool
     uv run python -m scripts.build_support_proximity_snapshot \
-        --market kr --limit 10 --min-market-cap 500000000000 \
-        --candidate-pool-limit 15
+        --market kr --candidate-pool-limit 30 --commit
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+from decimal import Decimal
 
 from app.core.cli import setup_logging_and_sentry
-from app.core.db import AsyncSessionLocal
+from app.jobs import support_proximity_snapshots as snapshot_job
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Read-only bounded preview of the support_proximity screener "
-            "preset (ROB-976). No --commit — see module docstring."
+            "Bounded support_proximity snapshot builder. Defaults to dry-run; "
+            "pass --commit to persist."
         )
     )
     parser.add_argument("--market", choices=["kr"], default="kr")
-    parser.add_argument("--limit", type=int, default=30)
-    parser.add_argument("--min-market-cap", type=float, default=None)
-    parser.add_argument("--min-turnover", type=float, default=None)
-    parser.add_argument("--candidate-pool-limit", type=int, default=None)
-    return parser.parse_args(argv)
-
-
-def _print_result(result) -> None:
-    print(
-        f"\nsupport_proximity preview (market=kr, partition={result.partition_date}, "
-        f"degradation_reason={result.degradation_reason}, "
-        f"coverage_label={result.coverage_label}):"
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help="Maximum ranked samples to print (default 10).",
     )
-    if not result.rows:
-        print("  (no rows — see degradation_reason above)")
-    for row in result.rows:
-        print(
-            f"  {row['symbol']} {row.get('name') or '-'}: "
-            f"close={row['close']:.0f} support={row.get('support_price')} "
-            f"({row.get('support_kind')}, {row.get('support_strength')}) "
-            f"dist={row['dist_to_support_pct']:.2f}% "
-            f"market_cap={row.get('market_cap')}"
+    parser.add_argument(
+        "--candidate-pool-limit",
+        type=int,
+        default=snapshot_job.DEFAULT_CANDIDATE_POOL_LIMIT,
+        help=(
+            "Maximum symbols receiving a completed-OHLCV/support calculation "
+            f"(default {snapshot_job.DEFAULT_CANDIDATE_POOL_LIMIT}, max "
+            f"{snapshot_job.MAX_CANDIDATE_POOL_LIMIT})."
+        ),
+    )
+    parser.add_argument("--concurrency", type=int, default=4)
+    parser.add_argument(
+        "--min-market-cap",
+        type=Decimal,
+        default=snapshot_job.DEFAULT_MIN_MARKET_CAP_KRW,
+    )
+    parser.add_argument(
+        "--min-turnover",
+        type=Decimal,
+        default=snapshot_job.DEFAULT_MIN_TURNOVER_KRW,
+    )
+    parser.add_argument(
+        "--commit",
+        action="store_true",
+        help="Persist through InvestScreenerSnapshotsRepository.upsert.",
+    )
+    args = parser.parse_args(argv)
+    if args.limit < 1:
+        parser.error("--limit must be at least 1")
+    if not 1 <= args.candidate_pool_limit <= snapshot_job.MAX_CANDIDATE_POOL_LIMIT:
+        parser.error(
+            "--candidate-pool-limit must be between 1 and "
+            f"{snapshot_job.MAX_CANDIDATE_POOL_LIMIT}"
         )
+    if args.concurrency < 1:
+        parser.error("--concurrency must be at least 1")
+    args.dry_run = not args.commit
+    return args
+
+
+def _print_result(
+    result: snapshot_job.SupportProximityBuildResult, *, limit: int
+) -> None:
     print(
-        f"\n{len(result.rows)} row(s) — dry-run only, no rows written "
-        "(no persisted artifact for this preset; see module docstring).\n"
+        f"\nsupport_proximity build (market={result.market}, "
+        f"source_partition={result.source_partition_date}, "
+        f"candidates={result.candidates_resolved}, "
+        f"snapshots={result.snapshots_built}, supports={result.supports_built}):"
     )
+    for row in result.samples[:limit]:
+        print(
+            f"  {row.symbol}: close={row.latest_close} "
+            f"support={row.support_price} ({row.support_kind}, "
+            f"{row.support_strength}) dist={row.dist_to_support_pct}% "
+            f"market_cap={row.market_cap}"
+        )
+    for warning in result.warnings:
+        print(f"warning: {warning}")
+    if result.committed:
+        print(f"\ncommitted {result.snapshots_built} row(s).\n")
+    else:
+        print("\n--dry-run: no rows written. Pass --commit to persist.\n")
 
 
 async def run(args: argparse.Namespace) -> int:
-    from app.services.invest_view_model.support_proximity_screener import (
-        DEFAULT_CANDIDATE_POOL_LIMIT,
-        load_support_proximity_from_snapshots,
+    request = snapshot_job.SupportProximityBuildRequest(
+        market=args.market,
+        candidate_pool_limit=args.candidate_pool_limit,
+        concurrency=args.concurrency,
+        min_market_cap=args.min_market_cap,
+        min_turnover=args.min_turnover,
+        commit=args.commit,
     )
-
-    async with AsyncSessionLocal() as session:
-        result = await load_support_proximity_from_snapshots(
-            session,
-            market=args.market,
-            limit=args.limit,
-            min_market_cap=args.min_market_cap,
-            min_turnover=args.min_turnover,
-            candidate_pool_limit=args.candidate_pool_limit
-            or DEFAULT_CANDIDATE_POOL_LIMIT,
-        )
-    if result is None:
-        print(
-            "\nno invest_screener_snapshots partition found for market=kr — run "
-            "scripts/build_invest_screener_snapshots.py --market kr --all --commit "
-            "first.\n"
-        )
-        return 1
-    _print_result(result)
-    return 0
+    result = await snapshot_job.run_support_proximity_build(request)
+    _print_result(result, limit=args.limit)
+    return 0 if result.source_partition_date is not None else 1
 
 
 async def main() -> int:

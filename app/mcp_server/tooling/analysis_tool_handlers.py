@@ -38,6 +38,9 @@ from app.mcp_server.tooling.shared import (
 from app.monitoring import yfinance_tracing_session
 from app.services.brokers.kis.client import KISClient
 from app.services.decision_history import build_decision_context
+from app.services.market_valuation_snapshots.normalized_market_cap import (
+    fetch_normalized_kr_market_caps,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -189,29 +192,33 @@ async def get_top_stocks_impl(
                     mapped = analysis_screening._map_kr_row(row, len(mapped_rows) + 1)
                 mapped_rows.append(mapped)
 
-            # ROB-976 verify R1 [BLOCKER]: KIS's non-foreigners ranking endpoints
-            # (volume/market_cap/gainers/losers) just as often omit hts_avls as
-            # the foreigners endpoint does, so a bare min_market_cap/min_turnover
-            # filter was a silent no-op in practice. Backfill market_cap the same
-            # way the foreigners path does (fundamentals snapshot, then
-            # shares_outstanding x price, else honest null — never fabricated)
-            # before applying either floor. Scoped to non-foreign ranking types;
-            # the foreign_net_buy/sell path keeps its own dedicated liquidity
-            # pipeline below untouched.
-            if (
-                _quality_filter_requested
-                and resolved_ranking_type not in _FOREIGN_RANKING_TYPES
-            ):
-                await foreigners_liquidity.backfill_foreigners_market_cap(mapped_rows)
+            # ROB-976 R3: a hard KRW market-cap threshold may only use the
+            # normalized Naver-backed market_valuation_snapshots value.  The
+            # foreigners helper's TradingView fundamentals value has a different
+            # unit and caused real blue chips to be rejected as sub-3천억.
+            if min_market_cap is not None:
+                normalized_caps = await fetch_normalized_kr_market_caps(
+                    row["symbol"] for row in mapped_rows
+                )
+                for mapped in mapped_rows:
+                    cap = normalized_caps.get(mapped["symbol"])
+                    mapped["market_cap"] = float(cap.value) if cap is not None else None
+                    mapped["market_cap_source"] = (
+                        f"market_valuation_snapshots:{cap.source}"
+                        if cap is not None
+                        else None
+                    )
+                    mapped["market_cap_snapshot_date"] = (
+                        cap.snapshot_date.isoformat() if cap is not None else None
+                    )
 
             rankings = []
             for mapped in mapped_rows:
-                # Only excludes rows with a KNOWN value below the floor — never
-                # drops a row just because it's unconfirmed (honest, never
-                # fabricated exclusion).
                 if min_market_cap is not None:
                     mc = mapped.get("market_cap")
-                    if mc is not None and mc < min_market_cap:
+                    # A requested quality floor is fail-closed: unknown normalized
+                    # cap coverage cannot establish that the row passes.
+                    if mc is None or mc < min_market_cap:
                         excluded_by_market_cap += 1
                         continue
                 if min_turnover is not None:
@@ -221,7 +228,8 @@ async def get_top_stocks_impl(
                         volume = mapped.get("volume")
                         if price is not None and volume is not None:
                             turnover = price * volume
-                    if turnover is not None and turnover < min_turnover:
+                            mapped["trade_amount"] = turnover
+                    if turnover is None or turnover < min_turnover:
                         excluded_by_turnover += 1
                         continue
                 rankings.append(mapped)
@@ -362,9 +370,10 @@ async def get_top_stocks_impl(
             "status": "degraded",
             "degraded_reason": (
                 f"all {excluded_by_market_cap + excluded_by_turnover} matching "
-                f"row(s) fell below the requested quality floor "
+                f"row(s) fell below the requested quality floor or lacked "
+                f"trusted normalized coverage "
                 f"(min_market_cap={min_market_cap}, min_turnover={min_turnover}); "
-                "retry with a lower floor"
+                "refresh normalized valuation snapshots or retry with a lower floor"
             ),
             **(
                 {

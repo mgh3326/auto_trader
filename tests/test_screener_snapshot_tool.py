@@ -99,8 +99,9 @@ async def test_support_proximity_preset_dispatches_and_warns_on_filters(
     patched,
 ) -> None:
     """ROB-976: preset='support_proximity' reaches build_screener_results (MCP
-    exposure, AC2/AC4) and — since it has no adjustable-filter catalog wired
-    (same as cheap_value) — filters= produces the honest '필터 미적용' warning
+    exposure, AC2/AC4) and — although its persisted base snapshot is identified,
+    its adjustable-filter catalog is not wired — filters= produces the honest
+    '필터 미적용' warning
     rather than silently dropping them."""
     out = await tool.screen_stocks_snapshot_impl(
         preset="support_proximity",
@@ -108,7 +109,7 @@ async def test_support_proximity_preset_dispatches_and_warns_on_filters(
         filters=[{"field": "per", "operator": "lte", "value": 8}],
     )
     assert patched["preset_id"] == "support_proximity"
-    assert out["snapshotKind"] is None
+    assert out["snapshotKind"] == "invest_screener_snapshots"
     assert any("배선되지 않" in w for w in out["warnings"])
 
 

@@ -282,14 +282,15 @@ lanes:
    시총/거래대금 품질 필터를 통과한 종목을 최근접 지지선까지 거리
    (`dist_to_support_pct`) 오름차순으로 반환 — 지지선 계산은
    `get_support_resistance`와 동일 로직(fib/거래량프로파일/볼린저)을
-   스냅샷 기반 1차 선별 후 상위 후보만 실시간 재검증해서 산출한다
-   (`support_proximity_screener.py`).
+   야간 bounded 빌더가 완료봉 OHLCV 한 프레임에 적용하고, 그 프레임의
+   가격·지지선·거리를 함께 저장한다. 조회 중에는 재계산하지 않는다.
 3. **교차 확인**: 두 그물의 교집합(또는 그물 2 상위 종목이 그물 1에도 뜬
    경우) = 우량주가 실제로 지지선 근처까지 눌린 상태 — §3 스크리닝
    단계(RSI/upside/rights-issue 필터)로 그대로 이어서 검증.
 4. **심볼 단위 재확인**: 최종 후보는 `get_support_resistance(symbol)`로
-   개별 재검증 후 `get_quote`로 가격을 다시 확인(스냅샷/실시간 재검증
-   값 모두 최대 1세션 stale일 수 있음 — screen_stocks_snapshot 공통 경고).
+   상위 종목만 별도 실시간 재검증 후 `get_quote`로 가격을 다시 확인
+   (`support_proximity` 행 자체는 최대 1세션 stale일 수 있음 —
+   screen_stocks_snapshot 공통 경고).
 
 `support_proximity`는 KR 전용(US는 후속)이며 지지선이 없는(현재가 아래
 클러스터가 없는) 종목은 결과에서 제외된다(fail-closed, fabricate 금지).
