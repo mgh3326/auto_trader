@@ -64,7 +64,10 @@ def register_analysis_tools(
     @mcp.tool(
         name="get_momentum_candidates",
         description=(
-            "Read-only early-catch candidates for 급등 Korean stocks from persisted "
+            "Use for KR-only intraday 급등 early-catch scoring; for general filtered "
+            "discovery use screen_stocks or screen_stocks_snapshot, and for simple "
+            "market rankings use get_top_stocks. Read-only early-catch candidates "
+            "for 급등 Korean stocks from persisted "
             "Naver Stock momentum snapshots. Scores cross-surface signals such as "
             "searchTop, quantTop, up, priceTop, KRX/NXT confirmation, rank deltas, "
             "and theme leadership. Does not fetch Naver or mutate broker/order state."
@@ -111,7 +114,11 @@ def register_analysis_tools(
     @mcp.tool(
         name="get_top_stocks",
         description=(
-            "Get top stocks by ranking type across different markets (KR/US/Crypto). "
+            "Use for a simple ranking-type sort with no filter parameters; for "
+            "filtered candidate discovery use screen_stocks or the persisted-preset "
+            "screen_stocks_snapshot, and for KR intraday 급등 scoring use "
+            "get_momentum_candidates. Get top stocks by ranking type across different "
+            "markets (KR/US/Crypto). "
             "KR: volume, market_cap, gainers, losers, foreign_net_buy, "
             "foreign_net_sell (foreigners = back-compat alias for foreign_net_buy). "
             "Foreign rankings expose named foreign_net_qty / foreign_net_amount "
@@ -234,7 +241,12 @@ def register_analysis_tools(
     @mcp.tool(
         name="analyze_stock_batch",
         description=(
-            "Analyze multiple stocks in parallel with compact summaries. "
+            "Analyze multiple stocks in parallel with compact summaries. For KR/crypto "
+            "and US regular-session analysis, a planned batch already returns a fresh "
+            "price plus context, so a separate get_quote is normally unnecessary. "
+            "Exception: use get_quote(include_extended_hours=True) for US premarket/"
+            "afterhours; use get_quote for previous_close, and get_ohlcv when OHLC "
+            "candles are required. "
             "Returns per-symbol compact summary (symbol, price, RSI, consensus, supports/resistances) "
             "by default, or full analysis when quick=False. "
             "When include_position=True (default), each compact summary carries a "
@@ -283,7 +295,12 @@ def register_analysis_tools(
     @mcp.tool(
         name="screen_stocks",
         description=(
-            "Screen stocks across markets (KR/US/Crypto) with filters. "
+            "Use for live, generic filter/sort discovery across KR/US/Crypto; use "
+            "screen_stocks_snapshot for curated persisted presets, get_top_stocks "
+            "for simple rankings, and get_momentum_candidates for KR intraday 급등 "
+            "scoring. If this returns reason='krx_session_expired', fall back to "
+            "screen_stocks_snapshot. Screen stocks across markets (KR/US/Crypto) "
+            "with filters. "
             "KR supports kospi/kosdaq/konex/all, 30-day ADV via adv_krw_min "
             "(1B KRW conservative, 5B KRW aggressive), instrument_types, "
             "and exclude_sectors. "
@@ -350,7 +367,10 @@ def register_analysis_tools(
     @mcp.tool(
         name="screen_stocks_snapshot",
         description=(
-            "Snapshot-backed screener: run one or more /invest/screener presets over "
+            "Use for curated persisted-preset discovery; use screen_stocks for live "
+            "generic filters, get_top_stocks for simple rankings, and "
+            "get_momentum_candidates for KR intraday 급등 scoring. Snapshot-backed "
+            "screener: run one or more /invest/screener presets over "
             "their base snapshots (Discovery Workflow, ROB-515). "
             "Unlike screen_stocks (generic tvscreener/KIS path), this serves persisted "
             "screener snapshot data. preset can be a single ID or a comma-separated "
@@ -374,6 +394,12 @@ def register_analysis_tools(
             "recomputed each call from a fresh price so it stays intraday-current. "
             "min_analyst_* filters resolve consensus from the cache and only the "
             "returned page is enriched. "
+            "priceLabel, changePctLabel, and metricValueLabel are values at the "
+            "snapshot time and "
+            "may be stale by up to one session; before confirming a candidate, "
+            "revalidate price/change with get_quote and technical analysis with "
+            "analyze_stock_batch. analysisContext.rsi14, when present, is the "
+            "separately exposed RSI field. "
             "Results are capped (default 40) and paginated via limit/offset."
         ),
     )
