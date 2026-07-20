@@ -10,7 +10,7 @@ exit-reason/symbol/direction attribution (THESIS_EXIT is never TIMEOUT).
 from __future__ import annotations
 
 import pytest
-from rob974_h5_contracts import FOLD_IDS, MetricTrade
+from rob974_h5_contracts import FOLD_IDS, H5InputError, MetricTrade
 from rob974_h5_s3 import (
     S3_FIRST_4H_MINUTES,
     S3_POOLED_TIMEOUT_MAX,
@@ -57,6 +57,15 @@ def _uniform_trades(n: int, exit_reason: str = "TP", net_bps: float = 10.0):
     )
 
 
+def _upward_trades(n: int, net_bps: float = 10.0):
+    # D3 fix: the upward (E22) subbook must carry path_scenario ==
+    # "upward_stress22" -- never the primary book's "primary_stress17".
+    return tuple(
+        _trade(FOLD_IDS[i % 8], net_bps, exit_ts=i, path_scenario="upward_stress22")
+        for i in range(n)
+    )
+
+
 class TestPooledTimeoutBoundary:
     def _trades_with_timeout_ratio(self, ratio: float, n: int = 1000) -> tuple:
         n_timeout = round(ratio * n)
@@ -69,14 +78,14 @@ class TestPooledTimeoutBoundary:
     def test_exact_15pct_passes(self):
         result = evaluate_s3_falsification(
             primary_trades=self._trades_with_timeout_ratio(S3_POOLED_TIMEOUT_MAX),
-            upward_trades=_uniform_trades(10),
+            upward_trades=_upward_trades(10),
         )
         assert "s3_pooled_timeout_above_15pct" not in result.reasons
 
     def test_above_15pct_fails(self):
         result = evaluate_s3_falsification(
             primary_trades=self._trades_with_timeout_ratio(0.151),
-            upward_trades=_uniform_trades(10),
+            upward_trades=_upward_trades(10),
         )
         assert "s3_pooled_timeout_above_15pct" in result.reasons
 
@@ -93,7 +102,7 @@ class TestFoldTimeoutBoundary:
             for i in range(50):
                 trades.append(_trade(fold_id, 10.0, exit_reason="TP", exit_ts=i))
         result = evaluate_s3_falsification(
-            primary_trades=tuple(trades), upward_trades=_uniform_trades(10)
+            primary_trades=tuple(trades), upward_trades=_upward_trades(10)
         )
         assert "s3_fold_timeout_above_25pct" in result.reasons
         assert "s3_pooled_timeout_above_15pct" not in result.reasons
@@ -107,7 +116,7 @@ class TestFoldTimeoutBoundary:
             for i in range(20):
                 trades.append(_trade(fold_id, 10.0, exit_reason="TP", exit_ts=i))
         result = evaluate_s3_falsification(
-            primary_trades=tuple(trades), upward_trades=_uniform_trades(10)
+            primary_trades=tuple(trades), upward_trades=_upward_trades(10)
         )
         assert "s3_fold_timeout_above_25pct" not in result.reasons
 
@@ -115,7 +124,14 @@ class TestFoldTimeoutBoundary:
 class TestBullishLongE22:
     def test_positive_bullish_subbook_passes(self):
         longs = tuple(
-            _trade("fold-00", 5.0, direction="long", exit_ts=i) for i in range(5)
+            _trade(
+                "fold-00",
+                5.0,
+                direction="long",
+                exit_ts=i,
+                path_scenario="upward_stress22",
+            )
+            for i in range(5)
         )
         result = evaluate_s3_falsification(
             primary_trades=_uniform_trades(40), upward_trades=longs
@@ -124,7 +140,14 @@ class TestBullishLongE22:
 
     def test_zero_bullish_subbook_fails(self):
         longs = tuple(
-            _trade("fold-00", 0.0, direction="long", exit_ts=i) for i in range(5)
+            _trade(
+                "fold-00",
+                0.0,
+                direction="long",
+                exit_ts=i,
+                path_scenario="upward_stress22",
+            )
+            for i in range(5)
         )
         result = evaluate_s3_falsification(
             primary_trades=_uniform_trades(40), upward_trades=longs
@@ -135,16 +158,58 @@ class TestBullishLongE22:
         # A large positive SHORT subbook must not be allowed to satisfy the
         # bullish-LONG gate -- only direction=="long" rows count.
         shorts = tuple(
-            _trade("fold-00", 500.0, direction="short", exit_ts=i) for i in range(5)
+            _trade(
+                "fold-00",
+                500.0,
+                direction="short",
+                exit_ts=i,
+                path_scenario="upward_stress22",
+            )
+            for i in range(5)
         )
         longs_losing = tuple(
-            _trade("fold-00", -1.0, direction="long", exit_ts=100 + i) for i in range(5)
+            _trade(
+                "fold-00",
+                -1.0,
+                direction="long",
+                exit_ts=100 + i,
+                path_scenario="upward_stress22",
+            )
+            for i in range(5)
         )
         result = evaluate_s3_falsification(
             primary_trades=_uniform_trades(40),
             upward_trades=shorts + longs_losing,
         )
         assert "s3_bullish_long_e22_not_positive" in result.reasons
+
+
+class TestPathScenarioMembershipBinding:
+    """D3 exploit repro (adversarial verify R1, finding 1): common gates and
+    S3/S4 falsification must fail-closed reject a path-scenario swap (all
+    "primary" trades tagged base13, or the upward book tagged
+    primary_stress17) instead of silently computing metrics over the wrong
+    membership."""
+
+    def test_primary_trades_wrong_path_scenario_rejected(self):
+        wrong_path_primary = tuple(
+            _trade(FOLD_IDS[i % 8], 20.0, exit_ts=i, path_scenario="base13")
+            for i in range(40)
+        )
+        with pytest.raises(H5InputError):
+            evaluate_s3_falsification(
+                primary_trades=wrong_path_primary, upward_trades=_upward_trades(10)
+            )
+
+    def test_upward_trades_wrong_path_scenario_rejected(self):
+        wrong_path_upward = tuple(
+            _trade(FOLD_IDS[i % 8], 10.0, exit_ts=i, path_scenario="primary_stress17")
+            for i in range(10)
+        )
+        with pytest.raises(H5InputError):
+            evaluate_s3_falsification(
+                primary_trades=_uniform_trades(40), upward_trades=wrong_path_upward
+            )
 
 
 class TestFirst4hSlDependence:
@@ -188,14 +253,14 @@ class TestFirst4hSlDependence:
     def test_exact_50pct_passes(self):
         result = evaluate_s3_falsification(
             primary_trades=self._trades_with_dependence(0.5),
-            upward_trades=_uniform_trades(10),
+            upward_trades=_upward_trades(10),
         )
         assert "s3_first_4h_sl_dependence_above_50pct" not in result.reasons
 
     def test_above_50pct_fails(self):
         result = evaluate_s3_falsification(
             primary_trades=self._trades_with_dependence(0.6),
-            upward_trades=_uniform_trades(10),
+            upward_trades=_upward_trades(10),
         )
         assert "s3_first_4h_sl_dependence_above_50pct" in result.reasons
 
@@ -212,7 +277,7 @@ class TestFirst4hSlDependence:
                 _trade(FOLD_IDS[i % 8], 20.0, exit_reason="TP", exit_ts=100 + i)
             )
         result = evaluate_s3_falsification(
-            primary_trades=tuple(trades), upward_trades=_uniform_trades(10)
+            primary_trades=tuple(trades), upward_trades=_upward_trades(10)
         )
         # numerator == denominator == 10 -> ratio 1.0 -> must FAIL (not
         # silently excluded to 0/undefined).
@@ -221,7 +286,7 @@ class TestFirst4hSlDependence:
     def test_zero_losses_denominator_is_incomplete_not_pass(self):
         trades = _uniform_trades(40, exit_reason="TP", net_bps=10.0)
         result = evaluate_s3_falsification(
-            primary_trades=trades, upward_trades=_uniform_trades(10)
+            primary_trades=trades, upward_trades=_upward_trades(10)
         )
         assert result.first_4h_sl_dependence is None
         assert "s3_first_4h_sl_denominator_undefined" in result.incomplete_reasons
@@ -243,7 +308,7 @@ class TestFirst4hSlDependence:
                 _trade(FOLD_IDS[i % 8], 20.0, exit_reason="TP", exit_ts=100 + i)
             )
         result = evaluate_s3_falsification(
-            primary_trades=tuple(trades), upward_trades=_uniform_trades(10)
+            primary_trades=tuple(trades), upward_trades=_upward_trades(10)
         )
         # true ratio: 800 / (800+200) = 0.8 > 0.5 -> fails
         assert result.first_4h_sl_dependence == pytest.approx(0.8, abs=1e-9)
@@ -266,7 +331,7 @@ class TestSymbolDependence:
     def test_one_positive_others_pooled_negative_fails(self):
         result = evaluate_s3_falsification(
             primary_trades=self._symbol_trades(50.0, -10.0, -10.0),
-            upward_trades=_uniform_trades(10),
+            upward_trades=_upward_trades(10),
         )
         assert "s3_symbol_dependence" in result.reasons
 
@@ -275,14 +340,14 @@ class TestSymbolDependence:
         # two pooled must ALSO be <=0 (second predicate).
         result = evaluate_s3_falsification(
             primary_trades=self._symbol_trades(50.0, 5.0, -1.0),
-            upward_trades=_uniform_trades(10),
+            upward_trades=_upward_trades(10),
         )
         assert "s3_symbol_dependence" not in result.reasons
 
     def test_two_positive_symbols_never_fails_this_gate(self):
         result = evaluate_s3_falsification(
             primary_trades=self._symbol_trades(50.0, 50.0, -10.0),
-            upward_trades=_uniform_trades(10),
+            upward_trades=_upward_trades(10),
         )
         assert "s3_symbol_dependence" not in result.reasons
 
@@ -295,7 +360,7 @@ class TestSymbolDependence:
             )
             # SOLUSDT has zero trades entirely
         result = evaluate_s3_falsification(
-            primary_trades=tuple(trades), upward_trades=_uniform_trades(10)
+            primary_trades=tuple(trades), upward_trades=_upward_trades(10)
         )
         assert "s3_symbol_evidence_missing" in result.incomplete_reasons
 
@@ -304,7 +369,7 @@ class TestAttributionAndExitTaxonomy:
     def test_thesis_exit_is_never_classified_as_timeout(self):
         trades = _uniform_trades(40, exit_reason="THESIS_EXIT", net_bps=10.0)
         result = evaluate_s3_falsification(
-            primary_trades=trades, upward_trades=_uniform_trades(10)
+            primary_trades=trades, upward_trades=_upward_trades(10)
         )
         by_exit = result.attribution["by_exit_reason"]
         assert "THESIS_EXIT" in by_exit
@@ -316,7 +381,7 @@ class TestAttributionAndExitTaxonomy:
     def test_attribution_by_symbol_and_exit_reason_nonempty(self):
         trades = self._mixed_trades()
         result = evaluate_s3_falsification(
-            primary_trades=trades, upward_trades=_uniform_trades(10)
+            primary_trades=trades, upward_trades=_upward_trades(10)
         )
         assert set(result.attribution["by_symbol"].keys()) >= {"XRPUSDT"}
         assert result.attribution["by_symbol"]["XRPUSDT"]["trades"] > 0

@@ -200,9 +200,13 @@ def render_markdown(canonical: Mapping[str, Any]) -> bytes:
     campaign = canonical["campaign_decision"]
     lines.append("## Campaign Decision")
     lines.append(f"- campaign_decision: {campaign['campaign_decision']}")
+    lines.append(
+        f"- campaign_historical_verdict: {campaign['campaign_historical_verdict']}"
+    )
     lines.append(f"- s3_direct_verdict: {campaign['s3_direct_verdict']}")
     lines.append(f"- s4_direct_verdict: {campaign['s4_direct_verdict']}")
     lines.append(f"- demo_candidate: {_fmt(campaign['demo_candidate'])}")
+    lines.append(f"- historical_preferred: {_fmt(campaign['historical_preferred'])}")
     lines.append(
         f"- s4_observable_superiority: {_fmt(campaign['s4_observable_superiority'])}"
     )

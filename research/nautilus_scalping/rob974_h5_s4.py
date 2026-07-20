@@ -156,6 +156,14 @@ def evaluate_s4_falsification(
     primary_trades: tuple[MetricTrade, ...],
     upward_trades: tuple[MetricTrade, ...],
 ) -> S4FalsificationResult:
+    # D3 fail-closed membership binding (adversarial verify R1, finding 1):
+    # reject a path-scenario swap rather than silently scoring the wrong
+    # membership.
+    if any(t.path_scenario != "primary_stress17" for t in primary_trades):
+        raise H5InputError("s4_falsification_primary_path_scenario_mismatch")
+    if any(t.path_scenario != "upward_stress22" for t in upward_trades):
+        raise H5InputError("s4_falsification_upward_path_scenario_mismatch")
+
     reasons: set[str] = set()
     incomplete_reasons: set[str] = set()
 
@@ -219,11 +227,15 @@ def evaluate_s4_falsification(
     if missing_pairs:
         incomplete_reasons.add(INCOMPLETE_PAIR_EVIDENCE_MISSING)
     else:
-        pair_e17 = {
-            p: sum(t.net_bps for t in trades) / len(trades)
-            for p, trades in pair_trades.items()
+        # D12 fix (adversarial verify R1, finding 3): concentration share is
+        # the SUM of net_bps per pair, never a per-pair MEAN -- a mean-based
+        # share is skewed by unequal trade counts across pairs (the
+        # authoritative definition is "max positive pair net / sum positive
+        # pair net").
+        pair_net_sum = {
+            p: sum(t.net_bps for t in trades) for p, trades in pair_trades.items()
         }
-        positive_pairs = {p: v for p, v in pair_e17.items() if v > 0.0}
+        positive_pairs = {p: v for p, v in pair_net_sum.items() if v > 0.0}
         if positive_pairs:
             total_positive = sum(positive_pairs.values())
             dominant_pair = max(positive_pairs, key=lambda p: positive_pairs[p])
@@ -362,12 +374,21 @@ def compute_direct_verdict(
 # ---------------------------------------------------------------------------
 
 
+_VALID_DIRECT_VERDICTS = (
+    DIRECT_VERDICT_INCOMPLETE,
+    DIRECT_VERDICT_FAIL,
+    DIRECT_VERDICT_PASS,
+)
+
+
 @dataclass(frozen=True, slots=True)
 class CampaignDecisionResult:
     campaign_decision: str
+    campaign_historical_verdict: str
     s3_direct_verdict: str
     s4_direct_verdict: str
     demo_candidate: str | None
+    historical_preferred: str | None
     s4_observable_superiority: bool | None
 
 
@@ -376,50 +397,84 @@ def compute_campaign_decision(
     s3_direct_verdict: str,
     s4_direct_verdict: str,
     s4_observable_superiority: bool | None = None,
+    s3_rank_metrics: StrategyRankMetrics | None = None,
+    s4_rank_metrics: StrategyRankMetrics | None = None,
 ) -> CampaignDecisionResult:
+    # D13 fix (adversarial verify R1, finding 4): reject a non-closed-enum
+    # verdict string rather than silently falling through to a default
+    # branch.
+    _require(
+        s3_direct_verdict in _VALID_DIRECT_VERDICTS,
+        "campaign_decision_s3_verdict_unknown",
+    )
+    _require(
+        s4_direct_verdict in _VALID_DIRECT_VERDICTS,
+        "campaign_decision_s4_verdict_unknown",
+    )
+
     if (
         s3_direct_verdict == DIRECT_VERDICT_INCOMPLETE
         or s4_direct_verdict == DIRECT_VERDICT_INCOMPLETE
     ):
         return CampaignDecisionResult(
             campaign_decision=CAMPAIGN_DECISION_INCOMPLETE,
+            campaign_historical_verdict=DIRECT_VERDICT_INCOMPLETE,
             s3_direct_verdict=s3_direct_verdict,
             s4_direct_verdict=s4_direct_verdict,
             demo_candidate=None,
+            historical_preferred=None,
             s4_observable_superiority=None,
         )
     if (
         s3_direct_verdict == DIRECT_VERDICT_PASS
         and s4_direct_verdict == DIRECT_VERDICT_PASS
     ):
+        # D13 fix (finding 5, AC44): historical_preferred is the both-pass
+        # literal rank -- report-only, never changes campaign_decision or
+        # the (operationally forced) S3 demo candidate.
+        _require(
+            s3_rank_metrics is not None and s4_rank_metrics is not None,
+            "campaign_decision_both_pass_requires_rank_metrics",
+        )
+        historical_preferred = rank_both_pass(
+            s3_metrics=s3_rank_metrics, s4_metrics=s4_rank_metrics
+        )
         return CampaignDecisionResult(
             campaign_decision=CAMPAIGN_DECISION_BOTH_PASS_S3_DEMO_CANDIDATE,
+            campaign_historical_verdict=DIRECT_VERDICT_PASS,
             s3_direct_verdict=s3_direct_verdict,
             s4_direct_verdict=s4_direct_verdict,
             demo_candidate="S3",
+            historical_preferred=historical_preferred,
             s4_observable_superiority=s4_observable_superiority,
         )
     if s3_direct_verdict == DIRECT_VERDICT_PASS:
         return CampaignDecisionResult(
             campaign_decision=CAMPAIGN_DECISION_S3_ONLY,
+            campaign_historical_verdict=DIRECT_VERDICT_PASS,
             s3_direct_verdict=s3_direct_verdict,
             s4_direct_verdict=s4_direct_verdict,
             demo_candidate="S3",
+            historical_preferred="S3",
             s4_observable_superiority=None,
         )
     if s4_direct_verdict == DIRECT_VERDICT_PASS:
         return CampaignDecisionResult(
             campaign_decision=CAMPAIGN_DECISION_S4_ONLY_NO_DEMO,
+            campaign_historical_verdict=DIRECT_VERDICT_PASS,
             s3_direct_verdict=s3_direct_verdict,
             s4_direct_verdict=s4_direct_verdict,
             demo_candidate=None,
+            historical_preferred="S4",
             s4_observable_superiority=None,
         )
     return CampaignDecisionResult(
         campaign_decision=CAMPAIGN_DECISION_BOTH_FAIL,
+        campaign_historical_verdict=DIRECT_VERDICT_FAIL,
         s3_direct_verdict=s3_direct_verdict,
         s4_direct_verdict=s4_direct_verdict,
         demo_candidate=None,
+        historical_preferred=None,
         s4_observable_superiority=None,
     )
 

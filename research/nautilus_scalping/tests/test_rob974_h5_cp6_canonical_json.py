@@ -38,7 +38,9 @@ from rob974_h5_gates import evaluate_common_gates
 from rob974_h5_s3 import evaluate_s3_falsification
 from rob974_h5_s4 import (
     S4_HISTORICAL_PAIR_EXECUTOR_STATE,
-    CampaignDecisionResult,
+    StrategyRankMetrics,
+    compute_campaign_decision,
+    compute_direct_verdict,
     evaluate_s4_falsification,
 )
 
@@ -86,12 +88,20 @@ def _seal(**overrides) -> H6AAccountingSeal:
     return H6AAccountingSeal(**fields)
 
 
-def _s3_trade(fold_id, net_bps, *, exit_ts=0, exit_reason="TP", dimension="XRPUSDT"):
+def _s3_trade(
+    fold_id,
+    net_bps,
+    *,
+    exit_ts=0,
+    exit_reason="TP",
+    dimension="XRPUSDT",
+    path_scenario="primary_stress17",
+):
     return MetricTrade(
         strategy="S3",
         config_id="S3-00",
         fold_id=fold_id,
-        path_scenario="primary_stress17",
+        path_scenario=path_scenario,
         dimension=dimension,
         direction="long",
         entry_ts=exit_ts,
@@ -108,12 +118,20 @@ def _s3_trade(fold_id, net_bps, *, exit_ts=0, exit_reason="TP", dimension="XRPUS
     )
 
 
-def _s4_trade(fold_id, net_bps, *, exit_ts=0, exit_reason="TP", dimension="XRP-DOGE"):
+def _s4_trade(
+    fold_id,
+    net_bps,
+    *,
+    exit_ts=0,
+    exit_reason="TP",
+    dimension="XRP-DOGE",
+    path_scenario="primary_stress17",
+):
     return MetricTrade(
         strategy="S4",
         config_id="S4-00",
         fold_id=fold_id,
-        path_scenario="primary_stress17",
+        path_scenario=path_scenario,
         dimension=dimension,
         direction="long",
         entry_ts=exit_ts,
@@ -124,7 +142,7 @@ def _s4_trade(fold_id, net_bps, *, exit_ts=0, exit_reason="TP", dimension="XRP-D
         net_bps=net_bps,
         tp_bps=68.0,
         sl_bps=40.0,
-        gross_notional=None,
+        gross_notional=100.0,
         market_return_4h=0.01,
         volatility_percentile=None,
     )
@@ -134,24 +152,48 @@ def _s3_primary_trades(n: int = 40) -> tuple:
     return tuple(_s3_trade(FOLD_IDS[i % 8], 10.0, exit_ts=i) for i in range(n))
 
 
+def _s3_upward_trades(n: int = 10) -> tuple:
+    return tuple(
+        _s3_trade(FOLD_IDS[i % 8], 10.0, exit_ts=i, path_scenario="upward_stress22")
+        for i in range(n)
+    )
+
+
 def _s4_primary_trades(n: int = 40) -> tuple:
     return tuple(_s4_trade(FOLD_IDS[i % 8], 10.0, exit_ts=i) for i in range(n))
 
 
+def _s4_upward_trades(n: int = 10) -> tuple:
+    return tuple(
+        _s4_trade(FOLD_IDS[i % 8], 10.0, exit_ts=i, path_scenario="upward_stress22")
+        for i in range(n)
+    )
+
+
 def _build_strategy_inputs(strategy: str) -> StrategyCanonicalInputs:
+    # direct_verdict is ALWAYS recomputed via compute_direct_verdict here
+    # (never hand-asserted) -- build_canonical_scorecard cross-checks this
+    # against common_gates/falsification and rejects a mismatch (D13 fix,
+    # adversarial verify R1 finding 4). This single-dimension fixture is
+    # missing symbol/pair coverage by construction, so both strategies
+    # genuinely compute "incomplete" here.
     if strategy == "S3":
         primary = _s3_primary_trades()
         common_gates = evaluate_common_gates(
-            primary_trades=primary, upward_trades=_s3_primary_trades(10)
+            primary_trades=primary, upward_trades=_s3_upward_trades(10)
         )
         falsification = evaluate_s3_falsification(
-            primary_trades=primary, upward_trades=_s3_primary_trades(10)
+            primary_trades=primary, upward_trades=_s3_upward_trades(10)
+        )
+        direct_verdict = compute_direct_verdict(
+            incomplete_reasons=falsification.incomplete_reasons,
+            hard_gate_reasons=common_gates.reasons + falsification.reasons,
         )
         return StrategyCanonicalInputs(
             strategy="S3",
             common_gates=common_gates,
             falsification=falsification,
-            direct_verdict="historical_pass",
+            direct_verdict=direct_verdict,
             exit_reason_order=("TP", "SL", "THESIS_EXIT", "TIMEOUT"),
             dimension_order=("XRPUSDT", "DOGEUSDT", "SOLUSDT"),
             unique_by_key={},
@@ -160,16 +202,20 @@ def _build_strategy_inputs(strategy: str) -> StrategyCanonicalInputs:
         )
     primary = _s4_primary_trades()
     common_gates = evaluate_common_gates(
-        primary_trades=primary, upward_trades=_s4_primary_trades(10)
+        primary_trades=primary, upward_trades=_s4_upward_trades(10)
     )
     falsification = evaluate_s4_falsification(
-        primary_trades=primary, upward_trades=_s4_primary_trades(10)
+        primary_trades=primary, upward_trades=_s4_upward_trades(10)
+    )
+    direct_verdict = compute_direct_verdict(
+        incomplete_reasons=falsification.incomplete_reasons,
+        hard_gate_reasons=common_gates.reasons + falsification.reasons,
     )
     return StrategyCanonicalInputs(
         strategy="S4",
         common_gates=common_gates,
         falsification=falsification,
-        direct_verdict="historical_pass",
+        direct_verdict=direct_verdict,
         exit_reason_order=("TP", "SL", "MEAN_EXIT", "STALL_EXIT", "TIMEOUT"),
         dimension_order=("XRP-DOGE", "XRP-SOL", "DOGE-SOL"),
         unique_by_key={},
@@ -180,19 +226,18 @@ def _build_strategy_inputs(strategy: str) -> StrategyCanonicalInputs:
 
 
 def _build_scorecard() -> dict:
+    s3_inputs = _build_strategy_inputs("S3")
+    s4_inputs = _build_strategy_inputs("S4")
     return build_canonical_scorecard(
         envelope=_envelope(),
         h6a_seal=_seal(),
         envelope_ok=True,
         envelope_incomplete_reasons=(),
-        s3_inputs=_build_strategy_inputs("S3"),
-        s4_inputs=_build_strategy_inputs("S4"),
-        campaign_decision=CampaignDecisionResult(
-            campaign_decision="both_pass_s3_demo_candidate",
-            s3_direct_verdict="historical_pass",
-            s4_direct_verdict="historical_pass",
-            demo_candidate="S3",
-            s4_observable_superiority=False,
+        s3_inputs=s3_inputs,
+        s4_inputs=s4_inputs,
+        campaign_decision=compute_campaign_decision(
+            s3_direct_verdict=s3_inputs.direct_verdict,
+            s4_direct_verdict=s4_inputs.direct_verdict,
         ),
     )
 
@@ -282,35 +327,29 @@ class TestPermutationInvariance:
         seal_b = _seal(
             status_counts={"timeout": 0, "crashed": 0, "rejected": 0, "completed": 48}
         )
+        s3_inputs = _build_strategy_inputs("S3")
+        s4_inputs = _build_strategy_inputs("S4")
+        campaign_decision = compute_campaign_decision(
+            s3_direct_verdict=s3_inputs.direct_verdict,
+            s4_direct_verdict=s4_inputs.direct_verdict,
+        )
         scorecard_a = build_canonical_scorecard(
             envelope=_envelope(),
             h6a_seal=seal_a,
             envelope_ok=True,
             envelope_incomplete_reasons=(),
-            s3_inputs=_build_strategy_inputs("S3"),
-            s4_inputs=_build_strategy_inputs("S4"),
-            campaign_decision=CampaignDecisionResult(
-                campaign_decision="both_pass_s3_demo_candidate",
-                s3_direct_verdict="historical_pass",
-                s4_direct_verdict="historical_pass",
-                demo_candidate="S3",
-                s4_observable_superiority=False,
-            ),
+            s3_inputs=s3_inputs,
+            s4_inputs=s4_inputs,
+            campaign_decision=campaign_decision,
         )
         scorecard_b = build_canonical_scorecard(
             envelope=_envelope(),
             h6a_seal=seal_b,
             envelope_ok=True,
             envelope_incomplete_reasons=(),
-            s3_inputs=_build_strategy_inputs("S3"),
-            s4_inputs=_build_strategy_inputs("S4"),
-            campaign_decision=CampaignDecisionResult(
-                campaign_decision="both_pass_s3_demo_candidate",
-                s3_direct_verdict="historical_pass",
-                s4_direct_verdict="historical_pass",
-                demo_candidate="S3",
-                s4_observable_superiority=False,
-            ),
+            s3_inputs=s3_inputs,
+            s4_inputs=s4_inputs,
+            campaign_decision=campaign_decision,
         )
         bytes_a = canonical_json_bytes(scorecard_a)
         bytes_b = canonical_json_bytes(scorecard_b)
@@ -322,6 +361,7 @@ class TestPermutationInvariance:
         # Rebuild S3 falsification's by_symbol attribution dict with keys
         # inserted in a DIFFERENT order -- must not move the hash.
         s3_inputs = _build_strategy_inputs("S3")
+        s4_inputs = _build_strategy_inputs("S4")
         by_symbol = s3_inputs.falsification.attribution["by_symbol"]
         reordered = dict(reversed(list(by_symbol.items())))
         object.__setattr__(
@@ -335,13 +375,10 @@ class TestPermutationInvariance:
             envelope_ok=True,
             envelope_incomplete_reasons=(),
             s3_inputs=s3_inputs,
-            s4_inputs=_build_strategy_inputs("S4"),
-            campaign_decision=CampaignDecisionResult(
-                campaign_decision="both_pass_s3_demo_candidate",
-                s3_direct_verdict="historical_pass",
-                s4_direct_verdict="historical_pass",
-                demo_candidate="S3",
-                s4_observable_superiority=False,
+            s4_inputs=s4_inputs,
+            campaign_decision=compute_campaign_decision(
+                s3_direct_verdict=s3_inputs.direct_verdict,
+                s4_direct_verdict=s4_inputs.direct_verdict,
             ),
         )
         assert canonical_json_bytes(scorecard_a) == canonical_json_bytes(scorecard_b)
@@ -389,3 +426,86 @@ class TestHashSensitivity:
         assert hash_canonical_bytes(canonical_json_bytes(base)) != hash_canonical_bytes(
             canonical_json_bytes(mutated)
         )
+
+
+class TestCanonicalConsistencyValidation:
+    """D13 exploit repro (adversarial verify R1, finding 4):
+    ``build_canonical_scorecard`` must recompute and cross-check each
+    strategy's ``direct_verdict`` against its own ``common_gates``/
+    ``falsification`` (never trust a caller-supplied label), and must
+    cross-check the campaign decision's embedded verdicts against those
+    same recomputed values -- a forged "historical_pass" alongside
+    ``common_gates.passed=False``/nonempty ``incomplete_reasons`` must be
+    rejected, not silently canonicalized."""
+
+    def test_forged_direct_verdict_rejected(self):
+        import dataclasses
+
+        s3_inputs = _build_strategy_inputs("S3")
+        assert s3_inputs.direct_verdict == "incomplete"
+        forged = dataclasses.replace(s3_inputs, direct_verdict="historical_pass")
+        with pytest.raises(H5InputError):
+            build_canonical_scorecard(
+                envelope=_envelope(),
+                h6a_seal=_seal(),
+                envelope_ok=True,
+                envelope_incomplete_reasons=(),
+                s3_inputs=forged,
+                s4_inputs=_build_strategy_inputs("S4"),
+                campaign_decision=compute_campaign_decision(
+                    s3_direct_verdict="historical_pass", s4_direct_verdict="incomplete"
+                ),
+            )
+
+    def test_campaign_decision_verdict_mismatch_rejected(self):
+        s3_inputs = _build_strategy_inputs("S3")
+        s4_inputs = _build_strategy_inputs("S4")
+        assert s3_inputs.direct_verdict == "incomplete"
+        # A campaign_decision computed from verdicts that do NOT match the
+        # actual strategy inputs' own (correctly-computed) direct_verdict.
+        mismatched_campaign_decision = compute_campaign_decision(
+            s3_direct_verdict="historical_pass",
+            s4_direct_verdict="historical_pass",
+            s3_rank_metrics=StrategyRankMetrics(
+                min_fold_e17=5.0,
+                pooled_e17=10.0,
+                monthly_concentration=0.3,
+                timeout_ratio=0.1,
+            ),
+            s4_rank_metrics=StrategyRankMetrics(
+                min_fold_e17=5.0,
+                pooled_e17=10.0,
+                monthly_concentration=0.3,
+                timeout_ratio=0.1,
+            ),
+        )
+        with pytest.raises(H5InputError):
+            build_canonical_scorecard(
+                envelope=_envelope(),
+                h6a_seal=_seal(),
+                envelope_ok=True,
+                envelope_incomplete_reasons=(),
+                s3_inputs=s3_inputs,
+                s4_inputs=s4_inputs,
+                campaign_decision=mismatched_campaign_decision,
+            )
+
+    def test_consistent_inputs_are_accepted(self):
+        # Sanity: the SAME cross-check must not reject genuinely consistent
+        # input (no false positives).
+        s3_inputs = _build_strategy_inputs("S3")
+        s4_inputs = _build_strategy_inputs("S4")
+        campaign_decision = compute_campaign_decision(
+            s3_direct_verdict=s3_inputs.direct_verdict,
+            s4_direct_verdict=s4_inputs.direct_verdict,
+        )
+        scorecard = build_canonical_scorecard(
+            envelope=_envelope(),
+            h6a_seal=_seal(),
+            envelope_ok=True,
+            envelope_incomplete_reasons=(),
+            s3_inputs=s3_inputs,
+            s4_inputs=s4_inputs,
+            campaign_decision=campaign_decision,
+        )
+        assert scorecard["campaign_decision"]["campaign_decision"] == "incomplete"

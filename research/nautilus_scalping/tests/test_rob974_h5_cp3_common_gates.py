@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 
 import pytest
-from rob974_h5_contracts import FOLD_IDS, MetricTrade
+from rob974_h5_contracts import FOLD_IDS, H5InputError, MetricTrade
 from rob974_h5_gates import (
     MIN_TRADES_PER_FOLD,
     PF17_MIN,
@@ -432,3 +432,32 @@ class TestNoShortCircuit:
         assert "insufficient_positive_folds" in result.reasons
         assert "e22_not_positive" in result.reasons
         assert result.passed is False
+
+
+class TestPathScenarioMembershipBinding:
+    """D3 exploit repro (adversarial verify R1, finding 1): common gates
+    must fail-closed reject a path-scenario swap (all "primary" trades
+    tagged base13, or the upward book tagged primary_stress17) instead of
+    silently computing metrics over the wrong membership."""
+
+    def test_primary_trades_wrong_path_scenario_rejected(self):
+        wrong_path_primary = tuple(
+            _trade(fold_id, 20.0, exit_ts=i * _MONTH_MS, path_scenario="base13")
+            for i, fold_id in enumerate(FOLD_IDS)
+            for _ in range(5)
+        )
+        with pytest.raises(H5InputError):
+            evaluate_common_gates(
+                primary_trades=wrong_path_primary, upward_trades=_upward_trades(10.0)
+            )
+
+    def test_upward_trades_wrong_path_scenario_rejected(self):
+        wrong_path_upward = tuple(
+            _trade("fold-00", 10.0, exit_ts=i, path_scenario="primary_stress17")
+            for i in range(5)
+        )
+        with pytest.raises(H5InputError):
+            evaluate_common_gates(
+                primary_trades=_passing_primary_trades(),
+                upward_trades=wrong_path_upward,
+            )

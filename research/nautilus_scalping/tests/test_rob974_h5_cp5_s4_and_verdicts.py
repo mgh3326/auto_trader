@@ -47,7 +47,7 @@ def _trade(
     direction: str = "long",
     exit_ts: int = 0,
     market_return_4h: float = 0.01,
-    gross_notional: float | None = None,
+    gross_notional: float | None = 100.0,
     path_scenario: str = "primary_stress17",
 ) -> MetricTrade:
     return MetricTrade(
@@ -78,6 +78,15 @@ def _uniform_trades(n: int, exit_reason: str = "TP", net_bps: float = 10.0):
     )
 
 
+def _upward_trades(n: int, net_bps: float = 10.0):
+    # D3 fix: the upward (E22) subbook must carry path_scenario ==
+    # "upward_stress22" -- never the primary book's "primary_stress17".
+    return tuple(
+        _trade(FOLD_IDS[i % 8], net_bps, exit_ts=i, path_scenario="upward_stress22")
+        for i in range(n)
+    )
+
+
 class TestPooledTimeoutBoundary:
     def _trades_with_timeout_ratio(self, ratio: float, n: int = 1000) -> tuple:
         n_timeout = round(ratio * n)
@@ -90,14 +99,14 @@ class TestPooledTimeoutBoundary:
     def test_exact_20pct_passes(self):
         result = evaluate_s4_falsification(
             primary_trades=self._trades_with_timeout_ratio(S4_POOLED_TIMEOUT_MAX),
-            upward_trades=_uniform_trades(10),
+            upward_trades=_upward_trades(10),
         )
         assert "s4_pooled_timeout_above_20pct" not in result.reasons
 
     def test_above_20pct_fails(self):
         result = evaluate_s4_falsification(
             primary_trades=self._trades_with_timeout_ratio(0.201),
-            upward_trades=_uniform_trades(10),
+            upward_trades=_upward_trades(10),
         )
         assert "s4_pooled_timeout_above_20pct" in result.reasons
 
@@ -112,7 +121,7 @@ class TestFoldTimeoutBoundary:
             for i in range(50):
                 trades.append(_trade(fold_id, 10.0, exit_reason="TP", exit_ts=i))
         result = evaluate_s4_falsification(
-            primary_trades=tuple(trades), upward_trades=_uniform_trades(10)
+            primary_trades=tuple(trades), upward_trades=_upward_trades(10)
         )
         assert "s4_fold_timeout_above_30pct" in result.reasons
         assert "s4_pooled_timeout_above_20pct" not in result.reasons
@@ -126,7 +135,7 @@ class TestFoldTimeoutBoundary:
             for i in range(20):
                 trades.append(_trade(fold_id, 10.0, exit_reason="TP", exit_ts=i))
         result = evaluate_s4_falsification(
-            primary_trades=tuple(trades), upward_trades=_uniform_trades(10)
+            primary_trades=tuple(trades), upward_trades=_upward_trades(10)
         )
         assert "s4_fold_timeout_above_30pct" not in result.reasons
 
@@ -134,7 +143,14 @@ class TestFoldTimeoutBoundary:
 class TestHighMarketReturnE22:
     def test_positive_high_m_subbook_passes(self):
         highs = tuple(
-            _trade("fold-00", 5.0, market_return_4h=0.05, exit_ts=i) for i in range(5)
+            _trade(
+                "fold-00",
+                5.0,
+                market_return_4h=0.05,
+                exit_ts=i,
+                path_scenario="upward_stress22",
+            )
+            for i in range(5)
         )
         result = evaluate_s4_falsification(
             primary_trades=_uniform_trades(40), upward_trades=highs
@@ -143,7 +159,14 @@ class TestHighMarketReturnE22:
 
     def test_zero_high_m_subbook_fails(self):
         highs = tuple(
-            _trade("fold-00", 0.0, market_return_4h=0.05, exit_ts=i) for i in range(5)
+            _trade(
+                "fold-00",
+                0.0,
+                market_return_4h=0.05,
+                exit_ts=i,
+                path_scenario="upward_stress22",
+            )
+            for i in range(5)
         )
         result = evaluate_s4_falsification(
             primary_trades=_uniform_trades(40), upward_trades=highs
@@ -154,10 +177,23 @@ class TestHighMarketReturnE22:
         # Large winning LOW-M_t trades must not satisfy the strict M_t>3%
         # subbook gate -- only market_return_4h>0.03 rows count.
         low_m_wins = tuple(
-            _trade("fold-00", 500.0, market_return_4h=0.01, exit_ts=i) for i in range(5)
+            _trade(
+                "fold-00",
+                500.0,
+                market_return_4h=0.01,
+                exit_ts=i,
+                path_scenario="upward_stress22",
+            )
+            for i in range(5)
         )
         high_m_losses = tuple(
-            _trade("fold-00", -1.0, market_return_4h=0.05, exit_ts=100 + i)
+            _trade(
+                "fold-00",
+                -1.0,
+                market_return_4h=0.05,
+                exit_ts=100 + i,
+                path_scenario="upward_stress22",
+            )
             for i in range(5)
         )
         result = evaluate_s4_falsification(
@@ -165,6 +201,33 @@ class TestHighMarketReturnE22:
             upward_trades=low_m_wins + high_m_losses,
         )
         assert "s4_high_market_return_e22_not_positive" in result.reasons
+
+
+class TestPathScenarioMembershipBinding:
+    """D3 exploit repro (adversarial verify R1, finding 1): S4 falsification
+    must fail-closed reject a path-scenario swap (all "primary" trades
+    tagged base13, or the upward book tagged primary_stress17) instead of
+    silently computing metrics over the wrong membership."""
+
+    def test_primary_trades_wrong_path_scenario_rejected(self):
+        wrong_path_primary = tuple(
+            _trade(FOLD_IDS[i % 8], 20.0, exit_ts=i, path_scenario="base13")
+            for i in range(40)
+        )
+        with pytest.raises(H5InputError):
+            evaluate_s4_falsification(
+                primary_trades=wrong_path_primary, upward_trades=_upward_trades(10)
+            )
+
+    def test_upward_trades_wrong_path_scenario_rejected(self):
+        wrong_path_upward = tuple(
+            _trade(FOLD_IDS[i % 8], 10.0, exit_ts=i, path_scenario="primary_stress17")
+            for i in range(10)
+        )
+        with pytest.raises(H5InputError):
+            evaluate_s4_falsification(
+                primary_trades=_uniform_trades(40), upward_trades=wrong_path_upward
+            )
 
 
 def _corr_trades(a: int, b: int, c: int, d: int) -> tuple:
@@ -196,7 +259,7 @@ class TestCorrelation:
         # (modulo float summation noise, well within tolerance).
         trades = _corr_trades(23, 17, 17, 23)
         result = evaluate_s4_falsification(
-            primary_trades=trades, upward_trades=_uniform_trades(10)
+            primary_trades=trades, upward_trades=_upward_trades(10)
         )
         assert result.correlation == pytest.approx(0.15, abs=1e-9)
         assert "s4_correlation_above_15pct" not in result.reasons
@@ -205,7 +268,7 @@ class TestCorrelation:
         # a=d=24, b=c=16, n=80 -> corr == 16/80 == 0.20
         trades = _corr_trades(24, 16, 16, 24)
         result = evaluate_s4_falsification(
-            primary_trades=trades, upward_trades=_uniform_trades(10)
+            primary_trades=trades, upward_trades=_upward_trades(10)
         )
         assert result.correlation == pytest.approx(0.20, abs=1e-9)
         assert "s4_correlation_above_15pct" in result.reasons
@@ -222,7 +285,7 @@ class TestCorrelation:
             for i in range(40)
         )
         result = evaluate_s4_falsification(
-            primary_trades=trades, upward_trades=_uniform_trades(10)
+            primary_trades=trades, upward_trades=_upward_trades(10)
         )
         assert result.correlation is None
         assert "s4_correlation_undefined" in result.incomplete_reasons
@@ -247,7 +310,7 @@ class TestPairConcentration:
     def test_dominant_pair_share_above_70pct_and_others_negative_fails(self):
         result = evaluate_s4_falsification(
             primary_trades=self._pair_trades(90.0, -5.0, -5.0),
-            upward_trades=_uniform_trades(10),
+            upward_trades=_upward_trades(10),
         )
         assert "s4_pair_concentration_above_70pct" in result.reasons
 
@@ -256,14 +319,14 @@ class TestPairConcentration:
         # pooled (combined) must ALSO be <=0 (second predicate).
         result = evaluate_s4_falsification(
             primary_trades=self._pair_trades(90.0, 20.0, -1.0),
-            upward_trades=_uniform_trades(10),
+            upward_trades=_upward_trades(10),
         )
         assert "s4_pair_concentration_above_70pct" not in result.reasons
 
     def test_two_positive_pairs_below_70pct_share_passes(self):
         result = evaluate_s4_falsification(
             primary_trades=self._pair_trades(40.0, 40.0, -5.0),
-            upward_trades=_uniform_trades(10),
+            upward_trades=_upward_trades(10),
         )
         assert "s4_pair_concentration_above_70pct" not in result.reasons
 
@@ -278,9 +341,67 @@ class TestPairConcentration:
             )
             # DOGE-SOL has zero trades entirely.
         result = evaluate_s4_falsification(
-            primary_trades=tuple(trades), upward_trades=_uniform_trades(10)
+            primary_trades=tuple(trades), upward_trades=_upward_trades(10)
         )
         assert "s4_pair_evidence_missing" in result.incomplete_reasons
+
+    def test_unequal_trade_counts_use_net_sum_share_not_per_pair_mean(self):
+        # D12 fix (adversarial verify R1, finding 3): concentration must be
+        # the SUM of net_bps per pair, never a per-pair MEAN -- a mean-based
+        # implementation is skewed by unequal trade counts. Repro: XRP-DOGE
+        # net+100 (1 trade), XRP-SOL net+100 total (100 trades of +1.0
+        # each), DOGE-SOL net-200 (1 trade). True sum-based share is
+        # 100/(100+100)=0.5 -- must NOT fail. A buggy mean-based
+        # implementation computes XRP-DOGE mean=100, XRP-SOL mean=1.0,
+        # share=100/101=0.9901 -- incorrectly fails.
+        trades = [
+            _trade(FOLD_IDS[0], 100.0, dimension="XRP-DOGE", exit_ts=0),
+            _trade(FOLD_IDS[1], -200.0, dimension="DOGE-SOL", exit_ts=1),
+        ]
+        trades.extend(
+            _trade(FOLD_IDS[i % 8], 1.0, dimension="XRP-SOL", exit_ts=100 + i)
+            for i in range(100)
+        )
+        result = evaluate_s4_falsification(
+            primary_trades=tuple(trades), upward_trades=_upward_trades(10)
+        )
+        assert result.pair_concentration == pytest.approx(0.5, abs=1e-9)
+        assert "s4_pair_concentration_above_70pct" not in result.reasons
+
+    def test_exact_70pct_net_sum_share_passes(self):
+        # dominant XRP-DOGE sum=70 (1 trade), second-positive XRP-SOL
+        # sum=30 (1 trade) -> share == 70/100 == 0.70 exactly -> must NOT
+        # fail (>0.70 is strict).
+        trades = [
+            _trade(FOLD_IDS[0], 70.0, dimension="XRP-DOGE", exit_ts=0),
+            _trade(FOLD_IDS[1], 30.0, dimension="XRP-SOL", exit_ts=1),
+            _trade(FOLD_IDS[2], -10.0, dimension="DOGE-SOL", exit_ts=2),
+        ]
+        result = evaluate_s4_falsification(
+            primary_trades=tuple(trades), upward_trades=_upward_trades(10)
+        )
+        assert result.pair_concentration == pytest.approx(0.70, abs=1e-9)
+        assert "s4_pair_concentration_above_70pct" not in result.reasons
+
+    def test_just_above_70pct_net_sum_share_with_unequal_counts_fails(self):
+        # dominant XRP-DOGE sum=71 (1 trade), second-positive XRP-SOL
+        # sum=29 (100 trades of +0.29 each -- unequal count vs dominant),
+        # DOGE-SOL sum=-50 (1 trade). Sum-based share = 71/100 = 0.71 >
+        # 0.70, and others-pooled (XRP-SOL + DOGE-SOL combined mean) is
+        # negative -> gate must fire.
+        trades = [
+            _trade(FOLD_IDS[0], 71.0, dimension="XRP-DOGE", exit_ts=0),
+            _trade(FOLD_IDS[1], -50.0, dimension="DOGE-SOL", exit_ts=1),
+        ]
+        trades.extend(
+            _trade(FOLD_IDS[i % 8], 0.29, dimension="XRP-SOL", exit_ts=100 + i)
+            for i in range(100)
+        )
+        result = evaluate_s4_falsification(
+            primary_trades=tuple(trades), upward_trades=_upward_trades(10)
+        )
+        assert result.pair_concentration == pytest.approx(0.71, abs=1e-6)
+        assert "s4_pair_concentration_above_70pct" in result.reasons
 
 
 class TestSlowOnlyFailure:
@@ -302,21 +423,21 @@ class TestSlowOnlyFailure:
     def test_fires_when_mid_bucket_nonpositive_and_slow_bucket_positive(self):
         result = evaluate_s4_falsification(
             primary_trades=self._bucket_trades(mid_net=-5.0, slow_net=5.0),
-            upward_trades=_uniform_trades(10),
+            upward_trades=_upward_trades(10),
         )
         assert "s4_slow_only_failure" in result.reasons
 
     def test_not_triggered_when_mid_bucket_positive(self):
         result = evaluate_s4_falsification(
             primary_trades=self._bucket_trades(mid_net=5.0, slow_net=5.0),
-            upward_trades=_uniform_trades(10),
+            upward_trades=_upward_trades(10),
         )
         assert "s4_slow_only_failure" not in result.reasons
 
     def test_not_triggered_when_slow_bucket_nonpositive(self):
         result = evaluate_s4_falsification(
             primary_trades=self._bucket_trades(mid_net=-5.0, slow_net=-1.0),
-            upward_trades=_uniform_trades(10),
+            upward_trades=_upward_trades(10),
         )
         assert "s4_slow_only_failure" not in result.reasons
 
@@ -329,7 +450,7 @@ class TestSlowOnlyFailure:
                 _trade(FOLD_IDS[i % 8], 50.0, holding_minutes=60.0, exit_ts=1000 + i)
             )
         result = evaluate_s4_falsification(
-            primary_trades=tuple(trades), upward_trades=_uniform_trades(10)
+            primary_trades=tuple(trades), upward_trades=_upward_trades(10)
         )
         assert "s4_slow_bucket_evidence_missing" in result.incomplete_reasons
         assert "s4_slow_only_failure" not in result.reasons
@@ -356,7 +477,7 @@ class TestSlowOnlyFailure:
                 _trade(FOLD_IDS[i % 8], 50.0, holding_minutes=60.0, exit_ts=1000 + i)
             )
         result = evaluate_s4_falsification(
-            primary_trades=tuple(trades), upward_trades=_uniform_trades(10)
+            primary_trades=tuple(trades), upward_trades=_upward_trades(10)
         )
         # mid bucket (1000min, negative) <=0, slow bucket (32h exactly,
         # positive) >0 -> gate must fire.
@@ -375,7 +496,7 @@ class TestAttributionAndExitTaxonomy:
             for i in range(40)
         )
         result = evaluate_s4_falsification(
-            primary_trades=trades, upward_trades=_uniform_trades(10)
+            primary_trades=trades, upward_trades=_upward_trades(10)
         )
         by_exit = result.attribution["by_exit_reason"]
         assert by_exit["MEAN_EXIT"]["trades"] == 20
@@ -406,7 +527,7 @@ class TestAttributionAndExitTaxonomy:
                 )
             )
         result = evaluate_s4_falsification(
-            primary_trades=tuple(trades), upward_trades=_uniform_trades(10)
+            primary_trades=tuple(trades), upward_trades=_upward_trades(10)
         )
         assert set(result.attribution["by_pair"].keys()) >= {"XRP-DOGE"}
         assert result.attribution["by_pair"]["XRP-DOGE"]["trades"] > 0
@@ -486,18 +607,30 @@ class TestDirectVerdict:
         )
 
 
+_S3_RANK = StrategyRankMetrics(
+    min_fold_e17=5.0, pooled_e17=10.0, monthly_concentration=0.3, timeout_ratio=0.1
+)
+_S4_RANK = StrategyRankMetrics(
+    min_fold_e17=6.0, pooled_e17=8.0, monthly_concentration=0.4, timeout_ratio=0.2
+)
+
+
 class TestCampaignDecision:
     def test_incomplete_first_s3_incomplete(self):
         result = compute_campaign_decision(
             s3_direct_verdict="incomplete", s4_direct_verdict="historical_pass"
         )
         assert result.campaign_decision == "incomplete"
+        assert result.campaign_historical_verdict == "incomplete"
+        assert result.historical_preferred is None
 
     def test_incomplete_first_s4_incomplete(self):
         result = compute_campaign_decision(
             s3_direct_verdict="historical_pass", s4_direct_verdict="incomplete"
         )
         assert result.campaign_decision == "incomplete"
+        assert result.campaign_historical_verdict == "incomplete"
+        assert result.historical_preferred is None
 
     def test_both_fail(self):
         result = compute_campaign_decision(
@@ -505,6 +638,8 @@ class TestCampaignDecision:
         )
         assert result.campaign_decision == "both_fail"
         assert result.demo_candidate is None
+        assert result.campaign_historical_verdict == "historical_fail"
+        assert result.historical_preferred is None
 
     def test_s3_only(self):
         result = compute_campaign_decision(
@@ -512,6 +647,8 @@ class TestCampaignDecision:
         )
         assert result.campaign_decision == "s3_only"
         assert result.demo_candidate == "S3"
+        assert result.campaign_historical_verdict == "historical_pass"
+        assert result.historical_preferred == "S3"
 
     def test_s4_only_no_demo(self):
         result = compute_campaign_decision(
@@ -519,13 +656,29 @@ class TestCampaignDecision:
         )
         assert result.campaign_decision == "s4_only_no_demo"
         assert result.demo_candidate is None
+        assert result.campaign_historical_verdict == "historical_pass"
+        assert result.historical_preferred == "S4"
 
     def test_both_pass_s3_demo_candidate(self):
         result = compute_campaign_decision(
-            s3_direct_verdict="historical_pass", s4_direct_verdict="historical_pass"
+            s3_direct_verdict="historical_pass",
+            s4_direct_verdict="historical_pass",
+            s3_rank_metrics=_S3_RANK,
+            s4_rank_metrics=_S4_RANK,
         )
         assert result.campaign_decision == "both_pass_s3_demo_candidate"
         assert result.demo_candidate == "S3"
+        assert result.campaign_historical_verdict == "historical_pass"
+        # rank_both_pass(_S3_RANK, _S4_RANK): S4's higher min_fold_e17 (6>5)
+        # decides first -> "S4" is the historically-preferred strategy, even
+        # though S3 remains the (operationally forced) demo candidate.
+        assert result.historical_preferred == "S4"
+
+    def test_both_pass_requires_rank_metrics(self):
+        with pytest.raises(H5InputError):
+            compute_campaign_decision(
+                s3_direct_verdict="historical_pass", s4_direct_verdict="historical_pass"
+            )
 
     def test_campaign_decision_never_overwrites_direct_verdicts(self):
         result = compute_campaign_decision(
@@ -533,6 +686,21 @@ class TestCampaignDecision:
         )
         assert result.s3_direct_verdict == "historical_fail"
         assert result.s4_direct_verdict == "historical_pass"
+
+    def test_unknown_s3_verdict_rejected(self):
+        # D13 fix (adversarial verify R1, finding 4): compute_campaign_decision
+        # must reject a non-closed-enum verdict string rather than silently
+        # falling through to a default branch.
+        with pytest.raises(H5InputError):
+            compute_campaign_decision(
+                s3_direct_verdict="bogus", s4_direct_verdict="historical_pass"
+            )
+
+    def test_unknown_s4_verdict_rejected(self):
+        with pytest.raises(H5InputError):
+            compute_campaign_decision(
+                s3_direct_verdict="historical_pass", s4_direct_verdict="bogus"
+            )
 
 
 class TestObservableS4Superiority:
@@ -593,11 +761,15 @@ class TestObservableS4Superiority:
             s3_direct_verdict="historical_pass",
             s4_direct_verdict="historical_pass",
             s4_observable_superiority=True,
+            s3_rank_metrics=_S3_RANK,
+            s4_rank_metrics=_S4_RANK,
         )
         result_false = compute_campaign_decision(
             s3_direct_verdict="historical_pass",
             s4_direct_verdict="historical_pass",
             s4_observable_superiority=False,
+            s3_rank_metrics=_S3_RANK,
+            s4_rank_metrics=_S4_RANK,
         )
         assert (
             result_true.campaign_decision

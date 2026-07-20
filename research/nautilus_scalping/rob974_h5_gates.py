@@ -24,7 +24,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from rob974_h5_contracts import FOLD_IDS, MetricTrade
+from rob974_h5_contracts import FOLD_IDS, H5InputError, MetricTrade
 
 __all__ = [
     "E0_MIN_BPS",
@@ -91,6 +91,17 @@ def evaluate_common_gates(
     primary_trades: tuple[MetricTrade, ...],
     upward_trades: tuple[MetricTrade, ...],
 ) -> CommonGateResult:
+    # D3 fail-closed membership binding (adversarial verify R1, finding 1):
+    # a path-scenario swap (e.g. base13 masquerading as the primary17
+    # selected-OOS book, or the upward book carrying primary_stress17) must
+    # be rejected, never silently scored as if it were the correct
+    # membership -- there is no fourth 0bp scenario/base membership/
+    # counterfactual substitute for E0/E17/PF/win-margin/concentration.
+    if any(t.path_scenario != "primary_stress17" for t in primary_trades):
+        raise H5InputError("common_gates_primary_path_scenario_mismatch")
+    if any(t.path_scenario != "upward_stress22" for t in upward_trades):
+        raise H5InputError("common_gates_upward_path_scenario_mismatch")
+
     reasons: set[str] = set()
 
     fold_trade_counts: dict[str, int] = dict.fromkeys(FOLD_IDS, 0)

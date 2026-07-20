@@ -47,7 +47,7 @@ from rob974_h5_markdown import render_markdown
 from rob974_h5_s3 import evaluate_s3_falsification
 from rob974_h5_s4 import (
     S4_HISTORICAL_PAIR_EXECUTOR_STATE,
-    CampaignDecisionResult,
+    StrategyRankMetrics,
     compute_campaign_decision,
     compute_direct_verdict,
     evaluate_s4_falsification,
@@ -56,6 +56,8 @@ from rob974_h5_s4 import (
 _HEX64_A = "a" * 64
 _HEX64_B = "b" * 64
 _HEX64_C = "c" * 64
+_DAY_MS = 24 * 60 * 60 * 1000
+_MONTH_MS = 30 * _DAY_MS
 
 
 def _envelope(**overrides) -> CampaignEnvelope:
@@ -98,17 +100,26 @@ def _seal(**overrides) -> H6AAccountingSeal:
     return H6AAccountingSeal(**fields)
 
 
-def _s3_trade(fold_id, net_bps, *, exit_ts=0, exit_reason="TP", dimension="XRPUSDT"):
+def _s3_trade(
+    fold_id,
+    net_bps,
+    *,
+    exit_ts=0,
+    exit_reason="TP",
+    dimension="XRPUSDT",
+    path_scenario="primary_stress17",
+    holding_minutes=10.0,
+):
     return MetricTrade(
         strategy="S3",
         config_id="S3-00",
         fold_id=fold_id,
-        path_scenario="primary_stress17",
+        path_scenario=path_scenario,
         dimension=dimension,
         direction="long",
         entry_ts=exit_ts,
         exit_ts=exit_ts + 60_000,
-        holding_minutes=10.0,
+        holding_minutes=holding_minutes,
         exit_reason=exit_reason,
         gross_bps=net_bps + 5.0,
         net_bps=net_bps,
@@ -120,24 +131,34 @@ def _s3_trade(fold_id, net_bps, *, exit_ts=0, exit_reason="TP", dimension="XRPUS
     )
 
 
-def _s4_trade(fold_id, net_bps, *, exit_ts=0, exit_reason="TP", dimension="XRP-DOGE"):
+def _s4_trade(
+    fold_id,
+    net_bps,
+    *,
+    exit_ts=0,
+    exit_reason="TP",
+    dimension="XRP-DOGE",
+    path_scenario="primary_stress17",
+    holding_minutes=10.0,
+    market_return_4h=0.01,
+):
     return MetricTrade(
         strategy="S4",
         config_id="S4-00",
         fold_id=fold_id,
-        path_scenario="primary_stress17",
+        path_scenario=path_scenario,
         dimension=dimension,
         direction="long",
         entry_ts=exit_ts,
         exit_ts=exit_ts + 60_000,
-        holding_minutes=10.0,
+        holding_minutes=holding_minutes,
         exit_reason=exit_reason,
         gross_bps=net_bps + 5.0,
         net_bps=net_bps,
         tp_bps=68.0,
         sl_bps=40.0,
-        gross_notional=None,
-        market_return_4h=0.01,
+        gross_notional=100.0,
+        market_return_4h=market_return_4h,
         volatility_percentile=None,
     )
 
@@ -151,11 +172,25 @@ def _s3_primary_trades(
     )
 
 
+def _s3_upward_trades(n: int = 10, net_bps: float = 10.0) -> tuple:
+    return tuple(
+        _s3_trade(FOLD_IDS[i % 8], net_bps, exit_ts=i, path_scenario="upward_stress22")
+        for i in range(n)
+    )
+
+
 def _s4_primary_trades(
     n: int = 40, exit_reason: str = "TP", net_bps: float = 10.0
 ) -> tuple:
     return tuple(
         _s4_trade(FOLD_IDS[i % 8], net_bps, exit_ts=i, exit_reason=exit_reason)
+        for i in range(n)
+    )
+
+
+def _s4_upward_trades(n: int = 10, net_bps: float = 10.0) -> tuple:
+    return tuple(
+        _s4_trade(FOLD_IDS[i % 8], net_bps, exit_ts=i, path_scenario="upward_stress22")
         for i in range(n)
     )
 
@@ -207,10 +242,10 @@ def _s3_pbo() -> PboEvidence:
 def _build_s3_inputs(*, with_evidence: bool = True) -> StrategyCanonicalInputs:
     primary = _s3_primary_trades()
     common_gates = evaluate_common_gates(
-        primary_trades=primary, upward_trades=_s3_primary_trades(10)
+        primary_trades=primary, upward_trades=_s3_upward_trades(10)
     )
     falsification = evaluate_s3_falsification(
-        primary_trades=primary, upward_trades=_s3_primary_trades(10)
+        primary_trades=primary, upward_trades=_s3_upward_trades(10)
     )
     direct_verdict = compute_direct_verdict(
         incomplete_reasons=falsification.incomplete_reasons,
@@ -246,10 +281,10 @@ def _build_s3_inputs(*, with_evidence: bool = True) -> StrategyCanonicalInputs:
 def _build_s4_inputs() -> StrategyCanonicalInputs:
     primary = _s4_primary_trades()
     common_gates = evaluate_common_gates(
-        primary_trades=primary, upward_trades=_s4_primary_trades(10)
+        primary_trades=primary, upward_trades=_s4_upward_trades(10)
     )
     falsification = evaluate_s4_falsification(
-        primary_trades=primary, upward_trades=_s4_primary_trades(10)
+        primary_trades=primary, upward_trades=_s4_upward_trades(10)
     )
     direct_verdict = compute_direct_verdict(
         incomplete_reasons=falsification.incomplete_reasons,
@@ -266,6 +301,166 @@ def _build_s4_inputs() -> StrategyCanonicalInputs:
         paths_by_key={},
         pbo=None,
         pair_executor_state=S4_HISTORICAL_PAIR_EXECUTOR_STATE,
+    )
+
+
+def _s3_clean_primary_trades(win_net: float) -> tuple:
+    """Full 3-symbol coverage with a small first-4h-excluded loss tail --
+    complete (no incomplete_reasons) regardless of ``win_net``. At
+    ``win_net=40.0`` every common/falsification gate clears
+    (historical_pass); at ``win_net=1.0`` E17/PF/positive-folds/monthly-
+    concentration all fail while staying complete (historical_fail)."""
+    trades = []
+    for fi, fold_id in enumerate(FOLD_IDS):
+        month_ts = fi * _MONTH_MS
+        for symbol in ("XRPUSDT", "DOGEUSDT", "SOLUSDT"):
+            for j in range(5):
+                if j < 4:
+                    net, reason, holding = win_net, "TP", 10.0
+                else:
+                    net, reason, holding = -5.0, "SL", 500.0
+                trades.append(
+                    _s3_trade(
+                        fold_id,
+                        net,
+                        exit_ts=month_ts + j * _DAY_MS,
+                        exit_reason=reason,
+                        dimension=symbol,
+                        holding_minutes=holding,
+                    )
+                )
+    return tuple(trades)
+
+
+def _s3_clean_upward_trades() -> tuple:
+    return tuple(
+        _s3_trade("fold-00", 20.0, exit_ts=i, path_scenario="upward_stress22")
+        for i in range(5)
+    )
+
+
+def _s4_clean_primary_trades(win_net: float) -> tuple:
+    """Full 3-pair coverage, a decorrelated market_return_4h pattern
+    (period-2, independent of the win/loss period-5 cycle -- numerically
+    verified |corr|<<0.15), and mid/slow holding-bucket filler trades
+    (keeps the mid bucket's mean positive so slow-only-failure never
+    fires). Complete regardless of ``win_net``."""
+    trades = []
+    idx = 0
+    for fi, fold_id in enumerate(FOLD_IDS):
+        month_ts = fi * _MONTH_MS
+        for pair in ("XRP-DOGE", "XRP-SOL", "DOGE-SOL"):
+            for j in range(5):
+                if j < 4:
+                    net, reason, holding = win_net, "TP", 10.0
+                else:
+                    net, reason, holding = -5.0, "SL", 500.0
+                m = 0.01 if idx % 2 == 0 else 0.02
+                trades.append(
+                    _s4_trade(
+                        fold_id,
+                        net,
+                        exit_ts=month_ts + j * _DAY_MS,
+                        exit_reason=reason,
+                        dimension=pair,
+                        holding_minutes=holding,
+                        market_return_4h=m,
+                    )
+                )
+                idx += 1
+    for fi, fold_id in enumerate(FOLD_IDS):
+        month_ts = fi * _MONTH_MS
+        trades.append(
+            _s4_trade(
+                fold_id,
+                50.0,
+                exit_ts=month_ts,
+                dimension="XRP-DOGE",
+                holding_minutes=1000.0,
+            )
+        )
+        trades.append(
+            _s4_trade(
+                fold_id,
+                10.0,
+                exit_ts=month_ts + 1,
+                dimension="XRP-DOGE",
+                holding_minutes=2000.0,
+            )
+        )
+    return tuple(trades)
+
+
+def _s4_clean_upward_trades() -> tuple:
+    return tuple(
+        _s4_trade(
+            "fold-00",
+            20.0,
+            exit_ts=i,
+            market_return_4h=0.05,
+            path_scenario="upward_stress22",
+        )
+        for i in range(5)
+    )
+
+
+def _s3_inputs_with_verdict(*, passing: bool) -> StrategyCanonicalInputs:
+    primary = _s3_clean_primary_trades(40.0 if passing else 1.0)
+    upward = _s3_clean_upward_trades()
+    common_gates = evaluate_common_gates(primary_trades=primary, upward_trades=upward)
+    falsification = evaluate_s3_falsification(
+        primary_trades=primary, upward_trades=upward
+    )
+    direct_verdict = compute_direct_verdict(
+        incomplete_reasons=falsification.incomplete_reasons,
+        hard_gate_reasons=common_gates.reasons + falsification.reasons,
+    )
+    return StrategyCanonicalInputs(
+        strategy="S3",
+        common_gates=common_gates,
+        falsification=falsification,
+        direct_verdict=direct_verdict,
+        exit_reason_order=("TP", "SL", "THESIS_EXIT", "TIMEOUT"),
+        dimension_order=("XRPUSDT", "DOGEUSDT", "SOLUSDT"),
+        unique_by_key={},
+        paths_by_key={},
+        pbo=None,
+    )
+
+
+def _s4_inputs_with_verdict(*, passing: bool) -> StrategyCanonicalInputs:
+    primary = _s4_clean_primary_trades(40.0 if passing else 1.0)
+    upward = _s4_clean_upward_trades()
+    common_gates = evaluate_common_gates(primary_trades=primary, upward_trades=upward)
+    falsification = evaluate_s4_falsification(
+        primary_trades=primary, upward_trades=upward
+    )
+    direct_verdict = compute_direct_verdict(
+        incomplete_reasons=falsification.incomplete_reasons,
+        hard_gate_reasons=common_gates.reasons + falsification.reasons,
+    )
+    return StrategyCanonicalInputs(
+        strategy="S4",
+        common_gates=common_gates,
+        falsification=falsification,
+        direct_verdict=direct_verdict,
+        exit_reason_order=("TP", "SL", "MEAN_EXIT", "STALL_EXIT", "TIMEOUT"),
+        dimension_order=("XRP-DOGE", "XRP-SOL", "DOGE-SOL"),
+        unique_by_key={},
+        paths_by_key={},
+        pbo=None,
+        pair_executor_state=S4_HISTORICAL_PAIR_EXECUTOR_STATE,
+    )
+
+
+def _rank_metrics(common_gates, falsification) -> StrategyRankMetrics:
+    # This session's clean fixtures are fold-symmetric by construction, so
+    # min-fold E17 == pooled E17 exactly.
+    return StrategyRankMetrics(
+        min_fold_e17=common_gates.pooled_e17_bps,
+        pooled_e17=common_gates.pooled_e17_bps,
+        monthly_concentration=common_gates.monthly_concentration,
+        timeout_ratio=falsification.pooled_timeout_ratio,
     )
 
 
@@ -349,6 +544,12 @@ class TestNonzeroContentSurvivesJsonToMarkdown:
     def test_campaign_decision_survives(self):
         assert "campaign_decision: incomplete" in self.markdown
 
+    def test_campaign_historical_verdict_and_preferred_survive(self):
+        # AC44 fields (adversarial verify R1, finding 5) -- distinct from
+        # the branch-label campaign_decision/demo_candidate.
+        assert "campaign_historical_verdict: incomplete" in self.markdown
+        assert "historical_preferred: null" in self.markdown
+
 
 class TestPermutationInvarianceOfMarkdown:
     def test_reversed_attribution_dict_order_produces_identical_markdown(self):
@@ -410,16 +611,24 @@ class TestContractFixtureCampaignDecisionSmoke:
     branch -- proves the full contracts -> dual_evidence -> gates ->
     falsification -> canonical -> markdown pipeline produces sane,
     non-empty output for each, without recomputing metrics inside the
-    renderer."""
+    renderer.
 
-    def _render_with_decision(self, campaign_decision: CampaignDecisionResult) -> str:
+    Post-verify-R1 fix 4, ``build_canonical_scorecard`` recomputes and
+    cross-checks each strategy's ``direct_verdict`` (rejecting a
+    caller-supplied value that disagrees with what ``common_gates``/
+    ``falsification`` actually imply) and cross-checks the campaign
+    decision's embedded verdicts against those same recomputed values.
+    These fixtures therefore build GENUINE, gate-verified S3/S4 inputs for
+    each branch rather than asserting an arbitrary label."""
+
+    def _render(self, s3_inputs, s4_inputs, campaign_decision) -> str:
         scorecard = build_canonical_scorecard(
             envelope=_envelope(),
             h6a_seal=_seal(),
             envelope_ok=True,
             envelope_incomplete_reasons=(),
-            s3_inputs=_build_s3_inputs(with_evidence=True),
-            s4_inputs=_build_s4_inputs(),
+            s3_inputs=s3_inputs,
+            s4_inputs=s4_inputs,
             campaign_decision=campaign_decision,
         )
         return render_markdown(json.loads(canonical_json_bytes(scorecard))).decode(
@@ -427,45 +636,72 @@ class TestContractFixtureCampaignDecisionSmoke:
         )
 
     def test_both_pass_s3_demo_candidate(self):
-        md = self._render_with_decision(
-            compute_campaign_decision(
-                s3_direct_verdict="historical_pass", s4_direct_verdict="historical_pass"
-            )
+        s3_inputs = _s3_inputs_with_verdict(passing=True)
+        s4_inputs = _s4_inputs_with_verdict(passing=True)
+        assert s3_inputs.direct_verdict == "historical_pass"
+        assert s4_inputs.direct_verdict == "historical_pass"
+        campaign_decision = compute_campaign_decision(
+            s3_direct_verdict=s3_inputs.direct_verdict,
+            s4_direct_verdict=s4_inputs.direct_verdict,
+            s3_rank_metrics=_rank_metrics(
+                s3_inputs.common_gates, s3_inputs.falsification
+            ),
+            s4_rank_metrics=_rank_metrics(
+                s4_inputs.common_gates, s4_inputs.falsification
+            ),
         )
+        md = self._render(s3_inputs, s4_inputs, campaign_decision)
         assert "campaign_decision: both_pass_s3_demo_candidate" in md
         assert "demo_candidate: S3" in md
 
     def test_s3_only(self):
-        md = self._render_with_decision(
-            compute_campaign_decision(
-                s3_direct_verdict="historical_pass", s4_direct_verdict="historical_fail"
-            )
+        s3_inputs = _s3_inputs_with_verdict(passing=True)
+        s4_inputs = _s4_inputs_with_verdict(passing=False)
+        assert s3_inputs.direct_verdict == "historical_pass"
+        assert s4_inputs.direct_verdict == "historical_fail"
+        campaign_decision = compute_campaign_decision(
+            s3_direct_verdict=s3_inputs.direct_verdict,
+            s4_direct_verdict=s4_inputs.direct_verdict,
         )
+        md = self._render(s3_inputs, s4_inputs, campaign_decision)
         assert "campaign_decision: s3_only" in md
 
     def test_s4_only_no_demo(self):
-        md = self._render_with_decision(
-            compute_campaign_decision(
-                s3_direct_verdict="historical_fail", s4_direct_verdict="historical_pass"
-            )
+        s3_inputs = _s3_inputs_with_verdict(passing=False)
+        s4_inputs = _s4_inputs_with_verdict(passing=True)
+        assert s3_inputs.direct_verdict == "historical_fail"
+        assert s4_inputs.direct_verdict == "historical_pass"
+        campaign_decision = compute_campaign_decision(
+            s3_direct_verdict=s3_inputs.direct_verdict,
+            s4_direct_verdict=s4_inputs.direct_verdict,
         )
+        md = self._render(s3_inputs, s4_inputs, campaign_decision)
         assert "campaign_decision: s4_only_no_demo" in md
         assert "demo_candidate: null" in md
 
     def test_both_fail(self):
-        md = self._render_with_decision(
-            compute_campaign_decision(
-                s3_direct_verdict="historical_fail", s4_direct_verdict="historical_fail"
-            )
+        s3_inputs = _s3_inputs_with_verdict(passing=False)
+        s4_inputs = _s4_inputs_with_verdict(passing=False)
+        assert s3_inputs.direct_verdict == "historical_fail"
+        assert s4_inputs.direct_verdict == "historical_fail"
+        campaign_decision = compute_campaign_decision(
+            s3_direct_verdict=s3_inputs.direct_verdict,
+            s4_direct_verdict=s4_inputs.direct_verdict,
         )
+        md = self._render(s3_inputs, s4_inputs, campaign_decision)
         assert "campaign_decision: both_fail" in md
 
     def test_incomplete(self):
-        md = self._render_with_decision(
-            compute_campaign_decision(
-                s3_direct_verdict="incomplete", s4_direct_verdict="historical_pass"
-            )
+        # The default single-dimension fixture is genuinely incomplete
+        # (missing symbol/pair coverage).
+        s3_inputs = _build_s3_inputs(with_evidence=True)
+        s4_inputs = _build_s4_inputs()
+        assert s3_inputs.direct_verdict == "incomplete"
+        campaign_decision = compute_campaign_decision(
+            s3_direct_verdict=s3_inputs.direct_verdict,
+            s4_direct_verdict=s4_inputs.direct_verdict,
         )
+        md = self._render(s3_inputs, s4_inputs, campaign_decision)
         assert "campaign_decision: incomplete" in md
 
 
@@ -569,8 +805,10 @@ _GOLDEN_MARKDOWN_BYTES = (
     b"### Direct Verdict: incomplete\n\n"
     b"## Campaign Decision\n"
     b"- campaign_decision: incomplete\n"
+    b"- campaign_historical_verdict: incomplete\n"
     b"- s3_direct_verdict: incomplete\n"
     b"- s4_direct_verdict: incomplete\n"
     b"- demo_candidate: null\n"
+    b"- historical_preferred: null\n"
     b"- s4_observable_superiority: null\n\n"
 )

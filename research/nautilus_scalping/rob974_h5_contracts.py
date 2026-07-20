@@ -219,6 +219,10 @@ class H6AAccountingSeal:
     reason_codes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        # Fix (adversarial verify R1, finding 7): exact-int type check, not
+        # `==48` alone -- `Decimal(48)==48` and `48.0==48` are both True in
+        # Python, so equality alone let a non-int type slip past.
+        _require_exact_int(self.expected_total, "h6a_expected_total_malformed")
         _require(
             self.expected_total == _EXPECTED_TOTAL_EXPERIMENTS,
             "h6a_expected_total_not_48",
@@ -360,11 +364,15 @@ class MetricTrade:
                 self.volatility_percentile is None,
                 "trade_s4_volatility_percentile_must_be_none",
             )
-            if self.gross_notional is not None:
-                _require_exact_float(
-                    self.gross_notional, "trade_gross_notional_malformed"
-                )
-                _require(self.gross_notional > 0, "trade_gross_notional_not_positive")
+            # D12 fix (adversarial verify R1, finding 2): S4's gross basket
+            # notional G is REQUIRED (never None) -- a missing/None G must
+            # never silently fall back to S3's equal-weight (1.0)
+            # convention downstream in pBE/win-margin weighting.
+            _require(
+                self.gross_notional is not None, "trade_s4_gross_notional_required"
+            )
+            _require_exact_float(self.gross_notional, "trade_gross_notional_malformed")
+            _require(self.gross_notional > 0, "trade_gross_notional_not_positive")
 
         _require_exact_int(self.entry_ts, "trade_entry_ts_malformed")
         _require_exact_int(self.exit_ts, "trade_exit_ts_malformed")

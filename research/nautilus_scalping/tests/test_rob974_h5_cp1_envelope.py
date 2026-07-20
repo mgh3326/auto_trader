@@ -184,6 +184,56 @@ class TestMetricTradeLegCountNeverDenominator:
                 volatility_percentile=55.0,
             )
 
+    def _s4_trade_kwargs(self, **overrides):
+        fields = {
+            "strategy": "S4",
+            "config_id": "S4-00",
+            "fold_id": "fold-00",
+            "path_scenario": "primary_stress17",
+            "dimension": "XRP-DOGE",
+            "direction": "short_a_long_b",
+            "entry_ts": 1_000,
+            "exit_ts": 2_000,
+            "holding_minutes": 120.0,
+            "exit_reason": "MEAN_EXIT",
+            "gross_bps": 30.0,
+            "net_bps": 24.0,
+            "tp_bps": 60.0,
+            "sl_bps": 35.0,
+            "gross_notional": 15_000.0,
+            "market_return_4h": 0.005,
+            "volatility_percentile": None,
+        }
+        fields.update(overrides)
+        return fields
+
+    def test_s4_gross_notional_none_rejected(self):
+        # D12 fix (adversarial verify R1, finding 2): S4's required gross
+        # basket notional G can never be None -- a missing G must never
+        # silently fall back to S3's equal-weight (1.0) convention.
+        with pytest.raises(H5InputError):
+            MetricTrade(**self._s4_trade_kwargs(gross_notional=None))
+
+    def test_s4_gross_notional_zero_rejected(self):
+        with pytest.raises(H5InputError):
+            MetricTrade(**self._s4_trade_kwargs(gross_notional=0.0))
+
+    def test_s4_gross_notional_negative_rejected(self):
+        with pytest.raises(H5InputError):
+            MetricTrade(**self._s4_trade_kwargs(gross_notional=-100.0))
+
+    def test_s4_gross_notional_bool_rejected(self):
+        with pytest.raises(H5InputError):
+            MetricTrade(**self._s4_trade_kwargs(gross_notional=True))
+
+    def test_s4_gross_notional_int_rejected(self):
+        with pytest.raises(H5InputError):
+            MetricTrade(**self._s4_trade_kwargs(gross_notional=100))
+
+    def test_s4_gross_notional_nan_rejected(self):
+        with pytest.raises(H5InputError):
+            MetricTrade(**self._s4_trade_kwargs(gross_notional=float("nan")))
+
 
 class TestMetricTradeTypeStrictness:
     def test_bool_net_bps_rejected(self):
@@ -325,6 +375,21 @@ class TestH6AAccountingGate:
     def test_49_registered_rejected(self):
         with pytest.raises(H5InputError):
             _accounting_seal(registered_total=49)
+
+    def test_expected_total_decimal_rejected(self):
+        # Discovered gap (adversarial verify R1, finding 7): expected_total
+        # was checked via `==48` only, not exact-int type --
+        # Decimal(48)==48 is True in Python, so it silently slipped past
+        # the equality check.
+        from decimal import Decimal
+
+        with pytest.raises(H5InputError):
+            _accounting_seal(expected_total=Decimal(48))
+
+    def test_expected_total_float_rejected(self):
+        # 48.0 == 48 is True in Python -- must still be type-rejected.
+        with pytest.raises(H5InputError):
+            _accounting_seal(expected_total=48.0)
 
     def test_status_sum_not_48_rejected(self):
         with pytest.raises(H5InputError):

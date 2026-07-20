@@ -64,6 +64,7 @@ from rob974_h5_s4 import (
     CampaignDecisionResult,
     S4FalsificationResult,
     S4PairExecutorState,
+    compute_direct_verdict,
 )
 
 __all__ = [
@@ -510,7 +511,41 @@ def build_canonical_scorecard(
     order. Never forwards a caller-supplied dict as-is -- every dict-shaped
     field is rebuilt from typed sources in registered domain order, so
     permuting how a caller constructed an upstream mapping can never change
-    the resulting bytes."""
+    the resulting bytes.
+
+    D13 fix (adversarial verify R1, finding 4): each strategy's
+    ``direct_verdict`` and the campaign decision's embedded verdicts are
+    RECOMPUTED here from the actual ``common_gates``/``falsification``
+    results and compared against the caller-supplied values -- a forged or
+    stale verdict (e.g. "historical_pass" alongside a failing/incomplete
+    gate result) is rejected rather than silently canonicalized."""
+    recomputed_s3_verdict = compute_direct_verdict(
+        incomplete_reasons=s3_inputs.falsification.incomplete_reasons,
+        hard_gate_reasons=s3_inputs.common_gates.reasons
+        + s3_inputs.falsification.reasons,
+    )
+    _require(
+        recomputed_s3_verdict == s3_inputs.direct_verdict,
+        "canonical_s3_direct_verdict_forged_or_stale",
+    )
+    recomputed_s4_verdict = compute_direct_verdict(
+        incomplete_reasons=s4_inputs.falsification.incomplete_reasons,
+        hard_gate_reasons=s4_inputs.common_gates.reasons
+        + s4_inputs.falsification.reasons,
+    )
+    _require(
+        recomputed_s4_verdict == s4_inputs.direct_verdict,
+        "canonical_s4_direct_verdict_forged_or_stale",
+    )
+    _require(
+        campaign_decision.s3_direct_verdict == recomputed_s3_verdict,
+        "canonical_campaign_decision_s3_verdict_mismatch",
+    )
+    _require(
+        campaign_decision.s4_direct_verdict == recomputed_s4_verdict,
+        "canonical_campaign_decision_s4_verdict_mismatch",
+    )
+
     lineage = {
         "full_campaign_hash": envelope.full_campaign_hash,
         "campaign_run_id": envelope.campaign_run_id,
@@ -565,9 +600,11 @@ def build_canonical_scorecard(
     }
     campaign = {
         "campaign_decision": campaign_decision.campaign_decision,
+        "campaign_historical_verdict": campaign_decision.campaign_historical_verdict,
         "s3_direct_verdict": campaign_decision.s3_direct_verdict,
         "s4_direct_verdict": campaign_decision.s4_direct_verdict,
         "demo_candidate": campaign_decision.demo_candidate,
+        "historical_preferred": campaign_decision.historical_preferred,
         "s4_observable_superiority": campaign_decision.s4_observable_superiority,
     }
     scorecard = {
