@@ -48,6 +48,14 @@ _AUTHORIZED_PRODUCTION_CHANGES = [
     ("A", ("research/nautilus_scalping/rob974_features.py",)),
     ("A", ("research/nautilus_scalping/rob974_lineage.py",)),
     ("A", ("research/nautilus_scalping/rob974_smoke.py",)),
+    # ROB-979 authorized additive modules. These are intentionally explicit:
+    # future rob974_* production files still require their own guard re-pin.
+    ("A", ("research/nautilus_scalping/rob974_h2_dtos.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h2_h1_bridge.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h2_ingress.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h2_s3_engine.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h2_s4_engine.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h2_scenarios.py",)),
 ]
 _FROZEN_PATHS = (
     "research/nautilus_scalping",
