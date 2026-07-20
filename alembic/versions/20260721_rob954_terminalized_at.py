@@ -10,8 +10,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-import sqlalchemy as sa
-
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -27,17 +25,17 @@ _INDEX = "ix_alpaca_paper_ledger_terminalized_at"
 
 def upgrade() -> None:
     """Add the immutable first-terminal-transition timestamp and scan index."""
-    op.add_column(
-        _TABLE,
-        sa.Column("terminalized_at", sa.TIMESTAMP(timezone=True), nullable=True),
-        schema=_SCHEMA,
+    # IF NOT EXISTS keeps the repository's migration acceptance pattern valid:
+    # it creates current Base.metadata first, stamps an older revision, and then
+    # upgrades to head. Production upgrades still add the genuinely absent
+    # column normally.
+    op.execute(
+        f"ALTER TABLE {_SCHEMA}.{_TABLE} "
+        "ADD COLUMN IF NOT EXISTS terminalized_at TIMESTAMP WITH TIME ZONE"
     )
-    op.create_index(
-        _INDEX,
-        _TABLE,
-        ["terminalized_at"],
-        unique=False,
-        schema=_SCHEMA,
+    op.execute(
+        f"CREATE INDEX IF NOT EXISTS {_INDEX} "
+        f"ON {_SCHEMA}.{_TABLE} (terminalized_at)"
     )
 
     # Intentionally no data backfill: updated_at is mutable metadata time, so
@@ -48,5 +46,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Remove the terminal transition timestamp and its index."""
-    op.drop_index(_INDEX, table_name=_TABLE, schema=_SCHEMA)
-    op.drop_column(_TABLE, "terminalized_at", schema=_SCHEMA)
+    op.execute(f"DROP INDEX IF EXISTS {_SCHEMA}.{_INDEX}")
+    op.execute(
+        f"ALTER TABLE {_SCHEMA}.{_TABLE} "
+        "DROP COLUMN IF EXISTS terminalized_at"
+    )
