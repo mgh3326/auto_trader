@@ -34,11 +34,13 @@ __all__ = [
     "ArtifactStageError",
     "ArtifactVerificationError",
     "H5ArtifactPort",
+    "PersistedScorecardPair",
     "PublishedArtifactPair",
     "StagedArtifactPair",
     "inspect_exact_artifact_replay",
     "probe_artifact_state",
     "publish_staged_pair",
+    "read_persisted_scorecard_pair",
     "stage_scorecard_pair",
 ]
 
@@ -153,6 +155,22 @@ class ArtifactPresence:
             "STALE_STAGING",
         }:
             raise ValueError("invalid artifact presence state")
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedScorecardPair:
+    """Physically read, self-consistent H5 pair for standalone audit."""
+
+    final_dir: Path
+    parsed_scorecard: dict[str, object]
+    canonical_json_bytes: bytes
+    markdown_bytes: bytes
+    semantic_hash: str
+    disposition: str = "PERSISTED_PAIR_READ_ONLY_VERIFIED"
+
+    def __post_init__(self) -> None:
+        if self.disposition != "PERSISTED_PAIR_READ_ONLY_VERIFIED":
+            raise ValueError("invalid persisted scorecard disposition")
 
 
 def _validate_output_path(output_dir: Path) -> tuple[Path, Path]:
@@ -624,4 +642,40 @@ def inspect_exact_artifact_replay(
         final_dir=output_dir,
         semantic_hash=semantic_hash,
         disposition="EXACT_ARTIFACT_REPLAY",
+    )
+
+
+def read_persisted_scorecard_pair(
+    *, output_dir: Path, h5_port: H5ArtifactPort
+) -> PersistedScorecardPair:
+    """Read and H5-verify an existing pair without an in-memory expected value."""
+    output_dir, _parent = _validate_output_path(output_dir)
+    _validate_port(h5_port)
+    _assert_no_stale_staging(output_dir)
+    state = ArtifactForensicState("PERSISTED_PAIR_READ_FAILED", None, output_dir, True)
+    try:
+        _assert_exact_pair_shape(output_dir)
+        json_bytes = _validate_text_bytes(
+            _read_regular_file(output_dir / _JSON_NAME), name="persisted canonical JSON"
+        )
+        markdown_bytes = _validate_text_bytes(
+            _read_regular_file(output_dir / _MARKDOWN_NAME),
+            name="persisted Markdown",
+        )
+        parsed = _parse_scorecard_json(json_bytes)
+        if h5_port.canonical_json_bytes(parsed) != json_bytes:
+            raise ValueError("persisted JSON does not recanonicalize byte-identically")
+        semantic_hash = _validate_semantic_hash(h5_port.semantic_hash(parsed))
+        if h5_port.render_markdown(parsed) != markdown_bytes:
+            raise ValueError("persisted parsed-JSON renderer parity mismatch")
+    except ArtifactVerificationError as exc:
+        raise ArtifactVerificationError(str(exc), state) from exc
+    except Exception as exc:
+        raise ArtifactVerificationError(str(exc), state) from exc
+    return PersistedScorecardPair(
+        final_dir=output_dir,
+        parsed_scorecard=parsed,
+        canonical_json_bytes=json_bytes,
+        markdown_bytes=markdown_bytes,
+        semantic_hash=semantic_hash,
     )
