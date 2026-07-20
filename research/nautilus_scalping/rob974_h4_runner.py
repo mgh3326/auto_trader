@@ -189,6 +189,30 @@ def recompute_stateless_phase[T](
     return feature_builder(raw_past_context, phase)
 
 
+def run_selected_oos_paths[Winner, Accepted, Outcome](
+    *,
+    winner: Winner,
+    generator: Callable[[Winner], Accepted],
+    fresh_engine: Callable[[str], Callable[[Accepted], Outcome]],
+) -> tuple[Outcome, Outcome, Outcome]:
+    """Generate once, then execute three independently fresh global paths."""
+    accepted = generator(winner)
+    engines: list[Callable[[Accepted], Outcome]] = []
+    outcomes: list[Outcome] = []
+    for scenario in ("base13", "primary_stress17", "upward_stress22"):
+        engine = fresh_engine(scenario)
+        if not callable(engine) or any(engine is prior for prior in engines):
+            raise ValueError("each selected OOS scenario requires a fresh engine")
+        engines.append(engine)
+        outcomes.append(engine(accepted))
+    return tuple(outcomes)  # type: ignore[return-value]
+
+
+def non_selected_oos_paths() -> tuple[str, str, str]:
+    """Typed scenario sentinels; never omit a non-selected fold/config path."""
+    return ("not_selected", "not_selected", "not_selected")
+
+
 __all__ = [
     "ExactMinuteEntry",
     "ActualH1PhaseContext",
@@ -199,4 +223,6 @@ __all__ = [
     "phase_horizon_reason",
     "recompute_stateless_phase",
     "resolve_exact_entry",
+    "run_selected_oos_paths",
+    "non_selected_oos_paths",
 ]
