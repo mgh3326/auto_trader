@@ -8,11 +8,12 @@ cannot consume t betas, weights, closes, median, MAD, or scale.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 
-from rob974_features import FOUR_HOUR_MS, CommonSnapshot
+from rob974_features import FOUR_HOUR_MS, MINUTE_MS, CommonSnapshot
 from rob974_h3_manifest import PAIRS, SYMBOLS, S4Config, assert_registered_config
-from rob974_h3_s3 import FeatureContext
+from rob974_h3_s3 import EmitWindow, FeatureContext, expected_decision_closes
 
 PAIR_ORDER: tuple[str, ...] = PAIRS
 _PAIR_SYMBOLS = {
@@ -585,17 +586,599 @@ def estimate_s4_pair(
     )
 
 
+S4_NO_SIGNAL_REASONS: tuple[str, ...] = S4_ESTIMATION_REASONS + (
+    "convergence_sign",
+    "prior_z_entry",
+    "current_z_entry",
+    "convergence_fraction",
+    "rho",
+    "half_life",
+    "beta_stability",
+    "absolute_distance",
+    "distance_to_tp",
+    "historical_notional_feasibility",
+)
+S4_GENERATOR_REJECTION_REASONS: tuple[str, ...] = (
+    "simultaneous_pair_arbitration_loser",
+)
+HISTORICAL_NOTIONAL_ASSUMPTION = "frozen_continuous_6_to_10_usd_per_leg"
+
+
+def s4_risk_distances(config: S4Config, sigma_pair: float) -> tuple[float, float]:
+    if type(config) is not S4Config:
+        raise TypeError("config must be exact registered S4Config")
+    assert_registered_config(config)
+    _float(sigma_pair, "sigma_pair")
+    if sigma_pair < 0.0:
+        raise ValueError("sigma_pair must not be negative")
+    d_sl = min(max(config.k_SL * sigma_pair, 0.008), 0.016)
+    d_tp = max(0.0068, config.R_TP * d_sl)
+    return d_sl, d_tp
+
+
+@dataclass(frozen=True, slots=True)
+class HistoricalNotional:
+    G_min: float
+    G_max: float
+    G: float | None
+
+    def __post_init__(self) -> None:
+        _float(self.G_min, "G_min")
+        _float(self.G_max, "G_max")
+        if self.G is not None:
+            _float(self.G, "G")
+            if self.G != self.G_min or self.G_min > self.G_max:
+                raise ValueError("feasible historical G must be exact G_min")
+        elif self.G_min <= self.G_max:
+            raise ValueError("feasible historical sizing cannot omit G")
+
+
+def historical_notional(weight_a: float, weight_b: float) -> HistoricalNotional:
+    _float(weight_a, "weight_a")
+    _float(weight_b, "weight_b")
+    if weight_a <= 0.0 or weight_b <= 0.0:
+        raise ValueError("historical weights must be positive")
+    g_min = max(6.0 / weight_a, 6.0 / weight_b)
+    g_max = min(10.0 / weight_a, 10.0 / weight_b)
+    if not math.isfinite(g_min) or not math.isfinite(g_max):
+        raise ValueError("nonfinite historical notional")
+    return HistoricalNotional(g_min, g_max, g_min if g_min <= g_max else None)
+
+
+@dataclass(frozen=True, slots=True)
+class S4Candidate:
+    """Dedicated H3 historical pair intent; it is never split into two intents."""
+
+    strategy: str
+    config_id: str
+    decision_ts: int
+    pair: str
+    side: str
+    symbol_a: str
+    symbol_b: str
+    side_a: str
+    side_b: str
+    beta_a: float
+    beta_b: float
+    weight_a: float
+    weight_b: float
+    mu: float
+    mad: float
+    effective_mad_scale: float
+    observed_z: float
+    prior_observed_z: float
+    D_fraction: float
+    D_bps: float
+    rho: float
+    half_life_4h_bars: float
+    beta_stability: float
+    sigma_pair_risk: float
+    observed_pair_return_fraction: float
+    gross_notional_usd: float
+    notional_a_usd: float
+    notional_b_usd: float
+    d_SL: float
+    d_TP: float
+    historical_notional_assumption: str
+    historical_eligibility: bool
+    historical_eligibility_authority: str
+    volatility_percentile: None
+    volatility_percentile_provenance: str
+    entry_tick_ts: int
+    entry_deadline_ts: int
+    max_hold_4h_bars: int
+    leg_a_order_id: None
+    leg_b_order_id: None
+    leg_a_fill_id: None
+    leg_b_fill_id: None
+    pair_executor_provenance: str
+
+    def __post_init__(self) -> None:
+        if _str(self.strategy, "strategy") != "S4":
+            raise ValueError("S4 candidate strategy must be S4")
+        _str(self.config_id, "config_id")
+        _int(self.decision_ts, "decision_ts")
+        if _str(self.pair, "pair") not in PAIR_ORDER:
+            raise ValueError("candidate pair outside frozen order")
+        if (self.symbol_a, self.symbol_b) != _PAIR_SYMBOLS[self.pair]:
+            raise ValueError("candidate pair symbol order drift")
+        if _str(self.side, "side") not in (
+            "short_a_long_b",
+            "long_a_short_b",
+        ):
+            raise ValueError("invalid pair side")
+        if (self.side_a, self.side_b) not in (("short", "long"), ("long", "short")):
+            raise ValueError("invalid frozen leg directions")
+        if self.side == "short_a_long_b" and (self.side_a, self.side_b) != (
+            "short",
+            "long",
+        ):
+            raise ValueError("positive-z direction mismatch")
+        if self.side == "long_a_short_b" and (self.side_a, self.side_b) != (
+            "long",
+            "short",
+        ):
+            raise ValueError("negative-z direction mismatch")
+        for name in (
+            "beta_a",
+            "beta_b",
+            "weight_a",
+            "weight_b",
+            "mu",
+            "mad",
+            "effective_mad_scale",
+            "observed_z",
+            "prior_observed_z",
+            "D_fraction",
+            "D_bps",
+            "rho",
+            "half_life_4h_bars",
+            "beta_stability",
+            "sigma_pair_risk",
+            "observed_pair_return_fraction",
+            "gross_notional_usd",
+            "notional_a_usd",
+            "notional_b_usd",
+            "d_SL",
+            "d_TP",
+        ):
+            _float(getattr(self, name), name)
+        if (
+            _str(self.historical_notional_assumption, "historical_notional_assumption")
+            != HISTORICAL_NOTIONAL_ASSUMPTION
+        ):
+            raise ValueError("historical notional authority drift")
+        if (
+            type(self.historical_eligibility) is not bool
+            or not self.historical_eligibility
+        ):
+            raise ValueError("S4 requires frozen historical eligibility")
+        if (
+            _str(
+                self.historical_eligibility_authority,
+                "historical_eligibility_authority",
+            )
+            != "rob974_h1_parent_manifest_selected_universe"
+        ):
+            raise ValueError("historical eligibility authority drift")
+        if self.volatility_percentile is not None:
+            raise ValueError("S4 volatility percentile must be exactly null")
+        if (
+            _str(
+                self.volatility_percentile_provenance,
+                "volatility_percentile_provenance",
+            )
+            != "not_defined_for_s4"
+        ):
+            raise ValueError("S4 volatility provenance drift")
+        _int(self.entry_tick_ts, "entry_tick_ts")
+        _int(self.entry_deadline_ts, "entry_deadline_ts")
+        _int(self.max_hold_4h_bars, "max_hold_4h_bars")
+        if self.entry_tick_ts != self.decision_ts:
+            raise ValueError("entry tick must equal decision close")
+        if self.entry_deadline_ts != self.decision_ts + MINUTE_MS:
+            raise ValueError("entry deadline must bound the exact next minute")
+        if self.max_hold_4h_bars != 9:
+            raise ValueError("S4 maximum hold is frozen at nine 4h bars")
+        if self.notional_a_usd != self.weight_a * self.gross_notional_usd or (
+            self.notional_b_usd != self.weight_b * self.gross_notional_usd
+        ):
+            raise ValueError("leg notionals must use frozen weights and gross G")
+        if not (
+            6.0 <= self.notional_a_usd <= 10.0 and 6.0 <= self.notional_b_usd <= 10.0
+        ):
+            raise ValueError("leg notionals must remain in the frozen $6-10 range")
+        if any(
+            value is not None
+            for value in (
+                self.leg_a_order_id,
+                self.leg_b_order_id,
+                self.leg_a_fill_id,
+                self.leg_b_fill_id,
+            )
+        ):
+            raise ValueError("H3 historical order/fill identifiers must be null")
+        if (
+            _str(self.pair_executor_provenance, "pair_executor_provenance")
+            != "not_evaluated_h3_generator"
+        ):
+            raise ValueError("pair executor evidence must not be fabricated")
+
+    @property
+    def signal_ts(self) -> int:
+        return self.decision_ts
+
+    @property
+    def identity(self) -> tuple[str, str, int, str, str]:
+        return (
+            self.strategy,
+            self.config_id,
+            self.decision_ts,
+            self.pair,
+            self.side,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class S4GateOutcome:
+    side: str | None
+    candidate: S4Candidate | None
+    no_signal_reason: str | None
+
+    def __post_init__(self) -> None:
+        if self.side is not None and self.side not in (
+            "short_a_long_b",
+            "long_a_short_b",
+        ):
+            raise ValueError("invalid S4 outcome side")
+        if self.candidate is not None and type(self.candidate) is not S4Candidate:
+            raise TypeError("candidate must be exact S4Candidate or None")
+        if (self.candidate is None) == (self.no_signal_reason is None):
+            raise ValueError("gate outcome must contain exactly candidate or reason")
+        if self.no_signal_reason is not None and (
+            type(self.no_signal_reason) is not str
+            or self.no_signal_reason not in S4_NO_SIGNAL_REASONS
+        ):
+            raise ValueError("unknown S4 no-signal reason")
+
+
+def _gate_reject(reason: str, side: str | None = None) -> S4GateOutcome:
+    return S4GateOutcome(side, None, reason)
+
+
+def evaluate_s4_gates(estimate: S4Estimate, config: S4Config) -> S4GateOutcome:
+    """Evaluate convergence and registered S4 eligibility in frozen order."""
+    if type(estimate) is not S4Estimate:
+        raise TypeError("estimate must be exact S4Estimate")
+    if type(config) is not S4Config:
+        raise TypeError("config must be exact registered S4Config")
+    assert_registered_config(config)
+    if estimate.config_id != config.config_id:
+        raise ValueError("estimate/config identity mismatch")
+
+    if (
+        estimate.z == 0.0
+        or estimate.z_prior == 0.0
+        or math.copysign(1.0, estimate.z) != math.copysign(1.0, estimate.z_prior)
+    ):
+        return _gate_reject("convergence_sign")
+    side = "short_a_long_b" if estimate.z > 0.0 else "long_a_short_b"
+    if abs(estimate.z_prior) < config.z_entry:
+        return _gate_reject("prior_z_entry", side)
+    if abs(estimate.z) < config.z_entry:
+        return _gate_reject("current_z_entry", side)
+    if abs(estimate.z) > 0.90 * abs(estimate.z_prior):
+        return _gate_reject("convergence_fraction", side)
+    if estimate.rho < 0.60:
+        return _gate_reject("rho", side)
+    if not 2.0 <= estimate.half_life_4h_bars <= 12.0:
+        return _gate_reject("half_life", side)
+    if estimate.beta_stability > 0.20:
+        return _gate_reject("beta_stability", side)
+    if estimate.D_bps < float(config.d_min_bp):
+        return _gate_reject("absolute_distance", side)
+    d_sl, d_tp = s4_risk_distances(config, estimate.sigma_pair)
+    if estimate.D_fraction < 1.25 * d_tp:
+        return _gate_reject("distance_to_tp", side)
+    sizing = historical_notional(estimate.weight_a, estimate.weight_b)
+    if sizing.G is None:
+        return _gate_reject("historical_notional_feasibility", side)
+
+    side_a, side_b = (
+        ("short", "long") if side == "short_a_long_b" else ("long", "short")
+    )
+    return S4GateOutcome(
+        side,
+        S4Candidate(
+            "S4",
+            config.config_id,
+            estimate.decision_ts,
+            estimate.pair,
+            side,
+            estimate.symbol_a,
+            estimate.symbol_b,
+            side_a,
+            side_b,
+            estimate.beta_a,
+            estimate.beta_b,
+            estimate.weight_a,
+            estimate.weight_b,
+            estimate.mu,
+            estimate.mad,
+            estimate.effective_mad_scale,
+            estimate.z,
+            estimate.z_prior,
+            estimate.D_fraction,
+            estimate.D_bps,
+            estimate.rho,
+            estimate.half_life_4h_bars,
+            estimate.beta_stability,
+            estimate.sigma_pair,
+            estimate.pair_return_fraction,
+            sizing.G,
+            estimate.weight_a * sizing.G,
+            estimate.weight_b * sizing.G,
+            d_sl,
+            d_tp,
+            HISTORICAL_NOTIONAL_ASSUMPTION,
+            True,
+            "rob974_h1_parent_manifest_selected_universe",
+            None,
+            "not_defined_for_s4",
+            estimate.decision_ts,
+            estimate.decision_ts + MINUTE_MS,
+            9,
+            None,
+            None,
+            None,
+            None,
+            "not_evaluated_h3_generator",
+        ),
+        None,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class S4RejectedCandidate:
+    candidate: S4Candidate
+    reason: str
+
+    def __post_init__(self) -> None:
+        if type(self.candidate) is not S4Candidate:
+            raise TypeError("rejected candidate must be exact S4Candidate")
+        if (
+            type(self.reason) is not str
+            or self.reason not in S4_GENERATOR_REJECTION_REASONS
+        ):
+            raise ValueError("unknown S4 generator-rejection reason")
+
+
+@dataclass(frozen=True, slots=True)
+class S4ArbitrationResult:
+    winner: S4Candidate
+    rejected: tuple[S4RejectedCandidate, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.winner) is not S4Candidate:
+            raise TypeError("winner must be exact S4Candidate")
+        if type(self.rejected) is not tuple or any(
+            type(item) is not S4RejectedCandidate for item in self.rejected
+        ):
+            raise TypeError("rejected must be tuple of exact records")
+        rejected_ids = tuple(item.candidate.identity for item in self.rejected)
+        if self.winner.identity in rejected_ids or len(rejected_ids) != len(
+            set(rejected_ids)
+        ):
+            raise ValueError("accepted/rejected pair collision")
+
+
+def _s4_rank(candidate: S4Candidate) -> tuple[float, float, float, str]:
+    return (
+        -candidate.D_fraction,
+        -abs(candidate.observed_z),
+        -candidate.rho,
+        candidate.pair,
+    )
+
+
+def arbitrate_s4_candidates(
+    candidates: Sequence[S4Candidate],
+) -> S4ArbitrationResult:
+    if not isinstance(candidates, Sequence):
+        raise TypeError("candidates must be a sequence")
+    exact = tuple(candidates)
+    if not exact:
+        raise ValueError("cannot arbitrate an empty pair candidate set")
+    if any(type(candidate) is not S4Candidate for candidate in exact):
+        raise TypeError("candidates must contain exact S4Candidate values")
+    scope = {
+        (candidate.strategy, candidate.config_id, candidate.decision_ts)
+        for candidate in exact
+    }
+    if len(scope) != 1:
+        raise ValueError("simultaneous pair arbitration scope mismatch")
+    identities = tuple(candidate.identity for candidate in exact)
+    if len(identities) != len(set(identities)):
+        raise ValueError("duplicate simultaneous pair candidate identity")
+    ordered = tuple(sorted(exact, key=_s4_rank))
+    return S4ArbitrationResult(
+        ordered[0],
+        tuple(
+            S4RejectedCandidate(candidate, "simultaneous_pair_arbitration_loser")
+            for candidate in ordered[1:]
+        ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class S4UnitDecision:
+    decision_ts: int
+    pair: str
+    status: str
+    side: str | None
+    candidate: S4Candidate | None
+    no_signal_reason: str | None
+    generator_rejection_reason: str | None
+
+    def __post_init__(self) -> None:
+        _int(self.decision_ts, "decision_ts")
+        if _str(self.pair, "pair") not in PAIR_ORDER:
+            raise ValueError("decision pair outside frozen order")
+        if _str(self.status, "status") not in (
+            "NO_SIGNAL",
+            "GENERATOR_REJECTED",
+            "GENERATOR_ACCEPTED",
+        ):
+            raise ValueError("unknown S4 unit status")
+        if self.side is not None and self.side not in (
+            "short_a_long_b",
+            "long_a_short_b",
+        ):
+            raise ValueError("invalid decision side")
+        if self.candidate is not None and type(self.candidate) is not S4Candidate:
+            raise TypeError("candidate must be exact S4Candidate or None")
+        if self.no_signal_reason is not None and (
+            type(self.no_signal_reason) is not str
+            or self.no_signal_reason not in S4_NO_SIGNAL_REASONS
+        ):
+            raise ValueError("unknown no-signal reason")
+        if self.generator_rejection_reason is not None and (
+            type(self.generator_rejection_reason) is not str
+            or self.generator_rejection_reason not in S4_GENERATOR_REJECTION_REASONS
+        ):
+            raise ValueError("unknown generator-rejection reason")
+
+
+@dataclass(frozen=True, slots=True)
+class S4GeneratorOutput:
+    decisions: tuple[S4UnitDecision, ...]
+    accepted: tuple[S4Candidate, ...]
+    rejected: tuple[S4RejectedCandidate, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.decisions) is not tuple or type(self.accepted) is not tuple:
+            raise TypeError("generator output containers must be tuples")
+        if type(self.rejected) is not tuple:
+            raise TypeError("generator rejected container must be tuple")
+        if any(type(item) is not S4UnitDecision for item in self.decisions):
+            raise TypeError("decisions must contain exact S4UnitDecision")
+        if any(type(item) is not S4Candidate for item in self.accepted):
+            raise TypeError("accepted must contain exact S4Candidate")
+        if any(type(item) is not S4RejectedCandidate for item in self.rejected):
+            raise TypeError("rejected must contain exact S4RejectedCandidate")
+        accepted_ids = {item.identity for item in self.accepted}
+        rejected_ids = {item.candidate.identity for item in self.rejected}
+        if accepted_ids & rejected_ids:
+            raise ValueError("accepted/rejected pair collision")
+
+
+def generate_s4_global(
+    feature_context: FeatureContext,
+    emit_window: EmitWindow,
+    config: S4Config,
+) -> S4GeneratorOutput:
+    """Run one historical S4 invocation across all expected closes/pairs."""
+    if type(feature_context) is not FeatureContext:
+        raise TypeError("feature_context must be exact FeatureContext")
+    if type(config) is not S4Config:
+        raise TypeError("config must be exact registered S4Config")
+    assert_registered_config(config)
+    decisions: list[S4UnitDecision] = []
+    accepted: list[S4Candidate] = []
+    rejected: list[S4RejectedCandidate] = []
+    for decision_ts in expected_decision_closes(emit_window):
+        outcomes: dict[str, S4GateOutcome] = {}
+        candidates: list[S4Candidate] = []
+        for pair in PAIR_ORDER:
+            estimation = estimate_s4_pair(feature_context, config, decision_ts, pair)
+            if estimation.estimate is None:
+                if estimation.rejection_reason is None:
+                    raise AssertionError("invalid S4 estimation outcome")
+                outcome = _gate_reject(estimation.rejection_reason)
+            else:
+                outcome = evaluate_s4_gates(estimation.estimate, config)
+            outcomes[pair] = outcome
+            if outcome.candidate is not None:
+                candidates.append(outcome.candidate)
+        arbitration = arbitrate_s4_candidates(candidates) if candidates else None
+        winner_id = arbitration.winner.identity if arbitration is not None else None
+        loser_by_id = (
+            {item.candidate.identity: item for item in arbitration.rejected}
+            if arbitration is not None
+            else {}
+        )
+        if arbitration is not None:
+            accepted.append(arbitration.winner)
+            rejected.extend(arbitration.rejected)
+        for pair in PAIR_ORDER:
+            outcome = outcomes[pair]
+            candidate = outcome.candidate
+            if candidate is None:
+                decisions.append(
+                    S4UnitDecision(
+                        decision_ts,
+                        pair,
+                        "NO_SIGNAL",
+                        outcome.side,
+                        None,
+                        outcome.no_signal_reason,
+                        None,
+                    )
+                )
+            elif candidate.identity == winner_id:
+                decisions.append(
+                    S4UnitDecision(
+                        decision_ts,
+                        pair,
+                        "GENERATOR_ACCEPTED",
+                        candidate.side,
+                        candidate,
+                        None,
+                        None,
+                    )
+                )
+            else:
+                loser = loser_by_id[candidate.identity]
+                decisions.append(
+                    S4UnitDecision(
+                        decision_ts,
+                        pair,
+                        "GENERATOR_REJECTED",
+                        candidate.side,
+                        candidate,
+                        None,
+                        loser.reason,
+                    )
+                )
+    return S4GeneratorOutput(tuple(decisions), tuple(accepted), tuple(rejected))
+
+
 __all__ = [
+    "HISTORICAL_NOTIONAL_ASSUMPTION",
+    "HistoricalNotional",
     "PAIR_ORDER",
+    "S4ArbitrationResult",
+    "S4Candidate",
     "S4Estimate",
     "S4EstimationOutcome",
+    "S4GateOutcome",
+    "S4GeneratorOutput",
+    "S4RejectedCandidate",
+    "S4UnitDecision",
     "S4_ESTIMATION_REASONS",
+    "S4_GENERATOR_REJECTION_REASONS",
+    "S4_NO_SIGNAL_REASONS",
     "SpreadStatistics",
+    "arbitrate_s4_candidates",
     "compute_clipped_beta",
     "correlation",
     "estimate_s4_pair",
+    "evaluate_s4_gates",
     "fixed_median",
+    "generate_s4_global",
+    "historical_notional",
     "phi_and_half_life",
     "population_sigma",
+    "s4_risk_distances",
     "spread_statistics",
 ]
