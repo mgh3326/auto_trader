@@ -253,18 +253,21 @@ def batch_member_block_reason(
     return None
 
 
-def _validate_action_contract(
-    *,
-    action: str | None,
-    account_mode: str,
-    market: str,
-    symbol: str,
-    side: str,
-    order_type: str,
-    rungs: list[RungInput],
-    target_broker_order_id: str | None,
-    target_order_snapshot: dict[str, str | None] | None,
-) -> tuple[str, TargetOrderSnapshot | None]:
+def check_action_capability(
+    *, action: str | None, account_mode: str, market: str
+) -> str:
+    """Validate (account_mode, market) is supported for ``action``.
+
+    Raises ``OrderProposalUnsupportedTargetAction`` (a structured, per-action
+    ``supported_matrix``) when unsupported. Returns the normalized action
+    ("place" default) on success.
+
+    Callers creating a replace/cancel proposal must run this check *before*
+    ``fetch_target_order`` -- that function has its own, narrower
+    ``SUPPORTED_TARGET_ACTIONS`` gate with an unstructured message, and would
+    otherwise be the first thing to reject an unsupported combination,
+    silently bypassing this structured error (ROB-972).
+    """
     normalized = action or "place"
     if normalized not in _ACTION_CAPABILITIES:
         raise OrderProposalError("action must be one of: place, replace, cancel")
@@ -280,6 +283,24 @@ def _validate_action_contract(
                 "action": normalized,
             },
         )
+    return normalized
+
+
+def _validate_action_contract(
+    *,
+    action: str | None,
+    account_mode: str,
+    market: str,
+    symbol: str,
+    side: str,
+    order_type: str,
+    rungs: list[RungInput],
+    target_broker_order_id: str | None,
+    target_order_snapshot: dict[str, str | None] | None,
+) -> tuple[str, TargetOrderSnapshot | None]:
+    normalized = check_action_capability(
+        action=action, account_mode=account_mode, market=market
+    )
     if normalized == "place":
         if target_broker_order_id is not None or target_order_snapshot is not None:
             raise OrderProposalError("place proposal cannot target a broker order")

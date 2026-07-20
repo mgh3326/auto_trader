@@ -35,7 +35,7 @@ from app.services.order_proposals.errors import (
     OrderProposalNotFound,
     OrderProposalUnsupportedTargetAction,
 )
-from app.services.order_proposals.service import RungInput
+from app.services.order_proposals.service import RungInput, check_action_capability
 from app.services.order_proposals.telegram_callback import _safe_edit_message
 
 if TYPE_CHECKING:
@@ -274,6 +274,9 @@ async def order_proposal_create(
         if normalized_action in {"replace", "cancel"}:
             if not target_broker_order_id:
                 raise ValueError(f"{normalized_action} requires target_broker_order_id")
+            check_action_capability(
+                action=normalized_action, account_mode=account_mode, market=market
+            )
             target_snapshot = await fetch_target_order(
                 order_id=target_broker_order_id,
                 symbol=symbol,

@@ -141,6 +141,98 @@ async def test_create_lookup_failure_returns_error_without_service_insert(monkey
     }
 
 
+def _toss_target_create_kwargs(action: str, *, market="equity_kr", **overrides):
+    symbol = "005930" if market == "equity_kr" else "AAPL"
+    return _create_kwargs(
+        symbol=symbol,
+        market=market,
+        account_mode="toss_live",
+        side="sell",
+        action=action,
+        target_broker_order_id="broker-1",
+        rungs=[
+            {
+                "rung_index": 0,
+                "side": "sell",
+                "quantity": "3.5",
+                "limit_price": "43000",
+                "notional": None,
+            }
+        ],
+        **overrides,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["replace", "cancel"])
+@pytest.mark.parametrize("market", ["equity_kr", "equity_us"])
+async def test_create_toss_live_target_action_preflights_and_creates_proposal(
+    monkeypatch, action, market
+):
+    """ROB-972: order_proposal_create(action='cancel'|'replace') must accept
+    toss_live x equity_kr/us. Only fetch_target_order (read-only preflight) is
+    ever imported/called by this tool -- broker_gateway.cancel_target_order
+    isn't imported here at all, so there is no code path for a mutation to
+    leak into proposal creation regardless of account_mode.
+    """
+    calls = []
+    symbol = "005930" if market == "equity_kr" else "AAPL"
+
+    async def fake_fetch(**kwargs):
+        calls.append(kwargs)
+        return _target_snapshot(
+            broker_order_id="broker-1",
+            symbol=symbol,
+            side="sell",
+            limit_price="43000",
+            remaining_quantity="3.5",
+        )
+
+    monkeypatch.setattr(opt, "fetch_target_order", fake_fetch)
+
+    created = await opt.order_proposal_create(
+        **_toss_target_create_kwargs(action, market=market)
+    )
+
+    assert created["success"] is True
+    assert created["action"] == action
+    assert created["target_broker_order_id"] == "broker-1"
+    assert len(calls) == 1
+    assert calls[0]["order_id"] == "broker-1"
+    assert calls[0]["symbol"] == symbol
+    assert calls[0]["market"] == market
+    assert calls[0]["account_mode"] == "toss_live"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["replace", "cancel"])
+async def test_create_rejects_toss_live_crypto_target_action_with_supported_matrix(
+    monkeypatch, action
+):
+    async def fetch_must_not_run(**kwargs):
+        raise AssertionError("unsupported combo must be rejected before any fetch")
+
+    monkeypatch.setattr(opt, "fetch_target_order", fetch_must_not_run)
+
+    result = await opt.order_proposal_create(
+        **_toss_target_create_kwargs(action, market="crypto")
+    )
+
+    assert result["success"] is False
+    assert "toss_live×equity_kr|equity_us" in result["error"]
+    assert result["requested"] == {
+        "account_mode": "toss_live",
+        "market": "crypto",
+        "action": action,
+    }
+    assert {"account_mode": "toss_live", "market": "equity_kr"} in (
+        result["supported_matrix"][action]
+    )
+    assert {"account_mode": "toss_live", "market": "crypto"} not in (
+        result["supported_matrix"][action]
+    )
+
+
 @pytest.mark.asyncio
 async def test_place_create_never_fetches_a_target(monkeypatch):
     async def fetch_must_not_run(**kwargs):
