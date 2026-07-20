@@ -61,6 +61,12 @@ def _s4_trade(**overrides):
         "entry_ts": 0,
         "weight_a": 0.4,
         "weight_b": 0.6,
+        "beta_a": 1.2,
+        "beta_b": 0.8,
+        "mu": 0.0,
+        "sigma": 0.05,
+        "z_entry": 1.9,
+        "gross_notional": 15.0,
         "entry_price_a": 1.0,
         "entry_price_b": 1.0,
         "exit_ts": 60_000,
@@ -190,8 +196,14 @@ class TestFreshIndependentState:
         assert rows_b[0].path_scenario == PATH_SCENARIO_PRIMARY_STRESS17
 
     def test_membership_can_legitimately_diverge_across_scenario_calls(self):
-        # H4 may feed genuinely different raw membership per scenario run;
-        # H2 must never assume/enforce equal counts across ledger calls.
+        # Scope note (verify-R1 finding 3): this is a BUILDER-level
+        # structural-independence test -- H4 may feed genuinely different
+        # raw membership per scenario run, and this ledger builder must
+        # never assume/enforce equal counts across calls. It does not by
+        # itself prove the raw S3/S4 ENGINE was invoked fresh per scenario
+        # (that is `test_rob974_h2_fixture_smoke.py`'s
+        # test_fresh_engine_state_per_scenario_no_shared_ledger_revaluation,
+        # which runs the full pipeline three independent times).
         rows_a = build_s3_scenario_ledger([_s3_trade()], PATH_SCENARIO_BASE13)
         rows_b = build_s3_scenario_ledger(
             [_s3_trade(), _s3_trade(signal_ts=1)], PATH_SCENARIO_UPWARD_STRESS22

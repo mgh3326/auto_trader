@@ -52,16 +52,20 @@ changes -- see ``/tmp/strategy-worker-rob979-sonnet-checkpoints.md`` CP2 entry):
     D-1).
   * EOF/gap/horizon 4-way split (AC9 vs AC12), implemented inline in
     ``_walk_s3_position``'s per-minute advance step: reaching a required
-    minute at/after
-    ``horizon_end_ts`` (if supplied -- an H4-owned walk-forward PIT boundary)
-    is ``fold_horizon_rejected``; reaching one at/after ``corpus_end_ts`` (the
-    caller-declared end of available minute data) is ``early_eof``; a minute
-    bar missing from within that available range is ``data_gap_in_position``;
-    and a MISSING ``S3CloseFeature`` at an otherwise-present boundary minute
-    (price data exists, the completed-4h feature snapshot does not) is
-    ``missing_future_data`` -- distinct from a raw-bar gap because the
-    upstream feature pipeline, not this engine's own minute grid, is what's
-    incomplete.
+    minute STRICTLY PAST ``horizon_end_ts`` (if supplied -- an H4-owned
+    walk-forward PIT/phase boundary; D1's approved value: exact equality
+    ``signal_ts + strategy_max_hold == phase_end`` is READABLE/evaluable,
+    only overrunning it is a violation, so the check is ``next_ts >
+    horizon_end_ts``, never ``>=``) is ``fold_horizon_rejected``; reaching
+    one AT/after ``corpus_end_ts`` (the caller-declared end of available
+    minute data -- a plain data-availability boundary, not a PIT/phase
+    boundary, so it deliberately keeps the exclusive ``>=`` convention) is
+    ``early_eof``; a minute bar missing from within that available range is
+    ``data_gap_in_position``; and a MISSING ``S3CloseFeature`` at an
+    otherwise-present boundary minute (price data exists, the completed-4h
+    feature snapshot does not) is ``missing_future_data`` -- distinct from a
+    raw-bar gap because the upstream feature pipeline, not this engine's own
+    minute grid, is what's incomplete.
   * MFE/MAE capping (AC25): every minute strictly BEFORE the exit minute
     contributes its FULL high/low range (both fully "chronologically
     available through exit"). The exit minute itself contributes exactly ONE
@@ -255,7 +259,17 @@ def _walk_s3_position(
         tracker.observe_full_bar(cur)
 
         next_ts = cur.open_time + _MIN_MS
-        if horizon_end_ts is not None and next_ts >= horizon_end_ts:
+        # R2 fix (verify-R1 finding 1): D1's approved fold boundary is
+        # INCLUSIVE -- `signal_ts + strategy_max_hold == phase_end` must be
+        # readable/evaluable (so an exact-equality TIMEOUT at the boundary
+        # resolves normally); only reading STRICTLY PAST phase_end is a
+        # horizon violation. `>=` here previously rejected the exact-equal
+        # case a beat too early, before the deadline bar itself was ever
+        # read. `corpus_end_ts` (data-availability, not a PIT/phase
+        # boundary) intentionally keeps its own `>=` exclusive-end
+        # convention below -- D1's inclusive-equality approval applies only
+        # to `horizon_end_ts`.
+        if horizon_end_ts is not None and next_ts > horizon_end_ts:
             return _S3Incomplete("fold_horizon_rejected", entry_ts, entry_bar.open)
         if next_ts >= corpus_end_ts:
             return _S3Incomplete("early_eof", entry_ts, entry_bar.open)

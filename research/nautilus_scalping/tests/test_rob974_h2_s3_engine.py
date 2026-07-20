@@ -341,8 +341,12 @@ class TestGapAndHorizon:
         assert result.incompletes[0].reason == "early_eof"
 
     def test_fold_horizon_rejected_before_data_gap(self):
+        # bars cover [0, 60_000]; a gap exists at 120_000 -- but the horizon
+        # (inclusive up to 60_000, per D1) forbids reading past 60_000 at
+        # all, so the rejection must be fold_horizon_rejected, never a
+        # data_gap_in_position for the (never-reached) 120_000 gap.
         bars = _bars("XRPUSDT", 0, 2, price=1.0)
-        result = _run([_intent(signal_ts=0)], bars, [], horizon_end_ts=120_000)
+        result = _run([_intent(signal_ts=0)], bars, [], horizon_end_ts=60_000)
         assert result.incompletes[0].reason == "fold_horizon_rejected"
 
     def test_missing_future_feature_at_boundary_is_missing_future_data(self):
@@ -350,6 +354,37 @@ class TestGapAndHorizon:
         # no S3CloseFeature supplied for the boundary close_ts -> feature missing
         result = _run([_intent(signal_ts=0)], bars, [])
         assert result.incompletes[0].reason == "missing_future_data"
+
+
+class TestHorizonExactEquality:
+    """verify-R1 finding 1: D1 approves signal_ts+strategy_max_hold==phase_end
+    as READABLE; only strictly overrunning phase_end is a horizon violation."""
+
+    def test_horizon_exact_equal_to_deadline_still_resolves_timeout(self):
+        deadline_offset = 12 * FOUR_H_MS
+        bars = _bars("XRPUSDT", 0, (deadline_offset // _MIN_MS) + 1, price=1.0)
+        features = _flat_close_features("XRPUSDT", 0, 12)
+        result = _run(
+            [_intent(signal_ts=0)], bars, features, horizon_end_ts=deadline_offset
+        )
+        assert len(result.trades) == 1
+        assert result.trades[0].exit_reason == "TIMEOUT"
+        assert result.trades[0].exit_ts == deadline_offset
+        assert result.incompletes == ()
+
+    def test_horizon_one_ms_past_deadline_is_rejected(self):
+        deadline_offset = 12 * FOUR_H_MS
+        bars = _bars("XRPUSDT", 0, (deadline_offset // _MIN_MS) + 1, price=1.0)
+        features = _flat_close_features("XRPUSDT", 0, 12)
+        result = _run(
+            [_intent(signal_ts=0)],
+            bars,
+            features,
+            horizon_end_ts=deadline_offset - 1,
+        )
+        assert result.trades == ()
+        assert len(result.incompletes) == 1
+        assert result.incompletes[0].reason == "fold_horizon_rejected"
 
 
 class TestIdentityCollision:

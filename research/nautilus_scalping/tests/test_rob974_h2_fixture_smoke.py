@@ -241,29 +241,63 @@ class TestFixtureContractSmoke:
         assert len(s3_missing) == 1
         assert s3_missing[0].signal_ts == 999_999_999
 
-    def test_scenario_membership_and_values_diverge_independently(self):
-        s3_result, s4_result = _run_pipeline()
-        base_rows = build_s3_scenario_ledger(s3_result.trades, PATH_SCENARIO_BASE13)
+    def test_fresh_engine_state_per_scenario_no_shared_ledger_revaluation(self):
+        """verify-R1 finding 3: reproduces H4's actual invocation pattern --
+        THREE separate, independent `_run_pipeline()` calls (fresh engine
+        state each time, exactly as AC27 requires H4 to do), one per path
+        scenario. Confirms (a) no shared/aliased state leaks between the
+        three independent engine runs, (b) each scenario's ledger is built
+        from ITS OWN freshly-computed trades (never one trades object reused
+        across ledger calls), and (c) the cost columns genuinely differ
+        within a row via real inequality (no `or True`)."""
+        base_s3, base_s4 = _run_pipeline()
+        stress_s3, stress_s4 = _run_pipeline()
+        upward_s3, upward_s4 = _run_pipeline()
+
+        # Fresh engine state: three independent calls never return the same
+        # object, even though (documented ultrathink decision) ROB-979 v1's
+        # S3/S4 execution mechanics are NOT cost-scenario-gated, so identical
+        # input legitimately produces identical CONTENT every time.
+        assert base_s3.trades is not stress_s3.trades
+        assert stress_s3.trades is not upward_s3.trades
+        assert base_s3.trades == stress_s3.trades == upward_s3.trades
+        assert base_s4.trades is not stress_s4.trades
+        assert base_s4.trades == stress_s4.trades == upward_s4.trades
+
+        base_rows = build_s3_scenario_ledger(base_s3.trades, PATH_SCENARIO_BASE13)
         stress_rows = build_s3_scenario_ledger(
-            s3_result.trades, PATH_SCENARIO_PRIMARY_STRESS17
+            stress_s3.trades, PATH_SCENARIO_PRIMARY_STRESS17
         )
-        assert len(base_rows) == len(stress_rows) == len(s3_result.trades)
-        for base_row, stress_row in zip(base_rows, stress_rows, strict=True):
+        upward_rows = build_s3_scenario_ledger(upward_s3.trades, "upward_stress22")
+        assert (
+            len(base_rows)
+            == len(stress_rows)
+            == len(upward_rows)
+            == len(base_s3.trades)
+        )
+        for base_row, stress_row, upward_row in zip(
+            base_rows, stress_rows, upward_rows, strict=True
+        ):
             assert base_row.path_scenario == PATH_SCENARIO_BASE13
             assert stress_row.path_scenario == PATH_SCENARIO_PRIMARY_STRESS17
-            assert (
-                base_row.e13_bps != stress_row.e17_bps or True
-            )  # independent cost draw
-            assert (
-                abs((base_row.e13_bps) - (stress_row.e13_bps)) < 1e-9
-            )  # same E13 col regardless of call
-            assert (
-                base_row.e17_bps != base_row.e13_bps
-            )  # cost actually differs within a row
+            assert upward_row.path_scenario == "upward_stress22"
+            # same gross/E13 regardless of which scenario call produced the
+            # row (E13/E17/E22 are all three always present on every row,
+            # AC29) -- a REAL equality check, not a tautology.
+            assert abs(base_row.e13_bps - stress_row.e13_bps) < 1e-9
+            assert abs(base_row.e13_bps - upward_row.e13_bps) < 1e-9
+            # the cost columns genuinely differ WITHIN a row (real
+            # inequality, replacing the prior `... or True` tautology).
+            assert base_row.e13_bps != base_row.e17_bps
+            assert base_row.e17_bps != base_row.e22_bps
+            assert base_row.e13_bps != base_row.e22_bps
 
-        s4_base_rows = build_s4_scenario_ledger(s4_result.trades, PATH_SCENARIO_BASE13)
-        s4_upward_rows = build_s4_scenario_ledger(s4_result.trades, "upward_stress22")
-        assert len(s4_base_rows) == len(s4_upward_rows) == len(s4_result.trades)
+        s4_base_rows = build_s4_scenario_ledger(base_s4.trades, PATH_SCENARIO_BASE13)
+        s4_upward_rows = build_s4_scenario_ledger(upward_s4.trades, "upward_stress22")
+        assert len(s4_base_rows) == len(s4_upward_rows) == len(base_s4.trades)
+        for base_row, upward_row in zip(s4_base_rows, s4_upward_rows, strict=True):
+            assert base_row.e13_bps != base_row.e22_bps
+            assert abs(base_row.e13_bps - upward_row.e13_bps) < 1e-9
 
     def test_same_input_byte_hash_equality_across_reruns(self):
         s3_result_1, s4_result_1 = _run_pipeline()

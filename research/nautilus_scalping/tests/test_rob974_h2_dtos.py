@@ -77,6 +77,44 @@ def _s4_intent(**overrides):
     return S4PairSignalIntent(**fields)
 
 
+def _s4_trade(**overrides):
+    fields = {
+        "pair": ("XRPUSDT", "DOGEUSDT"),
+        "side_a": "short",
+        "side_b": "long",
+        "config_id": "s4-00",
+        "fold_id": "fold-00",
+        "signal_ts": 1_000_000,
+        "entry_ts": 1_000_000,
+        "weight_a": 0.4,
+        "weight_b": 0.6,
+        "beta_a": 1.2,
+        "beta_b": 0.8,
+        "mu": 0.0,
+        "sigma": 0.05,
+        "z_entry": 1.9,
+        "gross_notional": 15.0,
+        "entry_price_a": 1.0,
+        "entry_price_b": 0.5,
+        "exit_ts": 1_060_000,
+        "exit_price_a": 0.99,
+        "exit_price_b": 0.51,
+        "exit_reason": "TP",
+        "mfe_bps": 100.0,
+        "mae_bps": -10.0,
+        "gross_bps": 100.0,
+        "order_id_a": None,
+        "order_id_b": None,
+        "pair_exec_status": "historical_atomic_assumption",
+        "pair_executor_validated": False,
+        "demo_eligible": False,
+        "volatility_percentile": None,
+        "volatility_percentile_provenance": "not_defined_for_s4",
+    }
+    fields.update(overrides)
+    return S4PairTrade(**fields)
+
+
 class TestMinuteBarTyping:
     def test_accepts_exact_types(self):
         bar = _minute_bar()
@@ -193,6 +231,27 @@ class TestS4PairSignalIntent:
         with pytest.raises(FrozenInstanceError):
             intent.weight_a = 0.5
 
+    def test_rejects_out_of_range_beta(self):
+        # verify-R1 finding 4 exact repro: beta_a=-999.0 was wrongly accepted.
+        with pytest.raises(ValueError):
+            _s4_intent(beta_a=-999.0)
+        with pytest.raises(ValueError):
+            _s4_intent(beta_b=99.0)
+
+    def test_accepts_beta_at_the_clip_boundaries(self):
+        assert _s4_intent(beta_a=0.25, beta_b=3.00).beta_a == 0.25
+
+    def test_rejects_zero_z_entry(self):
+        # verify-R1 finding 4 exact repro: z_entry=0.0 was wrongly accepted.
+        with pytest.raises(ValueError):
+            _s4_intent(z_entry=0.0)
+
+    def test_rejects_degenerate_small_z_entry_magnitude(self):
+        with pytest.raises(ValueError):
+            _s4_intent(z_entry=0.5)
+        with pytest.raises(ValueError):
+            _s4_intent(z_entry=-0.5)
+
 
 class TestS3Trade:
     def test_valid_construction_and_frozen(self):
@@ -247,6 +306,12 @@ class TestS4PairTrade:
             entry_ts=1_000_000,
             weight_a=0.4,
             weight_b=0.6,
+            beta_a=1.2,
+            beta_b=0.8,
+            mu=0.0,
+            sigma=0.05,
+            z_entry=1.9,
+            gross_notional=15.0,
             entry_price_a=1.0,
             entry_price_b=0.5,
             exit_ts=1_060_000,
@@ -283,6 +348,12 @@ class TestS4PairTrade:
                 entry_ts=1_000_000,
                 weight_a=0.4,
                 weight_b=0.6,
+                beta_a=1.2,
+                beta_b=0.8,
+                mu=0.0,
+                sigma=0.05,
+                z_entry=1.9,
+                gross_notional=15.0,
                 entry_price_a=1.0,
                 entry_price_b=0.5,
                 exit_ts=1_060_000,
@@ -313,6 +384,12 @@ class TestS4PairTrade:
                 entry_ts=1_000_000,
                 weight_a=0.4,
                 weight_b=0.6,
+                beta_a=1.2,
+                beta_b=0.8,
+                mu=0.0,
+                sigma=0.05,
+                z_entry=1.9,
+                gross_notional=15.0,
                 entry_price_a=1.0,
                 entry_price_b=0.5,
                 exit_ts=1_060_000,
@@ -330,6 +407,40 @@ class TestS4PairTrade:
                 volatility_percentile=None,
                 volatility_percentile_provenance="not_defined_for_s4",
             )
+
+    def test_carries_entry_frozen_provenance(self):
+        trade = _s4_trade(beta_a=1.2, beta_b=0.8, mu=0.01, sigma=0.05, z_entry=1.9)
+        assert trade.beta_a == 1.2
+        assert trade.beta_b == 0.8
+        assert trade.mu == 0.01
+        assert trade.sigma == 0.05
+        assert trade.z_entry == 1.9
+        assert trade.gross_notional == 15.0
+
+    def test_rejects_out_of_range_beta(self):
+        # verify-R1 finding 4 exact repro: beta_a=-999.0 was wrongly accepted.
+        with pytest.raises(ValueError):
+            _s4_trade(beta_a=-999.0)
+        with pytest.raises(ValueError):
+            _s4_trade(beta_b=99.0)
+
+    def test_rejects_zero_z_entry(self):
+        with pytest.raises(ValueError):
+            _s4_trade(z_entry=0.0)
+
+    def test_pair_exec_fail_defaults_to_not_evaluated_and_rejects_other_values(self):
+        trade = _s4_trade()
+        assert trade.pair_exec_fail == "not_evaluated"
+        with pytest.raises(ValueError):
+            _s4_trade(pair_exec_fail="pass")
+        with pytest.raises(ValueError):
+            _s4_trade(pair_exec_fail="0")
+
+    def test_promotion_status_defaults_blocked_and_rejects_other_values(self):
+        trade = _s4_trade()
+        assert trade.promotion_status == "promotion_blocked_pending_pair_executor"
+        with pytest.raises(ValueError):
+            _s4_trade(promotion_status="promotion_ready")
 
 
 class TestNoTradeRecords:

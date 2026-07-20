@@ -73,9 +73,13 @@ changes -- see ``/tmp/strategy-worker-rob979-sonnet-checkpoints.md`` CP3 entry):
     does not match the intent's supplied ``gross_notional``) -- H2 REJECTS a
     mismatched intent, it never silently substitutes its own recomputed
     value (H2 does not re-estimate/override H3's entry-frozen values, AC33).
-  * EOF/gap/horizon 4-way split mirrors ``rob974_h2_s3_engine`` exactly, but
-    a gap in EITHER leg's minute bar is terminal ``data_gap_in_pair_position``
-    (AC23) -- no rehedge, no forward-fill, no single-leg continuation.
+  * EOF/gap/horizon 4-way split mirrors ``rob974_h2_s3_engine`` exactly
+    (including D1's inclusive ``horizon_end_ts`` equality: the check is
+    ``next_ts > horizon_end_ts``, never ``>=``, so an exact
+    ``signal_ts + strategy_max_hold == phase_end`` boundary is still
+    readable/evaluable), but a gap in EITHER leg's minute bar is terminal
+    ``data_gap_in_pair_position`` (AC23) -- no rehedge, no forward-fill, no
+    single-leg continuation.
   * MFE/MAE capping (AC26) mirrors S3: every non-exit minute (including the
     entry minute and any boundary minute that fell through to the bounds
     check) contributes BOTH ``G_min_bound`` and ``G_max_bound`` (bps) as
@@ -93,6 +97,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from rob974_h2_dtos import (
+    PAIR_EXEC_FAIL_NOT_EVALUATED,
+    PROMOTION_BLOCKED_PENDING_PAIR_EXECUTOR,
     MinuteBar,
     S4EngineResult,
     S4IncompleteRecord,
@@ -323,7 +329,12 @@ def _walk_s4_position(
         tracker.observe(g_max_bound * 1e4)
 
         next_ts = cur_a.open_time + _MIN_MS
-        if horizon_end_ts is not None and next_ts >= horizon_end_ts:
+        # R2 fix (verify-R1 finding 1, mirrors rob974_h2_s3_engine): D1's
+        # approved fold boundary is INCLUSIVE -- exact
+        # `signal_ts + strategy_max_hold == phase_end` must still be
+        # readable/evaluable; only reading STRICTLY PAST phase_end is a
+        # horizon violation.
+        if horizon_end_ts is not None and next_ts > horizon_end_ts:
             return _S4Incomplete("fold_horizon_rejected", entry_ts, e_a, e_b)
         if next_ts >= corpus_end_ts:
             return _S4Incomplete("early_eof", entry_ts, e_a, e_b)
@@ -425,6 +436,12 @@ def run_s4_pair_basket_stream(
                 entry_ts=entry_bar_a.open_time,
                 weight_a=cand.weight_a,
                 weight_b=cand.weight_b,
+                beta_a=cand.beta_a,
+                beta_b=cand.beta_b,
+                mu=cand.mu,
+                sigma=cand.sigma,
+                z_entry=cand.z_entry,
+                gross_notional=cand.gross_notional,
                 entry_price_a=entry_bar_a.open,
                 entry_price_b=entry_bar_b.open,
                 exit_ts=outcome.exit_ts,
@@ -441,6 +458,8 @@ def run_s4_pair_basket_stream(
                 demo_eligible=False,
                 volatility_percentile=None,
                 volatility_percentile_provenance="not_defined_for_s4",
+                pair_exec_fail=PAIR_EXEC_FAIL_NOT_EVALUATED,
+                promotion_status=PROMOTION_BLOCKED_PENDING_PAIR_EXECUTOR,
             )
         )
         position_exit_ts = outcome.exit_ts
