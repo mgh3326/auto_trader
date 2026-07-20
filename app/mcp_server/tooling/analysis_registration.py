@@ -241,9 +241,12 @@ def register_analysis_tools(
     @mcp.tool(
         name="analyze_stock_batch",
         description=(
-            "Analyze multiple stocks in parallel with compact summaries. If a batch "
-            "analysis is planned for a symbol, do not also call get_quote for it: "
-            "this tool already returns a fresh price plus analysis context. "
+            "Analyze multiple stocks in parallel with compact summaries. For KR/crypto "
+            "and US regular-session analysis, a planned batch already returns a fresh "
+            "price plus context, so a separate get_quote is normally unnecessary. "
+            "Exception: use get_quote(include_extended_hours=True) for US premarket/"
+            "afterhours; use get_quote for previous_close, and get_ohlcv when OHLC "
+            "candles are required. "
             "Returns per-symbol compact summary (symbol, price, RSI, consensus, supports/resistances) "
             "by default, or full analysis when quick=False. "
             "When include_position=True (default), each compact summary carries a "
@@ -391,9 +394,12 @@ def register_analysis_tools(
             "recomputed each call from a fresh price so it stays intraday-current. "
             "min_analyst_* filters resolve consensus from the cache and only the "
             "returned page is enriched. "
-            "priceLabel, changePctLabel, and rsi are values at the snapshot time and "
+            "priceLabel, changePctLabel, and metricValueLabel are values at the "
+            "snapshot time and "
             "may be stale by up to one session; before confirming a candidate, "
-            "revalidate fresh values with get_quote or analyze_stock_batch. "
+            "revalidate price/change with get_quote and technical analysis with "
+            "analyze_stock_batch. analysisContext.rsi14, when present, is the "
+            "separately exposed RSI field. "
             "Results are capped (default 40) and paginated via limit/offset."
         ),
     )

@@ -2735,6 +2735,7 @@ async def test_list_expiry_candidates_is_read_only_preview(db_session):
 
 _HANDOFF_NOW = datetime(2026, 7, 21, 1, 0, tzinfo=UTC)
 _HANDOFF_RECENT = datetime(2026, 7, 21, 0, 30, tzinfo=UTC)  # 30min before _HANDOFF_NOW
+_HANDOFF_CREATED = datetime(2026, 7, 19, 1, 0, tzinfo=UTC)
 
 
 async def _create_defensive_rung(
@@ -2773,6 +2774,7 @@ async def _create_defensive_rung(
             exit_reason="stop_loss",
             retrospective_id=42,
             valid_until=datetime(2026, 7, 20, 0, 0, tzinfo=UTC),
+            now=_HANDOFF_CREATED,
         )
     await db_session.commit()
     return service, group
