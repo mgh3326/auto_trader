@@ -267,6 +267,35 @@ lanes:
 
 ---
 
+### 3.1 🎣 이중 그물 후보 소싱 (ROB-976)
+
+크래시데이(07-20)에 "우량주 지지선 그물 후보"를 찾으려 했으나 발굴 경로가
+없었다 — `get_top_stocks(losers)`는 시총/거래대금 필터가 없어 잡주만 걸렸고,
+`get_support_resistance`는 심볼 단위라 유니버스 스캔이 불가능했다. **이중
+그물**은 §3 fan-out의 두 축을 급락일 우량주 발굴에 맞춰 조합하는 소비
+패턴이다:
+
+1. **그물 1 — 하락률 net**: `get_top_stocks(market="kr", ranking_type="losers", min_market_cap=..., min_turnover=...)`.
+   `min_market_cap`/`min_turnover`(ROB-976)로 잡주 소음을 먼저 걷어낸
+   하락률 상위 우량주 목록.
+2. **그물 2 — 지지선 근접 net**: `screen_stocks_snapshot(preset="support_proximity")`.
+   시총/거래대금 품질 필터를 통과한 종목을 최근접 지지선까지 거리
+   (`dist_to_support_pct`) 오름차순으로 반환 — 지지선 계산은
+   `get_support_resistance`와 동일 로직(fib/거래량프로파일/볼린저)을
+   스냅샷 기반 1차 선별 후 상위 후보만 실시간 재검증해서 산출한다
+   (`support_proximity_screener.py`).
+3. **교차 확인**: 두 그물의 교집합(또는 그물 2 상위 종목이 그물 1에도 뜬
+   경우) = 우량주가 실제로 지지선 근처까지 눌린 상태 — §3 스크리닝
+   단계(RSI/upside/rights-issue 필터)로 그대로 이어서 검증.
+4. **심볼 단위 재확인**: 최종 후보는 `get_support_resistance(symbol)`로
+   개별 재검증 후 `get_quote`로 가격을 다시 확인(스냅샷/실시간 재검증
+   값 모두 최대 1세션 stale일 수 있음 — screen_stocks_snapshot 공통 경고).
+
+`support_proximity`는 KR 전용(US는 후속)이며 지지선이 없는(현재가 아래
+클러스터가 없는) 종목은 결과에서 제외된다(fail-closed, fabricate 금지).
+
+---
+
 ## 4) Recording / retrospective — current state and gaps
 
 - **Current:** `session_context_append` (decision journal, free text) +

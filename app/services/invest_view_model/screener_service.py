@@ -2466,6 +2466,7 @@ async def build_screener_results(
                 limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
                 min_market_cap=filters.get("min_market_cap"),  # type: ignore[arg-type]
                 min_turnover=filters.get("min_turnover"),  # type: ignore[arg-type]
+                now=now,
             )
             if _snapshot_load_result is not None:
                 _snapshot_check_result = _snapshot_load_result.rows

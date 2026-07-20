@@ -289,3 +289,286 @@ async def test_returns_empty_when_all_candidates_lack_a_support(
     assert result.rows == []
     assert result.degradation_reason == "healthy_no_matches"
     assert called == ["976001"]
+
+
+@pytest.mark.asyncio
+async def test_displayed_price_uses_live_reverified_basis_not_stale_snapshot(
+    db_session, monkeypatch
+):
+    """ROB-976 verify R1 [BLOCKER]: price/support/distance must all come from
+    the SAME live get_support_resistance call. Using the stale snapshot price
+    for display while the distance is computed against a different live price
+    caused a real cross-checked bug (a support above the displayed price still
+    showing as a "support" — KT&G 033780 in the 07-20 verify report)."""
+    today = dt.date(2099, 12, 31)
+    _seed_common(db_session, "976001", today=today, market_cap=1_000_000_000_000.0)
+    await db_session.commit()
+
+    import app.mcp_server.tooling.fundamentals._support_resistance as sr_module
+
+    async def _fake_impl(symbol: str, market: str | None = None, preloaded_df=None):
+        # Live price (48000) deliberately differs from the seeded snapshot's
+        # latest_close (50000) — simulates intraday drift since the snapshot.
+        return {
+            "symbol": symbol,
+            "current_price": 48000.0,
+            "supports": [
+                {
+                    "price": 47000.0,
+                    "strength": "moderate",
+                    "sources": ["bb_lower"],
+                    "distance_pct": -2.08,
+                }
+            ],
+            "resistances": [],
+        }
+
+    monkeypatch.setattr(sr_module, "get_support_resistance_impl", _fake_impl)
+
+    result = await load_support_proximity_from_snapshots(
+        db_session,
+        market="kr",
+        limit=10,
+        min_market_cap=300_000_000_000.0,
+        min_turnover=1_000_000_000.0,
+    )
+
+    assert result is not None
+    assert len(result.rows) == 1
+    row = result.rows[0]
+    # Displayed price must be the LIVE price, not the stale snapshot price —
+    # otherwise a level below the live price could render as "above" the
+    # (stale) displayed price, or vice versa.
+    assert row["close"] == pytest.approx(48000.0)
+    assert row["latest_close"] == pytest.approx(48000.0)
+    assert row["close"] != pytest.approx(50000.0)
+    assert row["support_price"] == pytest.approx(47000.0)
+    assert row["dist_to_support_pct"] == pytest.approx(2.08)
+    # change_amount/change_rate recomputed against the live price, anchored on
+    # the snapshot's prev_close (yesterday's settled close — not time-sensitive).
+    assert row["change_amount"] == pytest.approx(48000.0 - 49000.0)
+    assert row["computed_at"] is not None
+    assert row["_screener_snapshot_state"] == "fresh"
+    assert result.partition_computed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_excludes_candidates_not_in_active_universe(db_session, monkeypatch):
+    """ROB-976 verify R1 [HIGH]: a symbol absent from the ACTIVE KRSymbolUniverse
+    query (empty/stale active universe, delisted, etc.) must be excluded — never
+    fall through to the permissive 'unknown name -> allow' heuristic, which
+    previously let a stale snapshot-only symbol appear as a candidate even when
+    the active universe was empty."""
+    today = dt.date(2099, 12, 31)
+    # Price + valuation snapshot rows exist, but NO active KRSymbolUniverse row
+    # is seeded for this symbol.
+    db_session.add(
+        InvestScreenerSnapshot(
+            market="kr",
+            symbol="976001",
+            snapshot_date=today,
+            latest_close=decimal.Decimal("50000"),
+            prev_close=decimal.Decimal("49000"),
+            change_rate=decimal.Decimal("2.0"),
+            change_amount=decimal.Decimal("1000"),
+            daily_volume=1_000_000,
+            closes_window=[49000.0, 50000.0],
+            source="kis",
+        )
+    )
+    db_session.add(
+        MarketValuationSnapshot(
+            market="kr",
+            symbol="976001",
+            snapshot_date=today,
+            market_cap=decimal.Decimal("1000000000000"),
+            per=decimal.Decimal("10.0"),
+            source="naver_finance",
+        )
+    )
+    await db_session.commit()
+
+    called = _patch_support_resistance(monkeypatch, {})
+
+    result = await load_support_proximity_from_snapshots(
+        db_session,
+        market="kr",
+        limit=10,
+        min_market_cap=300_000_000_000.0,
+        min_turnover=1_000_000_000.0,
+    )
+
+    assert result is not None
+    assert result.rows == []
+    # Never reached the live fan-out — excluded before stage 2.
+    assert called == []
+
+
+@pytest.mark.asyncio
+async def test_excludes_krx_trading_suspended_symbol(db_session, monkeypatch):
+    """ROB-976 verify R1 [HIGH]: KRSymbolUniverse.krx_trading_suspended must
+    gate candidates (via _is_toss_common_stock_row), not just the bare
+    name-heuristic that ignores suspension entirely."""
+    today = dt.date(2099, 12, 31)
+    db_session.add(
+        KRSymbolUniverse(
+            symbol="976001",
+            name="정지종목",
+            exchange="KOSPI",
+            is_active=True,
+            krx_trading_suspended=True,
+        )
+    )
+    db_session.add(
+        InvestScreenerSnapshot(
+            market="kr",
+            symbol="976001",
+            snapshot_date=today,
+            latest_close=decimal.Decimal("50000"),
+            prev_close=decimal.Decimal("49000"),
+            change_rate=decimal.Decimal("2.0"),
+            change_amount=decimal.Decimal("1000"),
+            daily_volume=1_000_000,
+            closes_window=[49000.0, 50000.0],
+            source="kis",
+        )
+    )
+    db_session.add(
+        MarketValuationSnapshot(
+            market="kr",
+            symbol="976001",
+            snapshot_date=today,
+            market_cap=decimal.Decimal("1000000000000"),
+            per=decimal.Decimal("10.0"),
+            source="naver_finance",
+        )
+    )
+    await db_session.commit()
+
+    called = _patch_support_resistance(monkeypatch, {})
+
+    result = await load_support_proximity_from_snapshots(
+        db_session,
+        market="kr",
+        limit=10,
+        min_market_cap=300_000_000_000.0,
+        min_turnover=1_000_000_000.0,
+    )
+
+    assert result is not None
+    assert result.rows == []
+    assert called == []
+
+
+@pytest.mark.asyncio
+async def test_live_verification_pool_is_selected_by_snapshot_proxy_not_market_cap(
+    db_session, monkeypatch
+):
+    """ROB-976 verify R1 [BLOCKER]: stage-1 candidate ranking (who gets the
+    expensive live re-check) must come from the snapshot-only Bollinger proxy —
+    not simply 'top by market cap' — so 'live-verify only the top candidates'
+    genuinely means the most support-proximate ones, not just the biggest."""
+    today = dt.date(2099, 12, 31)
+
+    # Candidate A: smaller market cap, but flat closes put it right on its
+    # snapshot-only Bollinger lower band (near-zero cheap-proxy distance).
+    db_session.add(
+        KRSymbolUniverse(
+            symbol="976001", name="테스트A", exchange="KOSPI", is_active=True
+        )
+    )
+    db_session.add(
+        InvestScreenerSnapshot(
+            market="kr",
+            symbol="976001",
+            snapshot_date=today,
+            latest_close=decimal.Decimal("50000"),
+            prev_close=decimal.Decimal("50000"),
+            change_rate=decimal.Decimal("0.0"),
+            change_amount=decimal.Decimal("0"),
+            daily_volume=1_000_000,
+            closes_window=[50000.0] * 20,
+            source="kis",
+        )
+    )
+    db_session.add(
+        MarketValuationSnapshot(
+            market="kr",
+            symbol="976001",
+            snapshot_date=today,
+            market_cap=decimal.Decimal("500000000000"),
+            per=decimal.Decimal("10.0"),
+            source="naver_finance",
+        )
+    )
+
+    # Candidate B: bigger market cap, but a volatile closes_window puts the
+    # Bollinger band far from the latest close (poor snapshot-only proxy).
+    db_session.add(
+        KRSymbolUniverse(
+            symbol="976002", name="테스트B", exchange="KOSPI", is_active=True
+        )
+    )
+    db_session.add(
+        InvestScreenerSnapshot(
+            market="kr",
+            symbol="976002",
+            snapshot_date=today,
+            latest_close=decimal.Decimal("59000"),
+            prev_close=decimal.Decimal("58000"),
+            change_rate=decimal.Decimal("1.7"),
+            change_amount=decimal.Decimal("1000"),
+            daily_volume=1_000_000,
+            closes_window=[float(40000 + i * 1000) for i in range(20)],
+            source="kis",
+        )
+    )
+    db_session.add(
+        MarketValuationSnapshot(
+            market="kr",
+            symbol="976002",
+            snapshot_date=today,
+            market_cap=decimal.Decimal("2000000000000"),
+            per=decimal.Decimal("10.0"),
+            source="naver_finance",
+        )
+    )
+    await db_session.commit()
+
+    called = _patch_support_resistance(
+        monkeypatch,
+        {
+            "976001": [
+                {
+                    "price": 49500.0,
+                    "strength": "strong",
+                    "sources": ["bb_lower"],
+                    "distance_pct": -1.0,
+                }
+            ],
+            "976002": [
+                {
+                    "price": 55000.0,
+                    "strength": "weak",
+                    "sources": ["bb_lower"],
+                    "distance_pct": -6.8,
+                }
+            ],
+        },
+    )
+
+    result = await load_support_proximity_from_snapshots(
+        db_session,
+        market="kr",
+        limit=1,
+        min_market_cap=300_000_000_000.0,
+        min_turnover=1_000_000_000.0,
+        candidate_pool_limit=1,
+    )
+
+    assert result is not None
+    # Only the better snapshot-only-proxy candidate (976001) should have been
+    # live-checked, even though 976002 has 4x the market cap. Pool size is
+    # max(candidate_pool_limit, limit); both are 1 here so the bound is exact.
+    assert called == ["976001"]
+    assert [r["symbol"] for r in result.rows] == ["976001"]

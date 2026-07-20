@@ -1142,6 +1142,156 @@ class TestMCPLosers:
         assert "market_cap_filter" not in result
         assert len(result["rankings"]) == 1
 
+    async def test_min_market_cap_backfills_when_kis_omits_hts_avls(self, monkeypatch):
+        """ROB-976 verify R1 [BLOCKER]: real KIS losers responses reproduced in
+        the 07-20 verify report omit hts_avls entirely, making the bare filter
+        a no-op. market_cap must be backfilled (same pipeline as the foreign
+        rankings) before the floor is applied."""
+        from decimal import Decimal as _D
+
+        from app.mcp_server.tooling import foreigners_liquidity
+
+        async def fake_fetch(symbols, *, session_factory=None):
+            return (
+                {"900001": _D("5000000000"), "900002": _D("400000000000")},
+                {},
+            )
+
+        monkeypatch.setattr(foreigners_liquidity, "_fetch_market_cap_maps", fake_fetch)
+
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {  # junk cap once backfilled (50억) — excluded
+                        "stck_shrn_iscd": "900001",
+                        "hts_kor_isnm": "좋은사람들",
+                        "stck_prpr": "500",
+                        "prdy_ctrt": "-9.0",
+                        "acml_vol": "1000000",
+                        # no hts_avls, matches the real KIS losers payload
+                    },
+                    {  # blue-chip cap once backfilled (4000억) — kept
+                        "stck_shrn_iscd": "900002",
+                        "hts_kor_isnm": "대형주",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "-2.0",
+                        "acml_vol": "2000000",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        result = await tools["get_top_stocks"](
+            market="kr",
+            ranking_type="losers",
+            limit=5,
+            min_market_cap=30_000_000_000.0,
+        )
+
+        symbols = [r["symbol"] for r in result["rankings"]]
+        assert symbols == ["900002"]
+        assert result["rankings"][0]["market_cap"] == pytest.approx(4e11)
+        assert result["market_cap_filter"]["excluded_count"] == 1
+
+    async def test_min_turnover_uses_trade_amount_then_price_times_volume(
+        self, monkeypatch
+    ):
+        """ROB-976: min_turnover checks trade_amount (acml_tr_pbmn) first, and
+        falls back to price*volume when KIS omits trade_amount — never drops a
+        row with neither value available."""
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {  # trade_amount present, below the 10억 floor -> excluded
+                        "stck_shrn_iscd": "900001",
+                        "hts_kor_isnm": "저유동성",
+                        "stck_prpr": "1000",
+                        "prdy_ctrt": "-3.0",
+                        "acml_vol": "100000",
+                        "acml_tr_pbmn": "100000000",  # 1억
+                    },
+                    {  # no trade_amount; price*volume = 80000*2000000 = 1600억 -> kept
+                        "stck_shrn_iscd": "900002",
+                        "hts_kor_isnm": "대형주",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "-1.0",
+                        "acml_vol": "2000000",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        result = await tools["get_top_stocks"](
+            market="kr",
+            ranking_type="losers",
+            limit=5,
+            min_turnover=1_000_000_000.0,
+        )
+
+        symbols = [r["symbol"] for r in result["rankings"]]
+        assert symbols == ["900002"]
+        assert result["turnover_filter"] == {
+            "min_turnover": 1_000_000_000.0,
+            "excluded_count": 1,
+        }
+
+    async def test_quality_filter_emptying_losers_is_degraded_not_bullish_message(
+        self, monkeypatch
+    ):
+        """ROB-976 verify R1 [BLOCKER]: when the quality floor removes every
+        real loser, the response must say so (status=degraded) — not the
+        generic 'market may be entirely bullish' message, which would hide
+        that a filter (not market conditions) produced the empty page."""
+        from decimal import Decimal as _D
+
+        from app.mcp_server.tooling import foreigners_liquidity
+
+        async def fake_fetch(symbols, *, session_factory=None):
+            return ({s: _D("5000000000") for s in symbols}, {})
+
+        monkeypatch.setattr(foreigners_liquidity, "_fetch_market_cap_maps", fake_fetch)
+
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {
+                        "stck_shrn_iscd": "900001",
+                        "hts_kor_isnm": "잡주",
+                        "stck_prpr": "500",
+                        "prdy_ctrt": "-9.0",
+                        "acml_vol": "1000000",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        result = await tools["get_top_stocks"](
+            market="kr",
+            ranking_type="losers",
+            limit=5,
+            min_market_cap=30_000_000_000.0,
+        )
+
+        assert result["rankings"] == []
+        assert result["status"] == "degraded"
+        assert "degraded_reason" in result
+        assert "error" not in result
+
     async def test_get_top_stocks_kr_gainers_returns_positives(self, monkeypatch):
         tools = build_tools()
 

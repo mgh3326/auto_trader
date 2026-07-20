@@ -127,10 +127,16 @@ def register_analysis_tools(
             "provenance tag, and apply a default-ON liquidity filter "
             "(|foreign_net_amount| >= FOREIGNERS_MIN_NET_AMOUNT_KRW, default 1억 "
             "KRW; pass include_illiquid=true to bypass). "
-            "min_market_cap (KR only, raw KRW) drops rows with a KNOWN market_cap "
-            "below the floor — never excludes a row just because KIS omitted "
-            "market_cap for that ranking type (honest, never fabricated); the "
-            "excluded count is echoed under market_cap_filter. Useful on "
+            "min_market_cap/min_turnover (KR only, raw KRW) drop rows with a "
+            "KNOWN market_cap / turnover (trade_amount, falling back to "
+            "price*volume) below the floor — market_cap is backfilled from "
+            "fundamentals snapshots the same way the foreign rankings are, so "
+            "the filter isn't a silent no-op when KIS omits it; a row is never "
+            "excluded just because a value is unconfirmed (honest, never "
+            "fabricated). Excluded counts echo under market_cap_filter / "
+            "turnover_filter; if the filter empties an otherwise non-empty "
+            "losers page, the response is status=degraded with degraded_reason "
+            "(never the generic 'no losing stocks' message). Useful on "
             "ranking_type=losers to cut illiquid junk-cap noise before a "
             "지지선 매수 후보 scan; for a ranked-by-support-distance view use "
             "screen_stocks_snapshot(preset='support_proximity') instead. "
@@ -144,6 +150,7 @@ def register_analysis_tools(
         limit: int = 20,
         include_illiquid: bool = False,
         min_market_cap: float | None = None,
+        min_turnover: float | None = None,
     ) -> dict[str, Any]:
         return await get_top_stocks_impl(
             market=market,
@@ -151,6 +158,7 @@ def register_analysis_tools(
             limit=limit,
             include_illiquid=include_illiquid,
             min_market_cap=min_market_cap,
+            min_turnover=min_turnover,
         )
 
     @mcp.tool(

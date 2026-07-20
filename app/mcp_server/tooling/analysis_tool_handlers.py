@@ -94,6 +94,7 @@ async def get_top_stocks_impl(
     limit: int = 20,
     include_illiquid: bool = False,
     min_market_cap: float | None = None,
+    min_turnover: float | None = None,
 ) -> dict[str, Any]:
     market = (market or "").strip().lower()
     ranking_type = (ranking_type or "").strip().lower()
@@ -133,15 +134,16 @@ async def get_top_stocks_impl(
             query=f"market={market}, ranking_type={ranking_type}",
         )
 
-    # ROB-976: over-fetch when min_market_cap will drop rows post-hoc, so the
+    # ROB-976: over-fetch when a quality filter will drop rows post-hoc, so the
     # caller still gets up to limit_clamped quality rows (KR ranking endpoints
     # already fetch their full page in one call — see fluctuation_rank/
     # volume_rank/market_cap_rank — so a larger client-side slice is free).
+    _quality_filter_requested = min_market_cap is not None or min_turnover is not None
     fetch_limit = (
-        min(limit_clamped * 4, 100) if min_market_cap is not None else limit_clamped
+        min(limit_clamped * 4, 100) if _quality_filter_requested else limit_clamped
     )
-    rankings: list[dict[str, Any]] = []
     excluded_by_market_cap = 0
+    excluded_by_turnover = 0
     source = {"kr": "kis", "us": "yfinance", "crypto": "upbit"}.get(
         market,
         "",
@@ -172,7 +174,7 @@ async def get_top_stocks_impl(
             else:
                 data = []
 
-            filtered_rank = 1
+            mapped_rows: list[dict[str, Any]] = []
             for row in data[:fetch_limit]:
                 if ranking_type == "losers":
                     change_rate = analysis_screening._to_float(row.get("prdy_ctrt"))
@@ -180,24 +182,53 @@ async def get_top_stocks_impl(
                         continue
 
                 if resolved_ranking_type in _FOREIGN_RANKING_TYPES:
-                    mapped = analysis_screening._map_kr_foreign_row(row, filtered_rank)
+                    mapped = analysis_screening._map_kr_foreign_row(
+                        row, len(mapped_rows) + 1
+                    )
                 else:
-                    mapped = analysis_screening._map_kr_row(row, filtered_rank)
+                    mapped = analysis_screening._map_kr_row(row, len(mapped_rows) + 1)
+                mapped_rows.append(mapped)
 
-                # ROB-976: lightweight junk-cap cut. Only excludes rows with a
-                # KNOWN market_cap below the floor — never drops a row just
-                # because KIS omitted market_cap for this ranking type (honest,
-                # never fabricated).
+            # ROB-976 verify R1 [BLOCKER]: KIS's non-foreigners ranking endpoints
+            # (volume/market_cap/gainers/losers) just as often omit hts_avls as
+            # the foreigners endpoint does, so a bare min_market_cap/min_turnover
+            # filter was a silent no-op in practice. Backfill market_cap the same
+            # way the foreigners path does (fundamentals snapshot, then
+            # shares_outstanding x price, else honest null — never fabricated)
+            # before applying either floor. Scoped to non-foreign ranking types;
+            # the foreign_net_buy/sell path keeps its own dedicated liquidity
+            # pipeline below untouched.
+            if (
+                _quality_filter_requested
+                and resolved_ranking_type not in _FOREIGN_RANKING_TYPES
+            ):
+                await foreigners_liquidity.backfill_foreigners_market_cap(mapped_rows)
+
+            rankings = []
+            for mapped in mapped_rows:
+                # Only excludes rows with a KNOWN value below the floor — never
+                # drops a row just because it's unconfirmed (honest, never
+                # fabricated exclusion).
                 if min_market_cap is not None:
                     mc = mapped.get("market_cap")
                     if mc is not None and mc < min_market_cap:
                         excluded_by_market_cap += 1
                         continue
-
+                if min_turnover is not None:
+                    turnover = mapped.get("trade_amount")
+                    if turnover is None:
+                        price = mapped.get("price")
+                        volume = mapped.get("volume")
+                        if price is not None and volume is not None:
+                            turnover = price * volume
+                    if turnover is not None and turnover < min_turnover:
+                        excluded_by_turnover += 1
+                        continue
                 rankings.append(mapped)
-                filtered_rank += 1
                 if len(rankings) >= limit_clamped:
                     break
+            for new_rank, row in enumerate(rankings, start=1):
+                row["rank"] = new_rank
 
         elif market == "us":
             rankings, source = await analysis_screening._get_us_rankings(
@@ -311,6 +342,52 @@ async def get_top_stocks_impl(
         for new_rank, row in enumerate(rankings, start=1):
             row["rank"] = new_rank
 
+    # ROB-976 verify R1: don't let the quality filter's honest 0-rows collapse
+    # into the misleading "market may be entirely bullish" message below — that
+    # message means "KIS returned no losers at all", not "the quality filter
+    # removed everyone". Surface the real reason instead (never fabricate rows).
+    if (
+        len(rankings) == 0
+        and market == "kr"
+        and (excluded_by_market_cap or excluded_by_turnover)
+    ):
+        return {
+            "rankings": [],
+            "total_count": 0,
+            "market": market,
+            "ranking_type": ranking_type,
+            "timestamp": datetime.datetime.now(kst_tz).isoformat(),
+            "source": source,
+            **({"data_state": data_state} if data_state is not None else {}),
+            "status": "degraded",
+            "degraded_reason": (
+                f"all {excluded_by_market_cap + excluded_by_turnover} matching "
+                f"row(s) fell below the requested quality floor "
+                f"(min_market_cap={min_market_cap}, min_turnover={min_turnover}); "
+                "retry with a lower floor"
+            ),
+            **(
+                {
+                    "market_cap_filter": {
+                        "min_market_cap": min_market_cap,
+                        "excluded_count": excluded_by_market_cap,
+                    }
+                }
+                if min_market_cap is not None
+                else {}
+            ),
+            **(
+                {
+                    "turnover_filter": {
+                        "min_turnover": min_turnover,
+                        "excluded_count": excluded_by_turnover,
+                    }
+                }
+                if min_turnover is not None
+                else {}
+            ),
+        }
+
     if len(rankings) == 0 and market == "kr" and ranking_type == "losers":
         return analysis_screening._error_payload(
             source="kis",
@@ -341,6 +418,11 @@ async def get_top_stocks_impl(
         response["market_cap_filter"] = {
             "min_market_cap": min_market_cap,
             "excluded_count": excluded_by_market_cap,
+        }
+    if min_turnover is not None:
+        response["turnover_filter"] = {
+            "min_turnover": min_turnover,
+            "excluded_count": excluded_by_turnover,
         }
     return response
 
