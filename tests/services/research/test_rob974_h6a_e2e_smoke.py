@@ -107,11 +107,21 @@ class TestFullPipelineE2ESmoke:
 
         register_calls = []
 
+        class _FakeRegisteredRow:
+            def __init__(self, experiment_id):
+                self.experiment_id = experiment_id
+
         async def register_experiments_fn(
             session, *, specs, guard_opt_in_enabled, guard_policy
         ):
             register_calls.append(len(specs))
-            return []
+            # R1 blocker #2: register_h6a_campaign re-verifies the returned
+            # rows' experiment_id set against its own trusted derivation --
+            # a stub `[]` is no longer accepted.
+            return [
+                _FakeRegisteredRow(plan.row_id_to_experiment_id[spec.params["row_id"]])
+                for spec in specs
+            ]
 
         registered = await bridge.register_h6a_campaign(
             _PoisonedSession(),
@@ -126,7 +136,8 @@ class TestFullPipelineE2ESmoke:
             register_experiments_fn=register_experiments_fn,
         )
         assert register_calls == [24, 24]
-        assert registered == ([], [])
+        assert len(registered[0]) == 24
+        assert len(registered[1]) == 24
 
     @pytest.mark.asyncio
     async def test_record_h6a_attempts_accepts_49_rows_including_retry(self):

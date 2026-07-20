@@ -37,9 +37,11 @@ durable residue zero.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import re
 import sys
+import types
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -66,20 +68,24 @@ from research_contracts.diagnostic_evidence_policy import (
 )
 
 __all__ = [
+    "CANONICAL_ROW_ORDER",
     "EXPECTED_SLICE_SIZE",
     "EXPECTED_TOTAL_ROWS",
     "MAX_DISTINCT_SIGNATURES",
     "REASON_ALLOWLIST_BY_STATUS",
     "RECORD_ATTEMPTS_OPERATION_KIND",
     "REGISTER_CAMPAIGN_OPERATION_KIND",
+    "RUN_ID_PREFIX",
     "STATUSES",
     "ApprovalContextError",
     "ApprovedMutationContext",
     "BatchValidationError",
     "H6AAttemptBatchItem",
     "H6ABridgeError",
+    "RunIdDerivationError",
     "TerminalEvidenceMismatch",
     "compute_exact_48_mapping_hash",
+    "derive_campaign_run_id",
     "record_h6a_attempts",
     "register_h6a_campaign",
 ]
@@ -103,6 +109,23 @@ EXPECTED_SLICE_SIZE = 24
 EXPECTED_TOTAL_ROWS = 48
 REGISTER_CAMPAIGN_OPERATION_KIND = "rob974_h6a_register_campaign"
 RECORD_ATTEMPTS_OPERATION_KIND = "rob974_h6a_record_attempts"
+RUN_ID_PREFIX = "rob974h6a-"
+
+# R1 blocker #2: the canonical exact-48 row-id universe, literally
+# duplicated from rob974_h6a_identity.CANONICAL_ROW_ORDER (this module
+# never imports research/nautilus_scalping -- app/services stays
+# DB-free-boundary-pure the same way rob944_campaign_controller's own
+# literal duplication of ROB-944 constants does). A caller-supplied
+# row_id_to_experiment_id/attempt batch is validated against THIS set, not
+# merely checked for length-48 self-consistency with itself.
+_CONFIGS_PER_STRATEGY = 24
+_EXPECTED_STRATEGY_SLUGS: tuple[str, ...] = ("S3", "S4")
+CANONICAL_ROW_ORDER: tuple[str, ...] = tuple(
+    f"{slug}-{i:02d}"
+    for slug in _EXPECTED_STRATEGY_SLUGS
+    for i in range(_CONFIGS_PER_STRATEGY)
+)
+_CANONICAL_ROW_SET = frozenset(CANONICAL_ROW_ORDER)
 
 STATUSES: tuple[str, ...] = ("completed", "rejected", "crashed", "timeout")
 # Literal duplication of the CP3 closed reason taxonomy (this module never
@@ -143,6 +166,67 @@ class TerminalEvidenceMismatch(H6ABridgeError):
     or duplicated."""
 
 
+class DiagnosticStorageError(H6ABridgeError):
+    """A PRESENT (not genuinely absent) stored diagnostic value is
+    malformed -- corrupted persisted data must loudly surface, never
+    silently default to the empty/closed-default shape (R1 blocker #5;
+    mirrors ``research_campaign_bridge.DiagnosticEvidenceBoundaryViolation``
+    for the same absent-vs-malformed distinction)."""
+
+
+def _freeze(obj: Any) -> Any:
+    """Recursively converts dict/list into an immutable structure
+    (``types.MappingProxyType`` + ``tuple``), a full deep, non-aliasing
+    copy -- mirrors ``rob974_h6a_identity._freeze``/
+    ``rob974_h6a_payload._freeze``/``rob974_h6a_evidence._freeze_mapping``.
+    Duplicated here (never imported) since app/services never imports
+    research/nautilus_scalping."""
+    if isinstance(obj, Mapping):
+        return types.MappingProxyType({k: _freeze(v) for k, v in obj.items()})
+    if isinstance(obj, list | tuple):
+        return tuple(_freeze(v) for v in obj)
+    return obj
+
+
+def _unfreeze(obj: Any) -> Any:
+    if isinstance(obj, Mapping):
+        return {k: _unfreeze(v) for k, v in obj.items()}
+    if isinstance(obj, list | tuple):
+        return [_unfreeze(v) for v in obj]
+    return obj
+
+
+class RunIdDerivationError(H6ABridgeError):
+    """A caller-supplied ``campaign_run_id`` is not the value canonically
+    derived from ``full_campaign_hash`` -- an arbitrary UUID/timestamp/
+    operator typo is refused before any service call (R1 blocker #2)."""
+
+
+def derive_campaign_run_id(full_campaign_hash: str) -> str:
+    """Independent re-derivation of the SAME recipe
+    ``rob974_h6a_payload.derive_primary_run_id`` uses (SHA-256 of
+    ``{full_campaign_hash, kind}`` -> raw 32 bytes -> unpadded URL-safe
+    base64 -> fixed prefix) -- duplicated here since app/services never
+    imports research/nautilus_scalping. This is the actual persistence
+    trust boundary and must not rely solely on a caller's own (separate)
+    copy of this same check."""
+    digest_hex = canonical_sha256(
+        {"full_campaign_hash": full_campaign_hash, "kind": "rob974_h6a_primary_run"}
+    )
+    raw = bytes.fromhex(digest_hex)
+    suffix = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    return f"{RUN_ID_PREFIX}{suffix}"
+
+
+def _require_derived_run_id(campaign_run_id: str, *, full_campaign_hash: str) -> None:
+    expected = derive_campaign_run_id(full_campaign_hash)
+    if campaign_run_id != expected:
+        raise RunIdDerivationError(
+            "campaign_run_id is not the value canonically derived from the frozen "
+            "full_campaign_hash -- an arbitrary UUID/timestamp/operator typo is refused"
+        )
+
+
 @dataclass(frozen=True)
 class ApprovedMutationContext:
     """Authorization-only token bound to one exact mutation. Excluded from
@@ -180,12 +264,31 @@ class ApprovedMutationContext:
 def compute_exact_48_mapping_hash(row_id_to_experiment_id: Mapping[str, str]) -> str:
     """Canonical hash of the exact 48 row_id -> experiment_id mapping being
     mutated -- one of the four facts an ``ApprovedMutationContext`` binds
-    to."""
-    if len(row_id_to_experiment_id) != EXPECTED_TOTAL_ROWS:
+    to.
+
+    R1 blocker #2: this is the ONE place a caller-supplied mapping is
+    checked against the canonical ``S3-00..S3-23,S4-00..S4-23`` row-id
+    universe -- a same-length-48 but non-canonical row-id set (e.g.
+    ``X-00..X-47``), a duplicate experiment_id, or a malformed
+    (non-hex64) experiment_id is refused here, BEFORE any hash is even
+    computed, rather than merely checked for internal self-consistency
+    with itself.
+    """
+    if set(row_id_to_experiment_id) != _CANONICAL_ROW_SET:
         raise BatchValidationError(
-            f"row_id_to_experiment_id must map exactly {EXPECTED_TOTAL_ROWS} rows, got "
-            f"{len(row_id_to_experiment_id)}"
+            "row_id_to_experiment_id must cover exactly the canonical "
+            f"{EXPECTED_TOTAL_ROWS} row IDs (S3-00..S3-23,S4-00..S4-23)"
         )
+    experiment_ids = list(row_id_to_experiment_id.values())
+    if len(set(experiment_ids)) != len(experiment_ids):
+        raise BatchValidationError(
+            "row_id_to_experiment_id experiment_id values must all be distinct"
+        )
+    for row_id, experiment_id in row_id_to_experiment_id.items():
+        if type(experiment_id) is not str or not _HEX64_RE.match(experiment_id):
+            raise BatchValidationError(
+                f"experiment_id for row_id {row_id!r} must be a lowercase 64-hex digest"
+            )
     return canonical_sha256(dict(row_id_to_experiment_id))
 
 
@@ -231,16 +334,19 @@ def _preflight_specs(
     *,
     expected_slug: str,
     row_id_to_experiment_id: Mapping[str, str],
-) -> None:
+) -> frozenset[str]:
     """Independently re-derive and cross-check EVERY spec's experiment_id
     against the trusted mapping BEFORE any service call -- a malformed
     first/middle/LAST entry means zero registration calls for either slice
-    (this loop is pure computation, no I/O)."""
+    (this loop is pure computation, no I/O). Returns the TRUSTED expected
+    experiment_id set for this slice, so the caller can re-verify the
+    registrar's returned rows against it post-delegate (R1 blocker #2)."""
     if len(specs) != EXPECTED_SLICE_SIZE:
         raise BatchValidationError(
             f"expected exactly {EXPECTED_SLICE_SIZE} {expected_slug} specs, got {len(specs)}"
         )
     seen_row_ids: set[str] = set()
+    expected_experiment_ids: set[str] = set()
     for spec in specs:
         row_id = _spec_row_id(spec)
         if row_id is None or not row_id.startswith(f"{expected_slug}-"):
@@ -268,6 +374,7 @@ def _preflight_specs(
                 f"spec for row_id {row_id!r} derives an experiment_id that does not match "
                 "the trusted mapping"
             )
+        expected_experiment_ids.add(expected_experiment_id)
     expected_row_ids = {
         rid for rid in row_id_to_experiment_id if rid.startswith(f"{expected_slug}-")
     }
@@ -275,6 +382,7 @@ def _preflight_specs(
         raise BatchValidationError(
             f"{expected_slug} specs do not cover exactly its 24 expected row IDs"
         )
+    return frozenset(expected_experiment_ids)
 
 
 RegisterExperimentsFn = Callable[..., Awaitable[list[ResearchStrategyExperiment]]]
@@ -307,6 +415,7 @@ async def register_h6a_campaign(
     transaction until the CALLER'S OWN rollback (H6-B) removes them.
     """
     mapping_hash = compute_exact_48_mapping_hash(row_id_to_experiment_id)
+    _require_derived_run_id(campaign_run_id, full_campaign_hash=full_campaign_hash)
     _require_approved(
         approved,
         operation_kind=REGISTER_CAMPAIGN_OPERATION_KIND,
@@ -314,10 +423,10 @@ async def register_h6a_campaign(
         campaign_run_id=campaign_run_id,
         mapping_hash=mapping_hash,
     )
-    _preflight_specs(
+    expected_s3_ids = _preflight_specs(
         s3_specs, expected_slug="S3", row_id_to_experiment_id=row_id_to_experiment_id
     )
-    _preflight_specs(
+    expected_s4_ids = _preflight_specs(
         s4_specs, expected_slug="S4", row_id_to_experiment_id=row_id_to_experiment_id
     )
 
@@ -327,12 +436,28 @@ async def register_h6a_campaign(
         guard_opt_in_enabled=guard_opt_in_enabled,
         guard_policy=guard_policy,
     )
+    # R1 blocker #2: re-verify the delegate's OWN returned rows by identity
+    # -- never trust register_experiments_fn's return value at face value,
+    # even though the specs it was CALLED with were already trusted.
+    actual_s3_ids = frozenset(row.experiment_id for row in registered_s3)
+    if actual_s3_ids != expected_s3_ids:
+        raise BatchValidationError(
+            "register_experiments_fn returned S3 rows whose experiment_id set does not "
+            "match the trusted expected set -- refusing to trust the delegate's return value"
+        )
+
     registered_s4 = await register_experiments_fn(
         session,
         specs=s4_specs,
         guard_opt_in_enabled=guard_opt_in_enabled,
         guard_policy=guard_policy,
     )
+    actual_s4_ids = frozenset(row.experiment_id for row in registered_s4)
+    if actual_s4_ids != expected_s4_ids:
+        raise BatchValidationError(
+            "register_experiments_fn returned S4 rows whose experiment_id set does not "
+            "match the trusted expected set -- refusing to trust the delegate's return value"
+        )
     return registered_s3, registered_s4
 
 
@@ -408,6 +533,20 @@ class H6AAttemptBatchItem:
             self.diagnostic_overflow, Mapping
         ):
             raise BatchValidationError("diagnostic_overflow must be a mapping or None")
+        # R1 blocker #4: seal a deep-frozen snapshot -- frozen=True only
+        # blocks attribute REBINDING, not in-place mutation of a mutable
+        # dict/tuple-of-dicts the attribute happens to hold. A caller
+        # mutating evidence_payload/diagnostic_evidence/diagnostic_overflow
+        # after construction now raises instead of silently desyncing the
+        # sealed value from fingerprint()/the persisted raw_payload.
+        object.__setattr__(self, "evidence_payload", _freeze(self.evidence_payload))
+        object.__setattr__(
+            self, "diagnostic_evidence", _freeze(self.diagnostic_evidence)
+        )
+        if self.diagnostic_overflow is not None:
+            object.__setattr__(
+                self, "diagnostic_overflow", _freeze(self.diagnostic_overflow)
+            )
 
     def idempotency_key(self, campaign_run_id: str) -> str:
         return f"{campaign_run_id}:{self.experiment_id}:{self.retry_index}"
@@ -421,17 +560,17 @@ class H6AAttemptBatchItem:
                 "reason_code": self.reason_code,
                 "fold_evidence_hash": self.fold_evidence_hash,
                 "run_identity": self.run_identity,
-                "evidence_payload": dict(self.evidence_payload),
+                "evidence_payload": _unfreeze(self.evidence_payload),
             }
         )
 
     def diagnostic_evidence_payload(self) -> list[dict]:
-        return [dict(row) for row in self.diagnostic_evidence]
+        return [_unfreeze(row) for row in self.diagnostic_evidence]
 
     def diagnostic_overflow_payload(self) -> dict:
         if self.diagnostic_overflow is None:
             return dict(_DEFAULT_DIAGNOSTIC_OVERFLOW_PAYLOAD)
-        return dict(self.diagnostic_overflow)
+        return _unfreeze(self.diagnostic_overflow)
 
 
 def _preflight_attempts(
@@ -439,6 +578,15 @@ def _preflight_attempts(
     *,
     row_id_to_experiment_id: Mapping[str, str],
 ) -> None:
+    """``record_h6a_attempts`` records ONLY the primary (retry_index=0)
+    batch -- an explicit retry is a separate, later, single-item call (a
+    real H4 rerun of one config), never smuggled into this 48-row batch.
+
+    R1 blocker #2: row_id set is checked against the CANONICAL universe
+    directly (never merely against whatever keys the caller's own
+    ``row_id_to_experiment_id`` happens to have -- that mapping is ALSO
+    independently validated by ``compute_exact_48_mapping_hash``, but this
+    check does not rely on that ordering)."""
     if len(attempts) != EXPECTED_TOTAL_ROWS:
         raise BatchValidationError(
             f"expected exactly {EXPECTED_TOTAL_ROWS} attempts, got {len(attempts)}"
@@ -446,9 +594,14 @@ def _preflight_attempts(
     seen_row_ids = [a.row_id for a in attempts]
     if len(set(seen_row_ids)) != EXPECTED_TOTAL_ROWS:
         raise BatchValidationError("duplicate row_id present in attempt batch")
+    if set(seen_row_ids) != _CANONICAL_ROW_SET:
+        raise BatchValidationError(
+            "attempt batch does not cover exactly the canonical 48 row IDs "
+            "(S3-00..S3-23,S4-00..S4-23)"
+        )
     if set(seen_row_ids) != set(row_id_to_experiment_id):
         raise BatchValidationError(
-            "attempt batch does not cover exactly the 48 canonical row IDs"
+            "attempt batch does not match row_id_to_experiment_id's row-id set"
         )
     for attempt in attempts:
         # H6AAttemptBatchItem.__post_init__ already validated its own
@@ -460,6 +613,11 @@ def _preflight_attempts(
             raise BatchValidationError(
                 f"attempt for row_id {attempt.row_id!r} carries an experiment_id that does "
                 "not match the trusted mapping"
+            )
+        if attempt.retry_index != 0:
+            raise BatchValidationError(
+                f"record_h6a_attempts only accepts the primary (retry_index=0) batch -- "
+                f"row_id {attempt.row_id!r} has retry_index={attempt.retry_index}"
             )
 
 
@@ -503,26 +661,49 @@ def _diagnostic_canonical_bytes(
 
 
 def _stored_diagnostic_evidence_payload(row: ResearchBacktestRun) -> list[dict]:
+    """R1 blocker #5: genuinely ABSENT (key missing entirely -- a
+    pre-ROB-981 row) normalizes to ``[]`` (an empty list IS a legitimate
+    "no diagnostics captured" fact, same semantic meaning as absent). A
+    PRESENT value that is malformed (not a list, or containing a non-dict
+    item) is a DIFFERENT, more severe case -- corrupted persisted data --
+    and is never silently coerced to the same default; it raises
+    ``DiagnosticStorageError`` instead (mirrors
+    ``research_campaign_bridge._stored_diagnostic_evidence_payload``'s own
+    absent-vs-malformed discipline exactly)."""
     raw_payload = row.raw_payload
     if type(raw_payload) is not dict:
-        return []
+        raise DiagnosticStorageError(
+            "stored trial raw_payload is not a dict -- cannot resolve diagnostic evidence"
+        )
     value = raw_payload.get("diagnostic_evidence", _MISSING)
     if value is _MISSING:
         return []
     if type(value) is not list or any(type(item) is not dict for item in value):
-        return []
+        raise DiagnosticStorageError(
+            "stored diagnostic_evidence is PRESENT but malformed (not a list of dicts) -- "
+            "refusing to silently default past corrupted persisted data"
+        )
     return value
 
 
 def _stored_diagnostic_overflow_payload(row: ResearchBacktestRun) -> dict:
+    """Same absent-vs-malformed distinction as
+    ``_stored_diagnostic_evidence_payload`` -- genuinely absent normalizes
+    to the closed default shape; a PRESENT value that is not a dict raises
+    rather than silently defaulting."""
     raw_payload = row.raw_payload
     if type(raw_payload) is not dict:
-        return dict(_DEFAULT_DIAGNOSTIC_OVERFLOW_PAYLOAD)
+        raise DiagnosticStorageError(
+            "stored trial raw_payload is not a dict -- cannot resolve diagnostic overflow"
+        )
     value = raw_payload.get("diagnostic_overflow", _MISSING)
     if value is _MISSING:
         return dict(_DEFAULT_DIAGNOSTIC_OVERFLOW_PAYLOAD)
     if type(value) is not dict:
-        return dict(_DEFAULT_DIAGNOSTIC_OVERFLOW_PAYLOAD)
+        raise DiagnosticStorageError(
+            "stored diagnostic_overflow is PRESENT but malformed (not a dict) -- refusing "
+            "to silently default past corrupted persisted data"
+        )
     return value
 
 
@@ -607,6 +788,7 @@ async def record_h6a_attempts(
       never rolled back here.
     """
     mapping_hash = compute_exact_48_mapping_hash(row_id_to_experiment_id)
+    _require_derived_run_id(campaign_run_id, full_campaign_hash=full_campaign_hash)
     _require_approved(
         approved,
         operation_kind=RECORD_ATTEMPTS_OPERATION_KIND,

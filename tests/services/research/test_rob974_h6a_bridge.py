@@ -84,7 +84,11 @@ def _mapping(specs: list[StrategyExperimentIdentity]) -> dict[str, str]:
 
 
 FULL_CAMPAIGN_HASH = _hex64("fixture-full-campaign")
-CAMPAIGN_RUN_ID = "rob974h6a-fixture-run"
+# Must be the value ACTUALLY derived from FULL_CAMPAIGN_HASH -- R1 blocker
+# #2 made record_h6a_attempts/register_h6a_campaign independently
+# re-derive and verify campaign_run_id, so a hand-picked literal (the
+# pre-fix fixture value) is no longer accepted.
+CAMPAIGN_RUN_ID = bridge.derive_campaign_run_id(FULL_CAMPAIGN_HASH)
 
 
 def _full_mapping() -> dict[str, str]:
@@ -102,6 +106,29 @@ def _approved(
         exact_48_mapping_hash=bridge.compute_exact_48_mapping_hash(mapping),
         approval_token="opaque-h6b-token",
     )
+
+
+class _FakeRegisteredRow:
+    def __init__(self, experiment_id: str):
+        self.experiment_id = experiment_id
+
+
+def _fake_registered_rows(specs) -> list[_FakeRegisteredRow]:
+    """A spy `register_experiments_fn` must return rows whose
+    experiment_id set matches what register_h6a_campaign independently
+    derives from the SAME specs (R1 blocker #2 post-delegate
+    re-verification) -- this builds those rows via the real derivation
+    recipe, never a stub `[]`."""
+    return [
+        _FakeRegisteredRow(
+            derive_experiment_id(
+                spec.strategy_key,
+                spec.strategy_version,
+                compute_identity_hashes(spec.components()),
+            )
+        )
+        for spec in specs
+    ]
 
 
 class _CallSpy:
@@ -216,14 +243,19 @@ class TestRegisterH6ACampaignZeroCallPreflight:
             spy.calls.append(("register", len(specs)))
             return []
 
+        different_hash = _hex64("different-hash")
         with pytest.raises(bridge.ApprovalContextError):
             await bridge.register_h6a_campaign(
                 _PoisonedSession(),
                 approved=_approved(
                     operation_kind=bridge.REGISTER_CAMPAIGN_OPERATION_KIND
                 ),
-                full_campaign_hash=_hex64("different-hash"),
-                campaign_run_id=CAMPAIGN_RUN_ID,
+                full_campaign_hash=different_hash,
+                # A matching (correctly re-derived) run id for THIS hash --
+                # isolates the plan-hash-vs-approval mismatch this test
+                # targets from the (separately covered) run-id-derivation
+                # check.
+                campaign_run_id=bridge.derive_campaign_run_id(different_hash),
                 s3_specs=_s3_specs(),
                 s4_specs=_s4_specs(),
                 row_id_to_experiment_id=_full_mapping(),
@@ -303,7 +335,7 @@ class TestRegisterH6ACampaignTransactionOwnership:
             session, *, specs, guard_opt_in_enabled, guard_policy
         ):
             spy.calls.append(("register", specs[0].strategy_key))
-            return []
+            return _fake_registered_rows(specs)
 
         await bridge.register_h6a_campaign(
             _PoisonedSession(),
@@ -330,7 +362,7 @@ class TestRegisterH6ACampaignTransactionOwnership:
             spy.calls.append(("register", specs[0].strategy_key))
             if specs[0].strategy_key == "ROB974-S4-FIXTURE":
                 raise boom
-            return []
+            return _fake_registered_rows(specs)
 
         with pytest.raises(RuntimeError) as excinfo:
             await bridge.register_h6a_campaign(
@@ -360,7 +392,7 @@ class TestRegisterH6ACampaignTransactionOwnership:
         async def register_experiments_fn(
             session, *, specs, guard_opt_in_enabled, guard_policy
         ):
-            return []
+            return _fake_registered_rows(specs)
 
         await bridge.register_h6a_campaign(
             _PoisonedSession(),
@@ -726,6 +758,72 @@ class TestH6AAttemptBatchItem:
         )
         assert base.fingerprint() == with_diagnostics.fingerprint()
 
+    def test_evidence_payload_rejects_post_construction_item_assignment(self):
+        item = bridge.H6AAttemptBatchItem(
+            row_id="S3-00",
+            experiment_id=_hex64("x"),
+            retry_index=0,
+            status="completed",
+            reason_code=None,
+            fold_evidence_hash=_hex64("fold"),
+            run_identity=_hex64("run"),
+            evidence_payload={"a": 1},
+        )
+        with pytest.raises(TypeError):
+            item.evidence_payload["a"] = 999
+
+    def test_diagnostic_evidence_entry_rejects_post_construction_item_assignment(self):
+        item = bridge.H6AAttemptBatchItem(
+            row_id="S3-00",
+            experiment_id=_hex64("x"),
+            retry_index=0,
+            status="completed",
+            reason_code=None,
+            fold_evidence_hash=_hex64("fold"),
+            run_identity=_hex64("run"),
+            evidence_payload={},
+            diagnostic_evidence=({"signature": "abc", "occurrence_count": 1},),
+        )
+        with pytest.raises(TypeError):
+            item.diagnostic_evidence[0]["signature"] = "tampered"
+
+    def test_diagnostic_overflow_rejects_post_construction_item_assignment(self):
+        item = bridge.H6AAttemptBatchItem(
+            row_id="S3-00",
+            experiment_id=_hex64("x"),
+            retry_index=0,
+            status="completed",
+            reason_code=None,
+            fold_evidence_hash=_hex64("fold"),
+            run_identity=_hex64("run"),
+            evidence_payload={},
+            diagnostic_overflow={
+                "truncated": False,
+                "omitted_distinct_signatures": 0,
+                "omitted_occurrences": 0,
+            },
+        )
+        with pytest.raises(TypeError):
+            item.diagnostic_overflow["truncated"] = True
+
+    def test_mutated_evidence_payload_after_construction_does_not_affect_fingerprint(
+        self,
+    ):
+        original = {"a": 1}
+        item = bridge.H6AAttemptBatchItem(
+            row_id="S3-00",
+            experiment_id=_hex64("x"),
+            retry_index=0,
+            status="completed",
+            reason_code=None,
+            fold_evidence_hash=_hex64("fold"),
+            run_identity=_hex64("run"),
+            evidence_payload=original,
+        )
+        before = item.fingerprint()
+        original["a"] = 999  # mutate the CALLER's own original dict
+        assert item.fingerprint() == before
+
 
 class TestDiagnosticReplayObserverIsolation:
     @pytest.mark.asyncio
@@ -821,11 +919,275 @@ class TestDiagnosticReplayObserverIsolation:
         assert bridge._stored_diagnostic_evidence_payload(absent) == []
         assert bridge._stored_diagnostic_evidence_payload(present_empty) == []
 
-    def test_malformed_present_diagnostic_does_not_crash_lookup(self):
+    def test_malformed_present_evidence_raises_instead_of_defaulting(self):
+        # R1 blocker #5: PRESENT-but-malformed is corrupted persisted data,
+        # a DIFFERENT and more severe case than genuinely absent -- it must
+        # loudly surface (raise), never silently coerce to the same `[]`
+        # default absence normalizes to.
         malformed = _FakeStoredRow(
             {"h6a_evidence_fingerprint": "x", "diagnostic_evidence": "not-a-list"}
         )
-        # Malformed present data degrades to empty rather than raising here
-        # -- the divergence CHECK downstream will then correctly observe a
-        # divergence against any real incoming diagnostic evidence.
-        assert bridge._stored_diagnostic_evidence_payload(malformed) == []
+        with pytest.raises(bridge.DiagnosticStorageError):
+            bridge._stored_diagnostic_evidence_payload(malformed)
+
+    def test_malformed_present_overflow_raises_instead_of_defaulting(self):
+        malformed = _FakeStoredRow(
+            {"h6a_evidence_fingerprint": "x", "diagnostic_overflow": "not-a-dict"}
+        )
+        with pytest.raises(bridge.DiagnosticStorageError):
+            bridge._stored_diagnostic_overflow_payload(malformed)
+
+    def test_absent_evidence_and_overflow_do_not_raise(self):
+        absent = _FakeStoredRow({"h6a_evidence_fingerprint": "x"})
+        assert bridge._stored_diagnostic_evidence_payload(absent) == []
+        assert bridge._stored_diagnostic_overflow_payload(absent) == dict(
+            bridge._DEFAULT_DIAGNOSTIC_OVERFLOW_PAYLOAD
+        )
+
+    def test_present_valid_evidence_list_item_with_non_dict_entry_raises(self):
+        malformed = _FakeStoredRow(
+            {"h6a_evidence_fingerprint": "x", "diagnostic_evidence": ["not-a-dict"]}
+        )
+        with pytest.raises(bridge.DiagnosticStorageError):
+            bridge._stored_diagnostic_evidence_payload(malformed)
+
+
+class TestCanonicalMappingHashValidation:
+    """R1 blocker #2: compute_exact_48_mapping_hash must validate the
+    canonical S3-00..S3-23,S4-00..S4-23 row-id universe, experiment_id
+    format, and uniqueness -- not merely a length-48 self-check."""
+
+    def test_non_canonical_row_ids_same_length_48_rejected(self):
+        bogus_mapping = {f"X-{i:02d}": _hex64(f"bogus-{i}") for i in range(48)}
+        with pytest.raises(bridge.BatchValidationError):
+            bridge.compute_exact_48_mapping_hash(bogus_mapping)
+
+    def test_duplicate_experiment_id_rejected(self):
+        mapping = _full_mapping()
+        row_ids = list(mapping)
+        mapping[row_ids[1]] = mapping[row_ids[0]]
+        with pytest.raises(bridge.BatchValidationError):
+            bridge.compute_exact_48_mapping_hash(mapping)
+
+    def test_non_hex64_experiment_id_rejected(self):
+        mapping = _full_mapping()
+        row_ids = list(mapping)
+        mapping[row_ids[0]] = "not-a-hash"
+        with pytest.raises(bridge.BatchValidationError):
+            bridge.compute_exact_48_mapping_hash(mapping)
+
+    def test_valid_canonical_mapping_accepted(self):
+        bridge.compute_exact_48_mapping_hash(_full_mapping())
+
+
+class TestRunIdIndependentRederivation:
+    @pytest.mark.asyncio
+    async def test_arbitrary_run_id_rejected_zero_calls(self):
+        spy = _CallSpy()
+
+        async def register_experiments_fn(
+            session, *, specs, guard_opt_in_enabled, guard_policy
+        ):
+            spy.calls.append(len(specs))
+            return _fake_registered_rows(specs)
+
+        with pytest.raises(bridge.RunIdDerivationError):
+            await bridge.register_h6a_campaign(
+                _PoisonedSession(),
+                approved=_approved(
+                    operation_kind=bridge.REGISTER_CAMPAIGN_OPERATION_KIND
+                ),
+                full_campaign_hash=FULL_CAMPAIGN_HASH,
+                campaign_run_id="arbitrary-uuid-1234-not-derived",
+                s3_specs=_s3_specs(),
+                s4_specs=_s4_specs(),
+                row_id_to_experiment_id=_full_mapping(),
+                guard_opt_in_enabled=True,
+                guard_policy=_POLICY,
+                register_experiments_fn=register_experiments_fn,
+            )
+        assert spy.calls == []
+
+    @pytest.mark.asyncio
+    async def test_record_attempts_arbitrary_run_id_rejected(self):
+        mapping = _full_mapping()
+
+        async def find_existing_trial_fn(session, *, experiment_pk, idempotency_key):
+            return None
+
+        async def record_trial_fn(session, *, experiment_id, request):
+            return _FakeStoredRow(
+                {
+                    "h6a_evidence_fingerprint": request.raw_payload[
+                        "h6a_evidence_fingerprint"
+                    ]
+                }
+            )
+
+        with pytest.raises(bridge.RunIdDerivationError):
+            await bridge.record_h6a_attempts(
+                _PoisonedSession(),
+                approved=_approved(
+                    operation_kind=bridge.RECORD_ATTEMPTS_OPERATION_KIND,
+                    mapping=mapping,
+                ),
+                full_campaign_hash=FULL_CAMPAIGN_HASH,
+                campaign_run_id="another-arbitrary-run-id",
+                row_id_to_experiment_id=mapping,
+                row_id_to_experiment_pk=_pk_mapping(mapping),
+                attempts=_all_attempts(mapping),
+                strategy_name="rob974-h6a",
+                timeframe="4h",
+                runner="h6a-fixture",
+                guard_opt_in_enabled=True,
+                guard_policy=_POLICY,
+                find_existing_trial_fn=find_existing_trial_fn,
+                record_trial_fn=record_trial_fn,
+            )
+
+
+class TestRetryIndexZeroEnforcement:
+    @pytest.mark.asyncio
+    async def test_uniform_retry_index_7_rejected(self):
+        mapping = _full_mapping()
+        attempts = [
+            bridge.H6AAttemptBatchItem(
+                row_id=row_id,
+                experiment_id=exp_id,
+                retry_index=7,
+                status="completed",
+                reason_code=None,
+                fold_evidence_hash=_hex64(f"fold-{row_id}"),
+                run_identity=_hex64(f"run-{row_id}"),
+                evidence_payload={},
+            )
+            for row_id, exp_id in mapping.items()
+        ]
+
+        async def find_existing_trial_fn(session, *, experiment_pk, idempotency_key):
+            return None
+
+        record_spy = _CallSpy()
+
+        async def record_trial_fn(session, *, experiment_id, request):
+            record_spy.calls.append(experiment_id)
+            return _FakeStoredRow(
+                {
+                    "h6a_evidence_fingerprint": request.raw_payload[
+                        "h6a_evidence_fingerprint"
+                    ]
+                }
+            )
+
+        with pytest.raises(bridge.BatchValidationError):
+            await bridge.record_h6a_attempts(
+                _PoisonedSession(),
+                approved=_approved(
+                    operation_kind=bridge.RECORD_ATTEMPTS_OPERATION_KIND,
+                    mapping=mapping,
+                ),
+                full_campaign_hash=FULL_CAMPAIGN_HASH,
+                campaign_run_id=CAMPAIGN_RUN_ID,
+                row_id_to_experiment_id=mapping,
+                row_id_to_experiment_pk=_pk_mapping(mapping),
+                attempts=attempts,
+                strategy_name="rob974-h6a",
+                timeframe="4h",
+                runner="h6a-fixture",
+                guard_opt_in_enabled=True,
+                guard_policy=_POLICY,
+                find_existing_trial_fn=find_existing_trial_fn,
+                record_trial_fn=record_trial_fn,
+            )
+        assert record_spy.calls == []
+
+
+class TestDelegateReturnReverification:
+    @pytest.mark.asyncio
+    async def test_register_experiments_fn_returning_wrong_rows_rejected(self):
+        async def register_experiments_fn(
+            session, *, specs, guard_opt_in_enabled, guard_policy
+        ):
+            # A buggy/malicious delegate returns rows for a DIFFERENT
+            # (self-consistent-looking but wrong) experiment_id set.
+            return [_FakeRegisteredRow(_hex64(f"wrong-{i}")) for i in range(len(specs))]
+
+        with pytest.raises(bridge.BatchValidationError):
+            await bridge.register_h6a_campaign(
+                _PoisonedSession(),
+                approved=_approved(
+                    operation_kind=bridge.REGISTER_CAMPAIGN_OPERATION_KIND
+                ),
+                full_campaign_hash=FULL_CAMPAIGN_HASH,
+                campaign_run_id=CAMPAIGN_RUN_ID,
+                s3_specs=_s3_specs(),
+                s4_specs=_s4_specs(),
+                row_id_to_experiment_id=_full_mapping(),
+                guard_opt_in_enabled=True,
+                guard_policy=_POLICY,
+                register_experiments_fn=register_experiments_fn,
+            )
+
+
+class TestNonCanonicalRunIdRetry7ExploitClosed:
+    """The exact R1 blocker #2 repro: X-00..X-47 row ids, an arbitrary run
+    ID, and a uniform retry_index=7 batch must never reach the record
+    loop."""
+
+    @pytest.mark.asyncio
+    async def test_exploit_batch_rejected_zero_record_calls(self):
+        bogus_mapping = {f"X-{i:02d}": _hex64(f"bogus-{i}") for i in range(48)}
+        attempts = [
+            bridge.H6AAttemptBatchItem(
+                row_id=row_id,
+                experiment_id=exp_id,
+                retry_index=7,
+                status="completed",
+                reason_code=None,
+                fold_evidence_hash=_hex64(f"fold-{row_id}"),
+                run_identity=_hex64(f"run-{row_id}"),
+                evidence_payload={},
+            )
+            for row_id, exp_id in bogus_mapping.items()
+        ]
+        record_spy = _CallSpy()
+
+        async def find_existing_trial_fn(session, *, experiment_pk, idempotency_key):
+            return None
+
+        async def record_trial_fn(session, *, experiment_id, request):
+            record_spy.calls.append(experiment_id)
+            return _FakeStoredRow(
+                {
+                    "h6a_evidence_fingerprint": request.raw_payload[
+                        "h6a_evidence_fingerprint"
+                    ]
+                }
+            )
+
+        with pytest.raises(bridge.H6ABridgeError):
+            await bridge.record_h6a_attempts(
+                _PoisonedSession(),
+                approved=bridge.ApprovedMutationContext(
+                    operation_kind=bridge.RECORD_ATTEMPTS_OPERATION_KIND,
+                    canonical_plan_hash=FULL_CAMPAIGN_HASH,
+                    derived_run_id="arbitrary-run-id-forged",
+                    exact_48_mapping_hash=_hex64("forged-mapping-hash"),
+                    approval_token="forged-token",
+                ),
+                full_campaign_hash=FULL_CAMPAIGN_HASH,
+                campaign_run_id="arbitrary-run-id-forged",
+                row_id_to_experiment_id=bogus_mapping,
+                row_id_to_experiment_pk={
+                    rid: i for i, rid in enumerate(bogus_mapping, start=1)
+                },
+                attempts=attempts,
+                strategy_name="rob974-h6a",
+                timeframe="4h",
+                runner="h6a-fixture",
+                guard_opt_in_enabled=True,
+                guard_policy=_POLICY,
+                find_existing_trial_fn=find_existing_trial_fn,
+                record_trial_fn=record_trial_fn,
+            )
+        assert record_spy.calls == []
