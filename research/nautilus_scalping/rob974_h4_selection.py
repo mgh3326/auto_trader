@@ -125,11 +125,157 @@ def invoke_after_arbitration[Winner, Entry, Opened](
     return ("opened", gate, h2_open(winner, entry))
 
 
+@dataclass(frozen=True, slots=True)
+class TrainUnitMetric:
+    unit: str
+    completed_basket_trades: int
+    e17_bps: float
+
+    def __post_init__(self) -> None:
+        if type(self.unit) is not str or not self.unit:
+            raise TypeError("unit must be a non-empty built-in str")
+        if _int(self.completed_basket_trades, "completed_basket_trades") < 0:
+            raise ValueError("completed_basket_trades must not be negative")
+        _float(self.e17_bps, "e17_bps")
+
+
+@dataclass(frozen=True, slots=True)
+class TrainCandidateTrace:
+    config_id: str
+    units: tuple[TrainUnitMetric, ...]
+    pf: float
+    pooled_e17_bps: float
+    train_input_hash: str
+    train_scenario_hash: str
+
+    def __post_init__(self) -> None:
+        if type(self.config_id) is not str:
+            raise TypeError("config_id must be built-in str")
+        if type(self.units) is not tuple or not self.units:
+            raise TypeError("units must be a non-empty built-in tuple")
+        if any(type(unit) is not TrainUnitMetric for unit in self.units):
+            raise TypeError("units must contain exact TrainUnitMetric values")
+        if len({unit.unit for unit in self.units}) != len(self.units):
+            raise ValueError("TRAIN units must be unique")
+        _float(self.pf, "pf")
+        _float(self.pooled_e17_bps, "pooled_e17_bps")
+        for name in ("train_input_hash", "train_scenario_hash"):
+            value = getattr(self, name)
+            if (
+                type(value) is not str
+                or len(value) != 64
+                or any(char not in "0123456789abcdef" for char in value)
+            ):
+                raise ValueError(f"{name} must be lowercase SHA-256")
+
+    @property
+    def eligible_units(self) -> tuple[TrainUnitMetric, ...]:
+        return tuple(unit for unit in self.units if unit.completed_basket_trades >= 5)
+
+    @property
+    def eligible_unit_mean_e17_bps(self) -> float | None:
+        eligible = self.eligible_units
+        if len(eligible) < 2:
+            return None
+        return math.fsum(unit.e17_bps for unit in eligible) / len(eligible)
+
+
+@dataclass(frozen=True, slots=True)
+class TrainSelection:
+    strategy: str
+    traces: tuple[TrainCandidateTrace, ...]
+    selected_config_id: str | None
+    tie_break: str | None
+
+    def __post_init__(self) -> None:
+        if type(self.strategy) is not str or self.strategy not in ("S3", "S4"):
+            raise ValueError("strategy must be S3 or S4")
+        if type(self.traces) is not tuple or len(self.traces) != 24:
+            raise ValueError("selection requires exactly 24 TRAIN traces")
+        expected = tuple(f"{self.strategy}-{index:02d}" for index in range(24))
+        if tuple(trace.config_id for trace in self.traces) != expected:
+            raise ValueError("TRAIN traces must use the exact ordered config roster")
+        eligible_ids = {
+            trace.config_id
+            for trace in self.traces
+            if trace.eligible_unit_mean_e17_bps is not None
+        }
+        if (
+            self.selected_config_id is not None
+            and self.selected_config_id not in eligible_ids
+        ):
+            raise ValueError("selected config must be TRAIN-eligible")
+        if (self.selected_config_id is None) != (self.tie_break is None):
+            raise ValueError("selection/tie-break must be jointly present or absent")
+
+
+def select_train_config(strategy: object, traces: object) -> TrainSelection:
+    """Choose one shared winner from TRAIN metrics only, never pooled E17."""
+    if type(strategy) is not str or strategy not in ("S3", "S4"):
+        raise ValueError("strategy must be S3 or S4")
+    if type(traces) is not tuple or any(
+        type(trace) is not TrainCandidateTrace for trace in traces
+    ):
+        raise TypeError("traces must be a built-in tuple of exact TrainCandidateTrace")
+    eligible = [
+        trace for trace in traces if trace.eligible_unit_mean_e17_bps is not None
+    ]
+    if not eligible:
+        return TrainSelection(strategy, traces, None, None)
+    winner = min(
+        eligible,
+        key=lambda trace: (
+            -float(trace.eligible_unit_mean_e17_bps),
+            -trace.pf,
+            trace.config_id,
+        ),
+    )
+    return TrainSelection(
+        strategy,
+        traces,
+        winner.config_id,
+        "eligible_unit_equal_weight_E17_desc_then_PF_desc_then_config_id_asc",
+    )
+
+
+def run_train_global_configs[Config, Generated, EngineResult](
+    *,
+    strategy: object,
+    configs: object,
+    generator: Callable[[Config], Generated],
+    fresh_primary_engine: Callable[[], Callable[[Generated], EngineResult]],
+) -> tuple[EngineResult, ...]:
+    """Invoke one global generator and independently fresh engine per config."""
+    if type(strategy) is not str or strategy not in ("S3", "S4"):
+        raise ValueError("strategy must be S3 or S4")
+    if type(configs) is not tuple or len(configs) != 24:
+        raise ValueError("configs must be the exact ordered 24-row tuple")
+    expected = tuple(f"{strategy}-{index:02d}" for index in range(24))
+    if tuple(getattr(config, "config_id", None) for config in configs) != expected:
+        raise ValueError("configs must use the exact canonical roster/order")
+    engine_ids: set[int] = set()
+    engines: list[Callable[[Generated], EngineResult]] = []
+    results: list[EngineResult] = []
+    for config in configs:
+        engine = fresh_primary_engine()
+        if not callable(engine) or id(engine) in engine_ids:
+            raise ValueError("each TRAIN config requires an independently fresh engine")
+        engine_ids.add(id(engine))
+        engines.append(engine)
+        results.append(engine(generator(config)))
+    return tuple(results)
+
+
 __all__ = [
     "FundingGateResult",
     "PITFundingObservation",
+    "TrainCandidateTrace",
+    "TrainSelection",
+    "TrainUnitMetric",
     "invoke_after_arbitration",
     "last_known_pit_funding",
     "s3_funding_gate",
     "s4_funding_gate",
+    "select_train_config",
+    "run_train_global_configs",
 ]
