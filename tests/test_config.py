@@ -313,10 +313,3 @@ class TestConfigLoading:
 
 def test_runbook_exists() -> None:
     assert Path("docs/runbooks/freqtrade-research-pipeline.md").exists()
-
-
-@pytest.mark.unit
-def test_watch_notify_transport_defaults_to_hermes_webhook():
-    from app.core.config import settings
-
-    assert settings.WATCH_NOTIFY_TRANSPORT in ("hermes_webhook", "python_direct")

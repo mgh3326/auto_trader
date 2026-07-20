@@ -12,8 +12,8 @@ Locked semantics:
 * Notification target is **Hermes**, never the agent gateway (the legacy
   agent-gateway watch-alert path has been removed).
 * The alert only transitions to ``triggered`` after Hermes confirms
-  delivery. ``skipped`` (HERMES_ENABLED=False) and ``failed`` deliveries
-  leave the alert ``active`` so the next scan loop can re-attempt
+  delivery. ``skipped`` (e.g. Discord transport not configured) and
+  ``failed`` deliveries leave the alert ``active`` so the next scan loop can re-attempt
   against the existing event row (looked up via the idempotency_key
   collision). The event row carries the delivery-tracking columns
   (``delivery_status`` / ``delivery_reason`` / ``delivered_at`` /

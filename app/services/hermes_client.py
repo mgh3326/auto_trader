@@ -1,10 +1,11 @@
-"""ROB-265 Plan 4 — Hermes review-trigger notification client.
+"""ROB-265 Plan 4 — watch-trigger review notification payload + delivery.
 
-Hermes is the operator review surface auto_trader delivers watch-trigger
-events to. This client POSTs a closed payload (see
-:class:`ReviewTriggerPayload`) carrying the full immutable trigger
-identity snapshot from ``investment_watch_events`` plus the linkage
-back to the source report / item / alert.
+Carries the closed payload (see :class:`ReviewTriggerPayload`) built from
+the full immutable trigger identity snapshot in ``investment_watch_events``
+plus the linkage back to the source report / item / alert, and delivers it
+in-process via :class:`~app.monitoring.trade_notifier.TradeNotifier`
+(ROB-566 — the earlier HTTP webhook delivery to an external Hermes gateway
+has been removed; ROB-986).
 
 The agent gateway (formerly OpenClaw) is the legacy notification surface
 and is intentionally not touched from this module. The agent-gateway
@@ -20,10 +21,8 @@ from typing import Any, Literal
 from urllib.parse import quote
 from uuid import UUID
 
-import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from app.core.config import settings
 from app.schemas.investment_reports import (
     ItemIntentLiteral,
     ItemSideLiteral,
@@ -302,87 +301,17 @@ class HermesDeliveryResult:
 
 
 class HermesNotificationClient:
-    """POSTs :class:`ReviewTriggerPayload` to the Hermes webhook.
+    """Delivers :class:`ReviewTriggerPayload` in-process via TradeNotifier.
 
-    When ``HERMES_ENABLED`` is False (default) the client logs the
-    intended delivery and returns ``status='skipped'`` without making
-    the HTTP request. This keeps dev/test runs from hitting an external
-    URL while still exercising the payload-building path.
+    ROB-566 replaced the original HTTP webhook delivery (to an external
+    Hermes gateway) with in-process rendering through
+    :class:`~app.monitoring.trade_notifier.TradeNotifier`; ROB-986 removed
+    the now-dead webhook code path entirely.
     """
-
-    _DEFAULT_TIMEOUT_SECONDS = 10.0
-
-    def __init__(
-        self,
-        webhook_url: str | None = None,
-        token: str | None = None,
-        enabled: bool | None = None,
-        *,
-        transport: httpx.AsyncBaseTransport | None = None,
-        timeout_seconds: float | None = None,
-    ) -> None:
-        self._webhook_url = webhook_url or settings.HERMES_WEBHOOK_URL
-        self._token = token if token is not None else settings.HERMES_TOKEN
-        self._enabled = settings.HERMES_ENABLED if enabled is None else enabled
-        self._timeout = timeout_seconds or self._DEFAULT_TIMEOUT_SECONDS
-        self._client = httpx.AsyncClient(transport=transport, timeout=self._timeout)
 
     async def send_review_trigger(
         self, payload: ReviewTriggerPayload
     ) -> HermesDeliveryResult:
-        if settings.WATCH_NOTIFY_TRANSPORT == "python_direct":
-            return await self._render_in_process(payload)
-
-        if not self._enabled:
-            logger.debug(
-                "Hermes disabled — skipping review-trigger delivery: "
-                "event_uuid=%s alert_uuid=%s outcome=%s",
-                payload.event_uuid,
-                payload.alert_uuid,
-                payload.outcome,
-            )
-            return HermesDeliveryResult(status="skipped")
-
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
-
-        body = payload.model_dump_json(by_alias=True)
-
-        try:
-            response = await self._client.post(
-                self._webhook_url, content=body, headers=headers
-            )
-        except httpx.HTTPError as exc:
-            logger.warning(
-                "Hermes review-trigger delivery raised: event_uuid=%s error=%s",
-                payload.event_uuid,
-                exc,
-            )
-            return HermesDeliveryResult(status="failed", reason="request_failed")
-
-        if 200 <= response.status_code < 300:
-            return HermesDeliveryResult(
-                status="success", http_status=response.status_code
-            )
-
-        logger.warning(
-            "Hermes review-trigger delivery non-2xx: "
-            "event_uuid=%s http_status=%s body=%s",
-            payload.event_uuid,
-            response.status_code,
-            response.text[:200],
-        )
-        return HermesDeliveryResult(
-            status="failed",
-            http_status=response.status_code,
-            reason=f"http_{response.status_code}",
-        )
-
-    async def _render_in_process(
-        self, payload: ReviewTriggerPayload
-    ) -> HermesDeliveryResult:
-        """ROB-566: Prefect 수신기 대신 TradeNotifier로 직접 렌더. 결과를 3-way로 매핑."""
         from app.monitoring.trade_notifier import get_trade_notifier
 
         notifier = get_trade_notifier()
@@ -397,8 +326,8 @@ class HermesNotificationClient:
             return HermesDeliveryResult(status="failed", reason="render_exception")
         if sent:
             return HermesDeliveryResult(status="success")
-        # webhook 미설정 등으로 dispatch가 False면 skipped(=alert active 유지, 재시도)
+        # dispatch가 False면 skipped(=alert active 유지, 재시도)
         return HermesDeliveryResult(status="skipped", reason="discord_not_configured")
 
     async def close(self) -> None:
-        await self._client.aclose()
+        """No-op — retained so callers' symmetric close() calls stay valid."""

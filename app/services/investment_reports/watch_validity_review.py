@@ -12,7 +12,6 @@ Locked semantics:
 * Notification reuses the Hermes review-trigger contract; verdict + reason
   ride in ``scanner_snapshot`` with ``outcome='review_required'``. No
   investment_watch_events rows are created.
-* HERMES_ENABLED default False -> deliveries are skipped.
 """
 
 from __future__ import annotations
