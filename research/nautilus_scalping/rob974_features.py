@@ -224,7 +224,9 @@ def synchronized_features(rows: Mapping[str, Sequence[MinuteBar]]) -> tuple[Comm
         for symbol, index in zip(SYMBOLS, bars_at, strict=True):
             # bar close data is recoverable from the contiguous 4h build, never future rows.
             built = build_complete_4h(rows[symbol])
-            if index < 6 or built[index].ts != built[index - 6].close_ts:
+            if index < 6 or any(
+                built[k].ts != built[k - 1].close_ts for k in range(index - 5, index + 1)
+            ):
                 break
             returns24.append(math.log(built[index].close / built[index - 6].close))
         else:
@@ -233,6 +235,11 @@ def synchronized_features(rows: Mapping[str, Sequence[MinuteBar]]) -> tuple[Comm
                 continue
             output.append(CommonSnapshot(ts, sorted(rs)[1], sorted(returns24)[1], sum(x > 0 for x in returns24), sum(x < 0 for x in returns24), features))
     return tuple(output)
+
+
+def compute_common_features(rows: Mapping[str, Sequence[MinuteBar]]) -> tuple[CommonSnapshot, ...]:
+    """Named public boundary for the synchronized S3/S4 common plane."""
+    return synchronized_features(rows)
 
 
 def phase_features(rows: Mapping[str, Sequence[MinuteBar]], start_ts: int, end_ts: int) -> tuple[CommonSnapshot, ...]:
