@@ -453,10 +453,15 @@ class TestD13ACampaignDecisionPolicyCommitment:
         )
 
     def test_branch_order_mutation_changes_full_campaign_hash(self):
+        # A genuine FUTURE policy revision (a distinct, non-"d13_a.v1"
+        # policy_version) may legitimately carry a different both_pass_result
+        # -- this is exactly the "injectable future policy" the exact-pin
+        # gate below deliberately does NOT apply to.
         base = _build_envelope()
         mutated_decision_policy = h6a.CampaignDecisionPolicy(
             **{
                 **h6a.D13_A_CAMPAIGN_DECISION_POLICY.__dict__,
+                "policy_version": "d13_a_future.v2",
                 "both_pass_result": "a_different_both_pass_semantics",
             }
         )
@@ -472,6 +477,7 @@ class TestD13ACampaignDecisionPolicyCommitment:
         mutated_decision_policy = h6a.CampaignDecisionPolicy(
             **{
                 **h6a.D13_A_CAMPAIGN_DECISION_POLICY.__dict__,
+                "policy_version": "d13_a_future.v2",
                 "both_pass_ranking_order": ("lower_timeout", "higher_pooled_e17"),
             }
         )
@@ -481,6 +487,86 @@ class TestD13ACampaignDecisionPolicyCommitment:
             )
         )
         assert base.full_campaign_hash() != mutated.full_campaign_hash()
+
+    def test_same_version_contradictory_both_fail_result_rejected(self):
+        # R3 finding #5 exact repro: policy_version stays "d13_a.v1" but
+        # both_fail_result is swapped for a contradictory (both_pass-shaped)
+        # value -- a same-shape-but-wrong policy under the SAME claimed
+        # version must never construct.
+        with pytest.raises(h6a.H6APayloadError):
+            h6a.CampaignDecisionPolicy(
+                **{
+                    **h6a.D13_A_CAMPAIGN_DECISION_POLICY.__dict__,
+                    "both_fail_result": "historical_pass_s4_demo_candidate",
+                }
+            )
+
+    def test_same_version_contradictory_incomplete_result_rejected(self):
+        with pytest.raises(h6a.H6APayloadError):
+            h6a.CampaignDecisionPolicy(
+                **{
+                    **h6a.D13_A_CAMPAIGN_DECISION_POLICY.__dict__,
+                    "incomplete_result": "not_the_approved_incomplete_label",
+                }
+            )
+
+    def test_same_version_contradictory_s3_only_pass_result_rejected(self):
+        with pytest.raises(h6a.H6APayloadError):
+            h6a.CampaignDecisionPolicy(
+                **{
+                    **h6a.D13_A_CAMPAIGN_DECISION_POLICY.__dict__,
+                    "s3_only_pass_result": "not_the_approved_s3_label",
+                }
+            )
+
+    def test_same_version_contradictory_s4_only_pass_result_rejected(self):
+        with pytest.raises(h6a.H6APayloadError):
+            h6a.CampaignDecisionPolicy(
+                **{
+                    **h6a.D13_A_CAMPAIGN_DECISION_POLICY.__dict__,
+                    "s4_only_pass_result": "not_the_approved_s4_label",
+                }
+            )
+
+    def test_same_version_contradictory_both_pass_result_rejected(self):
+        with pytest.raises(h6a.H6APayloadError):
+            h6a.CampaignDecisionPolicy(
+                **{
+                    **h6a.D13_A_CAMPAIGN_DECISION_POLICY.__dict__,
+                    "both_pass_result": "not_the_approved_both_pass_label",
+                }
+            )
+
+    def test_same_version_contradictory_ranking_order_rejected(self):
+        with pytest.raises(h6a.H6APayloadError):
+            h6a.CampaignDecisionPolicy(
+                **{
+                    **h6a.D13_A_CAMPAIGN_DECISION_POLICY.__dict__,
+                    "both_pass_ranking_order": ("lower_timeout", "higher_pooled_e17"),
+                }
+            )
+
+    def test_same_version_contradictory_promotion_blocked_reason_rejected(self):
+        with pytest.raises(h6a.H6APayloadError):
+            h6a.CampaignDecisionPolicy(
+                **{
+                    **h6a.D13_A_CAMPAIGN_DECISION_POLICY.__dict__,
+                    "s4_promotion_blocked_reason": "not_the_approved_reason",
+                }
+            )
+
+    def test_different_policy_version_still_allows_injectable_results(self):
+        # The counterpart positive case -- a genuinely different
+        # policy_version is NOT held to the d13_a.v1 exact pins (this is
+        # the "future policy revision" escape hatch the module's own
+        # docstring describes).
+        h6a.CampaignDecisionPolicy(
+            **{
+                **h6a.D13_A_CAMPAIGN_DECISION_POLICY.__dict__,
+                "policy_version": "d13_a_future.v2",
+                "both_fail_result": "a_totally_new_future_label",
+            }
+        )
 
     def test_s4_demo_eligible_default_cannot_be_relaxed_to_true(self):
         with pytest.raises(h6a.H6APayloadError):

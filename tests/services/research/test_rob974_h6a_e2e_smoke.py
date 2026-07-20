@@ -23,6 +23,7 @@ import rob974_h6a_smoke as smoke  # noqa: E402 -- after sys.path shim
 
 from app.schemas.research_backtest import StrategyExperimentIdentity  # noqa: E402
 from app.services import rob974_h6a_bridge as bridge  # noqa: E402
+from app.services.research_canonical_hash import compute_identity_hashes  # noqa: E402
 from app.services.research_db_write_guard import (  # noqa: E402
     ResearchDbPolicy,
     ResearchDbTarget,
@@ -108,20 +109,31 @@ class TestFullPipelineE2ESmoke:
         register_calls = []
 
         class _FakeRegisteredRow:
-            def __init__(self, experiment_id):
+            def __init__(self, experiment_id, **fields):
                 self.experiment_id = experiment_id
+                for name, value in fields.items():
+                    setattr(self, name, value)
 
         async def register_experiments_fn(
             session, *, specs, guard_opt_in_enabled, guard_policy
         ):
             register_calls.append(len(specs))
-            # R1 blocker #2: register_h6a_campaign re-verifies the returned
-            # rows' experiment_id set against its own trusted derivation --
-            # a stub `[]` is no longer accepted.
-            return [
-                _FakeRegisteredRow(plan.row_id_to_experiment_id[spec.params["row_id"]])
-                for spec in specs
-            ]
+            # R1 blocker #2 / R3 finding #2: register_h6a_campaign
+            # re-verifies the returned rows' canonical ORDER and FULL
+            # identity against its own trusted derivation -- a stub `[]` or
+            # an experiment_id-only fake is no longer accepted.
+            rows = []
+            for spec in specs:
+                hashes = compute_identity_hashes(spec.components())
+                rows.append(
+                    _FakeRegisteredRow(
+                        plan.row_id_to_experiment_id[spec.params["row_id"]],
+                        strategy_key=spec.strategy_key,
+                        strategy_version=spec.strategy_version,
+                        **hashes,
+                    )
+                )
+            return rows
 
         registered = await bridge.register_h6a_campaign(
             _PoisonedSession(),

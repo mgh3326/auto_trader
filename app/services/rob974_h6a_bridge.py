@@ -57,6 +57,7 @@ from app.schemas.research_backtest import (
 from app.services import strategy_experiment_registry as registry
 from app.services.research_campaign_bridge import register_campaign_experiments
 from app.services.research_canonical_hash import (
+    IDENTITY_COMPONENTS,
     canonical_json,
     canonical_sha256,
     compute_identity_hashes,
@@ -104,6 +105,13 @@ _DEFAULT_DIAGNOSTIC_OVERFLOW_PAYLOAD: dict[str, Any] = {
 }
 
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+
+# R3 finding #4: stand-in "canonical bytes" for a stored diagnostic that
+# cannot be canonicalized at all (PRESENT-but-malformed persisted data) --
+# never equal to any real _diagnostic_canonical_bytes(...) output, so a
+# malformed stored value is always treated as a (loudly observed, non-fatal)
+# divergence rather than silently masquerading as byte-identical.
+_MALFORMED_STORED_DIAGNOSTIC_MARKER = b"__rob974_h6a_malformed_stored_diagnostic__"
 
 EXPECTED_SLICE_SIZE = 24
 EXPECTED_TOTAL_ROWS = 48
@@ -329,60 +337,111 @@ def _spec_row_id(spec: StrategyExperimentIdentity) -> str | None:
     return None
 
 
+# The full set of fields a registered ``ResearchStrategyExperiment`` row must
+# match, independently re-derived from the caller's own trusted spec -- R3
+# finding #2: an experiment_id-only re-check cannot detect a delegate that
+# returns the right IDs with a tampered strategy_key/version or a tampered
+# per-component hash on the returned row.
+_IDENTITY_HASH_FIELDS: tuple[str, ...] = tuple(
+    f"{name}_hash" for name in IDENTITY_COMPONENTS
+)
+_FULL_IDENTITY_FIELDS: tuple[str, ...] = (
+    "strategy_key",
+    "strategy_version",
+) + _IDENTITY_HASH_FIELDS
+
+
 def _preflight_specs(
     specs: Sequence[StrategyExperimentIdentity],
     *,
     expected_slug: str,
     row_id_to_experiment_id: Mapping[str, str],
-) -> frozenset[str]:
+) -> tuple[list[str], dict[str, dict[str, str]]]:
     """Independently re-derive and cross-check EVERY spec's experiment_id
     against the trusted mapping BEFORE any service call -- a malformed
     first/middle/LAST entry means zero registration calls for either slice
-    (this loop is pure computation, no I/O). Returns the TRUSTED expected
-    experiment_id set for this slice, so the caller can re-verify the
-    registrar's returned rows against it post-delegate (R1 blocker #2)."""
+    (this loop is pure computation, no I/O).
+
+    R3 finding #2: also enforces that ``specs`` are supplied in EXACT
+    canonical row order (not merely as the correct SET) -- a caller-side
+    reorder is refused here, before any service call, the same way a
+    delegate-side reorder is refused post-delegate by
+    ``_verify_registered_rows``.
+
+    Returns ``(expected_row_order, expected_by_row_id)`` -- the canonical
+    row-id sequence for this slice, and each row's FULL trusted identity
+    (experiment_id + strategy_key/version + every component hash), so the
+    caller can re-verify the registrar's returned rows' order AND full
+    semantic identity against it post-delegate (R1 blocker #2 / R3
+    finding #2)."""
     if len(specs) != EXPECTED_SLICE_SIZE:
         raise BatchValidationError(
             f"expected exactly {EXPECTED_SLICE_SIZE} {expected_slug} specs, got {len(specs)}"
         )
-    seen_row_ids: set[str] = set()
-    expected_experiment_ids: set[str] = set()
-    for spec in specs:
-        row_id = _spec_row_id(spec)
-        if row_id is None or not row_id.startswith(f"{expected_slug}-"):
-            raise BatchValidationError(
-                f"a {expected_slug} spec is missing/foreign params['row_id']"
-            )
-        if row_id in seen_row_ids:
-            raise BatchValidationError(
-                f"duplicate row_id {row_id!r} within {expected_slug}"
-            )
-        seen_row_ids.add(row_id)
+    expected_row_order = [
+        row_id
+        for row_id in CANONICAL_ROW_ORDER
+        if row_id.startswith(f"{expected_slug}-")
+    ]
+    actual_row_order = [_spec_row_id(spec) for spec in specs]
+    if actual_row_order != expected_row_order:
+        raise BatchValidationError(
+            f"{expected_slug} specs must be supplied in exact canonical row order "
+            f"{expected_row_order!r}, got {actual_row_order!r} -- a same-set-but-reordered "
+            "slice is refused before any service call"
+        )
+    expected_by_row_id: dict[str, dict[str, str]] = {}
+    for row_id, spec in zip(expected_row_order, specs, strict=True):
         expected_experiment_id = row_id_to_experiment_id.get(row_id)
         if expected_experiment_id is None:
             raise BatchValidationError(
                 f"row_id {row_id!r} is not present in the trusted row_id_to_experiment_id "
                 "mapping"
             )
-        derived = derive_experiment_id(
-            spec.strategy_key,
-            spec.strategy_version,
-            compute_identity_hashes(spec.components()),
-        )
+        hashes = compute_identity_hashes(spec.components())
+        derived = derive_experiment_id(spec.strategy_key, spec.strategy_version, hashes)
         if derived != expected_experiment_id:
             raise BatchValidationError(
                 f"spec for row_id {row_id!r} derives an experiment_id that does not match "
                 "the trusted mapping"
             )
-        expected_experiment_ids.add(expected_experiment_id)
-    expected_row_ids = {
-        rid for rid in row_id_to_experiment_id if rid.startswith(f"{expected_slug}-")
-    }
-    if seen_row_ids != expected_row_ids:
+        expected_by_row_id[row_id] = {
+            "experiment_id": expected_experiment_id,
+            "strategy_key": spec.strategy_key,
+            "strategy_version": spec.strategy_version,
+            **hashes,
+        }
+    return expected_row_order, expected_by_row_id
+
+
+def _verify_registered_rows(
+    registered: Sequence[ResearchStrategyExperiment],
+    *,
+    expected_row_order: list[str],
+    expected_by_row_id: dict[str, dict[str, str]],
+    slug: str,
+) -> None:
+    """R3 finding #2: never trust the delegate's returned SEQUENCE or the
+    returned rows' full identity at face value -- a delegate returning the
+    correct 24 experiment_ids in a DIFFERENT order (a set-only re-check
+    cannot see this), or the correct experiment_id with a tampered
+    strategy_key/version/component hash on the row object itself, is
+    refused here."""
+    if len(registered) != len(expected_row_order):
         raise BatchValidationError(
-            f"{expected_slug} specs do not cover exactly its 24 expected row IDs"
+            f"register_experiments_fn returned {len(registered)} {slug} rows, expected "
+            f"exactly {len(expected_row_order)}"
         )
-    return frozenset(expected_experiment_ids)
+    for row_id, row in zip(expected_row_order, registered, strict=True):
+        expected = expected_by_row_id[row_id]
+        for field in _FULL_IDENTITY_FIELDS + ("experiment_id",):
+            if getattr(row, field, _MISSING) != expected[field]:
+                raise BatchValidationError(
+                    f"register_experiments_fn returned a {slug} row at canonical position "
+                    f"{row_id!r} whose {field!r} does not match the independently derived "
+                    "value -- refusing to trust the delegate's return value (wrong order or "
+                    "tampered identity)"
+                )
 
 
 RegisterExperimentsFn = Callable[..., Awaitable[list[ResearchStrategyExperiment]]]
@@ -423,10 +482,10 @@ async def register_h6a_campaign(
         campaign_run_id=campaign_run_id,
         mapping_hash=mapping_hash,
     )
-    expected_s3_ids = _preflight_specs(
+    s3_row_order, expected_s3_by_row_id = _preflight_specs(
         s3_specs, expected_slug="S3", row_id_to_experiment_id=row_id_to_experiment_id
     )
-    expected_s4_ids = _preflight_specs(
+    s4_row_order, expected_s4_by_row_id = _preflight_specs(
         s4_specs, expected_slug="S4", row_id_to_experiment_id=row_id_to_experiment_id
     )
 
@@ -436,15 +495,16 @@ async def register_h6a_campaign(
         guard_opt_in_enabled=guard_opt_in_enabled,
         guard_policy=guard_policy,
     )
-    # R1 blocker #2: re-verify the delegate's OWN returned rows by identity
-    # -- never trust register_experiments_fn's return value at face value,
-    # even though the specs it was CALLED with were already trusted.
-    actual_s3_ids = frozenset(row.experiment_id for row in registered_s3)
-    if actual_s3_ids != expected_s3_ids:
-        raise BatchValidationError(
-            "register_experiments_fn returned S3 rows whose experiment_id set does not "
-            "match the trusted expected set -- refusing to trust the delegate's return value"
-        )
+    # R1 blocker #2 / R3 finding #2: re-verify the delegate's OWN returned
+    # rows by canonical ORDER and FULL identity -- never trust
+    # register_experiments_fn's return value at face value, even though the
+    # specs it was CALLED with were already trusted.
+    _verify_registered_rows(
+        registered_s3,
+        expected_row_order=s3_row_order,
+        expected_by_row_id=expected_s3_by_row_id,
+        slug="S3",
+    )
 
     registered_s4 = await register_experiments_fn(
         session,
@@ -452,12 +512,12 @@ async def register_h6a_campaign(
         guard_opt_in_enabled=guard_opt_in_enabled,
         guard_policy=guard_policy,
     )
-    actual_s4_ids = frozenset(row.experiment_id for row in registered_s4)
-    if actual_s4_ids != expected_s4_ids:
-        raise BatchValidationError(
-            "register_experiments_fn returned S4 rows whose experiment_id set does not "
-            "match the trusted expected set -- refusing to trust the delegate's return value"
-        )
+    _verify_registered_rows(
+        registered_s4,
+        expected_row_order=s4_row_order,
+        expected_by_row_id=expected_s4_by_row_id,
+        slug="S4",
+    )
     return registered_s3, registered_s4
 
 
@@ -738,11 +798,24 @@ def _check_diagnostic_divergence(
     """Never fail-stop -- semantic identity has ALREADY matched by the time
     this is called (see the caller). Byte-identical is a write-free no-op;
     any divergence is loudly observed (never merged, never silently
-    discarded) while the returned/original row is unaffected either way."""
-    stored_bytes = _diagnostic_canonical_bytes(
-        _stored_diagnostic_evidence_payload(existing),
-        _stored_diagnostic_overflow_payload(existing),
-    )
+    discarded) while the returned/original row is unaffected either way.
+
+    R3 finding #4 (AC29): a PRESENT-but-malformed stored diagnostic
+    (corrupted historic data, ``DiagnosticStorageError``) must be treated as
+    an observed divergence too -- NOT re-raised here. Re-raising would let a
+    diagnostic-only concern fail-stop an otherwise-legitimate semantic
+    replay whose primary fingerprint already matched; that is exactly the
+    "malformed diagnostic alters primary outcome" defect this closes. The
+    malformed-stored-value case is still loudly observed (a fixed marker
+    digest stands in for "could not be canonicalized"), never silently
+    dropped."""
+    try:
+        stored_bytes = _diagnostic_canonical_bytes(
+            _stored_diagnostic_evidence_payload(existing),
+            _stored_diagnostic_overflow_payload(existing),
+        )
+    except DiagnosticStorageError:
+        stored_bytes = _MALFORMED_STORED_DIAGNOSTIC_MARKER
     incoming_bytes = _diagnostic_canonical_bytes(
         incoming.diagnostic_evidence_payload(), incoming.diagnostic_overflow_payload()
     )
@@ -839,7 +912,12 @@ async def record_h6a_attempts(
                 "reason_code": item.reason_code,
                 "fold_evidence_hash": item.fold_evidence_hash,
                 "run_identity": item.run_identity,
-                "evidence_payload": dict(item.evidence_payload),
+                # R3 finding #3: evidence_payload is deep-frozen (nested
+                # MappingProxyType/tuple) -- a shallow `dict(...)` leaves
+                # nested proxies in the tree, which the real DB JSON
+                # serializer cannot handle. `_unfreeze` recursively converts
+                # every level back to built-in dict/list.
+                "evidence_payload": _unfreeze(item.evidence_payload),
                 "diagnostic_evidence": item.diagnostic_evidence_payload(),
                 "diagnostic_overflow": item.diagnostic_overflow_payload(),
             },

@@ -13,6 +13,7 @@ DEEP INSIDE the injected ``register_experiments_fn``/``record_trial_fn``/
 from __future__ import annotations
 
 import hashlib
+import json
 
 import pytest
 
@@ -109,26 +110,31 @@ def _approved(
 
 
 class _FakeRegisteredRow:
-    def __init__(self, experiment_id: str):
+    def __init__(self, experiment_id: str, **fields):
         self.experiment_id = experiment_id
+        for name, value in fields.items():
+            setattr(self, name, value)
+
+
+def _fake_registered_row_for(spec) -> _FakeRegisteredRow:
+    hashes = compute_identity_hashes(spec.components())
+    return _FakeRegisteredRow(
+        derive_experiment_id(spec.strategy_key, spec.strategy_version, hashes),
+        strategy_key=spec.strategy_key,
+        strategy_version=spec.strategy_version,
+        **hashes,
+    )
 
 
 def _fake_registered_rows(specs) -> list[_FakeRegisteredRow]:
-    """A spy `register_experiments_fn` must return rows whose
-    experiment_id set matches what register_h6a_campaign independently
-    derives from the SAME specs (R1 blocker #2 post-delegate
-    re-verification) -- this builds those rows via the real derivation
+    """A spy `register_experiments_fn` must return rows whose FULL identity
+    (experiment_id, strategy_key, strategy_version, all 11 component
+    hashes) matches what register_h6a_campaign independently derives from
+    the SAME specs, in the SAME canonical order (R1 finding #2 R3
+    delegate-return re-verification: order + full identity, not merely an
+    experiment_id set) -- this builds those rows via the real derivation
     recipe, never a stub `[]`."""
-    return [
-        _FakeRegisteredRow(
-            derive_experiment_id(
-                spec.strategy_key,
-                spec.strategy_version,
-                compute_identity_hashes(spec.components()),
-            )
-        )
-        for spec in specs
-    ]
+    return [_fake_registered_row_for(spec) for spec in specs]
 
 
 class _CallSpy:
@@ -549,6 +555,94 @@ class TestRecordH6AAttempts:
         assert record_spy.calls == sorted(record_spy.calls, key=lambda eid: eid) or True
 
     @pytest.mark.asyncio
+    async def test_nested_evidence_payload_is_json_serializable_on_the_wire(self):
+        # R3 finding #3 exact repro: evidence_payload is deep-frozen
+        # (nested MappingProxyType), but the OLD raw_payload builder only
+        # did `dict(item.evidence_payload)` (top-level only) -- nested
+        # mapping proxies survived into the DB JSON column request and
+        # broke the real SQLAlchemy JSON serializer. A flat payload (the
+        # OLD fixture shape) can never catch this -- this uses a genuinely
+        # nested structure.
+        mapping = _full_mapping()
+        row_id, experiment_id = next(iter(mapping.items()))
+        nested_item = bridge.H6AAttemptBatchItem(
+            row_id=row_id,
+            experiment_id=experiment_id,
+            retry_index=0,
+            status="completed",
+            reason_code=None,
+            fold_evidence_hash=_hex64(f"fold-{row_id}"),
+            run_identity=_hex64(f"run-{row_id}"),
+            evidence_payload={
+                "row_id": row_id,
+                "fold_traces": [
+                    {"fold_index": 0, "counts": {"a": 1, "b": 2}},
+                    {"fold_index": 1, "counts": {"a": 3, "b": 4}},
+                ],
+                "nested": {"deeply": {"nested": {"value": 1}}},
+            },
+        )
+        attempts = [
+            nested_item if row_id_ == row_id else item
+            for row_id_, item in zip(mapping, _all_attempts(mapping), strict=True)
+        ]
+
+        captured: list[object] = []
+
+        async def find_existing_trial_fn(session, *, experiment_pk, idempotency_key):
+            return None
+
+        async def record_trial_fn(session, *, experiment_id, request):
+            captured.append(request.raw_payload)
+            # The real persistence boundary: SQLAlchemy's JSON column
+            # serializer is (at minimum) stdlib json.dumps-compatible --
+            # a nested mappingproxy raises TypeError here exactly like it
+            # would against the real DB driver.
+            json.dumps(request.raw_payload)
+            return _FakeStoredRow(
+                {
+                    "h6a_evidence_fingerprint": request.raw_payload[
+                        "h6a_evidence_fingerprint"
+                    ]
+                }
+            )
+
+        await bridge.record_h6a_attempts(
+            _PoisonedSession(),
+            approved=_approved(
+                operation_kind=bridge.RECORD_ATTEMPTS_OPERATION_KIND, mapping=mapping
+            ),
+            full_campaign_hash=FULL_CAMPAIGN_HASH,
+            campaign_run_id=CAMPAIGN_RUN_ID,
+            row_id_to_experiment_id=mapping,
+            row_id_to_experiment_pk=_pk_mapping(mapping),
+            attempts=attempts,
+            strategy_name="rob974-h6a",
+            timeframe="4h",
+            runner="h6a-fixture",
+            guard_opt_in_enabled=True,
+            guard_policy=_POLICY,
+            find_existing_trial_fn=find_existing_trial_fn,
+            record_trial_fn=record_trial_fn,
+        )
+        assert len(captured) == 48
+        nested_payload = next(
+            p
+            for p in captured
+            if p["row_id"] == row_id and "fold_traces" in p["evidence_payload"]
+        )
+        # Every level must be a genuine built-in dict/list, never a
+        # MappingProxyType/tuple survivor.
+        assert type(nested_payload["evidence_payload"]) is dict
+        assert type(nested_payload["evidence_payload"]["fold_traces"]) is list
+        assert type(nested_payload["evidence_payload"]["fold_traces"][0]) is dict
+        assert (
+            type(nested_payload["evidence_payload"]["fold_traces"][0]["counts"]) is dict
+        )
+        assert type(nested_payload["evidence_payload"]["nested"]) is dict
+        assert type(nested_payload["evidence_payload"]["nested"]["deeply"]) is dict
+
+    @pytest.mark.asyncio
     async def test_identical_replay_is_no_write(self):
         mapping = _full_mapping()
         attempts = _all_attempts(mapping)
@@ -594,6 +688,112 @@ class TestRecordH6AAttempts:
         assert len(results) == 48
         # The pre-existing (identical) row was never passed to record_trial_fn.
         assert target.experiment_id not in record_spy.calls
+
+    @pytest.mark.asyncio
+    async def test_malformed_stored_diagnostic_does_not_fail_stop_identical_replay(
+        self,
+    ):
+        # R3 finding #4 exact repro: the EXISTING stored row's semantic
+        # fingerprint matches (a legitimate identical-semantic replay), but
+        # its persisted diagnostic_evidence is malformed (corrupted historic
+        # data). Per AC29 this must NOT fail-stop the semantic attempt --
+        # the original immutable row is returned untouched and only a
+        # bounded, digest-only observation is emitted.
+        mapping = _full_mapping()
+        attempts = _all_attempts(mapping)
+        target = attempts[0]
+        existing = _FakeStoredRow(
+            {
+                "h6a_evidence_fingerprint": target.fingerprint(),
+                "diagnostic_evidence": "not-a-list-malformed",
+            }
+        )
+
+        async def find_existing_trial_fn(session, *, experiment_pk, idempotency_key):
+            if idempotency_key == target.idempotency_key(CAMPAIGN_RUN_ID):
+                return existing
+            return None
+
+        record_spy = _CallSpy()
+
+        async def record_trial_fn(session, *, experiment_id, request):
+            record_spy.calls.append(experiment_id)
+            return _FakeStoredRow(
+                {
+                    "h6a_evidence_fingerprint": request.raw_payload[
+                        "h6a_evidence_fingerprint"
+                    ]
+                }
+            )
+
+        results = await bridge.record_h6a_attempts(
+            _PoisonedSession(),
+            approved=_approved(
+                operation_kind=bridge.RECORD_ATTEMPTS_OPERATION_KIND, mapping=mapping
+            ),
+            full_campaign_hash=FULL_CAMPAIGN_HASH,
+            campaign_run_id=CAMPAIGN_RUN_ID,
+            row_id_to_experiment_id=mapping,
+            row_id_to_experiment_pk=_pk_mapping(mapping),
+            attempts=attempts,
+            strategy_name="rob974-h6a",
+            timeframe="4h",
+            runner="h6a-fixture",
+            guard_opt_in_enabled=True,
+            guard_policy=_POLICY,
+            find_existing_trial_fn=find_existing_trial_fn,
+            record_trial_fn=record_trial_fn,
+        )
+        assert len(results) == 48
+        assert target.experiment_id not in record_spy.calls
+        assert existing in results  # original immutable row returned untouched
+
+    @pytest.mark.asyncio
+    async def test_malformed_stored_diagnostic_overflow_does_not_fail_stop(self):
+        mapping = _full_mapping()
+        attempts = _all_attempts(mapping)
+        target = attempts[1]
+        existing = _FakeStoredRow(
+            {
+                "h6a_evidence_fingerprint": target.fingerprint(),
+                "diagnostic_overflow": ["not-a-dict-malformed"],
+            }
+        )
+
+        async def find_existing_trial_fn(session, *, experiment_pk, idempotency_key):
+            if idempotency_key == target.idempotency_key(CAMPAIGN_RUN_ID):
+                return existing
+            return None
+
+        async def record_trial_fn(session, *, experiment_id, request):
+            return _FakeStoredRow(
+                {
+                    "h6a_evidence_fingerprint": request.raw_payload[
+                        "h6a_evidence_fingerprint"
+                    ]
+                }
+            )
+
+        results = await bridge.record_h6a_attempts(
+            _PoisonedSession(),
+            approved=_approved(
+                operation_kind=bridge.RECORD_ATTEMPTS_OPERATION_KIND, mapping=mapping
+            ),
+            full_campaign_hash=FULL_CAMPAIGN_HASH,
+            campaign_run_id=CAMPAIGN_RUN_ID,
+            row_id_to_experiment_id=mapping,
+            row_id_to_experiment_pk=_pk_mapping(mapping),
+            attempts=attempts,
+            strategy_name="rob974-h6a",
+            timeframe="4h",
+            runner="h6a-fixture",
+            guard_opt_in_enabled=True,
+            guard_policy=_POLICY,
+            find_existing_trial_fn=find_existing_trial_fn,
+            record_trial_fn=record_trial_fn,
+        )
+        assert len(results) == 48
+        assert existing in results
 
     @pytest.mark.asyncio
     async def test_divergent_replay_fails_closed(self):
@@ -1127,6 +1327,140 @@ class TestDelegateReturnReverification:
                 guard_policy=_POLICY,
                 register_experiments_fn=register_experiments_fn,
             )
+
+    @pytest.mark.asyncio
+    async def test_reordered_delegate_return_rejected(self):
+        # R3 finding #2 exact repro: a delegate that returns exactly the
+        # correct 24 experiment_ids per slice, but in REVERSED order, must
+        # be rejected -- a set-only re-check cannot see this.
+        async def register_experiments_fn(
+            session, *, specs, guard_opt_in_enabled, guard_policy
+        ):
+            return list(reversed(_fake_registered_rows(specs)))
+
+        with pytest.raises(bridge.BatchValidationError):
+            await bridge.register_h6a_campaign(
+                _PoisonedSession(),
+                approved=_approved(
+                    operation_kind=bridge.REGISTER_CAMPAIGN_OPERATION_KIND
+                ),
+                full_campaign_hash=FULL_CAMPAIGN_HASH,
+                campaign_run_id=CAMPAIGN_RUN_ID,
+                s3_specs=_s3_specs(),
+                s4_specs=_s4_specs(),
+                row_id_to_experiment_id=_full_mapping(),
+                guard_opt_in_enabled=True,
+                guard_policy=_POLICY,
+                register_experiments_fn=register_experiments_fn,
+            )
+
+    @pytest.mark.asyncio
+    async def test_delegate_return_with_right_experiment_id_but_wrong_strategy_key_rejected(
+        self,
+    ):
+        # Correct experiment_id (and thus correct set-membership) but a
+        # forged strategy_key on the returned row -- full semantic identity
+        # must be re-verified, not just experiment_id.
+        async def register_experiments_fn(
+            session, *, specs, guard_opt_in_enabled, guard_policy
+        ):
+            rows = _fake_registered_rows(specs)
+            rows[0].strategy_key = "TAMPERED-STRATEGY-KEY"
+            return rows
+
+        with pytest.raises(bridge.BatchValidationError):
+            await bridge.register_h6a_campaign(
+                _PoisonedSession(),
+                approved=_approved(
+                    operation_kind=bridge.REGISTER_CAMPAIGN_OPERATION_KIND
+                ),
+                full_campaign_hash=FULL_CAMPAIGN_HASH,
+                campaign_run_id=CAMPAIGN_RUN_ID,
+                s3_specs=_s3_specs(),
+                s4_specs=_s4_specs(),
+                row_id_to_experiment_id=_full_mapping(),
+                guard_opt_in_enabled=True,
+                guard_policy=_POLICY,
+                register_experiments_fn=register_experiments_fn,
+            )
+
+    @pytest.mark.asyncio
+    async def test_delegate_return_with_tampered_component_hash_rejected(self):
+        async def register_experiments_fn(
+            session, *, specs, guard_opt_in_enabled, guard_policy
+        ):
+            rows = _fake_registered_rows(specs)
+            rows[-1].params_hash = _hex64("tampered-params-hash")
+            return rows
+
+        with pytest.raises(bridge.BatchValidationError):
+            await bridge.register_h6a_campaign(
+                _PoisonedSession(),
+                approved=_approved(
+                    operation_kind=bridge.REGISTER_CAMPAIGN_OPERATION_KIND
+                ),
+                full_campaign_hash=FULL_CAMPAIGN_HASH,
+                campaign_run_id=CAMPAIGN_RUN_ID,
+                s3_specs=_s3_specs(),
+                s4_specs=_s4_specs(),
+                row_id_to_experiment_id=_full_mapping(),
+                guard_opt_in_enabled=True,
+                guard_policy=_POLICY,
+                register_experiments_fn=register_experiments_fn,
+            )
+
+    @pytest.mark.asyncio
+    async def test_correct_full_identity_in_canonical_order_accepted(self):
+        async def register_experiments_fn(
+            session, *, specs, guard_opt_in_enabled, guard_policy
+        ):
+            return _fake_registered_rows(specs)
+
+        registered = await bridge.register_h6a_campaign(
+            _PoisonedSession(),
+            approved=_approved(operation_kind=bridge.REGISTER_CAMPAIGN_OPERATION_KIND),
+            full_campaign_hash=FULL_CAMPAIGN_HASH,
+            campaign_run_id=CAMPAIGN_RUN_ID,
+            s3_specs=_s3_specs(),
+            s4_specs=_s4_specs(),
+            row_id_to_experiment_id=_full_mapping(),
+            guard_opt_in_enabled=True,
+            guard_policy=_POLICY,
+            register_experiments_fn=register_experiments_fn,
+        )
+        assert len(registered[0]) == 24
+        assert len(registered[1]) == 24
+
+
+class TestCanonicalSpecOrderEnforced:
+    @pytest.mark.asyncio
+    async def test_s3_specs_supplied_out_of_canonical_order_rejected(self):
+        spy = _CallSpy()
+
+        async def register_experiments_fn(
+            session, *, specs, guard_opt_in_enabled, guard_policy
+        ):
+            spy.calls.append(("register", len(specs)))
+            return _fake_registered_rows(specs)
+
+        s3 = _s3_specs()
+        s3[0], s3[1] = s3[1], s3[0]  # swap S3-00/S3-01 -- same set, wrong order
+        with pytest.raises(bridge.BatchValidationError):
+            await bridge.register_h6a_campaign(
+                _PoisonedSession(),
+                approved=_approved(
+                    operation_kind=bridge.REGISTER_CAMPAIGN_OPERATION_KIND
+                ),
+                full_campaign_hash=FULL_CAMPAIGN_HASH,
+                campaign_run_id=CAMPAIGN_RUN_ID,
+                s3_specs=s3,
+                s4_specs=_s4_specs(),
+                row_id_to_experiment_id=_full_mapping(),
+                guard_opt_in_enabled=True,
+                guard_policy=_POLICY,
+                register_experiments_fn=register_experiments_fn,
+            )
+        assert spy.calls == []
 
 
 class TestNonCanonicalRunIdRetry7ExploitClosed:

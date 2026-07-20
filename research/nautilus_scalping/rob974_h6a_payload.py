@@ -111,6 +111,27 @@ _DIRECT_VERDICT_DOMAIN: tuple[str, str, str] = (
 )
 _S4_PAIR_EXECUTOR_GATE_STATES: tuple[str, str, str] = ("not_evaluated", "pass", "fail")
 
+# R3 finding #5: the exact approved D13=A closed values (06-h5.md AC40-46).
+# `policy_version == _D13_A_POLICY_VERSION` is held to EXACTLY these values
+# in __post_init__ below -- a same-version policy with a contradictory
+# branch result is drift, not a genuine revision. A DIFFERENT policy_version
+# is deliberately NOT held to these pins (see the class docstring) so a real
+# future D-ruling remains representable without a code change here.
+_D13_A_POLICY_VERSION = "d13_a.v1"
+_D13_A_INCOMPLETE_RESULT = "campaign_incomplete"
+_D13_A_BOTH_FAIL_RESULT = "historical_fail_no_candidate"
+_D13_A_S3_ONLY_PASS_RESULT = "historical_pass_s3_preferred_demo_handoff"
+_D13_A_S4_ONLY_PASS_RESULT = "historical_pass_s4_preferred_no_demo_candidate"
+_D13_A_BOTH_PASS_RESULT = "historical_pass_s3_demo_candidate_s4_comparison_report_only"
+_D13_A_BOTH_PASS_RANKING_ORDER: tuple[str, ...] = (
+    "higher_min_fold_e17",
+    "higher_pooled_e17",
+    "lower_monthly_concentration",
+    "lower_timeout",
+    "lower_operational_complexity",
+)
+_D13_A_PROMOTION_BLOCKED_REASON = "promotion_blocked_pending_pair_executor"
+
 
 @dataclass(frozen=True)
 class CampaignDecisionPolicy:
@@ -199,6 +220,33 @@ class CampaignDecisionPolicy:
                 "s4_full_promotion_conjunction must be exactly 'not_evaluated' -- "
                 "PAIR_EXEC_FAIL=0 is never observed, so full promotion is never true"
             )
+        # R3 finding #5: policy_version="d13_a.v1" is held to the EXACT
+        # approved D13=A closed values -- a same-version policy with a
+        # contradictory branch result/ranking order/promotion-blocked reason
+        # is drift, never a genuine revision (a genuine revision uses a
+        # DIFFERENT policy_version, which is deliberately NOT pinned here).
+        if self.policy_version == _D13_A_POLICY_VERSION:
+            exact_pins = {
+                "incomplete_result": _D13_A_INCOMPLETE_RESULT,
+                "both_fail_result": _D13_A_BOTH_FAIL_RESULT,
+                "s3_only_pass_result": _D13_A_S3_ONLY_PASS_RESULT,
+                "s4_only_pass_result": _D13_A_S4_ONLY_PASS_RESULT,
+                "both_pass_result": _D13_A_BOTH_PASS_RESULT,
+                "s4_promotion_blocked_reason": _D13_A_PROMOTION_BLOCKED_REASON,
+            }
+            for field, expected in exact_pins.items():
+                if getattr(self, field) != expected:
+                    raise H6APayloadError(
+                        f"policy_version={_D13_A_POLICY_VERSION!r} requires {field}="
+                        f"{expected!r} exactly -- a same-version policy with a different "
+                        "branch result is drift, not a genuine revision (use a different "
+                        "policy_version to represent a real future D-ruling)"
+                    )
+            if tuple(self.both_pass_ranking_order) != _D13_A_BOTH_PASS_RANKING_ORDER:
+                raise H6APayloadError(
+                    f"policy_version={_D13_A_POLICY_VERSION!r} requires "
+                    f"both_pass_ranking_order exactly {_D13_A_BOTH_PASS_RANKING_ORDER!r}"
+                )
 
     def as_dict(self) -> dict[str, Any]:
         return {
