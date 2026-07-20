@@ -35,11 +35,13 @@ from .correlation import strategy_loop_correlation_id
 from .execution import RoundTripBlocked, RoundTripResult, execute_signal_round_trip
 from .kill_switch import (
     StrategyLoopKillSwitchLimits,
+    assert_kill_switch_limits_locked,
     build_kill_switch_snapshot,
     evaluate_kill_switch,
 )
 from .sizing import (
     FuturesSizingBlocked,
+    assert_leg_notional_cap_locked,
     assert_symbol_allowed,
     compute_futures_demo_order_qty,
     fetch_reference_price,
@@ -195,23 +197,46 @@ async def run_tick(
     skip re-evaluating a 4h bar it has already acted on (or declined) —
     the loop polls faster than the 4h cadence, so without this a strategy
     could otherwise fire on the same bar close every poll interval.
+
+    Raises ``LegNotionalCapNotLocked`` / ``KillSwitchLimitsNotLocked``
+    (ROB-993 adversarial review Finding 1) before any network/DB call if
+    ``cap_usdt`` or ``kill_switch_limits`` deviate from this lane's hard
+    safety invariant — they are not operator-tunable dials.
     """
+    assert_leg_notional_cap_locked(cap_usdt)
+    assert_kill_switch_limits_locked(kill_switch_limits)
+
     if signal_override is not None:
         decision_ts = signal_override.decision_ts
         signal = signal_override
     else:
         bars_by_symbol = await collect_4h_bars(market_client, symbols)
-        decision_ts = max(
-            (bars[-1].close_ts for bars in bars_by_symbol.values() if bars),
-            default=None,
-        )
-        if decision_ts is None:
+        # ROB-993 adversarial review (verify-993-2256.md, Finding 5): the
+        # strategy must only be invoked when EVERY symbol in the universe
+        # has a complete 4h bar ending at the exact same close_ts. Picking
+        # the freshest symbol's close_ts (a bare ``max()``) would silently
+        # hand the plugin a snapshot where a lagging symbol's bar is stale
+        # or absent — the opposite of H1's synchronized-plane semantics
+        # (``compute_common_features`` requires the same intersection).
+        latest_close_ts_per_symbol = {
+            symbol: bars[-1].close_ts for symbol, bars in bars_by_symbol.items() if bars
+        }
+        if len(latest_close_ts_per_symbol) < len(symbols):
             return TickOutcome(
-                decision_ts=None,
+                decision_ts=max(latest_close_ts_per_symbol.values(), default=None),
                 signal=None,
                 round_trip=None,
                 blocked_reason="no_complete_4h_bar",
             )
+        synchronized_close_ts = set(latest_close_ts_per_symbol.values())
+        if len(synchronized_close_ts) != 1:
+            return TickOutcome(
+                decision_ts=max(synchronized_close_ts),
+                signal=None,
+                round_trip=None,
+                blocked_reason="missing_complete_4h_bar",
+            )
+        decision_ts = synchronized_close_ts.pop()
         if decision_ts == already_processed_decision_ts:
             return TickOutcome(
                 decision_ts=decision_ts,

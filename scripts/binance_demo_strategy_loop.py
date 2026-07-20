@@ -28,12 +28,18 @@ Modes (mutually exclusive; default with no flag prints guidance):
      forecast_save wiring end to end. Requires ``--confirm`` for a real
      Demo round trip (default is dry-run, zero HTTP mutation).
 
-Kill switch (ROB-993 AC ④): this file's env gate (default off) +
-``--max-concurrent-positions`` (default 1) + ``--max-consecutive-sl``
-(default 2, this loop's own trades, current UTC day) — both risk gates
-are re-evaluated from the durable ledger on every tick, never held only
-in memory (survives a process restart). See
-``app.services.brokers.binance.demo_strategy_loop.kill_switch``.
+Kill switch (ROB-993 AC ④): this file's env gate (default off) + a
+concurrent-position cap of 1 + a consecutive-stop-loss cap of 2 (this
+loop's own trades, current UTC day) — both risk gates are re-evaluated
+from the durable ledger on every tick, never held only in memory
+(survives a process restart). Per the ROB-993 adversarial review
+(verify-993-2256.md, Finding 1), these caps — and the $6-10 leg notional
+— are hard lane invariants, not operator-tunable CLI flags:
+``orchestrator.run_tick`` fails closed via
+``KillSwitchLimitsNotLocked``/``LegNotionalCapNotLocked`` before any
+network/DB call if a caller ever supplies a different value. See
+``app.services.brokers.binance.demo_strategy_loop.kill_switch`` /
+``.sizing``.
 
 Demo-only: the execution client and the market-data client both enforce
 the Futures Demo host allowlist (``demo-fapi.binance.com``) at the
@@ -62,7 +68,6 @@ import json
 import logging
 import os
 import sys
-from decimal import Decimal
 from typing import Any
 
 logger = logging.getLogger("scripts.binance_demo_strategy_loop")
@@ -133,34 +138,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--cap-usdt",
-        dest="cap_usdt",
-        type=Decimal,
-        default=Decimal("10"),
-        help="Per-order notional cap in USDT (default: 10; ROB-298 leg is $6-10).",
-    )
-    parser.add_argument(
         "--leverage",
         type=int,
         default=1,
         help="Leverage (default: 1). Any other value is rejected before any signed POST.",
-    )
-    parser.add_argument(
-        "--max-concurrent-positions",
-        dest="max_concurrent_positions",
-        type=int,
-        default=1,
-        help="Kill switch: max concurrent open positions (default: 1).",
-    )
-    parser.add_argument(
-        "--max-consecutive-sl",
-        dest="max_consecutive_sl",
-        type=int,
-        default=2,
-        help=(
-            "Kill switch: consecutive stop-losses (this loop's own trades, "
-            "current UTC day) before halting new entries (default: 2)."
-        ),
     )
     parser.add_argument(
         "--poll-interval-seconds",
@@ -258,11 +239,14 @@ async def _run_tick(
     """Run one tick. Returns ``(exit_code, decision_ts)``."""
     from app.services.brokers.binance.demo_strategy_loop import bars as bars_mod
     from app.services.brokers.binance.demo_strategy_loop.kill_switch import (
-        StrategyLoopKillSwitchLimits,
+        LOCKED_LIMITS,
     )
     from app.services.brokers.binance.demo_strategy_loop.orchestrator import (
         assert_demo_only,
         run_tick,
+    )
+    from app.services.brokers.binance.demo_strategy_loop.sizing import (
+        LEG_NOTIONAL_CAP_MAX_USDT,
     )
     from app.services.brokers.binance.demo_strategy_loop.strategy import NullStrategy
     from app.services.brokers.binance.futures_demo.errors import (
@@ -291,10 +275,12 @@ async def _run_tick(
     )
 
     symbols = tuple(s.strip().upper() for s in args.symbols.split(",") if s.strip())
-    limits = StrategyLoopKillSwitchLimits(
-        max_concurrent_positions=args.max_concurrent_positions,
-        max_consecutive_stop_losses_per_utc_day=args.max_consecutive_sl,
-    )
+    # ROB-993 adversarial review (verify-993-2256.md, Finding 1): leg notional
+    # and kill-switch caps are hard lane invariants, not CLI-settable — there
+    # is deliberately no flag to override LOCKED_LIMITS / the notional cap.
+    # ``run_tick`` also asserts this itself before any network/DB call, so
+    # this is belt-and-suspenders, not the only enforcement point.
+    limits = LOCKED_LIMITS
 
     try:
         async with AsyncSessionLocal() as session:
@@ -307,7 +293,7 @@ async def _run_tick(
                 market_client=market_client,
                 venue_host=venue_host,
                 symbols=symbols,
-                cap_usdt=args.cap_usdt,
+                cap_usdt=LEG_NOTIONAL_CAP_MAX_USDT,
                 leverage=args.leverage,
                 kill_switch_limits=limits,
                 now=_now_utc(),

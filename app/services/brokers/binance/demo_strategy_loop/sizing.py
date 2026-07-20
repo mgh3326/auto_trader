@@ -11,7 +11,7 @@ maximum" — see ``scripts/binance_futures_demo_smoke.py::_quantize_qty``).
 from __future__ import annotations
 
 from decimal import ROUND_DOWN, Decimal
-from typing import Any
+from typing import Any, Final
 
 import httpx
 
@@ -34,10 +34,36 @@ __all__ = [
     "quantize_qty",
     "fetch_symbol_filters",
     "fetch_reference_price",
+    "LEG_NOTIONAL_CAP_MIN_USDT",
+    "LEG_NOTIONAL_CAP_MAX_USDT",
+    "LegNotionalCapNotLocked",
+    "assert_leg_notional_cap_locked",
 ]
 
 _EXCHANGE_INFO_PATH = "/fapi/v1/exchangeInfo"
 _PRICE_PATH = "/fapi/v1/ticker/price"
+
+# ROB-993 adversarial review (verify-993-2256.md, Finding 1) — the ROB-993
+# ticket/CLAUDE.md locks this lane's leg size at "$6~10"; that is a hard
+# safety invariant, not an operator-tunable dial. There is deliberately no
+# CLI flag to set ``cap_usdt`` — ``assert_leg_notional_cap_locked`` fails
+# closed BEFORE any network/DB call if a caller (a future strategy adapter,
+# a test, a scheduler) supplies a value outside the locked range.
+LEG_NOTIONAL_CAP_MIN_USDT: Final[Decimal] = Decimal("6")
+LEG_NOTIONAL_CAP_MAX_USDT: Final[Decimal] = Decimal("10")
+
+
+class LegNotionalCapNotLocked(ValueError):
+    """Raised when a supplied ``cap_usdt`` falls outside the locked lane range."""
+
+
+def assert_leg_notional_cap_locked(cap_usdt: Decimal) -> None:
+    if not (LEG_NOTIONAL_CAP_MIN_USDT <= cap_usdt <= LEG_NOTIONAL_CAP_MAX_USDT):
+        raise LegNotionalCapNotLocked(
+            f"cap_usdt={cap_usdt} outside the locked lane invariant "
+            f"[{LEG_NOTIONAL_CAP_MIN_USDT}, {LEG_NOTIONAL_CAP_MAX_USDT}] — this "
+            "lane has no operator-tunable leg size"
+        )
 
 
 def quantize_qty(

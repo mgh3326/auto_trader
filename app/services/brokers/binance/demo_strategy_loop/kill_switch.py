@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass, field
+from typing import Final
 
 from app.services.brokers.binance.demo.ledger.service import BinanceDemoLedgerService
 
@@ -37,6 +38,35 @@ class KillSwitchReasonCode:
 class StrategyLoopKillSwitchLimits:
     max_concurrent_positions: int = 1
     max_consecutive_stop_losses_per_utc_day: int = 2
+
+
+# ROB-993 adversarial review (verify-993-2256.md, Finding 1) — leg notional,
+# consecutive-SL, and concurrent-position caps are hard safety invariants for
+# this lane, not operator-tunable dials. ``LOCKED_LIMITS`` is the single
+# allowed value; ``assert_kill_switch_limits_locked`` fails closed BEFORE any
+# network/DB call if a caller supplies anything else. There is deliberately
+# no CLI flag to override these (scripts/binance_demo_strategy_loop.py).
+LOCKED_LIMITS: Final[StrategyLoopKillSwitchLimits] = StrategyLoopKillSwitchLimits()
+
+
+class KillSwitchLimitsNotLocked(ValueError):
+    """Raised when supplied kill-switch limits deviate from ``LOCKED_LIMITS``."""
+
+
+def assert_kill_switch_limits_locked(limits: StrategyLoopKillSwitchLimits) -> None:
+    """Fail closed if ``limits`` is not exactly the locked lane invariant.
+
+    Defense in depth: even though the CLI no longer exposes a way to set
+    these, this guard protects every other caller of ``run_tick`` (a future
+    strategy adapter, a test, a scheduler) from silently widening the
+    concurrent-position or consecutive-stop-loss safety caps.
+    """
+    if limits != LOCKED_LIMITS:
+        raise KillSwitchLimitsNotLocked(
+            f"kill switch limits {limits!r} deviate from the locked lane "
+            f"invariant {LOCKED_LIMITS!r} — this lane has no operator-tunable "
+            "safety caps"
+        )
 
 
 @dataclass(frozen=True)

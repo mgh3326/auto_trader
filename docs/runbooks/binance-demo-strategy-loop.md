@@ -117,10 +117,20 @@ uv run python -m scripts.binance_demo_strategy_loop --paper-signal --confirm
 | `--loop` | continuous | Polls at `--poll-interval-seconds` (default 300s); only acts once per newly-closed 4h bar (in-memory guard — see §6 limitation). Foreground, operator-managed. |
 | `--paper-signal` | bars skipped; execution if `--confirm` | Injects a canned `Signal` (`--paper-symbol`/`--paper-side`), bypassing bar-fetch + strategy. **This is the ROB-993 e2e smoke path.** |
 
-Shared flags: `--symbols` (default `XRPUSDT,DOGEUSDT,SOLUSDT`), `--cap-usdt`
-(default 10), `--leverage` (default 1, only 1 accepted), `--max-concurrent-positions`
-(default 1), `--max-consecutive-sl` (default 2), `--confirm` (operator gate —
-without it every mode is dry-run, zero broker mutation).
+Shared flags: `--symbols` (default `XRPUSDT,DOGEUSDT,SOLUSDT`), `--leverage`
+(default 1, only 1 accepted), `--confirm` (operator gate — without it every
+mode is dry-run, zero broker mutation).
+
+**No CLI flag exists for leg notional, max concurrent positions, or
+consecutive-SL limit.** Per the ROB-993 adversarial review
+(`verify-993-2256.md`, Finding 1), those are hard lane invariants — leg
+notional locked to `[6, 10]` USDT (`sizing.LEG_NOTIONAL_CAP_MIN_USDT`/
+`_MAX_USDT`), max concurrent positions locked to `1`, consecutive-SL cap
+locked to `2` (`kill_switch.LOCKED_LIMITS`) — not operator-tunable dials.
+`orchestrator.run_tick` also asserts this itself (raises
+`LegNotionalCapNotLocked`/`KillSwitchLimitsNotLocked` before any
+network/DB call) so any future caller that bypasses the CLI is protected
+too.
 
 Every tick emits one JSON evidence line (`event: "strategy_loop_tick"`) with
 `decision_ts`, `signal`, `blocked_reason`, `round_trip`, and forecast-save
@@ -143,27 +153,34 @@ in production — the ROB-307/841/844 demo-scalping executor
 `reserve_root_planned` exposure-slot cap only see **this process's own
 local database's** `binance_demo_order_ledger` rows — they do **not**
 know about broker-side state opened by a different process against the
-same account (e.g. a running production scalping bot's open position).
+same account.
 
-**Before running `--confirm` against any environment whose Demo
-credentials are also used by a live automation (production, or any
-shared dev credential set):**
+**Code-level defense (added in the ROB-993 adversarial-review hardening
+pass — see §8):** `execute_signal_round_trip` now runs a fresh signed
+`get_position`/`get_open_orders` snapshot immediately after the root
+reservation and refuses the entire round trip (`RoundTripBlocked`, zero
+submits) if the target symbol is not flat with zero open orders. The
+close leg's quantity is computed from the position **delta** attributable
+to our own open fill, not the raw account-wide `positionAmt` — a
+mismatched delta (another consumer traded the same symbol in the narrow
+window between the gate and our own fill) aborts before any close
+submit. This does not make concurrent use fully safe (the gate has its
+own narrow TOCTOU window between the snapshot and our own submit), but it
+converts "silently mis-close someone else's position" into "fail closed
+with an anomaly row" for the common case.
+
+**Still recommended before running `--confirm` against any environment
+whose Demo credentials are also used by a live automation:**
 
 1. Confirm no other consumer currently holds an open position/order on
    the symbol you're about to trade (`GET /fapi/v2/positionRisk`,
    `GET /fapi/v1/openOrders` via `--preflight`-style tooling, or the
-   `binance_demo_ledger_status` MCP tool).
+   `binance_demo_ledger_status` MCP tool) — belt-and-suspenders on top of
+   the code-level gate above.
 2. Prefer a dedicated/non-production credential pair for this loop's
    own smoke/dev runs when one is available.
 3. If you must share credentials with a live automation, coordinate
-   timing with whoever operates it — a concurrent round trip on the
-   same symbol can misattribute a reduceOnly close to the wrong
-   process's position.
-
-This is the same caveat that already applies to running the ROB-298
-smoke CLI's `--confirm` mode against a shared account; nothing new is
-introduced by this loop beyond another consumer of the same shared
-resource.
+   timing with whoever operates it.
 
 ---
 
@@ -211,4 +228,55 @@ resource.
   ticket for the run evidence — this loop's `execute_signal_round_trip`
   reuses the exact lifecycle the ROB-298 smoke CLI already proves live
   against `demo-fapi.binance.com`, driven here by an injected `Signal`
-  instead of CLI args.
+  instead of CLI args. Re-run clean after §8's hardening pass.
+
+---
+
+## 8. Adversarial-review hardening (R2, verify-993-2256.md)
+
+An independent adversarial review of the initial PR found 5 P1 safety
+gaps, all fixed (TDD — a regression test reproducing each gap was written
+and confirmed to fail against the pre-fix code before the fix landed):
+
+1. **Hard invariants, not CLI dials.** Leg notional (`[6, 10]` USDT), max
+   concurrent positions (`1`), and consecutive-SL cap (`2`) are now locked
+   constants (`sizing.LEG_NOTIONAL_CAP_MIN_USDT`/`_MAX_USDT`,
+   `kill_switch.LOCKED_LIMITS`) with no CLI flag to override them.
+   `orchestrator.run_tick` also asserts this itself
+   (`LegNotionalCapNotLocked`/`KillSwitchLimitsNotLocked`) before any
+   network/DB call. `execute_signal_round_trip`'s `global_open_root_cap`
+   parameter was removed entirely (hardcoded to `1` internally) rather
+   than left as an overridable default.
+2. **Broker-flat pre-submit gate + own-fill-attributed close qty.** See
+   §5. `execute_signal_round_trip` now checks `get_position`/
+   `get_open_orders` immediately after reservation, before any other
+   broker call, and computes the close quantity from the position delta
+   attributable to its own fill rather than trusting the raw account-wide
+   `positionAmt`.
+3. **Root exposure slot held blocking until reconcile completes.** The
+   open root no longer transitions to the non-blocking `closed` lifecycle
+   state until AFTER the open_orders-empty / position-flat / close-fill-
+   proven checks have all passed; a reconcile failure now records
+   `anomaly` directly from `filled` (still blocking) instead of releasing
+   the slot first. See `execution._reconcile`.
+4. **Broker-echo verification.** Every submit/poll response trusted as
+   order-shape or fill evidence (open submit, close submit, and both
+   fill-proof polls) is now compared against what was requested —
+   symbol/side/client_order_id/qty/reduceOnly — via
+   `execution._assert_order_echo`; any mismatch raises
+   `BrokerEchoMismatch` and records an anomaly rather than accepting a
+   tampered/inconsistent response.
+5. **Synchronized multi-symbol decision bucket.** `run_tick` now requires
+   every symbol in the universe to have a complete 4h bar ending at the
+   exact same `close_ts` before invoking the strategy (`blocked_reason=
+   "missing_complete_4h_bar"` otherwise) — previously a bare `max()`
+   across symbols' latest bars could hand the plugin a snapshot where a
+   lagging symbol's bar was stale, silently violating H1's synchronized-
+   plane semantics.
+
+New regression coverage: `tests/services/brokers/binance/demo_strategy_loop/test_execution.py`
+(controllable fake execution client + ledger in `_fakes.py`, used to
+reproduce deliberately mutated/tampered broker responses deterministically
+without any real HTTP/DB) plus additional cases in `test_orchestrator.py`.
+Re-verified against the real `demo-fapi.binance.com` Demo API after the
+fix (clean reconciled round trip, same as §7).

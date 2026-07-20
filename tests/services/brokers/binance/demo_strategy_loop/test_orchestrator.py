@@ -17,9 +17,13 @@ from app.services.brokers.binance.demo_strategy_loop.execution import (
     RoundTripResult,
 )
 from app.services.brokers.binance.demo_strategy_loop.kill_switch import (
+    KillSwitchLimitsNotLocked,
     KillSwitchReasonCode,
     KillSwitchSnapshot,
     StrategyLoopKillSwitchLimits,
+)
+from app.services.brokers.binance.demo_strategy_loop.sizing import (
+    LegNotionalCapNotLocked,
 )
 from app.services.brokers.binance.demo_strategy_loop.strategy import (
     NullStrategy,
@@ -67,6 +71,81 @@ def _common_kwargs(**overrides):
     return kwargs
 
 
+@pytest.mark.asyncio
+async def test_run_tick_rejects_cap_usdt_above_locked_range_before_any_call(
+    monkeypatch,
+) -> None:
+    """ROB-993 verify-993-2256.md Finding 1: cap_usdt must be a hard-locked
+    invariant ([6,10]), not a value the caller can widen — and the rejection
+    must happen before ANY network/DB call."""
+
+    async def _fail_if_called(*args, **kwargs):
+        raise AssertionError(
+            "no network/DB call is allowed before the cap invariant check"
+        )
+
+    monkeypatch.setattr(orchestrator, "build_kill_switch_snapshot", _fail_if_called)
+    monkeypatch.setattr(orchestrator, "fetch_symbol_filters", _fail_if_called)
+    monkeypatch.setattr(orchestrator, "fetch_reference_price", _fail_if_called)
+    monkeypatch.setattr(orchestrator, "collect_4h_bars", _fail_if_called)
+
+    with pytest.raises(LegNotionalCapNotLocked):
+        await orchestrator.run_tick(
+            **_common_kwargs(
+                signal_override=_SIGNAL, confirm=True, cap_usdt=Decimal("100")
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_tick_rejects_cap_usdt_below_locked_range_before_any_call(
+    monkeypatch,
+) -> None:
+    async def _fail_if_called(*args, **kwargs):
+        raise AssertionError(
+            "no network/DB call is allowed before the cap invariant check"
+        )
+
+    monkeypatch.setattr(orchestrator, "build_kill_switch_snapshot", _fail_if_called)
+    monkeypatch.setattr(orchestrator, "fetch_symbol_filters", _fail_if_called)
+
+    with pytest.raises(LegNotionalCapNotLocked):
+        await orchestrator.run_tick(
+            **_common_kwargs(
+                signal_override=_SIGNAL, confirm=True, cap_usdt=Decimal("5")
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_tick_rejects_widened_kill_switch_limits_before_any_call(
+    monkeypatch,
+) -> None:
+    """ROB-993 verify-993-2256.md Finding 1: max_concurrent_positions /
+    max_consecutive_stop_losses_per_utc_day must be hard-locked, not caller
+    tunable — rejection must happen before ANY network/DB call."""
+
+    async def _fail_if_called(*args, **kwargs):
+        raise AssertionError(
+            "no network/DB call is allowed before the kill-switch invariant check"
+        )
+
+    monkeypatch.setattr(orchestrator, "build_kill_switch_snapshot", _fail_if_called)
+    monkeypatch.setattr(orchestrator, "fetch_symbol_filters", _fail_if_called)
+
+    with pytest.raises(KillSwitchLimitsNotLocked):
+        await orchestrator.run_tick(
+            **_common_kwargs(
+                signal_override=_SIGNAL,
+                confirm=True,
+                kill_switch_limits=StrategyLoopKillSwitchLimits(
+                    max_concurrent_positions=9,
+                    max_consecutive_stop_losses_per_utc_day=999,
+                ),
+            )
+        )
+
+
 def test_assert_demo_only_accepts_futures_demo_host() -> None:
     orchestrator.assert_demo_only("demo-fapi.binance.com", "demo-fapi.binance.com")
 
@@ -94,6 +173,88 @@ async def test_run_tick_null_strategy_declines_to_signal(monkeypatch) -> None:
     assert outcome.round_trip is None
     assert outcome.blocked_reason == "no_signal"
     assert outcome.decision_ts == fake_bar.close_ts
+
+
+@pytest.mark.asyncio
+async def test_run_tick_skips_strategy_when_symbols_have_mismatched_latest_bar(
+    monkeypatch,
+) -> None:
+    """ROB-993 verify-993-2256.md Finding 5: the strategy must only be
+    invoked when EVERY symbol in the universe has a complete 4h bar ending
+    at the exact same decision_ts — a lagging symbol's stale bar must not
+    be silently dropped from consideration by picking the freshest
+    symbol's close_ts as decision_ts."""
+    from research.nautilus_scalping.rob974_features import Bar4h
+
+    fresh_bar = Bar4h(
+        28_800_000, 28_800_000 + 14_400_000, 1.0, 2.0, 0.5, 1.5, 10.0, True
+    )
+    stale_bar = Bar4h(
+        14_400_000, 14_400_000 + 14_400_000, 1.0, 2.0, 0.5, 1.5, 10.0, True
+    )
+
+    async def _fake_collect(market_client, symbols, *, minute_limit=500):
+        return {
+            "XRPUSDT": (fresh_bar,),
+            "DOGEUSDT": (stale_bar,),  # lagging behind the other two symbols
+            "SOLUSDT": (fresh_bar,),
+        }
+
+    monkeypatch.setattr(orchestrator, "collect_4h_bars", _fake_collect)
+
+    called_with: list[int] = []
+
+    class _RecordingStrategy:
+        strategy_id = "recording"
+
+        def evaluate(self, bars_4h_multi_symbol, *, decision_ts):
+            called_with.append(decision_ts)
+            return None
+
+    outcome = await orchestrator.run_tick(
+        **_common_kwargs(
+            signal_override=None, confirm=True, strategy=_RecordingStrategy()
+        )
+    )
+    assert called_with == [], "strategy must not be called on a mismatched bucket"
+    assert outcome.signal is None
+    assert outcome.round_trip is None
+    assert outcome.blocked_reason == "missing_complete_4h_bar"
+
+
+@pytest.mark.asyncio
+async def test_run_tick_calls_strategy_when_all_symbols_share_latest_close_ts(
+    monkeypatch,
+) -> None:
+    """Positive case: when every symbol's latest complete bar shares the
+    same close_ts, the strategy IS invoked with that synchronized
+    decision_ts."""
+    from research.nautilus_scalping.rob974_features import Bar4h
+
+    bar = Bar4h(28_800_000, 28_800_000 + 14_400_000, 1.0, 2.0, 0.5, 1.5, 10.0, True)
+
+    async def _fake_collect(market_client, symbols, *, minute_limit=500):
+        return dict.fromkeys(symbols, (bar,))
+
+    monkeypatch.setattr(orchestrator, "collect_4h_bars", _fake_collect)
+
+    called_with: list[int] = []
+
+    class _RecordingStrategy:
+        strategy_id = "recording"
+
+        def evaluate(self, bars_4h_multi_symbol, *, decision_ts):
+            called_with.append(decision_ts)
+            return None
+
+    outcome = await orchestrator.run_tick(
+        **_common_kwargs(
+            signal_override=None, confirm=True, strategy=_RecordingStrategy()
+        )
+    )
+    assert called_with == [bar.close_ts]
+    assert outcome.decision_ts == bar.close_ts
+    assert outcome.blocked_reason == "no_signal"
 
 
 @pytest.mark.asyncio
