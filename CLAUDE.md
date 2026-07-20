@@ -150,6 +150,29 @@ scans `app/**/*.py` for forbidden provider imports and deleted provider files.
 - **CLI**: `scripts/binance_futures_demo_smoke.py` (default-disabled, 5 modes)
 - **런북**: `docs/runbooks/binance-futures-demo-smoke.md`
 
+### Binance Demo 라이브 실행 루프 — 전략 플러그형 (ROB-993)
+
+실시간 1m→4h bar 집계(H1 오프라인 builder `research/nautilus_scalping/rob974_features.py`의
+`build_complete_4h`를 그대로 재사용 — UTC 경계·결측=NO_SIGNAL·forward-fill 금지 동일 시맨틱) +
+플러그형 전략 인터페이스(`evaluate(bars_4h_multi_symbol) -> Signal|None`) + kill switch +
+`BinanceFuturesDemoExecutionClient`(ROB-298) 배선. 전략 무관 인프라 — S3 신호엔진 어댑터(ROB-980)는
+별도 커밋(미포함), 기본 플러그인 `NullStrategy`는 항상 `None`.
+
+- **패키지**: `app/services/brokers/binance/demo_strategy_loop/` — `bars.py`(H1 재사용 + 1m fetch),
+  `strategy.py`(`Signal`/`StrategyPlugin`/`NullStrategy`), `kill_switch.py`(최대동시포지션1 +
+  연속 SL/UTC일), `sizing.py`, `execution.py`(open MARKET + reduceOnly close round-trip, ROB-298
+  smoke CLI와 동일 lifecycle), `correlation.py`, `orchestrator.py`(`run_tick`)
+- **CLI**: `scripts/binance_demo_strategy_loop.py` (default-disabled, `--once`/`--loop`/
+  `--paper-signal`/`--readiness`) — `--paper-signal`이 ROB-993 e2e 스모크 경로(주문 1건 데모 왕복)
+- **env**: `BINANCE_DEMO_STRATEGY_LOOP_ENABLED`(기본 false) — 기존 `BINANCE_FUTURES_DEMO_*`
+  자격증명/호스트 allowlist 그대로 상속, 신규 자격증명 표면 없음
+- **kill switch**: env 게이트 + 동시 포지션 1 상한(`count_open_lifecycles` 재사용) + 연속 SL 2회/UTC일
+  정지(자체 `strategy_loop_tag`로 스코프, closed root의 `extra_metadata.exit_reason` 워크)
+- **학습루프 척추**: `correlation_id`(`binance-demo-strategy-loop:<tag>:<hash>`) → ledger → `forecast_save`
+- **런북**: `docs/runbooks/binance-demo-strategy-loop.md` (§5 — 공유 Demo 계정 간섭 주의: 프로덕션
+  demo-scalping 봇과 동일 자격증명 공유 시 계정단 상태 충돌 가능)
+- **스케줄러 등록 없음** — CLI 수동 가동만, `--loop`도 operator 소유 foreground 프로세스
+
 ### KIS WebSocket Mock Smoke (ROB-104)
 
 `scripts/kis_websocket_mock_smoke.py` — KIS 모의 WebSocket 핸드셰이크 검증 (주문/체결/Redis publish 없음).
