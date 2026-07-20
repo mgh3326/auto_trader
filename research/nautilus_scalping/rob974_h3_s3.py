@@ -20,6 +20,8 @@ from rob974_features import (
     SymbolFeature,
 )
 from rob974_h3_manifest import (
+    S3_GENERATOR_REJECTION_TAXONOMY,
+    S3_NO_SIGNAL_TAXONOMY,
     SYMBOLS,
     S3Config,
     assert_registered_config,
@@ -429,22 +431,8 @@ def s3_formula_grid(
     )
 
 
-S3_NO_SIGNAL_REASONS: tuple[str, ...] = (
-    "missing_required_context",
-    "market_regime",
-    "market_breadth",
-    "trend_strength",
-    "efficiency",
-    "pullback_depth",
-    "vwap_reclaim",
-    "momentum",
-    "prior_l_non_breakout",
-    "volatility_percentile",
-    "range_tp_capacity",
-)
-S3_GENERATOR_REJECTION_REASONS: tuple[str, ...] = (
-    "simultaneous_candidate_arbitration_loser",
-)
+S3_NO_SIGNAL_REASONS: tuple[str, ...] = S3_NO_SIGNAL_TAXONOMY
+S3_GENERATOR_REJECTION_REASONS: tuple[str, ...] = S3_GENERATOR_REJECTION_TAXONOMY
 
 
 def s3_risk_distances(config: S3Config, a_value: float) -> tuple[float, float]:
@@ -756,11 +744,20 @@ class S3UnitDecision:
 
 @dataclass(frozen=True, slots=True)
 class S3GeneratorOutput:
+    strategy: str
+    config_id: str
     decisions: tuple[S3UnitDecision, ...]
     accepted: tuple[S3Candidate, ...]
     rejected: tuple[S3RejectedCandidate, ...]
 
     def __post_init__(self) -> None:
+        if _str(self.strategy, "strategy") != "S3":
+            raise ValueError("S3 generator output strategy must be S3")
+        _str(self.config_id, "config_id")
+        if any(item.config_id != self.config_id for item in self.accepted) or any(
+            item.candidate.config_id != self.config_id for item in self.rejected
+        ):
+            raise ValueError("S3 generator output config mismatch")
         if type(self.decisions) is not tuple or type(self.accepted) is not tuple:
             raise TypeError("generator output containers must be tuples")
         if type(self.rejected) is not tuple:
@@ -850,7 +847,9 @@ def generate_s3_global(
                         loser.reason,
                     )
                 )
-    return S3GeneratorOutput(tuple(decisions), tuple(accepted), tuple(rejected))
+    return S3GeneratorOutput(
+        "S3", config.config_id, tuple(decisions), tuple(accepted), tuple(rejected)
+    )
 
 
 __all__ = [

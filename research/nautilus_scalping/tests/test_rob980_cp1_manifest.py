@@ -214,11 +214,11 @@ def test_structured_contract_seals_are_distinct_complete_and_source_honest(manif
     assert s3.source_research_sha256 == manifest.RESEARCH_DOCUMENT_SHA256
     assert (
         s3.contract_hash
-        == "4ca659bfbd0f6dad43a276fb77721198c00ff6038462395dd1bd1f98332601e6"
+        == "52118734b8fbbfe8c1fcec45641578e16b25a4bb22f625ff117cc40f648eb562"
     )
     assert (
         s4.contract_hash
-        == "8e0926404b91f2db762a3744b43bf7dc54fae3a302cb59ec6e518e47886dddef"
+        == "767fdeb136f7f78050890b98b6128e826ec49d0fdf2ed3ccbd0572cad4118180"
     )
     assert s3.contract_hash != s4.contract_hash
     assert s3.contract_hash != manifest.RESEARCH_DOCUMENT_SHA256

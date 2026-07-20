@@ -12,7 +12,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from rob974_features import FOUR_HOUR_MS, MINUTE_MS, CommonSnapshot
-from rob974_h3_manifest import PAIRS, SYMBOLS, S4Config, assert_registered_config
+from rob974_h3_manifest import (
+    PAIRS,
+    S4_GENERATOR_REJECTION_TAXONOMY,
+    S4_NO_SIGNAL_TAXONOMY,
+    SYMBOLS,
+    S4Config,
+    assert_registered_config,
+)
 from rob974_h3_s3 import EmitWindow, FeatureContext, expected_decision_closes
 
 PAIR_ORDER: tuple[str, ...] = PAIRS
@@ -21,14 +28,7 @@ _PAIR_SYMBOLS = {
     "XRP-SOL": ("XRPUSDT", "SOLUSDT"),
     "DOGE-SOL": ("DOGEUSDT", "SOLUSDT"),
 }
-S4_ESTIMATION_REASONS: tuple[str, ...] = (
-    "missing_required_context",
-    "degenerate_beta_market_variance",
-    "degenerate_rho_variance",
-    "degenerate_phi_denominator",
-    "phi_not_in_open_unit_interval",
-    "nonfinite_required_input",
-)
+S4_ESTIMATION_REASONS: tuple[str, ...] = S4_NO_SIGNAL_TAXONOMY[:6]
 
 
 def _int(value: object, name: str) -> int:
@@ -586,21 +586,8 @@ def estimate_s4_pair(
     )
 
 
-S4_NO_SIGNAL_REASONS: tuple[str, ...] = S4_ESTIMATION_REASONS + (
-    "convergence_sign",
-    "prior_z_entry",
-    "current_z_entry",
-    "convergence_fraction",
-    "rho",
-    "half_life",
-    "beta_stability",
-    "absolute_distance",
-    "distance_to_tp",
-    "historical_notional_feasibility",
-)
-S4_GENERATOR_REJECTION_REASONS: tuple[str, ...] = (
-    "simultaneous_pair_arbitration_loser",
-)
+S4_NO_SIGNAL_REASONS: tuple[str, ...] = S4_NO_SIGNAL_TAXONOMY
+S4_GENERATOR_REJECTION_REASONS: tuple[str, ...] = S4_GENERATOR_REJECTION_TAXONOMY
 HISTORICAL_NOTIONAL_ASSUMPTION = "frozen_continuous_6_to_10_usd_per_leg"
 
 
@@ -1051,11 +1038,20 @@ class S4UnitDecision:
 
 @dataclass(frozen=True, slots=True)
 class S4GeneratorOutput:
+    strategy: str
+    config_id: str
     decisions: tuple[S4UnitDecision, ...]
     accepted: tuple[S4Candidate, ...]
     rejected: tuple[S4RejectedCandidate, ...]
 
     def __post_init__(self) -> None:
+        if _str(self.strategy, "strategy") != "S4":
+            raise ValueError("S4 generator output strategy must be S4")
+        _str(self.config_id, "config_id")
+        if any(item.config_id != self.config_id for item in self.accepted) or any(
+            item.candidate.config_id != self.config_id for item in self.rejected
+        ):
+            raise ValueError("S4 generator output config mismatch")
         if type(self.decisions) is not tuple or type(self.accepted) is not tuple:
             raise TypeError("generator output containers must be tuples")
         if type(self.rejected) is not tuple:
@@ -1150,7 +1146,9 @@ def generate_s4_global(
                         loser.reason,
                     )
                 )
-    return S4GeneratorOutput(tuple(decisions), tuple(accepted), tuple(rejected))
+    return S4GeneratorOutput(
+        "S4", config.config_id, tuple(decisions), tuple(accepted), tuple(rejected)
+    )
 
 
 __all__ = [

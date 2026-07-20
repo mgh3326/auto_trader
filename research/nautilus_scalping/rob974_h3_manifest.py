@@ -19,6 +19,43 @@ RESEARCH_DOCUMENT_SHA256 = (
 SYMBOLS: tuple[str, ...] = ("XRPUSDT", "DOGEUSDT", "SOLUSDT")
 PAIRS: tuple[str, ...] = ("XRP-DOGE", "XRP-SOL", "DOGE-SOL")
 DESIGN_TYPES = ("baseline", "OFAT", "interaction")
+S3_NO_SIGNAL_TAXONOMY: tuple[str, ...] = (
+    "missing_required_context",
+    "market_regime",
+    "market_breadth",
+    "trend_strength",
+    "efficiency",
+    "pullback_depth",
+    "vwap_reclaim",
+    "momentum",
+    "prior_l_non_breakout",
+    "volatility_percentile",
+    "range_tp_capacity",
+)
+S3_GENERATOR_REJECTION_TAXONOMY: tuple[str, ...] = (
+    "simultaneous_candidate_arbitration_loser",
+)
+S4_NO_SIGNAL_TAXONOMY: tuple[str, ...] = (
+    "missing_required_context",
+    "degenerate_beta_market_variance",
+    "degenerate_rho_variance",
+    "degenerate_phi_denominator",
+    "phi_not_in_open_unit_interval",
+    "nonfinite_required_input",
+    "convergence_sign",
+    "prior_z_entry",
+    "current_z_entry",
+    "convergence_fraction",
+    "rho",
+    "half_life",
+    "beta_stability",
+    "absolute_distance",
+    "distance_to_tp",
+    "historical_notional_feasibility",
+)
+S4_GENERATOR_REJECTION_TAXONOMY: tuple[str, ...] = (
+    "simultaneous_pair_arbitration_loser",
+)
 
 S3_HYPOTHESIS_UTF8 = (
     "사전등록 가설: 암호자산의 정보·포지션 조정이 여러 시간에 걸쳐 반영되는 구간에서는 24~80h 방향성이 형성될 수 있다. "
@@ -541,6 +578,8 @@ def strategy_contract_payload(strategy: str) -> dict[str, object]:
                 "exit": ["TP", "SL", "THESIS_EXIT", "TIMEOUT"],
             },
             "mechanism_statements": list(_S3_MECHANISM),
+            "no_signal_reasons": list(S3_NO_SIGNAL_TAXONOMY),
+            "generator_rejection_reasons": list(S3_GENERATOR_REJECTION_TAXONOMY),
             "hypothesis_utf8": S3_HYPOTHESIS_UTF8.decode("utf-8"),
             "hypothesis_sha256": S3_HYPOTHESIS_SHA256,
             "authority_labels": [row.authority_label for row in FROZEN_S3_CONFIGS],
@@ -613,6 +652,8 @@ def strategy_contract_payload(strategy: str) -> dict[str, object]:
                 ],
             },
             "mechanism_statements": list(_S4_MECHANISM),
+            "no_signal_reasons": list(S4_NO_SIGNAL_TAXONOMY),
+            "generator_rejection_reasons": list(S4_GENERATOR_REJECTION_TAXONOMY),
             "hypothesis_utf8": S4_HYPOTHESIS_UTF8.decode("utf-8"),
             "hypothesis_sha256": S4_HYPOTHESIS_SHA256,
             "authority_labels": [row.authority_label for row in FROZEN_S4_CONFIGS],
@@ -697,12 +738,16 @@ __all__ = [
     "PAIRS",
     "RESEARCH_DOCUMENT_SHA256",
     "S3Config",
+    "S3_GENERATOR_REJECTION_TAXONOMY",
     "S3_HYPOTHESIS_SHA256",
     "S3_HYPOTHESIS_UTF8",
+    "S3_NO_SIGNAL_TAXONOMY",
     "S3_STRATEGY_CONTRACT",
     "S4Config",
+    "S4_GENERATOR_REJECTION_TAXONOMY",
     "S4_HYPOTHESIS_SHA256",
     "S4_HYPOTHESIS_UTF8",
+    "S4_NO_SIGNAL_TAXONOMY",
     "S4_STRATEGY_CONTRACT",
     "SYMBOLS",
     "StrategyContract",
