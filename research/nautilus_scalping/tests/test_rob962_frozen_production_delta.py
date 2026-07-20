@@ -43,6 +43,13 @@ _AUTHORIZED_PRODUCTION_CHANGES = [
     ("M", ("research/nautilus_scalping/rob945_accounting_seal.py",)),
     ("M", ("research/nautilus_scalping/rob945_h6_summary_contract.py",)),
     ("M", ("research/nautilus_scalping/run_rob944_campaign.py",)),
+    # ROB-979 authorized additive modules. These are intentionally explicit:
+    # future rob974_* production files still require their own guard re-pin.
+    ("A", ("research/nautilus_scalping/rob974_h2_dtos.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h2_ingress.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h2_s3_engine.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h2_s4_engine.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h2_scenarios.py",)),
 ]
 _FROZEN_PATHS = (
     "research/nautilus_scalping",
