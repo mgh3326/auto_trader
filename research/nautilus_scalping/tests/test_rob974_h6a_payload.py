@@ -319,6 +319,65 @@ class TestModeIsMetadataNotSemanticIdentity:
         assert fixture_env.full_campaign_hash() == production_env.full_campaign_hash()
 
 
+class TestSourcePinsAreSemanticIdentity:
+    """R1 blocker #1: a different H1 feature/H2 engine/H4 runner/PBO
+    implementation source pin must never collide on the same
+    full_campaign_hash -- source pins are content, not metadata (only
+    `mode` itself is metadata; see TestModeIsMetadataNotSemanticIdentity)."""
+
+    def test_different_runner_pin_changes_hash(self):
+        pins_a = _fixture_pins()
+        pins_b = h6a.RequiredSourcePins(
+            feature_source_sha256=pins_a.feature_source_sha256,
+            engine_source_sha256=pins_a.engine_source_sha256,
+            runner_source_sha256=_hex64("a-completely-different-runner-source"),
+            pbo_implementation_sha256=pins_a.pbo_implementation_sha256,
+        )
+        env_a = _build_envelope(mode="production_plan", source_pins=pins_a)
+        env_b = _build_envelope(mode="production_plan", source_pins=pins_b)
+        assert env_a.full_campaign_hash() != env_b.full_campaign_hash()
+
+    def test_different_pbo_implementation_pin_changes_hash(self):
+        pins_a = _fixture_pins()
+        pins_b = h6a.RequiredSourcePins(
+            feature_source_sha256=pins_a.feature_source_sha256,
+            engine_source_sha256=pins_a.engine_source_sha256,
+            runner_source_sha256=pins_a.runner_source_sha256,
+            pbo_implementation_sha256=_hex64("a-completely-different-pbo-impl"),
+        )
+        env_a = _build_envelope(mode="production_plan", source_pins=pins_a)
+        env_b = _build_envelope(mode="production_plan", source_pins=pins_b)
+        assert env_a.full_campaign_hash() != env_b.full_campaign_hash()
+
+    def test_all_four_pins_independently_drift_the_hash(self):
+        base = _fixture_pins()
+        base_hash = _build_envelope(
+            mode="production_plan", source_pins=base
+        ).full_campaign_hash()
+        for field in (
+            "feature_source_sha256",
+            "engine_source_sha256",
+            "runner_source_sha256",
+            "pbo_implementation_sha256",
+        ):
+            mutated_kwargs = base.as_dict()
+            mutated_kwargs[field] = _hex64(f"mutated-{field}")
+            mutated_pins = h6a.RequiredSourcePins(**mutated_kwargs)
+            mutated_hash = _build_envelope(
+                mode="production_plan", source_pins=mutated_pins
+            ).full_campaign_hash()
+            assert mutated_hash != base_hash, field
+
+    def test_fixture_plan_empty_pins_vs_populated_pins_differ(self):
+        empty_env = _build_envelope(
+            mode="fixture_plan", source_pins=h6a.EMPTY_SOURCE_PINS
+        )
+        populated_env = _build_envelope(
+            mode="fixture_plan", source_pins=_fixture_pins()
+        )
+        assert empty_env.full_campaign_hash() != populated_env.full_campaign_hash()
+
+
 class TestProductionSourcePinGate:
     def test_fixture_mode_does_not_require_pins(self):
         _build_envelope(mode="fixture_plan", source_pins=h6a.EMPTY_SOURCE_PINS)
@@ -378,3 +437,112 @@ class TestPurePlanCall:
     def test_repeated_builds_are_side_effect_free(self):
         hashes = {_build_envelope().full_campaign_hash() for _ in range(5)}
         assert len(hashes) == 1
+
+
+class TestD13ACampaignDecisionPolicyCommitment:
+    """R1 blocker #6: the approved D13=A campaign-decision table (06-h5.md
+    AC40-46) must be committed to campaign identity, not left as an
+    arbitrary/uninterpreted policy blob a future H5 semantics change could
+    silently drift away from."""
+
+    def test_default_policy_is_the_real_d13_a_contract(self):
+        env = _build_envelope()
+        assert (
+            env.campaign_policy.campaign_decision_policy
+            == h6a.D13_A_CAMPAIGN_DECISION_POLICY
+        )
+
+    def test_branch_order_mutation_changes_full_campaign_hash(self):
+        base = _build_envelope()
+        mutated_decision_policy = h6a.CampaignDecisionPolicy(
+            **{
+                **h6a.D13_A_CAMPAIGN_DECISION_POLICY.__dict__,
+                "both_pass_result": "a_different_both_pass_semantics",
+            }
+        )
+        mutated = _build_envelope(
+            campaign_policy=_campaign_policy(
+                campaign_decision_policy=mutated_decision_policy
+            )
+        )
+        assert base.full_campaign_hash() != mutated.full_campaign_hash()
+
+    def test_ranking_order_mutation_changes_hash(self):
+        base = _build_envelope()
+        mutated_decision_policy = h6a.CampaignDecisionPolicy(
+            **{
+                **h6a.D13_A_CAMPAIGN_DECISION_POLICY.__dict__,
+                "both_pass_ranking_order": ("lower_timeout", "higher_pooled_e17"),
+            }
+        )
+        mutated = _build_envelope(
+            campaign_policy=_campaign_policy(
+                campaign_decision_policy=mutated_decision_policy
+            )
+        )
+        assert base.full_campaign_hash() != mutated.full_campaign_hash()
+
+    def test_s4_demo_eligible_default_cannot_be_relaxed_to_true(self):
+        with pytest.raises(h6a.H6APayloadError):
+            h6a.CampaignDecisionPolicy(
+                **{
+                    **h6a.D13_A_CAMPAIGN_DECISION_POLICY.__dict__,
+                    "s4_demo_eligible_default": True,
+                }
+            )
+
+    def test_s4_lineage_gate_state_cannot_be_relaxed_to_pass(self):
+        with pytest.raises(h6a.H6APayloadError):
+            h6a.CampaignDecisionPolicy(
+                **{
+                    **h6a.D13_A_CAMPAIGN_DECISION_POLICY.__dict__,
+                    "s4_historical_lineage_permitted_gate_state": "pass",
+                }
+            )
+
+    def test_s4_full_promotion_conjunction_cannot_be_relaxed_to_true(self):
+        with pytest.raises(h6a.H6APayloadError):
+            h6a.CampaignDecisionPolicy(
+                **{
+                    **h6a.D13_A_CAMPAIGN_DECISION_POLICY.__dict__,
+                    "s4_full_promotion_conjunction": "true",
+                }
+            )
+
+    def test_wrong_branch_order_rejected(self):
+        with pytest.raises(h6a.H6APayloadError):
+            h6a.CampaignDecisionPolicy(
+                **{
+                    **h6a.D13_A_CAMPAIGN_DECISION_POLICY.__dict__,
+                    "branch_order": (
+                        "both_fail",
+                        "accounting_or_strategy_incomplete",
+                        "s3_only_pass",
+                        "s4_only_pass",
+                        "both_pass",
+                    ),
+                }
+            )
+
+    def test_wrong_direct_verdict_domain_rejected(self):
+        with pytest.raises(h6a.H6APayloadError):
+            h6a.CampaignDecisionPolicy(
+                **{
+                    **h6a.D13_A_CAMPAIGN_DECISION_POLICY.__dict__,
+                    "direct_verdict_domain": ("pass", "fail", "incomplete"),
+                }
+            )
+
+    def test_wrong_pair_executor_gate_states_rejected(self):
+        with pytest.raises(h6a.H6APayloadError):
+            h6a.CampaignDecisionPolicy(
+                **{
+                    **h6a.D13_A_CAMPAIGN_DECISION_POLICY.__dict__,
+                    "s4_pair_executor_gate_states": (
+                        "not_evaluated",
+                        "pass",
+                        "fail",
+                        "PAIR_EXEC_FAIL=0",
+                    ),
+                }
+            )

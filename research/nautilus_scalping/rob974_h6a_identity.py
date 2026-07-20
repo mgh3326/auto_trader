@@ -18,6 +18,7 @@ shared ``research_contracts.canonical_hash`` typed-canonical authority.
 from __future__ import annotations
 
 import re
+import types
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -118,6 +119,33 @@ class StaleSourcePinError(H6AIdentityError):
     contract hash actually supplied -- refused before any row is built."""
 
 
+def _freeze(obj: Any) -> Any:
+    """Recursively converts dict/list into an immutable structure
+    (``types.MappingProxyType`` + ``tuple``) with a full deep, non-aliasing
+    copy -- a caller's own pre-construction dict can never leak into (or
+    later mutate) a sealed ``H6ARowSpec.components``, and the sealed
+    object's own nested fields can never be mutated in place either.
+    Mirrors ``rob944_frozen_campaign._freeze``/``rob974_h6a_payload._freeze``.
+    """
+    if isinstance(obj, Mapping):
+        return types.MappingProxyType({k: _freeze(v) for k, v in obj.items()})
+    if isinstance(obj, list | tuple):
+        return tuple(_freeze(v) for v in obj)
+    return obj
+
+
+def _unfreeze(obj: Any) -> Any:
+    """The dual of ``_freeze`` -- recognizes BOTH an already-frozen
+    ``MappingProxyType``/``tuple`` snapshot and a plain ``dict``/``list``
+    (e.g. a fresh, still-mutable ``components`` dict mid-construction) so a
+    single call normalizes either shape to canonical-hash-safe built-ins."""
+    if isinstance(obj, Mapping):
+        return {k: _unfreeze(v) for k, v in obj.items()}
+    if isinstance(obj, list | tuple):
+        return [_unfreeze(v) for v in obj]
+    return obj
+
+
 def _provenance_field(value: object, *, field: str) -> Provenance:
     if value not in _ALLOWED_PROVENANCE:
         raise H6AIdentityError(
@@ -202,7 +230,7 @@ class H6ARowSpec:
     strategy_key: str
     strategy_version: str
     hypothesis: str
-    components: dict[str, Any]
+    components: Mapping[str, Any]
     provenance: Provenance
     experiment_id: str
 
@@ -334,7 +362,7 @@ def build_campaign_row_specs(
                 strategy_key=contract.strategy_key,
                 strategy_version=contract.strategy_version,
                 hypothesis=row.hypothesis,
-                components=components,
+                components=_freeze(components),
                 provenance="fixture_identity",
                 experiment_id=experiment_id,
             )
@@ -375,8 +403,13 @@ def derive_row_experiment_id(
 ) -> str:
     """Independently derive one row's canonical experiment_id from trusted
     components -- the SAME ROB-846 typed-canonical authority the app-side
-    registry uses (``compute_identity_hashes``/``derive_experiment_id``)."""
-    hashes = compute_identity_hashes(dict(components))
+    registry uses (``compute_identity_hashes``/``derive_experiment_id``).
+    Accepts either a plain dict (pre-freeze, during construction) or an
+    already-frozen ``MappingProxyType`` snapshot (post-construction,
+    ``verify_row_experiment_id``) -- ``_unfreeze`` normalizes either shape
+    to plain dict/list before hashing, since the canonical-hash encoder
+    only recognizes built-in ``dict``/``list``."""
+    hashes = compute_identity_hashes(_unfreeze(components))
     return derive_experiment_id(strategy_key, strategy_version, hashes)
 
 

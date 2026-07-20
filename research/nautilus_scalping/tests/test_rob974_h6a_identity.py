@@ -372,3 +372,40 @@ class TestFixtureProvenanceIsolation:
 
     def test_no_production_builder_exported(self):
         assert not hasattr(h6a, "build_production_campaign_row_specs")
+
+
+class TestImmutableComponentsSeal:
+    """R1 blocker #4: H6ARowSpec.components must be a deep-frozen snapshot
+    -- neither the caller's original row/contract objects nor the returned
+    spec's own nested dicts can mutate a sealed identity after the fact."""
+
+    def test_top_level_components_mapping_rejects_item_assignment(self):
+        specs = _build_specs()
+        with pytest.raises(TypeError):
+            specs[0].components["params"] = {"tampered": True}
+
+    def test_nested_params_dict_rejects_item_assignment(self):
+        specs = _build_specs()
+        with pytest.raises(TypeError):
+            specs[0].components["params"]["q_min"] = 999.0
+
+    def test_post_build_mutation_of_original_row_params_does_not_change_spec(self):
+        rows = _all_48_rows()
+        row0_params = rows[0].params
+        specs_before = _build_specs(rows=rows)
+        before_hash = specs_before[0].experiment_id
+        # Mutate the ORIGINAL row's own params dict (still a plain dict on
+        # CampaignConfigRow -- the row itself is a caller-owned input, not
+        # the sealed output) after the specs were already built.
+        row0_params["q_min"] = 999.0
+        # The real invariant under test: the ALREADY-SEALED spec object is
+        # untouched by this later external mutation of the caller's own row.
+        assert specs_before[0].experiment_id == before_hash
+        assert specs_before[0].components["params"]["q_min"] != 999.0
+
+    def test_components_are_frozen_mapping_proxy_type(self):
+        import types
+
+        specs = _build_specs()
+        assert isinstance(specs[0].components, types.MappingProxyType)
+        assert isinstance(specs[0].components["params"], types.MappingProxyType)
