@@ -39,6 +39,7 @@ __all__ = [
     "CampaignDbSnapshot",
     "CampaignStateInspector",
     "ContractFixtureCampaignInput",
+    "ContractFixtureClosureEvidence",
     "ContractFixtureExecutionPorts",
     "ContractFixturePlan",
     "CoordinatorCounters",
@@ -63,6 +64,7 @@ __all__ = [
     "ReplayCollisionError",
     "SESSION_CLOSE_FAILURE",
     "build_h6a_mutation_contexts",
+    "build_contract_fixture_closure_evidence",
     "issue_contract_fixture_authorization",
     "issue_run_authorization",
     "materialize_contract_fixture",
@@ -914,6 +916,210 @@ class MaterializationOutcome:
     replay_inspection: object | None
     diagnostic_capture: H6BDiagnosticCapture | None
     diagnostic_capture_error: BaseException | None
+
+
+@dataclass(frozen=True, slots=True)
+class ContractFixtureClosureEvidence:
+    """Deterministic CP7 evidence that cannot be mistaken for production."""
+
+    exact_48_mapping_hash: str
+    registered_total: int
+    primary_attempts: int
+    total_attempts: int
+    retry_attempts: int
+    trial_accounting_hash: str
+    fixture_scorecard_semantic_hash: str
+    artifact_names: tuple[str, str]
+    empirical_runs: int = 0
+    rob974_db_connections: int = 0
+    rob974_db_queries: int = 0
+    rob974_db_writes: int = 0
+    real_db_sessions: int = 0
+    production_db_queries: int = 0
+    production_db_writes: int = 0
+    broker_order_fill_calls: int = 0
+    actual_h4_contract: str = "NOT_EVALUATED"
+    actual_h5_contract: str = "NOT_EVALUATED"
+    production_identity: str = "DEFERRED_UNTIL_H4_SOURCE_PINS"
+    launchability: str = "NOT_LAUNCHABLE_CONTRACT_FIXTURE"
+
+    def __post_init__(self) -> None:
+        _hex64(self.exact_48_mapping_hash, "closure mapping hash")
+        _hex64(self.trial_accounting_hash, "closure accounting hash")
+        _hex64(
+            self.fixture_scorecard_semantic_hash,
+            "closure fixture scorecard hash",
+        )
+        expected_dimensions = {
+            "registered_total": 48,
+            "primary_attempts": 48,
+            "total_attempts": 48,
+            "retry_attempts": 0,
+        }
+        for name, expected in expected_dimensions.items():
+            value = getattr(self, name)
+            if type(value) is not int or value != expected:
+                raise H6BPlanError(
+                    f"fixture closure accounting dimension {name} is not exact"
+                )
+        if (
+            type(self.artifact_names) is not tuple
+            or any(type(name) is not str for name in self.artifact_names)
+            or self.artifact_names != ("scorecard.json", "scorecard.md")
+        ):
+            raise H6BPlanError("fixture closure artifact names are not exact")
+        for name in (
+            "empirical_runs",
+            "rob974_db_connections",
+            "rob974_db_queries",
+            "rob974_db_writes",
+            "real_db_sessions",
+            "production_db_queries",
+            "production_db_writes",
+            "broker_order_fill_calls",
+        ):
+            value = getattr(self, name)
+            if type(value) is not int or value != 0:
+                raise H6BPlanError(f"fixture closure safety counter {name} is nonzero")
+        for name in (
+            "actual_h4_contract",
+            "actual_h5_contract",
+            "production_identity",
+            "launchability",
+        ):
+            if type(getattr(self, name)) is not str:
+                raise H6BPlanError(f"fixture closure label {name} is not exact str")
+        if (
+            self.actual_h4_contract,
+            self.actual_h5_contract,
+            self.production_identity,
+            self.launchability,
+        ) != (
+            "NOT_EVALUATED",
+            "NOT_EVALUATED",
+            "DEFERRED_UNTIL_H4_SOURCE_PINS",
+            "NOT_LAUNCHABLE_CONTRACT_FIXTURE",
+        ):
+            raise H6BPlanError("fixture closure dependency labels drifted")
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "schema_version": "rob974_h6b_contract_fixture_closure.v1",
+            "predecessor_mode": "actual_h6a_contract_fixture_h4_h5",
+            "actual_h4_contract": self.actual_h4_contract,
+            "actual_h5_contract": self.actual_h5_contract,
+            "production_identity": self.production_identity,
+            "launchability": self.launchability,
+            "exact_48_mapping_hash": self.exact_48_mapping_hash,
+            "accounting": {
+                "registered_total": self.registered_total,
+                "primary_attempts": self.primary_attempts,
+                "total_attempts": self.total_attempts,
+                "retry_attempts": self.retry_attempts,
+                "trial_accounting_hash": self.trial_accounting_hash,
+            },
+            "artifact": {
+                "names": list(self.artifact_names),
+                "fixture_scorecard_semantic_hash": (
+                    self.fixture_scorecard_semantic_hash
+                ),
+            },
+            "safety_counters": {
+                "empirical_runs": self.empirical_runs,
+                "rob974_db_connections": self.rob974_db_connections,
+                "rob974_db_queries": self.rob974_db_queries,
+                "rob974_db_writes": self.rob974_db_writes,
+                "real_db_sessions": self.real_db_sessions,
+                "production_db_queries": self.production_db_queries,
+                "production_db_writes": self.production_db_writes,
+                "broker_order_fill_calls": self.broker_order_fill_calls,
+            },
+        }
+
+
+def build_contract_fixture_closure_evidence(
+    *, plan: ContractFixturePlan, outcome: MaterializationOutcome
+) -> ContractFixtureClosureEvidence:
+    """Validate one non-vacuous fixture materialization without identity claims."""
+    if type(plan) is not ContractFixturePlan:
+        raise H6BPlanError("closure plan must be exact ContractFixturePlan")
+    if type(outcome) is not MaterializationOutcome:
+        raise H6BPlanError("closure outcome must be exact MaterializationOutcome")
+    if outcome.exit_code != MATERIALIZED_EXIT or outcome.disposition != "MATERIALIZED":
+        raise H6BPlanError("closure requires a confirmed materialized fixture")
+    if outcome.db_state != "ABSENT" or outcome.artifact_state != "ABSENT":
+        raise H6BPlanError("closure requires two-sided absence before mutation")
+    expected_counters = {
+        "session_factory": 1,
+        "begin": 1,
+        "register": 1,
+        "h4": 1,
+        "record": 1,
+        "accounting": 1,
+        "h5": 1,
+        "stage": 1,
+        "rollback": 0,
+        "commit": 1,
+        "publish": 1,
+        "close": 1,
+        "db_inspect": 1,
+        "artifact_probe": 1,
+        "replay_verify": 0,
+        "delete": 0,
+    }
+    for name, expected in expected_counters.items():
+        value = getattr(outcome.counters, name)
+        if type(value) is not int or value != expected:
+            raise H6BPlanError(f"closure mutation counter {name} is not exact")
+    if type(outcome.scorecard) is not dict:
+        raise H6BPlanError("closure scorecard is absent or non-canonical")
+    accounting = outcome.accounting
+    published = outcome.published_pair
+    if accounting is None or published is None:
+        raise H6BPlanError("closure accounting or published pair is absent")
+    if outcome.scorecard.get("semantic_verdict") != "NOT_EVALUATED":
+        raise H6BPlanError("fixture scorecard made a semantic verdict claim")
+    if outcome.scorecard.get("mapping_hash") != plan.contract_fixture_mapping_hash:
+        raise H6BPlanError("fixture scorecard mapping hash differs from plan")
+    if outcome.scorecard.get("trial_accounting_hash") != getattr(
+        accounting, "trial_accounting_hash", None
+    ):
+        raise H6BPlanError("fixture scorecard accounting hash differs from H6-A")
+    json_path = getattr(published, "json_path", None)
+    markdown_path = getattr(published, "markdown_path", None)
+    semantic_hash = _hex64(
+        getattr(published, "semantic_hash", None),
+        "closure fixture scorecard hash",
+    )
+    if not isinstance(json_path, Path) or not isinstance(markdown_path, Path):
+        raise H6BPlanError("fixture published pair lacks physical paths")
+    if not json_path.is_file() or not markdown_path.is_file():
+        raise H6BPlanError("fixture published pair is not physically present")
+    dimensions: dict[str, int] = {}
+    for name, expected in (
+        ("registered_total", 48),
+        ("primary_attempts", 48),
+        ("total_attempts", 48),
+        ("retry_attempts", 0),
+    ):
+        value = getattr(accounting, name, None)
+        if type(value) is not int or value != expected:
+            raise H6BPlanError(f"closure H6-A accounting {name} is not exact")
+        dimensions[name] = value
+    accounting_hash = _hex64(
+        getattr(accounting, "trial_accounting_hash", None),
+        "closure accounting hash",
+    )
+    return ContractFixtureClosureEvidence(
+        exact_48_mapping_hash=plan.contract_fixture_mapping_hash,
+        registered_total=dimensions["registered_total"],
+        primary_attempts=dimensions["primary_attempts"],
+        total_attempts=dimensions["total_attempts"],
+        retry_attempts=dimensions["retry_attempts"],
+        trial_accounting_hash=accounting_hash,
+        fixture_scorecard_semantic_hash=semantic_hash,
+        artifact_names=(json_path.name, markdown_path.name),
+    )
 
 
 @dataclass(slots=True)
