@@ -1,9 +1,3 @@
-> **아카이브 (ROB-986, 2026-07-20)**: 여기 설명된 HTTP webhook 전송(`HERMES_WEBHOOK_URL`
-> POST)은 ROB-566에서 in-process `python_direct`(TradeNotifier) 렌더링으로 대체되었고,
-> 그 대체 완료를 확인한 뒤 webhook 코드 경로 자체가 제거되었다. `ReviewTriggerPayload`
-> 스키마와 필드 의미는 여전히 유효하지만(`app/services/hermes_client.py`), 전송 방식은
-> 아래 설명과 다르다 — 현재는 `TradeNotifier.notify_investment_watch`가 직접 렌더링한다.
-
 # Watch Trigger → Hermes Payload Contract (ROB-265 Plan 4 + ROB-500)
 
 auto_trader가 watch 발화/유효성 재검토 시 `HERMES_WEBHOOK_URL`로 POST하는

@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
@@ -72,10 +73,99 @@ def test_payload_rejects_extra_fields() -> None:
 
 
 @pytest.mark.asyncio
-async def test_close_is_a_noop() -> None:
-    # ROB-986: webhook HTTP client removed; close() stays a harmless no-op
-    # so callers' symmetric close() calls keep working.
-    await HermesNotificationClient().close()
+async def test_disabled_client_skips_delivery() -> None:
+    client = HermesNotificationClient(
+        webhook_url="http://nowhere.local/hook", token="t", enabled=False
+    )
+    result = await client.send_review_trigger(_base_payload())
+    assert result.status == "skipped"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_enabled_client_success_path() -> None:
+    captured: dict = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["headers"] = dict(request.headers)
+        captured["body"] = request.content.decode("utf-8")
+        return httpx.Response(202)
+
+    transport = httpx.MockTransport(_handler)
+    client = HermesNotificationClient(
+        webhook_url="http://hermes.test/hook",
+        token="bearer-abc",
+        enabled=True,
+        transport=transport,
+    )
+    payload = _base_payload()
+    result = await client.send_review_trigger(payload)
+    await client.close()
+
+    assert result.status == "success"
+    assert result.http_status == 202
+    assert captured["url"] == "http://hermes.test/hook"
+    assert captured["headers"]["authorization"] == "Bearer bearer-abc"
+    # Payload includes every required immutable-snapshot field.
+    assert f'"event_uuid":"{payload.event_uuid}"' in captured["body"]
+    assert f'"alert_uuid":"{payload.alert_uuid}"' in captured["body"]
+    assert '"market":"kr"' in captured["body"]
+    assert '"action_mode":"notify_only"' in captured["body"]
+    assert '"outcome":"notified"' in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_enabled_client_4xx_returns_failed() -> None:
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(403, text="forbidden")
+    )
+    client = HermesNotificationClient(
+        webhook_url="http://hermes.test/hook",
+        enabled=True,
+        transport=transport,
+    )
+    result = await client.send_review_trigger(_base_payload())
+    await client.close()
+    assert result.status == "failed"
+    assert result.http_status == 403
+
+
+@pytest.mark.asyncio
+async def test_enabled_client_network_error_returns_failed() -> None:
+    def _raise(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    transport = httpx.MockTransport(_raise)
+    client = HermesNotificationClient(
+        webhook_url="http://hermes.test/hook",
+        enabled=True,
+        transport=transport,
+    )
+    result = await client.send_review_trigger(_base_payload())
+    await client.close()
+    assert result.status == "failed"
+    assert result.reason == "request_failed"
+
+
+@pytest.mark.asyncio
+async def test_enabled_client_without_token_omits_auth_header() -> None:
+    captured: dict = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured["headers"] = dict(request.headers)
+        return httpx.Response(200)
+
+    transport = httpx.MockTransport(_handler)
+    client = HermesNotificationClient(
+        webhook_url="http://hermes.test/hook",
+        token="",
+        enabled=True,
+        transport=transport,
+    )
+    await client.send_review_trigger(_base_payload())
+    await client.close()
+    assert "authorization" not in captured["headers"]
 
 
 # --- ROB-500 Tests ---
@@ -282,12 +372,15 @@ def test_payload_accepts_planned_action_and_trigger_checklist() -> None:
 async def test_python_direct_success_maps_to_success(monkeypatch):
     from unittest.mock import AsyncMock
 
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "WATCH_NOTIFY_TRANSPORT", "python_direct")
     fake = AsyncMock()
     fake.notify_investment_watch = AsyncMock(return_value=True)
     monkeypatch.setattr(
         "app.monitoring.trade_notifier.get_trade_notifier", lambda: fake
     )
-    client = HermesNotificationClient()
+    client = HermesNotificationClient(enabled=True)
     res = await client.send_review_trigger(_base_payload())
     assert res.status == "success"
     fake.notify_investment_watch.assert_awaited_once()
@@ -298,12 +391,17 @@ async def test_python_direct_success_maps_to_success(monkeypatch):
 async def test_python_direct_failure_maps_to_skipped(monkeypatch):
     from unittest.mock import AsyncMock
 
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "WATCH_NOTIFY_TRANSPORT", "python_direct")
     fake = AsyncMock()
     fake.notify_investment_watch = AsyncMock(return_value=False)
     monkeypatch.setattr(
         "app.monitoring.trade_notifier.get_trade_notifier", lambda: fake
     )
-    res = await HermesNotificationClient().send_review_trigger(_base_payload())
+    res = await HermesNotificationClient(enabled=True).send_review_trigger(
+        _base_payload()
+    )
     assert res.status == "skipped"
 
 
@@ -312,10 +410,15 @@ async def test_python_direct_failure_maps_to_skipped(monkeypatch):
 async def test_python_direct_exception_maps_to_failed(monkeypatch):
     from unittest.mock import AsyncMock
 
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "WATCH_NOTIFY_TRANSPORT", "python_direct")
     fake = AsyncMock()
     fake.notify_investment_watch = AsyncMock(side_effect=RuntimeError("dispatch error"))
     monkeypatch.setattr(
         "app.monitoring.trade_notifier.get_trade_notifier", lambda: fake
     )
-    res = await HermesNotificationClient().send_review_trigger(_base_payload())
+    res = await HermesNotificationClient(enabled=True).send_review_trigger(
+        _base_payload()
+    )
     assert res.status == "failed"

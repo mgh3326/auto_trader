@@ -343,9 +343,9 @@ async def test_scan_market_hermes_failure_does_not_consume_alert(
 async def test_scan_market_hermes_skipped_does_not_consume_alert(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Plan 4 hardening — a skipped delivery keeps the alert active.
+    """Plan 4 hardening — disabled Hermes (skipped) keeps the alert active.
 
-    E.g. the notifier's Discord transport not configured — the scanner
+    Useful for dev/test runs where HERMES_ENABLED=False — the scanner
     still writes audit history of what would have fired, but does not
     silently consume a real watch.
     """
