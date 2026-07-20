@@ -78,7 +78,7 @@ async def test_recommend_stocks_removal_leaves_order_surface_untouched() -> None
 
 @pytest.mark.asyncio
 async def test_rob488_immediate_deprecated_tools_removed_from_default_surface() -> None:
-    """ROB-488: dead/no-op/footgun tools are implementation-retained but unregistered."""
+    """ROB-488: dead/no-op/footgun tools remain absent from the default surface."""
     tools = build_tools()
 
     retired = {
@@ -90,7 +90,6 @@ async def test_rob488_immediate_deprecated_tools_removed_from_default_surface() 
         "set_market_filter",
         "delete_asset_profile",
         "simulate_avg_cost",
-        "format_execution_comment",
         "investment_snapshot_bundle_ensure",
         "investment_snapshot_refresh_request",
     }

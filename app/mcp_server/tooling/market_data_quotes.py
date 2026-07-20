@@ -1686,6 +1686,9 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
         name="get_quote",
         description=(
             "Get latest quote/last price for a symbol (KR equity / US equity / crypto). "
+            "Use this for a fast standalone price/last-trade check; if batch analysis "
+            "is planned for the symbol, do not duplicate this call because "
+            "analyze_stock_batch already returns a fresh price with its analysis context. "
             "For KR equities during NXT pre-market/after-hours sessions, price falls "
             "back to the NXT orderbook expected price or best bid/ask mid while "
             "preserving KRX previous_close for gap calculations. "
