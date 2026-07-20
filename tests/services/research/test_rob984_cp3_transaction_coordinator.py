@@ -185,6 +185,14 @@ class DirectoryArtifactPort:
             raise self.publish_error
         return artifacts.publish_staged_pair(staged, h5_port=h5_port)
 
+    def probe(self, *, output_dir):
+        return artifacts.probe_artifact_state(output_dir=output_dir)
+
+    def inspect(self, *, scorecard, output_dir, h5_port):
+        return artifacts.inspect_exact_artifact_replay(
+            scorecard=scorecard, output_dir=output_dir, h5_port=h5_port
+        )
+
 
 class Fixture:
     def __init__(self, tmp_path: Path, *, session=None):

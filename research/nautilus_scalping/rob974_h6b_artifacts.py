@@ -27,6 +27,7 @@ __all__ = [
     "ArtifactCollisionError",
     "ArtifactError",
     "ArtifactForensicState",
+    "ArtifactPresence",
     "ArtifactPreflightError",
     "ArtifactPublishError",
     "ArtifactReplayInspection",
@@ -36,6 +37,7 @@ __all__ = [
     "PublishedArtifactPair",
     "StagedArtifactPair",
     "inspect_exact_artifact_replay",
+    "probe_artifact_state",
     "publish_staged_pair",
     "stage_scorecard_pair",
 ]
@@ -134,6 +136,25 @@ class ArtifactReplayInspection:
             raise ValueError("invalid replay disposition")
 
 
+@dataclass(frozen=True, slots=True)
+class ArtifactPresence:
+    """Read-only pair/staging probe used before any database mutation."""
+
+    state: str
+    final_dir: Path
+    staging_dirs: tuple[Path, ...]
+    detail: str
+
+    def __post_init__(self) -> None:
+        if self.state not in {
+            "ABSENT",
+            "PAIR_PRESENT",
+            "INVALID_FINAL",
+            "STALE_STAGING",
+        }:
+            raise ValueError("invalid artifact presence state")
+
+
 def _validate_output_path(output_dir: Path) -> tuple[Path, Path]:
     if not isinstance(output_dir, Path):
         raise ArtifactPreflightError("output_dir must be pathlib.Path")
@@ -195,6 +216,51 @@ def _assert_no_stale_staging(output_dir: Path) -> None:
 def _assert_output_absent(output_dir: Path) -> None:
     if _lexists(output_dir):
         raise ArtifactCollisionError("final output already exists")
+
+
+def probe_artifact_state(*, output_dir: Path) -> ArtifactPresence:
+    """Classify final/staging shape without writing, deleting, or repairing."""
+    output_dir, _parent = _validate_output_path(output_dir)
+    staging = _staging_siblings(output_dir)
+    if staging:
+        return ArtifactPresence(
+            state="STALE_STAGING",
+            final_dir=output_dir,
+            staging_dirs=staging,
+            detail="one or more staging siblings already exist",
+        )
+    if not _lexists(output_dir):
+        return ArtifactPresence(
+            state="ABSENT",
+            final_dir=output_dir,
+            staging_dirs=(),
+            detail="final pair and staging siblings are absent",
+        )
+    try:
+        final_mode = os.lstat(output_dir).st_mode
+        if not stat.S_ISDIR(final_mode) or stat.S_ISLNK(final_mode):
+            raise ValueError("final path is not a regular non-symlink directory")
+        entries = tuple(os.scandir(output_dir))
+        names = frozenset(entry.name for entry in entries)
+        if names != _EXACT_NAMES:
+            raise ValueError("final directory is not the exact two-file pair")
+        for entry in entries:
+            mode = os.lstat(entry.path).st_mode
+            if not stat.S_ISREG(mode) or stat.S_ISLNK(mode):
+                raise ValueError(f"{entry.name} is not a regular non-symlink file")
+    except (FileNotFoundError, NotADirectoryError, OSError, ValueError) as exc:
+        return ArtifactPresence(
+            state="INVALID_FINAL",
+            final_dir=output_dir,
+            staging_dirs=(),
+            detail=str(exc),
+        )
+    return ArtifactPresence(
+        state="PAIR_PRESENT",
+        final_dir=output_dir,
+        staging_dirs=(),
+        detail="exact two-file physical shape is present",
+    )
 
 
 def _validate_port(port: H5ArtifactPort) -> None:
@@ -419,12 +485,8 @@ def stage_scorecard_pair(
     _assert_output_absent(output_dir)
     _assert_no_stale_staging(output_dir)
 
-    staging_dir = Path(
-        tempfile.mkdtemp(dir=parent, prefix=_staging_prefix(output_dir))
-    )
-    state = ArtifactForensicState(
-        "STAGING_PRESERVED", staging_dir, output_dir, False
-    )
+    staging_dir = Path(tempfile.mkdtemp(dir=parent, prefix=_staging_prefix(output_dir)))
+    state = ArtifactForensicState("STAGING_PRESERVED", staging_dir, output_dir, False)
     try:
         if _device_id(staging_dir) != _device_id(parent):
             raise ArtifactStageError("cross-filesystem staging refused", state)
@@ -512,7 +574,9 @@ def publish_staged_pair(
         _rename_noreplace(staged.staging_dir, staged.final_dir)
     except OSError as exc:
         if exc.errno in (errno.EEXIST, errno.ENOTEMPTY):
-            raise ArtifactPublishError("concurrent final creator won", before_state) from exc
+            raise ArtifactPublishError(
+                "concurrent final creator won", before_state
+            ) from exc
         raise ArtifactPublishError("directory rename failed", before_state) from exc
 
     after_state = ArtifactForensicState(
@@ -521,7 +585,9 @@ def publish_staged_pair(
     try:
         _fsync_directory(staged.final_dir.parent)
     except Exception as exc:
-        raise ArtifactPublishError("parent-directory fsync failed", after_state) from exc
+        raise ArtifactPublishError(
+            "parent-directory fsync failed", after_state
+        ) from exc
     return PublishedArtifactPair(
         final_dir=staged.final_dir,
         json_path=staged.final_dir / _JSON_NAME,

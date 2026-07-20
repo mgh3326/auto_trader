@@ -35,6 +35,8 @@ __all__ = [
     "CLI_USAGE_OR_PLAN_ERROR",
     "COMMIT_FAILED_OR_UNKNOWN",
     "CommitRejectedError",
+    "CampaignDbSnapshot",
+    "CampaignStateInspector",
     "ContractFixtureCampaignInput",
     "ContractFixtureExecutionPorts",
     "ContractFixturePlan",
@@ -55,11 +57,13 @@ __all__ = [
     "PredecessorTransactionOwnershipError",
     "ProductionExecutionPlan",
     "RunAuthority",
+    "ReplayCollisionError",
     "SESSION_CLOSE_FAILURE",
     "build_h6a_mutation_contexts",
     "issue_contract_fixture_authorization",
     "issue_run_authorization",
     "materialize_contract_fixture",
+    "materialize_or_replay_contract_fixture",
     "validate_database_target_pair",
     "validate_derived_run_id",
     "validate_exact_48_mapping",
@@ -589,6 +593,70 @@ class ArtifactPairPort(Protocol):
 
     def publish(self, staged: object, *, h5_port: H5CompositionPort) -> object: ...
 
+    def probe(self, *, output_dir: Path) -> object: ...
+
+    def inspect(
+        self,
+        *,
+        scorecard: Mapping[str, object],
+        output_dir: Path,
+        h5_port: H5CompositionPort,
+    ) -> object: ...
+
+
+@dataclass(frozen=True, slots=True)
+class CampaignDbSnapshot:
+    """Canonical raw-row projection returned by the CP4 inspection seam."""
+
+    campaign_run_id: str | None
+    registered_mapping: tuple[tuple[str, str], ...]
+    attempts: tuple[H6AAttemptBatchItem, ...]
+    mismatch_row_ids: tuple[str, ...] = ()
+    out_of_plan_experiment_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.campaign_run_id is not None and type(self.campaign_run_id) is not str:
+            raise H6BPlanError("snapshot campaign_run_id must be exact str or None")
+        if type(self.registered_mapping) is not tuple:
+            raise H6BPlanError("snapshot registered mapping must be an exact tuple")
+        for item in self.registered_mapping:
+            if (
+                type(item) is not tuple
+                or len(item) != 2
+                or type(item[0]) is not str
+                or type(item[1]) is not str
+            ):
+                raise H6BPlanError("snapshot registration entries must be string pairs")
+        if type(self.attempts) is not tuple or any(
+            type(item) is not H6AAttemptBatchItem for item in self.attempts
+        ):
+            raise H6BPlanError("snapshot attempts must be exact H6-A item tuples")
+        for name in ("mismatch_row_ids", "out_of_plan_experiment_ids"):
+            values = getattr(self, name)
+            if type(values) is not tuple or any(
+                type(item) is not str for item in values
+            ):
+                raise H6BPlanError(f"snapshot {name} must be an exact string tuple")
+
+    def is_absent(self) -> bool:
+        return (
+            self.campaign_run_id is None
+            and self.registered_mapping == ()
+            and self.attempts == ()
+            and self.mismatch_row_ids == ()
+            and self.out_of_plan_experiment_ids == ()
+        )
+
+
+class CampaignStateInspector(Protocol):
+    """Read-only DB snapshot seam; CP5 replaces it with first-statement RO."""
+
+    provenance: str
+
+    async def inspect(
+        self, session: object, *, plan: ContractFixturePlan
+    ) -> CampaignDbSnapshot: ...
+
 
 @dataclass(frozen=True, slots=True)
 class ContractFixtureCampaignInput:
@@ -643,6 +711,7 @@ class ContractFixtureExecutionPorts:
     h6a_accounting: H6AAccountingPort
     h5: H5CompositionPort
     artifacts: ArtifactPairPort
+    state_inspector: CampaignStateInspector | None = None
     provenance: str = "contract_fixture"
 
     def __post_init__(self) -> None:
@@ -678,6 +747,11 @@ class ContractFixtureExecutionPorts:
             getattr(self.artifacts, "publish", None)
         ):
             raise H6BPlanError("artifact port lacks stage/publish")
+        if self.state_inspector is not None:
+            if getattr(self.state_inspector, "provenance", None) != "contract_fixture":
+                raise H6BPlanError("pre-CP8 state inspector must be contract_fixture")
+            if not callable(getattr(self.state_inspector, "inspect", None)):
+                raise H6BPlanError("state inspector lacks inspect")
         if self.provenance != "contract_fixture":
             raise H6BPlanError("pre-CP8 execution ports must be contract_fixture")
 
@@ -688,6 +762,10 @@ class CommitRejectedError(RuntimeError):
 
 class PredecessorTransactionOwnershipError(RuntimeError):
     """A predecessor attempted to own H6-B's transaction lifecycle."""
+
+
+class ReplayCollisionError(RuntimeError):
+    """DB/artifact state is asymmetric, partial, stale, or non-canonical."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -704,6 +782,10 @@ class CoordinatorCounters:
     commit: int
     publish: int
     close: int
+    db_inspect: int = 0
+    artifact_probe: int = 0
+    replay_verify: int = 0
+    delete: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -725,6 +807,9 @@ class MaterializationOutcome:
     published_pair: object | None
     accounting: object | None
     scorecard: dict[str, object] | None
+    db_state: str
+    artifact_state: str
+    replay_inspection: object | None
 
 
 @dataclass(slots=True)
@@ -742,6 +827,10 @@ class _CoordinatorState:
     commit: int = 0
     publish: int = 0
     close: int = 0
+    db_inspect: int = 0
+    artifact_probe: int = 0
+    replay_verify: int = 0
+    delete: int = 0
     rollback_error: BaseException | None = None
     close_error: BaseException | None = None
     rollback_outcome: str = "NOT_ATTEMPTED"
@@ -751,6 +840,9 @@ class _CoordinatorState:
     published_pair: object | None = None
     accounting_report: object | None = None
     scorecard: dict[str, object] | None = None
+    db_state: str = "NOT_INSPECTED"
+    artifact_state: str = "NOT_INSPECTED"
+    replay_inspection: object | None = None
 
     def counters(self) -> CoordinatorCounters:
         return CoordinatorCounters(
@@ -766,6 +858,10 @@ class _CoordinatorState:
             commit=self.commit,
             publish=self.publish,
             close=self.close,
+            db_inspect=self.db_inspect,
+            artifact_probe=self.artifact_probe,
+            replay_verify=self.replay_verify,
+            delete=self.delete,
         )
 
 
@@ -809,6 +905,9 @@ def _outcome(
         published_pair=state.published_pair,
         accounting=state.accounting_report,
         scorecard=state.scorecard,
+        db_state=state.db_state,
+        artifact_state=state.artifact_state,
+        replay_inspection=state.replay_inspection,
     )
 
 
@@ -908,6 +1007,95 @@ def _registered_pk_mapping(
     return result
 
 
+def _validate_replay_ports(ports: ContractFixtureExecutionPorts) -> None:
+    if ports.state_inspector is None:
+        raise H6BPreflightRefused("CP4 requires an explicit state inspector")
+    for name in ("probe", "inspect"):
+        if not callable(getattr(ports.artifacts, name, None)):
+            raise H6BPreflightRefused(f"artifact port lacks read-only {name}")
+
+
+def _validate_exact_db_snapshot(
+    *,
+    plan: ContractFixturePlan,
+    snapshot: CampaignDbSnapshot,
+    accounting: object,
+) -> None:
+    if snapshot.campaign_run_id != plan._fixture_run_id:
+        raise ReplayCollisionError("persisted campaign belongs to a wrong run")
+    if snapshot.registered_mapping != plan.ordered_mapping:
+        raise ReplayCollisionError(
+            "persisted registration is partial, reordered, or outside the plan"
+        )
+    if snapshot.mismatch_row_ids:
+        raise ReplayCollisionError("persisted registration carries mismatched row IDs")
+    if snapshot.out_of_plan_experiment_ids:
+        raise ReplayCollisionError("persisted state carries out-of-plan experiments")
+    required_report_values = {
+        "campaign_run_id": plan._fixture_run_id,
+        "expected_total": 48,
+        "registered_total": 48,
+        "primary_attempts": 48,
+        "total_attempts": 48,
+        "retry_attempts": 0,
+        "accounting_complete": True,
+    }
+    for name, expected in required_report_values.items():
+        if getattr(accounting, name, object()) != expected:
+            raise ReplayCollisionError(
+                f"H6-A reconstructed accounting field {name} is not exact"
+            )
+    for name in (
+        "missing_row_ids",
+        "extra_experiment_ids",
+        "mismatch_row_ids",
+        "duplicate_or_gap_row_ids",
+    ):
+        if getattr(accounting, name, object()) != ():
+            raise ReplayCollisionError(
+                f"H6-A reconstructed accounting carries non-empty {name}"
+            )
+
+
+async def _finish_replay_noop(
+    *, state: _CoordinatorState, session: object
+) -> MaterializationOutcome:
+    primary_error: BaseException | None = None
+    native_interrupt: BaseException | None = None
+    try:
+        await _attempt_rollback(state, session)
+    except BaseException as exc:
+        native_interrupt = exc
+    if state.rollback_error is None:
+        exit_code = MATERIALIZED_EXIT
+        disposition = "REPLAY_NOOP"
+        retry_forbidden = False
+    else:
+        primary_error = state.rollback_error
+        exit_code = PRECOMMIT_FAILURE
+        disposition = "PRECOMMIT_FAILURE"
+        retry_forbidden = True
+    try:
+        await _attempt_close(state, session)
+    except BaseException as exc:
+        native_interrupt = native_interrupt or exc
+    if state.close_error is not None and exit_code == MATERIALIZED_EXIT:
+        exit_code = SESSION_CLOSE_FAILURE
+        disposition = "REPLAY_NOOP_CLOSE_FAILED"
+        retry_forbidden = True
+    outcome = _outcome(
+        state,
+        exit_code=exit_code,
+        disposition=disposition,
+        primary_error=primary_error,
+        retry_forbidden=retry_forbidden,
+    )
+    if native_interrupt is not None:
+        _attach_cancellation_outcome(native_interrupt, outcome)
+        raise native_interrupt
+    return outcome
+
+
 async def materialize_contract_fixture(
     *,
     plan: ContractFixturePlan,
@@ -915,6 +1103,45 @@ async def materialize_contract_fixture(
     campaign: ContractFixtureCampaignInput,
     ports: ContractFixtureExecutionPorts,
     output_dir: Path,
+) -> MaterializationOutcome:
+    """CP3 compatibility entry point for explicitly call-spy-only fixtures."""
+    return await _materialize_contract_fixture(
+        plan=plan,
+        authorization=authorization,
+        campaign=campaign,
+        ports=ports,
+        output_dir=output_dir,
+        require_state_inspection=False,
+    )
+
+
+async def materialize_or_replay_contract_fixture(
+    *,
+    plan: ContractFixturePlan,
+    authorization: IssuedOneShotAuthorization,
+    campaign: ContractFixtureCampaignInput,
+    ports: ContractFixtureExecutionPorts,
+    output_dir: Path,
+) -> MaterializationOutcome:
+    """CP4 two-sided classifier; mutation follows only dual absence."""
+    return await _materialize_contract_fixture(
+        plan=plan,
+        authorization=authorization,
+        campaign=campaign,
+        ports=ports,
+        output_dir=output_dir,
+        require_state_inspection=True,
+    )
+
+
+async def _materialize_contract_fixture(
+    *,
+    plan: ContractFixturePlan,
+    authorization: IssuedOneShotAuthorization,
+    campaign: ContractFixtureCampaignInput,
+    ports: ContractFixtureExecutionPorts,
+    output_dir: Path,
+    require_state_inspection: bool,
 ) -> MaterializationOutcome:
     """Compose CP1-CP7 seams with H6-B as the sole transaction owner.
 
@@ -929,6 +1156,25 @@ async def materialize_contract_fixture(
         )
         register_context, record_context = build_h6a_mutation_contexts(authorization)
         validate_h6a_context_pair(register_context, record_context)
+        if type(require_state_inspection) is not bool:
+            raise H6BPreflightRefused("state-inspection flag must be exact bool")
+        if require_state_inspection:
+            _validate_replay_ports(ports)
+            state.trace.append("artifact_probe")
+            state.artifact_probe += 1
+            presence = ports.artifacts.probe(output_dir=output_dir)
+            state.artifact_state = getattr(presence, "state", "MALFORMED")
+            if state.artifact_state not in {
+                "ABSENT",
+                "PAIR_PRESENT",
+                "INVALID_FINAL",
+                "STALE_STAGING",
+            }:
+                raise H6BPreflightRefused("artifact probe returned a malformed state")
+            if state.artifact_state in {"INVALID_FINAL", "STALE_STAGING"}:
+                raise ReplayCollisionError(
+                    f"artifact forensic state refused: {state.artifact_state}"
+                )
     except BaseException as exc:
         if not isinstance(exc, Exception):
             outcome = _outcome(
@@ -936,7 +1182,7 @@ async def materialize_contract_fixture(
                 exit_code=AUTHORITY_OR_PREFLIGHT_REFUSED,
                 disposition="AUTHORITY_OR_PREFLIGHT_REFUSED",
                 primary_error=exc,
-                retry_forbidden=False,
+                retry_forbidden=isinstance(exc, ReplayCollisionError),
             )
             _attach_cancellation_outcome(exc, outcome)
             raise
@@ -945,7 +1191,7 @@ async def materialize_contract_fixture(
             exit_code=AUTHORITY_OR_PREFLIGHT_REFUSED,
             disposition="AUTHORITY_OR_PREFLIGHT_REFUSED",
             primary_error=exc,
-            retry_forbidden=False,
+            retry_forbidden=isinstance(exc, ReplayCollisionError),
         )
 
     session: object | None = None
@@ -972,6 +1218,63 @@ async def materialize_contract_fixture(
 
         predecessor_session = _InjectedTransactionSession(session)
         mapping = dict(plan.ordered_mapping)
+
+        if require_state_inspection:
+            assert ports.state_inspector is not None
+            state.trace.append("db_state_inspection")
+            state.db_inspect += 1
+            snapshot = await ports.state_inspector.inspect(
+                predecessor_session, plan=plan
+            )
+            if type(snapshot) is not CampaignDbSnapshot:
+                raise ReplayCollisionError(
+                    "state inspector returned a non-canonical snapshot type"
+                )
+            if snapshot.is_absent():
+                state.db_state = "ABSENT"
+                if state.artifact_state != "ABSENT":
+                    raise ReplayCollisionError(
+                        "artifact pair exists while canonical DB state is absent"
+                    )
+            else:
+                state.db_state = "PRESENT_UNVERIFIED"
+                state.trace.append("h6a_accounting")
+                state.accounting_calls += 1
+                state.accounting_report = ports.h6a_accounting.reconstruct(
+                    plan=plan,
+                    registered_total=len(snapshot.registered_mapping),
+                    attempts=snapshot.attempts,
+                )
+                _validate_exact_db_snapshot(
+                    plan=plan,
+                    snapshot=snapshot,
+                    accounting=state.accounting_report,
+                )
+                state.db_state = "EXACT"
+                if state.artifact_state != "PAIR_PRESENT":
+                    raise ReplayCollisionError(
+                        "canonical DB state exists while artifact pair is absent"
+                    )
+                state.trace.append("h5_scorecard")
+                state.h5 += 1
+                replay_scorecard = ports.h5.build_scorecard(
+                    plan=plan,
+                    attempts=snapshot.attempts,
+                    accounting=state.accounting_report,
+                )
+                if type(replay_scorecard) is not dict:
+                    raise ReplayCollisionError(
+                        "H5 replay scorecard must be an exact built-in dict"
+                    )
+                state.scorecard = replay_scorecard
+                state.trace.append("artifact_replay_verify")
+                state.replay_verify += 1
+                state.replay_inspection = ports.artifacts.inspect(
+                    scorecard=replay_scorecard,
+                    output_dir=output_dir,
+                    h5_port=ports.h5,
+                )
+                return await _finish_replay_noop(state=state, session=session)
 
         state.trace.append("h6a_register")
         state.register += 1
@@ -1075,6 +1378,11 @@ async def materialize_contract_fixture(
     except BaseException as exc:
         if primary_error is None:
             primary_error = exc
+        if isinstance(exc, ReplayCollisionError) or (
+            require_state_inspection
+            and (state.db_state != "ABSENT" or state.artifact_state != "ABSENT")
+        ):
+            retry_forbidden = True
         if not isinstance(exc, Exception):
             native_interrupt = exc
         if exit_code not in (COMMIT_FAILED_OR_UNKNOWN, POSTCOMMIT_PUBLISH_FAILURE):
