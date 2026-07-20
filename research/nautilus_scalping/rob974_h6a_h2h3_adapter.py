@@ -92,7 +92,9 @@ def verify_h2h3_contract() -> None:
     try:
         h3_h2_adapter.verify_h2_contract()
     except h3_h2_adapter.ContractDriftError as exc:
-        raise _contract_drift(f"H2 (via H3's reviewed integration seam): {exc}") from exc
+        raise _contract_drift(
+            f"H2 (via H3's reviewed integration seam): {exc}"
+        ) from exc
 
     if h3_manifest.RESEARCH_DOCUMENT_SHA256 != RESEARCH_DOCUMENT_SHA256:
         raise _contract_drift(
@@ -124,7 +126,14 @@ def verify_h2h3_contract() -> None:
             )
 
 
-_S3_PARAM_FIELDS: tuple[str, ...] = ("L", "q_min", "ER_min", "k_SL", "R_TP", "design_type")
+_S3_PARAM_FIELDS: tuple[str, ...] = (
+    "L",
+    "q_min",
+    "ER_min",
+    "k_SL",
+    "R_TP",
+    "design_type",
+)
 _S4_PARAM_FIELDS: tuple[str, ...] = (
     "W",
     "z_entry",
@@ -135,7 +144,9 @@ _S4_PARAM_FIELDS: tuple[str, ...] = (
 )
 
 
-def _row_from_config(config: object, *, fields: tuple[str, ...]) -> h6a.CampaignConfigRow:
+def _row_from_config(
+    config: object, *, fields: tuple[str, ...]
+) -> h6a.CampaignConfigRow:
     return h6a.CampaignConfigRow(
         row_id=config.config_id,
         params={name: getattr(config, name) for name in fields},

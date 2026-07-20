@@ -38,7 +38,9 @@ class TestVerifyH2H3Contract:
         # frozen source_research_sha256 field). Layered, not redundant: see
         # TestVerifyH2H3ContractLayerIsolation below for each layer alone.
         monkeypatch.setattr(
-            h3_manifest, "RESEARCH_DOCUMENT_SHA256", hashlib.sha256(b"tampered").hexdigest()
+            h3_manifest,
+            "RESEARCH_DOCUMENT_SHA256",
+            hashlib.sha256(b"tampered").hexdigest(),
         )
         with pytest.raises(adapter.ContractDriftError):
             adapter.verify_h2h3_contract()
@@ -89,7 +91,10 @@ class TestVerifyH2H3ContractLayerIsolation:
     ):
         tampered = hashlib.sha256(b"coordinated-self-consistent-tamper").hexdigest()
         monkeypatch.setattr(h3_manifest, "RESEARCH_DOCUMENT_SHA256", tampered)
-        for slug, attr in (("S3", "S3_STRATEGY_CONTRACT"), ("S4", "S4_STRATEGY_CONTRACT")):
+        for slug, attr in (
+            ("S3", "S3_STRATEGY_CONTRACT"),
+            ("S4", "S4_STRATEGY_CONTRACT"),
+        ):
             recomputed_hash = h3_manifest.hash_contract_payload(
                 h3_manifest.strategy_contract_payload(slug)
             )
@@ -125,12 +130,26 @@ class TestBuildProductionRows:
     def test_s3_rows_carry_s3_param_fields(self):
         rows = adapter.build_production_rows()
         s3_row = next(row for row in rows if row.row_id == "S3-00")
-        assert set(s3_row.params) == {"L", "q_min", "ER_min", "k_SL", "R_TP", "design_type"}
+        assert set(s3_row.params) == {
+            "L",
+            "q_min",
+            "ER_min",
+            "k_SL",
+            "R_TP",
+            "design_type",
+        }
 
     def test_s4_rows_carry_s4_param_fields(self):
         rows = adapter.build_production_rows()
         s4_row = next(row for row in rows if row.row_id == "S4-00")
-        assert set(s4_row.params) == {"W", "z_entry", "d_min_bp", "k_SL", "R_TP", "design_type"}
+        assert set(s4_row.params) == {
+            "W",
+            "z_entry",
+            "d_min_bp",
+            "k_SL",
+            "R_TP",
+            "design_type",
+        }
 
     def test_hypothesis_matches_the_real_h3_hypothesis_text(self):
         rows = adapter.build_production_rows()
@@ -139,7 +158,9 @@ class TestBuildProductionRows:
 
     def test_drift_before_row_build_fails_closed(self, monkeypatch):
         monkeypatch.setattr(
-            h3_manifest, "RESEARCH_DOCUMENT_SHA256", hashlib.sha256(b"tampered").hexdigest()
+            h3_manifest,
+            "RESEARCH_DOCUMENT_SHA256",
+            hashlib.sha256(b"tampered").hexdigest(),
         )
         with pytest.raises(adapter.ContractDriftError):
             adapter.build_production_rows()
@@ -228,7 +249,10 @@ class TestBuildProductionCampaignRowSpecs:
     def _build(self):
         return adapter.build_production_campaign_row_specs(
             shared_components=_synthetic_components(),
-            pit_component_by_slug={"S3": _synthetic_pit("S3"), "S4": _synthetic_pit("S4")},
+            pit_component_by_slug={
+                "S3": _synthetic_pit("S3"),
+                "S4": _synthetic_pit("S4"),
+            },
             frozen_config_component_by_slug={
                 "S3": _synthetic_frozen_config("S3"),
                 "S4": _synthetic_frozen_config("S4"),
@@ -237,7 +261,10 @@ class TestBuildProductionCampaignRowSpecs:
                 "S3": _synthetic_policy("S3"),
                 "S4": _synthetic_policy("S4"),
             },
-            cost_component_by_slug={"S3": _synthetic_cost("S3"), "S4": _synthetic_cost("S4")},
+            cost_component_by_slug={
+                "S3": _synthetic_cost("S3"),
+                "S4": _synthetic_cost("S4"),
+            },
         )
 
     def test_builds_exactly_48_production_specs_in_canonical_order(self):
@@ -249,7 +276,9 @@ class TestBuildProductionCampaignRowSpecs:
     def test_every_experiment_id_independently_reverifies(self):
         specs = self._build()
         for spec in specs:
-            h6a.verify_row_experiment_id(spec, envelope_experiment_id=spec.experiment_id)
+            h6a.verify_row_experiment_id(
+                spec, envelope_experiment_id=spec.experiment_id
+            )
 
     def test_experiment_ids_are_all_distinct(self):
         specs = self._build()
@@ -263,7 +292,9 @@ class TestBuildProductionCampaignRowSpecs:
 
     def test_drift_before_any_row_construction_fails_closed(self, monkeypatch):
         monkeypatch.setattr(
-            h3_manifest, "RESEARCH_DOCUMENT_SHA256", hashlib.sha256(b"tampered").hexdigest()
+            h3_manifest,
+            "RESEARCH_DOCUMENT_SHA256",
+            hashlib.sha256(b"tampered").hexdigest(),
         )
         with pytest.raises(adapter.ContractDriftError):
             self._build()

@@ -348,7 +348,9 @@ def build_campaign_row_specs(
             f"S4 contract provenance {s4_contract.provenance!r}"
         )
     common_provenance = s3_contract.provenance
-    mismatched_rows = [row.row_id for row in rows if row.provenance != common_provenance]
+    mismatched_rows = [
+        row.row_id for row in rows if row.provenance != common_provenance
+    ]
     if mismatched_rows:
         raise ProvenanceMismatchError(
             f"row(s) {sorted(mismatched_rows)} provenance does not match the "

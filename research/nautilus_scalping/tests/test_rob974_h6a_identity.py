@@ -544,7 +544,10 @@ class TestProductionProvenanceUnlock:
             rows,
             contracts=contracts,
             shared_components=_shared_components(),
-            pit_component_by_slug={"S3": _pit_component("S3"), "S4": _pit_component("S4")},
+            pit_component_by_slug={
+                "S3": _pit_component("S3"),
+                "S4": _pit_component("S4"),
+            },
             frozen_config_component_by_slug={
                 "S3": _frozen_config_component("S3"),
                 "S4": _frozen_config_component("S4"),
