@@ -118,6 +118,16 @@ def vwap(rows: Sequence[MinuteBar], close_ts: int, minutes: int) -> float | None
     return answer if math.isfinite(answer) else None
 
 
+def vwap12(rows: Sequence[MinuteBar], close_ts: int) -> float | None:
+    """Exact 12-hour (720 completed minute) typical-price VWAP."""
+    return vwap(rows, close_ts, 720)
+
+
+def vwap24(rows: Sequence[MinuteBar], close_ts: int) -> float | None:
+    """Exact 24-hour (1,440 completed minute) typical-price VWAP."""
+    return vwap(rows, close_ts, 1440)
+
+
 @dataclass(frozen=True)
 class SymbolFeature:
     symbol: str
