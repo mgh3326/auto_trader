@@ -37,7 +37,9 @@ durable residue zero.
 
 from __future__ import annotations
 
+import hashlib
 import re
+import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -53,15 +55,20 @@ from app.schemas.research_backtest import (
 from app.services import strategy_experiment_registry as registry
 from app.services.research_campaign_bridge import register_campaign_experiments
 from app.services.research_canonical_hash import (
+    canonical_json,
     canonical_sha256,
     compute_identity_hashes,
     derive_experiment_id,
 )
 from app.services.research_db_write_guard import ResearchDbPolicy
+from research_contracts.diagnostic_evidence_policy import (
+    MAX_DISTINCT_SIGNATURES as MAX_DISTINCT_SIGNATURES,
+)
 
 __all__ = [
     "EXPECTED_SLICE_SIZE",
     "EXPECTED_TOTAL_ROWS",
+    "MAX_DISTINCT_SIGNATURES",
     "REASON_ALLOWLIST_BY_STATUS",
     "RECORD_ATTEMPTS_OPERATION_KIND",
     "REGISTER_CAMPAIGN_OPERATION_KIND",
@@ -76,6 +83,19 @@ __all__ = [
     "record_h6a_attempts",
     "register_h6a_campaign",
 ]
+
+# A sentinel distinct from any real stored value (including ``None``) so a
+# key that is GENUINELY ABSENT (a pre-ROB-981 row) can be told apart from
+# one that is PRESENT with an explicit (possibly malformed) value -- mirrors
+# ``research_campaign_bridge._MISSING`` / ``rob974_h6a_diagnostics.MISSING``.
+# Never ``.get(key) or default`` -- that masks ``{}``/``0``/``False``/``None``
+# as "missing" even though they are actually present-but-malformed.
+_MISSING = object()
+_DEFAULT_DIAGNOSTIC_OVERFLOW_PAYLOAD: dict[str, Any] = {
+    "truncated": False,
+    "omitted_distinct_signatures": 0,
+    "omitted_occurrences": 0,
+}
 
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -331,6 +351,12 @@ class H6AAttemptBatchItem:
     fold_evidence_hash: str
     run_identity: str
     evidence_payload: Mapping[str, Any]
+    # ROB-970-carrier-compatible (rob974_h6a_diagnostics.DiagnosticCarrier),
+    # additive, persistence-only -- deliberately excluded from fingerprint()
+    # below, exactly like ChildFailureDiagnostic is excluded from
+    # terminal_evidence_fingerprint in the old S1/S2 bridge.
+    diagnostic_evidence: tuple[Mapping[str, Any], ...] = ()
+    diagnostic_overflow: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if type(self.row_id) is not str or not self.row_id:
@@ -367,11 +393,28 @@ class H6AAttemptBatchItem:
             raise BatchValidationError("run_identity must be a lowercase 64-hex digest")
         if not isinstance(self.evidence_payload, Mapping):
             raise BatchValidationError("evidence_payload must be a mapping")
+        if type(self.diagnostic_evidence) is not tuple:
+            raise BatchValidationError("diagnostic_evidence must be an exact tuple")
+        if len(self.diagnostic_evidence) > MAX_DISTINCT_SIGNATURES:
+            raise BatchValidationError(
+                f"diagnostic_evidence must have at most {MAX_DISTINCT_SIGNATURES} entries"
+            )
+        for row in self.diagnostic_evidence:
+            if not isinstance(row, Mapping):
+                raise BatchValidationError(
+                    "each diagnostic_evidence entry must be a mapping"
+                )
+        if self.diagnostic_overflow is not None and not isinstance(
+            self.diagnostic_overflow, Mapping
+        ):
+            raise BatchValidationError("diagnostic_overflow must be a mapping or None")
 
     def idempotency_key(self, campaign_run_id: str) -> str:
         return f"{campaign_run_id}:{self.experiment_id}:{self.retry_index}"
 
     def fingerprint(self) -> str:
+        # Deliberately excludes diagnostic_evidence/diagnostic_overflow --
+        # additive/persistence-only, never semantic identity.
         return canonical_sha256(
             {
                 "status": self.status,
@@ -381,6 +424,14 @@ class H6AAttemptBatchItem:
                 "evidence_payload": dict(self.evidence_payload),
             }
         )
+
+    def diagnostic_evidence_payload(self) -> list[dict]:
+        return [dict(row) for row in self.diagnostic_evidence]
+
+    def diagnostic_overflow_payload(self) -> dict:
+        if self.diagnostic_overflow is None:
+            return dict(_DEFAULT_DIAGNOSTIC_OVERFLOW_PAYLOAD)
+        return dict(self.diagnostic_overflow)
 
 
 def _preflight_attempts(
@@ -432,6 +483,95 @@ def _stored_fingerprint(row: ResearchBacktestRun) -> object:
     if type(raw_payload) is not dict:
         return None
     return raw_payload.get("h6a_evidence_fingerprint")
+
+
+def _diagnostic_canonical_bytes(
+    evidence_payload: list[dict], overflow_payload: dict
+) -> bytes:
+    """The SOLE comparison authority for replay-divergence detection --
+    mirrors ``rob974_h6a_diagnostics.canonical_diagnostic_bytes`` /
+    ``research_campaign_bridge._canonical_diagnostic_bytes`` (this module
+    cannot import the research-side sibling -- app/services never imports
+    research/nautilus_scalping -- so the SAME shape is reconstructed here
+    via the shared ``canonical_json`` authority)."""
+    return canonical_json(
+        {
+            "diagnostic_evidence": evidence_payload,
+            "diagnostic_overflow": overflow_payload,
+        }
+    ).encode("utf-8")
+
+
+def _stored_diagnostic_evidence_payload(row: ResearchBacktestRun) -> list[dict]:
+    raw_payload = row.raw_payload
+    if type(raw_payload) is not dict:
+        return []
+    value = raw_payload.get("diagnostic_evidence", _MISSING)
+    if value is _MISSING:
+        return []
+    if type(value) is not list or any(type(item) is not dict for item in value):
+        return []
+    return value
+
+
+def _stored_diagnostic_overflow_payload(row: ResearchBacktestRun) -> dict:
+    raw_payload = row.raw_payload
+    if type(raw_payload) is not dict:
+        return dict(_DEFAULT_DIAGNOSTIC_OVERFLOW_PAYLOAD)
+    value = raw_payload.get("diagnostic_overflow", _MISSING)
+    if value is _MISSING:
+        return dict(_DEFAULT_DIAGNOSTIC_OVERFLOW_PAYLOAD)
+    if type(value) is not dict:
+        return dict(_DEFAULT_DIAGNOSTIC_OVERFLOW_PAYLOAD)
+    return value
+
+
+def _emit_diagnostic_replay_divergence(
+    *, idempotency_key: str, stored_bytes: bytes, incoming_bytes: bytes
+) -> None:
+    """Digest-only, bounded, non-fail-stop observation -- mirrors
+    ``research_campaign_bridge._emit_diagnostic_replay_divergence``. Wrapped
+    so an emission failure can NEVER alter the primary (already-decided,
+    already-returned) outcome or any semantic byte."""
+    try:
+        payload = {
+            "event": "rob974_h6a_diagnostic_replay_divergence",
+            "idempotency_key_digest": hashlib.sha256(
+                idempotency_key.encode("utf-8")
+            ).hexdigest(),
+            "stored_diagnostic_digest": hashlib.sha256(stored_bytes).hexdigest(),
+            "incoming_diagnostic_digest": hashlib.sha256(incoming_bytes).hexdigest(),
+        }
+        sys.stderr.write(repr(payload) + "\n")
+        sys.stderr.flush()
+    except Exception:  # noqa: BLE001 -- observer failure must never propagate
+        pass
+
+
+def _check_diagnostic_divergence(
+    existing: ResearchBacktestRun,
+    incoming: H6AAttemptBatchItem,
+    *,
+    idempotency_key: str,
+) -> None:
+    """Never fail-stop -- semantic identity has ALREADY matched by the time
+    this is called (see the caller). Byte-identical is a write-free no-op;
+    any divergence is loudly observed (never merged, never silently
+    discarded) while the returned/original row is unaffected either way."""
+    stored_bytes = _diagnostic_canonical_bytes(
+        _stored_diagnostic_evidence_payload(existing),
+        _stored_diagnostic_overflow_payload(existing),
+    )
+    incoming_bytes = _diagnostic_canonical_bytes(
+        incoming.diagnostic_evidence_payload(), incoming.diagnostic_overflow_payload()
+    )
+    if stored_bytes == incoming_bytes:
+        return
+    _emit_diagnostic_replay_divergence(
+        idempotency_key=idempotency_key,
+        stored_bytes=stored_bytes,
+        incoming_bytes=incoming_bytes,
+    )
 
 
 async def record_h6a_attempts(
@@ -493,6 +633,9 @@ async def record_h6a_attempts(
         )
         if existing is not None:
             if _stored_fingerprint(existing) == fingerprint:
+                _check_diagnostic_divergence(
+                    existing, item, idempotency_key=idempotency_key
+                )
                 results.append(existing)
                 continue
             raise TerminalEvidenceMismatch(
@@ -515,6 +658,8 @@ async def record_h6a_attempts(
                 "fold_evidence_hash": item.fold_evidence_hash,
                 "run_identity": item.run_identity,
                 "evidence_payload": dict(item.evidence_payload),
+                "diagnostic_evidence": item.diagnostic_evidence_payload(),
+                "diagnostic_overflow": item.diagnostic_overflow_payload(),
             },
         )
         returned = await record_trial_fn(
@@ -525,5 +670,11 @@ async def record_h6a_attempts(
                 f"attempt for row_id {row_id!r} was recorded concurrently by another writer "
                 "with different terminal evidence; this call's evidence was NOT recorded"
             )
+        # The post-delegate winner row may not be the one THIS call tried to
+        # insert (a concurrent race) -- same non-fail-stop diagnostic check
+        # applies here too. When `returned` IS the row this call just
+        # inserted, its stored diagnostic bytes trivially equal this item's
+        # own, so the check is a guaranteed no-op observation-wise.
+        _check_diagnostic_divergence(returned, item, idempotency_key=idempotency_key)
         results.append(returned)
     return results

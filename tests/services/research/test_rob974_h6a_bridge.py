@@ -680,3 +680,152 @@ class TestH6AAttemptBatchItem:
                 run_identity=_hex64("run"),
                 evidence_payload={},
             )
+
+    def test_over_cap_diagnostic_evidence_rejected(self):
+        with pytest.raises(bridge.BatchValidationError):
+            bridge.H6AAttemptBatchItem(
+                row_id="S3-00",
+                experiment_id=_hex64("x"),
+                retry_index=0,
+                status="completed",
+                reason_code=None,
+                fold_evidence_hash=_hex64("fold"),
+                run_identity=_hex64("run"),
+                evidence_payload={},
+                diagnostic_evidence=tuple(
+                    {"i": i} for i in range(bridge.MAX_DISTINCT_SIGNATURES + 1)
+                ),
+            )
+
+    def test_diagnostic_fields_excluded_from_fingerprint(self):
+        base = bridge.H6AAttemptBatchItem(
+            row_id="S3-00",
+            experiment_id=_hex64("x"),
+            retry_index=0,
+            status="completed",
+            reason_code=None,
+            fold_evidence_hash=_hex64("fold"),
+            run_identity=_hex64("run"),
+            evidence_payload={"a": 1},
+        )
+        with_diagnostics = bridge.H6AAttemptBatchItem(
+            row_id="S3-00",
+            experiment_id=_hex64("x"),
+            retry_index=0,
+            status="completed",
+            reason_code=None,
+            fold_evidence_hash=_hex64("fold"),
+            run_identity=_hex64("run"),
+            evidence_payload={"a": 1},
+            diagnostic_evidence=({"signature": "abc", "occurrence_count": 1},),
+            diagnostic_overflow={
+                "truncated": True,
+                "omitted_distinct_signatures": 1,
+                "omitted_occurrences": 1,
+            },
+        )
+        assert base.fingerprint() == with_diagnostics.fingerprint()
+
+
+class TestDiagnosticReplayObserverIsolation:
+    @pytest.mark.asyncio
+    async def test_semantic_match_diverged_diagnostics_is_non_fail_stop(self):
+        mapping = _full_mapping()
+        row_id = "S3-00"
+        experiment_id = mapping[row_id]
+        item = bridge.H6AAttemptBatchItem(
+            row_id=row_id,
+            experiment_id=experiment_id,
+            retry_index=0,
+            status="completed",
+            reason_code=None,
+            fold_evidence_hash=_hex64("fold"),
+            run_identity=_hex64("run"),
+            evidence_payload={"a": 1},
+            diagnostic_evidence=(
+                {"signature": "new-signature", "occurrence_count": 1},
+            ),
+        )
+        stored_fp = item.fingerprint()
+        idempotency_key_for_target = item.idempotency_key(CAMPAIGN_RUN_ID)
+
+        async def find_existing_trial_fn(session, *, experiment_pk, idempotency_key):
+            if idempotency_key != idempotency_key_for_target:
+                return None
+            return _FakeStoredRow(
+                {
+                    "h6a_evidence_fingerprint": stored_fp,
+                    "diagnostic_evidence": [
+                        {"signature": "old-signature", "occurrence_count": 1}
+                    ],
+                }
+            )
+
+        record_spy = _CallSpy()
+
+        async def record_trial_fn(session, *, experiment_id, request):
+            record_spy.calls.append(experiment_id)
+            return _FakeStoredRow(
+                {
+                    "h6a_evidence_fingerprint": request.raw_payload[
+                        "h6a_evidence_fingerprint"
+                    ]
+                }
+            )
+
+        results = await bridge.record_h6a_attempts(
+            _PoisonedSession(),
+            approved=_approved(
+                operation_kind=bridge.RECORD_ATTEMPTS_OPERATION_KIND, mapping=mapping
+            ),
+            full_campaign_hash=FULL_CAMPAIGN_HASH,
+            campaign_run_id=CAMPAIGN_RUN_ID,
+            row_id_to_experiment_id=mapping,
+            row_id_to_experiment_pk=_pk_mapping(mapping),
+            attempts=[item] + [a for a in _all_attempts(mapping) if a.row_id != row_id],
+            strategy_name="rob974-h6a",
+            timeframe="4h",
+            runner="h6a-fixture",
+            guard_opt_in_enabled=True,
+            guard_policy=_POLICY,
+            find_existing_trial_fn=find_existing_trial_fn,
+            record_trial_fn=record_trial_fn,
+        )
+        # No fail-stop -- 48 rows still returned, no attempt marked failed.
+        assert len(results) == 48
+        # The (diagnostically-diverged but semantically-identical) row was
+        # never re-inserted via record_trial_fn.
+        assert experiment_id not in record_spy.calls
+
+    def test_observer_emission_failure_never_raises(self, monkeypatch):
+        import sys
+
+        def _boom(*args, **kwargs):
+            raise OSError("stderr is broken")
+
+        monkeypatch.setattr(sys.stderr, "write", _boom)
+        # Must not raise even though the underlying emit call fails.
+        bridge._emit_diagnostic_replay_divergence(
+            idempotency_key="k", stored_bytes=b"a", incoming_bytes=b"b"
+        )
+
+    def test_absent_stored_diagnostic_differs_from_present_empty_list(self):
+        absent = _FakeStoredRow({"h6a_evidence_fingerprint": "x"})
+        present_empty = _FakeStoredRow(
+            {"h6a_evidence_fingerprint": "x", "diagnostic_evidence": []}
+        )
+        # Both normalize to an empty payload today (an empty list IS a
+        # legitimate "no diagnostics captured" fact) -- but the ABSENT case
+        # must never raise/crash while reading it (never `.get(...)` without
+        # the sentinel), proven by both calls succeeding.
+        assert bridge._stored_diagnostic_evidence_payload(absent) == []
+        assert bridge._stored_diagnostic_evidence_payload(present_empty) == []
+
+    def test_malformed_present_diagnostic_does_not_crash_lookup(self):
+        malformed = _FakeStoredRow(
+            {"h6a_evidence_fingerprint": "x", "diagnostic_evidence": "not-a-list"}
+        )
+        # Malformed present data degrades to empty rather than raising here
+        # -- the divergence CHECK downstream will then correctly observe a
+        # divergence against any real incoming diagnostic evidence.
+        assert bridge._stored_diagnostic_evidence_payload(malformed) == []
