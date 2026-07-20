@@ -29,6 +29,10 @@ def _symbol() -> str:
     return f"R928{uuid.uuid4().hex[:6].upper()}"
 
 
+async def _price_above_stop(_symbol: str) -> Decimal:
+    return Decimal("999999")
+
+
 async def _seed_journal(
     session: AsyncSession,
     *,
@@ -79,7 +83,11 @@ async def test_compute_levels_prefers_stop_loss_mirror_max_across_lots(
             "recent-low fallback must not be called when stop_loss exists"
         )
 
-    service = DownsideWatchService(session, recent_low_fetcher=_fail_recent_low)
+    service = DownsideWatchService(
+        session,
+        recent_low_fetcher=_fail_recent_low,
+        current_price_fetcher=_price_above_stop,
+    )
     levels = await service.compute_levels()
 
     matching = [lvl for lvl in levels if lvl.symbol == symbol]
@@ -172,7 +180,11 @@ async def test_register_sweep_skips_symbol_with_existing_active_downside_watch(
     async def _fail_recent_low(_symbol: str) -> Decimal | None:
         raise AssertionError("must not be called; stop_loss present")
 
-    service = DownsideWatchService(session, recent_low_fetcher=_fail_recent_low)
+    service = DownsideWatchService(
+        session,
+        recent_low_fetcher=_fail_recent_low,
+        current_price_fetcher=_price_above_stop,
+    )
 
     first = await service.register_sweep(dry_run=False)
     assert len(first["registered"]) == 1
@@ -201,7 +213,7 @@ async def test_register_sweep_dry_run_default_makes_no_db_changes(
     await _seed_journal(session, symbol=symbol, stop_loss="48000")
     await session.commit()
 
-    service = DownsideWatchService(session)
+    service = DownsideWatchService(session, current_price_fetcher=_price_above_stop)
     result = await service.register_sweep()
 
     assert result["dry_run"] is True
@@ -220,7 +232,7 @@ async def test_register_sweep_registered_alert_shape(session: AsyncSession) -> N
     await _seed_journal(session, symbol=symbol, stop_loss="48000")
     await session.commit()
 
-    service = DownsideWatchService(session)
+    service = DownsideWatchService(session, current_price_fetcher=_price_above_stop)
     await service.register_sweep(dry_run=False)
 
     alert = await session.scalar(
@@ -235,3 +247,50 @@ async def test_register_sweep_registered_alert_shape(session: AsyncSession) -> N
     assert alert.action_mode == "notify_only"
     assert alert.status == "active"
     assert "stop_loss_mirror" in alert.rationale
+
+
+@pytest.mark.asyncio
+async def test_register_sweep_skips_below_watch_when_condition_is_already_true(
+    session: AsyncSession,
+) -> None:
+    symbol = _symbol()
+    await _seed_journal(session, symbol=symbol, stop_loss="48000")
+    await session.commit()
+
+    async def _already_breached(_symbol: str) -> Decimal:
+        return Decimal("47999")
+
+    result = await DownsideWatchService(
+        session, current_price_fetcher=_already_breached
+    ).register_sweep(dry_run=False)
+
+    assert result["registered"] == []
+    assert result["skipped_already_triggered"] == [
+        {
+            "symbol": symbol,
+            "reason": "condition_already_true_at_registration",
+            "current_price": "47999",
+            "threshold": "48000.0000",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_register_sweep_skips_when_registration_price_is_unavailable(
+    session: AsyncSession,
+) -> None:
+    symbol = _symbol()
+    await _seed_journal(session, symbol=symbol, stop_loss="48000")
+    await session.commit()
+
+    async def _unavailable(_symbol: str) -> Decimal | None:
+        return None
+
+    result = await DownsideWatchService(
+        session, current_price_fetcher=_unavailable
+    ).register_sweep(dry_run=False)
+
+    assert result["registered"] == []
+    assert result["skipped_already_triggered"] == [
+        {"symbol": symbol, "reason": "current_price_unavailable"}
+    ]

@@ -48,6 +48,7 @@ _DEFENSIVE_INTENTS = frozenset({"sell_review", "risk_review"})
 
 LevelSource = Literal["stop_loss_mirror", "recent_low_20d"]
 RecentLowFetcher = Callable[[str], Awaitable[Decimal | None]]
+CurrentPriceFetcher = Callable[[str], Awaitable[Decimal | None]]
 
 
 @dataclass(frozen=True)
@@ -87,12 +88,14 @@ class DownsideWatchService:
         *,
         watch_repo: InvestmentReportsRepository | None = None,
         recent_low_fetcher: RecentLowFetcher | None = None,
+        current_price_fetcher: CurrentPriceFetcher | None = None,
     ) -> None:
         self._session = session
         self._watch_repo = watch_repo or InvestmentReportsRepository(session)
         self._recent_low_fetcher = recent_low_fetcher or (
             lambda symbol: _fetch_recent_low_from_db(session, symbol)
         )
+        self._current_price_fetcher = current_price_fetcher or _fetch_current_price
 
     async def _active_kr_holdings(self) -> dict[str, list[TradeJournal]]:
         stmt = sa.select(TradeJournal).where(
@@ -186,6 +189,7 @@ class DownsideWatchService:
 
         registered: list[dict[str, Any]] = []
         skipped_existing: list[dict[str, Any]] = []
+        skipped_already_triggered: list[dict[str, Any]] = []
         level_summaries: list[dict[str, Any]] = []
 
         for level in levels:
@@ -203,6 +207,30 @@ class DownsideWatchService:
                     {
                         "symbol": level.symbol,
                         "reason": "active_downside_watch_exists",
+                    }
+                )
+                continue
+
+            # ROB-971: a below watch whose price is already at/below its
+            # threshold fires on the first scanner pass. Never register such
+            # a condition: doing so turns historical stop-loss breaches into
+            # an alert burst instead of a useful future watch.
+            current_price = await self._current_price_fetcher(level.symbol)
+            if current_price is None:
+                skipped_already_triggered.append(
+                    {
+                        "symbol": level.symbol,
+                        "reason": "current_price_unavailable",
+                    }
+                )
+                continue
+            if current_price <= level.threshold:
+                skipped_already_triggered.append(
+                    {
+                        "symbol": level.symbol,
+                        "reason": "condition_already_true_at_registration",
+                        "current_price": str(current_price),
+                        "threshold": str(level.threshold),
                     }
                 )
                 continue
@@ -237,5 +265,19 @@ class DownsideWatchService:
             "dry_run": dry_run,
             "registered": registered,
             "skipped_existing": skipped_existing,
+            "skipped_already_triggered": skipped_already_triggered,
             "levels": level_summaries,
         }
+
+
+async def _fetch_current_price(symbol: str) -> Decimal | None:
+    """Fetch the registration-time KR price; failures fail closed upstream."""
+    from app.services import market_data
+
+    try:
+        quote = await market_data.get_quote(symbol=symbol, market="equity_kr")
+    except Exception:
+        logger.warning("downside_watch: current price unavailable for %s", symbol)
+        return None
+    price = getattr(quote, "price", None)
+    return Decimal(str(price)) if price is not None else None

@@ -57,6 +57,7 @@ from app.services.investment_reports.query_service import (
 from app.services.investment_reports.repository import InvestmentReportsRepository
 from app.services.investment_reports.watch_activation import WatchActivationService
 from app.services.investment_reports.watch_create import DirectWatchCreateService
+from app.services.investment_reports.watch_lifecycle import WatchLifecycleService
 from app.services.investment_reports.watch_recommendation_policy import (
     ATR_PERIOD,
     LOOKBACK_DAYS,
@@ -82,6 +83,10 @@ INVESTMENT_REPORT_TOOL_NAMES: set[str] = {
     "investment_report_update",
     # ROB-768 — direct watch create (independent of report flow).
     "investment_watch_create",
+    # ROB-971 — explicit lifecycle controls for operational watch cleanup.
+    "investment_watch_void",
+    "investment_watch_expire",
+    "sweep_expired_watches",
 }
 
 # ROB-352 — mirror of the generator's canonical market/account_scope pairs.
@@ -1035,6 +1040,88 @@ async def investment_watch_create_impl(
 
 
 # ---------------------------------------------------------------------------
+# investment_watch_void / investment_watch_expire (ROB-971)
+# ---------------------------------------------------------------------------
+async def _transition_watch_impl(
+    *, alert_uuid: str, reason: str, action: str
+) -> dict[str, Any]:
+    try:
+        parsed_uuid = UUID(alert_uuid)
+    except (TypeError, ValueError):
+        return {"success": False, "error": "invalid_alert_uuid"}
+    try:
+        async with AsyncSessionLocal() as db:
+            service = WatchLifecycleService(db)
+            if action == "void":
+                alert = await service.void(parsed_uuid, reason=reason)
+            else:
+                alert = await service.expire(parsed_uuid, reason=reason)
+            await db.commit()
+            return {
+                "success": True,
+                "alert": InvestmentWatchAlertResponse.model_validate(alert).model_dump(
+                    mode="json", by_alias=True
+                ),
+            }
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
+
+
+async def investment_watch_void_impl(alert_uuid: str, reason: str) -> dict[str, Any]:
+    """Cancel one active watch; use before cleanup for invalid/orphaned watches."""
+    return await _transition_watch_impl(
+        alert_uuid=alert_uuid, reason=reason, action="void"
+    )
+
+
+async def investment_watch_expire_impl(
+    alert_uuid: str, reason: str = "operator_expired"
+) -> dict[str, Any]:
+    """Expire one active watch explicitly; the expiry sweeper handles overdue rows."""
+    return await _transition_watch_impl(
+        alert_uuid=alert_uuid, reason=reason, action="expire"
+    )
+
+
+async def run_expired_watches_sweep(*, now: datetime) -> dict[str, Any]:
+    """Expire every overdue active alert; shared by MCP and scheduleless TaskIQ."""
+    async with AsyncSessionLocal() as db:
+        service = WatchLifecycleService(db)
+        expired = await service.sweep_expired(now=now)
+        await db.commit()
+    return {
+        "success": True,
+        "expired_count": len(expired),
+        "expired_alert_uuids": [str(alert.alert_uuid) for alert in expired],
+    }
+
+
+async def sweep_expired_watches_impl(dry_run: bool = True) -> dict[str, Any]:
+    """List or expire active alerts whose valid_until has passed (ROB-971)."""
+    now = datetime.now(UTC)
+    async with AsyncSessionLocal() as db:
+        repo = InvestmentReportsRepository(db)
+        candidates = await repo.list_expired_active_alerts_for_update(now=now)
+        if dry_run:
+            return {
+                "success": True,
+                "dry_run": True,
+                "count": len(candidates),
+                "candidates": [
+                    {
+                        "alert_uuid": str(alert.alert_uuid),
+                        "symbol": alert.symbol,
+                        "market": alert.market,
+                        "valid_until": alert.valid_until.isoformat(),
+                    }
+                    for alert in candidates
+                ],
+            }
+    result = await run_expired_watches_sweep(now=now)
+    return {**result, "dry_run": False}
+
+
+# ---------------------------------------------------------------------------
 # investment_report_context_get
 # ---------------------------------------------------------------------------
 async def investment_report_context_get_impl(
@@ -1520,6 +1607,36 @@ def register_investment_report_tools(
             "watch only and never submits orders."
         ),
     )(investment_watch_create_impl)
+    mcp.tool(
+        name="investment_watch_void",
+        description=(
+            "ROB-971 — cancel one active investment watch by alert_uuid with a "
+            "required operator reason. Use for invalid, orphaned, duplicate, or "
+            "zombie watches; see investment_watch_expire for time-based cleanup "
+            "and sweep_expired_watches for all overdue active watches. Never "
+            "touches any broker or order path."
+        ),
+    )(investment_watch_void_impl)
+    mcp.tool(
+        name="investment_watch_expire",
+        description=(
+            "ROB-971 — explicitly expire one active investment watch by alert_uuid. "
+            "Use for a known stale watch; for valid_until-based bulk cleanup use "
+            "sweep_expired_watches (dry_run=True first). Never touches any broker "
+            "or order path."
+        ),
+    )(investment_watch_expire_impl)
+    mcp.tool(
+        name="sweep_expired_watches",
+        description=(
+            "ROB-971 — list (dry_run=True, default) or expire (dry_run=False) "
+            "every active investment watch whose valid_until has passed. This is "
+            "the manual operator lever; scheduleless TaskIQ recurrence is separately "
+            "env-gated. See investment_watch_expire for one explicit watch, and "
+            "investment_watch_void for invalid/orphaned/duplicate watches. Never "
+            "touches any broker or order path."
+        ),
+    )(sweep_expired_watches_impl)
 
 
 __all__ = [
@@ -1536,7 +1653,11 @@ __all__ = [
     "investment_report_set_status_impl",
     "investment_report_update_impl",
     "investment_watch_create_impl",
+    "investment_watch_expire_impl",
     "investment_watch_events_list_recent_impl",
     "investment_watch_recommend_impl",
+    "investment_watch_void_impl",
     "register_investment_report_tools",
+    "run_expired_watches_sweep",
+    "sweep_expired_watches_impl",
 ]

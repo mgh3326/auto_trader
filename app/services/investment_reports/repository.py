@@ -340,6 +340,31 @@ class InvestmentReportsRepository:
             )
         )
 
+    async def get_alert_by_uuid_for_update(
+        self, alert_uuid: UUID
+    ) -> InvestmentWatchAlert | None:
+        return await self._session.scalar(
+            sa.select(InvestmentWatchAlert)
+            .where(InvestmentWatchAlert.alert_uuid == alert_uuid)
+            .with_for_update()
+        )
+
+    async def list_expired_active_alerts_for_update(
+        self, *, now: datetime
+    ) -> list[InvestmentWatchAlert]:
+        result = await self._session.scalars(
+            sa.select(InvestmentWatchAlert)
+            .where(
+                InvestmentWatchAlert.status == "active",
+                InvestmentWatchAlert.valid_until <= now,
+            )
+            .order_by(
+                InvestmentWatchAlert.valid_until.asc(), InvestmentWatchAlert.id.asc()
+            )
+            .with_for_update(skip_locked=True)
+        )
+        return list(result.all())
+
     async def list_alerts(
         self,
         *,
@@ -403,6 +428,16 @@ class InvestmentReportsRepository:
             sa.update(InvestmentWatchAlert)
             .where(InvestmentWatchAlert.id == alert_id)
             .values(status=status)
+        )
+
+    async def update_alert_lifecycle(
+        self, alert_id: int, *, status: str, metadata: dict
+    ) -> None:
+        """Persist a status transition with its operator/sweeper audit detail."""
+        await self._session.execute(
+            sa.update(InvestmentWatchAlert)
+            .where(InvestmentWatchAlert.id == alert_id)
+            .values(status=status, alert_metadata=metadata)
         )
 
     # ------------------------------------------------------------------
