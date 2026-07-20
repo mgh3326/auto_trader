@@ -73,6 +73,15 @@ changes -- see ``/tmp/strategy-worker-rob979-sonnet-checkpoints.md`` CP2 entry):
     The opposite-direction extreme of the exit minute is never included --
     its ordering relative to the fill within that same minute is not
     determinable from OHLC alone.
+  * An INCOMPLETE outcome (data_gap_in_position/early_eof/
+    missing_future_data/fold_horizon_rejected) HALTS all further candidate
+    evaluation for the rest of the run. A position's true close after an
+    unresolvable gap is unknowable -- silently resuming as though flat would
+    fabricate a "closed" state, and silently locking the book forever would
+    fabricate an "open forever" state; failing closed by stopping the walk
+    entirely claims neither. Callers needing per-segment evidence should
+    split the input at a known corpus discontinuity themselves rather than
+    rely on this engine to resume past one.
 
 No DB/network/app/broker/order/fill/scheduler/random/current-time imports --
 pure stdlib, deterministic given its input.
@@ -267,9 +276,23 @@ def run_s3_portfolio_stream(
     trades: list[S3Trade] = []
     no_trades: list[S3NoTradeRecord] = []
     incompletes: list[S3IncompleteRecord] = []
-    seen_identity: set[tuple[str, int]] = set()
 
     ordered = sorted(candidates, key=lambda c: (c.signal_ts, c.symbol))
+
+    # AC2 identity-collision guard: validated UPFRONT, over the WHOLE input,
+    # before any walking begins -- not incrementally inside the loop below.
+    # An incremental check would be masked whenever an earlier candidate's
+    # walk halts the loop (see the INCOMPLETE handling below) before a later
+    # duplicate is ever reached, silently hiding an H3 arbitration failure.
+    seen_identity: set[tuple[str, int]] = set()
+    for cand in ordered:
+        identity = (cand.symbol, cand.signal_ts)
+        if identity in seen_identity:
+            raise ValueError(
+                f"duplicate S3 candidate identity {identity} -- H3 must arbitrate to "
+                "at most one candidate per (symbol, signal_ts)"
+            )
+        seen_identity.add(identity)
 
     position_exit_ts: int | None = (
         None  # exclusive upper bound of the last-opened position
@@ -280,14 +303,6 @@ def run_s3_portfolio_stream(
     sl_halted_dates: set = set()
 
     for cand in ordered:
-        identity = (cand.symbol, cand.signal_ts)
-        if identity in seen_identity:
-            raise ValueError(
-                f"duplicate S3 candidate identity {identity} -- H3 must arbitrate to "
-                "at most one candidate per (symbol, signal_ts)"
-            )
-        seen_identity.add(identity)
-
         if position_exit_ts is not None and cand.signal_ts < position_exit_ts:
             no_trades.append(_no_trade(cand, "global_position_open"))
             continue
@@ -350,10 +365,12 @@ def run_s3_portfolio_stream(
                     reason=outcome.reason,
                 )
             )
-            position_exit_ts = (
-                None  # a genuinely unresolved position never re-occupies the book
-            )
-            continue
+            # A genuinely unresolved position's true close is unknowable -- do
+            # not resume as if flat (that would silently fabricate a "closed"
+            # state) and do not fabricate an infinite lock either. Fail
+            # closed: stop evaluating further candidates for the rest of this
+            # run: any later candidate's fate would rest on undefined ground.
+            break
 
         trades.append(
             S3Trade(
