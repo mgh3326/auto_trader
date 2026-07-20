@@ -31,11 +31,23 @@ shared ``research_contracts.canonical_hash`` authority.
 
 from __future__ import annotations
 
+import types
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from research_contracts.canonical_hash import canonical_sha256
+
+
+def _freeze_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    """R1 blocker #4: ``frozen=True`` only blocks attribute REBINDING, not
+    in-place mutation of a mutable dict the attribute happens to hold --
+    this seals a validated str-keyed mapping into an immutable
+    ``types.MappingProxyType`` snapshot (deep, non-aliasing copy) so a
+    caller mutating it after construction raises instead of silently
+    desyncing the sealed value from the hash already computed over it."""
+    return types.MappingProxyType(dict(value))
+
 
 __all__ = [
     "ALLOWED_REASONS_BY_STATUS",
@@ -185,6 +197,9 @@ class FoldSelectionTrace:
             ),
             "no_trade_reason_counts must be a str->non-negative-int mapping",
         )
+        object.__setattr__(
+            self, "no_trade_reason_counts", _freeze_mapping(self.no_trade_reason_counts)
+        )
 
     def canonical_payload(self) -> dict[str, Any]:
         return {
@@ -254,6 +269,11 @@ class UniqueGeneratorEvidence:
             sum(self.generator_rejection_subtotal_by_reason.values())
             == self.generator_rejected,
             "generator_rejection_subtotal_by_reason must sum to generator_rejected",
+        )
+        object.__setattr__(
+            self,
+            "generator_rejection_subtotal_by_reason",
+            _freeze_mapping(self.generator_rejection_subtotal_by_reason),
         )
         recomputed = _recompute_unique_evidence_hash(self)
         if recomputed != self.content_hash:
@@ -349,6 +369,9 @@ class PathScenarioEvidence:
                 type(v) is int and v >= 0 for v in self.no_trade_reason_counts.values()
             ),
             "no_trade_reason_counts must be a str->non-negative-int mapping",
+        )
+        object.__setattr__(
+            self, "no_trade_reason_counts", _freeze_mapping(self.no_trade_reason_counts)
         )
         recomputed = _recompute_path_scenario_hash(self)
         if recomputed != self.artifact_hash:

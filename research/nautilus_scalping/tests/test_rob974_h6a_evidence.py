@@ -502,3 +502,27 @@ class TestTrustedBoundaryRecompute:
         base = _build_s3_attempt()
         retry = _build_s3_attempt(retry_index=1)
         assert base.run_identity != retry.run_identity
+
+
+class TestImmutableSealDeepFreeze:
+    """R1 blocker #4: mutable dict fields nested in otherwise-frozen
+    dataclasses must be deep-frozen -- `frozen=True` only blocks attribute
+    REBINDING, not in-place mutation of a dict the attribute happens to
+    hold. A caller mutating `trace.no_trade_reason_counts['x'] = 1` after
+    construction must raise, not silently desync the sealed value from the
+    hash that was already computed over it."""
+
+    def test_fold_trace_no_trade_reason_counts_rejects_item_assignment(self):
+        trace = _fold_trace(0, selected=True)
+        with pytest.raises(TypeError):
+            trace.no_trade_reason_counts["tampered"] = 1
+
+    def test_unique_evidence_subtotal_rejects_item_assignment(self):
+        row = _unique_evidence_row(0)
+        with pytest.raises(TypeError):
+            row.generator_rejection_subtotal_by_reason["tampered"] = 1
+
+    def test_path_scenario_no_trade_reason_counts_rejects_item_assignment(self):
+        row = _path_scenario_row("base13", status="never_selected")
+        with pytest.raises(TypeError):
+            row.no_trade_reason_counts["tampered"] = 1
