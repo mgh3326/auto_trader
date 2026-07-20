@@ -11,6 +11,7 @@ production full-campaign hash or run id and is never accepted by ``--run``.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -46,6 +47,8 @@ __all__ = [
     "ExactSourcePins",
     "H6BPlanError",
     "H6BPreflightRefused",
+    "H6BDiagnosticCapture",
+    "DiagnosticCapturePort",
     "H6AAccountingPort",
     "H5CompositionPort",
     "IssuedOneShotAuthorization",
@@ -64,6 +67,7 @@ __all__ = [
     "issue_run_authorization",
     "materialize_contract_fixture",
     "materialize_or_replay_contract_fixture",
+    "render_safe_materialization_failure",
     "validate_database_target_pair",
     "validate_derived_run_id",
     "validate_exact_48_mapping",
@@ -658,6 +662,95 @@ class CampaignStateInspector(Protocol):
     ) -> CampaignDbSnapshot: ...
 
 
+_DIAGNOSTIC_BOUNDARIES = frozenset(
+    {"feature", "generator", "funding_gate", "engine", "metric", "materializer"}
+)
+_DIAGNOSTIC_SANITIZER_STAGES = frozenset({"generator", "funding_gate", "engine"})
+
+
+@dataclass(frozen=True, slots=True)
+class H6BDiagnosticCapture:
+    """Safe metadata-only projection of the merged ROB-970 evidence type."""
+
+    catch_boundary: str
+    sanitizer_stage: str
+    exception_type: str
+    message: str
+    traceback_text: str
+    innermost_file: str
+    innermost_function: str
+    innermost_line: int
+    signature: str
+    occurrence_count: int
+    truncated: bool
+    has_cause: bool
+    has_context: bool
+
+    def __post_init__(self) -> None:
+        if self.catch_boundary not in _DIAGNOSTIC_BOUNDARIES:
+            raise H6BPlanError("diagnostic catch boundary is not closed")
+        if self.sanitizer_stage not in _DIAGNOSTIC_SANITIZER_STAGES:
+            raise H6BPlanError("diagnostic sanitizer stage is not authoritative")
+        if (
+            type(self.exception_type) is not str
+            or not self.exception_type
+            or len(self.exception_type) > 200
+        ):
+            raise H6BPlanError("diagnostic exception type is malformed")
+        if type(self.message) is not str or len(self.message) > 500:
+            raise H6BPlanError("diagnostic message exceeds the ROB-970 cap")
+        if (
+            type(self.traceback_text) is not str
+            or not self.traceback_text
+            or len(self.traceback_text) > 4000
+        ):
+            raise H6BPlanError("diagnostic traceback exceeds the ROB-970 cap")
+        for name in ("innermost_file", "innermost_function"):
+            value = getattr(self, name)
+            if type(value) is not str or not value or "/" in value or "\\" in value:
+                raise H6BPlanError(f"diagnostic {name} must be safe basename metadata")
+        if type(self.innermost_line) is not int or self.innermost_line <= 0:
+            raise H6BPlanError("diagnostic innermost line must be a positive int")
+        _hex64(self.signature, "diagnostic signature")
+        if type(self.occurrence_count) is not int or self.occurrence_count <= 0:
+            raise H6BPlanError("diagnostic occurrence count must be positive int")
+        for name in ("truncated", "has_cause", "has_context"):
+            if type(getattr(self, name)) is not bool:
+                raise H6BPlanError(f"diagnostic {name} must be exact bool")
+
+    def to_safe_payload(self) -> dict[str, object]:
+        return {
+            "catch_boundary": self.catch_boundary,
+            "sanitizer_stage": self.sanitizer_stage,
+            "exception_type": self.exception_type,
+            "message": self.message,
+            "traceback_text": self.traceback_text,
+            "innermost_frame": {
+                "file": self.innermost_file,
+                "function": self.innermost_function,
+                "line": self.innermost_line,
+            },
+            "signature": self.signature,
+            "occurrence_count": self.occurrence_count,
+            "truncated": self.truncated,
+            "has_cause": self.has_cause,
+            "has_context": self.has_context,
+        }
+
+
+class DiagnosticCapturePort(Protocol):
+    provenance: str
+
+    def capture_live_exception(
+        self,
+        exc: BaseException,
+        *,
+        catch_boundary: str,
+        strategy: str,
+        config_id: str,
+    ) -> H6BDiagnosticCapture: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ContractFixtureCampaignInput:
     """Pre-CP8 registration inputs, visibly limited to contract fixtures."""
@@ -712,6 +805,7 @@ class ContractFixtureExecutionPorts:
     h5: H5CompositionPort
     artifacts: ArtifactPairPort
     state_inspector: CampaignStateInspector | None = None
+    diagnostics: DiagnosticCapturePort | None = None
     provenance: str = "contract_fixture"
 
     def __post_init__(self) -> None:
@@ -752,6 +846,14 @@ class ContractFixtureExecutionPorts:
                 raise H6BPlanError("pre-CP8 state inspector must be contract_fixture")
             if not callable(getattr(self.state_inspector, "inspect", None)):
                 raise H6BPlanError("state inspector lacks inspect")
+        if self.diagnostics is not None:
+            if (
+                getattr(self.diagnostics, "provenance", None)
+                != "actual_merged_rob970_h6a"
+            ):
+                raise H6BPlanError("diagnostic port is not merged ROB-970/H6-A")
+            if not callable(getattr(self.diagnostics, "capture_live_exception", None)):
+                raise H6BPlanError("diagnostic port lacks live capture")
         if self.provenance != "contract_fixture":
             raise H6BPlanError("pre-CP8 execution ports must be contract_fixture")
 
@@ -810,6 +912,8 @@ class MaterializationOutcome:
     db_state: str
     artifact_state: str
     replay_inspection: object | None
+    diagnostic_capture: H6BDiagnosticCapture | None
+    diagnostic_capture_error: BaseException | None
 
 
 @dataclass(slots=True)
@@ -843,6 +947,8 @@ class _CoordinatorState:
     db_state: str = "NOT_INSPECTED"
     artifact_state: str = "NOT_INSPECTED"
     replay_inspection: object | None = None
+    diagnostic_capture: H6BDiagnosticCapture | None = None
+    diagnostic_capture_error: BaseException | None = None
 
     def counters(self) -> CoordinatorCounters:
         return CoordinatorCounters(
@@ -908,6 +1014,8 @@ def _outcome(
         db_state=state.db_state,
         artifact_state=state.artifact_state,
         replay_inspection=state.replay_inspection,
+        diagnostic_capture=state.diagnostic_capture,
+        diagnostic_capture_error=state.diagnostic_capture_error,
     )
 
 
@@ -921,6 +1029,86 @@ def _attach_cancellation_outcome(
             "ROB-984 materialization outcome attachment unavailable; "
             f"last disposition={outcome.disposition}"
         )
+
+
+def _capture_materializer_exception(
+    state: _CoordinatorState,
+    ports: ContractFixtureExecutionPorts,
+    exc: BaseException,
+) -> None:
+    """Capture once at the first H6-B catch; capture failure is secondary."""
+    if (
+        state.diagnostic_capture is not None
+        or state.diagnostic_capture_error is not None
+    ):
+        return
+    if ports.diagnostics is None:
+        return
+    try:
+        captured = ports.diagnostics.capture_live_exception(
+            exc,
+            catch_boundary="materializer",
+            strategy="H6B",
+            config_id="ROB-984",
+        )
+        if type(captured) is not H6BDiagnosticCapture:
+            raise H6BPlanError("diagnostic port returned a non-canonical capture")
+        state.diagnostic_capture = captured
+    except BaseException as capture_error:
+        state.diagnostic_capture_error = capture_error
+
+
+def render_safe_materialization_failure(outcome: MaterializationOutcome) -> bytes:
+    """Render bounded operator evidence without stringifying raw exceptions."""
+    if type(outcome) is not MaterializationOutcome:
+        raise TypeError("outcome must be exact MaterializationOutcome")
+    diagnostic = (
+        outcome.diagnostic_capture.to_safe_payload()
+        if outcome.diagnostic_capture is not None
+        else {
+            "capture": "unavailable",
+            "capture_error_type": (
+                type(outcome.diagnostic_capture_error).__name__
+                if outcome.diagnostic_capture_error is not None
+                else None
+            ),
+        }
+    )
+    payload = {
+        "schema_version": "rob974_h6b_materializer_failure.v1",
+        "exit_code": outcome.exit_code,
+        "disposition": outcome.disposition,
+        "commit_confirmed": outcome.commit_confirmed,
+        "retry_forbidden": outcome.retry_forbidden,
+        "rollback_outcome": outcome.rollback_outcome,
+        "close_outcome": outcome.close_outcome,
+        "primary_error_type": (
+            type(outcome.primary_error).__name__
+            if outcome.primary_error is not None
+            else None
+        ),
+        "rollback_error_type": (
+            type(outcome.rollback_error).__name__
+            if outcome.rollback_error is not None
+            else None
+        ),
+        "close_error_type": (
+            type(outcome.close_error).__name__
+            if outcome.close_error is not None
+            else None
+        ),
+        "diagnostic": diagnostic,
+    }
+    return (
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
 
 
 async def _attempt_rollback(state: _CoordinatorState, session: object) -> None:
@@ -1176,6 +1364,8 @@ async def _materialize_contract_fixture(
                     f"artifact forensic state refused: {state.artifact_state}"
                 )
     except BaseException as exc:
+        if type(ports) is ContractFixtureExecutionPorts:
+            _capture_materializer_exception(state, ports, exc)
         if not isinstance(exc, Exception):
             outcome = _outcome(
                 state,
@@ -1343,6 +1533,7 @@ async def _materialize_contract_fixture(
         try:
             await session.commit()
         except BaseException as exc:
+            _capture_materializer_exception(state, ports, exc)
             primary_error = exc
             if not isinstance(exc, Exception):
                 native_interrupt = exc
@@ -1365,6 +1556,7 @@ async def _materialize_contract_fixture(
                     state.staged_pair, h5_port=ports.h5
                 )
             except BaseException as exc:
+                _capture_materializer_exception(state, ports, exc)
                 primary_error = exc
                 if not isinstance(exc, Exception):
                     native_interrupt = exc
@@ -1376,6 +1568,7 @@ async def _materialize_contract_fixture(
                 disposition = "MATERIALIZED"
                 retry_forbidden = False
     except BaseException as exc:
+        _capture_materializer_exception(state, ports, exc)
         if primary_error is None:
             primary_error = exc
         if isinstance(exc, ReplayCollisionError) or (
@@ -1409,8 +1602,11 @@ async def _materialize_contract_fixture(
     try:
         await _attempt_close(state, session)
     except BaseException as exc:
+        _capture_materializer_exception(state, ports, exc)
         if not isinstance(exc, Exception):
             native_interrupt = native_interrupt or exc
+    if state.close_error is not None:
+        _capture_materializer_exception(state, ports, state.close_error)
 
     if state.close_error is not None and exit_code == MATERIALIZED_EXIT:
         exit_code = SESSION_CLOSE_FAILURE

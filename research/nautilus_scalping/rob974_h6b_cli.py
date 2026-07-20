@@ -9,25 +9,120 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections.abc import Sequence
 from io import TextIOBase
 
+import rob974_h6a_diagnostics
 import rob974_h6a_smoke
 
 from app.services.rob974_h6b_materializer import (
     AUTHORITY_OR_PREFLIGHT_REFUSED,
     CLI_USAGE_OR_PLAN_ERROR,
     ContractFixturePlan,
+    H6BDiagnosticCapture,
     compute_exact_48_mapping_hash,
 )
 
 __all__ = [
+    "ActualRob970DiagnosticPort",
     "build_contract_fixture_plan",
     "main",
     "render_plan_bytes",
     "run_cli",
 ]
+
+_BOUNDARY_TO_SANITIZER_STAGE = {
+    "feature": "generator",
+    "generator": "generator",
+    "funding_gate": "funding_gate",
+    "engine": "engine",
+    "metric": "engine",
+    "materializer": "engine",
+}
+_FRAME_RE = re.compile(r'^\s*File "([^"]+)", line ([0-9]+), in ([^\n]+)$')
+_RAW_OBJECT_TAIL_RE = re.compile(
+    r"\b[A-Z][A-Za-z0-9_]*(?:Record|DTO|Event|Bar[0-9A-Za-z_]*)\([^\n]*"
+)
+_CHAIN_MARKERS = (
+    "Traceback (most recent call last):",
+    "The above exception was the direct cause",
+    "During handling of the above exception",
+    "...<truncated>...",
+)
+
+
+def _metadata_only_traceback(traceback_text: str) -> str:
+    """Remove every source-context/caret line after ROB-970 sanitization."""
+    kept: list[str] = []
+    for line in traceback_text.splitlines():
+        stripped = line.strip()
+        if _FRAME_RE.match(line) or any(
+            stripped.startswith(item) for item in _CHAIN_MARKERS
+        ):
+            kept.append(line)
+        elif re.match(r"^[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception):", stripped):
+            kept.append(stripped)
+    return "\n".join(kept) + "\n"
+
+
+def _remove_raw_object_repr(text: str) -> str:
+    """Tight H6-B projection: raw DTO/record tails are never operator text."""
+    return _RAW_OBJECT_TAIL_RE.sub("<redacted-record>", text)
+
+
+class ActualRob970DiagnosticPort:
+    """Projection adapter over the merged ROB-970/H6-A capture authority."""
+
+    provenance = "actual_merged_rob970_h6a"
+
+    def capture_live_exception(
+        self,
+        exc: BaseException,
+        *,
+        catch_boundary: str,
+        strategy: str,
+        config_id: str,
+    ) -> H6BDiagnosticCapture:
+        try:
+            sanitizer_stage = _BOUNDARY_TO_SANITIZER_STAGE[catch_boundary]
+        except KeyError as cause:
+            raise ValueError("unknown H6-B catch boundary") from cause
+        evidence = rob974_h6a_diagnostics.capture_child_failure_evidence(
+            exc,
+            transport="in_process",
+            stage=sanitizer_stage,
+            strategy=strategy,
+            config_id=config_id,
+        )
+        safe_traceback = _remove_raw_object_repr(
+            _metadata_only_traceback(evidence.traceback_text)
+        )
+        safe_message = _remove_raw_object_repr(evidence.message)
+        frames = [
+            match.groups()
+            for line in safe_traceback.splitlines()
+            if (match := _FRAME_RE.match(line)) is not None
+        ]
+        if not frames:
+            raise ValueError("live diagnostic lacks a sanitized traceback frame")
+        filename, line_number, function = frames[-1]
+        return H6BDiagnosticCapture(
+            catch_boundary=catch_boundary,
+            sanitizer_stage=sanitizer_stage,
+            exception_type=evidence.exception_type,
+            message=safe_message,
+            traceback_text=safe_traceback,
+            innermost_file=filename,
+            innermost_function=function,
+            innermost_line=int(line_number),
+            signature=evidence.signature,
+            occurrence_count=evidence.occurrence_count,
+            truncated=evidence.truncated,
+            has_cause=exc.__cause__ is not None,
+            has_context=exc.__context__ is not None and not exc.__suppress_context__,
+        )
 
 
 def build_contract_fixture_plan() -> ContractFixturePlan:
@@ -111,9 +206,7 @@ _RUN_REQUIRED = (
 )
 
 
-def run_cli(
-    argv: Sequence[str], *, stdout: TextIOBase, stderr: TextIOBase
-) -> int:
+def run_cli(argv: Sequence[str], *, stdout: TextIOBase, stderr: TextIOBase) -> int:
     """Return the closed application exit code; never calls ``sys.exit``."""
     if isinstance(argv, str | bytes) or not isinstance(argv, Sequence):
         stderr.write("CLI_USAGE_OR_PLAN_ERROR\n")
@@ -155,4 +248,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
