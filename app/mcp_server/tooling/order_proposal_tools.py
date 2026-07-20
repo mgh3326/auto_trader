@@ -33,6 +33,7 @@ from app.services.order_proposals.dispatch import dispatch_proposal
 from app.services.order_proposals.errors import (
     OrderProposalError,
     OrderProposalNotFound,
+    OrderProposalUnsupportedTargetAction,
 )
 from app.services.order_proposals.service import RungInput
 from app.services.order_proposals.telegram_callback import _safe_edit_message
@@ -393,6 +394,13 @@ async def order_proposal_create(
                 )
 
         return result
+    except OrderProposalUnsupportedTargetAction as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+            "supported_matrix": exc.supported_matrix,
+            "requested": exc.requested,
+        }
     except (ValueError, OrderProposalError) as exc:
         return {"success": False, "error": str(exc)}
 

@@ -1171,7 +1171,9 @@ async def _revalidate_replace_rung(
     fetch_submit_evidence_fn: SubmitEvidenceFetchFn,
 ) -> RungOutcome:
     proposal_client_order_id = (
-        _proposal_client_order_id(group.proposal_id, rung.rung_index)
+        _toss_proposal_client_order_id(group.proposal_id, rung.rung_index)
+        if group.account_mode == "toss_live"
+        else _proposal_client_order_id(group.proposal_id, rung.rung_index)
         if group.account_mode == "upbit"
         else None
     )

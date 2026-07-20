@@ -36,6 +36,7 @@ from app.services.order_proposals.defensive_ttl import (
 from app.services.order_proposals.errors import (
     OrderProposalError,
     OrderProposalNotFound,
+    OrderProposalUnsupportedTargetAction,
 )
 from app.services.order_proposals.payload import (
     ProposalRungSpec,
@@ -134,11 +135,63 @@ _ACTION_CAPABILITIES = {
     "cancel": SUPPORTED_TARGET_ACTIONS,
 }
 
-_ALLOWED_ACTION_CONTRACT_MESSAGE = (
-    "allowed: kis_live×equity_kr|equity_us, "
-    "toss_live×equity_kr|equity_us, upbit×crypto; "
-    "market aliases kr→equity_kr, us→equity_us"
-)
+# Display order only -- purely cosmetic grouping for the human-facing
+# "allowed: ..." message and the supported_matrix response field. Any
+# account_mode/market absent from these tuples still sorts, just after the
+# named ones.
+_ACCOUNT_MODE_DISPLAY_ORDER = ("kis_live", "toss_live", "upbit")
+_MARKET_DISPLAY_ORDER = ("equity_kr", "equity_us", "crypto")
+
+
+def _capability_sort_key(order: tuple[str, ...]) -> Callable[[str], tuple[int, str]]:
+    def key(value: str) -> tuple[int, str]:
+        try:
+            return (order.index(value), value)
+        except ValueError:
+            return (len(order), value)
+
+    return key
+
+
+def _format_action_capabilities(pairs: frozenset[tuple[str, str]]) -> str:
+    by_mode: dict[str, list[str]] = {}
+    for mode, market in pairs:
+        by_mode.setdefault(mode, []).append(market)
+    mode_key = _capability_sort_key(_ACCOUNT_MODE_DISPLAY_ORDER)
+    market_key = _capability_sort_key(_MARKET_DISPLAY_ORDER)
+    parts = [
+        f"{mode}×{'|'.join(sorted(by_mode[mode], key=market_key))}"
+        for mode in sorted(by_mode, key=mode_key)
+    ]
+    return ", ".join(parts) + "; market aliases kr→equity_kr, us→equity_us"
+
+
+def _action_contract_message(action: str) -> str:
+    """Allowed-combinations text for one action, derived from its own
+    capability set -- never a different action's set (ROB-972: cancel/replace
+    rejections previously reused place's message and falsely advertised
+    support they didn't have).
+    """
+    return f"allowed: {_format_action_capabilities(_ACTION_CAPABILITIES[action])}"
+
+
+def _supported_matrix() -> dict[str, list[dict[str, str]]]:
+    """Structured per-action allowed account_mode/market pairs.
+
+    Derived from the same ``_ACTION_CAPABILITIES`` sets ``_action_contract_message``
+    reads, so the matrix and the human-facing text can never drift apart.
+    """
+    mode_key = _capability_sort_key(_ACCOUNT_MODE_DISPLAY_ORDER)
+    market_key = _capability_sort_key(_MARKET_DISPLAY_ORDER)
+    return {
+        action: [
+            {"account_mode": mode, "market": market}
+            for mode, market in sorted(
+                pairs, key=lambda pair: (mode_key(pair[0]), market_key(pair[1]))
+            )
+        ]
+        for action, pairs in _ACTION_CAPABILITIES.items()
+    }
 
 _LOSS_CUT_EXIT_REASONS = frozenset({"stop_loss", "thesis_change"})
 _LOSS_CUT_TRIGGER_TYPES = frozenset({"stop_loss", "thesis_change"})
@@ -216,10 +269,16 @@ def _validate_action_contract(
     if normalized not in _ACTION_CAPABILITIES:
         raise OrderProposalError("action must be one of: place, replace, cancel")
     if (account_mode, market) not in _ACTION_CAPABILITIES[normalized]:
-        raise OrderProposalError(
+        raise OrderProposalUnsupportedTargetAction(
             "unsupported account_mode/market/action: "
             f"{account_mode}/{market}/{normalized} "
-            f"({_ALLOWED_ACTION_CONTRACT_MESSAGE})"
+            f"({_action_contract_message(normalized)})",
+            supported_matrix=_supported_matrix(),
+            requested={
+                "account_mode": account_mode,
+                "market": market,
+                "action": normalized,
+            },
         )
     if normalized == "place":
         if target_broker_order_id is not None or target_order_snapshot is not None:
