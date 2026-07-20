@@ -206,6 +206,10 @@ MUTATION_TOOLS: frozenset[str] = frozenset(
             "paper_place_limit_order",
             "paper_cancel_pending_order",
             "paper_reconcile_orders",
+            # ROB-971: lifecycle writes for direct investment watches.
+            "investment_watch_void",
+            "investment_watch_expire",
+            "sweep_expired_watches",
         }
     )
 )

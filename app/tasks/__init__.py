@@ -30,6 +30,7 @@ from app.tasks import (
     upbit_symbol_universe_tasks,
     us_candles_tasks,
     us_symbol_universe_tasks,
+    watch_expiry_tasks,
     watch_follow_up_tasks,
     watch_scan_tasks,
 )
@@ -54,6 +55,7 @@ TASKIQ_TASK_MODULES = (
     kis_live_reconcile_tasks,
     kis_mock_reconciliation_tasks,
     watch_follow_up_tasks,
+    watch_expiry_tasks,
     research_reports_ingest_tasks,
     research_run_refresh_tasks,
     watch_scan_tasks,
