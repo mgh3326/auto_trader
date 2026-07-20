@@ -1,7 +1,7 @@
 """ROB-314 — lock the deferred bundle-ensure call sites on the empty default.
 
-The report-generation entrypoints (MCP prepare_bundle, HTTP prepare-bundle,
-hermes_bundle_preparation_flow) inject ``production_collector_registry``.
+The report-generation entrypoints (MCP prepare_bundle, HTTP prepare-bundle)
+inject ``production_collector_registry``.
 These two call sites intentionally do NOT — the refresh flow belongs to the
 separate scheduler-activation track and the generic ensure tool is a manual
 primitive. If a future change wires production collectors here, it must be a

@@ -709,14 +709,6 @@ class Settings(BaseSettings):
     # ROB-510 — Finnhub news fetch reliability (per-attempt timeout + bounded retry)
     FINNHUB_NEWS_TIMEOUT_S: float = 8.0
     FINNHUB_NEWS_MAX_ATTEMPTS: int = 3
-    # ROB-287 Phase B — operational activation gate for the
-    # ``hermes_bundle_preparation_flow`` Prefect entry. Default ``False``
-    # makes the flow a structured dry-run (no ``SnapshotBundleEnsureService``
-    # write, no side effects) so the Prefect deployment can land in a
-    # paused state and operators flip the env var separately. The
-    # production cutover is owned by ``robin-prefect-automations``;
-    # nothing in this repo schedules the flow on its own.
-    HERMES_BUNDLE_PREPARATION_ENABLED: bool = False
 
     # ROB-211 execution ledger ships inert; commit/backfill activation is a separate approval-gated ops change.
     EXECUTION_LEDGER_COMMIT_ENABLED: bool = False
