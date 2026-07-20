@@ -12,15 +12,21 @@ production full-campaign hash or run id and is never accepted by ``--run``.
 from __future__ import annotations
 
 import re
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Protocol
 
+from app.services.research_db_write_guard import ResearchDbPolicy
 from app.services.rob974_h6a_bridge import (
     RECORD_ATTEMPTS_OPERATION_KIND,
     REGISTER_CAMPAIGN_OPERATION_KIND,
     ApprovedMutationContext,
+    H6AAttemptBatchItem,
     compute_exact_48_mapping_hash,
     derive_campaign_run_id,
+    record_h6a_attempts,
+    register_h6a_campaign,
 )
 
 __all__ = [
@@ -28,23 +34,32 @@ __all__ = [
     "CANONICAL_ROW_ORDER",
     "CLI_USAGE_OR_PLAN_ERROR",
     "COMMIT_FAILED_OR_UNKNOWN",
+    "CommitRejectedError",
+    "ContractFixtureCampaignInput",
+    "ContractFixtureExecutionPorts",
     "ContractFixturePlan",
+    "CoordinatorCounters",
     "DatabaseTarget",
     "EXIT_DISPOSITION_TABLE",
     "ExactSourcePins",
     "H6BPlanError",
     "H6BPreflightRefused",
+    "H6AAccountingPort",
+    "H5CompositionPort",
     "IssuedOneShotAuthorization",
     "MATERIALIZED_EXIT",
     "POSTAUDIT_FAILURE",
     "POSTCOMMIT_PUBLISH_FAILURE",
     "PRECOMMIT_FAILURE",
+    "MaterializationOutcome",
+    "PredecessorTransactionOwnershipError",
     "ProductionExecutionPlan",
     "RunAuthority",
     "SESSION_CLOSE_FAILURE",
     "build_h6a_mutation_contexts",
     "issue_contract_fixture_authorization",
     "issue_run_authorization",
+    "materialize_contract_fixture",
     "validate_database_target_pair",
     "validate_derived_run_id",
     "validate_exact_48_mapping",
@@ -149,9 +164,7 @@ def validate_exact_48_mapping(
         _hex64(item[1], f"experiment id for {item[0]!r}")
     row_ids = tuple(row_id for row_id, _ in mapping)
     if row_ids != CANONICAL_ROW_ORDER:
-        raise H6BPlanError(
-            "mapping order must be exactly S3-00..S3-23,S4-00..S4-23"
-        )
+        raise H6BPlanError("mapping order must be exactly S3-00..S3-23,S4-00..S4-23")
     experiment_ids = tuple(experiment_id for _, experiment_id in mapping)
     if len(set(experiment_ids)) != 48:
         raise H6BPlanError("mapping experiment ids must be unique")
@@ -396,7 +409,10 @@ class IssuedOneShotAuthorization:
         self._issuer = _issuer
 
     def _consume(self) -> tuple[str, str, str, str]:
-        if type(self) is not IssuedOneShotAuthorization or self._issuer is not _ISSUER_SEAL:
+        if (
+            type(self) is not IssuedOneShotAuthorization
+            or self._issuer is not _ISSUER_SEAL
+        ):
             raise H6BPreflightRefused("authorization was independently minted")
         if self._used:
             raise H6BPreflightRefused("one-shot authorization was already consumed")
@@ -499,7 +515,10 @@ def validate_h6a_context_pair(
     register: ApprovedMutationContext, record: ApprovedMutationContext
 ) -> None:
     """Reject a caller-built/subclassed/swapped pair before any session."""
-    if type(register) is not ApprovedMutationContext or type(record) is not ApprovedMutationContext:
+    if (
+        type(register) is not ApprovedMutationContext
+        or type(record) is not ApprovedMutationContext
+    ):
         raise H6BPreflightRefused("H6-A contexts must use the exact approved type")
     if register.operation_kind != REGISTER_CAMPAIGN_OPERATION_KIND:
         raise H6BPreflightRefused("register context operation kind is swapped")
@@ -519,3 +538,585 @@ def validate_h6a_context_pair(
     )
     if shared_register != shared_record:
         raise H6BPreflightRefused("H6-A contexts do not share one authorization")
+
+
+class H6AAccountingPort(Protocol):
+    """Exact H6-A accounting adapter; H6-B never reproduces its algorithm."""
+
+    provenance: str
+
+    def reconstruct(
+        self,
+        *,
+        plan: ContractFixturePlan,
+        registered_total: int,
+        attempts: Sequence[H6AAttemptBatchItem],
+    ) -> object: ...
+
+
+class H5CompositionPort(Protocol):
+    """Pure H5 composition plus the canonical artifact methods from CP2."""
+
+    provenance: str
+
+    def build_scorecard(
+        self,
+        *,
+        plan: ContractFixturePlan,
+        attempts: Sequence[H6AAttemptBatchItem],
+        accounting: object,
+    ) -> dict[str, object]: ...
+
+    def canonical_json_bytes(self, scorecard: Mapping[str, object]) -> bytes: ...
+
+    def semantic_hash(self, scorecard: Mapping[str, object]) -> str: ...
+
+    def render_markdown(self, scorecard: Mapping[str, object]) -> bytes: ...
+
+
+class ArtifactPairPort(Protocol):
+    """H6-B physical primitive adapter; the implementation is CP2's module."""
+
+    provenance: str
+
+    def stage(
+        self,
+        *,
+        scorecard: Mapping[str, object],
+        output_dir: Path,
+        h5_port: H5CompositionPort,
+    ) -> object: ...
+
+    def publish(self, staged: object, *, h5_port: H5CompositionPort) -> object: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ContractFixtureCampaignInput:
+    """Pre-CP8 registration inputs, visibly limited to contract fixtures."""
+
+    plan: ContractFixturePlan
+    s3_specs: tuple[object, ...]
+    s4_specs: tuple[object, ...]
+    guard_policy: ResearchDbPolicy
+    strategy_name: str = "rob974-h6b-contract-fixture"
+    timeframe: str = "4h"
+    runner: str = "rob974-h6b-contract-fixture"
+    provenance: str = "contract_fixture"
+
+    def __post_init__(self) -> None:
+        if type(self.plan) is not ContractFixturePlan:
+            raise H6BPlanError("fixture campaign plan must use the exact type")
+        if type(self.s3_specs) is not tuple or len(self.s3_specs) != 24:
+            raise H6BPlanError(
+                "fixture S3 registration specs must be an exact 24-tuple"
+            )
+        if type(self.s4_specs) is not tuple or len(self.s4_specs) != 24:
+            raise H6BPlanError(
+                "fixture S4 registration specs must be an exact 24-tuple"
+            )
+        if type(self.guard_policy) is not ResearchDbPolicy:
+            raise H6BPlanError("guard_policy must use the exact ResearchDbPolicy type")
+        for name in ("strategy_name", "timeframe", "runner"):
+            _exact_nonempty_str(getattr(self, name), name)
+        if self.provenance != "contract_fixture":
+            raise H6BPlanError("pre-CP8 campaign input must be contract_fixture")
+
+
+SessionFactory = Callable[[], object]
+RegisterExperimentsFn = Callable[..., Awaitable[list[Any]]]
+RunH4AttemptsFn = Callable[
+    [ContractFixturePlan], Awaitable[tuple[H6AAttemptBatchItem, ...]]
+]
+FindExistingTrialFn = Callable[..., Awaitable[object | None]]
+RecordTrialFn = Callable[..., Awaitable[object]]
+
+
+@dataclass(frozen=True, slots=True)
+class ContractFixtureExecutionPorts:
+    """Typed CP1-CP7 seams; no real engine or production H4/H5 is implied."""
+
+    session_factory: SessionFactory
+    register_experiments_fn: RegisterExperimentsFn
+    run_h4_attempts_fn: RunH4AttemptsFn
+    find_existing_trial_fn: FindExistingTrialFn
+    record_trial_fn: RecordTrialFn
+    h6a_accounting: H6AAccountingPort
+    h5: H5CompositionPort
+    artifacts: ArtifactPairPort
+    provenance: str = "contract_fixture"
+
+    def __post_init__(self) -> None:
+        for name in (
+            "session_factory",
+            "register_experiments_fn",
+            "run_h4_attempts_fn",
+            "find_existing_trial_fn",
+            "record_trial_fn",
+        ):
+            if not callable(getattr(self, name)):
+                raise H6BPlanError(f"execution port {name} must be callable")
+        if getattr(self.h6a_accounting, "provenance", None) != "actual_merged_h6a":
+            raise H6BPlanError("accounting port must identify actual merged H6-A")
+        if not callable(getattr(self.h6a_accounting, "reconstruct", None)):
+            raise H6BPlanError("accounting port lacks reconstruct")
+        if getattr(self.h5, "provenance", None) != "contract_fixture":
+            raise H6BPlanError("pre-CP8 H5 port must be contract_fixture")
+        for name in (
+            "build_scorecard",
+            "canonical_json_bytes",
+            "semantic_hash",
+            "render_markdown",
+        ):
+            if not callable(getattr(self.h5, name, None)):
+                raise H6BPlanError(f"H5 port lacks {name}")
+        if (
+            getattr(self.artifacts, "provenance", None)
+            != "rob974_h6b_directory_atomic_v1"
+        ):
+            raise H6BPlanError("artifact port is not the H6-B directory primitive")
+        if not callable(getattr(self.artifacts, "stage", None)) or not callable(
+            getattr(self.artifacts, "publish", None)
+        ):
+            raise H6BPlanError("artifact port lacks stage/publish")
+        if self.provenance != "contract_fixture":
+            raise H6BPlanError("pre-CP8 execution ports must be contract_fixture")
+
+
+class CommitRejectedError(RuntimeError):
+    """Adapter assertion that COMMIT was rejected before confirmed success."""
+
+
+class PredecessorTransactionOwnershipError(RuntimeError):
+    """A predecessor attempted to own H6-B's transaction lifecycle."""
+
+
+@dataclass(frozen=True, slots=True)
+class CoordinatorCounters:
+    session_factory: int
+    begin: int
+    register: int
+    h4: int
+    record: int
+    accounting: int
+    h5: int
+    stage: int
+    rollback: int
+    commit: int
+    publish: int
+    close: int
+
+
+@dataclass(frozen=True, slots=True)
+class MaterializationOutcome:
+    """Closed application outcome with primary and secondary failures separated."""
+
+    exit_code: int
+    disposition: str
+    trace: tuple[str, ...]
+    counters: CoordinatorCounters
+    primary_error: BaseException | None
+    rollback_error: BaseException | None
+    close_error: BaseException | None
+    rollback_outcome: str
+    close_outcome: str
+    commit_confirmed: bool
+    retry_forbidden: bool
+    staged_pair: object | None
+    published_pair: object | None
+    accounting: object | None
+    scorecard: dict[str, object] | None
+
+
+@dataclass(slots=True)
+class _CoordinatorState:
+    trace: list[str] = field(default_factory=list)
+    session_factory: int = 0
+    begin: int = 0
+    register: int = 0
+    h4: int = 0
+    record: int = 0
+    accounting_calls: int = 0
+    h5: int = 0
+    stage: int = 0
+    rollback: int = 0
+    commit: int = 0
+    publish: int = 0
+    close: int = 0
+    rollback_error: BaseException | None = None
+    close_error: BaseException | None = None
+    rollback_outcome: str = "NOT_ATTEMPTED"
+    close_outcome: str = "NOT_ATTEMPTED"
+    commit_confirmed: bool = False
+    staged_pair: object | None = None
+    published_pair: object | None = None
+    accounting_report: object | None = None
+    scorecard: dict[str, object] | None = None
+
+    def counters(self) -> CoordinatorCounters:
+        return CoordinatorCounters(
+            session_factory=self.session_factory,
+            begin=self.begin,
+            register=self.register,
+            h4=self.h4,
+            record=self.record,
+            accounting=self.accounting_calls,
+            h5=self.h5,
+            stage=self.stage,
+            rollback=self.rollback,
+            commit=self.commit,
+            publish=self.publish,
+            close=self.close,
+        )
+
+
+class _InjectedTransactionSession:
+    """Delegate view that forwards DB work but poisons lifecycle ownership."""
+
+    __slots__ = ("__session",)
+
+    def __init__(self, session: object) -> None:
+        object.__setattr__(self, "_InjectedTransactionSession__session", session)
+
+    def __getattr__(self, name: str) -> object:
+        if name in {"begin", "commit", "rollback", "close"}:
+            raise PredecessorTransactionOwnershipError(
+                f"predecessor attempted forbidden session.{name} ownership"
+            )
+        return getattr(self.__session, name)
+
+
+def _outcome(
+    state: _CoordinatorState,
+    *,
+    exit_code: int,
+    disposition: str,
+    primary_error: BaseException | None,
+    retry_forbidden: bool,
+) -> MaterializationOutcome:
+    return MaterializationOutcome(
+        exit_code=exit_code,
+        disposition=disposition,
+        trace=tuple(state.trace),
+        counters=state.counters(),
+        primary_error=primary_error,
+        rollback_error=state.rollback_error,
+        close_error=state.close_error,
+        rollback_outcome=state.rollback_outcome,
+        close_outcome=state.close_outcome,
+        commit_confirmed=state.commit_confirmed,
+        retry_forbidden=retry_forbidden,
+        staged_pair=state.staged_pair,
+        published_pair=state.published_pair,
+        accounting=state.accounting_report,
+        scorecard=state.scorecard,
+    )
+
+
+def _attach_cancellation_outcome(
+    exc: BaseException, outcome: MaterializationOutcome
+) -> None:
+    try:
+        exc.rob984_materialization_outcome = outcome
+    except Exception:
+        exc.add_note(
+            "ROB-984 materialization outcome attachment unavailable; "
+            f"last disposition={outcome.disposition}"
+        )
+
+
+async def _attempt_rollback(state: _CoordinatorState, session: object) -> None:
+    state.trace.append("rollback")
+    state.rollback += 1
+    try:
+        await session.rollback()
+    except BaseException as exc:
+        state.rollback_error = exc
+        state.rollback_outcome = "FAILED"
+        if not isinstance(exc, Exception):
+            raise
+    else:
+        state.rollback_outcome = "SUCCEEDED"
+
+
+async def _attempt_close(state: _CoordinatorState, session: object) -> None:
+    state.trace.append("session_close")
+    state.close += 1
+    try:
+        await session.close()
+    except BaseException as exc:
+        state.close_error = exc
+        state.close_outcome = "FAILED"
+        if not isinstance(exc, Exception):
+            raise
+    else:
+        state.close_outcome = "SUCCEEDED"
+
+
+def _validate_fixture_preflight(
+    *,
+    plan: ContractFixturePlan,
+    campaign: ContractFixtureCampaignInput,
+    ports: ContractFixtureExecutionPorts,
+    output_dir: Path,
+) -> None:
+    if type(plan) is not ContractFixturePlan:
+        raise H6BPreflightRefused("plan must be exact ContractFixturePlan")
+    if type(campaign) is not ContractFixtureCampaignInput or campaign.plan is not plan:
+        raise H6BPreflightRefused("campaign input is not bound to this exact plan")
+    if type(ports) is not ContractFixtureExecutionPorts:
+        raise H6BPreflightRefused("execution ports must use the exact fixture type")
+    if not isinstance(output_dir, Path) or not output_dir.is_absolute():
+        raise H6BPreflightRefused("output_dir must be an absolute Path")
+    if plan.to_payload()["status"] != "NOT_LAUNCHABLE_CONTRACT_FIXTURE":
+        raise H6BPreflightRefused("fixture launchability marker drifted")
+    validate_exact_48_mapping(plan.ordered_mapping)
+
+
+def _validate_attempt_batch(
+    plan: ContractFixturePlan, attempts: tuple[H6AAttemptBatchItem, ...]
+) -> None:
+    if type(attempts) is not tuple or len(attempts) != 48:
+        raise H6BPreflightRefused("H4 fixture must return an exact 48-attempt tuple")
+    if any(type(item) is not H6AAttemptBatchItem for item in attempts):
+        raise H6BPreflightRefused("H4 attempts must use exact H6AAttemptBatchItem")
+    expected = tuple(row_id for row_id, _experiment_id in plan.ordered_mapping)
+    if tuple(item.row_id for item in attempts) != expected:
+        raise H6BPreflightRefused("H4 attempt order differs from the exact plan")
+    if any(item.retry_index != 0 for item in attempts):
+        raise H6BPreflightRefused(
+            "primary materialization batch cannot contain retries"
+        )
+
+
+def _registered_pk_mapping(
+    *, plan: ContractFixturePlan, registered: Sequence[object]
+) -> dict[str, int]:
+    if len(registered) != 48:
+        raise H6BPreflightRefused("H6-A registration did not return exactly 48 rows")
+    result: dict[str, int] = {}
+    for (row_id, _experiment_id), row in zip(
+        plan.ordered_mapping, registered, strict=True
+    ):
+        primary_key = getattr(row, "id", None)
+        if type(primary_key) is not int or primary_key <= 0:
+            raise H6BPreflightRefused(
+                "registered experiment primary keys must be positive built-in ints"
+            )
+        result[row_id] = primary_key
+    if len(set(result.values())) != 48:
+        raise H6BPreflightRefused("registered experiment primary keys must be unique")
+    return result
+
+
+async def materialize_contract_fixture(
+    *,
+    plan: ContractFixturePlan,
+    authorization: IssuedOneShotAuthorization,
+    campaign: ContractFixtureCampaignInput,
+    ports: ContractFixtureExecutionPorts,
+    output_dir: Path,
+) -> MaterializationOutcome:
+    """Compose CP1-CP7 seams with H6-B as the sole transaction owner.
+
+    This entry point is test-only contract-fixture wiring and is unreachable
+    from ``--run``.  It nevertheless exercises the real merged H6-A register
+    and record functions and the actual H6-A accounting adapter.
+    """
+    state = _CoordinatorState(trace=["preflight"])
+    try:
+        _validate_fixture_preflight(
+            plan=plan, campaign=campaign, ports=ports, output_dir=output_dir
+        )
+        register_context, record_context = build_h6a_mutation_contexts(authorization)
+        validate_h6a_context_pair(register_context, record_context)
+    except BaseException as exc:
+        if not isinstance(exc, Exception):
+            outcome = _outcome(
+                state,
+                exit_code=AUTHORITY_OR_PREFLIGHT_REFUSED,
+                disposition="AUTHORITY_OR_PREFLIGHT_REFUSED",
+                primary_error=exc,
+                retry_forbidden=False,
+            )
+            _attach_cancellation_outcome(exc, outcome)
+            raise
+        return _outcome(
+            state,
+            exit_code=AUTHORITY_OR_PREFLIGHT_REFUSED,
+            disposition="AUTHORITY_OR_PREFLIGHT_REFUSED",
+            primary_error=exc,
+            retry_forbidden=False,
+        )
+
+    session: object | None = None
+    primary_error: BaseException | None = None
+    exit_code = PRECOMMIT_FAILURE
+    disposition = "PRECOMMIT_FAILURE"
+    retry_forbidden = False
+    begun = False
+    native_interrupt: BaseException | None = None
+
+    try:
+        state.trace.append("session_factory")
+        state.session_factory += 1
+        session = ports.session_factory()
+        if session is None or isinstance(session, Awaitable):
+            raise H6BPreflightRefused(
+                "session factory must synchronously return one session"
+            )
+
+        state.trace.append("begin")
+        state.begin += 1
+        await session.begin()
+        begun = True
+
+        predecessor_session = _InjectedTransactionSession(session)
+        mapping = dict(plan.ordered_mapping)
+
+        state.trace.append("h6a_register")
+        state.register += 1
+        registered_s3, registered_s4 = await register_h6a_campaign(
+            predecessor_session,
+            approved=register_context,
+            full_campaign_hash=plan._fixture_campaign_hash,
+            campaign_run_id=plan._fixture_run_id,
+            s3_specs=list(campaign.s3_specs),
+            s4_specs=list(campaign.s4_specs),
+            row_id_to_experiment_id=mapping,
+            guard_opt_in_enabled=True,
+            guard_policy=campaign.guard_policy,
+            register_experiments_fn=ports.register_experiments_fn,
+        )
+        registered = (*registered_s3, *registered_s4)
+        pk_mapping = _registered_pk_mapping(plan=plan, registered=registered)
+
+        state.trace.append("h4_attempts")
+        state.h4 += 1
+        attempts = await ports.run_h4_attempts_fn(plan)
+        _validate_attempt_batch(plan, attempts)
+
+        state.trace.append("h6a_record")
+        state.record += 1
+        await record_h6a_attempts(
+            predecessor_session,
+            approved=record_context,
+            full_campaign_hash=plan._fixture_campaign_hash,
+            campaign_run_id=plan._fixture_run_id,
+            row_id_to_experiment_id=mapping,
+            row_id_to_experiment_pk=pk_mapping,
+            attempts=attempts,
+            strategy_name=campaign.strategy_name,
+            timeframe=campaign.timeframe,
+            runner=campaign.runner,
+            guard_opt_in_enabled=True,
+            guard_policy=campaign.guard_policy,
+            find_existing_trial_fn=ports.find_existing_trial_fn,
+            record_trial_fn=ports.record_trial_fn,
+        )
+
+        state.trace.append("h6a_accounting")
+        state.accounting_calls += 1
+        state.accounting_report = ports.h6a_accounting.reconstruct(
+            plan=plan, registered_total=len(registered), attempts=attempts
+        )
+
+        state.trace.append("h5_scorecard")
+        state.h5 += 1
+        scorecard = ports.h5.build_scorecard(
+            plan=plan, attempts=attempts, accounting=state.accounting_report
+        )
+        if type(scorecard) is not dict:
+            raise H6BPreflightRefused("H5 scorecard must be an exact built-in dict")
+        state.scorecard = scorecard
+
+        state.trace.append("artifact_stage")
+        state.stage += 1
+        state.staged_pair = ports.artifacts.stage(
+            scorecard=scorecard, output_dir=output_dir, h5_port=ports.h5
+        )
+
+        state.trace.append("db_commit")
+        state.commit += 1
+        try:
+            await session.commit()
+        except BaseException as exc:
+            primary_error = exc
+            if not isinstance(exc, Exception):
+                native_interrupt = exc
+            retry_forbidden = True
+            if isinstance(exc, CommitRejectedError):
+                disposition = "COMMIT_FAILED"
+            else:
+                disposition = "COMMIT_OUTCOME_UNKNOWN"
+            exit_code = COMMIT_FAILED_OR_UNKNOWN
+            try:
+                await _attempt_rollback(state, session)
+            except BaseException as rollback_interrupt:
+                native_interrupt = rollback_interrupt
+        else:
+            state.commit_confirmed = True
+            state.trace.append("artifact_publish")
+            state.publish += 1
+            try:
+                state.published_pair = ports.artifacts.publish(
+                    state.staged_pair, h5_port=ports.h5
+                )
+            except BaseException as exc:
+                primary_error = exc
+                if not isinstance(exc, Exception):
+                    native_interrupt = exc
+                exit_code = POSTCOMMIT_PUBLISH_FAILURE
+                disposition = "DB_DURABLE_ARTIFACT_UNPUBLISHED"
+                retry_forbidden = True
+            else:
+                exit_code = MATERIALIZED_EXIT
+                disposition = "MATERIALIZED"
+                retry_forbidden = False
+    except BaseException as exc:
+        if primary_error is None:
+            primary_error = exc
+        if not isinstance(exc, Exception):
+            native_interrupt = exc
+        if exit_code not in (COMMIT_FAILED_OR_UNKNOWN, POSTCOMMIT_PUBLISH_FAILURE):
+            exit_code = PRECOMMIT_FAILURE
+            disposition = "PRECOMMIT_FAILURE"
+            if begun:
+                try:
+                    await _attempt_rollback(state, session)
+                except BaseException as rollback_interrupt:
+                    native_interrupt = rollback_interrupt
+
+    if session is None:
+        outcome = _outcome(
+            state,
+            exit_code=exit_code,
+            disposition=disposition,
+            primary_error=primary_error,
+            retry_forbidden=retry_forbidden,
+        )
+        if native_interrupt is not None:
+            _attach_cancellation_outcome(native_interrupt, outcome)
+            raise native_interrupt
+        return outcome
+    try:
+        await _attempt_close(state, session)
+    except BaseException as exc:
+        if not isinstance(exc, Exception):
+            native_interrupt = native_interrupt or exc
+
+    if state.close_error is not None and exit_code == MATERIALIZED_EXIT:
+        exit_code = SESSION_CLOSE_FAILURE
+        disposition = "MATERIALIZED_CLOSE_FAILED"
+        retry_forbidden = True
+
+    outcome = _outcome(
+        state,
+        exit_code=exit_code,
+        disposition=disposition,
+        primary_error=primary_error,
+        retry_forbidden=retry_forbidden,
+    )
+    if native_interrupt is not None:
+        _attach_cancellation_outcome(native_interrupt, outcome)
+        raise native_interrupt
+    return outcome
