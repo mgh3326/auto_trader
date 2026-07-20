@@ -54,7 +54,8 @@ from sqlalchemy import text
 # The ORM tables are built by create_all; the trigger functions are non-ORM DDL
 # mirrored here.
 # v25 (ROB-920): update alpaca_paper_order_ledger check constraint to include canceled state.
-SCHEMA_BOOTSTRAP_VERSION = 25
+# v26 (ROB-954): add the dedicated terminal transition timestamp + scan index.
+SCHEMA_BOOTSTRAP_VERSION = 26
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -812,6 +813,11 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ALTER TABLE paper.paper_pending_orders ADD COLUMN IF NOT EXISTS journal_id BIGINT",
     "ALTER TABLE paper.paper_pending_orders ADD COLUMN IF NOT EXISTS artifact_uuid TEXT",
     "ALTER TABLE paper.paper_pending_orders ADD COLUMN IF NOT EXISTS forecast_id TEXT",
+    # ---- ROB-954 stable Alpaca-paper retrospective window ----
+    "ALTER TABLE review.alpaca_paper_order_ledger "
+    "ADD COLUMN IF NOT EXISTS terminalized_at TIMESTAMPTZ",
+    "CREATE INDEX IF NOT EXISTS ix_alpaca_paper_ledger_terminalized_at "
+    "ON review.alpaca_paper_order_ledger (terminalized_at)",
     # ---- benchmark_return_bps on scalping_daily_reviews (B-1) ----
     "ALTER TABLE scalping_daily_reviews ADD COLUMN IF NOT EXISTS benchmark_return_bps NUMERIC(12, 4)",
     # ---- ROB-734 mirror counterfactual metadata ----

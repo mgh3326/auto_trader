@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.services.alpaca_paper_ledger_service import (
+    KNOWN_TERMINAL_BROKER_STATUSES,
     LIFECYCLE_ANOMALY,
     LIFECYCLE_CANCELED,
     LIFECYCLE_FILLED,
@@ -44,6 +45,16 @@ _LIFECYCLE_ACTION_LABELS: dict[str, str] = {
     LIFECYCLE_SUBMITTED: "partial",
     LIFECYCLE_ANOMALY: "anomaly",
     LIFECYCLE_CANCELED: "canceled",
+}
+
+# ROB-994 — known broker-terminal statuses that still carry zero fill evidence
+# (``FillVerdict.PENDING`` from the classifier, since filled_qty<=0). "filled"
+# is excluded: that combination is a broker/evidence contradiction handled
+# separately as ``filled_status_without_fill_evidence``, never a silent
+# terminalization. Any status outside this explicit known set stays
+# ``noop_pending`` (fail-closed) rather than being guessed at as terminal.
+_ZERO_FILL_TERMINAL_STATUSES: frozenset[str] = KNOWN_TERMINAL_BROKER_STATUSES - {
+    "filled"
 }
 
 
@@ -336,6 +347,32 @@ class AlpacaPaperReconcileService:
                 # The broker calls the order filled but produced no quantity to
                 # book. That contradiction is escalated, never a silent no-op.
                 return manual_review("filled_status_without_fill_evidence")
+            if broker_status in _ZERO_FILL_TERMINAL_STATUSES:
+                # ROB-994: a known broker-terminal, zero-fill order (expired /
+                # canceled / rejected) must not sit in noop_pending forever —
+                # terminalize it to anomaly (or canceled, with cancel evidence)
+                # via the same resolve/persist path as every other transition.
+                zero_qty = Decimal("0")
+                result.update(filled_qty=str(zero_qty), delta_qty="0")
+                transition = resolve_transition(
+                    verdict=evidence.verdict,
+                    broker_status=broker_status,
+                    filled_qty=zero_qty,
+                    has_cancel_evidence=(
+                        getattr(row, "cancel_status", None) is not None
+                        or getattr(row, "canceled_at", None) is not None
+                    ),
+                )
+                return await self._book_transition(
+                    row,
+                    order,
+                    fills,
+                    transition,
+                    broker_qty=zero_qty,
+                    avg_price=None,
+                    dry_run=dry_run,
+                    result=result,
+                )
             result.update(action="noop_pending")
             return result
 
@@ -362,6 +399,35 @@ class AlpacaPaperReconcileService:
                 or getattr(row, "canceled_at", None) is not None
             ),
         )
+        return await self._book_transition(
+            row,
+            order,
+            fills,
+            transition,
+            broker_qty=broker_qty,
+            avg_price=evidence.avg_price,
+            dry_run=dry_run,
+            result=result,
+        )
+
+    async def _book_transition(
+        self,
+        row: Any,
+        order: Any,
+        fills: list[Any],
+        transition: ReconcileTransition,
+        *,
+        broker_qty: Decimal,
+        avg_price: Decimal | None,
+        dry_run: bool,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist ``transition`` (or plan it, for dry-run) and report the outcome.
+
+        Shared by every transition shape — fills and zero-fill terminalization
+        alike — so the reported ``action`` can never diverge from what
+        ``record_status`` actually persists (ROB-953 R4 invariant).
+        """
         result["transition_depth"] = transition.label
         if dry_run:
             result["lifecycle_state"] = transition.lifecycle_state
@@ -373,7 +439,7 @@ class AlpacaPaperReconcileService:
             {
                 "status": transition.broker_status,
                 "filled_qty": str(broker_qty),
-                "filled_avg_price": str(evidence.avg_price),
+                "filled_avg_price": str(avg_price) if avg_price is not None else None,
                 "id": order.id,
             },
             # raw_response is persisted to a JSONB column: Decimal is not JSON

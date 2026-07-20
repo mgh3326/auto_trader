@@ -658,6 +658,169 @@ async def test_fill_pages_are_walked_until_the_set_is_complete() -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# ROB-994 — zero-fill terminal (expired/canceled/rejected) orders must not
+# sit in noop_pending forever. Reproduces the REGN sell (ledger id=18,
+# client_order_id=rob73-856b151e164fc98f) stuck 3 days as noop_pending.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_zero_fill_expired_order_books_anomaly_not_noop_pending() -> None:
+    from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
+
+    ledger = Ledger([Row()])
+    order = filled_order(status="expired", qty="0")
+    result = await AlpacaPaperReconcileService(ledger, Broker(order)).reconcile(
+        dry_run=False
+    )
+    outcome = result["reconciled"][0]
+
+    assert outcome["action"] == "booked_anomaly"
+    assert outcome["lifecycle_state"] == "anomaly"
+    assert outcome["persisted_lifecycle_state"] == "anomaly"
+    assert ledger.rows[0].lifecycle_state == "anomaly"
+    assert ledger.status_calls[0]["status"] == "expired"
+    assert ledger.status_calls[0]["filled_qty"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_zero_fill_rejected_order_books_anomaly() -> None:
+    from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
+
+    ledger = Ledger([Row()])
+    order = filled_order(status="rejected", qty="0")
+    result = await AlpacaPaperReconcileService(ledger, Broker(order)).reconcile(
+        dry_run=False
+    )
+    outcome = result["reconciled"][0]
+
+    assert outcome["action"] == "booked_anomaly"
+    assert ledger.rows[0].lifecycle_state == "anomaly"
+
+
+@pytest.mark.asyncio
+async def test_zero_fill_canceled_order_without_cancel_evidence_books_anomaly() -> None:
+    from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
+
+    ledger = Ledger([Row(cancel_status=None, canceled_at=None)])
+    order = filled_order(status="canceled", qty="0")
+    result = await AlpacaPaperReconcileService(ledger, Broker(order)).reconcile(
+        dry_run=False
+    )
+    outcome = result["reconciled"][0]
+
+    assert outcome["action"] == "booked_anomaly"
+    assert ledger.rows[0].lifecycle_state == "anomaly"
+
+
+@pytest.mark.asyncio
+async def test_zero_fill_canceled_order_with_cancel_evidence_books_canceled() -> None:
+    from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
+
+    ledger = Ledger([Row(cancel_status="canceled")])
+    order = filled_order(status="canceled", qty="0")
+    result = await AlpacaPaperReconcileService(ledger, Broker(order)).reconcile(
+        dry_run=False
+    )
+    outcome = result["reconciled"][0]
+
+    assert outcome["action"] == "booked_canceled"
+    assert ledger.rows[0].lifecycle_state == "canceled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("open_status", ["new", "accepted", "pending_new"])
+async def test_zero_fill_open_broker_status_stays_noop_pending(
+    open_status: str,
+) -> None:
+    """Regression: a zero-fill order still open at the broker must not be
+    terminalized — only the explicit known-terminal set may transition."""
+    from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
+
+    ledger = Ledger([Row()])
+    order = filled_order(status=open_status, qty="0")
+    result = await AlpacaPaperReconcileService(ledger, Broker(order)).reconcile(
+        dry_run=False
+    )
+    outcome = result["reconciled"][0]
+
+    assert outcome["action"] == "noop_pending"
+    assert ledger.rows[0].lifecycle_state == "submitted"
+    assert ledger.status_calls == []
+
+
+@pytest.mark.asyncio
+async def test_zero_fill_unknown_broker_status_stays_noop_pending() -> None:
+    """An unrecognized/blank status must never be guessed at as terminal."""
+    from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
+
+    ledger = Ledger([Row()])
+    order = filled_order(status="some_future_broker_status", qty="0")
+    result = await AlpacaPaperReconcileService(ledger, Broker(order)).reconcile(
+        dry_run=False
+    )
+    outcome = result["reconciled"][0]
+
+    assert outcome["action"] == "noop_pending"
+    assert ledger.rows[0].lifecycle_state == "submitted"
+    assert ledger.status_calls == []
+
+
+@pytest.mark.asyncio
+async def test_filled_status_without_fill_evidence_still_manual_review() -> None:
+    """Regression: the broker/evidence contradiction for status=filled with no
+    fill evidence must remain manual_review, never silently terminalized."""
+    from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
+
+    ledger = Ledger([Row()])
+    order = filled_order(status="filled", qty="0")
+    result = await AlpacaPaperReconcileService(ledger, Broker(order)).reconcile(
+        dry_run=False
+    )
+    outcome = result["reconciled"][0]
+
+    assert outcome["action"] == "noop_requires_manual_review"
+    assert outcome["reason"] == "filled_status_without_fill_evidence"
+    assert ledger.rows[0].lifecycle_state == "submitted"
+    assert ledger.status_calls == []
+
+
+@pytest.mark.asyncio
+async def test_zero_fill_expired_dry_run_plans_without_a_ledger_write() -> None:
+    from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
+
+    ledger = Ledger([Row()])
+    order = filled_order(status="expired", qty="0")
+    result = await AlpacaPaperReconcileService(ledger, Broker(order)).reconcile(
+        dry_run=True
+    )
+    outcome = result["reconciled"][0]
+
+    assert outcome["action"] == "would_book_anomaly"
+    assert outcome["lifecycle_state"] == "anomaly"
+    assert ledger.status_calls == []
+    assert ledger.rows[0].lifecycle_state == "submitted"
+
+
+@pytest.mark.asyncio
+async def test_zero_fill_terminal_booking_is_delta_idempotent_on_rerun() -> None:
+    """Once booked to anomaly, the row leaves the reconcile candidate set —
+    a rerun must not re-derive or re-write it."""
+    from app.services.alpaca_paper_reconcile_service import AlpacaPaperReconcileService
+
+    ledger = Ledger([Row()])
+    order = filled_order(status="expired", qty="0")
+    service = AlpacaPaperReconcileService(ledger, Broker(order))
+
+    first = await service.reconcile(dry_run=False)
+    second = await service.reconcile(dry_run=False)
+
+    assert first["reconciled"][0]["action"] == "booked_anomaly"
+    assert len(ledger.status_calls) == 1
+    assert second == {"success": True, "dry_run": False, "reconciled": [], "count": 0}
+
+
 @pytest.mark.asyncio
 async def test_bulk_limit_applies_after_eligibility_filters() -> None:
     """200 newer preview/terminal rows must not hide the 201st open execution."""
