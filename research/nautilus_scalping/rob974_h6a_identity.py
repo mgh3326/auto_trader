@@ -39,6 +39,7 @@ __all__ = [
     "H6AIdentityError",
     "H6ARowSpec",
     "Provenance",
+    "ProvenanceMismatchError",
     "RowCountError",
     "RowIdError",
     "StaleSourcePinError",
@@ -81,13 +82,17 @@ _NON_PARAMS_COMPONENTS: tuple[str, ...] = (
 
 Provenance = Literal["fixture_identity", "production"]
 _ALLOWED_PROVENANCE = frozenset({"fixture_identity", "production"})
-# CP1-CP7 (this worker) exposes NO production builder -- only fixture rows
-# may be CONSTRUCTED as fully-fledged CampaignConfigRow/StrategyContractProvenance
-# values today. "production" remains a valid literal for the type (CP8 will
-# populate it via a real adapter this module does not yet contain), but this
-# module refuses to construct a "production"-tagged row itself since no
-# production builder exists here -- see H6AIdentityError subclasses below.
-_FIXTURE_ONLY_PROVENANCE = frozenset({"fixture_identity"})
+# CP8 (research/nautilus_scalping/rob974_h6a_h2h3_adapter.py) is the ONLY
+# module authorized to construct provenance="production" values -- it does so
+# only after independently re-deriving and verifying the real merged H2/H3
+# production surface (see that module's ``verify_h2h3_contract``). This
+# module itself fabricates NO competing production H2/H3 manifest and adds no
+# H2/H3 verification of its own; a bare "production" literal here is only a
+# type-membership check. The actual drift protection lives at two structural
+# points below: ``StrategyContractProvenance`` requires a pinned
+# ``expected_contract_hash`` for "production", and ``build_campaign_row_specs``
+# refuses any mix of "fixture_identity"/"production" across the two contracts
+# or the 48 rows (``ProvenanceMismatchError``).
 
 
 class H6AIdentityError(ValueError):
@@ -117,6 +122,12 @@ class EnvelopeIdMismatchError(H6AIdentityError):
 class StaleSourcePinError(H6AIdentityError):
     """A caller-asserted ``expected_contract_hash`` does not match the
     contract hash actually supplied -- refused before any row is built."""
+
+
+class ProvenanceMismatchError(H6AIdentityError):
+    """The two strategy contracts, or a row among the 48, disagree on
+    ``provenance`` -- a real production campaign can never be built from a
+    mix of fixture and production components."""
 
 
 def _freeze(obj: Any) -> Any:
@@ -150,12 +161,6 @@ def _provenance_field(value: object, *, field: str) -> Provenance:
     if value not in _ALLOWED_PROVENANCE:
         raise H6AIdentityError(
             f"{field} must be one of {sorted(_ALLOWED_PROVENANCE)}, got {value!r}"
-        )
-    if value not in _FIXTURE_ONLY_PROVENANCE:
-        raise H6AIdentityError(
-            f"{field}={value!r} requires a production builder, which does not exist in this "
-            "module (CP1-CP7 fixture-only; CP8 is the only phase that may register a "
-            "production H2/H3 adapter) -- refusing to construct"
         )
     return value  # type: ignore[return-value]
 
@@ -207,6 +212,12 @@ class StrategyContractProvenance:
         _provenance_field(
             self.provenance, field="StrategyContractProvenance.provenance"
         )
+        if self.provenance == "production" and self.expected_contract_hash is None:
+            raise H6AIdentityError(
+                f"{self.strategy_slug}: provenance='production' requires a pinned "
+                "expected_contract_hash -- refusing to construct an unpinned production "
+                "contract (stale/tampered source pin protection)"
+            )
 
     def verified_contract_hash(self) -> str:
         if (
@@ -322,11 +333,26 @@ def build_campaign_row_specs(
     s3_contract, s4_contract = contracts["S3"], contracts["S4"]
     if s3_contract.strategy_key == s4_contract.strategy_key:
         raise H6AIdentityError("S3 and S4 must have different strategy_key")
-    if s3_contract.strategy_version == s4_contract.strategy_version:
-        raise H6AIdentityError("S3 and S4 must have different strategy_version")
+    # strategy_version is NOT required to differ across S3/S4 -- the real
+    # merged H3 manifest pins both contracts at version "1"
+    # (rob974_h3_manifest.S3_STRATEGY_CONTRACT/S4_STRATEGY_CONTRACT). Distinct
+    # strategy_key alone already guarantees experiment_id uniqueness, since
+    # derive_experiment_id hashes strategy_key into the identity payload.
     if s3_contract.verified_contract_hash() == s4_contract.verified_contract_hash():
         raise H6AIdentityError(
             "S3 and S4 must have different structured contract hashes"
+        )
+    if s3_contract.provenance != s4_contract.provenance:
+        raise ProvenanceMismatchError(
+            f"S3 contract provenance {s3_contract.provenance!r} != "
+            f"S4 contract provenance {s4_contract.provenance!r}"
+        )
+    common_provenance = s3_contract.provenance
+    mismatched_rows = [row.row_id for row in rows if row.provenance != common_provenance]
+    if mismatched_rows:
+        raise ProvenanceMismatchError(
+            f"row(s) {sorted(mismatched_rows)} provenance does not match the "
+            f"contracts' provenance {common_provenance!r}"
         )
 
     dataset_manifest_component = dict(shared_components["dataset_manifest"])
@@ -363,7 +389,7 @@ def build_campaign_row_specs(
                 strategy_version=contract.strategy_version,
                 hypothesis=row.hypothesis,
                 components=_freeze(components),
-                provenance="fixture_identity",
+                provenance=common_provenance,
                 experiment_id=experiment_id,
             )
         )

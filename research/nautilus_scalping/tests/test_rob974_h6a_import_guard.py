@@ -20,6 +20,7 @@ _MODULES = (
     "rob974_h6a_accounting.py",
     "rob974_h6a_diagnostics.py",
     "rob974_h6a_smoke.py",
+    "rob974_h6a_h2h3_adapter.py",
 )
 _FORBIDDEN = {
     "app",

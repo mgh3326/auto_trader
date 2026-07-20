@@ -360,18 +360,211 @@ class TestFixtureProvenanceIsolation:
         for row in _all_48_rows():
             assert row.provenance == "fixture_identity"
 
-    def test_non_fixture_provenance_literal_rejected(self):
+    def test_bare_production_literal_is_a_valid_provenance_value(self):
+        # CP8 unlock: "production" is a valid Provenance literal on its own --
+        # the real safety gate lives at build_campaign_row_specs (pinned
+        # expected_contract_hash + all-rows/both-contracts provenance
+        # consistency), never on a bare CampaignConfigRow in isolation.
+        row = h6a.CampaignConfigRow(
+            row_id="S3-00",
+            params={},
+            hypothesis=_S3_HYPOTHESIS,
+            authority_label="baseline",
+            provenance="production",
+        )
+        assert row.provenance == "production"
+
+    def test_invalid_provenance_literal_still_rejected(self):
         with pytest.raises((ValueError, TypeError)):
             h6a.CampaignConfigRow(
                 row_id="S3-00",
                 params={},
                 hypothesis=_S3_HYPOTHESIS,
                 authority_label="baseline",
-                provenance="production",  # no production builder exists yet (CP8-only)
+                provenance="totally_made_up",
             )
 
     def test_no_production_builder_exported(self):
+        # This module itself never fabricates a competing production H2/H3
+        # manifest -- the real production builder lives in the separate CP8
+        # adapter module (rob974_h6a_h2h3_adapter.py).
         assert not hasattr(h6a, "build_production_campaign_row_specs")
+
+
+class TestProductionProvenanceUnlock:
+    """CP8: constructing provenance="production" values is now possible, but
+    only under structural drift-protection -- StrategyContractProvenance MUST
+    pin expected_contract_hash, and build_campaign_row_specs refuses any mix
+    of fixture_identity/production across the two contracts or the 48 rows."""
+
+    def test_production_strategy_contract_without_pinned_hash_rejected(self):
+        with pytest.raises(h6a.H6AIdentityError):
+            h6a.StrategyContractProvenance(
+                strategy_slug="S3",
+                strategy_key="rob974.s3.rpt-4h",
+                strategy_version="1",
+                contract_hash=_hex64("s3-contract"),
+                contract_key="rob974.s3.rpt-4h",
+                provenance="production",
+                expected_contract_hash=None,
+            )
+
+    def test_production_strategy_contract_with_pinned_hash_constructs(self):
+        contract_hash = _hex64("s3-contract")
+        contract = h6a.StrategyContractProvenance(
+            strategy_slug="S3",
+            strategy_key="rob974.s3.rpt-4h",
+            strategy_version="1",
+            contract_hash=contract_hash,
+            contract_key="rob974.s3.rpt-4h",
+            provenance="production",
+            expected_contract_hash=contract_hash,
+        )
+        assert contract.provenance == "production"
+
+    def test_mixed_provenance_contracts_rejected(self):
+        s3 = h6a.StrategyContractProvenance(
+            strategy_slug="S3",
+            strategy_key="rob974.s3.rpt-4h",
+            strategy_version="1",
+            contract_hash=_hex64("s3-contract"),
+            contract_key="rob974.s3.rpt-4h",
+            provenance="production",
+            expected_contract_hash=_hex64("s3-contract"),
+        )
+        s4 = _strategy_contract("S4")  # fixture_identity
+        with pytest.raises(h6a.ProvenanceMismatchError):
+            h6a.build_campaign_row_specs(
+                _all_48_rows(),
+                contracts={"S3": s3, "S4": s4},
+                shared_components=_shared_components(),
+                pit_component_by_slug={
+                    "S3": _pit_component("S3"),
+                    "S4": _pit_component("S4"),
+                },
+                frozen_config_component_by_slug={
+                    "S3": _frozen_config_component("S3"),
+                    "S4": _frozen_config_component("S4"),
+                },
+                policy_component_by_slug={
+                    "S3": _policy_component("S3"),
+                    "S4": _policy_component("S4"),
+                },
+                cost_component_by_slug={
+                    "S3": _cost_component("S3"),
+                    "S4": _cost_component("S4"),
+                },
+            )
+
+    def test_mixed_provenance_rows_within_production_contracts_rejected(self):
+        s3_hash, s4_hash = _hex64("s3-contract"), _hex64("s4-contract")
+        contracts = {
+            "S3": h6a.StrategyContractProvenance(
+                strategy_slug="S3",
+                strategy_key="rob974.s3.rpt-4h",
+                strategy_version="s3-v1",
+                contract_hash=s3_hash,
+                contract_key="rob974.s3.rpt-4h",
+                provenance="production",
+                expected_contract_hash=s3_hash,
+            ),
+            "S4": h6a.StrategyContractProvenance(
+                strategy_slug="S4",
+                strategy_key="rob974.s4.brc-4h",
+                strategy_version="s4-v1",
+                contract_hash=s4_hash,
+                contract_key="rob974.s4.brc-4h",
+                provenance="production",
+                expected_contract_hash=s4_hash,
+            ),
+        }
+        rows = _all_48_rows()  # all fixture_identity
+        with pytest.raises(h6a.ProvenanceMismatchError):
+            h6a.build_campaign_row_specs(
+                rows,
+                contracts=contracts,
+                shared_components=_shared_components(),
+                pit_component_by_slug={
+                    "S3": _pit_component("S3"),
+                    "S4": _pit_component("S4"),
+                },
+                frozen_config_component_by_slug={
+                    "S3": _frozen_config_component("S3"),
+                    "S4": _frozen_config_component("S4"),
+                },
+                policy_component_by_slug={
+                    "S3": _policy_component("S3"),
+                    "S4": _policy_component("S4"),
+                },
+                cost_component_by_slug={
+                    "S3": _cost_component("S3"),
+                    "S4": _cost_component("S4"),
+                },
+            )
+
+    def test_all_production_build_stamps_h6a_row_spec_provenance_production(self):
+        # strategy_version deliberately IDENTICAL ("1") across S3/S4 here --
+        # this mirrors the REAL merged H3 manifest (both StrategyContract.version
+        # == "1") and proves distinct strategy_key alone is sufficient for
+        # experiment_id uniqueness (derive_experiment_id hashes strategy_key
+        # into the identity), so build_campaign_row_specs must NOT require
+        # strategy_version to also differ.
+        s3_hash, s4_hash = _hex64("s3-contract"), _hex64("s4-contract")
+        contracts = {
+            "S3": h6a.StrategyContractProvenance(
+                strategy_slug="S3",
+                strategy_key="rob974.s3.rpt-4h",
+                strategy_version="1",
+                contract_hash=s3_hash,
+                contract_key="rob974.s3.rpt-4h",
+                provenance="production",
+                expected_contract_hash=s3_hash,
+            ),
+            "S4": h6a.StrategyContractProvenance(
+                strategy_slug="S4",
+                strategy_key="rob974.s4.brc-4h",
+                strategy_version="1",
+                contract_hash=s4_hash,
+                contract_key="rob974.s4.brc-4h",
+                provenance="production",
+                expected_contract_hash=s4_hash,
+            ),
+        }
+        rows = [
+            h6a.CampaignConfigRow(
+                row_id=row.row_id,
+                params=row.params,
+                hypothesis=row.hypothesis,
+                authority_label=row.authority_label,
+                provenance="production",
+            )
+            for row in _all_48_rows()
+        ]
+        specs = h6a.build_campaign_row_specs(
+            rows,
+            contracts=contracts,
+            shared_components=_shared_components(),
+            pit_component_by_slug={"S3": _pit_component("S3"), "S4": _pit_component("S4")},
+            frozen_config_component_by_slug={
+                "S3": _frozen_config_component("S3"),
+                "S4": _frozen_config_component("S4"),
+            },
+            policy_component_by_slug={
+                "S3": _policy_component("S3"),
+                "S4": _policy_component("S4"),
+            },
+            cost_component_by_slug={
+                "S3": _cost_component("S3"),
+                "S4": _cost_component("S4"),
+            },
+        )
+        assert len(specs) == 48
+        assert all(spec.provenance == "production" for spec in specs)
+        s3_ids = {spec.experiment_id for spec in specs if spec.row_id.startswith("S3")}
+        s4_ids = {spec.experiment_id for spec in specs if spec.row_id.startswith("S4")}
+        assert len(s3_ids) == 24
+        assert len(s4_ids) == 24
+        assert s3_ids.isdisjoint(s4_ids)
 
 
 class TestImmutableComponentsSeal:
