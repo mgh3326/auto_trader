@@ -3,6 +3,7 @@ import math
 import pytest
 
 from rob974_features import Bar4h, MinuteBar, build_complete_4h, compute_common_features, symbol_features, vwap12, vwap24
+from rob974_lineage import PARENT_CONTENT_SHA256, PARENT_MANIFEST_SHA256, DerivedManifest
 
 
 MIN = 60_000
@@ -45,3 +46,11 @@ def test_cp3_atr_seed_wilder_and_synchronized_common_order():
     snapshots = compute_common_features(minute_rows)
     assert snapshots[-1].features[0].symbol == "XRPUSDT"
     assert snapshots[-1].m == math.log(1680.5 / 1440.5)
+
+
+def test_cp4_typed_deterministic_lineage_seal_is_order_invariant_and_sensitive():
+    manifest = DerivedManifest.create(input_hash="a" * 64, context_start=0, context_end=240 * MIN)
+    assert PARENT_CONTENT_SHA256 == "4bcc2da979b47caa45b5f90a09c326aefff91fa605e110d55ef316d53c9a9351"
+    assert PARENT_MANIFEST_SHA256 == "0767b44f976bf717cdc26bbcb0d01da1800418668f9f153461ce62486de10721"
+    assert manifest.hash == DerivedManifest.create(input_hash="a" * 64, context_start=0, context_end=240 * MIN).hash
+    assert manifest.hash != DerivedManifest.create(input_hash="b" * 64, context_start=0, context_end=240 * MIN).hash
