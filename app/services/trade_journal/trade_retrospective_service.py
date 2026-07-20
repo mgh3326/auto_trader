@@ -38,6 +38,9 @@ from app.schemas.trade_retrospective import (
 from app.services.alpaca_paper_ledger_service import (
     RECORD_KIND_EXECUTION as _ALPACA_PAPER_RECORD_KIND_EXECUTION,
 )
+from app.services.alpaca_paper_ledger_service import (
+    RECORD_KIND_RECONCILE as _ALPACA_PAPER_RECORD_KIND_RECONCILE,
+)
 from app.services.brokers.kis.mock_scalping_exec.ledger_state import real_order_filter
 from app.services.trade_journal.retrospective_action_repository import (
     ActionControlError,
@@ -1079,6 +1082,24 @@ _ALPACA_PAPER_DEFAULT_TERMINAL = frozenset(
     {"filled", "position_reconciled", "closed", "final_reconciled", "anomaly"}
 )
 _ALPACA_PAPER_CANCEL_TERMINAL = frozenset({"canceled"})
+# ROB-954 round-2: record_kind alone is not a stable identity for "the
+# execution row". AlpacaPaperLedgerService.record_final_reconcile() flips
+# record_kind from 'execution' to 'reconcile' on the *same* row (an in-place
+# UPDATE, not a second INSERT) at the exact moment it books
+# lifecycle_state='final_reconciled' — every other terminal lifecycle_state
+# (filled/position_reconciled/closed/anomaly/canceled) is reached through
+# record_status/record_cancel/record_position_snapshot/record_close/
+# record_submit_failure, none of which ever touch record_kind, so they stay
+# 'execution'. Scanning only 'execution' therefore made every
+# final_reconciled roundtrip invisible to the due-list. 'reconcile' is safe
+# to add here: it is never produced by an INSERT (only this one UPDATE path),
+# so it cannot introduce a second row for an order already counted under
+# 'execution'. plan/preview/validation_attempt remain excluded — audited
+# against every AlpacaPaperLedgerService.record_* method, none of them ever
+# set a terminal lifecycle_state on those record_kinds.
+_ALPACA_PAPER_RECORD_KINDS = frozenset(
+    {_ALPACA_PAPER_RECORD_KIND_EXECUTION, _ALPACA_PAPER_RECORD_KIND_RECONCILE}
+)
 
 _KIS_LIVE_TERMINAL = _KIS_LIVE_DEFAULT_TERMINAL | _KIS_LIVE_CANCEL_TERMINAL
 _GENERIC_LIVE_TERMINAL = _GENERIC_LIVE_DEFAULT_TERMINAL | _GENERIC_LIVE_CANCEL_TERMINAL
@@ -1393,31 +1414,52 @@ async def build_retrospective_pending(
 
     # 6. Alpaca paper ledger (ROB-954) — US equity/crypto paper execution loop
     # (ROB-953 reconcile + ROB-994 zero-fill terminalization). Scoped to
-    # record_kind='execution': plan/preview/validation_attempt/reconcile/anomaly
-    # record_kinds are bookkeeping rows sharing the same (client_order_id,
-    # record_kind) unique-slot family, not a second order — scanning them would
-    # double-surface a single execution as multiple due-list entries.
+    # record_kind IN {execution, reconcile} — see _ALPACA_PAPER_RECORD_KINDS
+    # for why 'reconcile' belongs alongside 'execution'. plan/preview/
+    # validation_attempt record_kinds are bookkeeping rows sharing the same
+    # (client_order_id, record_kind) unique-slot family, not a second order —
+    # scanning them would double-surface a single execution as multiple
+    # due-list entries.
     if account_mode in (None, "alpaca_paper"):
-        # This ledger has no trade_date column. `submitted_at` is NULL for an
-        # execution row still claimed-but-not-yet-sent, so it cannot anchor the
-        # window without silently dropping otherwise-terminal rows; `created_at`
-        # (NOT NULL, stamped at claim time) is the one timestamp guaranteed
-        # present on every execution row and is already the ordering key used
-        # elsewhere in this ledger (list_recent/list_reconcile_candidates).
+        # ROB-954 round-2: window anchors on `updated_at`, not `created_at`.
+        # `created_at` is claim time and never changes again; a row claimed
+        # days ago that only becomes terminal today was invisible in today's
+        # window under the old anchor (the REGN long-stall repro — see
+        # test_stale_created_at_with_recent_terminal_transition_surfaces_in_narrow_window).
+        # `updated_at` (NOT NULL, onupdate=func.now()) is bumped by every
+        # ledger write, including the terminal-transition write itself, so it
+        # tracks "when this row last became actionable" the same way
+        # KISMockOrderLedger.reconciled_at is stamped in
+        # apply_lifecycle_transition when next_state is terminal — a
+        # terminal-transition timestamp, not a send-time one.
         stmt = (
             select(AlpacaPaperOrderLedger)
             .where(
-                AlpacaPaperOrderLedger.record_kind
-                == _ALPACA_PAPER_RECORD_KIND_EXECUTION,
+                AlpacaPaperOrderLedger.record_kind.in_(_ALPACA_PAPER_RECORD_KINDS),
                 AlpacaPaperOrderLedger.lifecycle_state.in_(_ALPACA_PAPER_TERMINAL),
-                AlpacaPaperOrderLedger.created_at >= window_start,
-                AlpacaPaperOrderLedger.created_at <= window_end,
+                AlpacaPaperOrderLedger.updated_at >= window_start,
+                AlpacaPaperOrderLedger.updated_at <= window_end,
             )
-            .order_by(AlpacaPaperOrderLedger.created_at.desc())
+            .order_by(AlpacaPaperOrderLedger.updated_at.desc())
             .limit(_PENDING_LEDGER_FETCH_CAP)
         )
+        # ROB-954 round-2: a buy/sell roundtrip's two execution rows can share
+        # one lifecycle_correlation_id. review.trade_retrospectives enforces
+        # UNIQUE(correlation_id, account_mode) (app/models/review.py), so two
+        # independent due entries for the same correlation_id can never both
+        # be resolved — saving one retrospective always covers both rows at
+        # once. Collapse to a single due entry per (lifecycle_correlation_id)
+        # before appending, keyed on the row with the latest updated_at (the
+        # most recently terminal-transitioned leg — typically the closing/
+        # sell leg, since it settles after the entry leg).
+        by_correlation: dict[str, AlpacaPaperOrderLedger] = {}
         for row in (await db.execute(stmt)).scalars().all():
             scanned += 1
+            key = row.lifecycle_correlation_id
+            current = by_correlation.get(key)
+            if current is None or row.updated_at > current.updated_at:
+                by_correlation[key] = row
+        for row in by_correlation.values():
             itype = row.instrument_type.value
             market = "crypto" if itype == "crypto" else itype.removeprefix("equity_")
             entry = _pending_entry(
@@ -1430,7 +1472,7 @@ async def build_retrospective_pending(
                 status=row.lifecycle_state,
                 order_ref=row.client_order_id,
                 report_item_uuid=None,
-                trade_date=row.created_at,
+                trade_date=row.updated_at,
                 row_id=row.id,
                 suggested_correlation_id=row.lifecycle_correlation_id,
             )
