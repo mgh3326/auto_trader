@@ -215,3 +215,28 @@ def test_crypto_screening_filters_are_read_only_market_filters() -> None:
     assert momentum["sort_by"] == "change_rate"
     assert screening_filters_for("consecutive_gainers", "crypto") == {}
     assert screening_filters_for("crypto_high_volume", "kr") == {}
+
+
+@pytest.mark.unit
+def test_support_proximity_preset_is_kr_only_and_data_pending_for_us() -> None:
+    kr_preset = get_preset("support_proximity", market="kr")
+    assert kr_preset is not None
+    assert kr_preset.availability == "active"
+    assert kr_preset.metricLabel == "지지선까지 거리"
+    assert kr_preset.presetOrigin == "auto_trader_original"
+
+    us_preset = get_preset("support_proximity", market="us")
+    assert us_preset is not None
+    # ROB-441 PR5 retired data_pending; a KR-first-rollout preset is classified
+    # unsupported-with-reason (same bucket as the flow presets) until US lands.
+    assert us_preset.availability == "unsupported"
+    assert us_preset.availabilityReason
+
+
+@pytest.mark.unit
+def test_support_proximity_screening_filters_have_quality_floors() -> None:
+    filters = screening_filters_for("support_proximity", market="kr")
+    assert filters.get("min_market_cap") == pytest.approx(300_000_000_000.0)
+    assert filters.get("min_turnover") == pytest.approx(1_000_000_000.0)
+    assert filters.get("sort_by") == "dist_to_support_pct"
+    assert filters.get("sort_order") == "asc"

@@ -93,6 +93,7 @@ async def get_top_stocks_impl(
     ranking_type: str = "volume",
     limit: int = 20,
     include_illiquid: bool = False,
+    min_market_cap: float | None = None,
 ) -> dict[str, Any]:
     market = (market or "").strip().lower()
     ranking_type = (ranking_type or "").strip().lower()
@@ -132,8 +133,15 @@ async def get_top_stocks_impl(
             query=f"market={market}, ranking_type={ranking_type}",
         )
 
-    fetch_limit = limit_clamped
+    # ROB-976: over-fetch when min_market_cap will drop rows post-hoc, so the
+    # caller still gets up to limit_clamped quality rows (KR ranking endpoints
+    # already fetch their full page in one call — see fluctuation_rank/
+    # volume_rank/market_cap_rank — so a larger client-side slice is free).
+    fetch_limit = (
+        min(limit_clamped * 4, 100) if min_market_cap is not None else limit_clamped
+    )
     rankings: list[dict[str, Any]] = []
+    excluded_by_market_cap = 0
     source = {"kr": "kis", "us": "yfinance", "crypto": "upbit"}.get(
         market,
         "",
@@ -175,6 +183,17 @@ async def get_top_stocks_impl(
                     mapped = analysis_screening._map_kr_foreign_row(row, filtered_rank)
                 else:
                     mapped = analysis_screening._map_kr_row(row, filtered_rank)
+
+                # ROB-976: lightweight junk-cap cut. Only excludes rows with a
+                # KNOWN market_cap below the floor — never drops a row just
+                # because KIS omitted market_cap for this ranking type (honest,
+                # never fabricated).
+                if min_market_cap is not None:
+                    mc = mapped.get("market_cap")
+                    if mc is not None and mc < min_market_cap:
+                        excluded_by_market_cap += 1
+                        continue
+
                 rankings.append(mapped)
                 filtered_rank += 1
                 if len(rankings) >= limit_clamped:
@@ -318,6 +337,11 @@ async def get_top_stocks_impl(
         response["data_state"] = data_state
     if liquidity_filter_meta is not None:
         response["liquidity_filter"] = liquidity_filter_meta
+    if min_market_cap is not None:
+        response["market_cap_filter"] = {
+            "min_market_cap": min_market_cap,
+            "excluded_count": excluded_by_market_cap,
+        }
     return response
 
 

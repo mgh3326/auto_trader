@@ -1066,6 +1066,82 @@ class TestMCPLosers:
         assert float(result["rankings"][0]["change_rate"]) == pytest.approx(-3.0)
         assert float(result["rankings"][1]["change_rate"]) == pytest.approx(-2.0)
 
+    async def test_min_market_cap_drops_only_known_junk_cap_rows(self, monkeypatch):
+        """ROB-976: min_market_cap cuts rows with a KNOWN market_cap below the
+        floor, but never drops a row whose market_cap KIS simply omitted
+        (honest, never fabricated exclusion)."""
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {  # big-cap loser — kept
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "-2.0",
+                        "acml_vol": "2000000",
+                        "hts_avls": "200000000000000",
+                    },
+                    {  # junk-cap loser — excluded
+                        "stck_shrn_iscd": "900001",
+                        "hts_kor_isnm": "잡주",
+                        "stck_prpr": "500",
+                        "prdy_ctrt": "-9.0",
+                        "acml_vol": "1000000",
+                        "hts_avls": "5000000000",
+                    },
+                    {  # market_cap omitted by KIS — kept (unknown, not fabricated-excluded)
+                        "stck_shrn_iscd": "900002",
+                        "hts_kor_isnm": "미확인",
+                        "stck_prpr": "1000",
+                        "prdy_ctrt": "-1.0",
+                        "acml_vol": "500000",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+
+        result = await tools["get_top_stocks"](
+            market="kr",
+            ranking_type="losers",
+            limit=5,
+            min_market_cap=30_000_000_000.0,
+        )
+
+        symbols = [r["symbol"] for r in result["rankings"]]
+        assert symbols == ["005930", "900002"]
+        assert result["market_cap_filter"] == {
+            "min_market_cap": 30_000_000_000.0,
+            "excluded_count": 1,
+        }
+
+    async def test_min_market_cap_omitted_keeps_prior_behavior(self, monkeypatch):
+        """No min_market_cap -> no filter key in the response, behavior unchanged."""
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "-2.0",
+                        "acml_vol": "2000000",
+                        "hts_avls": "1000000000",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+
+        result = await tools["get_top_stocks"](
+            market="kr", ranking_type="losers", limit=5
+        )
+
+        assert "market_cap_filter" not in result
+        assert len(result["rankings"]) == 1
+
     async def test_get_top_stocks_kr_gainers_returns_positives(self, monkeypatch):
         tools = build_tools()
 

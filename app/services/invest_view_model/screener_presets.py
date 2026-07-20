@@ -36,6 +36,7 @@ _KR_ONLY_PRESET_IDS = {
     "cheap_value",
     "steady_dividend",
     "growth_expectation_toss",
+    "support_proximity",
 }
 
 # ROB-427: per-market availability. Instead of HIDING the KR-only presets for US
@@ -67,8 +68,20 @@ _US_ACTIVE_PRESET_IDS = {
     "steady_dividend",
     "future_dividend_king",
 }
-_US_UNSUPPORTED_PRESET_IDS = {"double_buy", "investor_flow_momentum"}
+# ROB-976: support_proximity is a KR-first rollout scoping choice, not a
+# structural no-US-equivalent gap (get_support_resistance already runs for
+# equity_us) — but ROB-441 PR5 retired data_pending entirely (see
+# test_us_no_fundamentals_presets_data_pending), so it is classified
+# unsupported-with-reason until the US follow-up lands, same as the flow presets.
+_US_UNSUPPORTED_PRESET_IDS = {
+    "double_buy",
+    "investor_flow_momentum",
+    "support_proximity",
+}
 _US_UNSUPPORTED_REASON = "외국인·기관 수급은 국내 전용 지표입니다"
+_US_UNSUPPORTED_REASON_OVERRIDES: dict[str, str] = {
+    "support_proximity": "지지선 근접 스캔은 KR 우선 롤아웃 — US는 후속 예정",
+}
 _US_DATA_PENDING_REASON: dict[str, str] = {}
 
 
@@ -84,7 +97,9 @@ def _preset_availability(preset_id: str, market: str) -> tuple[str, str | None]:
     if preset_id in _US_ACTIVE_PRESET_IDS:  # ROB-427 PR3: Yahoo-backed US activation
         return "active", None
     if preset_id in _US_UNSUPPORTED_PRESET_IDS:
-        return "unsupported", _US_UNSUPPORTED_REASON
+        return "unsupported", _US_UNSUPPORTED_REASON_OVERRIDES.get(
+            preset_id, _US_UNSUPPORTED_REASON
+        )
     if preset_id in _KR_ONLY_PRESET_IDS:
         return "data_pending", _US_DATA_PENDING_REASON.get(
             preset_id, "미국 데이터 준비중"
@@ -211,6 +226,33 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
         market="kr",
         presetOrigin=_TOSS,
         parityStatus=_FULL,
+    ),
+    ScreenerPreset(
+        id="support_proximity",
+        name="지지선 근접",
+        description=(
+            "우량주 중 최근접 지지선(피보나치·거래량프로파일·볼린저밴드 클러스터링)까지 "
+            "거리가 가장 가까운 종목 (auto_trader 자체 스크린, 지연 스냅샷 기반)"
+        ),
+        badges=["NEW"],
+        filterChips=[
+            ScreenerFilterChip(label="국내", detail=None),
+            ScreenerFilterChip(label="시가총액", detail="3천억원 이상"),
+            ScreenerFilterChip(label="거래대금", detail="10억원 이상"),
+            ScreenerFilterChip(label="지지선까지 거리", detail="가까운 순"),
+            ScreenerFilterChip(
+                label="데이터", detail="지연 스냅샷 + 상위 후보 실시간 재검증"
+            ),
+        ],
+        metricLabel="지지선까지 거리",
+        market="kr",
+        presetOrigin=_AT_OWN,
+        parityNote=(
+            "auto_trader 자체 프리셋 (Toss 기본 골라보기에 없음). "
+            "get_support_resistance와 동일한 클러스터링 로직을 유니버스 스캔에 재사용. "
+            "심볼 단위 상세는 get_support_resistance, 시세 재검증은 get_quote를 이용할 것. "
+            "지지선이 없는(현재가 아래 클러스터 없음) 종목은 결과에서 제외됨. KR 우선, US는 후속."
+        ),
     ),
     ScreenerPreset(
         id="growth_expectation",
@@ -511,6 +553,20 @@ _SCREENING_FILTERS: dict[str, dict[str, object]] = {
         "sort_order": "desc",
         "min_market_cap": 1_000_000_000_000.0,
         "limit": 20,
+    },
+    # support_proximity is snapshot-only (invest_screener_snapshots supplies
+    # price/quality-filter inputs; the nearest-support distance itself is
+    # computed live, bounded to the top candidates — see
+    # support_proximity_screener.py). min_market_cap/min_turnover here are the
+    # loader's internal quality floors, not a live-screening-provider filter.
+    "support_proximity": {
+        "market": "kr",
+        "asset_type": "stock",
+        "sort_by": "dist_to_support_pct",
+        "sort_order": "asc",
+        "min_market_cap": 300_000_000_000.0,
+        "min_turnover": 1_000_000_000.0,
+        "limit": 30,
     },
     # high_yield_value is snapshot-only (market_valuation_snapshots); the generic
     # screening provider has no ROE filter, so build_screener_results never falls
