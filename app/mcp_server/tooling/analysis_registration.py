@@ -25,6 +25,7 @@ from app.mcp_server.tooling.research_pipeline_read import (
 )
 from app.mcp_server.tooling.screener_snapshot_tool import screen_stocks_snapshot_impl
 from app.mcp_server.tooling.theme_events import get_theme_events_impl
+from app.services.krx import probe_krx_session_health
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -48,6 +49,7 @@ ANALYSIS_TOOL_NAMES: set[str] = {
     "get_dividends",
     "get_crypto_fear_greed",
     "get_momentum_candidates",
+    "get_krx_session_health",
     "get_theme_events",
     "research_session_get",
     "research_session_list_recent",
@@ -60,6 +62,20 @@ def register_analysis_tools(
     mcp: FastMCP,
 ) -> None:
     """Register MCP tools for analysis, screening, and ranking utilities."""
+
+    @mcp.tool(
+        name="get_krx_session_health",
+        description=(
+            "Read-only KRX authenticated-session health probe. Detects an expired "
+            "KRX session and reuses the normal KRX login path once; it never writes "
+            "market, broker, or order state. If status='unavailable' with "
+            "reason='krx_session_expired', use screen_stocks_snapshot(market='kr') "
+            "for persisted discovery and get_momentum_candidates(market='kr') for "
+            "intraday momentum candidates."
+        ),
+    )
+    async def get_krx_session_health() -> dict[str, Any]:
+        return await probe_krx_session_health()
 
     @mcp.tool(
         name="get_momentum_candidates",
@@ -299,7 +315,9 @@ def register_analysis_tools(
             "screen_stocks_snapshot for curated persisted presets, get_top_stocks "
             "for simple rankings, and get_momentum_candidates for KR intraday 급등 "
             "scoring. If this returns reason='krx_session_expired', fall back to "
-            "screen_stocks_snapshot. Screen stocks across markets (KR/US/Crypto) "
+            "screen_stocks_snapshot(market='kr') for persisted presets; use "
+            "get_momentum_candidates(market='kr') for KR intraday momentum. "
+            "Screen stocks across markets (KR/US/Crypto) "
             "with filters. "
             "KR supports kospi/kosdaq/konex/all, 30-day ADV via adv_krw_min "
             "(1B KRW conservative, 5B KRW aggressive), instrument_types, "

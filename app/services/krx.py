@@ -193,6 +193,19 @@ class KRXSessionManager:
             logger.error(f"KRX 로그인 중 오류: {e}")
             self._auth_failed = True
 
+    async def _reauthenticate(self) -> None:
+        """Reset expired state and reuse the normal KRX login flow once."""
+        self._authenticated = False
+        self._auth_failed = False
+        async with self._login_lock:
+            if not self._authenticated:
+                await self._login()
+
+    @staticmethod
+    def _is_logout_response(response: httpx.Response) -> bool:
+        """Return whether KRX explicitly rejected the current browser session."""
+        return response.status_code == 400 and "LOGOUT" in response.text
+
     async def fetch_data(
         self,
         bld: str,
@@ -227,16 +240,12 @@ class KRXSessionManager:
             response = await client.post(KRX_API_URL, data=form_data)
 
             # Handle 400 + LOGOUT body: re-authenticate once
-            if response.status_code == 400 and "LOGOUT" in response.text:
+            if self._is_logout_response(response):
                 logger.warning("KRX 세션 만료 감지 (400/LOGOUT), 재인증 시도")
-                self._authenticated = False
-                self._auth_failed = False
-                async with self._login_lock:
-                    if not self._authenticated:
-                        await self._login()
+                await self._reauthenticate()
                 client = await self._ensure_session()
                 response = await client.post(KRX_API_URL, data=form_data)
-                if response.status_code == 400 and "LOGOUT" in response.text:
+                if self._is_logout_response(response):
                     logger.error(
                         "KRX 재인증 후에도 LOGOUT 응답 (login_code=%s)",
                         self._last_login_code or "unknown",
@@ -266,6 +275,42 @@ class KRXSessionManager:
 
         return []
 
+    async def probe_health(self) -> dict[str, Any]:
+        """Read-only KRX session probe that also exercises expiry recovery.
+
+        The probe uses the same authenticated data endpoint as KR screening, but
+        never caches, persists, or mutates market data.  A LOGOUT response follows
+        ``fetch_data``'s existing re-authentication path exactly once.
+        """
+        try:
+            rows = await self.fetch_data(
+                bld="dbms/MDC/STAT/standard/MDCSTAT01501",
+                mktId="STK",
+            )
+        except KRXSessionExpiredError:
+            return {
+                "status": "unavailable",
+                "reason": "krx_session_expired",
+                "retryable": True,
+                "authenticated": False,
+            }
+        except httpx.HTTPError as exc:
+            logger.warning("KRX session health probe failed: %s", exc)
+            return {
+                "status": "unavailable",
+                "reason": "krx_session_probe_failed",
+                "retryable": True,
+                "authenticated": self._authenticated,
+            }
+
+        return {
+            "status": "ok",
+            "reason": None,
+            "retryable": False,
+            "authenticated": self._authenticated,
+            "rows_observed": len(rows),
+        }
+
     async def fetch_resource(self, url: str) -> dict[str, Any]:
         """Fetch resource data (e.g., max working date) using persistent session."""
         client = await self._ensure_session()
@@ -284,6 +329,11 @@ class KRXSessionManager:
 
 # Module-level singleton
 _krx_session = KRXSessionManager()
+
+
+async def probe_krx_session_health() -> dict[str, Any]:
+    """Run the read-only health probe against the shared KRX session."""
+    return await _krx_session.probe_health()
 
 
 async def _get_redis_client() -> Redis:
