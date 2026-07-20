@@ -19,7 +19,16 @@ from rob941_manifest import (
     SymbolFundingManifest,
     SymbolKlineManifest,
 )
-from rob974_features import MINUTE_MS, MinuteBar, synchronized_features
+from rob974_features import (
+    FOUR_HOUR_MS,
+    MINUTE_MS,
+    MinuteBar,
+    symbol_features,
+    synchronized_features,
+)
+from rob974_lineage import DerivedManifest
+
+_SMOKE_MINUTES = 202 * 240  # ATR20 + 180 prior A values + 21 complete UTC days
 
 
 def _archive(root: Path, symbol: str, kind: str) -> ArchiveProvenance:
@@ -54,7 +63,7 @@ def run_fake_free_smoke(root: Path) -> dict[str, object]:
                 0.0,
                 0.0,
             )
-            for i in range(1680)
+            for i in range(_SMOKE_MINUTES)
         ]
         rel, physical = persistence.write_kline_shard(root, symbol, source)
         klines.append(
@@ -113,12 +122,64 @@ def run_fake_free_smoke(root: Path) -> dict[str, object]:
         for symbol in ("XRPUSDT", "DOGEUSDT", "SOLUSDT")
     }
     snapshots = synchronized_features(selected)
-    missing = {symbol: bars[:100] + bars[101:] for symbol, bars in selected.items()}
     sealed = [
         {**x.__dict__, "features": [f.__dict__ for f in x.features]} for x in snapshots
     ]
+    feature_hash = canonical_hash.canonical_sha256(sealed)
+    funding_coverage = tuple(
+        (
+            symbol,
+            len(loaded["funding"][symbol]),
+            loaded["funding"][symbol][0].calc_time,
+            loaded["funding"][symbol][-1].calc_time,
+        )
+        for symbol in ("XRPUSDT", "DOGEUSDT", "SOLUSDT")
+    )
+    derived = DerivedManifest.create(
+        rows=selected,
+        context_start=frozen.WINDOW_START_MS,
+        context_end=frozen.WINDOW_START_MS + _SMOKE_MINUTES * MINUTE_MS,
+        funding_coverage=funding_coverage,
+        funding_source_sha256=canonical_hash.canonical_sha256(
+            {
+                symbol: [row.__dict__ for row in loaded["funding"][symbol]]
+                for symbol in ("XRPUSDT", "DOGEUSDT", "SOLUSDT")
+            }
+        ),
+        feature_hash=feature_hash,
+    )
+    damaged = dict(selected)
+    gap_ts = frozen.WINDOW_START_MS + 100 * MINUTE_MS
+    damaged["DOGEUSDT"] = tuple(row for row in selected["DOGEUSDT"] if row.ts != gap_ts)
+    damaged_snapshots = synchronized_features(damaged)
+    damaged_closes = {snapshot.decision_ts for snapshot in damaged_snapshots}
+    gap_close = frozen.WINDOW_START_MS + FOUR_HOUR_MS
+    recovery_close = frozen.WINDOW_START_MS + 8 * FOUR_HOUR_MS
     return {
         "valid_snapshots": len(snapshots),
-        "missing_minute_snapshots": len(synchronized_features(missing)),
-        "feature_hash": canonical_hash.canonical_sha256(sealed),
+        "non_null_counts": {
+            name: sum(
+                getattr(feature, name) is not None
+                for snapshot in snapshots
+                for feature in snapshot.features
+            )
+            for name in (
+                "r",
+                "tr",
+                "atr20",
+                "a",
+                "vwap12",
+                "vwap24",
+                "percentile_30d",
+                "range24",
+            )
+        },
+        "missing_symbol_close_absent": gap_close not in damaged_closes,
+        "other_symbol_close_present": any(
+            feature.decision_ts == gap_close
+            for feature in symbol_features("XRPUSDT", selected["XRPUSDT"])
+        ),
+        "recovery_close_present": recovery_close in damaged_closes,
+        "feature_hash": feature_hash,
+        "lineage_hash": derived.hash,
     }

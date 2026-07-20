@@ -1,9 +1,12 @@
 import math
+from decimal import Decimal
 
 import pytest
 from rob974_features import (
     Bar4h,
+    CommonSnapshot,
     MinuteBar,
+    SymbolFeature,
     build_complete_4h,
     compute_common_features,
     symbol_features,
@@ -14,6 +17,8 @@ from rob974_lineage import (
     PARENT_CONTENT_SHA256,
     PARENT_MANIFEST_SHA256,
     DerivedManifest,
+    feature_input_hash,
+    verify_parent,
 )
 from rob974_smoke import run_fake_free_smoke
 
@@ -45,6 +50,24 @@ def test_cp1_complete_only_utc_ohlcv_and_terminal_invalidity():
         build_complete_4h([rows(1)[0], rows(1)[0]])
     with pytest.raises(TypeError):
         MinuteBar(True, 1.0, 1.0, 1.0, 1.0, 1.0)
+    with pytest.raises(ValueError):
+        Bar4h(1, 4 * 60 * 60 * 1000 + 1, 1.0, 1.0, 1.0, 1.0, 0.0, True)
+    with pytest.raises(ValueError):
+        Bar4h(0, 999, 1.0, 1.0, 1.0, 1.0, 0.0, True)
+
+
+def test_exact_dto_boundaries_reject_subclass_and_unvalidated_derived_values():
+    class Evil(MinuteBar):
+        def __post_init__(self):
+            pass
+
+    dirty = [Evil(index * MIN, 1.0, 1.0, 1.0, 1.0, -1.0) for index in range(240)]
+    with pytest.raises(TypeError):
+        build_complete_4h(dirty)
+    with pytest.raises(TypeError):
+        SymbolFeature("XRPUSDT", True, None, None, None, None, None, None, None, None)
+    with pytest.raises(TypeError):
+        CommonSnapshot(0, Decimal("1"), 1.0, 1, 1, ())
 
 
 def test_cp2_exact_vwap_windows_and_future_isolation():
@@ -102,6 +125,21 @@ def test_cp4_typed_deterministic_lineage_seal_is_order_invariant_and_sensitive()
             input_hash="a" * 64, context_start=0, context_end=240 * MIN
         ).hash
     )
+    parent = verify_parent()
+    assert parent.content_hash() == PARENT_CONTENT_SHA256
+    selected = {symbol: tuple(rows(1)) for symbol in ("XRPUSDT", "DOGEUSDT", "SOLUSDT")}
+    actual = feature_input_hash(selected)
+    permuted = {"SOLUSDT": selected["SOLUSDT"], "XRPUSDT": selected["XRPUSDT"], "DOGEUSDT": selected["DOGEUSDT"]}
+    assert feature_input_hash(permuted) == actual
+    from_rows = DerivedManifest.create(
+        rows=selected, context_start=0, context_end=240 * MIN
+    )
+    assert from_rows.input_hash == actual
+    changed = dict(selected)
+    changed["XRPUSDT"] = (
+        MinuteBar(0, 1.0, math.nextafter(2.0, math.inf), 0.5, 1.5, 1.0),
+    )
+    assert feature_input_hash(changed) != actual
     assert (
         manifest.hash
         != DerivedManifest.create(
@@ -113,6 +151,10 @@ def test_cp4_typed_deterministic_lineage_seal_is_order_invariant_and_sensitive()
 def test_cp5_fake_free_smoke_is_non_vacuous_deterministic_and_gap_safe(tmp_path):
     first = run_fake_free_smoke(tmp_path / "one")
     second = run_fake_free_smoke(tmp_path / "two")
-    assert first["valid_snapshots"] > 0
+    assert first["valid_snapshots"] > 10
     assert first["feature_hash"] == second["feature_hash"]
-    assert first["missing_minute_snapshots"] == 0
+    assert first["lineage_hash"] == second["lineage_hash"]
+    assert all(value > 0 for value in first["non_null_counts"].values())
+    assert first["missing_symbol_close_absent"] is True
+    assert first["other_symbol_close_present"] is True
+    assert first["recovery_close_present"] is True
