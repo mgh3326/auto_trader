@@ -193,6 +193,7 @@ def _supported_matrix() -> dict[str, list[dict[str, str]]]:
         for action, pairs in _ACTION_CAPABILITIES.items()
     }
 
+
 _LOSS_CUT_EXIT_REASONS = frozenset({"stop_loss", "thesis_change"})
 _LOSS_CUT_TRIGGER_TYPES = frozenset({"stop_loss", "thesis_change"})
 _LOSS_CUT_MAX_AGE = timedelta(hours=72)
