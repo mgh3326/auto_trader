@@ -21,6 +21,7 @@ from app.core.symbol import to_db_symbol
 from app.core.timezone import now_kst
 from app.models.paper_trading import PaperTrade
 from app.models.review import (
+    AlpacaPaperOrderLedger,
     KISLiveOrderLedger,
     KISMockOrderLedger,
     LiveOrderLedger,
@@ -33,6 +34,9 @@ from app.schemas.trade_retrospective import (
     VALID_TRIGGER_TYPES,
     IntendedVsHappened,
     NextAction,
+)
+from app.services.alpaca_paper_ledger_service import (
+    RECORD_KIND_EXECUTION as _ALPACA_PAPER_RECORD_KIND_EXECUTION,
 )
 from app.services.brokers.kis.mock_scalping_exec.ledger_state import real_order_filter
 from app.services.trade_journal.retrospective_action_repository import (
@@ -1061,11 +1065,26 @@ _TOSS_CANCEL_TERMINAL = frozenset({"cancelled", "cancel_rejected", "replace_reje
 # churn, hidden by default like live expiry.
 _KIS_MOCK_DEFAULT_TERMINAL = frozenset({"fill", "reconciled", "failed", "anomaly"})
 _KIS_MOCK_CANCEL_TERMINAL = frozenset({"cancelled", "stale"})
+# ROB-954: Alpaca Paper terminality is keyed on `lifecycle_state` (the ROB-90
+# canonical state machine), never the raw broker `order_status` — same
+# convention as kis_mock above. ROB-953 reconcile books proven fills into
+# filled/position_reconciled/closed/final_reconciled; ROB-994 additionally
+# terminalizes known broker-terminal zero-fill orders (expired/canceled/
+# rejected evidence) into `anomaly`, or into `canceled` when cancel evidence
+# is present — so both belong in the terminal set or those rows never surface.
+# NOTE spelling: the alpaca ledger's cancel state is `canceled` (one L) — do
+# not conflate with the `cancelled` (two L) spelling used by the KIS/generic/
+# Toss ledgers above; they are deliberately distinct strings.
+_ALPACA_PAPER_DEFAULT_TERMINAL = frozenset(
+    {"filled", "position_reconciled", "closed", "final_reconciled", "anomaly"}
+)
+_ALPACA_PAPER_CANCEL_TERMINAL = frozenset({"canceled"})
 
 _KIS_LIVE_TERMINAL = _KIS_LIVE_DEFAULT_TERMINAL | _KIS_LIVE_CANCEL_TERMINAL
 _GENERIC_LIVE_TERMINAL = _GENERIC_LIVE_DEFAULT_TERMINAL | _GENERIC_LIVE_CANCEL_TERMINAL
 _TOSS_TERMINAL = _TOSS_DEFAULT_TERMINAL | _TOSS_CANCEL_TERMINAL
 _KIS_MOCK_TERMINAL = _KIS_MOCK_DEFAULT_TERMINAL | _KIS_MOCK_CANCEL_TERMINAL
+_ALPACA_PAPER_TERMINAL = _ALPACA_PAPER_DEFAULT_TERMINAL | _ALPACA_PAPER_CANCEL_TERMINAL
 
 # Statuses hidden from `pending` unless include_cancelled=True. Disjoint from the
 # DEFAULT statuses (note: `rejected` is DEFAULT; `cancel_rejected` /
@@ -1075,6 +1094,7 @@ _CANCEL_FAMILY_STATUSES = (
     | _GENERIC_LIVE_CANCEL_TERMINAL
     | _TOSS_CANCEL_TERMINAL
     | _KIS_MOCK_CANCEL_TERMINAL
+    | _ALPACA_PAPER_CANCEL_TERMINAL
 )
 # Bound per-ledger scan so a wide window cannot load unbounded rows.
 _PENDING_LEDGER_FETCH_CAP = 1000
@@ -1172,13 +1192,13 @@ async def build_retrospective_pending(
     """List terminal ledger orders lacking a retrospective.
 
     Read-only. Scans review.{kis_live_order_ledger, live_order_ledger,
-    toss_live_order_ledger, kis_mock_order_ledger} plus paper_trades for
-    lifecycle-terminal rows in the KST trade_date window, then subtracts rows
-    already covered by a retrospective (matched on report_item_uuid or the
-    suggested correlation_id). Mirrors the ROB-120 coverage pattern
-    (terminal-without-artifact). Filter to one source with account_mode
-    (e.g. "kis_mock" for the counterfactual mock loop, "kis_live"/"toss_live"/
-    "upbit_live"/"paper" otherwise); None scans all.
+    toss_live_order_ledger, kis_mock_order_ledger, alpaca_paper_order_ledger}
+    plus paper_trades for lifecycle-terminal rows in the KST trade_date window,
+    then subtracts rows already covered by a retrospective (matched on
+    report_item_uuid or the suggested correlation_id). Mirrors the ROB-120
+    coverage pattern (terminal-without-artifact). Filter to one source with
+    account_mode (e.g. "kis_mock" for the counterfactual mock loop, "kis_live"/
+    "toss_live"/"upbit_live"/"paper"/"alpaca_paper" otherwise); None scans all.
 
     Cancel-family rows (cancelled / cancel_rejected / replace_rejected) are
     hidden unless include_cancelled=True; the hidden count is reported in
@@ -1367,6 +1387,52 @@ async def build_retrospective_pending(
                 trade_date=row.trade_date,
                 row_id=row.id,
                 suggested_correlation_id=row.correlation_id,
+            )
+            if not _is_covered(entry, covered_cids, covered_item_uuids):
+                pending.append(entry)
+
+    # 6. Alpaca paper ledger (ROB-954) — US equity/crypto paper execution loop
+    # (ROB-953 reconcile + ROB-994 zero-fill terminalization). Scoped to
+    # record_kind='execution': plan/preview/validation_attempt/reconcile/anomaly
+    # record_kinds are bookkeeping rows sharing the same (client_order_id,
+    # record_kind) unique-slot family, not a second order — scanning them would
+    # double-surface a single execution as multiple due-list entries.
+    if account_mode in (None, "alpaca_paper"):
+        # This ledger has no trade_date column. `submitted_at` is NULL for an
+        # execution row still claimed-but-not-yet-sent, so it cannot anchor the
+        # window without silently dropping otherwise-terminal rows; `created_at`
+        # (NOT NULL, stamped at claim time) is the one timestamp guaranteed
+        # present on every execution row and is already the ordering key used
+        # elsewhere in this ledger (list_recent/list_reconcile_candidates).
+        stmt = (
+            select(AlpacaPaperOrderLedger)
+            .where(
+                AlpacaPaperOrderLedger.record_kind
+                == _ALPACA_PAPER_RECORD_KIND_EXECUTION,
+                AlpacaPaperOrderLedger.lifecycle_state.in_(_ALPACA_PAPER_TERMINAL),
+                AlpacaPaperOrderLedger.created_at >= window_start,
+                AlpacaPaperOrderLedger.created_at <= window_end,
+            )
+            .order_by(AlpacaPaperOrderLedger.created_at.desc())
+            .limit(_PENDING_LEDGER_FETCH_CAP)
+        )
+        for row in (await db.execute(stmt)).scalars().all():
+            scanned += 1
+            itype = row.instrument_type.value
+            market = "crypto" if itype == "crypto" else itype.removeprefix("equity_")
+            entry = _pending_entry(
+                ledger="alpaca_paper",
+                account_mode="alpaca_paper",
+                market=market,
+                instrument_type=itype,
+                symbol=row.execution_symbol,
+                side=row.side,
+                status=row.lifecycle_state,
+                order_ref=row.client_order_id,
+                report_item_uuid=None,
+                trade_date=row.created_at,
+                row_id=row.id,
+                suggested_correlation_id=row.lifecycle_correlation_id,
             )
             if not _is_covered(entry, covered_cids, covered_item_uuids):
                 pending.append(entry)

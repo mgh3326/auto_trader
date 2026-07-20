@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.timezone import now_kst
 from app.models.paper_trading import PaperTrade
 from app.models.review import (
+    AlpacaPaperOrderLedger,
     KISLiveOrderLedger,
     KISMockOrderLedger,
     LiveOrderLedger,
@@ -22,6 +23,7 @@ from app.models.review import (
 )
 from app.models.trading import InstrumentType
 from app.services.trade_journal import trade_retrospective_service as svc
+from tests.conftest import _alpaca_paper_db_suite_lock
 
 pytestmark = [
     pytest.mark.integration,
@@ -45,6 +47,21 @@ async def _cleanup(
     ):
         await db_session.execute(delete(model))
     await db_session.commit()
+    # ROB-954: the pending scan now also reads the alpaca_paper ledger, a
+    # table globally shared with many other suites (see conftest's
+    # `_serialize_alpaca_paper_db_suites`). Unlike the tables above this one is
+    # NOT blind-truncated — only the two server-derived client_order_id
+    # prefixes every alpaca_paper writer actually uses are cleared, under the
+    # same cross-worker lock those suites use, so a concurrently-running
+    # alpaca_paper suite's committed rows are never deleted out from under it.
+    with _alpaca_paper_db_suite_lock():
+        await db_session.execute(
+            delete(AlpacaPaperOrderLedger).where(
+                AlpacaPaperOrderLedger.client_order_id.like("rob73-%")
+                | AlpacaPaperOrderLedger.client_order_id.like("rob74-crypto-%")
+            )
+        )
+        await db_session.commit()
 
 
 def _kis_row(*, order_no, status="filled", report_item_uuid=None):

@@ -1453,6 +1453,47 @@ async def test_record_status_does_not_update_final_reconciled_row():
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+async def test_record_status_rowcount_zero_skips_raw_response_accumulation():
+    """ROB-953 LOW follow-up: a guard-rejected write (rowcount=0, e.g. a
+    concurrent write already landed a higher-lifecycle state) must not
+    accumulate raw_response evidence for a transition that never persisted.
+    The shipped code already gates `_accumulate_raw_response` on
+    `write_applied` — this was unguarded by any test, so a regression that
+    dropped the gate would have shipped silently (a prior audit found
+    `write_applied=True` mutations still left the whole test suite green)."""
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(lifecycle_state="submitted", record_kind="execution")
+    db = AsyncMock()
+
+    class _SelectResult:
+        def scalar_one_or_none(self):
+            return row
+
+    class _UpdateResult:
+        rowcount = 0
+
+    db.execute = AsyncMock(side_effect=[_SelectResult(), _UpdateResult()])
+    db.commit = AsyncMock()
+    db.refresh = AsyncMock()
+
+    svc = AlpacaPaperLedgerService(db)
+    result = await svc.record_status(
+        "test-client-001",
+        order={"id": "bid1", "status": "filled", "filled_qty": "1"},
+        raw_response={"reconcile_order": {"status": "filled"}},
+        return_write_result=True,
+    )
+
+    assert result.applied is False
+    # Exactly 2 execute calls: the read (get_execution_by_client_order_id) and
+    # the guarded UPDATE. A 3rd call would be the raw_responses-accumulation
+    # UPDATE, which must never fire when the guard rejected the write.
+    assert db.execute.call_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_record_cancel_transitions_to_canceled_if_order_status_is_canceled():
     from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
 
