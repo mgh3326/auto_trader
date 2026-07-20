@@ -38,6 +38,21 @@ class _PoisonedSession:
         raise AssertionError(f"e2e smoke touched session.{name} directly -- forbidden")
 
 
+def _unfreeze(obj):
+    """H6ARowSpec.components is a deep-frozen (MappingProxyType/tuple)
+    snapshot since rob974_h6a_identity's R1 immutable-seal fix -- convert
+    back to plain dict/list here so pydantic's canonical-hash validator
+    (which only recognizes built-in dict/list) accepts it. Test-only glue;
+    no app production code touches raw H6ARowSpec.components this way."""
+    import types
+
+    if isinstance(obj, types.MappingProxyType | dict):
+        return {k: _unfreeze(v) for k, v in obj.items()}
+    if isinstance(obj, tuple | list):
+        return [_unfreeze(v) for v in obj]
+    return obj
+
+
 def _specs_from_plan(plan: smoke.SmokePlan) -> tuple[list, list]:
     s3, s4 = [], []
     for spec in plan.row_specs:
@@ -45,7 +60,7 @@ def _specs_from_plan(plan: smoke.SmokePlan) -> tuple[list, list]:
             strategy_key=spec.strategy_key,
             strategy_version=spec.strategy_version,
             hypothesis=spec.hypothesis,
-            **spec.components,
+            **_unfreeze(spec.components),
         )
         (s3 if spec.row_id.startswith("S3") else s4).append(identity)
     return s3, s4

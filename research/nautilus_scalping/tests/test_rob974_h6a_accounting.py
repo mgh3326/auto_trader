@@ -28,6 +28,9 @@ def _all_primary_completed_attempts(mapping) -> list[acc.AttemptAccountingRow]:
             experiment_id=mapping[row_id],
             retry_index=0,
             status="completed",
+            reason_code=None,
+            fold_evidence_hash=_hex64("fold"),
+            run_identity=_hex64("run"),
         )
         for row_id in _ROW_IDS
     ]
@@ -72,6 +75,9 @@ class TestNormalPrimaryRun:
                 experiment_id=mapping[row_id],
                 retry_index=0,
                 status="crashed",
+                reason_code=acc.REASON_CHILD_EXECUTION_CRASHED,
+                fold_evidence_hash=_hex64("fold"),
+                run_identity=_hex64("run"),
             )
             for row_id in _ROW_IDS
         ]
@@ -91,6 +97,9 @@ class TestAccountingCompleteIsNotPerformancePass:
             experiment_id=mapping["S3-00"],
             retry_index=0,
             status="rejected",
+            reason_code=acc.REASON_DATA_GAP_IN_POSITION,
+            fold_evidence_hash=_hex64("fold"),
+            run_identity=_hex64("run"),
         )
         report = _build(row_id_to_experiment_id=mapping, attempts=attempts)
         assert report.accounting_complete is True
@@ -108,6 +117,9 @@ class TestRetryAppendOnly:
                 experiment_id=mapping["S3-00"],
                 retry_index=1,
                 status="completed",
+                reason_code=None,
+                fold_evidence_hash=_hex64("fold"),
+                run_identity=_hex64("run"),
             )
         )
         report = _build(row_id_to_experiment_id=mapping, attempts=attempts)
@@ -126,6 +138,9 @@ class TestRetryAppendOnly:
                 experiment_id=mapping["S3-00"],
                 retry_index=1,
                 status="crashed",
+                reason_code=acc.REASON_CHILD_EXECUTION_CRASHED,
+                fold_evidence_hash=_hex64("fold"),
+                run_identity=_hex64("run"),
             )
         )
         report = _build(row_id_to_experiment_id=mapping, attempts=attempts)
@@ -143,6 +158,9 @@ class TestRetryAppendOnly:
                 experiment_id=mapping["S3-00"],
                 retry_index=2,
                 status="completed",
+                reason_code=None,
+                fold_evidence_hash=_hex64("fold"),
+                run_identity=_hex64("run"),
             )
         )
         report = _build(row_id_to_experiment_id=mapping, attempts=attempts)
@@ -158,6 +176,9 @@ class TestRetryAppendOnly:
                 experiment_id=mapping["S3-00"],
                 retry_index=0,
                 status="completed",
+                reason_code=None,
+                fold_evidence_hash=_hex64("fold"),
+                run_identity=_hex64("run"),
             )
         )
         report = _build(row_id_to_experiment_id=mapping, attempts=attempts)
@@ -172,6 +193,9 @@ class TestRetryAppendOnly:
             experiment_id=mapping["S3-00"],
             retry_index=1,
             status="completed",
+            reason_code=None,
+            fold_evidence_hash=_hex64("fold"),
+            run_identity=_hex64("run"),
         )
         report = _build(row_id_to_experiment_id=mapping, attempts=attempts)
         assert "S3-00" in report.missing_row_ids
@@ -197,6 +221,9 @@ class TestMissingPrimaries:
                 experiment_id=mapping["S3-00"],
                 retry_index=0,
                 status="completed",
+                reason_code=None,
+                fold_evidence_hash=_hex64("fold"),
+                run_identity=_hex64("run"),
             )
         )
         report = _build(row_id_to_experiment_id=mapping, attempts=attempts)
@@ -215,6 +242,9 @@ class TestCrossCampaignRejection:
                 experiment_id=_hex64("rogue"),
                 retry_index=0,
                 status="completed",
+                reason_code=None,
+                fold_evidence_hash=_hex64("fold"),
+                run_identity=_hex64("run"),
             )
         )
         with pytest.raises(acc.AccountingInputError):
@@ -228,6 +258,9 @@ class TestCrossCampaignRejection:
             experiment_id=_hex64("forged"),
             retry_index=0,
             status="completed",
+            reason_code=None,
+            fold_evidence_hash=_hex64("fold"),
+            run_identity=_hex64("run"),
         )
         with pytest.raises(acc.AccountingInputError):
             _build(row_id_to_experiment_id=mapping, attempts=attempts)
@@ -298,6 +331,9 @@ class TestTrialAccountingHash:
             experiment_id=mapping["S3-00"],
             retry_index=0,
             status="rejected",
+            reason_code=acc.REASON_DATA_GAP_IN_POSITION,
+            fold_evidence_hash=_hex64("fold"),
+            run_identity=_hex64("run"),
         )
         mutated = _build(row_id_to_experiment_id=mapping, attempts=attempts)
         assert base.trial_accounting_hash != mutated.trial_accounting_hash
@@ -312,6 +348,9 @@ class TestTrialAccountingHash:
                 experiment_id=mapping["S3-00"],
                 retry_index=1,
                 status="completed",
+                reason_code=None,
+                fold_evidence_hash=_hex64("fold"),
+                run_identity=_hex64("run"),
             )
         )
         with_retry = _build(row_id_to_experiment_id=mapping, attempts=attempts)
@@ -334,6 +373,9 @@ class TestAttemptAccountingRowTypes:
                 experiment_id=_hex64("x"),
                 retry_index=True,
                 status="completed",
+                reason_code=None,
+                fold_evidence_hash=_hex64("fold"),
+                run_identity=_hex64("run"),
             )
 
     def test_unknown_status_rejected(self):
@@ -343,4 +385,134 @@ class TestAttemptAccountingRowTypes:
                 experiment_id=_hex64("x"),
                 retry_index=0,
                 status="never_selected",
+                reason_code=None,
+                fold_evidence_hash=_hex64("fold"),
+                run_identity=_hex64("run"),
             )
+
+    def test_completed_with_reason_code_rejected(self):
+        with pytest.raises(acc.AccountingInputError):
+            acc.AttemptAccountingRow(
+                row_id="S3-00",
+                experiment_id=_hex64("x"),
+                retry_index=0,
+                status="completed",
+                reason_code="should-be-none",
+                fold_evidence_hash=_hex64("fold"),
+                run_identity=_hex64("run"),
+            )
+
+    def test_reason_code_outside_allowlist_rejected(self):
+        with pytest.raises(acc.AccountingInputError):
+            acc.AttemptAccountingRow(
+                row_id="S3-00",
+                experiment_id=_hex64("x"),
+                retry_index=0,
+                status="crashed",
+                reason_code="totally_made_up_reason",
+                fold_evidence_hash=_hex64("fold"),
+                run_identity=_hex64("run"),
+            )
+
+    def test_non_hex64_fold_evidence_hash_rejected(self):
+        with pytest.raises(acc.AccountingInputError):
+            acc.AttemptAccountingRow(
+                row_id="S3-00",
+                experiment_id=_hex64("x"),
+                retry_index=0,
+                status="completed",
+                reason_code=None,
+                fold_evidence_hash="not-a-hash",
+                run_identity=_hex64("run"),
+            )
+
+    def test_non_hex64_run_identity_rejected(self):
+        with pytest.raises(acc.AccountingInputError):
+            acc.AttemptAccountingRow(
+                row_id="S3-00",
+                experiment_id=_hex64("x"),
+                retry_index=0,
+                status="completed",
+                reason_code=None,
+                fold_evidence_hash=_hex64("fold"),
+                run_identity="not-a-hash",
+            )
+
+
+class TestRegisteredTotalGate:
+    """R1 blocker #3a: registered_total must participate in
+    accounting_complete -- 48 completed primary attempts alone must NOT be
+    "complete" if the campaign was never actually registered."""
+
+    def test_zero_registered_total_is_incomplete_even_with_48_completed(self):
+        mapping = _mapping()
+        report = _build(row_id_to_experiment_id=mapping, registered_total=0)
+        assert report.accounting_complete is False
+
+    def test_47_registered_total_is_incomplete(self):
+        mapping = _mapping()
+        report = _build(row_id_to_experiment_id=mapping, registered_total=47)
+        assert report.accounting_complete is False
+
+    def test_48_registered_total_with_no_other_defects_is_complete(self):
+        mapping = _mapping()
+        report = _build(row_id_to_experiment_id=mapping, registered_total=48)
+        assert report.accounting_complete is True
+
+
+class TestFullSemanticAttemptSeal:
+    """R1 blocker #3b: trial_accounting_hash must commit every semantic
+    attempt field (reason_code/fold_evidence_hash/run_identity), not just
+    row/experiment/retry/status -- so an AC18 status/reason/evidence
+    mismatch is reconstructible and detectable."""
+
+    def test_reason_code_mutation_changes_trial_hash(self):
+        mapping = _mapping()
+        attempts = _all_primary_completed_attempts(mapping)
+        base = _build(row_id_to_experiment_id=mapping, attempts=attempts)
+        mutated_attempts = list(attempts)
+        mutated_attempts[0] = acc.AttemptAccountingRow(
+            row_id=attempts[0].row_id,
+            experiment_id=attempts[0].experiment_id,
+            retry_index=attempts[0].retry_index,
+            status="crashed",
+            reason_code=acc.REASON_CHILD_EXECUTION_CRASHED,
+            fold_evidence_hash=attempts[0].fold_evidence_hash,
+            run_identity=attempts[0].run_identity,
+        )
+        mutated = _build(row_id_to_experiment_id=mapping, attempts=mutated_attempts)
+        assert base.trial_accounting_hash != mutated.trial_accounting_hash
+
+    def test_fold_evidence_hash_mutation_changes_trial_hash_even_with_same_status(self):
+        mapping = _mapping()
+        attempts = _all_primary_completed_attempts(mapping)
+        base = _build(row_id_to_experiment_id=mapping, attempts=attempts)
+        mutated_attempts = list(attempts)
+        mutated_attempts[0] = acc.AttemptAccountingRow(
+            row_id=attempts[0].row_id,
+            experiment_id=attempts[0].experiment_id,
+            retry_index=attempts[0].retry_index,
+            status=attempts[0].status,
+            reason_code=attempts[0].reason_code,
+            fold_evidence_hash=_hex64("a-completely-different-fold-evidence"),
+            run_identity=attempts[0].run_identity,
+        )
+        mutated = _build(row_id_to_experiment_id=mapping, attempts=mutated_attempts)
+        assert base.trial_accounting_hash != mutated.trial_accounting_hash
+
+    def test_run_identity_mutation_changes_trial_hash_even_with_same_status(self):
+        mapping = _mapping()
+        attempts = _all_primary_completed_attempts(mapping)
+        base = _build(row_id_to_experiment_id=mapping, attempts=attempts)
+        mutated_attempts = list(attempts)
+        mutated_attempts[0] = acc.AttemptAccountingRow(
+            row_id=attempts[0].row_id,
+            experiment_id=attempts[0].experiment_id,
+            retry_index=attempts[0].retry_index,
+            status=attempts[0].status,
+            reason_code=attempts[0].reason_code,
+            fold_evidence_hash=attempts[0].fold_evidence_hash,
+            run_identity=_hex64("a-completely-different-run-identity"),
+        )
+        mutated = _build(row_id_to_experiment_id=mapping, attempts=mutated_attempts)
+        assert base.trial_accounting_hash != mutated.trial_accounting_hash

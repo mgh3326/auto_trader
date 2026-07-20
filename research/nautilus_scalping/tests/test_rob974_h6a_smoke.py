@@ -116,6 +116,13 @@ class TestCombinedAccountingAndTrialSeal:
                     if a.row_id == "S3-05" and a.retry_index == 0
                     else a.status
                 ),
+                reason_code=(
+                    h6a_accounting.REASON_DATA_GAP_IN_POSITION
+                    if a.row_id == "S3-05" and a.retry_index == 0
+                    else a.reason_code
+                ),
+                fold_evidence_hash=a.fold_evidence_hash,
+                run_identity=a.run_identity,
             )
             for a in plan.attempts
         )
@@ -262,8 +269,10 @@ class TestHighestRiskIdentityMutants:
             "benchmark": {"kind": "none_explicit_sentinel"},
             "mdd": {"h2_engine_contract_hash": _hex64("smoke-h2-engine")},
         }
+
         def by_slug(key):
             return {"S3": {key: f"S3-smoke-{key}"}, "S4": {key: f"S4-smoke-{key}"}}
+
         with pytest.raises(h6a_identity.H6AIdentityError):
             h6a_identity.build_campaign_row_specs(
                 smoke._rows(),
@@ -331,6 +340,9 @@ class TestHighestRiskAccountingMutants:
                 experiment_id=a.experiment_id,
                 retry_index=a.retry_index,
                 status=a.status,
+                reason_code=a.reason_code,
+                fold_evidence_hash=a.fold_evidence_hash,
+                run_identity=a.run_identity,
             )
             for a in plan.attempts
             if a.retry_index == 0  # drop the one retry -> 48 primaries
@@ -360,6 +372,9 @@ class TestHighestRiskAccountingMutants:
                 experiment_id=a.experiment_id,
                 retry_index=a.retry_index,
                 status=a.status,
+                reason_code=a.reason_code,
+                fold_evidence_hash=a.fold_evidence_hash,
+                run_identity=a.run_identity,
             )
             for a in plan.attempts
             # keep only "completed" rows -- a naive winner-only filter.

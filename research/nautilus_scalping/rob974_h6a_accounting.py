@@ -26,14 +26,42 @@ shared ``research_contracts.canonical_hash`` authority.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+
+from rob974_h6a_evidence import ALLOWED_REASONS_BY_STATUS as _ALLOWED_REASONS_BY_STATUS
+from rob974_h6a_evidence import ATTEMPT_STATUSES as _ATTEMPT_STATUSES
+from rob974_h6a_evidence import (
+    REASON_CHILD_EXECUTION_CRASHED as REASON_CHILD_EXECUTION_CRASHED,
+)
+from rob974_h6a_evidence import (
+    REASON_CHILD_EXECUTION_TIMEOUT as REASON_CHILD_EXECUTION_TIMEOUT,
+)
+from rob974_h6a_evidence import (
+    REASON_DATA_GAP_IN_PAIR_POSITION as REASON_DATA_GAP_IN_PAIR_POSITION,
+)
+from rob974_h6a_evidence import (
+    REASON_DATA_GAP_IN_POSITION as REASON_DATA_GAP_IN_POSITION,
+)
+from rob974_h6a_evidence import (
+    REASON_GLOBAL_CORPUS_LOAD_FAILED as REASON_GLOBAL_CORPUS_LOAD_FAILED,
+)
+from rob974_h6a_evidence import (
+    REASON_INSUFFICIENT_TRAIN_EVIDENCE_ALL_FOLDS as REASON_INSUFFICIENT_TRAIN_EVIDENCE_ALL_FOLDS,
+)
 
 from research_contracts.canonical_hash import canonical_sha256
 
 __all__ = [
     "CLOSED_STATUSES",
     "EXPECTED_TOTAL_ROWS",
+    "REASON_CHILD_EXECUTION_CRASHED",
+    "REASON_CHILD_EXECUTION_TIMEOUT",
+    "REASON_DATA_GAP_IN_PAIR_POSITION",
+    "REASON_DATA_GAP_IN_POSITION",
+    "REASON_GLOBAL_CORPUS_LOAD_FAILED",
+    "REASON_INSUFFICIENT_TRAIN_EVIDENCE_ALL_FOLDS",
     "AccountingInputError",
     "AttemptAccountingRow",
     "CombinedAccountingReport",
@@ -41,7 +69,15 @@ __all__ = [
 ]
 
 EXPECTED_TOTAL_ROWS = 48
-CLOSED_STATUSES: tuple[str, ...] = ("completed", "rejected", "crashed", "timeout")
+# Literal re-export, never a re-derivation -- the SAME closed taxonomy CP3
+# (rob974_h6a_evidence) already owns; both siblings live in this package
+# (mirrors rob945_accounting_seal importing rob944_walkforward directly).
+CLOSED_STATUSES: tuple[str, ...] = _ATTEMPT_STATUSES
+_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _is_hex64(value: object) -> bool:
+    return type(value) is str and bool(_HEX64_RE.match(value))
 
 
 class AccountingInputError(ValueError):
@@ -52,13 +88,20 @@ class AccountingInputError(ValueError):
 
 @dataclass(frozen=True)
 class AttemptAccountingRow:
-    """One recorded attempt's accounting-relevant facts -- coarser than the
-    full CP3 ``AttemptRecord`` (accounting only needs identity + status)."""
+    """One recorded attempt's accounting-relevant facts.
+
+    R1 blocker #3b: this now carries the FULL semantic seal (reason_code/
+    fold_evidence_hash/run_identity), not just row/experiment/retry/status
+    -- so ``trial_accounting_hash`` can commit every semantic attempt field
+    and an AC18 status/reason/evidence mismatch is reconstructible."""
 
     row_id: str
     experiment_id: str
     retry_index: int
     status: str
+    reason_code: str | None
+    fold_evidence_hash: str
+    run_identity: str
 
     def __post_init__(self) -> None:
         if type(self.row_id) is not str:
@@ -71,6 +114,24 @@ class AttemptAccountingRow:
             )
         if self.status not in CLOSED_STATUSES:
             raise AccountingInputError(f"status must be one of {CLOSED_STATUSES}")
+        if self.status == "completed":
+            if self.reason_code is not None:
+                raise AccountingInputError("completed must carry reason_code=None")
+        else:
+            allowed = _ALLOWED_REASONS_BY_STATUS[self.status]
+            if self.reason_code not in allowed:
+                raise AccountingInputError(
+                    f"reason_code {self.reason_code!r} is not permitted for status "
+                    f"{self.status!r} under the closed allowlist"
+                )
+        if not _is_hex64(self.fold_evidence_hash):
+            raise AccountingInputError(
+                "fold_evidence_hash must be a lowercase 64-hex SHA-256 digest"
+            )
+        if not _is_hex64(self.run_identity):
+            raise AccountingInputError(
+                "run_identity must be a lowercase 64-hex SHA-256 digest"
+            )
 
 
 @dataclass(frozen=True)
@@ -217,8 +278,14 @@ def build_combined_accounting(
     for row in clean_rows:
         status_counts[row.status] += 1
 
-    accounting_complete = not (
-        missing or extra_experiment_ids or mismatch_row_ids or duplicate_or_gap
+    # R1 blocker #3a: registered_total must participate in completeness --
+    # 48 completed primary attempts alone is NOT "complete" if the campaign
+    # was never actually registered (a caller-supplied registered_total of
+    # 0 must not silently pass merely because terminal attempt evidence
+    # happens to exist for all 48 canonical rows).
+    accounting_complete = (
+        not (missing or extra_experiment_ids or mismatch_row_ids or duplicate_or_gap)
+        and registered_total == EXPECTED_TOTAL_ROWS
     )
     all_primary_completed = accounting_complete and all(
         any(r.retry_index == 0 and r.status == "completed" for r in by_row[row_id])
@@ -254,6 +321,9 @@ def build_combined_accounting(
                     "experiment_id": a.experiment_id,
                     "retry_index": a.retry_index,
                     "status": a.status,
+                    "reason_code": a.reason_code,
+                    "fold_evidence_hash": a.fold_evidence_hash,
+                    "run_identity": a.run_identity,
                 }
                 for a in normalized_attempts
             ],

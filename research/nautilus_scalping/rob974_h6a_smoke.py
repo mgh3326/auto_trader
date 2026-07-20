@@ -322,6 +322,9 @@ def _accounting(
             experiment_id=a.experiment_id,
             retry_index=a.retry_index,
             status=a.status,
+            reason_code=a.reason_code,
+            fold_evidence_hash=a.fold_evidence_hash,
+            run_identity=a.run_identity,
         )
         for a in attempts
     )
