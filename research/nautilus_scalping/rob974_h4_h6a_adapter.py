@@ -35,6 +35,7 @@ from rob974_h4_contracts import (
     WINDOW_END_MS,
     WINDOW_START_MS,
     H4SourcePins,
+    attribution_contract,
     campaign_verdict_contract,
     exact_h4_folds,
     scorecard_contract,
@@ -371,6 +372,7 @@ def _frozen_config_components() -> dict[str, dict[str, object]]:
 
 def _policy_components() -> dict[str, dict[str, object]]:
     scorecard = scorecard_contract()
+    attribution = attribution_contract()
     return {
         slug: {
             "train_selection": {
@@ -394,6 +396,16 @@ def _policy_components() -> dict[str, dict[str, object]]:
                 "diagnostics_excluded_from_semantic_hashes": True,
             },
             "scorecard": {"common": scorecard["common"], slug: scorecard[slug]},
+            "selected_oos_attribution": {
+                "common": {
+                    "schema_version": attribution["schema_version"],
+                    "contract_provenance": attribution["contract_provenance"],
+                    "market_return": attribution["market_return"],
+                    "tercile": attribution["tercile"],
+                    "realized_holding_minutes": attribution["realized_holding_minutes"],
+                },
+                slug: attribution[slug],
+            },
             "verdict": campaign_verdict_contract(),
         }
         for slug in ("S3", "S4")
