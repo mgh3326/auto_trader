@@ -20,7 +20,7 @@ alongside (never instead of) PF.
 from __future__ import annotations
 
 import math
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -35,7 +35,9 @@ __all__ = [
     "POOLED_E17_MIN_BPS",
     "WIN_MARGIN_MIN",
     "CommonGateResult",
+    "attribution_bucket",
     "evaluate_common_gates",
+    "validate_attribution_membership",
     "validate_selected_oos_membership",
 ]
 
@@ -88,6 +90,107 @@ def _weight(trade: MetricTrade) -> float:
     return trade.gross_notional if trade.gross_notional is not None else 1.0
 
 
+def _attribution_membership_key(trade: MetricTrade) -> tuple[object, ...]:
+    attribution = trade.attribution
+    if attribution is None:
+        raise H5InputError("attribution_membership_row_missing")
+    return (
+        attribution.experiment_id,
+        trade.config_id,
+        trade.fold_id,
+        trade.dimension,
+        trade.direction,
+        trade.entry_ts,
+        trade.exit_ts,
+        trade.exit_reason,
+        trade.gross_bps,
+        attribution.market_return,
+        attribution.realized_holding_minutes,
+    )
+
+
+def validate_attribution_membership(
+    *,
+    primary_trades: tuple[MetricTrade, ...],
+    upward_trades: tuple[MetricTrade, ...],
+    authority: str,
+) -> bool:
+    """Validate one exact typed raw membership across E17 and E22 paths.
+
+    Legacy fixture books contain no attribution and return ``False``.  A
+    mixed book, a changed experiment identity, or different raw trade
+    membership across paths is contract drift and fails closed.
+    """
+    all_trades = primary_trades + upward_trades
+    present = tuple(trade.attribution is not None for trade in all_trades)
+    if not any(present):
+        return False
+    if not all(present):
+        raise H5InputError(f"{authority}_attribution_mixed_provenance")
+    if any(
+        trade.attribution is not None
+        and trade.attribution.contract_provenance != "actual"
+        for trade in all_trades
+    ):
+        raise H5InputError(f"{authority}_attribution_requires_actual_provenance")
+    experiment_ids = {
+        trade.attribution.experiment_id
+        for trade in all_trades
+        if trade.attribution is not None
+    }
+    if len(experiment_ids) > 1:
+        raise H5InputError(f"{authority}_attribution_experiment_identity_mismatch")
+    primary_membership = Counter(
+        _attribution_membership_key(trade) for trade in primary_trades
+    )
+    upward_membership = Counter(
+        _attribution_membership_key(trade) for trade in upward_trades
+    )
+    if primary_membership != upward_membership:
+        raise H5InputError(f"{authority}_attribution_path_membership_mismatch")
+    return True
+
+
+def attribution_bucket(
+    trades: tuple[MetricTrade, ...],
+) -> dict[str, float | int | None]:
+    """Aggregate only raw H4-carried economics for a registered bin."""
+    if not trades:
+        return {
+            "trades": 0,
+            "e0_bps": None,
+            "e13_bps": None,
+            "e17_bps": None,
+            "e22_bps": None,
+            "pf17": None,
+            "avg_holding_minutes": None,
+        }
+    attributions = []
+    for trade in trades:
+        if trade.attribution is None:
+            raise H5InputError("attribution_bucket_row_missing")
+        attributions.append(trade.attribution)
+    e17_values = [attribution.e17_bps for attribution in attributions]
+    gross_profit = sum(value for value in e17_values if value > 0.0)
+    gross_loss = -sum(value for value in e17_values if value < 0.0)
+    if gross_loss == 0.0:
+        pf17 = math.inf if gross_profit > 0.0 else float("nan")
+    else:
+        pf17 = gross_profit / gross_loss
+    count = len(trades)
+    return {
+        "trades": count,
+        "e0_bps": sum(trade.gross_bps for trade in trades) / count,
+        "e13_bps": sum(value.e13_bps for value in attributions) / count,
+        "e17_bps": sum(e17_values) / count,
+        "e22_bps": sum(value.e22_bps for value in attributions) / count,
+        "pf17": pf17,
+        "avg_holding_minutes": (
+            sum(value.realized_holding_minutes for value in attributions) / count
+        ),
+    }
+
+
 def validate_selected_oos_membership(
     *,
     primary_trades: tuple[MetricTrade, ...],
@@ -119,6 +222,11 @@ def validate_selected_oos_membership(
 
     if len({t.config_id for t in all_trades}) > 1:
         raise H5InputError(f"{authority}_selected_oos_membership_mismatch")
+    validate_attribution_membership(
+        primary_trades=primary_trades,
+        upward_trades=upward_trades,
+        authority=authority,
+    )
 
 
 def evaluate_common_gates(

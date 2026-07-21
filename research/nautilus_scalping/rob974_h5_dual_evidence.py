@@ -33,6 +33,7 @@ from rob974_h5_contracts import (
     PATH_SCENARIOS,
     STRATEGIES,
     EnvelopeValidationResult,
+    H4AttributionContractResult,
     H5InputError,
     config_ids_for,
 )
@@ -63,6 +64,8 @@ __all__ = [
     "PathInvocationEvidence",
     "PboEvidence",
     "UniqueGeneratorEvidence",
+    "H4AttributionCrossCheck",
+    "cross_check_h4_attribution_contract",
     "cross_check_dual_evidence",
     "validate_pbo_evidence",
 ]
@@ -197,6 +200,91 @@ def cross_check_dual_evidence(
             path.unique_evidence_accepted_count == unique.accepted,
             "dual_evidence_path_unique_accepted_count_mismatch",
         )
+
+
+@dataclass(frozen=True, slots=True)
+class H4AttributionCrossCheck:
+    ok: bool
+    path_count: int
+    trade_count: int
+    raw_member_key_cross_seal: str
+
+    def __post_init__(self) -> None:
+        _require(type(self.ok) is bool and self.ok, "h4_attribution_cross_check_not_ok")
+        _require_exact_int(self.path_count, "h4_attribution_path_count_malformed")
+        _require_exact_int(self.trade_count, "h4_attribution_trade_count_malformed")
+        _require(
+            self.raw_member_key_cross_seal == "DEFERRED_TO_H6B_INTEGRATION_E2E",
+            "h4_attribution_member_key_cross_seal_must_remain_deferred",
+        )
+
+
+def cross_check_h4_attribution_contract(
+    *,
+    h4_contract: H4AttributionContractResult,
+    paths_by_key: dict[tuple[str, str, str], PathInvocationEvidence],
+) -> H4AttributionCrossCheck:
+    """Bind H4 raw paths to H5 invocation evidence without inventing keys.
+
+    The engine input seal/count and terminal trade count are common existing
+    authorities and can be checked now.  H6-A's member-trade-key recipe is not
+    present in the merged predecessor, so raw-row-to-member-key cross-sealing
+    remains the explicit H6-B integration responsibility.
+    """
+    _require(
+        type(h4_contract) is H4AttributionContractResult
+        and h4_contract.actual_h4_contract == "PASS"
+        and h4_contract.envelope is not None,
+        "h4_attribution_cross_check_requires_actual_pass",
+    )
+    _require(type(paths_by_key) is dict, "h4_attribution_paths_by_key_malformed")
+    envelope = h4_contract.envelope
+    expected_keys = {
+        (path.lineage.row_id, path.lineage.fold_id, path.path_scenario)
+        for path in envelope.paths
+    }
+    _require(
+        set(paths_by_key) == expected_keys,
+        "h4_attribution_path_invocation_evidence_set_mismatch",
+    )
+    trade_count = 0
+    for path in envelope.paths:
+        key = (path.lineage.row_id, path.lineage.fold_id, path.path_scenario)
+        evidence = paths_by_key.get(key)
+        _require(
+            type(evidence) is PathInvocationEvidence,
+            "h4_attribution_path_invocation_evidence_missing",
+        )
+        _require(
+            evidence.strategy == path.strategy
+            and evidence.config_id == path.lineage.row_id
+            and evidence.fold_id == path.lineage.fold_id
+            and evidence.path_scenario == path.path_scenario,
+            "h4_attribution_path_binding_mismatch",
+        )
+        _require(
+            evidence.engine_input_hash == path.terminal.input_seal_sha256,
+            "h4_attribution_engine_input_hash_mismatch",
+        )
+        _require(
+            evidence.engine_input_count == path.engine_input_count,
+            "h4_attribution_engine_input_count_mismatch",
+        )
+        _require(
+            evidence.trade_count == len(path.rows),
+            "h4_attribution_trade_count_mismatch",
+        )
+        _require(
+            evidence.ledger_status == "completed",
+            "h4_attribution_selected_path_not_completed",
+        )
+        trade_count += len(path.rows)
+    return H4AttributionCrossCheck(
+        ok=True,
+        path_count=len(envelope.paths),
+        trade_count=trade_count,
+        raw_member_key_cross_seal="DEFERRED_TO_H6B_INTEGRATION_E2E",
+    )
 
 
 @dataclass(frozen=True, slots=True)

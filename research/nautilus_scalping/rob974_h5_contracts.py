@@ -25,6 +25,14 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from rob974_h4_runner import (
+    H4AttributionError,
+    S3SelectedOOSAttribution,
+    S4SelectedOOSAttribution,
+    SelectedOOSAttributionEnvelope,
+    validate_attribution_envelope,
+)
+
 __all__ = [
     "CONFIGS_PER_STRATEGY",
     "FOLD_IDS",
@@ -40,8 +48,13 @@ __all__ = [
     "H5InputError",
     "H6AAccountingSeal",
     "MetricTrade",
+    "TradeAttribution",
+    "H4AttributionContractResult",
+    "authoritative_market_return",
     "classify_provenance_violation",
     "config_ids_for",
+    "consume_h4_attribution",
+    "fixture_h4_attribution_result",
     "validate_envelope_and_accounting",
 ]
 
@@ -314,6 +327,115 @@ def validate_envelope_and_accounting(
 _S3_DIMENSION_SET = frozenset(S3_SYMBOLS)
 _S4_DIMENSION_SET = frozenset(S4_PAIRS)
 
+_H4_CONTRACT_STATUSES = ("PASS", "FIXTURE_ONLY", "DEFERRED")
+_H4_CONTRACT_PROVENANCE = ("actual", "fixture", "deferred")
+_MARKET_RETURN_SEMANTIC = "M_t_24h_median_log_return"
+
+
+@dataclass(frozen=True, slots=True)
+class TradeAttribution:
+    """Raw H4-owned attribution carried beside one H5 metric projection.
+
+    Strategy-specific absent values are exact ``None``.  In particular S3
+    has no ``entry_z`` and S4 has no volatility percentile; neither boundary
+    can fill those absences with a numeric sentinel.
+    """
+
+    strategy: str
+    row_id: str
+    experiment_id: str
+    contract_provenance: str
+    market_return_semantic: str
+    e13_bps: float
+    e17_bps: float
+    e22_bps: float
+    market_return: float
+    realized_holding_minutes: float
+    S: float | None
+    Q: float | None
+    q_min: float | None
+    market_return_tercile: str | None
+    volatility_percentile: float | None
+    entry_z: float | None
+    entry_z_threshold: float | None
+    D: float | None
+    correlation: float | None
+    half_life: float | None
+    beta_stability: float | None
+    realized_pair_beta: float | None
+
+    def __post_init__(self) -> None:
+        _require(self.strategy in STRATEGIES, "attribution_strategy_unknown")
+        _require(
+            self.row_id in config_ids_for(self.strategy),
+            "attribution_row_id_unknown",
+        )
+        _require_hex64(self.experiment_id, "attribution_experiment_id_malformed")
+        _require(
+            self.contract_provenance in ("actual", "fixture"),
+            "attribution_row_provenance_unknown",
+        )
+        _require(
+            self.market_return_semantic == _MARKET_RETURN_SEMANTIC,
+            "attribution_market_return_semantic_drift",
+        )
+        for name in (
+            "e13_bps",
+            "e17_bps",
+            "e22_bps",
+            "market_return",
+            "realized_holding_minutes",
+        ):
+            _require_exact_float(getattr(self, name), f"attribution_{name}_malformed")
+        _require(
+            self.realized_holding_minutes >= 0.0,
+            "attribution_holding_minutes_negative",
+        )
+        if self.strategy == "S3":
+            for name in ("S", "Q", "q_min", "volatility_percentile"):
+                _require_exact_float(
+                    getattr(self, name), f"attribution_s3_{name}_malformed"
+                )
+            _require(
+                self.market_return_tercile in ("lower", "middle", "top"),
+                "attribution_s3_tercile_unknown",
+            )
+            for name in (
+                "entry_z",
+                "entry_z_threshold",
+                "D",
+                "correlation",
+                "half_life",
+                "beta_stability",
+                "realized_pair_beta",
+            ):
+                _require(
+                    getattr(self, name) is None,
+                    f"attribution_s3_{name}_must_be_none",
+                )
+        else:
+            for name in (
+                "entry_z",
+                "entry_z_threshold",
+                "D",
+                "correlation",
+                "half_life",
+                "beta_stability",
+                "realized_pair_beta",
+            ):
+                _require_exact_float(
+                    getattr(self, name), f"attribution_s4_{name}_malformed"
+                )
+            for name in ("S", "Q", "q_min", "volatility_percentile"):
+                _require(
+                    getattr(self, name) is None,
+                    f"attribution_s4_{name}_must_be_none",
+                )
+            _require(
+                self.market_return_tercile is None,
+                "attribution_s4_tercile_must_be_none",
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class MetricTrade:
@@ -334,6 +456,7 @@ class MetricTrade:
     gross_notional: float | None
     market_return_4h: float | None
     volatility_percentile: float | None
+    attribution: TradeAttribution | None = None
 
     def __post_init__(self) -> None:
         _require(self.strategy in STRATEGIES, "trade_strategy_unknown")
@@ -387,3 +510,239 @@ class MetricTrade:
         _require(self.sl_bps > 0, "trade_sl_bps_not_positive")
         if self.market_return_4h is not None:
             _require_exact_float(self.market_return_4h, "trade_market_return_malformed")
+        if self.attribution is not None:
+            _require(
+                type(self.attribution) is TradeAttribution,
+                "trade_attribution_concrete_type_mismatch",
+            )
+            attribution = self.attribution
+            _require(
+                attribution.strategy == self.strategy
+                and attribution.row_id == self.config_id,
+                "trade_attribution_identity_mismatch",
+            )
+            _require(
+                self.market_return_4h is None,
+                "actual_attribution_forbids_legacy_market_return_4h",
+            )
+            _require(
+                self.holding_minutes == attribution.realized_holding_minutes,
+                "trade_attribution_holding_mismatch",
+            )
+            selected_net = {
+                "base13": attribution.e13_bps,
+                "primary_stress17": attribution.e17_bps,
+                "upward_stress22": attribution.e22_bps,
+            }[self.path_scenario]
+            _require(
+                self.net_bps == selected_net,
+                "trade_attribution_selected_path_economics_mismatch",
+            )
+            _require(
+                self.volatility_percentile == attribution.volatility_percentile,
+                "trade_attribution_volatility_mismatch",
+            )
+
+
+def authoritative_market_return(trade: MetricTrade) -> float | None:
+    """Return H4-captured ``M_t`` for actual rows, legacy fixture data otherwise."""
+    if type(trade) is not MetricTrade:
+        raise H5InputError("market_return_trade_concrete_type_mismatch")
+    if trade.attribution is not None:
+        return trade.attribution.market_return
+    return trade.market_return_4h
+
+
+@dataclass(frozen=True, slots=True)
+class H4AttributionContractResult:
+    actual_h4_contract: str
+    contract_provenance: str
+    envelope: SelectedOOSAttributionEnvelope | None
+    trades: tuple[MetricTrade, ...]
+    incomplete_reasons: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _require(
+            self.actual_h4_contract in _H4_CONTRACT_STATUSES,
+            "h4_attribution_contract_status_unknown",
+        )
+        _require(
+            self.contract_provenance in _H4_CONTRACT_PROVENANCE,
+            "h4_attribution_contract_provenance_unknown",
+        )
+        _require(
+            type(self.trades) is tuple
+            and all(type(trade) is MetricTrade for trade in self.trades),
+            "h4_attribution_metric_trades_malformed",
+        )
+        _require(
+            type(self.incomplete_reasons) is tuple
+            and all(
+                type(reason) is str and reason for reason in self.incomplete_reasons
+            ),
+            "h4_attribution_incomplete_reasons_malformed",
+        )
+        _require(
+            self.incomplete_reasons == tuple(sorted(set(self.incomplete_reasons))),
+            "h4_attribution_incomplete_reasons_not_canonical",
+        )
+        if self.actual_h4_contract == "PASS":
+            _require(
+                self.contract_provenance == "actual"
+                and type(self.envelope) is SelectedOOSAttributionEnvelope
+                and self.envelope.contract_provenance == "actual"
+                and not self.incomplete_reasons,
+                "h4_attribution_pass_without_actual_typed_evidence",
+            )
+            _require(
+                all(
+                    trade.attribution is not None
+                    and trade.attribution.contract_provenance == "actual"
+                    for trade in self.trades
+                ),
+                "h4_attribution_pass_contains_nonactual_row",
+            )
+        elif self.actual_h4_contract == "FIXTURE_ONLY":
+            _require(
+                self.contract_provenance == "fixture"
+                and self.envelope is None
+                and not self.trades
+                and bool(self.incomplete_reasons),
+                "h4_attribution_fixture_status_mismatch",
+            )
+        else:
+            _require(
+                self.contract_provenance == "deferred"
+                and type(self.envelope) is SelectedOOSAttributionEnvelope
+                and self.envelope.contract_provenance == "deferred"
+                and not self.trades
+                and bool(self.incomplete_reasons),
+                "h4_attribution_deferred_status_mismatch",
+            )
+
+
+def _attribution_from_h4_row(
+    row: S3SelectedOOSAttribution | S4SelectedOOSAttribution,
+) -> TradeAttribution:
+    common: dict[str, Any] = {
+        "strategy": "S3" if type(row) is S3SelectedOOSAttribution else "S4",
+        "row_id": row.lineage.row_id,
+        "experiment_id": row.lineage.experiment_id,
+        "contract_provenance": "actual",
+        "market_return_semantic": _MARKET_RETURN_SEMANTIC,
+        "e13_bps": row.scenario_row.e13_bps,
+        "e17_bps": row.scenario_row.e17_bps,
+        "e22_bps": row.scenario_row.e22_bps,
+        "market_return": row.market_return,
+        "realized_holding_minutes": row.realized_holding_minutes,
+    }
+    if type(row) is S3SelectedOOSAttribution:
+        return TradeAttribution(
+            **common,
+            S=row.S,
+            Q=row.Q,
+            q_min=row.q_min,
+            market_return_tercile=row.market_return_tercile,
+            volatility_percentile=row.volatility_percentile,
+            entry_z=None,
+            entry_z_threshold=None,
+            D=None,
+            correlation=None,
+            half_life=None,
+            beta_stability=None,
+            realized_pair_beta=None,
+        )
+    return TradeAttribution(
+        **common,
+        S=None,
+        Q=None,
+        q_min=None,
+        market_return_tercile=None,
+        volatility_percentile=None,
+        entry_z=row.entry_z,
+        entry_z_threshold=row.entry_z_threshold,
+        D=row.D,
+        correlation=row.correlation,
+        half_life=row.half_life,
+        beta_stability=row.beta_stability,
+        realized_pair_beta=row.realized_pair_beta,
+    )
+
+
+def _metric_trade_from_h4_row(
+    row: S3SelectedOOSAttribution | S4SelectedOOSAttribution,
+) -> MetricTrade:
+    attribution = _attribution_from_h4_row(row)
+    trade = row.scenario_row.trade
+    net_bps = {
+        "base13": attribution.e13_bps,
+        "primary_stress17": attribution.e17_bps,
+        "upward_stress22": attribution.e22_bps,
+    }[row.scenario_row.path_scenario]
+    if type(row) is S3SelectedOOSAttribution:
+        dimension = trade.symbol
+        direction = trade.side
+        gross_notional = None
+        volatility_percentile = row.volatility_percentile
+    else:
+        dimension = row.candidate.pair
+        direction = row.candidate.side
+        gross_notional = trade.gross_notional
+        volatility_percentile = None
+    return MetricTrade(
+        strategy=attribution.strategy,
+        config_id=attribution.row_id,
+        fold_id=row.lineage.fold_id,
+        path_scenario=row.scenario_row.path_scenario,
+        dimension=dimension,
+        direction=direction,
+        entry_ts=trade.entry_ts,
+        exit_ts=trade.exit_ts,
+        holding_minutes=row.realized_holding_minutes,
+        exit_reason=trade.exit_reason,
+        gross_bps=trade.gross_bps,
+        net_bps=net_bps,
+        tp_bps=row.tp_bps,
+        sl_bps=row.sl_bps,
+        gross_notional=gross_notional,
+        market_return_4h=None,
+        volatility_percentile=volatility_percentile,
+        attribution=attribution,
+    )
+
+
+def consume_h4_attribution(envelope: object) -> H4AttributionContractResult:
+    """Validate the concrete H4 seam and project it without recomputation."""
+    try:
+        exact = validate_attribution_envelope(envelope)
+    except (H4AttributionError, TypeError, ValueError) as exc:
+        raise H5InputError("actual_h4_attribution_contract_invalid") from exc
+    if exact.contract_provenance == "deferred":
+        return H4AttributionContractResult(
+            actual_h4_contract="DEFERRED",
+            contract_provenance="deferred",
+            envelope=exact,
+            trades=(),
+            incomplete_reasons=(exact.deferred_reason or "h4_attribution_deferred",),
+        )
+    if exact.contract_provenance == "fixture":
+        return fixture_h4_attribution_result()
+    trades = tuple(_metric_trade_from_h4_row(row) for row in exact.rows)
+    return H4AttributionContractResult(
+        actual_h4_contract="PASS",
+        contract_provenance="actual",
+        envelope=exact,
+        trades=trades,
+        incomplete_reasons=(),
+    )
+
+
+def fixture_h4_attribution_result() -> H4AttributionContractResult:
+    """Explicit legacy/shape-test sentinel; it can never become PASS."""
+    return H4AttributionContractResult(
+        actual_h4_contract="FIXTURE_ONLY",
+        contract_provenance="fixture",
+        envelope=None,
+        trades=(),
+        incomplete_reasons=("fixture_h4_attribution_not_actual",),
+    )

@@ -26,14 +26,19 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from rob974_h5_contracts import FOLD_IDS, S3_SYMBOLS, MetricTrade
-from rob974_h5_gates import validate_selected_oos_membership
+from rob974_h5_contracts import FOLD_IDS, S3_SYMBOLS, H5InputError, MetricTrade
+from rob974_h5_gates import attribution_bucket, validate_selected_oos_membership
 
 __all__ = [
+    "S3_ABS_M_BIN_ORDER",
+    "S3_ABS_S_BIN_ORDER",
+    "S3_DIRECTION_ORDER",
     "S3_FIRST_4H_MINUTES",
     "S3_FOLD_TIMEOUT_MAX",
     "S3_POOLED_TIMEOUT_MAX",
+    "S3_Q_BIN_ORDER",
     "S3_SL_DEPENDENCE_MAX",
+    "S3_VOLATILITY_BIN_ORDER",
     "S3FalsificationResult",
     "evaluate_s3_falsification",
 ]
@@ -42,6 +47,12 @@ S3_POOLED_TIMEOUT_MAX = 0.15
 S3_FOLD_TIMEOUT_MAX = 0.25
 S3_SL_DEPENDENCE_MAX = 0.50
 S3_FIRST_4H_MINUTES = 240.0
+
+S3_ABS_S_BIN_ORDER = ("[1.25,1.75)", "[1.75,2.50)", "[2.50,inf)")
+S3_Q_BIN_ORDER = ("[q_min,0.50)", "[0.50,0.85)", "[0.85,1.25]")
+S3_ABS_M_BIN_ORDER = ("[0.0075,0.015)", "[0.015,0.03)", "[0.03,inf)")
+S3_VOLATILITY_BIN_ORDER = ("[20,40)", "[40,60)", "[60,75)", "[75,90]")
+S3_DIRECTION_ORDER = ("Long", "Short")
 
 REASON_POOLED_TIMEOUT_ABOVE = "s3_pooled_timeout_above_15pct"
 REASON_FOLD_TIMEOUT_ABOVE = "s3_fold_timeout_above_25pct"
@@ -63,7 +74,7 @@ class S3FalsificationResult:
     fold_timeout_ratios: dict[str, float]
     bullish_long_e22_bps: float | None
     first_4h_sl_dependence: float | None
-    attribution: dict[str, dict[str, dict[str, float | int | None]]]
+    attribution: dict[str, object]
 
 
 def _profit_factor(net_values: list[float]) -> float | None:
@@ -88,6 +99,112 @@ def _bucket(trades: tuple[MetricTrade, ...]) -> dict[str, float | int | None]:
         "avg_holding_minutes": (
             sum(holding_values) / len(holding_values) if holding_values else None
         ),
+    }
+
+
+def _s3_abs_s_bin(value: float) -> str:
+    value = abs(value)
+    if 1.25 <= value < 1.75:
+        return S3_ABS_S_BIN_ORDER[0]
+    if 1.75 <= value < 2.50:
+        return S3_ABS_S_BIN_ORDER[1]
+    if value >= 2.50:
+        return S3_ABS_S_BIN_ORDER[2]
+    raise H5InputError("s3_attribution_abs_S_outside_registered_bins")
+
+
+def _s3_q_bin(value: float, q_min: float) -> str:
+    if q_min <= value < 0.50:
+        return S3_Q_BIN_ORDER[0]
+    if 0.50 <= value < 0.85:
+        return S3_Q_BIN_ORDER[1]
+    if 0.85 <= value <= 1.25:
+        return S3_Q_BIN_ORDER[2]
+    raise H5InputError("s3_attribution_Q_outside_registered_bins")
+
+
+def _s3_abs_m_bin(value: float) -> str:
+    value = abs(value)
+    if 0.0075 <= value < 0.015:
+        return S3_ABS_M_BIN_ORDER[0]
+    if 0.015 <= value < 0.03:
+        return S3_ABS_M_BIN_ORDER[1]
+    if value >= 0.03:
+        return S3_ABS_M_BIN_ORDER[2]
+    raise H5InputError("s3_attribution_abs_M_outside_registered_bins")
+
+
+def _s3_volatility_bin(value: float) -> str:
+    if 20.0 <= value < 40.0:
+        return S3_VOLATILITY_BIN_ORDER[0]
+    if 40.0 <= value < 60.0:
+        return S3_VOLATILITY_BIN_ORDER[1]
+    if 60.0 <= value < 75.0:
+        return S3_VOLATILITY_BIN_ORDER[2]
+    if 75.0 <= value <= 90.0:
+        return S3_VOLATILITY_BIN_ORDER[3]
+    raise H5InputError("s3_attribution_volatility_outside_registered_bins")
+
+
+def _s3_registered_attribution(
+    trades: tuple[MetricTrade, ...],
+) -> dict[str, object]:
+    by_abs_s: dict[str, list[MetricTrade]] = {name: [] for name in S3_ABS_S_BIN_ORDER}
+    by_q: dict[str, list[MetricTrade]] = {name: [] for name in S3_Q_BIN_ORDER}
+    by_abs_m: dict[str, list[MetricTrade]] = {name: [] for name in S3_ABS_M_BIN_ORDER}
+    by_volatility: dict[str, list[MetricTrade]] = {
+        name: [] for name in S3_VOLATILITY_BIN_ORDER
+    }
+    top_cross: dict[str, dict[str, list[MetricTrade]]] = {
+        direction: {name: [] for name in S3_ABS_M_BIN_ORDER}
+        for direction in S3_DIRECTION_ORDER
+    }
+    for trade in trades:
+        attribution = trade.attribution
+        if (
+            attribution is None
+            or attribution.S is None
+            or attribution.Q is None
+            or attribution.q_min is None
+            or attribution.volatility_percentile is None
+            or attribution.market_return_tercile is None
+        ):
+            raise H5InputError("s3_registered_attribution_row_incomplete")
+        abs_m_bin = _s3_abs_m_bin(attribution.market_return)
+        by_abs_s[_s3_abs_s_bin(attribution.S)].append(trade)
+        by_q[_s3_q_bin(attribution.Q, attribution.q_min)].append(trade)
+        by_abs_m[abs_m_bin].append(trade)
+        by_volatility[_s3_volatility_bin(attribution.volatility_percentile)].append(
+            trade
+        )
+        direction = {"long": "Long", "short": "Short"}.get(trade.direction)
+        if direction is None:
+            raise H5InputError("s3_attribution_direction_unknown")
+        if attribution.market_return_tercile == "top":
+            top_cross[direction][abs_m_bin].append(trade)
+    return {
+        "by_abs_S_bin": {
+            name: attribution_bucket(tuple(by_abs_s[name]))
+            for name in S3_ABS_S_BIN_ORDER
+        },
+        "by_pullback_Q_bin": {
+            name: attribution_bucket(tuple(by_q[name])) for name in S3_Q_BIN_ORDER
+        },
+        "by_abs_M_bin": {
+            name: attribution_bucket(tuple(by_abs_m[name]))
+            for name in S3_ABS_M_BIN_ORDER
+        },
+        "by_volatility_percentile_bin": {
+            name: attribution_bucket(tuple(by_volatility[name]))
+            for name in S3_VOLATILITY_BIN_ORDER
+        },
+        "top_tercile_by_direction_and_abs_M_bin": {
+            direction: {
+                name: attribution_bucket(tuple(top_cross[direction][name]))
+                for name in S3_ABS_M_BIN_ORDER
+            }
+            for direction in S3_DIRECTION_ORDER
+        },
     }
 
 
@@ -193,6 +310,13 @@ def evaluate_s3_falsification(
         s: _bucket(tuple(trades)) for s, trades in symbol_trades.items() if trades
     }
 
+    attribution: dict[str, object] = {
+        "by_exit_reason": by_exit_reason,
+        "by_symbol": by_symbol,
+    }
+    if primary_trades and primary_trades[0].attribution is not None:
+        attribution.update(_s3_registered_attribution(primary_trades))
+
     return S3FalsificationResult(
         passed=not reasons,
         reasons=tuple(sorted(reasons)),
@@ -201,5 +325,5 @@ def evaluate_s3_falsification(
         fold_timeout_ratios=fold_timeout_ratios,
         bullish_long_e22_bps=bullish_long_e22_bps,
         first_4h_sl_dependence=first_4h_sl_dependence,
-        attribution={"by_exit_reason": by_exit_reason, "by_symbol": by_symbol},
+        attribution=attribution,
     )

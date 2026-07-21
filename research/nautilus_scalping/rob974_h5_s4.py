@@ -4,7 +4,8 @@ state, direct-verdict tri-state, and campaign decision.
 S4-specific falsification mirrors S3's structure (CP4) with its own
 thresholds and predicates: pooled/per-fold timeout ceilings, an ``M_t>+3%``
 upward subbook (strict positivity), ``abs(Corr(pair gross return,
-M_t))<=0.15`` (pooled, price-only ``gross_bps`` against ``market_return_4h``
+M_t))<=0.15`` (pooled, price-only ``gross_bps`` against authoritative
+``M_t``
 -- a zero-variance denominator is structurally undefined, never a free
 pass), pair concentration (conditional -- dominant-pair share ``>0.70`` of
 the positive pool AND the other-two-pairs' pooled E17 ``<=0``, both
@@ -30,16 +31,27 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from rob974_h5_contracts import FOLD_IDS, S4_PAIRS, H5InputError, MetricTrade
-from rob974_h5_gates import validate_selected_oos_membership
+from rob974_h5_contracts import (
+    FOLD_IDS,
+    S4_PAIRS,
+    H5InputError,
+    MetricTrade,
+    authoritative_market_return,
+)
+from rob974_h5_gates import attribution_bucket, validate_selected_oos_membership
 
 __all__ = [
+    "S4_ABS_Z_BIN_ORDER",
     "S4_CORR_MAX",
+    "S4_D_BIN_ORDER",
     "S4_FOLD_TIMEOUT_MAX",
+    "S4_HALF_LIFE_BIN_ORDER",
     "S4_HISTORICAL_PAIR_EXECUTOR_STATE",
     "S4_M_T_THRESHOLD",
+    "S4_MARKET_RETURN_BIN_ORDER",
     "S4_PAIR_CONCENTRATION_MAX",
     "S4_POOLED_TIMEOUT_MAX",
+    "S4_RHO_BIN_ORDER",
     "S4_SLOW_BUCKET_END_MINUTES",
     "S4_SLOW_BUCKET_MID_MINUTES",
     "S4_SLOW_BUCKET_START_MINUTES",
@@ -62,6 +74,18 @@ S4_PAIR_CONCENTRATION_MAX = 0.70
 S4_SLOW_BUCKET_START_MINUTES = 480.0  # 8h
 S4_SLOW_BUCKET_MID_MINUTES = 1920.0  # 32h
 S4_SLOW_BUCKET_END_MINUTES = 2880.0  # 48h
+
+S4_ABS_Z_BIN_ORDER = ("[z_entry,2.2)", "[2.2,2.8)", "[2.8,inf)")
+S4_D_BIN_ORDER = ("[140,200)", "[200,300)", "[300,inf)")
+S4_RHO_BIN_ORDER = ("[0.60,0.70)", "[0.70,0.80)", "[0.80,1.00]")
+S4_HALF_LIFE_BIN_ORDER = ("[8,16)", "[16,32)", "[32,48]")
+S4_MARKET_RETURN_BIN_ORDER = (
+    "[-inf,-0.03)",
+    "[-0.03,-0.01)",
+    "[-0.01,0.01]",
+    "(0.01,0.03]",
+    "(0.03,inf)",
+)
 
 # Correlation is a derived statistic (not a directly-supplied registered
 # constant like the CP3 thresholds); a tiny epsilon absorbs float
@@ -110,7 +134,7 @@ class S4FalsificationResult:
     high_market_return_e22_bps: float | None
     correlation: float | None
     pair_concentration: float | None
-    attribution: dict[str, dict[str, dict[str, float | int | None]]]
+    attribution: dict[str, object]
 
 
 def _profit_factor(net_values: list[float]) -> float | None:
@@ -135,6 +159,115 @@ def _bucket(trades: tuple[MetricTrade, ...]) -> dict[str, float | int | None]:
         "avg_holding_minutes": (
             sum(holding_values) / len(holding_values) if holding_values else None
         ),
+    }
+
+
+def _s4_abs_z_bin(value: float, threshold: float) -> str:
+    value = abs(value)
+    if threshold <= value < 2.2:
+        return S4_ABS_Z_BIN_ORDER[0]
+    if 2.2 <= value < 2.8:
+        return S4_ABS_Z_BIN_ORDER[1]
+    if value >= 2.8:
+        return S4_ABS_Z_BIN_ORDER[2]
+    raise H5InputError("s4_attribution_abs_z_outside_registered_bins")
+
+
+def _s4_d_bin(value: float) -> str:
+    if 140.0 <= value < 200.0:
+        return S4_D_BIN_ORDER[0]
+    if 200.0 <= value < 300.0:
+        return S4_D_BIN_ORDER[1]
+    if value >= 300.0:
+        return S4_D_BIN_ORDER[2]
+    raise H5InputError("s4_attribution_D_outside_registered_bins")
+
+
+def _s4_rho_bin(value: float) -> str:
+    if 0.60 <= value < 0.70:
+        return S4_RHO_BIN_ORDER[0]
+    if 0.70 <= value < 0.80:
+        return S4_RHO_BIN_ORDER[1]
+    if 0.80 <= value <= 1.00:
+        return S4_RHO_BIN_ORDER[2]
+    raise H5InputError("s4_attribution_rho_outside_registered_bins")
+
+
+def _s4_half_life_bin(value_4h_bars: float) -> str:
+    if 2.0 <= value_4h_bars < 4.0:
+        return S4_HALF_LIFE_BIN_ORDER[0]
+    if 4.0 <= value_4h_bars < 8.0:
+        return S4_HALF_LIFE_BIN_ORDER[1]
+    if 8.0 <= value_4h_bars <= 12.0:
+        return S4_HALF_LIFE_BIN_ORDER[2]
+    raise H5InputError("s4_attribution_half_life_outside_registered_bins")
+
+
+def _s4_market_return_bin(value: float) -> str:
+    if value < -0.03:
+        return S4_MARKET_RETURN_BIN_ORDER[0]
+    if -0.03 <= value < -0.01:
+        return S4_MARKET_RETURN_BIN_ORDER[1]
+    if -0.01 <= value <= 0.01:
+        return S4_MARKET_RETURN_BIN_ORDER[2]
+    if 0.01 < value <= 0.03:
+        return S4_MARKET_RETURN_BIN_ORDER[3]
+    if value > 0.03:
+        return S4_MARKET_RETURN_BIN_ORDER[4]
+    raise H5InputError("s4_attribution_M_outside_registered_bins")
+
+
+def _s4_registered_attribution(
+    trades: tuple[MetricTrade, ...],
+) -> dict[str, object]:
+    by_abs_z: dict[str, list[MetricTrade]] = {name: [] for name in S4_ABS_Z_BIN_ORDER}
+    by_d: dict[str, list[MetricTrade]] = {name: [] for name in S4_D_BIN_ORDER}
+    by_rho: dict[str, list[MetricTrade]] = {name: [] for name in S4_RHO_BIN_ORDER}
+    by_half_life: dict[str, list[MetricTrade]] = {
+        name: [] for name in S4_HALF_LIFE_BIN_ORDER
+    }
+    by_market_return: dict[str, list[MetricTrade]] = {
+        name: [] for name in S4_MARKET_RETURN_BIN_ORDER
+    }
+    for trade in trades:
+        attribution = trade.attribution
+        if (
+            attribution is None
+            or attribution.entry_z is None
+            or attribution.entry_z_threshold is None
+            or attribution.D is None
+            or attribution.correlation is None
+            or attribution.half_life is None
+            or attribution.beta_stability is None
+            or attribution.realized_pair_beta is None
+        ):
+            raise H5InputError("s4_registered_attribution_row_incomplete")
+        by_abs_z[
+            _s4_abs_z_bin(attribution.entry_z, attribution.entry_z_threshold)
+        ].append(trade)
+        by_d[_s4_d_bin(attribution.D)].append(trade)
+        by_rho[_s4_rho_bin(attribution.correlation)].append(trade)
+        by_half_life[_s4_half_life_bin(attribution.half_life)].append(trade)
+        by_market_return[_s4_market_return_bin(attribution.market_return)].append(trade)
+    return {
+        "by_abs_z_bin": {
+            name: attribution_bucket(tuple(by_abs_z[name]))
+            for name in S4_ABS_Z_BIN_ORDER
+        },
+        "by_D_bps_bin": {
+            name: attribution_bucket(tuple(by_d[name])) for name in S4_D_BIN_ORDER
+        },
+        "by_rho_bin": {
+            name: attribution_bucket(tuple(by_rho[name])) for name in S4_RHO_BIN_ORDER
+        },
+        "by_half_life_hours_bin": {
+            name: attribution_bucket(tuple(by_half_life[name]))
+            for name in S4_HALF_LIFE_BIN_ORDER
+        },
+        "by_M_24h_bin": {
+            name: attribution_bucket(tuple(by_market_return[name]))
+            for name in S4_MARKET_RETURN_BIN_ORDER
+        },
     }
 
 
@@ -198,7 +331,8 @@ def evaluate_s4_falsification(
     high_m_net = [
         t.net_bps
         for t in upward_trades
-        if t.market_return_4h is not None and t.market_return_4h > S4_M_T_THRESHOLD
+        if (market_return := authoritative_market_return(t)) is not None
+        and market_return > S4_M_T_THRESHOLD
     ]
     high_market_return_e22_bps = (
         sum(high_m_net) / len(high_m_net) if high_m_net else None
@@ -207,10 +341,13 @@ def evaluate_s4_falsification(
         reasons.add(REASON_HIGH_M_E22_NOT_POSITIVE)
 
     # -- Correlation (AC: abs(Corr(gross_bps, M_t))<=0.15). ------------------
-    corr_xs = [
-        t.market_return_4h for t in primary_trades if t.market_return_4h is not None
-    ]
-    corr_ys = [t.gross_bps for t in primary_trades if t.market_return_4h is not None]
+    correlation_rows = tuple(
+        (market_return, trade.gross_bps)
+        for trade in primary_trades
+        if (market_return := authoritative_market_return(trade)) is not None
+    )
+    corr_xs = [row[0] for row in correlation_rows]
+    corr_ys = [row[1] for row in correlation_rows]
     correlation = _pearson_corr(corr_xs, corr_ys)
     if correlation is None:
         incomplete_reasons.add(INCOMPLETE_CORRELATION_UNDEFINED)
@@ -280,6 +417,13 @@ def evaluate_s4_falsification(
     }
     by_pair = {p: _bucket(tuple(trades)) for p, trades in pair_trades.items() if trades}
 
+    attribution: dict[str, object] = {
+        "by_exit_reason": by_exit_reason,
+        "by_pair": by_pair,
+    }
+    if primary_trades and primary_trades[0].attribution is not None:
+        attribution.update(_s4_registered_attribution(primary_trades))
+
     return S4FalsificationResult(
         passed=not reasons,
         reasons=tuple(sorted(reasons)),
@@ -289,7 +433,7 @@ def evaluate_s4_falsification(
         high_market_return_e22_bps=high_market_return_e22_bps,
         correlation=correlation,
         pair_concentration=pair_concentration,
-        attribution={"by_exit_reason": by_exit_reason, "by_pair": by_pair},
+        attribution=attribution,
     )
 
 
