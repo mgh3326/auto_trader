@@ -1,3 +1,4 @@
+import functools
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -202,6 +203,111 @@ async def test_create_toss_live_target_action_preflights_and_creates_proposal(
     assert calls[0]["symbol"] == symbol
     assert calls[0]["market"] == market
     assert calls[0]["account_mode"] == "toss_live"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["replace", "cancel"])
+async def test_create_toss_live_cancel_replace_auto_dispatch_never_mutates_before_gate(
+    monkeypatch, action
+):
+    """ROB-972 round-1 false-green fix.
+
+    `test_create_toss_live_target_action_preflights_and_creates_proposal`'s
+    docstring claims there is "no code path for a mutation to leak into
+    proposal creation" because only the read-only `fetch_target_order`
+    preflight is imported by `order_proposal_create` -- but that test never
+    exercises `order_proposal_create`'s own best-effort `dispatch_proposal`
+    call a few lines later, which IS a real code path, and which is exactly
+    where the round-1 incident happened (auto-dispatch reaching a broker
+    cancel before the eligibility gate ran). Cover that indirect path for
+    real: enable Telegram + auto-approve, let `order_proposal_create` drive
+    its own real `dispatch_proposal` -> real `revalidate_and_submit` (only
+    the broker/network edges are faked, via a `revalidate_fn` partial bound
+    onto the real functions -- not a stub that skips the gate logic), and
+    assert the broker cancel never fires.
+    """
+    from app.services.order_proposals.dispatch import (
+        dispatch_proposal as real_dispatch_proposal,
+    )
+    from app.services.order_proposals.revalidation import revalidate_and_submit
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
+    chat = _unique_chat()
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", chat)
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+
+    fake_notifier = _FakeNotifier(message_id=9977)
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.notifier.get_trade_notifier",
+        lambda: fake_notifier,
+    )
+
+    target_snapshot = _target_snapshot(
+        broker_order_id="broker-1",
+        symbol="005930",
+        side="sell",
+        limit_price="43000",
+        remaining_quantity="3.5",
+    )
+
+    async def fake_fetch(**kwargs):
+        return target_snapshot
+
+    monkeypatch.setattr(opt, "fetch_target_order", fake_fetch)
+
+    cancel_calls = []
+
+    async def cancel_fn_must_not_run(**kwargs):
+        cancel_calls.append(kwargs)
+        raise AssertionError(
+            "order_proposal_create's own dispatch_proposal call must never "
+            "reach a broker cancel before the eligibility gate runs"
+        )
+
+    async def place_fn(**kwargs):
+        if kwargs.get("dry_run"):
+            return {
+                "success": True,
+                "approval_hash": "fresh",
+                "price": "43000",
+                "quantity": "3.5",
+            }
+        raise AssertionError("live submit must never fire before the gate runs")
+
+    async def no_opposite_pending(**kwargs):
+        return None
+
+    # Bind the fakes onto the REAL dispatch_proposal/revalidate_and_submit --
+    # not a stand-in that reimplements or skips the gate call -- so this
+    # test actually exercises the production gate-application code path.
+    monkeypatch.setattr(
+        opt,
+        "dispatch_proposal",
+        functools.partial(
+            real_dispatch_proposal,
+            revalidate_fn=functools.partial(
+                revalidate_and_submit,
+                fetch_target_fn=fake_fetch,
+                cancel_target_fn=cancel_fn_must_not_run,
+                place_order_fn=place_fn,
+                opposite_pending_check_fn=no_opposite_pending,
+            ),
+        ),
+    )
+
+    created = await opt.order_proposal_create(
+        **_toss_target_create_kwargs(action, market="equity_kr")
+    )
+
+    assert created["success"] is True
+    assert cancel_calls == []
+    assert len(fake_notifier.calls) == 1
+    text, _keyboard, _chat_id = fake_notifier.calls[0]
+    assert "주문 제안 승인" in text
+    assert "자동 접수됨" not in text
+
+    got = await opt.order_proposal_get(created["proposal_id"])
+    assert got["rungs"][0]["state"] == "pending_approval"
 
 
 @pytest.mark.asyncio

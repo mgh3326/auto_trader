@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -14,7 +15,7 @@ from app.services.order_proposals.dispatch import (
     dispatch_proposal,
     send_proposal_for_approval,
 )
-from app.services.order_proposals.revalidation import RungOutcome
+from app.services.order_proposals.revalidation import RungOutcome, revalidate_and_submit
 from app.services.order_proposals.service import RungInput
 
 CHAT_ID = "chat-99"
@@ -509,6 +510,139 @@ async def test_dispatch_auto_ineligible_degrades_to_human_approval(
     assert rungs[0].state == "pending_approval"
     assert "auto_approved" not in (refreshed.source_asof or {})
     assert "주문 제안 승인" in notifier.sent_messages[0][0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "account_mode,market",
+    [
+        ("toss_live", "equity_kr"),
+        ("kis_live", "equity_kr"),
+        ("upbit", "crypto"),
+    ],
+)
+@pytest.mark.parametrize("action", ["cancel", "replace"])
+async def test_dispatch_auto_approve_cancel_replace_never_mutates_before_gate(
+    monkeypatch, db_session, account_mode, market, action
+):
+    """ROB-972 round-1 regression -- the 07-20 incident.
+
+    Auto-dispatch previously reached ``_cancel_and_confirm_target`` (a real
+    broker cancel) for cancel/replace proposals without ever consulting the
+    eligibility gate, because ``revalidate_and_submit`` only threaded
+    ``eligibility_gate`` into the ``place`` branch. The gate rejects every
+    cancel/replace with ``action_not_place`` (see
+    ``evaluate_auto_approve_eligibility``), so the fix must make auto-dispatch
+    fall back to the ordinary human-approval Telegram message for ALL three
+    veto-capable account/market pairs, same as it always has for ``place``.
+
+    Deliberately exercises the REAL ``revalidate_and_submit`` (not a fake
+    ``revalidate_fn`` that calls ``eligibility_gate`` by hand, as the other
+    tests in this module do) through ``dispatch_proposal``'s real auto-
+    approve branch end to end -- only the broker/network edges
+    (``fetch_target_fn``/``cancel_target_fn``/``place_order_fn``/
+    ``opposite_pending_check_fn``) are faked. This is the shape of coverage
+    the round-1 audit found missing: a fake ``revalidate_fn`` that manually
+    invokes ``eligibility_gate`` can never catch a bug in
+    ``revalidate_and_submit`` not calling it at all for a given action.
+    """
+    from app.core.config import settings
+    from app.services.order_proposals.target_order import TargetOrderSnapshot
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    # Unique per-parametrization chat id -- batches scope by chat, and this
+    # module's tests commit real rows to the shared test DB, so a fixed
+    # CHAT_ID lets an earlier parametrization's proposal leak into this run's
+    # 10-minute batch window and add an unrelated "전체 승인" batch-summary
+    # send (see `_unique_chat` in test_mcp_order_proposal_tools.py).
+    chat_id = f"chat-gate-{account_mode}-{action}-{uuid.uuid4().hex[:8]}"
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", chat_id
+    )
+
+    symbol = "KRW-AVAX" if market == "crypto" else "005930"
+    side = "sell"
+    limit_price = Decimal("43000") if action == "replace" else Decimal("42000")
+    target_snapshot = TargetOrderSnapshot(
+        broker_order_id="broker-gate-1",
+        symbol=symbol,
+        side=side,
+        order_type="limit",
+        limit_price="42000",
+        remaining_quantity="3.5",
+        status="open",
+        observed_at=datetime.now(UTC).isoformat(),
+    )
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol=symbol,
+        market=market,
+        account_mode=account_mode,
+        side=side,
+        order_type="limit",
+        proposer="p",
+        broker_account_id=f"gate-{account_mode}-{action}-{uuid.uuid4()}",
+        action=action,
+        target_broker_order_id="broker-gate-1",
+        target_order_snapshot=target_snapshot.to_payload(),
+        rungs=[RungInput(0, side, Decimal("3.5"), limit_price, None)],
+    )
+    await db_session.commit()
+
+    cancel_calls: list[dict] = []
+
+    async def fetch_fn(**kwargs):
+        return target_snapshot
+
+    async def cancel_fn(**kwargs):
+        cancel_calls.append(kwargs)
+        raise AssertionError(
+            "BROKER_CANCEL must never fire before the eligibility gate runs"
+        )
+
+    async def place_fn(**kwargs):
+        if kwargs.get("dry_run"):
+            return {
+                "success": True,
+                "approval_hash": "fresh",
+                "price": str(limit_price),
+                "quantity": "3.5",
+            }
+        raise AssertionError("live submit must never fire before the gate runs")
+
+    async def no_opposite_pending(**kwargs):
+        return None
+
+    notifier = _FakeNotifier(message_id=7700)
+    result = await dispatch_proposal(
+        group.proposal_id,
+        notifier=notifier,
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=functools.partial(
+            revalidate_and_submit,
+            fetch_target_fn=fetch_fn,
+            cancel_target_fn=cancel_fn,
+            place_order_fn=place_fn,
+            opposite_pending_check_fn=no_opposite_pending,
+        ),
+    )
+
+    assert cancel_calls == []
+    assert result is not None  # nonce minted + ordinary approval message sent
+    # Falls back to the ordinary human-approval message ("주문 제안 승인"),
+    # never the auto-approved "자동 접수됨" veto message -- TELEGRAM_APPROVAL_SEND
+    # for the human-click flow, not a post-hoc veto button on an already-sent order.
+    assert len(notifier.sent_messages) == 1
+    text, _keyboard, _chat_id = notifier.sent_messages[0]
+    assert "주문 제안 승인" in text
+    assert "자동 접수됨" not in text
+
+    refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert rungs[0].state == "pending_approval"
+    assert "auto_approved" not in (refreshed.source_asof or {})
 
 
 @pytest.mark.asyncio

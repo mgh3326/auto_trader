@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -770,6 +772,243 @@ async def test_approve_happy_path_submits_and_edits(monkeypatch, db_session):
     assert refreshed.approval_nonce_used_at is not None
     assert refreshed.approved_by_telegram_user_id == str(USER_ID)
     assert refreshed.approved_at is not None
+
+
+def _toss_broker_order(**overrides):
+    values = {
+        "order_id": "broker-1",
+        "symbol": "005930",
+        "side": "SELL",
+        "order_type": "LIMIT",
+        "price": Decimal("70000"),
+        "quantity": Decimal("10"),
+        "execution": {},
+        "status": "PENDING",
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+@pytest.mark.asyncio
+async def test_toss_live_cancel_approve_click_consumes_nonce_before_broker_cancel(
+    monkeypatch, db_session
+):
+    """ROB-972 AC3 -- the real 07-20 incident scenario, driven through the
+    actual Telegram approval boundary (nonce consumption via
+    `handle_callback_update`), not a direct `revalidate_and_submit` call.
+
+    ROB-972 round-1 finding: the previous "AC3" test called
+    `revalidate_and_submit` directly with no nonce/callback, so it could not
+    have caught a bug in the approval-boundary wiring itself (e.g. auto-
+    dispatch reaching a cancel before Telegram approval was ever consulted).
+    This test consumes a real approval nonce through `handle_callback_update`
+    -- exactly the human-click path -- and only then expects the broker
+    cancel to fire, with the *real* `revalidate_and_submit` (only the Toss
+    network boundary is faked, via a `revalidate_fn` partial bound onto the
+    real function, matching `test_toss_live_cancel_end_to_end_through_broker_gateway`'s
+    fakes).
+    """
+    from app.services.order_proposals.broker_gateway import (
+        cancel_target_order,
+        fetch_target_order,
+    )
+
+    _allow_chat(monkeypatch)
+    service = OrderProposalsService(db_session)
+    approved = TargetOrderSnapshot(
+        broker_order_id="broker-1",
+        symbol="005930",
+        side="sell",
+        order_type="limit",
+        limit_price="70000",
+        remaining_quantity="10",
+        status="open",
+        observed_at="2026-07-11T08:23:00+00:00",
+    )
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        action="cancel",
+        target_broker_order_id="broker-1",
+        target_order_snapshot=approved.to_payload(),
+        rungs=[RungInput(0, "sell", Decimal("10"), Decimal("70000"), None)],
+    )
+    await service.set_approval_nonce(group.proposal_id, "ac3-cancel-nonce")
+    await db_session.commit()
+
+    toss_orders = iter(
+        [
+            _toss_broker_order(status="PENDING"),
+            _toss_broker_order(status="CANCELED"),
+        ]
+    )
+
+    class FakeTossClient:
+        async def get_order(self, order_id):
+            assert order_id == "broker-1"
+            return next(toss_orders)
+
+    cancel_calls: list[dict] = []
+
+    async def fake_toss_cancel(**kwargs):
+        cancel_calls.append(kwargs)
+        return {"success": True, "original_order_id": kwargs["order_id"]}
+
+    real_revalidate = functools.partial(
+        revalidate_and_submit,
+        fetch_target_fn=functools.partial(
+            fetch_target_order, toss_client=FakeTossClient()
+        ),
+        cancel_target_fn=functools.partial(
+            cancel_target_order, toss_cancel_fn=fake_toss_cancel
+        ),
+    )
+
+    notifier = _FakeNotifier()
+    data = f"op:{str(group.proposal_id)[:8]}:ac3-cancel-nonce"
+
+    # Before the nonce is consumed, the broker must not have been touched.
+    assert cancel_calls == []
+
+    result = await handle_callback_update(
+        _make_update(data=data),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=real_revalidate,
+    )
+
+    assert result["handled"] is True
+    assert result["reason"] == "approved"
+    assert result["results"] == ["cancelled"]
+    # The cancel only happened after (as a direct consequence of) this
+    # single approve click -- TELEGRAM_APPROVAL_SEND already happened
+    # earlier (dispatch.py, not under test here); this asserts the click
+    # itself, not a pre-approval leak, is what triggered BROKER_CANCEL.
+    assert len(cancel_calls) == 1
+    assert cancel_calls[0]["order_id"] == "broker-1"
+
+    refreshed, rungs = await service.get_proposal(group.proposal_id)
+    assert refreshed.approval_nonce_used_at is not None
+    assert refreshed.approved_by_telegram_user_id == str(USER_ID)
+    assert rungs[0].state == "cancelled"
+    assert rungs[0].broker_order_id == "broker-1"
+
+    # Nonce replay: a second click (e.g. a duplicated Telegram webhook) must
+    # not be able to re-trigger the cancel path.
+    replay = await handle_callback_update(
+        _make_update(data=data, callback_id="cbq-replay"),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=real_revalidate,
+    )
+    assert replay["handled"] is False
+    assert len(cancel_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_toss_live_replace_approve_click_opposite_pending_blocks_before_cancel(
+    monkeypatch, db_session
+):
+    """ROB-972 round-1 -- the replace-atomicity finding, through the real
+    approval boundary. An opposite-pending order discovered by the pre-cancel
+    guard must leave the original resting order untouched even when reached
+    via a real Telegram approve click, not just a direct
+    `revalidate_and_submit` call.
+    """
+    from app.services.order_proposals.broker_gateway import (
+        cancel_target_order,
+        fetch_target_order,
+    )
+
+    _allow_chat(monkeypatch)
+    service = OrderProposalsService(db_session)
+    approved = TargetOrderSnapshot(
+        broker_order_id="broker-1",
+        symbol="005930",
+        side="sell",
+        order_type="limit",
+        limit_price="70000",
+        remaining_quantity="10",
+        status="open",
+        observed_at="2026-07-11T08:23:00+00:00",
+    )
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        action="replace",
+        target_broker_order_id="broker-1",
+        target_order_snapshot=approved.to_payload(),
+        rungs=[RungInput(0, "sell", Decimal("10"), Decimal("71000"), None)],
+    )
+    await service.set_approval_nonce(group.proposal_id, "ac3-replace-nonce")
+    await db_session.commit()
+
+    class FakeTossClient:
+        async def get_order(self, order_id):
+            return _toss_broker_order(status="PENDING")
+
+    cancel_calls: list[dict] = []
+
+    async def fake_toss_cancel(**kwargs):
+        cancel_calls.append(kwargs)
+        raise AssertionError(
+            "the original order must not be cancelled when the "
+            "opposite-pending pre-check rejects the replace"
+        )
+
+    async def place_order_fn(**kwargs):
+        assert kwargs.get("dry_run") is True
+        return {
+            "success": True,
+            "approval_hash": "fresh",
+            "price": "71000",
+            "quantity": "10",
+        }
+
+    async def opposite_pending_found(**kwargs):
+        return {
+            "success": False,
+            "error": "An opposite pending order exists for symbol 005930 (BUY).",
+        }
+
+    real_revalidate = functools.partial(
+        revalidate_and_submit,
+        place_order_fn=place_order_fn,
+        fetch_target_fn=functools.partial(
+            fetch_target_order, toss_client=FakeTossClient()
+        ),
+        cancel_target_fn=functools.partial(
+            cancel_target_order, toss_cancel_fn=fake_toss_cancel
+        ),
+        opposite_pending_check_fn=opposite_pending_found,
+    )
+
+    notifier = _FakeNotifier()
+    result = await handle_callback_update(
+        _make_update(data=f"op:{str(group.proposal_id)[:8]}:ac3-replace-nonce"),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=real_revalidate,
+    )
+
+    assert result["handled"] is True
+    assert result["results"] == ["guard_blocked"]
+    assert cancel_calls == []
+
+    refreshed, rungs = await service.get_proposal(group.proposal_id)
+    assert refreshed.target_broker_order_id == "broker-1"
+    assert rungs[0].state == "pending_approval"
 
 
 @pytest.mark.asyncio
