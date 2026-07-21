@@ -28,13 +28,13 @@ RESEARCH_ROOT = REPO_ROOT / "research" / "nautilus_scalping"
 # scanners classifying reviewed high-entropy evidence as credentials.
 FULL_CAMPAIGN_HASH = "".join(
     (
-        "341a5a57ec14b7a4",
-        "99ea58d74de3b7d9",
-        "c4b2c4e8bb514c78",
-        "9f6f528231a4045d",
+        "c8bb8e88e129e007",
+        "2d0ea174adca5c4c",
+        "ce8158f2726c6397",
+        "030d2ae6e4619f39",
     )
 )
-CAMPAIGN_RUN_ID = "rob974h6a-ReYDH4lJ8dDmDJxApTNIB7p72qAjTBI2Qited6Ni9Y0"
+CAMPAIGN_RUN_ID = "rob974h6a-G4efMErFLrEyHWNztSKlo9j-ghlxQuPkwD0h1g6sQEw"
 EXACT_48_MAPPING_HASH = (
     "9ec3fdac35c3a98ed0f17bb5f10ab75fb1d68abf89a964e471c3182f53a11bf0"
 )
@@ -45,16 +45,16 @@ ENGINE_SOURCE_SHA256 = (
     "a3449251714eeca12806143d8b046aff0d3917cbe4f13ea11b79cb0f1d3f9339"
 )
 RUNNER_SOURCE_SHA256 = (
-    "eef75d09aac6ee862f8e3d959c6abd11e72b3faf072cee620ddb9309678af806"
+    "09235b487e5436d2ca9899afeab89c4c1d2bd71db9d5b15e229c1b8d1be771d6"
 )
 PBO_IMPLEMENTATION_SHA256 = (
     "58e42e9c7d875ae8d4f5e40f0fd698d28bc1f1b983a38be2d3d3b2be86312a41"
 )
 MERGED_MAIN_REFREEZE_HEAD = "".join(
-    ("11a596d562", "aa4d34a7a7", "ce162b1acb", "e2ac0f594e")
+    ("7e5ff595ea", "b0a35b73a6", "e326105159", "ac8fea56de")
 )
 MERGED_MAIN_REFREEZE_TREE = "".join(
-    ("30d0973b41", "d0f9a1bb0e", "526abc6504", "a43b4931b7")
+    ("3426ed5bf6", "5a6666c8ae", "41de60d922", "ac9d923fd0")
 )
 
 WINDOW_START_ISO = "2025-07-01T00:00:00Z"
@@ -78,13 +78,13 @@ EXPECTED_CORPUS_ROOT = Path(
     "rob941-4bcc2da979b47caa45b5f90a09c326aefff91fa605e110d55ef316d53c9a9351/"
     "data"
 )
-EXPECTED_OUTPUT_ROOT = Path("/Users/mgh3326/work/herdr-artifacts/rob974-r2-341a5a57")
+EXPECTED_OUTPUT_ROOT = Path("/Users/mgh3326/work/herdr-artifacts/rob974-r2-c8bb8e88")
 DATABASE_URL_ENV = "ROB974_DATABASE_URL"
 WRITE_OPT_IN = "ROB974_R2_EMPIRICAL_WRITE=YES"
 PIT_CONFIRMATION = (
     "2025-07-01T00:00:00Z..2026-07-01T00:00:00Z/XRPUSDT,DOGEUSDT,SOLUSDT/PIT"
 )
-ONE_SHOT_APPROVAL = "ROB-1011/ROB-974-R2/341a5a57/ONE-SHOT"
+ONE_SHOT_APPROVAL = "ROB-1012/ROB-974-R2/c8bb8e88/ONE-SHOT"
 APPROVED_DB = ("localhost", 5432, "rob974_db", "postgres")
 
 CLI_USAGE_OR_PLAN_ERROR = 2
