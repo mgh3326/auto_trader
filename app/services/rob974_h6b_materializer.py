@@ -1004,16 +1004,18 @@ def build_h4_member_trade_key(row: object) -> str:
 
 def _attempt_evidence_payload(attempt: h6a_evidence.AttemptRecord) -> dict[str, object]:
     return {
-        "schema_version": "rob974_h6b_attempt_evidence.v1",
+        "schema_version": "rob974_h6b_attempt_evidence.v2",
         "row_id": attempt.row_id,
         "strategy_key": attempt.strategy_key,
         "fold_traces": [trace.canonical_payload() for trace in attempt.fold_traces],
         "unique_evidence": [
             {
                 "fold_id": evidence.fold_id,
+                "phase": evidence.phase,
                 "candidate_identity_hash": evidence.candidate_identity_hash,
                 "evaluated_decision_units": evidence.evaluated_decision_units,
                 "no_signal": evidence.no_signal,
+                "no_signal_reason_histogram": dict(evidence.no_signal_reason_histogram),
                 "candidate": evidence.candidate,
                 "generator_rejected": evidence.generator_rejected,
                 "generator_accepted": evidence.generator_accepted,
@@ -1207,10 +1209,10 @@ class ActualH4CampaignResult:
             }
             if (
                 path.engine_input_count
-                > unique_by_fold[path.lineage.fold_id].generator_accepted
+                != unique_by_fold[path.lineage.fold_id].generator_accepted
             ):
                 raise H6BPlanError(
-                    "H4 path engine input exceeds H6-A unique accepted evidence"
+                    "H4 path engine input differs from H6-A unique accepted evidence"
                 )
         for attempt in self.attempts:
             selected = {
@@ -1605,11 +1607,18 @@ def _h6a_unique_evidence(
         for reason, count in evidence.generator_rejection_reason_histogram
         if count > 0
     }
+    no_signal_counts = {
+        reason: count
+        for reason, count in evidence.no_signal_reason_histogram
+        if count > 0
+    }
     payload = {
         "fold_id": fold_id,
+        "phase": evidence.phase,
         "candidate_identity_hash": evidence.content_hash,
         "evaluated_decision_units": evidence.evaluated_decision_units,
         "no_signal": evidence.no_signal,
+        "no_signal_reason_histogram": no_signal_counts,
         "candidate": evidence.candidate,
         "generator_rejected": evidence.generator_rejected,
         "generator_accepted": evidence.generator_accepted,
@@ -1623,11 +1632,24 @@ def _h6a_unique_evidence(
 
 def _terminal_reason_counts(
     terminal: h4_adapter.SealedS3Terminal | h4_adapter.SealedS4Terminal,
+    *,
+    engine_input_count: int | None = None,
 ) -> dict[str, int]:
     counts: dict[str, int] = {}
     for row in (*terminal.result.no_trades, *terminal.result.incompletes):
         reason = row.reason
         counts[reason] = counts.get(reason, 0) + 1
+    if engine_input_count is not None:
+        resolved = (
+            len(terminal.result.trades)
+            + len(terminal.result.no_trades)
+            + len(terminal.result.incompletes)
+        )
+        if resolved > engine_input_count:
+            raise H6BPlanError("terminal outcomes exceed engine input count")
+        unresolved = engine_input_count - resolved
+        if unresolved:
+            counts["engine_halted_after_incomplete"] = unresolved
     return counts
 
 
@@ -1883,6 +1905,7 @@ class ActualMergedH4Runner:
         tuple[h3_s3.S3GeneratorOutput | h3_s4.S4GeneratorOutput, ...],
         tuple[h4_selection.TrainCandidateTrace, ...],
         h4_selection.TrainSelection,
+        tuple[h4_adapter.SealedS3Terminal | h4_adapter.SealedS4Terminal, ...],
     ]:
         configs = (
             h3_manifest.FROZEN_S3_CONFIGS
@@ -1963,6 +1986,7 @@ class ActualMergedH4Runner:
             tuple(outputs),
             traces,
             h4_selection.select_train_config(strategy, traces),
+            terminals,
         )
 
     def _run_selected_strategy(
@@ -2086,6 +2110,7 @@ class ActualMergedH4Runner:
         tuple[h3_s3.S3GeneratorOutput | h3_s4.S4GeneratorOutput, ...],
         tuple[h4_selection.TrainCandidateTrace, ...],
         h4_selection.TrainSelection,
+        tuple[h4_adapter.SealedS3Terminal | h4_adapter.SealedS4Terminal, ...],
     ]:
         """Run one real no-data decision close for a bounded inactive fold.
 
@@ -2172,7 +2197,7 @@ class ActualMergedH4Runner:
         selection = h4_selection.select_train_config(strategy, traces)
         if selection.selected_config_id is not None:
             raise H6BPlanError("inactive fold unexpectedly selected a config")
-        return tuple(outputs), traces, selection
+        return tuple(outputs), traces, selection, terminals
 
     def _run_pbo(
         self,
@@ -2233,7 +2258,12 @@ class ActualMergedH4Runner:
         }
         fold_trace_inputs: dict[
             tuple[str, str],
-            tuple[h4_selection.TrainCandidateTrace, bool],
+            tuple[
+                h4_selection.TrainCandidateTrace,
+                bool,
+                h4_adapter.SealedS3Terminal | h4_adapter.SealedS4Terminal,
+                int,
+            ],
         ] = {}
         attribution_paths: list[h4_runner.SelectedOOSPathAttribution] = []
         tercile_by_fold: dict[str, h4_runner.TercileAuthority] = {}
@@ -2268,6 +2298,10 @@ class ActualMergedH4Runner:
                     tuple[h3_s3.S3GeneratorOutput | h3_s4.S4GeneratorOutput, ...],
                     tuple[h4_selection.TrainCandidateTrace, ...],
                     h4_selection.TrainSelection,
+                    tuple[
+                        h4_adapter.SealedS3Terminal | h4_adapter.SealedS4Terminal,
+                        ...,
+                    ],
                 ],
             ] = {}
             for strategy in ("S3", "S4"):
@@ -2303,10 +2337,22 @@ class ActualMergedH4Runner:
                     phase=h4_runner.phase_for_fold(fold, "selected_oos"),
                 )
             for strategy in ("S3", "S4"):
-                outputs, traces, selection = train_results[strategy]
+                outputs, traces, selection, terminals = train_results[strategy]
                 selected_id = selection.selected_config_id
                 output_by_id = {output.config_id: output for output in outputs}
                 trace_by_id = {row.config_id: row for row in traces}
+                terminal_by_id = {
+                    config.config_id: terminal
+                    for config, terminal in zip(
+                        (
+                            h3_manifest.FROZEN_S3_CONFIGS
+                            if strategy == "S3"
+                            else h3_manifest.FROZEN_S4_CONFIGS
+                        ),
+                        terminals,
+                        strict=True,
+                    )
+                }
                 selected_output = None
                 selected_paths: tuple[h4_runner.SelectedOOSPathAttribution, ...] = ()
                 tercile: h4_runner.TercileAuthority | None = None
@@ -2368,6 +2414,8 @@ class ActualMergedH4Runner:
                     fold_trace_inputs[(row_id, fold.fold_id)] = (
                         trace_by_id[row_id],
                         row_id == selected_id,
+                        terminal_by_id[row_id],
+                        len(output_by_id[row_id].accepted),
                     )
 
         trace.append("pbo_24x365_s3_s4")
@@ -2395,7 +2443,9 @@ class ActualMergedH4Runner:
             counts = path_reasons.setdefault(
                 (path.lineage.row_id, path.path_scenario), {}
             )
-            for reason, count in _terminal_reason_counts(path.terminal).items():
+            for reason, count in _terminal_reason_counts(
+                path.terminal, engine_input_count=path.engine_input_count
+            ).items():
                 counts[reason] = counts.get(reason, 0) + count
 
         attempts: list[h6a_evidence.AttemptRecord] = []
@@ -2404,7 +2454,9 @@ class ActualMergedH4Runner:
             unique = tuple(unique_by_row[row_id])
             traces: list[h6a_evidence.FoldSelectionTrace] = []
             for fold, evidence in zip(folds, unique, strict=True):
-                train_trace, selected = fold_trace_inputs[(row_id, fold.fold_id)]
+                train_trace, selected, train_terminal, train_input_count = (
+                    fold_trace_inputs[(row_id, fold.fold_id)]
+                )
                 eligible = tuple(unit.unit for unit in train_trace.eligible_units)
                 excluded = tuple(
                     (unit.unit, "fewer_than_five_completed_trades")
@@ -2420,7 +2472,9 @@ class ActualMergedH4Runner:
                         excluded_symbols_or_pairs=excluded,
                         accepted_input_hash=evidence.content_hash,
                         rejection_reason=None if selected else "not_selected",
-                        no_trade_reason_counts={},
+                        no_trade_reason_counts=_terminal_reason_counts(
+                            train_terminal, engine_input_count=train_input_count
+                        ),
                     )
                 )
             selected = bool(selected_folds[row_id])
@@ -2528,6 +2582,12 @@ def _h5_dual_evidence(
                     strategy=strategy,
                     config_id=attempt.row_id,
                     fold_id=evidence.fold_id,
+                    phase=evidence.phase,
+                    evaluated_decision_units=evidence.evaluated_decision_units,
+                    no_signal=evidence.no_signal,
+                    no_signal_reason_histogram=dict(
+                        evidence.no_signal_reason_histogram
+                    ),
                     accepted=evidence.generator_accepted,
                     rejected=evidence.generator_rejected,
                     accepted_input_hash=evidence.content_hash,
@@ -2548,6 +2608,23 @@ def _h5_dual_evidence(
             for item in attempt.path_scenario_evidence
             if item.path_scenario == path.path_scenario
         )
+        no_trade_reason_counts = _terminal_reason_counts(
+            path.terminal, engine_input_count=path.engine_input_count
+        )
+        artifact_hash = canonical_sha256(
+            {
+                "schema_version": "rob1025_h5_path_invocation.v1",
+                "strategy": path.strategy,
+                "config_id": path.lineage.row_id,
+                "fold_id": path.lineage.fold_id,
+                "path_scenario": path.path_scenario,
+                "engine_input_hash": path.terminal.input_seal_sha256,
+                "engine_output_hash": path.terminal.output_seal_sha256,
+                "engine_input_count": path.engine_input_count,
+                "trade_count": len(path.rows),
+                "no_trade_reason_counts": no_trade_reason_counts,
+            }
+        )
         evidence = h5_dual.PathInvocationEvidence(
             strategy=path.strategy,
             config_id=path.lineage.row_id,
@@ -2557,10 +2634,10 @@ def _h5_dual_evidence(
             unique_evidence_accepted_count=unique.generator_accepted,
             engine_input_hash=path.terminal.input_seal_sha256,
             engine_input_count=path.engine_input_count,
-            no_trade_reason_counts=dict(aggregate.no_trade_reason_counts),
+            no_trade_reason_counts=no_trade_reason_counts,
             ledger_status=aggregate.status,
             trade_count=len(path.rows),
-            artifact_hash=aggregate.artifact_hash,
+            artifact_hash=artifact_hash,
         )
         path_by_strategy[path.strategy][
             (path.lineage.row_id, path.lineage.fold_id, path.path_scenario)
@@ -2942,7 +3019,7 @@ def parse_persisted_attempt_record(
         raise ReplayCollisionError(
             "persisted attempt evidence payload is not a mapping"
         )
-    if payload.get("schema_version") != "rob974_h6b_attempt_evidence.v1":
+    if payload.get("schema_version") != "rob974_h6b_attempt_evidence.v2":
         raise ReplayCollisionError("persisted attempt evidence schema differs")
     if payload.get("row_id") != item.row_id:
         raise ReplayCollisionError("persisted attempt evidence row differs")
@@ -2970,9 +3047,11 @@ def parse_persisted_attempt_record(
         unique_evidence = tuple(
             h6a_evidence.UniqueGeneratorEvidence(
                 fold_id=row["fold_id"],
+                phase=row["phase"],
                 candidate_identity_hash=row["candidate_identity_hash"],
                 evaluated_decision_units=row["evaluated_decision_units"],
                 no_signal=row["no_signal"],
+                no_signal_reason_histogram=row["no_signal_reason_histogram"],
                 candidate=row["candidate"],
                 generator_rejected=row["generator_rejected"],
                 generator_accepted=row["generator_accepted"],

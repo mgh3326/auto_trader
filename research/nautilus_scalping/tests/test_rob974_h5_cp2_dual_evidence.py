@@ -33,6 +33,10 @@ def _unique(**overrides) -> UniqueGeneratorEvidence:
         "strategy": "S3",
         "config_id": "S3-00",
         "fold_id": "fold-00",
+        "phase": "selected_oos",
+        "evaluated_decision_units": 20,
+        "no_signal": 5,
+        "no_signal_reason_histogram": {"momentum": 5},
         "accepted": 10,
         "rejected": 5,
         "accepted_input_hash": "a" * 64,
@@ -74,6 +78,25 @@ def _three_paths(unique: UniqueGeneratorEvidence) -> dict[str, PathInvocationEvi
 
 
 class TestUniqueGeneratorEvidenceInvariants:
+    def test_phase_and_no_signal_histogram_are_observable(self):
+        unique = _unique()
+        assert unique.phase == "selected_oos"
+        assert unique.evaluated_decision_units == 20
+        assert unique.no_signal_reason_histogram == {"momentum": 5}
+
+    def test_no_signal_histogram_cannot_be_empty_when_no_signal_is_nonzero(self):
+        with pytest.raises(
+            H5InputError,
+            match="unique_evidence_no_signal_histogram_subtotal_mismatch",
+        ):
+            _unique(no_signal_reason_histogram={})
+
+    def test_evaluated_units_partition_is_enforced(self):
+        with pytest.raises(
+            H5InputError, match="unique_evidence_evaluated_partition_mismatch"
+        ):
+            _unique(evaluated_decision_units=19)
+
     def test_candidate_equals_accepted_plus_rejected(self):
         unique = _unique()
         assert unique.candidate == unique.accepted + unique.rejected == 15
@@ -93,7 +116,11 @@ class TestUniqueGeneratorEvidenceInvariants:
             _unique(accepted_input_hash="not-hex")
 
     def test_zero_rejection_with_empty_histogram_is_valid(self):
-        unique = _unique(rejected=0, rejection_reason_histogram={})
+        unique = _unique(
+            evaluated_decision_units=15,
+            rejected=0,
+            rejection_reason_histogram={},
+        )
         assert unique.rejected == 0
         assert unique.rejection_reason_histogram == {}
 
@@ -107,6 +134,14 @@ class TestPathAgreesWithUniqueSource:
         unique = _unique()
         paths = _three_paths(unique)
         cross_check_dual_evidence(unique, paths)  # must not raise
+
+    def test_train_accepted_counts_cannot_be_bound_to_selected_oos_paths(self):
+        unique = _unique(phase="train")
+        with pytest.raises(
+            H5InputError,
+            match="dual_evidence_path_requires_selected_oos_unique_phase",
+        ):
+            cross_check_dual_evidence(unique, _three_paths(unique))
 
     def test_missing_path_rejected(self):
         unique = _unique()
@@ -178,6 +213,35 @@ class TestPathAgreesWithUniqueSource:
         assert paths["base13"].no_trade_reason_counts == {
             "expected_funding_cost_above_3bps": 2
         }
+
+    def test_positive_accepted_zero_trade_requires_complete_reason_accounting(self):
+        unique = _unique()
+        paths = _three_paths(unique)
+        paths["base13"] = _path(
+            "base13",
+            unique,
+            trade_count=0,
+            no_trade_reason_counts={},
+        )
+        with pytest.raises(
+            H5InputError,
+            match="dual_evidence_zero_trade_reason_subtotal_mismatch",
+        ):
+            cross_check_dual_evidence(unique, paths)
+
+    def test_positive_accepted_zero_trade_reason_total_must_equal_accepted(self):
+        unique = _unique()
+        paths = _three_paths(unique)
+        paths["base13"] = _path(
+            "base13",
+            unique,
+            trade_count=0,
+            no_trade_reason_counts={
+                "funding_evidence_unavailable": 4,
+                "next_tick_unavailable": 6,
+            },
+        )
+        cross_check_dual_evidence(unique, paths)
 
     def test_wrong_strategy_or_config_binding_rejected(self):
         unique = _unique()

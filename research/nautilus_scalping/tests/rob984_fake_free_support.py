@@ -20,6 +20,7 @@ import rob941_persistence as persistence
 import rob974_h3_h2_adapter as h3_h2_adapter
 import rob974_h3_smoke as h3_smoke
 from funding_oi_archive import FundingRow
+from rob941_funding_sidecar import FundingSidecar
 from rob941_manifest import (
     CorpusManifest,
     SymbolEligibility,
@@ -41,6 +42,8 @@ from app.services.rob974_h6b_materializer import (
 )
 
 _FOUR_HOUR_MS = 4 * 60 * 60 * 1000
+_EIGHT_HOUR_MS = 8 * 60 * 60 * 1000
+_ANNUAL_FUNDING_ROW_COUNT = 365 * 3
 _BASES = {
     "BTCUSDT": 60_000.0,
     "XRPUSDT": 0.50,
@@ -329,7 +332,26 @@ def _persist(
                 shard_file_sha256=physical,
             )
         )
-        funding_rows = (FundingRow(frozen.WINDOW_START_MS, 8, 0.0),)
+        # Production Binance funding shards are millisecond epoch rows on an
+        # eight-hour cadence.  Preserve the tiny observed calc-time jitter so
+        # CP10 exercises the exact PIT ordering/unit shape that ROB-1025 had
+        # to investigate, rather than a single perfectly aligned sentinel.
+        funding_rows = tuple(
+            FundingRow(
+                frozen.WINDOW_START_MS
+                + index * _EIGHT_HOUR_MS
+                + (
+                    7
+                    if index == 0
+                    else 5
+                    if index == _ANNUAL_FUNDING_ROW_COUNT - 1
+                    else (4, 6, 3, 8, 2, 5)[index % 6]
+                ),
+                8,
+                0.0,
+            )
+            for index in range(_ANNUAL_FUNDING_ROW_COUNT)
+        )
         funding_relative, funding_physical = persistence.write_funding_shard(
             root, symbol, funding_rows
         )
@@ -382,6 +404,10 @@ def prepare_fake_free_input(root: Path) -> FakeFreeInputBundle:
         raise AssertionError("persisted synthetic manifest changed on reload")
     loaded = loader.load_corpus(reloaded, root)
     selected = h3_smoke._selected_minutes(loaded)
+    funding_sidecars = {
+        symbol: FundingSidecar.from_rows(symbol, loaded["funding"][symbol])
+        for symbol in selected
+    }
     _context, feature_hash = h3_smoke._context(selected)
     corpus_end_ts = max(rows[-1].ts for rows in selected.values()) + MINUTE_MS
     input_data = ActualH4InputData.from_mapping(
@@ -389,9 +415,10 @@ def prepare_fake_free_input(root: Path) -> FakeFreeInputBundle:
         corpus_end_ts=corpus_end_ts,
         persisted_corpus_hash=manifest.content_hash(),
         persisted_feature_hash=feature_hash,
+        funding_sidecars=funding_sidecars,
     )
     identity = build_production_identity_plan()
-    runner = ActualMergedH4Runner(input_data)
+    runner = ActualMergedH4Runner(input_data, require_pit_funding=True)
     gap_close = frozen.WINDOW_START_MS + (h3_smoke._GAP_BAR_INDEX + 1) * _FOUR_HOUR_MS
     return FakeFreeInputBundle(
         identity=identity,

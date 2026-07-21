@@ -75,6 +75,7 @@ PBO_CONFIG_COUNT = 24
 PBO_DAY_COUNT = 365
 PBO_SLICES = 4
 PBO_SCENARIO_NAME = "primary_stress17"
+GENERATOR_PHASES = ("train", "selected_oos", "pbo_full_window", "offline_smoke")
 
 
 def _require_reason_histogram(
@@ -93,6 +94,10 @@ class UniqueGeneratorEvidence:
     strategy: str
     config_id: str
     fold_id: str
+    phase: str
+    evaluated_decision_units: int
+    no_signal: int
+    no_signal_reason_histogram: dict[str, int]
     accepted: int
     rejected: int
     accepted_input_hash: str
@@ -105,8 +110,23 @@ class UniqueGeneratorEvidence:
             "unique_evidence_config_id_unknown",
         )
         _require(self.fold_id in FOLD_IDS, "unique_evidence_fold_id_unknown")
+        _require(self.phase in GENERATOR_PHASES, "unique_evidence_phase_unknown")
+        _require_exact_int(
+            self.evaluated_decision_units,
+            "unique_evidence_evaluated_decision_units_malformed",
+        )
+        _require_exact_int(self.no_signal, "unique_evidence_no_signal_malformed")
+        _require_reason_histogram(
+            self.no_signal_reason_histogram,
+            self.no_signal,
+            "unique_evidence_no_signal_histogram_subtotal_mismatch",
+        )
         _require_exact_int(self.accepted, "unique_evidence_accepted_malformed")
         _require_exact_int(self.rejected, "unique_evidence_rejected_malformed")
+        _require(
+            self.evaluated_decision_units == self.no_signal + self.candidate,
+            "unique_evidence_evaluated_partition_mismatch",
+        )
         _require_hex64(
             self.accepted_input_hash, "unique_evidence_accepted_input_hash_malformed"
         )
@@ -185,6 +205,10 @@ def cross_check_dual_evidence(
         set(paths.keys()) == set(PATH_SCENARIOS),
         "dual_evidence_path_set_incomplete",
     )
+    _require(
+        unique.phase == "selected_oos",
+        "dual_evidence_path_requires_selected_oos_unique_phase",
+    )
     for name, path in paths.items():
         _require(path.path_scenario == name, "dual_evidence_path_scenario_key_mismatch")
         _require(
@@ -201,6 +225,11 @@ def cross_check_dual_evidence(
             path.unique_evidence_accepted_count == unique.accepted,
             "dual_evidence_path_unique_accepted_count_mismatch",
         )
+        if unique.accepted > 0 and path.trade_count == 0:
+            _require(
+                sum(path.no_trade_reason_counts.values()) == unique.accepted,
+                "dual_evidence_zero_trade_reason_subtotal_mismatch",
+            )
 
 
 @dataclass(frozen=True, slots=True)

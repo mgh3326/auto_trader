@@ -42,9 +42,11 @@ def _all_fold_traces(*, selected_index: int | None) -> tuple:
 def _unique_evidence_row(i: int) -> ev.UniqueGeneratorEvidence:
     kwargs = {
         "fold_id": f"fold-{i:02d}",
+        "phase": "selected_oos",
         "candidate_identity_hash": _hex64(f"candidate-{i}"),
         "evaluated_decision_units": 10,
         "no_signal": 4,
+        "no_signal_reason_histogram": {"momentum": 4},
         "candidate": 6,
         "generator_rejected": 4,
         "generator_accepted": 2,
@@ -165,14 +167,41 @@ class TestFoldSelectionTrace:
 
 class TestUniqueGeneratorEvidence:
     def test_valid_row_constructs(self):
-        _unique_evidence_row(0)
+        row = _unique_evidence_row(0)
+        assert row.phase == "selected_oos"
+        assert dict(row.no_signal_reason_histogram) == {"momentum": 4}
+
+    def test_no_signal_reason_histogram_must_sum_to_no_signal(self):
+        row = _unique_evidence_row(0)
+        kwargs = {
+            "fold_id": row.fold_id,
+            "phase": row.phase,
+            "candidate_identity_hash": row.candidate_identity_hash,
+            "evaluated_decision_units": row.evaluated_decision_units,
+            "no_signal": row.no_signal,
+            "no_signal_reason_histogram": {},
+            "candidate": row.candidate,
+            "generator_rejected": row.generator_rejected,
+            "generator_accepted": row.generator_accepted,
+            "generator_rejection_subtotal_by_reason": dict(
+                row.generator_rejection_subtotal_by_reason
+            ),
+        }
+        content_hash = ev._recompute_unique_evidence_hash(_FakeUniqueForHash(**kwargs))
+        with pytest.raises(
+            ev.AttemptEvidenceError,
+            match="no_signal_reason_histogram must sum to no_signal",
+        ):
+            ev.UniqueGeneratorEvidence(**kwargs, content_hash=content_hash)
 
     def test_evaluated_decision_units_must_equal_sum(self):
         kwargs = {
             "fold_id": "fold-00",
+            "phase": "selected_oos",
             "candidate_identity_hash": _hex64("c"),
             "evaluated_decision_units": 99,  # wrong
             "no_signal": 4,
+            "no_signal_reason_histogram": {"momentum": 4},
             "candidate": 6,
             "generator_rejected": 4,
             "generator_accepted": 2,
@@ -185,9 +214,11 @@ class TestUniqueGeneratorEvidence:
     def test_forged_content_hash_rejected(self):
         kwargs = {
             "fold_id": "fold-00",
+            "phase": "selected_oos",
             "candidate_identity_hash": _hex64("c"),
             "evaluated_decision_units": 10,
             "no_signal": 4,
+            "no_signal_reason_histogram": {"momentum": 4},
             "candidate": 6,
             "generator_rejected": 4,
             "generator_accepted": 2,
@@ -199,9 +230,11 @@ class TestUniqueGeneratorEvidence:
     def test_generator_rejection_subtotal_must_sum_to_rejected(self):
         kwargs = {
             "fold_id": "fold-00",
+            "phase": "selected_oos",
             "candidate_identity_hash": _hex64("c"),
             "evaluated_decision_units": 10,
             "no_signal": 4,
+            "no_signal_reason_histogram": {"momentum": 4},
             "candidate": 6,
             "generator_rejected": 4,
             "generator_accepted": 2,
