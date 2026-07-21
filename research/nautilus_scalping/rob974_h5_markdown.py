@@ -207,6 +207,14 @@ def _render_pair_executor_state(state: Mapping[str, Any] | None) -> list[str]:
 def _render_strategy(strategy: str, entry: Mapping[str, Any]) -> list[str]:
     lines = [f"## Strategy {strategy}", ""]
 
+    if "evaluation_state" in entry:
+        lines.append(f"- evaluation_state: {entry['evaluation_state']}")
+        lines.append(
+            "- evaluation_incomplete_reasons: "
+            f"{_fmt_list(entry['evaluation_incomplete_reasons'])}"
+        )
+        lines.append("")
+
     gates = entry["common_gates"]
     lines.append("### Common Gates")
     lines.append(f"- passed: {_fmt(gates['passed'])}")

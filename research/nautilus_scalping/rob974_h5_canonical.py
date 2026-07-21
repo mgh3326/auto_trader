@@ -613,8 +613,14 @@ def validate_scorecard_consistency(
         incomplete_reasons=s4_inputs.falsification.incomplete_reasons,
     )
 
+    accounting_incomplete_reasons = recomputed_envelope.incomplete_reasons
     recomputed_s3_verdict = compute_direct_verdict(
-        incomplete_reasons=s3_inputs.falsification.incomplete_reasons,
+        incomplete_reasons=tuple(
+            sorted(
+                set(s3_inputs.falsification.incomplete_reasons)
+                | set(accounting_incomplete_reasons)
+            )
+        ),
         hard_gate_reasons=s3_inputs.common_gates.reasons
         + s3_inputs.falsification.reasons,
     )
@@ -623,7 +629,12 @@ def validate_scorecard_consistency(
         "canonical_s3_direct_verdict_forged_or_stale",
     )
     recomputed_s4_verdict = compute_direct_verdict(
-        incomplete_reasons=s4_inputs.falsification.incomplete_reasons,
+        incomplete_reasons=tuple(
+            sorted(
+                set(s4_inputs.falsification.incomplete_reasons)
+                | set(accounting_incomplete_reasons)
+            )
+        ),
         hard_gate_reasons=s4_inputs.common_gates.reasons
         + s4_inputs.falsification.reasons,
     )
@@ -1190,16 +1201,18 @@ def _canonicalize_strategy(
     *,
     direct_verdict: str,
     h4_attribution: H4AttributionContractResult,
+    evaluation_incomplete_reasons: tuple[str, ...],
 ) -> dict:
     _require(
         inputs.strategy in STRATEGIES, "strategy_canonical_inputs_strategy_unknown"
     )
+    common_gates = _canonicalize_common_gates(inputs.common_gates)
     if inputs.strategy == "S3":
         falsification = _canonicalize_s3_falsification(inputs.falsification)
     else:
         falsification = _canonicalize_s4_falsification(inputs.falsification)
     entry: dict[str, Any] = {
-        "common_gates": _canonicalize_common_gates(inputs.common_gates),
+        "common_gates": common_gates,
         "falsification": falsification,
         "dual_evidence": _canonicalize_dual_evidence(
             strategy=inputs.strategy,
@@ -1212,6 +1225,29 @@ def _canonicalize_strategy(
         ),
         "direct_verdict": direct_verdict,
     }
+    if evaluation_incomplete_reasons:
+        evaluation_state = "not_evaluated_h6a_accounting_incomplete"
+        canonical_reasons = list(evaluation_incomplete_reasons)
+        entry = {
+            "evaluation_state": evaluation_state,
+            "evaluation_incomplete_reasons": canonical_reasons,
+            **entry,
+        }
+        # Preserve the observed metrics and attribution for degraded
+        # forensics, but remove every pass/fail claim: no numerical gate was
+        # authoritative once H6-A declared the attempt surface unscoreable.
+        common_gates["passed"] = None
+        common_gates["reasons"] = []
+        common_gates["evaluation_state"] = evaluation_state
+        common_gates["evaluation_incomplete_reasons"] = canonical_reasons
+        falsification["passed"] = None
+        falsification["reasons"] = []
+        falsification["incomplete_reasons"] = sorted(
+            set(falsification["incomplete_reasons"])
+            | set(evaluation_incomplete_reasons)
+        )
+        falsification["evaluation_state"] = evaluation_state
+        falsification["evaluation_incomplete_reasons"] = canonical_reasons
     if inputs.pair_executor_state is not None:
         entry["pair_executor_state"] = _canonicalize_pair_executor_state(
             inputs.pair_executor_state
@@ -1309,11 +1345,17 @@ def build_canonical_scorecard(
             s3_inputs,
             direct_verdict=consistency.s3_direct_verdict,
             h4_attribution=h4_attribution,
+            evaluation_incomplete_reasons=(
+                consistency.envelope_validation.incomplete_reasons
+            ),
         ),
         "S4": _canonicalize_strategy(
             s4_inputs,
             direct_verdict=consistency.s4_direct_verdict,
             h4_attribution=h4_attribution,
+            evaluation_incomplete_reasons=(
+                consistency.envelope_validation.incomplete_reasons
+            ),
         ),
     }
     canonical_campaign = consistency.campaign_decision

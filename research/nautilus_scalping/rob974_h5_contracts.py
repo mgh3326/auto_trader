@@ -3,8 +3,10 @@ H6-A exact-48 accounting gate.
 
 H5 is a pure consumer: it never opens a DB session, never reimplements H6-A's
 trial-accounting reconstruction, and never scores a subset when H6-A's seal
-is anything less than the full, exact-48, retry-0, ``performance_usable``
-report. Any AC34 provenance violation (missing/future/lookahead bar,
+is anything less than the full, exact-48, ``performance_usable`` report.
+A typed actual report containing retries remains publishable as an explicit
+degraded/incomplete scorecard, but its gates are never evaluated. Any AC34
+provenance violation (missing/future/lookahead bar,
 signal-close fill, unpriced gap trade, double-charged basket cost, single-leg
 notional denominator, a fabricated atomic fill/flatten price, a nonfinite or
 type-invalid required value, or missing PBO/accounting/evidence) is always
@@ -258,20 +260,29 @@ class H6AAccountingSeal:
         for count in self.status_counts.values():
             _require_exact_int(count, "h6a_status_count_value_malformed")
         status_sum = sum(self.status_counts.values())
-        _require(status_sum <= _EXPECTED_TOTAL_EXPERIMENTS, "h6a_status_sum_exceeds_48")
-        # A NORMAL, accounting-complete primary run always tallies exactly
-        # 48 across the four closed statuses (a hidden/missing row can never
-        # sit "under" a status_sum of 48 while claiming completeness). A
-        # genuinely incomplete run (e.g. one config never registered/
-        # attempted at all) may report fewer than 48 -- that gap is exactly
-        # what makes it incomplete.
-        if self.accounting_complete:
-            _require(status_sum == _EXPECTED_TOTAL_EXPERIMENTS, "h6a_status_sum_not_48")
+        # H6-A counts every clean attempt, including retries, in the closed
+        # status histogram. The only exact total available on this projection
+        # is therefore primary_attempts + retry_attempts; capping at 48 made a
+        # valid degraded actual report impossible to represent (ROB-1005).
+        _require(
+            status_sum == self.primary_attempts + self.retry_attempts,
+            "h6a_status_sum_does_not_match_primary_plus_retry",
+        )
+        _require(
+            self.primary_attempts <= _EXPECTED_TOTAL_EXPERIMENTS,
+            "h6a_primary_attempts_exceeds_48",
+        )
         _require(
             self.registered_total <= _EXPECTED_TOTAL_EXPERIMENTS
             or not self.accounting_complete,
             "h6a_registered_total_exceeds_48_but_claims_complete",
         )
+        if self.accounting_complete:
+            _require(
+                self.registered_total == _EXPECTED_TOTAL_EXPERIMENTS
+                and self.primary_attempts == _EXPECTED_TOTAL_EXPERIMENTS,
+                "h6a_complete_without_exact_48_primary_surface",
+            )
         _require_hex64(
             self.trial_accounting_hash, "h6a_trial_accounting_hash_malformed"
         )
@@ -386,13 +397,6 @@ def _seal_actual_h6a_report(report: CombinedAccountingReport) -> H6AAccountingSe
         report.total_attempts == report.primary_attempts + report.retry_attempts,
         "actual_h6a_attempt_totals_forged_or_stale",
     )
-    # H5 scores only the retry-free primary surface.  A real retry report is
-    # valid H6-A evidence, but cannot be projected into H5's primary-status
-    # seal without the underlying per-attempt rows; fail closed instead.
-    _require(
-        report.retry_attempts == 0,
-        "actual_h6a_retry_report_not_h5_scoreable",
-    )
     for values, reason in (
         (report.missing_row_ids, "actual_h6a_missing_row_ids_malformed"),
         (report.extra_experiment_ids, "actual_h6a_extra_ids_malformed"),
@@ -427,17 +431,39 @@ def _seal_actual_h6a_report(report: CombinedAccountingReport) -> H6AAccountingSe
         report.accounting_complete == expected_complete,
         "actual_h6a_accounting_complete_forged_or_stale",
     )
-    expected_all_completed = (
-        expected_complete and status_counts["completed"] == _EXPECTED_TOTAL_EXPERIMENTS
+    if report.retry_attempts == 0:
+        expected_all_completed = (
+            expected_complete
+            and status_counts["completed"] == _EXPECTED_TOTAL_EXPERIMENTS
+        )
+        _require(
+            report.all_primary_completed == expected_all_completed,
+            "actual_h6a_all_primary_completed_forged_or_stale",
+        )
+    else:
+        # Aggregate status counts do not identify which terminal status was
+        # the primary versus the retry. Preserve H6-A's typed primary-complete
+        # flag, but never use it to score: any retry makes performance unusable.
+        _require(
+            not report.all_primary_completed or report.accounting_complete,
+            "actual_h6a_all_primary_completed_without_complete_accounting",
+        )
+    expected_performance_usable = (
+        report.accounting_complete
+        and report.all_primary_completed
+        and report.retry_attempts == 0
     )
     _require(
-        report.all_primary_completed == expected_all_completed,
-        "actual_h6a_all_primary_completed_forged_or_stale",
-    )
-    _require(
-        report.performance_usable == expected_all_completed,
+        report.performance_usable == expected_performance_usable,
         "actual_h6a_performance_usable_forged_or_stale",
     )
+    reason_codes: list[str] = []
+    if report.retry_attempts:
+        reason_codes.append("h6_accounting_has_retries")
+    if not report.accounting_complete:
+        reason_codes.append("h6_accounting_incomplete")
+    if not report.all_primary_completed:
+        reason_codes.append("h6_primary_attempt_not_completed")
     return H6AAccountingSeal(
         expected_total=report.expected_total,
         registered_total=report.registered_total,
@@ -447,7 +473,7 @@ def _seal_actual_h6a_report(report: CombinedAccountingReport) -> H6AAccountingSe
         accounting_complete=report.accounting_complete,
         performance_usable=report.performance_usable,
         trial_accounting_hash=report.trial_accounting_hash,
-        reason_codes=() if report.performance_usable else ("h6_accounting_incomplete",),
+        reason_codes=tuple(sorted(reason_codes)),
     )
 
 
@@ -479,8 +505,9 @@ def validate_envelope_and_accounting(
 ) -> EnvelopeValidationResult:
     """Cross-check the envelope's H6-A hash pin against the sealed report and
     gate on H6-A's ``performance_usable`` flag. Never defaults metrics or
-    scores a subset -- anything short of exact-48/retry-0/complete/usable
-    makes the campaign structurally ``incomplete``."""
+    scores a subset -- anything short of exact-48/complete/usable makes the
+    campaign structurally ``incomplete``. Retries are preserved as explicit
+    degraded evidence rather than raising before a scorecard can exist."""
     _require(
         envelope.h6a_trial_accounting_hash == seal.trial_accounting_hash,
         "envelope_h6a_hash_does_not_match_sealed_report",
