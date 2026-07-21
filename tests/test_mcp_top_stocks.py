@@ -45,6 +45,15 @@ class TestMCPTopStocks:
             _no_op_fetch,
         )
 
+        async def _no_normalized_caps(*args, **kwargs):
+            return {}
+
+        monkeypatch.setattr(
+            analysis_tool_handlers,
+            "fetch_normalized_kr_market_caps",
+            _no_normalized_caps,
+        )
+
     async def test_get_top_stocks_us_uses_analysis_screening_rankings_alias(
         self, monkeypatch
     ):
@@ -1065,6 +1074,324 @@ class TestMCPLosers:
         assert all(float(r["change_rate"]) < 0 for r in result["rankings"])
         assert float(result["rankings"][0]["change_rate"]) == pytest.approx(-3.0)
         assert float(result["rankings"][1]["change_rate"]) == pytest.approx(-2.0)
+
+    async def test_min_market_cap_is_fail_closed_on_normalized_snapshot(
+        self, monkeypatch
+    ):
+        """A requested quality floor accepts only normalized snapshot coverage."""
+        import datetime as _dt
+        from decimal import Decimal as _D
+
+        from app.services.market_valuation_snapshots.normalized_market_cap import (
+            NormalizedMarketCap,
+        )
+
+        async def fake_caps(symbols):
+            return {
+                "005930": NormalizedMarketCap(
+                    _D("200000000000000"), _dt.date(2026, 7, 20), "naver_finance"
+                ),
+                "900001": NormalizedMarketCap(
+                    _D("5000000000"), _dt.date(2026, 7, 20), "naver_finance"
+                ),
+            }
+
+        monkeypatch.setattr(
+            analysis_tool_handlers, "fetch_normalized_kr_market_caps", fake_caps
+        )
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {  # big-cap loser — kept
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "-2.0",
+                        "acml_vol": "2000000",
+                        "hts_avls": "200000000000000",
+                    },
+                    {  # junk-cap loser — excluded
+                        "stck_shrn_iscd": "900001",
+                        "hts_kor_isnm": "잡주",
+                        "stck_prpr": "500",
+                        "prdy_ctrt": "-9.0",
+                        "acml_vol": "1000000",
+                        "hts_avls": "5000000000",
+                    },
+                    {  # normalized snapshot omitted — fail-closed
+                        "stck_shrn_iscd": "900002",
+                        "hts_kor_isnm": "미확인",
+                        "stck_prpr": "1000",
+                        "prdy_ctrt": "-1.0",
+                        "acml_vol": "500000",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+
+        result = await tools["get_top_stocks"](
+            market="kr",
+            ranking_type="losers",
+            limit=5,
+            min_market_cap=30_000_000_000.0,
+        )
+
+        symbols = [r["symbol"] for r in result["rankings"]]
+        assert symbols == ["005930"]
+        assert result["market_cap_filter"] == {
+            "min_market_cap": 30_000_000_000.0,
+            "excluded_count": 2,
+        }
+
+    async def test_min_market_cap_omitted_keeps_prior_behavior(self, monkeypatch):
+        """No min_market_cap -> no filter key in the response, behavior unchanged."""
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "-2.0",
+                        "acml_vol": "2000000",
+                        "hts_avls": "1000000000",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+
+        result = await tools["get_top_stocks"](
+            market="kr", ranking_type="losers", limit=5
+        )
+
+        assert "market_cap_filter" not in result
+        assert len(result["rankings"]) == 1
+
+    async def test_min_market_cap_backfills_when_kis_omits_hts_avls(self, monkeypatch):
+        """ROB-976 verify R1 [BLOCKER]: real KIS losers responses reproduced in
+        the 07-20 verify report omit hts_avls entirely, making the bare filter
+        a no-op. market_cap must come from the normalized Naver valuation
+        snapshot before the floor is applied."""
+        import datetime as _dt
+        from decimal import Decimal as _D
+
+        from app.services.market_valuation_snapshots.normalized_market_cap import (
+            NormalizedMarketCap,
+        )
+
+        async def fake_fetch(symbols):
+            return {
+                "900001": NormalizedMarketCap(
+                    _D("5000000000"), _dt.date(2026, 7, 20), "naver_finance"
+                ),
+                "900002": NormalizedMarketCap(
+                    _D("400000000000"), _dt.date(2026, 7, 20), "naver_finance"
+                ),
+            }
+
+        monkeypatch.setattr(
+            analysis_tool_handlers, "fetch_normalized_kr_market_caps", fake_fetch
+        )
+
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {  # junk cap once backfilled (50억) — excluded
+                        "stck_shrn_iscd": "900001",
+                        "hts_kor_isnm": "좋은사람들",
+                        "stck_prpr": "500",
+                        "prdy_ctrt": "-9.0",
+                        "acml_vol": "1000000",
+                        # no hts_avls, matches the real KIS losers payload
+                    },
+                    {  # blue-chip cap once backfilled (4000억) — kept
+                        "stck_shrn_iscd": "900002",
+                        "hts_kor_isnm": "대형주",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "-2.0",
+                        "acml_vol": "2000000",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        result = await tools["get_top_stocks"](
+            market="kr",
+            ranking_type="losers",
+            limit=5,
+            min_market_cap=30_000_000_000.0,
+        )
+
+        symbols = [r["symbol"] for r in result["rankings"]]
+        assert symbols == ["900002"]
+        assert result["rankings"][0]["market_cap"] == pytest.approx(4e11)
+        assert result["market_cap_filter"]["excluded_count"] == 1
+
+    async def test_min_market_cap_keeps_real_large_cap_with_r2_payload_shape(
+        self, monkeypatch
+    ):
+        """R2 regression: 삼성생명 must use 60.3조 KRW, not the ~399억
+        provider-unit value that previously caused a false exclusion."""
+        import datetime as _dt
+        from decimal import Decimal as _D
+
+        from app.services.market_valuation_snapshots.normalized_market_cap import (
+            NormalizedMarketCap,
+        )
+
+        async def fake_caps(symbols):
+            return {
+                "032830": NormalizedMarketCap(
+                    _D("60300000000000"), _dt.date(2026, 7, 20), "naver_finance"
+                )
+            }
+
+        monkeypatch.setattr(
+            analysis_tool_handlers, "fetch_normalized_kr_market_caps", fake_caps
+        )
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {
+                        "stck_shrn_iscd": "032830",
+                        "hts_kor_isnm": "삼성생명",
+                        "stck_prpr": "301500",
+                        "prdy_ctrt": "-1.2",
+                        "acml_vol": "1000000",
+                        # Reproduce the unnormalized R2 value; it must be ignored.
+                        "hts_avls": "39943178204",
+                    }
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        result = await tools["get_top_stocks"](
+            market="kr",
+            ranking_type="losers",
+            min_market_cap=300_000_000_000.0,
+        )
+
+        assert [row["symbol"] for row in result["rankings"]] == ["032830"]
+        assert result["rankings"][0]["market_cap"] == pytest.approx(60.3e12)
+        assert result["rankings"][0]["market_cap_source"].endswith("naver_finance")
+
+    async def test_min_turnover_uses_trade_amount_then_price_times_volume(
+        self, monkeypatch
+    ):
+        """ROB-976: min_turnover checks trade_amount (acml_tr_pbmn) first, and
+        falls back to price*volume when KIS omits trade_amount; rows with neither
+        value fail the requested quality gate."""
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {  # trade_amount present, below the 10억 floor -> excluded
+                        "stck_shrn_iscd": "900001",
+                        "hts_kor_isnm": "저유동성",
+                        "stck_prpr": "1000",
+                        "prdy_ctrt": "-3.0",
+                        "acml_vol": "100000",
+                        "acml_tr_pbmn": "100000000",  # 1억
+                    },
+                    {  # no trade_amount; price*volume = 80000*2000000 = 1600억 -> kept
+                        "stck_shrn_iscd": "900002",
+                        "hts_kor_isnm": "대형주",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "-1.0",
+                        "acml_vol": "2000000",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        result = await tools["get_top_stocks"](
+            market="kr",
+            ranking_type="losers",
+            limit=5,
+            min_turnover=1_000_000_000.0,
+        )
+
+        symbols = [r["symbol"] for r in result["rankings"]]
+        assert symbols == ["900002"]
+        assert result["turnover_filter"] == {
+            "min_turnover": 1_000_000_000.0,
+            "excluded_count": 1,
+        }
+
+    async def test_quality_filter_emptying_losers_is_degraded_not_bullish_message(
+        self, monkeypatch
+    ):
+        """ROB-976 verify R1 [BLOCKER]: when the quality floor removes every
+        real loser, the response must say so (status=degraded) — not the
+        generic 'market may be entirely bullish' message, which would hide
+        that a filter (not market conditions) produced the empty page."""
+        import datetime as _dt
+        from decimal import Decimal as _D
+
+        from app.services.market_valuation_snapshots.normalized_market_cap import (
+            NormalizedMarketCap,
+        )
+
+        async def fake_fetch(symbols):
+            return {
+                symbol: NormalizedMarketCap(
+                    _D("5000000000"), _dt.date(2026, 7, 20), "naver_finance"
+                )
+                for symbol in symbols
+            }
+
+        monkeypatch.setattr(
+            analysis_tool_handlers, "fetch_normalized_kr_market_caps", fake_fetch
+        )
+
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {
+                        "stck_shrn_iscd": "900001",
+                        "hts_kor_isnm": "잡주",
+                        "stck_prpr": "500",
+                        "prdy_ctrt": "-9.0",
+                        "acml_vol": "1000000",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        result = await tools["get_top_stocks"](
+            market="kr",
+            ranking_type="losers",
+            limit=5,
+            min_market_cap=30_000_000_000.0,
+        )
+
+        assert result["rankings"] == []
+        assert result["status"] == "degraded"
+        assert "degraded_reason" in result
+        assert "error" not in result
 
     async def test_get_top_stocks_kr_gainers_returns_positives(self, monkeypatch):
         tools = build_tools()
