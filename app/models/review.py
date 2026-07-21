@@ -742,6 +742,7 @@ class AlpacaPaperOrderLedger(Base):
         Index("ix_alpaca_paper_ledger_broker_order_id", "broker_order_id"),
         Index("ix_alpaca_paper_ledger_lifecycle_state", "lifecycle_state"),
         Index("ix_alpaca_paper_ledger_created_at", "created_at"),
+        Index("ix_alpaca_paper_ledger_terminalized_at", "terminalized_at"),
         Index("ix_alpaca_paper_ledger_candidate_uuid", "candidate_uuid"),
         Index(
             "ix_alpaca_paper_ledger_briefing_run_uuid",
@@ -773,6 +774,11 @@ class AlpacaPaperOrderLedger(Base):
 
     # Application lifecycle state (ROB-90 canonical)
     lifecycle_state: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # ROB-954: first transition into a retrospective-terminal lifecycle state.
+    # Nullable for pre-migration rows and every still-open row; unlike updated_at,
+    # this has no onupdate hook and metadata-only writes must never move it.
+    terminalized_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 
     # ROB-90: buy/sell leg role — separate from broker `side` (order direction).
     leg_role: Mapped[str | None] = mapped_column(Text)

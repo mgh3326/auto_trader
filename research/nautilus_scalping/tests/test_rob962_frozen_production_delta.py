@@ -63,6 +63,14 @@ _AUTHORIZED_PRODUCTION_CHANGES = [
     ("A", ("research/nautilus_scalping/rob974_h3_s3.py",)),
     ("A", ("research/nautilus_scalping/rob974_h3_s4.py",)),
     ("A", ("research/nautilus_scalping/rob974_h3_smoke.py",)),
+    # ROB-981 authorized additive modules.
+    ("A", ("research/nautilus_scalping/rob974_h6a_accounting.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h6a_diagnostics.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h6a_evidence.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h6a_h2h3_adapter.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h6a_identity.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h6a_payload.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h6a_smoke.py",)),
 ]
 _FROZEN_PATHS = (
     "research/nautilus_scalping",
