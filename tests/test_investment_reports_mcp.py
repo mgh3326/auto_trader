@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import timedelta
 
 import pytest
 import sqlalchemy as sa
@@ -29,7 +30,10 @@ from app.mcp_server.tooling.investment_reports_handlers import (
     investment_report_set_status_impl,
     investment_report_update_impl,
     investment_watch_create_impl,
+    investment_watch_expire_impl,
     investment_watch_recommend_impl,
+    investment_watch_void_impl,
+    sweep_expired_watches_impl,
 )
 from app.services.investment_reports.ingestion import InvestmentReportIngestionService
 from tests._investment_reports_helpers import future_datetime
@@ -133,6 +137,9 @@ def test_tool_names_match_registered_set() -> None:
         "investment_report_update",
         # ROB-768 — direct watch create (independent of report flow).
         "investment_watch_create",
+        "investment_watch_void",
+        "investment_watch_expire",
+        "sweep_expired_watches",
     }
 
 
@@ -167,6 +174,71 @@ async def test_investment_watch_create_direct_persists_active_alert(
     assert response["alert"]["metadata"]["created_by"] == "tradingcodex"
     assert response["alert"]["metadata"]["source_tool"] == "investment_watch_create"
     assert response["alert"]["metadata"]["source"] == "tcx-smoke"
+
+
+@pytest.mark.asyncio
+async def test_watch_void_and_expire_mcp_tools_transition_active_alert(
+    session: AsyncSession,
+) -> None:
+    created = await investment_watch_create_impl(
+        created_by="test",
+        market="kr",
+        symbol="005930",
+        intent="sell_review",
+        rationale="cleanup",
+        watch_condition={"metric": "price", "operator": "below", "threshold": 1},
+        valid_until=future_datetime().isoformat(),
+    )
+    voided = await investment_watch_void_impl(
+        alert_uuid=created["alert"]["alert_uuid"], reason="duplicate audit row"
+    )
+    assert voided["success"] is True
+    assert voided["alert"]["status"] == "canceled"
+    assert voided["alert"]["metadata"]["lifecycle_transition"]["reason"] == (
+        "duplicate audit row"
+    )
+
+    created = await investment_watch_create_impl(
+        created_by="test",
+        market="kr",
+        symbol="000660",
+        intent="sell_review",
+        rationale="cleanup",
+        watch_condition={"metric": "price", "operator": "below", "threshold": 1},
+        valid_until=future_datetime().isoformat(),
+    )
+    expired = await investment_watch_expire_impl(
+        alert_uuid=created["alert"]["alert_uuid"]
+    )
+    assert expired["success"] is True
+    assert expired["alert"]["status"] == "expired"
+
+
+@pytest.mark.asyncio
+async def test_sweep_expired_watches_dry_run_then_expire(session: AsyncSession) -> None:
+    from app.core.timezone import now_kst
+    from app.schemas.investment_reports import CreateInvestmentWatchRequest
+    from app.services.investment_reports.watch_create import DirectWatchCreateService
+
+    request = CreateInvestmentWatchRequest.model_validate(
+        {
+            "created_by": "test",
+            "market": "kr",
+            "symbol": "005930",
+            "intent": "sell_review",
+            "rationale": "expired fixture",
+            "watch_condition": {"metric": "price", "operator": "below", "threshold": 1},
+            "valid_until": future_datetime().isoformat(),
+        }
+    )
+    alert, _ = await DirectWatchCreateService(session).create(request)
+    alert.valid_until = now_kst() - timedelta(minutes=1)
+    await session.commit()
+
+    dry_run = await sweep_expired_watches_impl()
+    assert dry_run["count"] == 1
+    result = await sweep_expired_watches_impl(dry_run=False)
+    assert result["expired_count"] == 1
 
 
 @pytest.mark.asyncio

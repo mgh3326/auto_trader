@@ -1253,6 +1253,18 @@ Response:
 This tool never creates reports/items and never submits, previews, modifies,
 cancels, or reconciles broker orders.
 
+### `investment_watch_void`, `investment_watch_expire`, and `sweep_expired_watches`
+
+ROB-971 lifecycle controls for existing watch-alert rows. `investment_watch_void`
+cancels one active invalid, orphaned, duplicate, or zombie watch and requires an
+operator reason. `investment_watch_expire` explicitly expires one active stale
+watch. `sweep_expired_watches(dry_run=true)` lists all active watches whose
+`valid_until` has passed; set `dry_run=false` to expire that set. The sweep is
+also available as a scheduleless, environment-gated TaskIQ task; production
+recurrence remains an operator decision after manual reps. These tools never
+touch a broker or order path. See the tool descriptions for the single-watch vs
+bulk-cleanup choice.
+
 ### `get_operating_briefing`
 
 Read-only one-call bootstrap for a new operating session.
