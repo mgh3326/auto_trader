@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import math
 
 import pytest
@@ -17,9 +18,55 @@ from rob974_r3_gate_metrics import (
     validate_gate_audit,
 )
 
+from research_contracts.canonical_hash import canonical_json
+
 CAMPAIGN_SHA256 = "0622ae5bba7bd42f3a9a72bb5b518a73f877c94d32c2e75ee8c6e4e6ec31e9cb"
 EXPERIMENT_SHA256 = "b2f03a23285945c8fda84c56a040fe2466541e8250e0b01ea987ba9d315e7ac5"
 CONFIG_SHA256 = "7b752d2b902e0176aa92855ac3ae96e7d87f42bb9fc2db968af7516eed35ef81"
+
+R3_CONFIG_IDENTITY_PAYLOADS: tuple[dict[str, object], ...] = tuple(
+    {
+        "schema_version": "rob974-r3-config-identity-v1",
+        "family": "S3",
+        "config_id": f"S3-R3-{index:02d}",
+        "parameters": {
+            "L": 16,
+            "q_min": 0.35,
+            "ER_min": 0.35,
+            "k_SL": 1.25,
+            "R_TP": 1.60,
+            "S_min": s_min,
+            "M_min_bp": m_min_bp,
+        },
+    }
+    for index, (s_min, m_min_bp) in enumerate(((0.05, 0), (0.0, 25), (0.0, 0)))
+) + tuple(
+    {
+        "schema_version": "rob974-r3-config-identity-v1",
+        "family": "S4",
+        "config_id": f"S4-R3-{index:02d}",
+        "parameters": {
+            "W": 150,
+            "k_SL": 1.25,
+            "R_TP": 1.50,
+            "z_entry": z_entry,
+            "d_min_bp": d_min_bp,
+        },
+    }
+    for index, (z_entry, d_min_bp) in enumerate(
+        (
+            (1.10, 140),
+            (1.00, 160),
+            (1.00, 140),
+            (0.80, 180),
+            (0.80, 160),
+            (0.80, 140),
+            (0.60, 180),
+            (0.60, 160),
+            (0.60, 140),
+        )
+    )
+)
 
 
 def _scope(
@@ -40,6 +87,9 @@ def _scope(
 
 
 def _unit(unit_id: str, schema=S3_GATE_SCHEMA, **overrides: bool):
+    unknown = set(overrides) - {gate.name for gate in schema.gates}
+    if unknown:
+        raise ValueError(f"unknown fixture gate override: {sorted(unknown)}")
     values = tuple((gate.name, overrides.get(gate.name, True)) for gate in schema.gates)
     return ContextValidDecisionUnit(unit_id=unit_id, gate_results=values)
 
@@ -70,11 +120,11 @@ def _two_fold_fixture() -> tuple[GateAuditBatch, GateAuditBatch]:
             _unit("2025-10-29T03:00:00Z:XRPUSDT:long"),
             _unit(
                 "2025-10-29T07:00:00Z:DOGEUSDT:long",
-                market_direction=False,
+                market_magnitude=False,
             ),
             _unit(
                 "2025-10-29T11:00:00Z:SOLUSDT:long",
-                market_magnitude=False,
+                market_breadth=False,
             ),
         ),
         required_context_failures=1,
@@ -113,17 +163,17 @@ def test_fold_and_pooled_metrics_preserve_raw_counts_and_sum_pooling() -> None:
     assert fold.required_context_failures == 1
     assert fold.required_context_rate.as_tuple() == (3, 4, 0.75, None)
     assert fold.joint_pass_rate.as_tuple() == (1, 3, 1 / 3, None)
-    assert _named(fold.single_gate_pass_rates, "market_direction").rate.as_tuple() == (
+    assert _named(fold.single_gate_pass_rates, "market_magnitude").rate.as_tuple() == (
         2,
         3,
         2 / 3,
         None,
     )
     assert _named(
-        fold.sequential_conditional_pass_rates, "market_magnitude"
+        fold.sequential_conditional_pass_rates, "market_breadth"
     ).rate.as_tuple() == (1, 2, 0.5, None)
     assert _named(
-        fold.leave_one_gate_out_rates, "market_direction"
+        fold.leave_one_gate_out_rates, "market_magnitude"
     ).rate.as_tuple() == (2, 3, 2 / 3, None)
     assert _named(fold.dominant_removed_rates, "M").rate.as_tuple() == (
         3,
@@ -131,11 +181,17 @@ def test_fold_and_pooled_metrics_preserve_raw_counts_and_sum_pooling() -> None:
         1.0,
         None,
     )
+    assert _named(fold.dominant_removed_rates, "S").rate.as_tuple() == (
+        1,
+        3,
+        1 / 3,
+        None,
+    )
     assert fold.kappa.joint_rate.as_tuple() == (1, 3, 1 / 3, None)
     assert fold.kappa.single_rate_product.value == pytest.approx(4 / 9)
     assert fold.kappa.kappa.value == pytest.approx(0.75)
 
-    pair = _pair(fold, "market_direction", "market_magnitude")
+    pair = _pair(fold, "market_magnitude", "market_breadth")
     assert len(fold.pairwise) == math.comb(len(S3_GATE_SCHEMA.gates), 2)
     assert (pair.n00, pair.n01, pair.n10, pair.n11, pair.denominator) == (
         0,
@@ -150,10 +206,10 @@ def test_fold_and_pooled_metrics_preserve_raw_counts_and_sum_pooling() -> None:
     assert pooled.context_valid_denominator == 4
     assert pooled.required_context_failures == 1
     assert pooled.joint_pass_rate.as_tuple() == (2, 4, 0.5, None)
-    pooled_single = _named(pooled.single_gate_pass_rates, "market_direction").rate
+    pooled_single = _named(pooled.single_gate_pass_rates, "market_magnitude").rate
     assert pooled_single.as_tuple() == (3, 4, 0.75, None)
     assert pooled_single.value != pytest.approx(((2 / 3) + 1.0) / 2)
-    rate_range = _named(report.fold_rate_ranges, "single:market_direction")
+    rate_range = _named(report.fold_rate_ranges, "single:market_magnitude")
     assert rate_range.minimum == pytest.approx(2 / 3)
     assert rate_range.maximum == 1.0
     assert rate_range.reason is None
@@ -196,8 +252,8 @@ def test_zero_denominator_and_zero_product_are_null_with_closed_reasons() -> Non
     zero_single = _batch(
         "fold-00",
         (
-            _unit("unit-1", market_direction=False),
-            _unit("unit-2", market_direction=False),
+            _unit("unit-1", market_magnitude=False),
+            _unit("unit-2", market_magnitude=False),
         ),
     )
     report = build_gate_audit(expected_scope=_scope(), batches=(zero_single,))
@@ -218,7 +274,6 @@ def test_zero_denominator_and_zero_product_are_null_with_closed_reasons() -> Non
 
 def test_schema_covers_frozen_s3_and_s4_atomic_decomposition() -> None:
     assert tuple(item.name for item in S3_GATE_SCHEMA.gates) == (
-        "market_direction",
         "market_magnitude",
         "market_breadth",
         "trend_sign_alignment",
@@ -251,12 +306,46 @@ def test_schema_covers_frozen_s3_and_s4_atomic_decomposition() -> None:
         "M",
         "S+M",
     )
+    assert S3_GATE_SCHEMA.dominant_removals[1].gate_names == (
+        "market_magnitude",
+        "market_breadth",
+    )
+    assert S3_GATE_SCHEMA.dominant_removals[2].gate_names == (
+        "market_magnitude",
+        "market_breadth",
+        "trend_sign_alignment",
+        "trend_magnitude",
+    )
     assert tuple(item.name for item in S4_GATE_SCHEMA.dominant_removals) == (
         "prior_current_z_magnitude",
         "d_min",
         "z+d",
     )
     assert len(S4_GATE_SCHEMA.gates) == 11
+
+
+def test_s3_dominant_m_removes_breadth_but_dominant_s_retains_it() -> None:
+    batch = _batch(
+        "fold-00",
+        (
+            _unit("all-pass"),
+            _unit("breadth-false", market_breadth=False),
+        ),
+    )
+    fold = build_gate_audit(expected_scope=_scope(), batches=(batch,)).folds[0]
+
+    assert _named(fold.dominant_removed_rates, "M").rate.as_tuple() == (
+        2,
+        2,
+        1.0,
+        None,
+    )
+    assert _named(fold.dominant_removed_rates, "S").rate.as_tuple() == (
+        1,
+        2,
+        0.5,
+        None,
+    )
 
 
 @pytest.mark.parametrize(
@@ -346,8 +435,8 @@ def test_validator_rejects_loo_sequential_and_mean_of_means_mutants(
 def test_pairwise_table_rejects_cell_sum_mismatch() -> None:
     with pytest.raises(GateAuditValidationError, match="pairwise cell sum"):
         PairwiseTable.from_counts(
-            first_gate="market_direction",
-            second_gate="market_magnitude",
+            first_gate="market_magnitude",
+            second_gate="market_breadth",
             denominator=3,
             n00=1,
             n01=1,
@@ -365,7 +454,7 @@ def test_terminal_histogram_cannot_substitute_for_atomic_unit_vectors() -> None:
             evaluated_decision_units=3,
             context_valid_denominator=3,
             required_context_failures=0,
-            units=(("market_direction", 3),),  # type: ignore[arg-type]
+            units=(("market_regime", 3),),  # type: ignore[arg-type]
         )
 
 
@@ -431,13 +520,22 @@ def test_production_shaped_all_r3_ids_eight_folds_and_full_hashes() -> None:
     assert R3_CONFIG_IDS == tuple(f"S3-R3-{index:02d}" for index in range(3)) + tuple(
         f"S4-R3-{index:02d}" for index in range(9)
     )
-    for config_index, config_id in enumerate(R3_CONFIG_IDS):
+    assert tuple(payload["config_id"] for payload in R3_CONFIG_IDENTITY_PAYLOADS) == (
+        R3_CONFIG_IDS
+    )
+    config_hashes = tuple(
+        hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+        for payload in R3_CONFIG_IDENTITY_PAYLOADS
+    )
+    assert len(set(config_hashes)) == 12
+
+    for config_id, config_hash in zip(R3_CONFIG_IDS, config_hashes, strict=True):
         family = config_id[:2]
         scope = _scope(
             phase="OOS",
             family=family,
             config_id=config_id,
-            config_sha256=f"{config_index + 1:064x}",
+            config_sha256=config_hash,
         )
         schema = S3_GATE_SCHEMA if family == "S3" else S4_GATE_SCHEMA
         batches = tuple(
@@ -461,5 +559,5 @@ def test_production_shaped_all_r3_ids_eight_folds_and_full_hashes() -> None:
         )
         assert len(report.scope.campaign_identity_sha256) == 64
         assert len(report.scope.experiment_identity_sha256) == 64
-        assert len(report.scope.config_identity_sha256) == 64
+        assert report.scope.config_identity_sha256 == config_hash
         assert report.diagnostic_only and not report.threshold_authority

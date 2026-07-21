@@ -140,9 +140,11 @@ class GateSchema:
 S3_GATE_SCHEMA = GateSchema(
     family="S3",
     gates=(
-        GateDefinition("market_direction", "M"),
+        # The market return sign selects long/short side; it is not an
+        # independently passable predicate.  Frozen ``market_regime`` is
+        # exactly |M| magnitude plus breadth, so dominant M removes both.
         GateDefinition("market_magnitude", "M"),
-        GateDefinition("market_breadth", "breadth"),
+        GateDefinition("market_breadth", "M"),
         GateDefinition("trend_sign_alignment", "S"),
         GateDefinition("trend_magnitude", "S"),
         GateDefinition("efficiency_ratio", "ER"),
@@ -155,12 +157,12 @@ S3_GATE_SCHEMA = GateSchema(
     ),
     dominant_removals=(
         DominantRemoval("S", ("trend_sign_alignment", "trend_magnitude")),
-        DominantRemoval("M", ("market_direction", "market_magnitude")),
+        DominantRemoval("M", ("market_magnitude", "market_breadth")),
         DominantRemoval(
             "S+M",
             (
-                "market_direction",
                 "market_magnitude",
+                "market_breadth",
                 "trend_sign_alignment",
                 "trend_magnitude",
             ),
