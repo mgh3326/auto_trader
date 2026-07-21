@@ -537,6 +537,17 @@ def register_order_tools(mcp: FastMCP) -> None:
             "holdings deltas and updates ledger lifecycle states. "
             "dry_run=True by default for safety. Applying transitions requires "
             "BOTH dry_run=False AND confirm=True. "
+            "market (kr/us or equity_kr/equity_us) and/or symbol scope the run "
+            "to matching open orders only — omit both to scan all open KIS mock "
+            "orders (unchanged default behavior). An unrecognized market value "
+            "is rejected (success=false + allowed_markets) rather than silently "
+            "treated as a full scan. Every path that has a valid scope (config "
+            "error, confirm-required, success, and unexpected-exception) echoes "
+            'the effective/canonical scope under `scope` (e.g. market="us" '
+            'always echoes back as "equity_us") — never the raw, pre-alias '
+            "request. The one exception is the unknown-market rejection: since "
+            "no valid scope exists there, it has no `scope` key and instead "
+            "echoes the verbatim request under `requested_scope`. "
             "Fails closed if KIS mock config is missing."
         ),
     )
@@ -544,19 +555,39 @@ def register_order_tools(mcp: FastMCP) -> None:
         dry_run: bool = True,
         confirm: bool = False,
         limit: int = 100,
+        market: str | None = None,
+        symbol: str | None = None,
     ):
+        # ROB-1018 fix #3: allowlist validation runs at this single
+        # front-layer point, BEFORE the config-error and confirm gates
+        # below — so an unknown market always short-circuits with the same
+        # rejection (requested_scope, no scope key) no matter what other
+        # conditions also hold. See resolve_kis_mock_reconcile_scope's
+        # docstring for why both layers must share this one function.
+        scope, scope_error = kis_mock_ledger.resolve_kis_mock_reconcile_scope(
+            market=market, symbol=symbol
+        )
+        if scope_error:
+            return scope_error
         config_error = _kis_mock_config_error()
         if config_error:
-            return config_error
+            return {**config_error, "scope": scope}
         if not dry_run and not confirm:
             return {
                 "success": False,
                 "account_mode": "kis_mock",
                 "dry_run": dry_run,
                 "error": "confirm=True is required when dry_run=False",
+                "scope": scope,
             }
+        # Pass the raw request through (not the pre-normalized `scope`) —
+        # kis_mock_reconciliation_run_impl calls the same resolve helper
+        # itself and is the authoritative normalization point for the
+        # actual reconciliation call; this call can never disagree with
+        # the `scope`/`requested_scope` already validated above because
+        # both derive from the identical resolve_kis_mock_reconcile_scope.
         return await kis_mock_ledger.kis_mock_reconciliation_run_impl(
-            dry_run=dry_run, limit=limit
+            dry_run=dry_run, limit=limit, market=market, symbol=symbol
         )
 
 
