@@ -47,7 +47,7 @@ import rob974_h6a_accounting as h6a_accounting
 import rob974_h6a_evidence as h6a_evidence
 import rob974_lineage as h1_lineage
 from rob974_features import FOUR_HOUR_MS, MinuteBar
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 
 from app.models.research_backtest import (
     ResearchBacktestRun,
@@ -3478,6 +3478,88 @@ def _validate_exact_db_snapshot(
             )
 
 
+def _validate_exact_production_snapshot(
+    *,
+    plan: ProductionExecutionPlan,
+    snapshot: CampaignDbSnapshot,
+    accounting: h6a_accounting.CombinedAccountingReport,
+) -> tuple[h6a_evidence.AttemptRecord, ...]:
+    """Validate and reconstruct the immutable production replay surface."""
+
+    if snapshot.campaign_run_id != plan.campaign_run_id:
+        raise ReplayCollisionError("persisted production campaign belongs to wrong run")
+    if snapshot.registered_mapping != plan.ordered_mapping:
+        raise ReplayCollisionError(
+            "persisted production registration is partial, reordered, or out of plan"
+        )
+    if snapshot.mismatch_row_ids or snapshot.out_of_plan_experiment_ids:
+        raise ReplayCollisionError("persisted production state carries foreign rows")
+    if len(snapshot.attempts) != 48:
+        raise ReplayCollisionError("persisted production state is not exact 48")
+    required = {
+        "campaign_run_id": plan.campaign_run_id,
+        "expected_total": 48,
+        "registered_total": 48,
+        "primary_attempts": 48,
+        "total_attempts": 48,
+        "retry_attempts": 0,
+        "accounting_complete": True,
+    }
+    for name, expected in required.items():
+        if getattr(accounting, name) != expected:
+            raise ReplayCollisionError(
+                f"persisted production accounting field {name} is not exact"
+            )
+    if sum(accounting.status_counts.values()) != 48:
+        raise ReplayCollisionError("persisted production status sum is not 48")
+    for name in (
+        "missing_row_ids",
+        "extra_experiment_ids",
+        "mismatch_row_ids",
+        "duplicate_or_gap_row_ids",
+    ):
+        if getattr(accounting, name) != ():
+            raise ReplayCollisionError(
+                f"persisted production accounting carries non-empty {name}"
+            )
+    attempts = tuple(
+        parse_persisted_attempt_record(item, plan=plan) for item in snapshot.attempts
+    )
+    if tuple(item.row_id for item in attempts) != CANONICAL_ROW_ORDER:
+        raise ReplayCollisionError("persisted production attempt order differs")
+    return attempts
+
+
+def _require_exact_production_attempt_replay(
+    *,
+    persisted: tuple[h6a_evidence.AttemptRecord, ...],
+    recomputed: tuple[h6a_evidence.AttemptRecord, ...],
+) -> None:
+    if len(persisted) != 48 or len(recomputed) != 48:
+        raise ReplayCollisionError("production replay attempts are not exact 48")
+    for stored, current in zip(persisted, recomputed, strict=True):
+        if (
+            stored.row_id,
+            stored.experiment_id,
+            stored.retry_index,
+            stored.status,
+            stored.reason_code,
+            stored.fold_evidence_hash,
+            stored.run_identity,
+        ) != (
+            current.row_id,
+            current.experiment_id,
+            current.retry_index,
+            current.status,
+            current.reason_code,
+            current.fold_evidence_hash,
+            current.run_identity,
+        ):
+            raise ReplayCollisionError(
+                f"production replay semantic attempt differs at {stored.row_id}"
+            )
+
+
 async def _finish_replay_noop(
     *, state: _CoordinatorState, session: object
 ) -> MaterializationOutcome:
@@ -3536,16 +3618,21 @@ async def materialize_production(
         validate_exact_48_mapping(plan.ordered_mapping)
         s3_specs, s4_specs = campaign.registration_specs()
         authorization._require_plan(plan)
-        register_context, record_context = build_h6a_mutation_contexts(authorization)
-        validate_h6a_context_pair(register_context, record_context)
         state.trace.append("artifact_probe")
         state.artifact_probe += 1
         presence = ports.artifacts.probe(output_dir=plan.output_root)
         state.artifact_state = getattr(presence, "state", "MALFORMED")
-        if state.artifact_state != "ABSENT":
+        if state.artifact_state not in {"ABSENT", "PAIR_PRESENT"}:
             raise ReplayCollisionError(
                 f"production artifact forensic state refused: {state.artifact_state}"
             )
+        register_context: ApprovedMutationContext | None = None
+        record_context: ApprovedMutationContext | None = None
+        if state.artifact_state == "ABSENT":
+            register_context, record_context = build_h6a_mutation_contexts(
+                authorization
+            )
+            validate_h6a_context_pair(register_context, record_context)
     except BaseException as exc:
         if type(ports) is ProductionExecutionPorts:
             _capture_materializer_exception(state, ports, exc)
@@ -3589,6 +3676,9 @@ async def materialize_production(
         state.begin += 1
         await session.begin()
         begun = True
+        if state.artifact_state == "PAIR_PRESENT":
+            state.trace.append("set_transaction_read_only")
+            await session.execute(text("SET TRANSACTION READ ONLY"))
         predecessor_session = _InjectedTransactionSession(session)
 
         state.trace.append("db_state_inspection")
@@ -3598,10 +3688,69 @@ async def materialize_production(
             raise ReplayCollisionError(
                 "production state inspector returned non-canonical snapshot"
             )
-        if not snapshot.is_absent():
+        if snapshot.is_absent():
+            state.db_state = "ABSENT"
+            if state.artifact_state != "ABSENT":
+                raise ReplayCollisionError(
+                    "production artifact pair exists while database state is absent"
+                )
+        else:
             state.db_state = "PRESENT_UNVERIFIED"
-            raise ReplayCollisionError("production database state is not absent")
-        state.db_state = "ABSENT"
+            if state.artifact_state != "PAIR_PRESENT":
+                raise ReplayCollisionError(
+                    "production database state exists while artifact pair is absent"
+                )
+            state.trace.append("h6a_accounting")
+            state.accounting_calls += 1
+            state.accounting_report = ports.h6a_accounting.reconstruct(
+                plan=plan,
+                registered_total=len(snapshot.registered_mapping),
+                attempts=snapshot.attempts,
+            )
+            persisted_attempts = _validate_exact_production_snapshot(
+                plan=plan,
+                snapshot=snapshot,
+                accounting=state.accounting_report,
+            )
+            state.db_state = "EXACT"
+
+            state.trace.append("h4_attempts")
+            state.h4 += 1
+            h4_result = await ports.h4_runner.run(plan._identity)
+            if type(h4_result) is not ActualH4CampaignResult:
+                raise ReplayCollisionError(
+                    "actual H4 replay returned wrong concrete type"
+                )
+            if h4_result.identity is not plan._identity:
+                raise ReplayCollisionError("actual H4 replay identity differs")
+            _require_exact_production_attempt_replay(
+                persisted=persisted_attempts,
+                recomputed=h4_result.attempts,
+            )
+
+            state.trace.append("h5_scorecard")
+            state.h5 += 1
+            replay_scorecard = ports.h5.build_scorecard(
+                plan=plan,
+                h4_result=h4_result,
+                accounting=state.accounting_report,
+            )
+            if type(replay_scorecard) is not dict:
+                raise ReplayCollisionError(
+                    "actual H5 replay scorecard must be exact dict"
+                )
+            state.scorecard = replay_scorecard
+            state.trace.append("artifact_replay_verify")
+            state.replay_verify += 1
+            state.replay_inspection = ports.artifacts.inspect(
+                scorecard=replay_scorecard,
+                output_dir=plan.output_root,
+                h5_port=ports.h5,
+            )
+            return await _finish_replay_noop(state=state, session=session)
+
+        if register_context is None or record_context is None:
+            raise H6BPreflightRefused("production mutation contexts are unavailable")
 
         mapping = dict(plan.ordered_mapping)
         state.trace.append("h6a_register")

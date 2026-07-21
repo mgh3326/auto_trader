@@ -90,6 +90,12 @@ _AUTHORIZED_PRODUCTION_CHANGES = [
     ("A", ("research/nautilus_scalping/rob974_h5_markdown.py",)),
     ("A", ("research/nautilus_scalping/rob974_h5_s3.py",)),
     ("A", ("research/nautilus_scalping/rob974_h5_s4.py",)),
+    # ROB-984 authorized additive H6-B modules.  These three literal paths
+    # preserve the exact reviewed research scope; the app service remains
+    # outside this guard and no wildcard/prefix admits a future module.
+    ("A", ("research/nautilus_scalping/rob974_h6b_artifacts.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h6b_postaudit.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h6b_cli.py",)),
 ]
 _FROZEN_PATHS = (
     "research/nautilus_scalping",
@@ -171,8 +177,8 @@ def test_rob970_r1_repair_is_the_only_post_rob970_production_delta():
     assert production_changes == sorted(_AUTHORIZED_PRODUCTION_CHANGES)
 
 
-def test_rob1001_guard_is_resealed_at_exact_45_with_h4_8_and_h5_7():
-    assert len(_AUTHORIZED_PRODUCTION_CHANGES) == 45
+def test_rob984_guard_is_resealed_at_exact_48_with_h6b_3():
+    assert len(_AUTHORIZED_PRODUCTION_CHANGES) == 48
     h4_changes = tuple(
         change
         for change in _AUTHORIZED_PRODUCTION_CHANGES
@@ -201,6 +207,16 @@ def test_rob1001_guard_is_resealed_at_exact_45_with_h4_8_and_h5_7():
         ("A", ("research/nautilus_scalping/rob974_h5_markdown.py",)),
         ("A", ("research/nautilus_scalping/rob974_h5_s3.py",)),
         ("A", ("research/nautilus_scalping/rob974_h5_s4.py",)),
+    )
+    h6b_changes = tuple(
+        change
+        for change in _AUTHORIZED_PRODUCTION_CHANGES
+        if change[1][0].startswith("research/nautilus_scalping/rob974_h6b_")
+    )
+    assert h6b_changes == (
+        ("A", ("research/nautilus_scalping/rob974_h6b_artifacts.py",)),
+        ("A", ("research/nautilus_scalping/rob974_h6b_postaudit.py",)),
+        ("A", ("research/nautilus_scalping/rob974_h6b_cli.py",)),
     )
 
 

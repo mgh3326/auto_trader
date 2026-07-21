@@ -298,7 +298,7 @@ def test_transaction_and_sql_ast_ownership_is_closed():
         assert forbidden not in upper
 
 
-def test_guard_remains_exact_45_after_verified_h4_h5_and_h6b_is_not_preregistered():
+def test_guard_is_exact_48_after_cp10_literal_h6b_seal():
     guard = (
         _ROOT
         / "research/nautilus_scalping/tests/test_rob962_frozen_production_delta.py"
@@ -315,10 +315,18 @@ def test_guard_remains_exact_45_after_verified_h4_h5_and_h6b_is_not_preregistere
         )
     )
     authorized_changes = ast.literal_eval(assignment.value)
-    assert len(authorized_changes) == 45
-    assert not any(
-        "rob974_h6b_" in path for _status, paths in authorized_changes for path in paths
-    )
+    assert len(authorized_changes) == 48
+    h6b = {
+        path
+        for status, paths in authorized_changes
+        for path in paths
+        if status == "A" and "rob974_h6b_" in path
+    }
+    assert h6b == {
+        "research/nautilus_scalping/rob974_h6b_artifacts.py",
+        "research/nautilus_scalping/rob974_h6b_cli.py",
+        "research/nautilus_scalping/rob974_h6b_postaudit.py",
+    }
 
 
 def test_import_origins_and_actual_dependency_origins_are_this_worktree():

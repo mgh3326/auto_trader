@@ -242,9 +242,10 @@ def run_cli(argv: Sequence[str], *, stdout: TextIOBase, stderr: TextIOBase) -> i
         stderr.write("CLI_USAGE_OR_PLAN_ERROR\n")
         return CLI_USAGE_OR_PLAN_ERROR
 
-    # Physical launch wiring remains closed until CP9 proves the actual DB
-    # adapters and CP10 freezes the merged source/output authority.  Refusal
-    # remains before target/session/H4/filesystem effects.
+    # Physical launch wiring remains closed on the feature branch.  Only the
+    # captain's post-merge tree refreeze and SHA-sealed v3 operator packet may
+    # bind the empirical session/corpus/output adapters.  Refusal remains
+    # before target/session/H4/filesystem effects.
     build_contract_fixture_plan()
     stderr.write("AUTHORITY_OR_PREFLIGHT_REFUSED contract_fixture_not_launchable\n")
     return AUTHORITY_OR_PREFLIGHT_REFUSED
