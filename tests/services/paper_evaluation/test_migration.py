@@ -56,7 +56,7 @@ def test_migration_descends_from_latest_main_head_and_is_the_single_head() -> No
     config = Config(str(REPO / "alembic.ini"))
     config.set_main_option("script_location", str(REPO / "alembic"))
     assert ScriptDirectory.from_config(config).get_heads() == [
-        "20260721_rob954_terminalized_at"
+        "20260720_rob976_support"
     ]
 
 
