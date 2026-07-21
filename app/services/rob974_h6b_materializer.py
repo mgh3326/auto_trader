@@ -1609,13 +1609,25 @@ class ActualMergedH4Runner:
 
     provenance = "actual_merged_h4"
 
-    def __init__(self, data: ActualH4InputData) -> None:
+    def __init__(
+        self,
+        data: ActualH4InputData,
+        *,
+        execute_all_folds: bool = False,
+    ) -> None:
         if type(data) is not ActualH4InputData:
             raise H6BPlanError("actual H4 runner requires exact persisted input")
+        if type(execute_all_folds) is not bool:
+            raise H6BPlanError("execute_all_folds must be exact bool")
         self._data = data
+        self._execute_all_folds = execute_all_folds
         self.last_trace: tuple[str, ...] = ()
         self.last_selected: tuple[tuple[str, str, str], ...] = ()
         self.last_result: ActualH4CampaignResult | None = None
+
+    def _fold_is_active(self, fold: object) -> bool:
+        """Keep CP10's bounded mode default; launchers opt into all folds."""
+        return self._execute_all_folds or getattr(fold, "fold_index", None) == 0
 
     def _run_train_strategy(
         self,
@@ -1998,7 +2010,7 @@ class ActualMergedH4Runner:
         selected_rows: list[tuple[str, str, str]] = []
 
         for fold in folds:
-            active_fold = fold.fold_index == 0
+            active_fold = self._fold_is_active(fold)
             trace.append(
                 f"{fold.fold_id}:"
                 + ("train_h1" if active_fold else "bounded_inactive_h1")
