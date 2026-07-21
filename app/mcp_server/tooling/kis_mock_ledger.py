@@ -667,6 +667,10 @@ async def _record_kis_mock_order(
 
 
 _MARKET_ALIASES = {"kr": "equity_kr", "us": "equity_us"}
+_ALLOWED_RECONCILE_MARKETS = frozenset({"equity_kr", "equity_us"})
+_ALLOWED_RECONCILE_MARKET_VALUES = sorted(_MARKET_ALIASES) + sorted(
+    _ALLOWED_RECONCILE_MARKETS
+)
 
 
 def _normalize_kis_mock_reconcile_market(market: str | None) -> str | None:
@@ -690,8 +694,28 @@ async def kis_mock_reconciliation_run_impl(
     resting orders to ``stale``). Both default to ``None``, preserving the
     prior full-scan behavior for existing callers (TaskIQ periodic task,
     unscoped MCP calls).
+
+    An unrecognized ``market`` (typo or unsupported venue) is rejected
+    explicitly rather than silently passed through — KIS mock only covers
+    KR/US equity (``equity_kr``/``equity_us``). A silent pass-through would
+    otherwise yield an ``orders_processed=0`` false-success indistinguishable
+    from "scope matched but nothing was open".
     """
     normalized_market = _normalize_kis_mock_reconcile_market(market)
+    if (
+        normalized_market is not None
+        and normalized_market not in _ALLOWED_RECONCILE_MARKETS
+    ):
+        return {
+            "success": False,
+            "error": (
+                f"unknown market '{market}' — allowed values: "
+                f"{_ALLOWED_RECONCILE_MARKET_VALUES}"
+            ),
+            "allowed_markets": _ALLOWED_RECONCILE_MARKET_VALUES,
+            "account_mode": "kis_mock",
+            "scope": {"market": market, "symbol": symbol},
+        }
     try:
         async with _order_session_factory()() as db:
             return await run_kis_mock_reconciliation(
@@ -708,6 +732,7 @@ async def kis_mock_reconciliation_run_impl(
             "error": str(exc),
             "source": "mcp",
             "account_mode": "kis_mock",
+            "scope": {"market": normalized_market, "symbol": symbol},
         }
 
 

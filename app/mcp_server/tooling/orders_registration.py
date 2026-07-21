@@ -551,15 +551,17 @@ def register_order_tools(mcp: FastMCP) -> None:
         market: str | None = None,
         symbol: str | None = None,
     ):
+        scope = {"market": market, "symbol": symbol}
         config_error = _kis_mock_config_error()
         if config_error:
-            return config_error
+            return {**config_error, "scope": scope}
         if not dry_run and not confirm:
             return {
                 "success": False,
                 "account_mode": "kis_mock",
                 "dry_run": dry_run,
                 "error": "confirm=True is required when dry_run=False",
+                "scope": scope,
             }
         return await kis_mock_ledger.kis_mock_reconciliation_run_impl(
             dry_run=dry_run, limit=limit, market=market, symbol=symbol

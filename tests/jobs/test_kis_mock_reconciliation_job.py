@@ -331,13 +331,37 @@ async def test_market_scope_excludes_out_of_scope_rows_end_to_end(monkeypatch):
     """ROB-1018 core repro: a US-scoped run must never see KR rows as
     transition candidates — the query layer (not just filtering after the
     fact) must exclude them, so a US session cannot stale-transition a
-    resting KR order it never asked about."""
+    resting KR order it never asked about.
+
+    Mirrors the actual incident shape (ledger 63/64 KR + 65 US all open at
+    once): the fake ``list_open_orders`` below returns BOTH a KR row (63) and
+    a US row (65) whenever ``instrument_type`` is None, and filters down to
+    just the matching market otherwise — exactly like the real DB query. A
+    run scoped to ``market="equity_us"`` must end up with ONLY the US row
+    in ``events``/transitions; the KR row must never surface as a candidate.
+
+    This is a load-bearing regression guard for the bug this ticket fixed: if
+    the job stops forwarding ``market`` to ``list_open_orders`` (e.g.
+    regresses to passing ``instrument_type=None``), the fake below starts
+    returning the KR row too and this test goes RED — a single-row fake
+    would have let that regression through silently (it did, pre-fix).
+    """
     mock_db = AsyncMock()
     mock_lifecycle_svc = AsyncMock()
 
     async def _list_open_orders(*, limit=100, symbol=None, instrument_type=None):
-        # Simulate the real query-layer filter: only equity_us rows come back.
+        # Simulate the real query-layer filter: instrument_type gates which
+        # rows come back. Both a KR and a US order are open simultaneously.
         rows = [
+            _ledger_row(
+                ledger_id=63,
+                symbol="005930",
+                side="buy",
+                qty=Decimal("10"),
+                state="accepted",
+                baseline=Decimal("0"),
+                instrument_type="equity_kr",
+            ),
             _ledger_row(
                 ledger_id=65,
                 symbol="AVGO",
@@ -346,7 +370,7 @@ async def test_market_scope_excludes_out_of_scope_rows_end_to_end(monkeypatch):
                 state="accepted",
                 baseline=Decimal("0"),
                 instrument_type="equity_us",
-            )
+            ),
         ]
         return [
             r
@@ -370,6 +394,14 @@ async def test_market_scope_excludes_out_of_scope_rows_end_to_end(monkeypatch):
     assert result["orders_processed"] == 1
     ledger_ids = {e["detail"]["ledger_id"] for e in result["events"]}
     assert ledger_ids == {65}
+    assert 63 not in ledger_ids  # KR row must never appear as a candidate
+
+    transitioned_ids = {
+        c.kwargs["ledger_id"]
+        for c in mock_lifecycle_svc.apply_lifecycle_transition.call_args_list
+    }
+    assert transitioned_ids == {65}
+
     assert result["scope"] == {"market": "equity_us", "symbol": None}
 
 
