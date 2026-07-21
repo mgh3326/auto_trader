@@ -38,6 +38,9 @@ from app.mcp_server.tooling.shared import (
 from app.monitoring import yfinance_tracing_session
 from app.services.brokers.kis.client import KISClient
 from app.services.decision_history import build_decision_context
+from app.services.market_valuation_snapshots.normalized_market_cap import (
+    fetch_normalized_kr_market_caps,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +96,8 @@ async def get_top_stocks_impl(
     ranking_type: str = "volume",
     limit: int = 20,
     include_illiquid: bool = False,
+    min_market_cap: float | None = None,
+    min_turnover: float | None = None,
 ) -> dict[str, Any]:
     market = (market or "").strip().lower()
     ranking_type = (ranking_type or "").strip().lower()
@@ -132,8 +137,16 @@ async def get_top_stocks_impl(
             query=f"market={market}, ranking_type={ranking_type}",
         )
 
-    fetch_limit = limit_clamped
-    rankings: list[dict[str, Any]] = []
+    # ROB-976: over-fetch when a quality filter will drop rows post-hoc, so the
+    # caller still gets up to limit_clamped quality rows (KR ranking endpoints
+    # already fetch their full page in one call — see fluctuation_rank/
+    # volume_rank/market_cap_rank — so a larger client-side slice is free).
+    _quality_filter_requested = min_market_cap is not None or min_turnover is not None
+    fetch_limit = (
+        min(limit_clamped * 4, 100) if _quality_filter_requested else limit_clamped
+    )
+    excluded_by_market_cap = 0
+    excluded_by_turnover = 0
     source = {"kr": "kis", "us": "yfinance", "crypto": "upbit"}.get(
         market,
         "",
@@ -164,7 +177,7 @@ async def get_top_stocks_impl(
             else:
                 data = []
 
-            filtered_rank = 1
+            mapped_rows: list[dict[str, Any]] = []
             for row in data[:fetch_limit]:
                 if ranking_type == "losers":
                     change_rate = analysis_screening._to_float(row.get("prdy_ctrt"))
@@ -172,13 +185,58 @@ async def get_top_stocks_impl(
                         continue
 
                 if resolved_ranking_type in _FOREIGN_RANKING_TYPES:
-                    mapped = analysis_screening._map_kr_foreign_row(row, filtered_rank)
+                    mapped = analysis_screening._map_kr_foreign_row(
+                        row, len(mapped_rows) + 1
+                    )
                 else:
-                    mapped = analysis_screening._map_kr_row(row, filtered_rank)
+                    mapped = analysis_screening._map_kr_row(row, len(mapped_rows) + 1)
+                mapped_rows.append(mapped)
+
+            # ROB-976 R3: a hard KRW market-cap threshold may only use the
+            # normalized Naver-backed market_valuation_snapshots value.  The
+            # foreigners helper's TradingView fundamentals value has a different
+            # unit and caused real blue chips to be rejected as sub-3천억.
+            if min_market_cap is not None:
+                normalized_caps = await fetch_normalized_kr_market_caps(
+                    row["symbol"] for row in mapped_rows
+                )
+                for mapped in mapped_rows:
+                    cap = normalized_caps.get(mapped["symbol"])
+                    mapped["market_cap"] = float(cap.value) if cap is not None else None
+                    mapped["market_cap_source"] = (
+                        f"market_valuation_snapshots:{cap.source}"
+                        if cap is not None
+                        else None
+                    )
+                    mapped["market_cap_snapshot_date"] = (
+                        cap.snapshot_date.isoformat() if cap is not None else None
+                    )
+
+            rankings = []
+            for mapped in mapped_rows:
+                if min_market_cap is not None:
+                    mc = mapped.get("market_cap")
+                    # A requested quality floor is fail-closed: unknown normalized
+                    # cap coverage cannot establish that the row passes.
+                    if mc is None or mc < min_market_cap:
+                        excluded_by_market_cap += 1
+                        continue
+                if min_turnover is not None:
+                    turnover = mapped.get("trade_amount")
+                    if turnover is None:
+                        price = mapped.get("price")
+                        volume = mapped.get("volume")
+                        if price is not None and volume is not None:
+                            turnover = price * volume
+                            mapped["trade_amount"] = turnover
+                    if turnover is None or turnover < min_turnover:
+                        excluded_by_turnover += 1
+                        continue
                 rankings.append(mapped)
-                filtered_rank += 1
                 if len(rankings) >= limit_clamped:
                     break
+            for new_rank, row in enumerate(rankings, start=1):
+                row["rank"] = new_rank
 
         elif market == "us":
             rankings, source = await analysis_screening._get_us_rankings(
@@ -292,6 +350,53 @@ async def get_top_stocks_impl(
         for new_rank, row in enumerate(rankings, start=1):
             row["rank"] = new_rank
 
+    # ROB-976 verify R1: don't let the quality filter's honest 0-rows collapse
+    # into the misleading "market may be entirely bullish" message below — that
+    # message means "KIS returned no losers at all", not "the quality filter
+    # removed everyone". Surface the real reason instead (never fabricate rows).
+    if (
+        len(rankings) == 0
+        and market == "kr"
+        and (excluded_by_market_cap or excluded_by_turnover)
+    ):
+        return {
+            "rankings": [],
+            "total_count": 0,
+            "market": market,
+            "ranking_type": ranking_type,
+            "timestamp": datetime.datetime.now(kst_tz).isoformat(),
+            "source": source,
+            **({"data_state": data_state} if data_state is not None else {}),
+            "status": "degraded",
+            "degraded_reason": (
+                f"all {excluded_by_market_cap + excluded_by_turnover} matching "
+                f"row(s) fell below the requested quality floor or lacked "
+                f"trusted normalized coverage "
+                f"(min_market_cap={min_market_cap}, min_turnover={min_turnover}); "
+                "refresh normalized valuation snapshots or retry with a lower floor"
+            ),
+            **(
+                {
+                    "market_cap_filter": {
+                        "min_market_cap": min_market_cap,
+                        "excluded_count": excluded_by_market_cap,
+                    }
+                }
+                if min_market_cap is not None
+                else {}
+            ),
+            **(
+                {
+                    "turnover_filter": {
+                        "min_turnover": min_turnover,
+                        "excluded_count": excluded_by_turnover,
+                    }
+                }
+                if min_turnover is not None
+                else {}
+            ),
+        }
+
     if len(rankings) == 0 and market == "kr" and ranking_type == "losers":
         return analysis_screening._error_payload(
             source="kis",
@@ -318,6 +423,16 @@ async def get_top_stocks_impl(
         response["data_state"] = data_state
     if liquidity_filter_meta is not None:
         response["liquidity_filter"] = liquidity_filter_meta
+    if min_market_cap is not None:
+        response["market_cap_filter"] = {
+            "min_market_cap": min_market_cap,
+            "excluded_count": excluded_by_market_cap,
+        }
+    if min_turnover is not None:
+        response["turnover_filter"] = {
+            "min_turnover": min_turnover,
+            "excluded_count": excluded_by_turnover,
+        }
     return response
 
 

@@ -71,6 +71,25 @@ _AUTHORIZED_PRODUCTION_CHANGES = [
     ("A", ("research/nautilus_scalping/rob974_h6a_identity.py",)),
     ("A", ("research/nautilus_scalping/rob974_h6a_payload.py",)),
     ("A", ("research/nautilus_scalping/rob974_h6a_smoke.py",)),
+    # ROB-982 authorized additive modules.
+    ("A", ("research/nautilus_scalping/rob974_h4_adapter.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h4_contracts.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h4_h6a_adapter.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h4_pbo.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h4_plan.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h4_runner.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h4_selection.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h4_smoke.py",)),
+    # ROB-983 authorized additive H5 modules.  The seven literals preserve
+    # the orch-approved checkpoint-per-file layout; no wildcard/prefix can
+    # silently admit a future production module.
+    ("A", ("research/nautilus_scalping/rob974_h5_canonical.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h5_contracts.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h5_dual_evidence.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h5_gates.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h5_markdown.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h5_s3.py",)),
+    ("A", ("research/nautilus_scalping/rob974_h5_s4.py",)),
 ]
 _FROZEN_PATHS = (
     "research/nautilus_scalping",
@@ -150,6 +169,39 @@ def test_rob970_r1_repair_is_the_only_post_rob970_production_delta():
         if not all(_is_test_path(path) for path in change[1])
     ]
     assert production_changes == sorted(_AUTHORIZED_PRODUCTION_CHANGES)
+
+
+def test_rob1001_guard_is_resealed_at_exact_45_with_h4_8_and_h5_7():
+    assert len(_AUTHORIZED_PRODUCTION_CHANGES) == 45
+    h4_changes = tuple(
+        change
+        for change in _AUTHORIZED_PRODUCTION_CHANGES
+        if change[1][0].startswith("research/nautilus_scalping/rob974_h4_")
+    )
+    h5_changes = tuple(
+        change
+        for change in _AUTHORIZED_PRODUCTION_CHANGES
+        if change[1][0].startswith("research/nautilus_scalping/rob974_h5_")
+    )
+    assert h4_changes == (
+        ("A", ("research/nautilus_scalping/rob974_h4_adapter.py",)),
+        ("A", ("research/nautilus_scalping/rob974_h4_contracts.py",)),
+        ("A", ("research/nautilus_scalping/rob974_h4_h6a_adapter.py",)),
+        ("A", ("research/nautilus_scalping/rob974_h4_pbo.py",)),
+        ("A", ("research/nautilus_scalping/rob974_h4_plan.py",)),
+        ("A", ("research/nautilus_scalping/rob974_h4_runner.py",)),
+        ("A", ("research/nautilus_scalping/rob974_h4_selection.py",)),
+        ("A", ("research/nautilus_scalping/rob974_h4_smoke.py",)),
+    )
+    assert h5_changes == (
+        ("A", ("research/nautilus_scalping/rob974_h5_canonical.py",)),
+        ("A", ("research/nautilus_scalping/rob974_h5_contracts.py",)),
+        ("A", ("research/nautilus_scalping/rob974_h5_dual_evidence.py",)),
+        ("A", ("research/nautilus_scalping/rob974_h5_gates.py",)),
+        ("A", ("research/nautilus_scalping/rob974_h5_markdown.py",)),
+        ("A", ("research/nautilus_scalping/rob974_h5_s3.py",)),
+        ("A", ("research/nautilus_scalping/rob974_h5_s4.py",)),
+    )
 
 
 def test_rob962_cost_model_bytes_and_derived_lineage_are_exactly_refrozen():
