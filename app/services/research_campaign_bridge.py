@@ -47,6 +47,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.research_backtest import (
+    BACKTEST_RUNNER_MAX_LENGTH,
     TRIAL_STATUSES,
     ResearchBacktestRun,
     ResearchStrategyExperiment,
@@ -89,8 +90,8 @@ __all__ = [
 ]
 
 _EXPECTED_CAMPAIGN_SIZE = 24
-# research.backtest_runs.runner is VARCHAR(16) — reject before the DB does.
-_MAX_RUNNER_LENGTH = 16
+# Keep the pre-write boundary synchronized with the ORM and Alembic contract.
+_MAX_RUNNER_LENGTH = BACKTEST_RUNNER_MAX_LENGTH
 _ATTEMPT_BOUNDARY_PUBLIC_TEXT = (
     "attempt evidence rejected at the diagnostic persistence boundary"
 )
@@ -115,7 +116,7 @@ class CampaignDuplicateSpecError(CampaignBridgeError):
 
 
 class RunnerNameTooLongError(CampaignBridgeError):
-    """``runner`` exceeds the DB column's 16-character limit."""
+    """``runner`` exceeds the DB column's bounded character limit."""
 
 
 class TerminalEvidenceMismatch(CampaignBridgeError):
