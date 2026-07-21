@@ -1,3 +1,4 @@
+import functools
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -139,6 +140,203 @@ async def test_create_lookup_failure_returns_error_without_service_insert(monkey
         "success": False,
         "error": "target broker order lookup failed: offline",
     }
+
+
+def _toss_target_create_kwargs(action: str, *, market="equity_kr", **overrides):
+    symbol = "005930" if market == "equity_kr" else "AAPL"
+    return _create_kwargs(
+        symbol=symbol,
+        market=market,
+        account_mode="toss_live",
+        side="sell",
+        action=action,
+        target_broker_order_id="broker-1",
+        rungs=[
+            {
+                "rung_index": 0,
+                "side": "sell",
+                "quantity": "3.5",
+                "limit_price": "43000",
+                "notional": None,
+            }
+        ],
+        **overrides,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["replace", "cancel"])
+@pytest.mark.parametrize("market", ["equity_kr", "equity_us"])
+async def test_create_toss_live_target_action_preflights_and_creates_proposal(
+    monkeypatch, action, market
+):
+    """ROB-972: order_proposal_create(action='cancel'|'replace') must accept
+    toss_live x equity_kr/us. Only fetch_target_order (read-only preflight) is
+    ever imported/called by this tool -- broker_gateway.cancel_target_order
+    isn't imported here at all, so there is no code path for a mutation to
+    leak into proposal creation regardless of account_mode.
+    """
+    calls = []
+    symbol = "005930" if market == "equity_kr" else "AAPL"
+
+    async def fake_fetch(**kwargs):
+        calls.append(kwargs)
+        return _target_snapshot(
+            broker_order_id="broker-1",
+            symbol=symbol,
+            side="sell",
+            limit_price="43000",
+            remaining_quantity="3.5",
+        )
+
+    monkeypatch.setattr(opt, "fetch_target_order", fake_fetch)
+
+    created = await opt.order_proposal_create(
+        **_toss_target_create_kwargs(action, market=market)
+    )
+
+    assert created["success"] is True
+    assert created["action"] == action
+    assert created["target_broker_order_id"] == "broker-1"
+    assert len(calls) == 1
+    assert calls[0]["order_id"] == "broker-1"
+    assert calls[0]["symbol"] == symbol
+    assert calls[0]["market"] == market
+    assert calls[0]["account_mode"] == "toss_live"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["replace", "cancel"])
+async def test_create_toss_live_cancel_replace_auto_dispatch_never_mutates_before_gate(
+    monkeypatch, action
+):
+    """ROB-972 round-1 false-green fix.
+
+    `test_create_toss_live_target_action_preflights_and_creates_proposal`'s
+    docstring claims there is "no code path for a mutation to leak into
+    proposal creation" because only the read-only `fetch_target_order`
+    preflight is imported by `order_proposal_create` -- but that test never
+    exercises `order_proposal_create`'s own best-effort `dispatch_proposal`
+    call a few lines later, which IS a real code path, and which is exactly
+    where the round-1 incident happened (auto-dispatch reaching a broker
+    cancel before the eligibility gate ran). Cover that indirect path for
+    real: enable Telegram + auto-approve, let `order_proposal_create` drive
+    its own real `dispatch_proposal` -> real `revalidate_and_submit` (only
+    the broker/network edges are faked, via a `revalidate_fn` partial bound
+    onto the real functions -- not a stub that skips the gate logic), and
+    assert the broker cancel never fires.
+    """
+    from app.services.order_proposals.dispatch import (
+        dispatch_proposal as real_dispatch_proposal,
+    )
+    from app.services.order_proposals.revalidation import revalidate_and_submit
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
+    chat = _unique_chat()
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", chat)
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+
+    fake_notifier = _FakeNotifier(message_id=9977)
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.notifier.get_trade_notifier",
+        lambda: fake_notifier,
+    )
+
+    target_snapshot = _target_snapshot(
+        broker_order_id="broker-1",
+        symbol="005930",
+        side="sell",
+        limit_price="43000",
+        remaining_quantity="3.5",
+    )
+
+    async def fake_fetch(**kwargs):
+        return target_snapshot
+
+    monkeypatch.setattr(opt, "fetch_target_order", fake_fetch)
+
+    cancel_calls = []
+
+    async def cancel_fn_must_not_run(**kwargs):
+        cancel_calls.append(kwargs)
+        raise AssertionError(
+            "order_proposal_create's own dispatch_proposal call must never "
+            "reach a broker cancel before the eligibility gate runs"
+        )
+
+    async def place_fn(**kwargs):
+        if kwargs.get("dry_run"):
+            return {
+                "success": True,
+                "approval_hash": "fresh",
+                "price": "43000",
+                "quantity": "3.5",
+            }
+        raise AssertionError("live submit must never fire before the gate runs")
+
+    async def no_opposite_pending(**kwargs):
+        return None
+
+    # Bind the fakes onto the REAL dispatch_proposal/revalidate_and_submit --
+    # not a stand-in that reimplements or skips the gate call -- so this
+    # test actually exercises the production gate-application code path.
+    monkeypatch.setattr(
+        opt,
+        "dispatch_proposal",
+        functools.partial(
+            real_dispatch_proposal,
+            revalidate_fn=functools.partial(
+                revalidate_and_submit,
+                fetch_target_fn=fake_fetch,
+                cancel_target_fn=cancel_fn_must_not_run,
+                place_order_fn=place_fn,
+                opposite_pending_check_fn=no_opposite_pending,
+            ),
+        ),
+    )
+
+    created = await opt.order_proposal_create(
+        **_toss_target_create_kwargs(action, market="equity_kr")
+    )
+
+    assert created["success"] is True
+    assert cancel_calls == []
+    assert len(fake_notifier.calls) == 1
+    text, _keyboard, _chat_id = fake_notifier.calls[0]
+    assert "주문 제안 승인" in text
+    assert "자동 접수됨" not in text
+
+    got = await opt.order_proposal_get(created["proposal_id"])
+    assert got["rungs"][0]["state"] == "pending_approval"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["replace", "cancel"])
+async def test_create_rejects_toss_live_crypto_target_action_with_supported_matrix(
+    monkeypatch, action
+):
+    async def fetch_must_not_run(**kwargs):
+        raise AssertionError("unsupported combo must be rejected before any fetch")
+
+    monkeypatch.setattr(opt, "fetch_target_order", fetch_must_not_run)
+
+    result = await opt.order_proposal_create(
+        **_toss_target_create_kwargs(action, market="crypto")
+    )
+
+    assert result["success"] is False
+    assert "toss_live×equity_kr|equity_us" in result["error"]
+    assert result["requested"] == {
+        "account_mode": "toss_live",
+        "market": "crypto",
+        "action": action,
+    }
+    assert {"account_mode": "toss_live", "market": "equity_kr"} in (
+        result["supported_matrix"][action]
+    )
+    assert {"account_mode": "toss_live", "market": "crypto"} not in (
+        result["supported_matrix"][action]
+    )
 
 
 @pytest.mark.asyncio

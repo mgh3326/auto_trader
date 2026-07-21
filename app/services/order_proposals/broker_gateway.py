@@ -17,9 +17,33 @@ SUPPORTED_TARGET_ACTIONS = frozenset(
     {
         ("kis_live", "equity_kr"),
         ("kis_live", "equity_us"),
+        ("toss_live", "equity_kr"),
+        ("toss_live", "equity_us"),
         ("upbit", "crypto"),
     }
 )
+
+# Toss broker-authoritative order status enum (see reference_toss_openapi_docs
+# memory / GET /api/v1/orders docs). OPEN-group statuses still have live,
+# actionable remaining quantity; CLOSED-group statuses are terminal. REPLACED
+# means Toss issued a new order id superseding this one (cancel/modify both
+# do this) -- for target-order confirmation purposes that is equivalent to
+# "this order id is no longer actionable", so it maps to "cancelled" the same
+# as CANCELED.
+_TOSS_OPEN_TARGET_STATUSES = {
+    "PENDING": "open",
+    "PARTIAL_FILLED": "partial",
+    "PENDING_CANCEL": "open",
+    "PENDING_REPLACE": "open",
+    "CANCEL_REJECTED": "open",
+    "REPLACE_REJECTED": "open",
+}
+_TOSS_CLOSED_TARGET_STATUSES = {
+    "FILLED": "filled",
+    "CANCELED": "cancelled",
+    "REJECTED": "rejected",
+    "REPLACED": "cancelled",
+}
 
 
 @dataclass(frozen=True)
@@ -110,6 +134,72 @@ async def _maybe_await(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
 
 
+def _toss_target_status(raw_status: Any) -> str:
+    status = str(raw_status or "").strip().upper()
+    mapped = _TOSS_OPEN_TARGET_STATUSES.get(status) or _TOSS_CLOSED_TARGET_STATUSES.get(
+        status
+    )
+    if mapped is None:
+        raise OrderProposalError(f"unsupported toss target order status: {status!r}")
+    return mapped
+
+
+def _toss_target_remaining_quantity(order: Any) -> Decimal:
+    filled = (order.execution or {}).get("filledQuantity")
+    filled_decimal = filled if isinstance(filled, Decimal) else Decimal("0")
+    remaining = order.quantity - filled_decimal
+    return remaining if remaining > 0 else Decimal("0")
+
+
+async def _fetch_toss_target_order(
+    *,
+    order_id: str,
+    symbol: str,
+    now: datetime,
+    toss_client: Any | None,
+) -> TargetOrderSnapshot:
+    """Read-only single-order lookup for a toss_live cancel/replace target.
+
+    Uses ``GET /api/v1/orders/{orderId}`` (single order, any status) rather
+    than the paginated list scan ``fetch_operator_void_evidence`` uses -- an
+    exact order_id lookup needs no window/pagination bookkeeping.
+    """
+    from app.services.brokers.toss.client import TossReadClient
+    from app.services.brokers.toss.errors import TossApiResponseError
+
+    owns_client = toss_client is None
+    client = toss_client or TossReadClient.from_settings()
+    try:
+        order = await client.get_order(order_id)
+    except TossApiResponseError as exc:
+        if exc.status_code == 404:
+            raise OrderProposalError("target broker order not found uniquely") from exc
+        raise OrderProposalError(
+            f"target broker order lookup failed: {describe_exception(exc)}"
+        ) from exc
+    finally:
+        if owns_client:
+            await client.aclose()
+
+    if _normalize_order_text(order.order_id) != _normalize_order_text(order_id):
+        raise OrderProposalError("target broker order not found uniquely")
+    if _normalize_order_text(order.symbol) != _normalize_order_text(symbol):
+        raise OrderProposalError("target broker order symbol mismatch")
+
+    return TargetOrderSnapshot.from_broker_order(
+        {
+            "order_id": order.order_id,
+            "symbol": order.symbol,
+            "side": order.side,
+            "order_type": order.order_type,
+            "ordered_price": order.price,
+            "remaining_qty": _toss_target_remaining_quantity(order),
+            "status": _toss_target_status(order.status),
+        },
+        observed_at=now,
+    )
+
+
 async def fetch_target_order(
     *,
     order_id: str,
@@ -118,10 +208,15 @@ async def fetch_target_order(
     account_mode: str,
     now: datetime,
     history_fn: Callable[..., Any] | None = None,
+    toss_client: Any | None = None,
 ) -> TargetOrderSnapshot:
     if (account_mode, market) not in SUPPORTED_TARGET_ACTIONS:
         raise OrderProposalError(
             f"target order lookup unsupported for {account_mode}/{market}"
+        )
+    if account_mode == "toss_live":
+        return await _fetch_toss_target_order(
+            order_id=order_id, symbol=symbol, now=now, toss_client=toss_client
         )
     if history_fn is None:
         from app.mcp_server.tooling.orders_history import get_order_history_impl
@@ -566,9 +661,29 @@ async def cancel_target_order(
     market: str,
     account_mode: str,
     cancel_fn: Callable[..., Any] | None = None,
+    toss_cancel_fn: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     if (account_mode, market) not in SUPPORTED_TARGET_ACTIONS:
         raise OrderProposalError(f"cancel unsupported for {account_mode}/{market}")
+    if account_mode == "toss_live":
+        if toss_cancel_fn is None:
+            from app.mcp_server.tooling.orders_toss_variants import toss_cancel_order
+
+            toss_cancel_fn = toss_cancel_order
+        # toss_cancel_order is the production tool: it still enforces
+        # TOSS_LIVE_ORDER_MUTATIONS_ENABLED and records the accepted-only
+        # ledger row itself. This call site is only ever reached post-Telegram
+        # approval (revalidate_and_submit's cancel/replace execution branch),
+        # so dry_run=False/confirm=True mirrors cancel_order_impl's KIS/Upbit
+        # path below, which has no dry_run/preview concept at all.
+        return await _maybe_await(
+            toss_cancel_fn(
+                order_id=order_id,
+                dry_run=False,
+                confirm=True,
+                account_mode=account_mode,
+            )
+        )
     if cancel_fn is None:
         from app.mcp_server.tooling.orders_modify_cancel import cancel_order_impl
 

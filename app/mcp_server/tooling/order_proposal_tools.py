@@ -33,8 +33,9 @@ from app.services.order_proposals.dispatch import dispatch_proposal
 from app.services.order_proposals.errors import (
     OrderProposalError,
     OrderProposalNotFound,
+    OrderProposalUnsupportedTargetAction,
 )
-from app.services.order_proposals.service import RungInput
+from app.services.order_proposals.service import RungInput, check_action_capability
 from app.services.order_proposals.telegram_callback import _safe_edit_message
 
 if TYPE_CHECKING:
@@ -251,7 +252,12 @@ async def order_proposal_create(
         supersedes_proposal_id: if this proposal replaces an existing one (price/qty
                change), the original is marked superseded and lineage is linked.
         action: ``place`` (default), ``replace``, or ``cancel``. Replace/cancel
+                support the same account_mode/market combinations as place
+                (kis_live/toss_live equity_kr|equity_us, upbit crypto) and
                 perform a read-only target-order preflight before persistence.
+                An unsupported combination returns success=False with a
+                structured supported_matrix (per action) instead of a bare
+                error string.
         target_broker_order_id: required broker order ID for replace/cancel.
     """
     try:
@@ -273,6 +279,9 @@ async def order_proposal_create(
         if normalized_action in {"replace", "cancel"}:
             if not target_broker_order_id:
                 raise ValueError(f"{normalized_action} requires target_broker_order_id")
+            check_action_capability(
+                action=normalized_action, account_mode=account_mode, market=market
+            )
             target_snapshot = await fetch_target_order(
                 order_id=target_broker_order_id,
                 symbol=symbol,
@@ -393,6 +402,13 @@ async def order_proposal_create(
                 )
 
         return result
+    except OrderProposalUnsupportedTargetAction as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+            "supported_matrix": exc.supported_matrix,
+            "requested": exc.requested,
+        }
     except (ValueError, OrderProposalError) as exc:
         return {"success": False, "error": str(exc)}
 
