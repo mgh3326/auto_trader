@@ -12,7 +12,7 @@ dual_evidence -> gates -> S3/S4 falsification -> canonical -> markdown)
 covering every campaign-decision branch.
 
 ``contract_fixture_scorecard_smoke=PASS`` / ``actual_h4_contract=
-FIXTURE_ONLY`` / ``actual_h6a_contract=NOT_EVALUATED`` /
+FIXTURE_ONLY`` / ``actual_h6a_contract=FIXTURE_ONLY`` /
 ``db_sessions_created=0`` / ``db_queries=0`` / ``db_writes=0`` /
 ``commit_calls=0`` / ``rollback_calls=0`` / ``empirical_runs=0`` /
 ``corpus_campaign_runs=0`` / ``physical_stage_publish_calls=0`` -- this
@@ -789,7 +789,7 @@ class TestNeverCallsWriterOrPhysicalIO:
 # semantic OR presentation change requires a conscious re-freeze, never a
 # silent drift.
 _GOLDEN_MARKDOWN_BYTES = (
-    b"# H5 Scorecard (h5_scorecard_v2)\n\n"
+    b"# H5 Scorecard (h5_scorecard_v3)\n\n"
     b"## Lineage\n"
     b"- campaign_run_id: run-cp7\n"
     b"- full_campaign_hash: " + b"a" * 64 + b"\n"
@@ -797,6 +797,7 @@ _GOLDEN_MARKDOWN_BYTES = (
     b"- generator_version: g1\n"
     b"- actual_h4_ledger_key: NOT_EVALUATED\n\n"
     b"## H6-A Accounting\n"
+    b"- actual_h6a_contract: FIXTURE_ONLY\n"
     b"- expected_total: 48\n"
     b"- registered_total: 48\n"
     b"- accounting_complete: true\n"

@@ -32,6 +32,7 @@ from rob974_h4_runner import (
     SelectedOOSAttributionEnvelope,
     validate_attribution_envelope,
 )
+from rob974_h6a_accounting import CombinedAccountingReport
 
 __all__ = [
     "CONFIGS_PER_STRATEGY",
@@ -47,6 +48,9 @@ __all__ = [
     "EnvelopeValidationResult",
     "H5InputError",
     "H6AAccountingSeal",
+    "H6AAccountingInput",
+    "H6AAccountingContractResult",
+    "H6A_CONTRACT_STATUSES",
     "FAKE_FREE_EMPIRICAL_CLOSURE",
     "MARKET_RETURN_SEMANTIC",
     "MetricTrade",
@@ -57,6 +61,7 @@ __all__ = [
     "config_ids_for",
     "consume_h4_attribution",
     "fixture_h4_attribution_result",
+    "resolve_h6a_accounting_contract",
     "validate_envelope_and_accounting",
 ]
 
@@ -76,6 +81,7 @@ S4_EXIT_REASONS: tuple[str, ...] = ("TP", "SL", "MEAN_EXIT", "STALL_EXIT", "TIME
 _EXPECTED_TOTAL_EXPERIMENTS = 48
 _CLOSED_STATUSES = ("completed", "rejected", "crashed", "timeout")
 _LOWERCASE_HEX_64 = re.compile(r"^[0-9a-f]{64}$")
+H6A_CONTRACT_STATUSES = ("PASS", "FIXTURE_ONLY", "NOT_EVALUATED")
 
 
 class H5InputError(ValueError):
@@ -293,6 +299,173 @@ class H6AAccountingSeal:
         )
         if self.performance_usable:
             _require(exact_48_all_completed, "h6a_usable_true_with_incomplete_counters")
+
+
+H6AAccountingInput = CombinedAccountingReport | H6AAccountingSeal | None
+
+
+@dataclass(frozen=True, slots=True)
+class H6AAccountingContractResult:
+    """Normalized H6-A provenance plus the H5 accounting projection.
+
+    ``PASS`` can only be produced from H6-A's own ``CombinedAccountingReport``
+    type.  A directly constructed H5 ``H6AAccountingSeal`` is useful for
+    hermetic predecessor tests but is always ``FIXTURE_ONLY`` even when its
+    digest happens to equal a production digest.  ``NOT_EVALUATED`` carries
+    no seal and therefore cannot reach canonical scorecard assembly.
+    """
+
+    actual_h6a_contract: str
+    seal: H6AAccountingSeal | None
+    campaign_run_id: str | None
+
+    def __post_init__(self) -> None:
+        _require(
+            self.actual_h6a_contract in H6A_CONTRACT_STATUSES,
+            "h6a_contract_status_unknown",
+        )
+        if self.actual_h6a_contract == "PASS":
+            _require(
+                type(self.seal) is H6AAccountingSeal,
+                "actual_h6a_contract_seal_missing",
+            )
+            _require(
+                type(self.campaign_run_id) is str and self.campaign_run_id != "",
+                "actual_h6a_contract_campaign_run_id_missing",
+            )
+        elif self.actual_h6a_contract == "FIXTURE_ONLY":
+            _require(
+                type(self.seal) is H6AAccountingSeal,
+                "fixture_h6a_contract_seal_missing",
+            )
+            _require(
+                self.campaign_run_id is None,
+                "fixture_h6a_contract_cannot_claim_campaign_run_id",
+            )
+        else:
+            _require(
+                self.seal is None and self.campaign_run_id is None,
+                "not_evaluated_h6a_contract_must_be_empty",
+            )
+
+
+def _seal_actual_h6a_report(report: CombinedAccountingReport) -> H6AAccountingSeal:
+    """Project H6-A's sealed report without reconstructing its trial hash."""
+    _require(
+        type(report.campaign_run_id) is str and report.campaign_run_id != "",
+        "actual_h6a_campaign_run_id_malformed",
+    )
+    for value, reason in (
+        (report.expected_total, "actual_h6a_expected_total_malformed"),
+        (report.registered_total, "actual_h6a_registered_total_malformed"),
+        (report.primary_attempts, "actual_h6a_primary_attempts_malformed"),
+        (report.total_attempts, "actual_h6a_total_attempts_malformed"),
+        (report.retry_attempts, "actual_h6a_retry_attempts_malformed"),
+    ):
+        _require_exact_int(value, reason)
+    _require(
+        report.expected_total == _EXPECTED_TOTAL_EXPERIMENTS,
+        "actual_h6a_expected_total_not_48",
+    )
+    _require(
+        type(report.status_counts) is dict,
+        "actual_h6a_status_counts_malformed",
+    )
+    status_counts = dict(report.status_counts)
+    _require(
+        set(status_counts) == set(_CLOSED_STATUSES),
+        "actual_h6a_status_counts_malformed",
+    )
+    for count in status_counts.values():
+        _require_exact_int(count, "actual_h6a_status_count_malformed")
+    _require(
+        sum(status_counts.values()) == report.total_attempts,
+        "actual_h6a_status_sum_forged_or_stale",
+    )
+    _require(
+        report.total_attempts == report.primary_attempts + report.retry_attempts,
+        "actual_h6a_attempt_totals_forged_or_stale",
+    )
+    # H5 scores only the retry-free primary surface.  A real retry report is
+    # valid H6-A evidence, but cannot be projected into H5's primary-status
+    # seal without the underlying per-attempt rows; fail closed instead.
+    _require(
+        report.retry_attempts == 0,
+        "actual_h6a_retry_report_not_h5_scoreable",
+    )
+    for values, reason in (
+        (report.missing_row_ids, "actual_h6a_missing_row_ids_malformed"),
+        (report.extra_experiment_ids, "actual_h6a_extra_ids_malformed"),
+        (report.mismatch_row_ids, "actual_h6a_mismatch_row_ids_malformed"),
+        (
+            report.duplicate_or_gap_row_ids,
+            "actual_h6a_duplicate_or_gap_row_ids_malformed",
+        ),
+    ):
+        _require(
+            type(values) is tuple and all(type(value) is str for value in values),
+            reason,
+        )
+    _require(
+        type(report.accounting_complete) is bool
+        and type(report.all_primary_completed) is bool
+        and type(report.performance_usable) is bool,
+        "actual_h6a_boolean_status_malformed",
+    )
+    structural_gaps = (
+        report.missing_row_ids
+        + report.extra_experiment_ids
+        + report.mismatch_row_ids
+        + report.duplicate_or_gap_row_ids
+    )
+    expected_complete = (
+        report.registered_total == _EXPECTED_TOTAL_EXPERIMENTS
+        and report.primary_attempts == _EXPECTED_TOTAL_EXPERIMENTS
+        and not structural_gaps
+    )
+    _require(
+        report.accounting_complete == expected_complete,
+        "actual_h6a_accounting_complete_forged_or_stale",
+    )
+    expected_all_completed = (
+        expected_complete and status_counts["completed"] == _EXPECTED_TOTAL_EXPERIMENTS
+    )
+    _require(
+        report.all_primary_completed == expected_all_completed,
+        "actual_h6a_all_primary_completed_forged_or_stale",
+    )
+    _require(
+        report.performance_usable == expected_all_completed,
+        "actual_h6a_performance_usable_forged_or_stale",
+    )
+    return H6AAccountingSeal(
+        expected_total=report.expected_total,
+        registered_total=report.registered_total,
+        primary_attempts=report.primary_attempts,
+        status_counts=status_counts,
+        retry_attempts=report.retry_attempts,
+        accounting_complete=report.accounting_complete,
+        performance_usable=report.performance_usable,
+        trial_accounting_hash=report.trial_accounting_hash,
+        reason_codes=() if report.performance_usable else ("h6_accounting_incomplete",),
+    )
+
+
+def resolve_h6a_accounting_contract(
+    value: H6AAccountingInput,
+) -> H6AAccountingContractResult:
+    """Resolve the closed H6-A provenance domain without hash heuristics."""
+    if value is None:
+        return H6AAccountingContractResult("NOT_EVALUATED", None, None)
+    if type(value) is H6AAccountingSeal:
+        return H6AAccountingContractResult("FIXTURE_ONLY", value, None)
+    if type(value) is CombinedAccountingReport:
+        return H6AAccountingContractResult(
+            "PASS",
+            _seal_actual_h6a_report(value),
+            value.campaign_run_id,
+        )
+    raise H5InputError("h6a_accounting_contract_input_type_unknown")
 
 
 @dataclass(frozen=True, slots=True)

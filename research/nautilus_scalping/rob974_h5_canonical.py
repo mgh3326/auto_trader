@@ -52,11 +52,13 @@ from rob974_h5_contracts import (
     EnvelopeValidationResult,
     H4AttributionContractResult,
     H5InputError,
-    H6AAccountingSeal,
+    H6AAccountingContractResult,
+    H6AAccountingInput,
     MetricTrade,
     config_ids_for,
     consume_h4_attribution,
     fixture_h4_attribution_result,
+    resolve_h6a_accounting_contract,
     validate_envelope_and_accounting,
 )
 from rob974_h5_dual_evidence import (
@@ -105,7 +107,7 @@ __all__ = [
     "validate_scorecard_consistency",
 ]
 
-SCHEMA_VERSION = "h5_scorecard_v2"
+SCHEMA_VERSION = "h5_scorecard_v3"
 ACTUAL_H4_LEDGER_KEY_NOT_EVALUATED = "NOT_EVALUATED"
 CLOSED_STATUS_ORDER: tuple[str, ...] = ("completed", "rejected", "crashed", "timeout")
 
@@ -317,6 +319,7 @@ class ScorecardConsistencyResult:
     s4_direct_verdict: str
     campaign_decision: CampaignDecisionResult
     h4_attribution_cross_check: H4AttributionCrossCheck | None
+    h6a_contract: H6AAccountingContractResult
 
 
 def _validate_h4_campaign_binding(
@@ -495,7 +498,7 @@ def _rank_metrics_from_strategy_inputs(
 def validate_scorecard_consistency(
     *,
     envelope: CampaignEnvelope,
-    h6a_seal: H6AAccountingSeal,
+    h6a_seal: H6AAccountingInput,
     envelope_ok: bool,
     envelope_incomplete_reasons: tuple[str, ...],
     h4_attribution: H4AttributionContractResult,
@@ -534,7 +537,16 @@ def validate_scorecard_consistency(
             "canonical_h4_attribution_reprojection_mismatch",
         )
         _validate_h4_campaign_binding(envelope=envelope, h4_attribution=h4_attribution)
-    recomputed_envelope = validate_envelope_and_accounting(envelope, h6a_seal)
+    h6a_contract = resolve_h6a_accounting_contract(h6a_seal)
+    resolved_h6a_seal = h6a_contract.seal
+    if resolved_h6a_seal is None:
+        raise H5InputError("canonical_h6a_contract_not_evaluated")
+    if h6a_contract.actual_h6a_contract == "PASS":
+        _require(
+            h6a_contract.campaign_run_id == envelope.campaign_run_id,
+            "actual_h6a_campaign_run_id_mismatch",
+        )
+    recomputed_envelope = validate_envelope_and_accounting(envelope, resolved_h6a_seal)
     _require(
         envelope_ok == recomputed_envelope.ok
         and envelope_incomplete_reasons == recomputed_envelope.incomplete_reasons,
@@ -645,6 +657,7 @@ def validate_scorecard_consistency(
         s4_direct_verdict=recomputed_s4_verdict,
         campaign_decision=recomputed_campaign,
         h4_attribution_cross_check=h4_cross_check,
+        h6a_contract=h6a_contract,
     )
 
 
@@ -1209,7 +1222,7 @@ def _canonicalize_strategy(
 def build_canonical_scorecard(
     *,
     envelope: CampaignEnvelope,
-    h6a_seal: H6AAccountingSeal,
+    h6a_seal: H6AAccountingInput,
     envelope_ok: bool,
     envelope_incomplete_reasons: tuple[str, ...],
     h4_attribution: H4AttributionContractResult,
@@ -1258,29 +1271,34 @@ def build_canonical_scorecard(
         "h6a_trial_accounting_hash": envelope.h6a_trial_accounting_hash,
         "actual_h4_ledger_key": ACTUAL_H4_LEDGER_KEY_NOT_EVALUATED,
     }
+    resolved_h6a_seal = consistency.h6a_contract.seal
+    if resolved_h6a_seal is None:
+        raise H5InputError("canonical_h6a_contract_not_evaluated")
     h6a_accounting = {
+        "actual_h6a_contract": consistency.h6a_contract.actual_h6a_contract,
         "expected_total": _exact_int(
-            h6a_seal.expected_total, "h6a_expected_total_malformed"
+            resolved_h6a_seal.expected_total, "h6a_expected_total_malformed"
         ),
         "registered_total": _exact_int(
-            h6a_seal.registered_total, "h6a_registered_total_malformed"
+            resolved_h6a_seal.registered_total, "h6a_registered_total_malformed"
         ),
         "primary_attempts": _exact_int(
-            h6a_seal.primary_attempts, "h6a_primary_attempts_malformed"
+            resolved_h6a_seal.primary_attempts, "h6a_primary_attempts_malformed"
         ),
         "status_counts": {
             status: _exact_int(
-                h6a_seal.status_counts[status], "h6a_status_count_malformed"
+                resolved_h6a_seal.status_counts[status],
+                "h6a_status_count_malformed",
             )
             for status in CLOSED_STATUS_ORDER
         },
         "retry_attempts": _exact_int(
-            h6a_seal.retry_attempts, "h6a_retry_attempts_malformed"
+            resolved_h6a_seal.retry_attempts, "h6a_retry_attempts_malformed"
         ),
-        "accounting_complete": h6a_seal.accounting_complete,
-        "performance_usable": h6a_seal.performance_usable,
-        "trial_accounting_hash": h6a_seal.trial_accounting_hash,
-        "reason_codes": sorted(h6a_seal.reason_codes),
+        "accounting_complete": resolved_h6a_seal.accounting_complete,
+        "performance_usable": resolved_h6a_seal.performance_usable,
+        "trial_accounting_hash": resolved_h6a_seal.trial_accounting_hash,
+        "reason_codes": sorted(resolved_h6a_seal.reason_codes),
     }
     envelope_validation = {
         "ok": consistency.envelope_validation.ok,
