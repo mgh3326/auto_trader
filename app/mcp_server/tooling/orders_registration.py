@@ -539,8 +539,10 @@ def register_order_tools(mcp: FastMCP) -> None:
             "BOTH dry_run=False AND confirm=True. "
             "market (kr/us or equity_kr/equity_us) and/or symbol scope the run "
             "to matching open orders only — omit both to scan all open KIS mock "
-            "orders (unchanged default behavior). The response echoes the "
-            "applied scope. "
+            "orders (unchanged default behavior). An unrecognized market value "
+            "is rejected (success=false + allowed_markets) rather than silently "
+            "treated as a full scan. The response always echoes the requested "
+            "scope, including on every error path. "
             "Fails closed if KIS mock config is missing."
         ),
     )
