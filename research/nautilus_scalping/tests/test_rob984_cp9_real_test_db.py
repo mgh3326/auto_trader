@@ -147,6 +147,9 @@ async def test_cp9_actual_48_writer_commit_is_contained_by_outer_rollback(
     campaign = materializer.ProductionCampaignInput(
         plan=plan,
         guard_policy=default_research_db_policy(),
+        strategy_name=materializer.ROB974_R2_PRODUCTION_STRATEGY_NAME,
+        timeframe=materializer.ROB974_R2_PRODUCTION_TIMEFRAME,
+        runner=materializer.ROB974_R2_PRODUCTION_RUNNER,
     )
     result = _actual_result(identity)
     runner = _ActualRunner(result)
@@ -318,6 +321,9 @@ async def test_cp9_actual_runner_commits_then_fresh_connection_audits_read_only(
             campaign = materializer.ProductionCampaignInput(
                 plan=plan,
                 guard_policy=default_research_db_policy(),
+                strategy_name=materializer.ROB974_R2_PRODUCTION_STRATEGY_NAME,
+                timeframe=materializer.ROB974_R2_PRODUCTION_TIMEFRAME,
+                runner=materializer.ROB974_R2_PRODUCTION_RUNNER,
             )
             ports = materializer.ProductionExecutionPorts(
                 session_factory=session_factory,

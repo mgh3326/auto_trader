@@ -112,6 +112,9 @@ async def _ensure_committed_fake_free_state(tmp_path) -> None:
             campaign = materializer.ProductionCampaignInput(
                 plan=plan,
                 guard_policy=default_research_db_policy(),
+                strategy_name=materializer.ROB974_R2_PRODUCTION_STRATEGY_NAME,
+                timeframe=materializer.ROB974_R2_PRODUCTION_TIMEFRAME,
+                runner=materializer.ROB974_R2_PRODUCTION_RUNNER,
             )
             authorization = materializer.issue_project_test_db_authorization(
                 plan,
@@ -240,6 +243,9 @@ async def test_cp10_divergent_replay_is_read_only_and_never_mutates() -> None:
     campaign = materializer.ProductionCampaignInput(
         plan=plan,
         guard_policy=default_research_db_policy(),
+        strategy_name=materializer.ROB974_R2_PRODUCTION_STRATEGY_NAME,
+        timeframe=materializer.ROB974_R2_PRODUCTION_TIMEFRAME,
+        runner=materializer.ROB974_R2_PRODUCTION_RUNNER,
     )
     authorization = materializer.issue_project_test_db_authorization(
         plan,
@@ -323,6 +329,9 @@ async def test_cp10_actual_chain_is_deterministic_replay_noop_and_nonvacuous(
     campaign = materializer.ProductionCampaignInput(
         plan=plan,
         guard_policy=default_research_db_policy(),
+        strategy_name=materializer.ROB974_R2_PRODUCTION_STRATEGY_NAME,
+        timeframe=materializer.ROB974_R2_PRODUCTION_TIMEFRAME,
+        runner=materializer.ROB974_R2_PRODUCTION_RUNNER,
     )
     authorization = materializer.issue_project_test_db_authorization(
         plan,

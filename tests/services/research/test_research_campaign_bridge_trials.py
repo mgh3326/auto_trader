@@ -2155,7 +2155,7 @@ async def test_stable_reason_codes_survive_round_trip_unmutated(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_runner_name_over_16_chars_rejected_before_any_write(
+async def test_runner_name_over_64_chars_rejected_before_any_write(
     registry_tables,
 ) -> None:
     session = registry_tables
@@ -2169,7 +2169,7 @@ async def test_runner_name_over_16_chars_rejected_before_any_write(
             evidence=_evidence("camp1", experiment_id),
             strategy_name="S1",
             timeframe="15m",
-            runner="this-runner-name-is-way-too-long",
+            runner="x" * 65,
             guard_opt_in_enabled=True,
             guard_policy=_POLICY,
         )
