@@ -34,9 +34,7 @@ def test_cp1_pure_plan_behavior_is_implemented() -> None:
 def _all_mapping_keys(value: object) -> set[str]:
     if type(value) is dict:
         return set(value) | {
-            key
-            for child in value.values()
-            for key in _all_mapping_keys(child)
+            key for child in value.values() for key in _all_mapping_keys(child)
         }
     if type(value) is list:
         return {key for child in value for key in _all_mapping_keys(child)}
@@ -204,8 +202,8 @@ def test_inherited_dsn_conflict_fails_exactly():
 def _pins(seed: str = "a"):
     materializer = _materializer()
     return materializer.ExactSourcePins(
-        integration_head_sha=seed * 64,
-        integration_tree_sha="b" * 64,
+        integration_head_sha=seed * 40,
+        integration_tree_sha="b" * 40,
         feature_source_sha256="c" * 64,
         engine_source_sha256="d" * 64,
         runner_source_sha256="e" * 64,
@@ -218,20 +216,19 @@ def test_stale_source_or_tree_pin_and_subclass_fail():
     expected = _pins()
     materializer.validate_source_pins_pair(expected=expected, observed=expected)
     for field in dataclasses.fields(expected):
-        changed = dataclasses.replace(expected, **{field.name: "1" * 64})
+        changed = dataclasses.replace(
+            expected,
+            **{field.name: "1" * len(getattr(expected, field.name))},
+        )
         with pytest.raises(materializer.H6BPreflightRefused):
-            materializer.validate_source_pins_pair(
-                expected=expected, observed=changed
-            )
+            materializer.validate_source_pins_pair(expected=expected, observed=changed)
 
     class PinSubclass(materializer.ExactSourcePins):
         pass
 
     subclassed = PinSubclass(*dataclasses.astuple(expected))
     with pytest.raises(materializer.H6BPreflightRefused):
-        materializer.validate_source_pins_pair(
-            expected=expected, observed=subclassed
-        )
+        materializer.validate_source_pins_pair(expected=expected, observed=subclassed)
 
 
 def test_arbitrary_run_id_is_rejected_by_h6a_derivation():
@@ -336,9 +333,9 @@ def test_h6b_alone_issues_exact_one_shot_operation_specific_h6a_contexts():
     )
     with pytest.raises(materializer.H6BPreflightRefused):
         materializer.build_h6a_mutation_contexts(issued)
-    assert tuple(inspect.signature(materializer.build_h6a_mutation_contexts).parameters) == (
-        "authorization",
-    )
+    assert tuple(
+        inspect.signature(materializer.build_h6a_mutation_contexts).parameters
+    ) == ("authorization",)
 
 
 def test_self_attested_authorization_context_swap_and_subclass_fail():

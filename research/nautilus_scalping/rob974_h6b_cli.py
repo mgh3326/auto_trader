@@ -1,8 +1,8 @@
-"""ROB-984 H6-B closed CLI and pure pre-dependency plan.
+"""ROB-984 H6-B closed CLI and deterministic production identity plan.
 
-Only ``--plan`` is actionable before the verified H4/H5 integration gate.
-The plan uses H6-A's real fixture identity/payload APIs and deliberately
-contains no production full-campaign hash or campaign run id.
+``--plan`` is pure and projects the actual merged H4/H6-A identity plus H5
+integration provenance.  The retained contract-fixture builder exists only
+for the immutable CP1-CP7 call-spy regressions and is never launchable.
 """
 
 from __future__ import annotations
@@ -22,12 +22,17 @@ from app.services.rob974_h6b_materializer import (
     CLI_USAGE_OR_PLAN_ERROR,
     ContractFixturePlan,
     H6BDiagnosticCapture,
+    ProductionIdentityPlan,
     compute_exact_48_mapping_hash,
+)
+from app.services.rob974_h6b_materializer import (
+    build_production_identity_plan as _build_production_identity_plan,
 )
 
 __all__ = [
     "ActualRob970DiagnosticPort",
     "build_contract_fixture_plan",
+    "build_production_identity_plan",
     "main",
     "render_plan_bytes",
     "run_cli",
@@ -142,9 +147,14 @@ def build_contract_fixture_plan() -> ContractFixturePlan:
     )
 
 
-def render_plan_bytes(plan: ContractFixturePlan) -> bytes:
-    if type(plan) is not ContractFixturePlan:
-        raise TypeError("plan must be exact ContractFixturePlan")
+def build_production_identity_plan() -> ProductionIdentityPlan:
+    """Pure actual H4/H6-A identity; H5 remains a pure downstream adapter."""
+    return _build_production_identity_plan()
+
+
+def render_plan_bytes(plan: ContractFixturePlan | ProductionIdentityPlan) -> bytes:
+    if type(plan) not in (ContractFixturePlan, ProductionIdentityPlan):
+        raise TypeError("plan must be an exact H6-B plan type")
     return (
         json.dumps(
             plan.to_payload(),
@@ -222,7 +232,9 @@ def run_cli(argv: Sequence[str], *, stdout: TextIOBase, stderr: TextIOBase) -> i
         if disallowed:
             stderr.write("CLI_USAGE_OR_PLAN_ERROR\n")
             return CLI_USAGE_OR_PLAN_ERROR
-        stdout.write(render_plan_bytes(build_contract_fixture_plan()).decode("utf-8"))
+        stdout.write(
+            render_plan_bytes(build_production_identity_plan()).decode("utf-8")
+        )
         return 0
 
     missing = [name for name in _RUN_REQUIRED if getattr(arguments, name) is None]
@@ -230,9 +242,9 @@ def run_cli(argv: Sequence[str], *, stdout: TextIOBase, stderr: TextIOBase) -> i
         stderr.write("CLI_USAGE_OR_PLAN_ERROR\n")
         return CLI_USAGE_OR_PLAN_ERROR
 
-    # Even a syntactically complete run request is refused before any target,
-    # session, H4 child, or filesystem interaction until actual H4/H5 replace
-    # the fixture plan at CP8.
+    # Physical launch wiring remains closed until CP9 proves the actual DB
+    # adapters and CP10 freezes the merged source/output authority.  Refusal
+    # remains before target/session/H4/filesystem effects.
     build_contract_fixture_plan()
     stderr.write("AUTHORITY_OR_PREFLIGHT_REFUSED contract_fixture_not_launchable\n")
     return AUTHORITY_OR_PREFLIGHT_REFUSED

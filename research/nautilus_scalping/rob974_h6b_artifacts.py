@@ -33,6 +33,7 @@ __all__ = [
     "ArtifactReplayInspection",
     "ArtifactStageError",
     "ArtifactVerificationError",
+    "DirectoryAtomicArtifactPort",
     "H5ArtifactPort",
     "PersistedScorecardPair",
     "PublishedArtifactPair",
@@ -173,6 +174,42 @@ class PersistedScorecardPair:
             raise ValueError("invalid persisted scorecard disposition")
 
 
+class DirectoryAtomicArtifactPort:
+    """Concrete production adapter over this module's physical primitives."""
+
+    provenance = "rob974_h6b_directory_atomic_v1"
+
+    def stage(
+        self,
+        *,
+        scorecard: Mapping[str, object],
+        output_dir: Path,
+        h5_port: H5ArtifactPort,
+    ) -> StagedArtifactPair:
+        return stage_scorecard_pair(
+            scorecard=scorecard, output_dir=output_dir, h5_port=h5_port
+        )
+
+    def publish(
+        self, staged: StagedArtifactPair, *, h5_port: H5ArtifactPort
+    ) -> PublishedArtifactPair:
+        return publish_staged_pair(staged, h5_port=h5_port)
+
+    def probe(self, *, output_dir: Path) -> ArtifactPresence:
+        return probe_artifact_state(output_dir=output_dir)
+
+    def inspect(
+        self,
+        *,
+        scorecard: Mapping[str, object],
+        output_dir: Path,
+        h5_port: H5ArtifactPort,
+    ) -> ArtifactReplayInspection:
+        return inspect_exact_artifact_replay(
+            scorecard=scorecard, output_dir=output_dir, h5_port=h5_port
+        )
+
+
 def _validate_output_path(output_dir: Path) -> tuple[Path, Path]:
     if not isinstance(output_dir, Path):
         raise ArtifactPreflightError("output_dir must be pathlib.Path")
@@ -292,16 +329,20 @@ def _validate_port(port: H5ArtifactPort) -> None:
             raise ArtifactPreflightError(f"H5 port lacks callable {name}")
 
 
-def _validate_text_bytes(value: object, *, name: str) -> bytes:
+def _validate_text_bytes(
+    value: object, *, name: str, fixture_terminal_lf: bool
+) -> bytes:
     if type(value) is not bytes:
         raise ArtifactPreflightError(f"{name} must be exact bytes")
     try:
         value.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ArtifactPreflightError(f"{name} must be UTF-8") from exc
-    if not value.endswith(b"\n") or value.endswith(b"\n\n") or b"\r" in value:
+    if not value or b"\r" in value:
+        raise ArtifactPreflightError(f"{name} must be non-empty and contain no CR")
+    if fixture_terminal_lf and (not value.endswith(b"\n") or value.endswith(b"\n\n")):
         raise ArtifactPreflightError(
-            f"{name} must carry exactly one terminal LF and no CR"
+            f"fixture {name} must carry exactly one terminal LF"
         )
     return value
 
@@ -349,8 +390,11 @@ def _build_expected_pair(
     if type(scorecard) is not dict:
         raise ArtifactPreflightError("scorecard must be an exact built-in dict")
     _validate_port(port)
+    fixture_terminal_lf = getattr(port, "provenance", None) == "contract_fixture"
     json_bytes = _validate_text_bytes(
-        port.canonical_json_bytes(scorecard), name="canonical JSON"
+        port.canonical_json_bytes(scorecard),
+        name="canonical JSON",
+        fixture_terminal_lf=fixture_terminal_lf,
     )
     # Strictly parse before touching the filesystem. This catches NaN,
     # duplicate keys, invalid UTF-8, and a non-object H5 output.
@@ -361,7 +405,9 @@ def _build_expected_pair(
     if type(parsed) is not dict:
         raise ArtifactPreflightError("canonical JSON must parse to an object")
     markdown_bytes = _validate_text_bytes(
-        port.render_markdown(scorecard), name="Markdown"
+        port.render_markdown(scorecard),
+        name="Markdown",
+        fixture_terminal_lf=fixture_terminal_lf,
     )
     semantic_hash = _validate_semantic_hash(port.semantic_hash(scorecard))
     return json_bytes, markdown_bytes, semantic_hash
@@ -653,14 +699,18 @@ def read_persisted_scorecard_pair(
     _validate_port(h5_port)
     _assert_no_stale_staging(output_dir)
     state = ArtifactForensicState("PERSISTED_PAIR_READ_FAILED", None, output_dir, True)
+    fixture_terminal_lf = getattr(h5_port, "provenance", None) == "contract_fixture"
     try:
         _assert_exact_pair_shape(output_dir)
         json_bytes = _validate_text_bytes(
-            _read_regular_file(output_dir / _JSON_NAME), name="persisted canonical JSON"
+            _read_regular_file(output_dir / _JSON_NAME),
+            name="persisted canonical JSON",
+            fixture_terminal_lf=fixture_terminal_lf,
         )
         markdown_bytes = _validate_text_bytes(
             _read_regular_file(output_dir / _MARKDOWN_NAME),
             name="persisted Markdown",
+            fixture_terminal_lf=fixture_terminal_lf,
         )
         parsed = _parse_scorecard_json(json_bytes)
         if h5_port.canonical_json_bytes(parsed) != json_bytes:

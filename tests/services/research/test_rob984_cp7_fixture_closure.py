@@ -220,7 +220,7 @@ def test_exact_four_production_files_exist_without_symlinks_or_fifth_scope():
     assert all(path.is_file() and not path.is_symlink() for path in production_paths)
 
 
-def test_production_imports_have_no_h4_h5_or_forbidden_runtime_surface():
+def test_production_imports_use_only_actual_merged_h4_h5_and_no_forbidden_runtime_surface():
     paths = (
         _ROOT / "app/services/rob974_h6b_materializer.py",
         _ROOT / "research/nautilus_scalping/rob974_h6b_artifacts.py",
@@ -235,6 +235,7 @@ def test_production_imports_have_no_h4_h5_or_forbidden_runtime_surface():
         "subprocess",
         "taskiq",
     }
+    h4_h5_imports: set[str] = set()
     for path in paths:
         tree = ast.parse(path.read_text())
         imports = []
@@ -244,7 +245,21 @@ def test_production_imports_have_no_h4_h5_or_forbidden_runtime_surface():
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imports.append(node.module)
         assert not {name.split(".", 1)[0] for name in imports} & forbidden_import_roots
-        assert not any("rob974_h4" in name or "rob974_h5" in name for name in imports)
+        h4_h5_imports.update(
+            name for name in imports if name.startswith(("rob974_h4", "rob974_h5"))
+        )
+    assert h4_h5_imports == {
+        "rob974_h4_h6a_adapter",
+        "rob974_h4_pbo",
+        "rob974_h4_runner",
+        "rob974_h5_canonical",
+        "rob974_h5_contracts",
+        "rob974_h5_dual_evidence",
+        "rob974_h5_gates",
+        "rob974_h5_markdown",
+        "rob974_h5_s3",
+        "rob974_h5_s4",
+    }
 
 
 def test_transaction_and_sql_ast_ownership_is_closed():
@@ -280,7 +295,7 @@ def test_transaction_and_sql_ast_ownership_is_closed():
         assert forbidden not in upper
 
 
-def test_guard_remains_exact_30_pre_cp10_and_h6b_is_not_preregistered():
+def test_guard_remains_exact_45_after_verified_h4_h5_and_h6b_is_not_preregistered():
     guard = (
         _ROOT
         / "research/nautilus_scalping/tests/test_rob962_frozen_production_delta.py"
@@ -297,13 +312,13 @@ def test_guard_remains_exact_30_pre_cp10_and_h6b_is_not_preregistered():
         )
     )
     authorized_changes = ast.literal_eval(assignment.value)
-    assert len(authorized_changes) == 30
+    assert len(authorized_changes) == 45
     assert not any(
         "rob974_h6b_" in path for _status, paths in authorized_changes for path in paths
     )
 
 
-def test_import_origins_are_this_worktree_and_dependencies_remain_absent():
+def test_import_origins_and_actual_dependency_origins_are_this_worktree():
     modules = (
         materializer,
         rob974_h6b_artifacts,
@@ -313,5 +328,8 @@ def test_import_origins_are_this_worktree_and_dependencies_remain_absent():
     assert all(
         Path(module.__file__).resolve().is_relative_to(_ROOT) for module in modules
     )
-    assert importlib.util.find_spec("rob974_h4_contracts") is None
-    assert importlib.util.find_spec("rob974_h5_contracts") is None
+    for dependency in ("rob974_h4_contracts", "rob974_h5_contracts"):
+        spec = importlib.util.find_spec(dependency)
+        assert spec is not None
+        assert spec.origin is not None
+        assert Path(spec.origin).resolve().is_relative_to(_ROOT)

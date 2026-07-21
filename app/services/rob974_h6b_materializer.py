@@ -4,20 +4,38 @@ CP1 supplies the immutable plan/preflight vocabulary and the sole issuer for
 H6-A mutation contexts.  Transaction and filesystem behavior is added by the
 later checkpoints in this same module; no predecessor owns either concern.
 
-The pre-H4/H5 plan is deliberately a ``contract_fixture``.  Its private H6-A
-fixture identity is usable by call-spy tests, but is never rendered as a
-production full-campaign hash or run id and is never accepted by ``--run``.
+The retained CP1-CP7 plan is deliberately a ``contract_fixture``.  Its private
+H6-A fixture identity remains usable only by call-spy regressions.  CP8 adds a
+separately sealed production identity and execution path over the actual
+merged H4, H5, and H6-A APIs; fixture provenance is rejected there.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import types
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+import rob974_h3_manifest as h3_manifest
+import rob974_h4_h6a_adapter as h4_h6a_adapter
+import rob974_h4_pbo as h4_pbo
+import rob974_h4_runner as h4_runner
+import rob974_h5_canonical as h5_canonical
+import rob974_h5_contracts as h5_contracts
+import rob974_h5_dual_evidence as h5_dual
+import rob974_h5_gates as h5_gates
+import rob974_h5_markdown as h5_markdown
+import rob974_h5_s3 as h5_s3
+import rob974_h5_s4 as h5_s4
+import rob974_h6a_accounting as h6a_accounting
+import rob974_h6a_evidence as h6a_evidence
+import rob974_lineage as h1_lineage
+
+from app.schemas.research_backtest import StrategyExperimentIdentity
 from app.services.research_db_write_guard import ResearchDbPolicy
 from app.services.rob974_h6a_bridge import (
     RECORD_ATTEMPTS_OPERATION_KIND,
@@ -29,9 +47,14 @@ from app.services.rob974_h6a_bridge import (
     record_h6a_attempts,
     register_h6a_campaign,
 )
+from research_contracts.canonical_hash import canonical_sha256
 
 __all__ = [
     "AUTHORITY_OR_PREFLIGHT_REFUSED",
+    "ActualH4CampaignResult",
+    "ActualH4RunnerPort",
+    "ActualMergedH5Composition",
+    "ActualMergedH6AAccounting",
     "CANONICAL_ROW_ORDER",
     "CLI_USAGE_OR_PLAN_ERROR",
     "COMMIT_FAILED_OR_UNKNOWN",
@@ -59,16 +82,23 @@ __all__ = [
     "PRECOMMIT_FAILURE",
     "MaterializationOutcome",
     "PredecessorTransactionOwnershipError",
+    "ProductionCampaignInput",
     "ProductionExecutionPlan",
+    "ProductionExecutionPorts",
+    "ProductionIdentityPlan",
     "RunAuthority",
     "ReplayCollisionError",
     "SESSION_CLOSE_FAILURE",
     "build_h6a_mutation_contexts",
     "build_contract_fixture_closure_evidence",
+    "build_h4_member_trade_key",
+    "build_production_execution_plan",
+    "build_production_identity_plan",
     "issue_contract_fixture_authorization",
     "issue_run_authorization",
     "materialize_contract_fixture",
     "materialize_or_replay_contract_fixture",
+    "materialize_production",
     "render_safe_materialization_failure",
     "validate_database_target_pair",
     "validate_derived_run_id",
@@ -135,6 +165,7 @@ CANONICAL_ROW_ORDER: tuple[str, ...] = tuple(
     + [f"S4-{index:02d}" for index in range(24)]
 )
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+_GIT_OID_RE = re.compile(r"^[0-9a-f]{40}$")
 _EMPIRICAL_DATABASE = "rob974_db"
 
 
@@ -149,6 +180,12 @@ class H6BPreflightRefused(ValueError):
 def _hex64(value: object, name: str) -> str:
     if type(value) is not str or _HEX64_RE.fullmatch(value) is None:
         raise H6BPlanError(f"{name} must be exact built-in lowercase hex64")
+    return value
+
+
+def _git_oid(value: object, name: str) -> str:
+    if type(value) is not str or _GIT_OID_RE.fullmatch(value) is None:
+        raise H6BPlanError(f"{name} must be an exact lowercase SHA-1 Git OID")
     return value
 
 
@@ -246,6 +283,107 @@ class ContractFixturePlan:
         }
 
 
+_PRODUCTION_IDENTITY_SEAL = object()
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionIdentityPlan:
+    """Pure projection of the actual merged H4/H6-A production identity.
+
+    The H4 adapter independently re-hashes its closed source inventories and
+    H6-A derives the exact row IDs, full-campaign hash, and primary run ID.
+    H6-B only validates and renders those predecessor-owned values.
+    """
+
+    full_campaign_hash: str
+    campaign_run_id: str
+    ordered_mapping: tuple[tuple[str, str], ...]
+    exact_48_mapping_hash: str
+    source_pins: object
+    h4_source_pins: object
+    _h4_plan: object = field(repr=False, compare=False)
+    _seal: object = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._seal is not _PRODUCTION_IDENTITY_SEAL:
+            raise H6BPlanError("production identity was not issued by the H4 adapter")
+        if type(self._h4_plan) is not h4_h6a_adapter.ProductionH4Plan:
+            raise H6BPlanError("production identity lacks exact ProductionH4Plan")
+        if self.source_pins is not self._h4_plan.source_pins:
+            raise H6BPlanError("production source pins are not the H4 plan pins")
+        if self.h4_source_pins is not self._h4_plan.h4_source_pins:
+            raise H6BPlanError("H4 source pins are not the H4 plan pins")
+        self.source_pins.require_production_ready()
+        _hex64(self.full_campaign_hash, "full_campaign_hash")
+        try:
+            validate_derived_run_id(
+                full_campaign_hash=self.full_campaign_hash,
+                campaign_run_id=self.campaign_run_id,
+            )
+        except H6BPreflightRefused as exc:
+            raise H6BPlanError(str(exc)) from exc
+        mapping_hash = validate_exact_48_mapping(self.ordered_mapping)
+        if self.exact_48_mapping_hash != mapping_hash:
+            raise H6BPlanError("production identity exact-48 mapping hash mismatch")
+        expected_mapping = tuple(
+            (spec.row_id, spec.experiment_id) for spec in self._h4_plan.row_specs
+        )
+        if self.ordered_mapping != expected_mapping:
+            raise H6BPlanError("production mapping differs from the actual H4 plan")
+        if self.full_campaign_hash != self._h4_plan.full_campaign_hash:
+            raise H6BPlanError("production full-campaign hash differs from H4")
+        if self.campaign_run_id != self._h4_plan.campaign_run_id:
+            raise H6BPlanError("production campaign run ID differs from H4")
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "schema_version": "rob974_h6b_plan.v2",
+            "status": "PRODUCTION_IDENTITY_READY",
+            "predecessor_mode": "actual_merged_h4_h5",
+            "actual_h4_contract": "PASS",
+            "actual_h5_contract": "PASS",
+            "actual_h6a_contract_scope": "typed_integration_only",
+            "production_identity": "ACTUAL_H4_SOURCE_PINS_COMPLETE",
+            "launchability": "EXACT_TARGET_AND_ONE_SHOT_PREFLIGHT_REQUIRED",
+            "full_campaign_hash": self.full_campaign_hash,
+            "campaign_run_id": self.campaign_run_id,
+            "ordered_mapping": [
+                {"row_id": row_id, "experiment_id": experiment_id}
+                for row_id, experiment_id in self.ordered_mapping
+            ],
+            "exact_48_mapping_hash": self.exact_48_mapping_hash,
+            "source_pins": self.source_pins.as_dict(),
+            "h4_source_pins": {
+                "runner_bundle_sha256": (self.h4_source_pins.runner_bundle_sha256),
+                "pbo_source_sha256": self.h4_source_pins.pbo_source_sha256,
+            },
+            "exit_disposition_table": [
+                {
+                    "exit": code,
+                    "dispositions": list(dispositions),
+                    "meaning": meaning,
+                }
+                for code, dispositions, meaning in EXIT_DISPOSITION_TABLE
+            ],
+        }
+
+
+def build_production_identity_plan() -> ProductionIdentityPlan:
+    """Build twice identically from actual H4 source pins and H6-A identity."""
+    h4_plan = h4_h6a_adapter.build_production_h4_plan()
+    mapping = tuple((spec.row_id, spec.experiment_id) for spec in h4_plan.row_specs)
+    return ProductionIdentityPlan(
+        full_campaign_hash=h4_plan.full_campaign_hash,
+        campaign_run_id=h4_plan.campaign_run_id,
+        ordered_mapping=mapping,
+        exact_48_mapping_hash=compute_exact_48_mapping_hash(dict(mapping)),
+        source_pins=h4_plan.source_pins,
+        h4_source_pins=h4_plan.h4_source_pins,
+        _h4_plan=h4_plan,
+        _seal=_PRODUCTION_IDENTITY_SEAL,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class DatabaseTarget:
     host: str
@@ -298,9 +436,9 @@ class ExactSourcePins:
     pbo_implementation_sha256: str
 
     def __post_init__(self) -> None:
+        for name in ("integration_head_sha", "integration_tree_sha"):
+            _git_oid(getattr(self, name), name)
         for name in (
-            "integration_head_sha",
-            "integration_tree_sha",
             "feature_source_sha256",
             "engine_source_sha256",
             "runner_source_sha256",
@@ -332,6 +470,7 @@ class ProductionExecutionPlan:
     source_pins: ExactSourcePins
     output_root: Path
     provenance: str
+    _identity: ProductionIdentityPlan = field(repr=False, compare=False)
     _seal: object = field(repr=False)
 
     def __post_init__(self) -> None:
@@ -339,6 +478,8 @@ class ProductionExecutionPlan:
             raise H6BPlanError("production plan was not issued by the CP8 adapter")
         if self.provenance != "actual_merged_h4_h5":
             raise H6BPlanError("production plan provenance is not actual H4/H5")
+        if type(self._identity) is not ProductionIdentityPlan:
+            raise H6BPlanError("production execution plan lacks exact identity plan")
         _hex64(self.full_campaign_hash, "full_campaign_hash")
         try:
             validate_derived_run_id(
@@ -354,6 +495,46 @@ class ProductionExecutionPlan:
             raise H6BPlanError("source_pins must be exact ExactSourcePins")
         if not isinstance(self.output_root, Path) or not self.output_root.is_absolute():
             raise H6BPlanError("production output root must be an absolute Path")
+        if (
+            self.full_campaign_hash != self._identity.full_campaign_hash
+            or self.campaign_run_id != self._identity.campaign_run_id
+            or self.ordered_mapping != self._identity.ordered_mapping
+            or self.exact_48_mapping_hash != self._identity.exact_48_mapping_hash
+        ):
+            raise H6BPlanError("execution plan identity differs from H4/H6-A plan")
+
+
+def build_production_execution_plan(
+    *,
+    identity: ProductionIdentityPlan | ContractFixturePlan,
+    output_root: Path,
+    integration_head_sha: str,
+    integration_tree_sha: str,
+) -> ProductionExecutionPlan:
+    """Bind a pure production identity to exact integration/output authority."""
+    if type(identity) is not ProductionIdentityPlan:
+        raise H6BPreflightRefused("actual execution rejects non-production identity")
+    if not isinstance(output_root, Path) or not output_root.is_absolute():
+        raise H6BPlanError("production output root must be an absolute Path")
+    source_pins = ExactSourcePins(
+        integration_head_sha=integration_head_sha,
+        integration_tree_sha=integration_tree_sha,
+        feature_source_sha256=identity.source_pins.feature_source_sha256,
+        engine_source_sha256=identity.source_pins.engine_source_sha256,
+        runner_source_sha256=identity.source_pins.runner_source_sha256,
+        pbo_implementation_sha256=(identity.source_pins.pbo_implementation_sha256),
+    )
+    return ProductionExecutionPlan(
+        full_campaign_hash=identity.full_campaign_hash,
+        campaign_run_id=identity.campaign_run_id,
+        ordered_mapping=identity.ordered_mapping,
+        exact_48_mapping_hash=identity.exact_48_mapping_hash,
+        source_pins=source_pins,
+        output_root=output_root,
+        provenance="actual_merged_h4_h5",
+        _identity=identity,
+        _seal=_PRODUCTION_PLAN_SEAL,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -396,6 +577,7 @@ class IssuedOneShotAuthorization:
     __slots__ = (
         "_campaign_hash",
         "_mapping_hash",
+        "_plan",
         "_run_id",
         "_token",
         "_used",
@@ -409,14 +591,28 @@ class IssuedOneShotAuthorization:
         run_id: str,
         mapping_hash: str,
         token: str,
+        _plan: ProductionExecutionPlan | ContractFixturePlan | None = None,
         _issuer: object,
     ) -> None:
         self._campaign_hash = campaign_hash
         self._run_id = run_id
         self._mapping_hash = mapping_hash
         self._token = token
+        self._plan = _plan
         self._used = False
         self._issuer = _issuer
+
+    def _require_plan(
+        self, plan: ProductionExecutionPlan | ContractFixturePlan
+    ) -> None:
+        if (
+            type(self) is not IssuedOneShotAuthorization
+            or self._issuer is not _ISSUER_SEAL
+            or self._plan is not plan
+        ):
+            raise H6BPreflightRefused(
+                "one-shot authorization is not bound to this exact plan"
+            )
 
     def _consume(self) -> tuple[str, str, str, str]:
         if (
@@ -471,6 +667,7 @@ def issue_run_authorization(
         run_id=plan.campaign_run_id,
         mapping_hash=plan.exact_48_mapping_hash,
         token=authority.one_shot_approval,
+        _plan=plan,
         _issuer=_ISSUER_SEAL,
     )
 
@@ -492,6 +689,7 @@ def issue_contract_fixture_authorization(
         run_id=plan._fixture_run_id,
         mapping_hash=mapping_hash,
         token=token,
+        _plan=plan,
         _issuer=_ISSUER_SEAL,
     )
 
@@ -608,6 +806,472 @@ class ArtifactPairPort(Protocol):
         output_dir: Path,
         h5_port: H5CompositionPort,
     ) -> object: ...
+
+
+def _plain(value: object) -> object:
+    if isinstance(value, types.MappingProxyType | dict):
+        return {key: _plain(child) for key, child in value.items()}
+    if isinstance(value, tuple | list):
+        return [_plain(child) for child in value]
+    return value
+
+
+def build_h4_member_trade_key(row: object) -> str:
+    """Seal one actual H4.5 raw attribution member without economic repair."""
+    if type(row) not in (
+        h4_runner.S3SelectedOOSAttribution,
+        h4_runner.S4SelectedOOSAttribution,
+    ):
+        raise H6BPlanError("member trade key requires an exact H4 attribution row")
+    return canonical_sha256(
+        {
+            "schema_version": "rob974_h6b_h4_member_trade_key.v1",
+            "h4_attribution_row": h4_runner._attribution_row_payload(row),
+        }
+    )
+
+
+def _attempt_evidence_payload(attempt: h6a_evidence.AttemptRecord) -> dict[str, object]:
+    return {
+        "schema_version": "rob974_h6b_attempt_evidence.v1",
+        "row_id": attempt.row_id,
+        "strategy_key": attempt.strategy_key,
+        "fold_traces": [trace.canonical_payload() for trace in attempt.fold_traces],
+        "unique_evidence": [
+            {
+                "fold_id": evidence.fold_id,
+                "candidate_identity_hash": evidence.candidate_identity_hash,
+                "evaluated_decision_units": evidence.evaluated_decision_units,
+                "no_signal": evidence.no_signal,
+                "candidate": evidence.candidate,
+                "generator_rejected": evidence.generator_rejected,
+                "generator_accepted": evidence.generator_accepted,
+                "generator_rejection_subtotal_by_reason": dict(
+                    evidence.generator_rejection_subtotal_by_reason
+                ),
+                "content_hash": evidence.content_hash,
+            }
+            for evidence in attempt.unique_evidence
+        ],
+        "path_scenario_evidence": [
+            {
+                "path_scenario": evidence.path_scenario,
+                "status": evidence.status,
+                "reason_code": evidence.reason_code,
+                "trade_count": evidence.trade_count,
+                "member_trade_keys": list(evidence.member_trade_keys),
+                "no_trade_reason_counts": dict(evidence.no_trade_reason_counts),
+                "artifact_hash": evidence.artifact_hash,
+            }
+            for evidence in attempt.path_scenario_evidence
+        ],
+        "historical_executor_state": (
+            None
+            if attempt.historical_executor_state is None
+            else {
+                "order_id": attempt.historical_executor_state.order_id,
+                "executor_validated": (
+                    attempt.historical_executor_state.executor_validated
+                ),
+                "pair_exec_fail": attempt.historical_executor_state.pair_exec_fail,
+                "demo_eligible": attempt.historical_executor_state.demo_eligible,
+                "promotion_blocked_reason": (
+                    attempt.historical_executor_state.promotion_blocked_reason
+                ),
+            }
+        ),
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class ActualH4CampaignResult:
+    """Exact actual-H4 output surface consumed by H6-A and canonical H5."""
+
+    identity: ProductionIdentityPlan
+    attempts: tuple[h6a_evidence.AttemptRecord, ...]
+    attribution: h4_runner.SelectedOOSAttributionEnvelope
+    pbo: tuple[h4_pbo.H4PboEvidence, h4_pbo.H4PboEvidence]
+    provenance: str = "actual_merged_h4"
+
+    def __post_init__(self) -> None:
+        if type(self.identity) is not ProductionIdentityPlan:
+            raise H6BPlanError("actual H4 result requires exact production identity")
+        if self.provenance != "actual_merged_h4":
+            raise H6BPlanError("actual H4 result provenance drift")
+        if type(self.attempts) is not tuple or len(self.attempts) != 48:
+            raise H6BPlanError("actual H4 result requires exact 48 attempts")
+        if any(type(item) is not h6a_evidence.AttemptRecord for item in self.attempts):
+            raise H6BPlanError("actual H4 attempts must be exact H6-A records")
+        mapping = dict(self.identity.ordered_mapping)
+        specs = {spec.row_id: spec for spec in self.identity._h4_plan.row_specs}
+        if tuple(item.row_id for item in self.attempts) != CANONICAL_ROW_ORDER:
+            raise H6BPlanError("actual H4 attempt order differs from exact 48 plan")
+        for item in self.attempts:
+            spec = specs[item.row_id]
+            if (
+                item.experiment_id != mapping[item.row_id]
+                or item.campaign_run_id != self.identity.campaign_run_id
+                or item.full_campaign_hash != self.identity.full_campaign_hash
+                or item.strategy_key != spec.strategy_key
+                or item.retry_index != 0
+            ):
+                raise H6BPlanError("actual H4 attempt identity differs from plan")
+
+        envelope = h4_runner.validate_attribution_envelope(self.attribution)
+        if (
+            envelope.contract_provenance != "actual"
+            or envelope.full_campaign_hash != self.identity.full_campaign_hash
+            or envelope.campaign_run_id != self.identity.campaign_run_id
+            or envelope.source_pins != self.identity.source_pins
+            or envelope.h4_source_pins != self.identity.h4_source_pins
+        ):
+            raise H6BPlanError("actual H4 attribution is not bound to identity")
+        if type(self.pbo) is not tuple or len(self.pbo) != 2:
+            raise H6BPlanError("actual H4 result requires S3 and S4 PBO evidence")
+        if any(type(item) is not h4_pbo.H4PboEvidence for item in self.pbo):
+            raise H6BPlanError("actual PBO evidence must use exact H4 types")
+        if tuple(item.strategy for item in self.pbo) != ("S3", "S4"):
+            raise H6BPlanError("actual PBO evidence must be ordered S3,S4")
+
+        attempt_by_row = {item.row_id: item for item in self.attempts}
+        selected_folds_by_row: dict[str, set[str]] = {
+            row_id: set() for row_id in CANONICAL_ROW_ORDER
+        }
+        raw_keys: dict[tuple[str, str], list[str]] = {}
+        for path in envelope.paths:
+            selected_folds_by_row[path.lineage.row_id].add(path.lineage.fold_id)
+            raw_keys.setdefault((path.lineage.row_id, path.path_scenario), []).extend(
+                build_h4_member_trade_key(row) for row in path.rows
+            )
+            attempt = attempt_by_row[path.lineage.row_id]
+            unique_by_fold = {
+                evidence.fold_id: evidence for evidence in attempt.unique_evidence
+            }
+            if (
+                path.engine_input_count
+                > unique_by_fold[path.lineage.fold_id].generator_accepted
+            ):
+                raise H6BPlanError(
+                    "H4 path engine input exceeds H6-A unique accepted evidence"
+                )
+        for attempt in self.attempts:
+            selected = {
+                trace.fold_id for trace in attempt.fold_traces if trace.selected
+            }
+            if selected != selected_folds_by_row[attempt.row_id]:
+                raise H6BPlanError(
+                    "H4 attribution selected folds differ from H6-A fold traces"
+                )
+            for path in attempt.path_scenario_evidence:
+                expected_keys = tuple(
+                    sorted(raw_keys.get((attempt.row_id, path.path_scenario), ()))
+                )
+                if tuple(sorted(path.member_trade_keys)) != expected_keys:
+                    raise H6BPlanError(
+                        "H4 raw member keys differ from H6-A named path evidence"
+                    )
+
+    def batch_items(self) -> tuple[H6AAttemptBatchItem, ...]:
+        return tuple(
+            H6AAttemptBatchItem(
+                row_id=attempt.row_id,
+                experiment_id=attempt.experiment_id,
+                retry_index=attempt.retry_index,
+                status=attempt.status,
+                reason_code=attempt.reason_code,
+                fold_evidence_hash=attempt.fold_evidence_hash,
+                run_identity=attempt.run_identity,
+                evidence_payload=_attempt_evidence_payload(attempt),
+            )
+            for attempt in self.attempts
+        )
+
+
+class ActualH4RunnerPort(Protocol):
+    provenance: str
+
+    async def run(self, plan: ProductionIdentityPlan) -> ActualH4CampaignResult: ...
+
+
+class ActualMergedH6AAccounting:
+    provenance = "actual_merged_h6a"
+
+    def reconstruct(
+        self,
+        *,
+        plan: ProductionExecutionPlan,
+        registered_total: int,
+        attempts: Sequence[H6AAttemptBatchItem],
+    ) -> h6a_accounting.CombinedAccountingReport:
+        if type(plan) is not ProductionExecutionPlan:
+            raise H6BPreflightRefused("actual accounting rejects non-production plan")
+        if type(registered_total) is not int:
+            raise H6BPreflightRefused("registered_total must be exact int")
+        rows = tuple(
+            h6a_accounting.AttemptAccountingRow(
+                row_id=item.row_id,
+                experiment_id=item.experiment_id,
+                retry_index=item.retry_index,
+                status=item.status,
+                reason_code=item.reason_code,
+                fold_evidence_hash=item.fold_evidence_hash,
+                run_identity=item.run_identity,
+            )
+            for item in attempts
+        )
+        return h6a_accounting.build_combined_accounting(
+            campaign_run_id=plan.campaign_run_id,
+            canonical_row_ids=CANONICAL_ROW_ORDER,
+            row_id_to_experiment_id=dict(plan.ordered_mapping),
+            registered_total=registered_total,
+            attempts=rows,
+        )
+
+
+def _h5_dual_evidence(
+    result: ActualH4CampaignResult,
+) -> tuple[
+    dict[str, dict[tuple[str, str], h5_dual.UniqueGeneratorEvidence]],
+    dict[str, dict[tuple[str, str, str], h5_dual.PathInvocationEvidence]],
+]:
+    unique_by_strategy: dict[
+        str, dict[tuple[str, str], h5_dual.UniqueGeneratorEvidence]
+    ] = {"S3": {}, "S4": {}}
+    path_by_strategy: dict[
+        str, dict[tuple[str, str, str], h5_dual.PathInvocationEvidence]
+    ] = {"S3": {}, "S4": {}}
+    attempt_by_row = {attempt.row_id: attempt for attempt in result.attempts}
+    for attempt in result.attempts:
+        strategy = attempt.row_id.split("-", 1)[0]
+        for evidence in attempt.unique_evidence:
+            unique_by_strategy[strategy][(attempt.row_id, evidence.fold_id)] = (
+                h5_dual.UniqueGeneratorEvidence(
+                    strategy=strategy,
+                    config_id=attempt.row_id,
+                    fold_id=evidence.fold_id,
+                    accepted=evidence.generator_accepted,
+                    rejected=evidence.generator_rejected,
+                    accepted_input_hash=evidence.content_hash,
+                    rejection_reason_histogram=dict(
+                        evidence.generator_rejection_subtotal_by_reason
+                    ),
+                )
+            )
+    for path in result.attribution.paths:
+        attempt = attempt_by_row[path.lineage.row_id]
+        unique = next(
+            item
+            for item in attempt.unique_evidence
+            if item.fold_id == path.lineage.fold_id
+        )
+        aggregate = next(
+            item
+            for item in attempt.path_scenario_evidence
+            if item.path_scenario == path.path_scenario
+        )
+        evidence = h5_dual.PathInvocationEvidence(
+            strategy=path.strategy,
+            config_id=path.lineage.row_id,
+            fold_id=path.lineage.fold_id,
+            path_scenario=path.path_scenario,
+            unique_evidence_hash=unique.content_hash,
+            unique_evidence_accepted_count=unique.generator_accepted,
+            engine_input_hash=path.terminal.input_seal_sha256,
+            engine_input_count=path.engine_input_count,
+            no_trade_reason_counts=dict(aggregate.no_trade_reason_counts),
+            ledger_status=aggregate.status,
+            trade_count=len(path.rows),
+            artifact_hash=aggregate.artifact_hash,
+        )
+        path_by_strategy[path.strategy][
+            (path.lineage.row_id, path.lineage.fold_id, path.path_scenario)
+        ] = evidence
+    selected_keys = {
+        (path.strategy, path.lineage.row_id, path.lineage.fold_id)
+        for path in result.attribution.paths
+    }
+    for strategy, row_id, fold_id in selected_keys:
+        unique = unique_by_strategy[strategy][(row_id, fold_id)]
+        paths = {
+            scenario: path_by_strategy[strategy][(row_id, fold_id, scenario)]
+            for scenario in h5_contracts.PATH_SCENARIOS
+        }
+        h5_dual.cross_check_dual_evidence(unique, paths)
+    return unique_by_strategy, path_by_strategy
+
+
+def _h5_pbo(
+    *, identity: ProductionIdentityPlan, evidence: h4_pbo.H4PboEvidence
+) -> h5_dual.PboEvidence:
+    if evidence.reason_codes:
+        raise H6BPreflightRefused(
+            "actual production scorecard requires complete H4 PBO evidence"
+        )
+    return h5_dual.PboEvidence(
+        strategy=evidence.strategy,
+        config_count=evidence.config_count,
+        day_count=evidence.day_count,
+        slices=evidence.slices,
+        scenario_name="primary_stress17",
+        value=evidence.value,
+        reason_codes=evidence.reason_codes,
+        source_hash=identity.h4_source_pins.pbo_source_sha256,
+        input_hash=evidence.grid_seal_sha256,
+        artifact_hash=evidence.grid_seal_sha256,
+    )
+
+
+class ActualMergedH5Composition:
+    """Pure composition adapter; every economic calculation remains in H5."""
+
+    provenance = "actual_merged_h5"
+
+    def build_scorecard(
+        self,
+        *,
+        plan: ProductionExecutionPlan,
+        h4_result: ActualH4CampaignResult,
+        accounting: h6a_accounting.CombinedAccountingReport,
+    ) -> dict[str, object]:
+        if type(plan) is not ProductionExecutionPlan:
+            raise H6BPreflightRefused("actual H5 rejects non-production plan")
+        if type(h4_result) is not ActualH4CampaignResult:
+            raise H6BPreflightRefused("actual H5 requires exact H4 campaign result")
+        if h4_result.identity is not plan._identity:
+            raise H6BPreflightRefused("actual H4 result is not bound to execution plan")
+        if type(accounting) is not h6a_accounting.CombinedAccountingReport:
+            raise H6BPreflightRefused("actual H5 requires H6-A accounting report")
+
+        h4_contract = h5_contracts.consume_h4_attribution(h4_result.attribution)
+        if (
+            h4_contract.actual_h4_contract != "PASS"
+            or h4_contract.contract_provenance != "actual"
+        ):
+            raise H6BPreflightRefused(
+                "actual H4 contract did not pass typed consumption"
+            )
+        unique_by_strategy, paths_by_strategy = _h5_dual_evidence(h4_result)
+        pbo_by_strategy = {
+            evidence.strategy: _h5_pbo(identity=h4_result.identity, evidence=evidence)
+            for evidence in h4_result.pbo
+        }
+
+        strategy_inputs: dict[str, h5_canonical.StrategyCanonicalInputs] = {}
+        for strategy in h5_contracts.STRATEGIES:
+            primary = tuple(
+                trade
+                for trade in h4_contract.trades
+                if trade.strategy == strategy
+                and trade.path_scenario == "primary_stress17"
+            )
+            upward = tuple(
+                trade
+                for trade in h4_contract.trades
+                if trade.strategy == strategy
+                and trade.path_scenario == "upward_stress22"
+            )
+            common = h5_gates.evaluate_common_gates(
+                primary_trades=primary, upward_trades=upward
+            )
+            if strategy == "S3":
+                falsification = h5_s3.evaluate_s3_falsification(
+                    primary_trades=primary, upward_trades=upward
+                )
+                exit_order = h5_contracts.S3_EXIT_REASONS
+                dimension_order = h5_contracts.S3_SYMBOLS
+                executor_state = None
+            else:
+                falsification = h5_s4.evaluate_s4_falsification(
+                    primary_trades=primary, upward_trades=upward
+                )
+                exit_order = h5_contracts.S4_EXIT_REASONS
+                dimension_order = h5_contracts.S4_PAIRS
+                executor_state = h5_s4.S4_HISTORICAL_PAIR_EXECUTOR_STATE
+            direct = h5_s4.compute_direct_verdict(
+                incomplete_reasons=falsification.incomplete_reasons,
+                hard_gate_reasons=common.reasons + falsification.reasons,
+            )
+            strategy_inputs[strategy] = h5_canonical.StrategyCanonicalInputs(
+                strategy=strategy,
+                common_gates=common,
+                falsification=falsification,
+                direct_verdict=direct,
+                exit_reason_order=exit_order,
+                dimension_order=dimension_order,
+                unique_by_key=unique_by_strategy[strategy],
+                paths_by_key=paths_by_strategy[strategy],
+                pbo=pbo_by_strategy[strategy],
+                pair_executor_state=executor_state,
+            )
+
+        s3_inputs = strategy_inputs["S3"]
+        s4_inputs = strategy_inputs["S4"]
+        campaign_kwargs: dict[str, object] = {}
+        if (
+            s3_inputs.direct_verdict == "historical_pass"
+            and s4_inputs.direct_verdict == "historical_pass"
+        ):
+            campaign_kwargs = {
+                "s3_rank_metrics": h5_canonical._rank_metrics_from_strategy_inputs(
+                    s3_inputs
+                ),
+                "s4_rank_metrics": h5_canonical._rank_metrics_from_strategy_inputs(
+                    s4_inputs
+                ),
+            }
+        campaign = h5_s4.compute_campaign_decision(
+            s3_direct_verdict=s3_inputs.direct_verdict,
+            s4_direct_verdict=s4_inputs.direct_verdict,
+            **campaign_kwargs,
+        )
+
+        parent = h4_result.identity._h4_plan.envelope.parent_corpus
+        envelope = h5_contracts.CampaignEnvelope(
+            full_campaign_hash=plan.full_campaign_hash,
+            campaign_run_id=plan.campaign_run_id,
+            parent_corpus_hash=parent["content_sha256"],
+            parent_projection_hash=parent["physical_manifest_sha256"],
+            feature_contract_hash=plan.source_pins.feature_source_sha256,
+            strategy_contract_hashes={
+                "S3": h3_manifest.S3_STRATEGY_CONTRACT.contract_hash,
+                "S4": h3_manifest.S4_STRATEGY_CONTRACT.contract_hash,
+            },
+            h4_runner_source_hash=plan.source_pins.runner_source_sha256,
+            h4_pbo_source_hash=plan.source_pins.pbo_implementation_sha256,
+            h2_engine_source_hash=plan.source_pins.engine_source_sha256,
+            h3_generator_source_hash=plan.source_pins.runner_source_sha256,
+            run_schema_version=(h4_result.identity._h4_plan.envelope.schema_version),
+            generator_version=h1_lineage.GENERATOR_VERSION,
+            expected_experiment_ids=CANONICAL_ROW_ORDER,
+            h6a_trial_accounting_hash=accounting.trial_accounting_hash,
+        )
+        accounting_contract = h5_contracts.resolve_h6a_accounting_contract(accounting)
+        if accounting_contract.seal is None:
+            raise H6BPreflightRefused("actual H6-A accounting was not evaluated")
+        validation = h5_contracts.validate_envelope_and_accounting(
+            envelope, accounting_contract.seal
+        )
+        return h5_canonical.build_canonical_scorecard(
+            envelope=envelope,
+            h6a_seal=accounting,
+            envelope_ok=validation.ok,
+            envelope_incomplete_reasons=validation.incomplete_reasons,
+            h4_attribution=h4_contract,
+            s3_inputs=s3_inputs,
+            s4_inputs=s4_inputs,
+            campaign_decision=campaign,
+        )
+
+    def canonical_json_bytes(self, scorecard: Mapping[str, object]) -> bytes:
+        return h5_canonical.canonical_json_bytes(scorecard)
+
+    def semantic_hash(self, scorecard: Mapping[str, object]) -> str:
+        return h5_canonical.hash_canonical_bytes(
+            h5_canonical.canonical_json_bytes(scorecard)
+        )
+
+    def render_markdown(self, scorecard: Mapping[str, object]) -> bytes:
+        return h5_markdown.render_markdown(scorecard)
 
 
 @dataclass(frozen=True, slots=True)
@@ -858,6 +1522,110 @@ class ContractFixtureExecutionPorts:
                 raise H6BPlanError("diagnostic port lacks live capture")
         if self.provenance != "contract_fixture":
             raise H6BPlanError("pre-CP8 execution ports must be contract_fixture")
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionCampaignInput:
+    """Registration/runtime metadata derived only from the actual H4 plan."""
+
+    plan: ProductionExecutionPlan
+    guard_policy: ResearchDbPolicy
+    strategy_name: str = "rob974-h6b"
+    timeframe: str = "4h"
+    runner: str = "rob974-h6b-actual-h4"
+    provenance: str = "actual_merged_h4_h5"
+
+    def __post_init__(self) -> None:
+        if type(self.plan) is not ProductionExecutionPlan:
+            raise H6BPlanError("production campaign requires exact execution plan")
+        if type(self.guard_policy) is not ResearchDbPolicy:
+            raise H6BPlanError("guard_policy must use exact ResearchDbPolicy")
+        for name in ("strategy_name", "timeframe", "runner"):
+            _exact_nonempty_str(getattr(self, name), name)
+        if self.provenance != "actual_merged_h4_h5":
+            raise H6BPlanError("production campaign provenance drift")
+
+    def registration_specs(
+        self,
+    ) -> tuple[
+        tuple[StrategyExperimentIdentity, ...],
+        tuple[StrategyExperimentIdentity, ...],
+    ]:
+        s3: list[StrategyExperimentIdentity] = []
+        s4: list[StrategyExperimentIdentity] = []
+        for spec in self.plan._identity._h4_plan.row_specs:
+            components = _plain(spec.components)
+            if type(components) is not dict:
+                raise H6BPlanError("H4 row components did not unfreeze to exact dict")
+            identity = StrategyExperimentIdentity(
+                strategy_key=spec.strategy_key,
+                strategy_version=spec.strategy_version,
+                hypothesis=spec.hypothesis,
+                **components,
+            )
+            (s3 if spec.row_id.startswith("S3-") else s4).append(identity)
+        if len(s3) != 24 or len(s4) != 24:
+            raise H6BPlanError("production registration split is not exact 24+24")
+        return tuple(s3), tuple(s4)
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionExecutionPorts:
+    """Actual predecessor ports; fixture provenance is rejected at creation."""
+
+    session_factory: SessionFactory
+    h4_runner: ActualH4RunnerPort
+    artifacts: ArtifactPairPort
+    state_inspector: CampaignStateInspector
+    h6a_accounting: ActualMergedH6AAccounting = field(
+        default_factory=ActualMergedH6AAccounting
+    )
+    h5: ActualMergedH5Composition = field(default_factory=ActualMergedH5Composition)
+    register_experiments_fn: RegisterExperimentsFn | None = None
+    find_existing_trial_fn: FindExistingTrialFn | None = None
+    record_trial_fn: RecordTrialFn | None = None
+    diagnostics: DiagnosticCapturePort | None = None
+    provenance: str = "actual_merged_h4_h5"
+
+    def __post_init__(self) -> None:
+        if not callable(self.session_factory):
+            raise H6BPlanError("production session factory must be callable")
+        if getattr(
+            self.h4_runner, "provenance", None
+        ) != "actual_merged_h4" or not callable(getattr(self.h4_runner, "run", None)):
+            raise H6BPlanError("production H4 runner is not actual merged H4")
+        if type(self.h6a_accounting) is not ActualMergedH6AAccounting:
+            raise H6BPlanError("production accounting must be exact actual H6-A")
+        if type(self.h5) is not ActualMergedH5Composition:
+            raise H6BPlanError("production H5 must be exact actual merged adapter")
+        if (
+            getattr(self.artifacts, "provenance", None)
+            != "rob974_h6b_directory_atomic_v1"
+        ):
+            raise H6BPlanError("production artifacts must be H6-B directory atomic")
+        if getattr(
+            self.state_inspector, "provenance", None
+        ) != "actual_read_only_campaign_state" or not callable(
+            getattr(self.state_inspector, "inspect", None)
+        ):
+            raise H6BPlanError("production state inspector is not actual read-only")
+        for name in (
+            "register_experiments_fn",
+            "find_existing_trial_fn",
+            "record_trial_fn",
+        ):
+            value = getattr(self, name)
+            if value is not None and not callable(value):
+                raise H6BPlanError(
+                    f"optional production delegate {name} is not callable"
+                )
+        if self.diagnostics is not None and (
+            getattr(self.diagnostics, "provenance", None) != "actual_merged_rob970_h6a"
+            or not callable(getattr(self.diagnostics, "capture_live_exception", None))
+        ):
+            raise H6BPlanError("production diagnostics must be merged ROB-970/H6-A")
+        if self.provenance != "actual_merged_h4_h5":
+            raise H6BPlanError("production execution-port provenance drift")
 
 
 class CommitRejectedError(RuntimeError):
@@ -1239,7 +2007,7 @@ def _attach_cancellation_outcome(
 
 def _capture_materializer_exception(
     state: _CoordinatorState,
-    ports: ContractFixtureExecutionPorts,
+    ports: ContractFixtureExecutionPorts | ProductionExecutionPorts,
     exc: BaseException,
 ) -> None:
     """Capture once at the first H6-B catch; capture failure is secondary."""
@@ -1366,10 +2134,11 @@ def _validate_fixture_preflight(
 
 
 def _validate_attempt_batch(
-    plan: ContractFixturePlan, attempts: tuple[H6AAttemptBatchItem, ...]
+    plan: ContractFixturePlan | ProductionExecutionPlan,
+    attempts: tuple[H6AAttemptBatchItem, ...],
 ) -> None:
     if type(attempts) is not tuple or len(attempts) != 48:
-        raise H6BPreflightRefused("H4 fixture must return an exact 48-attempt tuple")
+        raise H6BPreflightRefused("H4 must return an exact 48-attempt tuple")
     if any(type(item) is not H6AAttemptBatchItem for item in attempts):
         raise H6BPreflightRefused("H4 attempts must use exact H6AAttemptBatchItem")
     expected = tuple(row_id for row_id, _experiment_id in plan.ordered_mapping)
@@ -1382,7 +2151,7 @@ def _validate_attempt_batch(
 
 
 def _registered_pk_mapping(
-    *, plan: ContractFixturePlan, registered: Sequence[object]
+    *, plan: ContractFixturePlan | ProductionExecutionPlan, registered: Sequence[object]
 ) -> dict[str, int]:
     if len(registered) != 48:
         raise H6BPreflightRefused("H6-A registration did not return exactly 48 rows")
@@ -1490,6 +2259,265 @@ async def _finish_replay_noop(
     return outcome
 
 
+async def materialize_production(
+    *,
+    plan: ProductionExecutionPlan,
+    authorization: IssuedOneShotAuthorization,
+    campaign: ProductionCampaignInput,
+    ports: ProductionExecutionPorts,
+) -> MaterializationOutcome:
+    """Run the actual H4/H6-A/H5 path with H6-B as sole lifecycle owner."""
+    state = _CoordinatorState(trace=["preflight"])
+    try:
+        if type(plan) is not ProductionExecutionPlan:
+            raise H6BPreflightRefused("production plan must use the exact sealed type")
+        if type(campaign) is not ProductionCampaignInput or campaign.plan is not plan:
+            raise H6BPreflightRefused("production campaign is not bound to plan")
+        if type(ports) is not ProductionExecutionPorts:
+            raise H6BPreflightRefused("production ports must use the exact type")
+        validate_exact_48_mapping(plan.ordered_mapping)
+        s3_specs, s4_specs = campaign.registration_specs()
+        authorization._require_plan(plan)
+        register_context, record_context = build_h6a_mutation_contexts(authorization)
+        validate_h6a_context_pair(register_context, record_context)
+        state.trace.append("artifact_probe")
+        state.artifact_probe += 1
+        presence = ports.artifacts.probe(output_dir=plan.output_root)
+        state.artifact_state = getattr(presence, "state", "MALFORMED")
+        if state.artifact_state != "ABSENT":
+            raise ReplayCollisionError(
+                f"production artifact forensic state refused: {state.artifact_state}"
+            )
+    except BaseException as exc:
+        if type(ports) is ProductionExecutionPorts:
+            _capture_materializer_exception(state, ports, exc)
+        if not isinstance(exc, Exception):
+            outcome = _outcome(
+                state,
+                exit_code=AUTHORITY_OR_PREFLIGHT_REFUSED,
+                disposition="AUTHORITY_OR_PREFLIGHT_REFUSED",
+                primary_error=exc,
+                retry_forbidden=isinstance(exc, ReplayCollisionError),
+            )
+            _attach_cancellation_outcome(exc, outcome)
+            raise
+        return _outcome(
+            state,
+            exit_code=AUTHORITY_OR_PREFLIGHT_REFUSED,
+            disposition="AUTHORITY_OR_PREFLIGHT_REFUSED",
+            primary_error=exc,
+            retry_forbidden=isinstance(exc, ReplayCollisionError),
+        )
+
+    session: object | None = None
+    primary_error: BaseException | None = None
+    exit_code = PRECOMMIT_FAILURE
+    disposition = "PRECOMMIT_FAILURE"
+    retry_forbidden = False
+    begun = False
+    native_interrupt: BaseException | None = None
+
+    try:
+        state.trace.append("session_factory")
+        state.session_factory += 1
+        session = ports.session_factory()
+        if session is None or isinstance(session, Awaitable):
+            raise H6BPreflightRefused(
+                "session factory must synchronously return one session"
+            )
+
+        state.trace.append("begin")
+        state.begin += 1
+        await session.begin()
+        begun = True
+        predecessor_session = _InjectedTransactionSession(session)
+
+        state.trace.append("db_state_inspection")
+        state.db_inspect += 1
+        snapshot = await ports.state_inspector.inspect(predecessor_session, plan=plan)
+        if type(snapshot) is not CampaignDbSnapshot:
+            raise ReplayCollisionError(
+                "production state inspector returned non-canonical snapshot"
+            )
+        if not snapshot.is_absent():
+            state.db_state = "PRESENT_UNVERIFIED"
+            raise ReplayCollisionError("production database state is not absent")
+        state.db_state = "ABSENT"
+
+        mapping = dict(plan.ordered_mapping)
+        state.trace.append("h6a_register")
+        state.register += 1
+        register_kwargs: dict[str, object] = {}
+        if ports.register_experiments_fn is not None:
+            register_kwargs["register_experiments_fn"] = ports.register_experiments_fn
+        registered_s3, registered_s4 = await register_h6a_campaign(
+            predecessor_session,
+            approved=register_context,
+            full_campaign_hash=plan.full_campaign_hash,
+            campaign_run_id=plan.campaign_run_id,
+            s3_specs=list(s3_specs),
+            s4_specs=list(s4_specs),
+            row_id_to_experiment_id=mapping,
+            guard_opt_in_enabled=True,
+            guard_policy=campaign.guard_policy,
+            **register_kwargs,
+        )
+        registered = (*registered_s3, *registered_s4)
+        pk_mapping = _registered_pk_mapping(plan=plan, registered=registered)
+
+        state.trace.append("h4_attempts")
+        state.h4 += 1
+        h4_result = await ports.h4_runner.run(plan._identity)
+        if type(h4_result) is not ActualH4CampaignResult:
+            raise H6BPreflightRefused("actual H4 runner returned wrong concrete type")
+        if h4_result.identity is not plan._identity:
+            raise H6BPreflightRefused(
+                "actual H4 result differs from execution identity"
+            )
+        attempts = h4_result.batch_items()
+        _validate_attempt_batch(plan, attempts)
+
+        state.trace.append("h6a_record")
+        state.record += 1
+        record_kwargs: dict[str, object] = {}
+        if ports.find_existing_trial_fn is not None:
+            record_kwargs["find_existing_trial_fn"] = ports.find_existing_trial_fn
+        if ports.record_trial_fn is not None:
+            record_kwargs["record_trial_fn"] = ports.record_trial_fn
+        await record_h6a_attempts(
+            predecessor_session,
+            approved=record_context,
+            full_campaign_hash=plan.full_campaign_hash,
+            campaign_run_id=plan.campaign_run_id,
+            row_id_to_experiment_id=mapping,
+            row_id_to_experiment_pk=pk_mapping,
+            attempts=attempts,
+            strategy_name=campaign.strategy_name,
+            timeframe=campaign.timeframe,
+            runner=campaign.runner,
+            guard_opt_in_enabled=True,
+            guard_policy=campaign.guard_policy,
+            **record_kwargs,
+        )
+
+        state.trace.append("h6a_accounting")
+        state.accounting_calls += 1
+        state.accounting_report = ports.h6a_accounting.reconstruct(
+            plan=plan, registered_total=len(registered), attempts=attempts
+        )
+
+        state.trace.append("h5_scorecard")
+        state.h5 += 1
+        scorecard = ports.h5.build_scorecard(
+            plan=plan,
+            h4_result=h4_result,
+            accounting=state.accounting_report,
+        )
+        if type(scorecard) is not dict:
+            raise H6BPreflightRefused("actual H5 scorecard must be exact dict")
+        state.scorecard = scorecard
+
+        state.trace.append("artifact_stage")
+        state.stage += 1
+        state.staged_pair = ports.artifacts.stage(
+            scorecard=scorecard,
+            output_dir=plan.output_root,
+            h5_port=ports.h5,
+        )
+
+        state.trace.append("db_commit")
+        state.commit += 1
+        try:
+            await session.commit()
+        except BaseException as exc:
+            _capture_materializer_exception(state, ports, exc)
+            primary_error = exc
+            if not isinstance(exc, Exception):
+                native_interrupt = exc
+            retry_forbidden = True
+            disposition = (
+                "COMMIT_FAILED"
+                if isinstance(exc, CommitRejectedError)
+                else "COMMIT_OUTCOME_UNKNOWN"
+            )
+            exit_code = COMMIT_FAILED_OR_UNKNOWN
+            try:
+                await _attempt_rollback(state, session)
+            except BaseException as rollback_interrupt:
+                native_interrupt = rollback_interrupt
+        else:
+            state.commit_confirmed = True
+            state.trace.append("artifact_publish")
+            state.publish += 1
+            try:
+                state.published_pair = ports.artifacts.publish(
+                    state.staged_pair, h5_port=ports.h5
+                )
+            except BaseException as exc:
+                _capture_materializer_exception(state, ports, exc)
+                primary_error = exc
+                if not isinstance(exc, Exception):
+                    native_interrupt = exc
+                exit_code = POSTCOMMIT_PUBLISH_FAILURE
+                disposition = "DB_DURABLE_ARTIFACT_UNPUBLISHED"
+                retry_forbidden = True
+            else:
+                exit_code = MATERIALIZED_EXIT
+                disposition = "MATERIALIZED"
+    except BaseException as exc:
+        _capture_materializer_exception(state, ports, exc)
+        if primary_error is None:
+            primary_error = exc
+        if isinstance(exc, ReplayCollisionError):
+            retry_forbidden = True
+        if not isinstance(exc, Exception):
+            native_interrupt = exc
+        if exit_code not in (COMMIT_FAILED_OR_UNKNOWN, POSTCOMMIT_PUBLISH_FAILURE):
+            exit_code = PRECOMMIT_FAILURE
+            disposition = "PRECOMMIT_FAILURE"
+            if begun:
+                try:
+                    await _attempt_rollback(state, session)
+                except BaseException as rollback_interrupt:
+                    native_interrupt = rollback_interrupt
+
+    if session is None:
+        outcome = _outcome(
+            state,
+            exit_code=exit_code,
+            disposition=disposition,
+            primary_error=primary_error,
+            retry_forbidden=retry_forbidden,
+        )
+        if native_interrupt is not None:
+            _attach_cancellation_outcome(native_interrupt, outcome)
+            raise native_interrupt
+        return outcome
+    try:
+        await _attempt_close(state, session)
+    except BaseException as exc:
+        _capture_materializer_exception(state, ports, exc)
+        if not isinstance(exc, Exception):
+            native_interrupt = native_interrupt or exc
+    if state.close_error is not None:
+        _capture_materializer_exception(state, ports, state.close_error)
+    if state.close_error is not None and exit_code == MATERIALIZED_EXIT:
+        exit_code = SESSION_CLOSE_FAILURE
+        disposition = "MATERIALIZED_CLOSE_FAILED"
+        retry_forbidden = True
+    outcome = _outcome(
+        state,
+        exit_code=exit_code,
+        disposition=disposition,
+        primary_error=primary_error,
+        retry_forbidden=retry_forbidden,
+    )
+    if native_interrupt is not None:
+        _attach_cancellation_outcome(native_interrupt, outcome)
+        raise native_interrupt
+    return outcome
+
+
 async def materialize_contract_fixture(
     *,
     plan: ContractFixturePlan,
@@ -1548,6 +2576,7 @@ async def _materialize_contract_fixture(
         _validate_fixture_preflight(
             plan=plan, campaign=campaign, ports=ports, output_dir=output_dir
         )
+        authorization._require_plan(plan)
         register_context, record_context = build_h6a_mutation_contexts(authorization)
         validate_h6a_context_pair(register_context, record_context)
         if type(require_state_inspection) is not bool:
