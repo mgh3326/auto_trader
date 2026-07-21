@@ -349,7 +349,9 @@ async def test_market_scope_excludes_out_of_scope_rows_end_to_end(monkeypatch):
     mock_db = AsyncMock()
     mock_lifecycle_svc = AsyncMock()
 
-    async def _list_open_orders(*, limit=100, symbol=None, instrument_type=None):
+    async def _list_open_orders(
+        *, limit=100, symbol=None, instrument_type=None, ledger_ids=None
+    ):
         # Simulate the real query-layer filter: instrument_type gates which
         # rows come back. Both a KR and a US order are open simultaneously.
         rows = [

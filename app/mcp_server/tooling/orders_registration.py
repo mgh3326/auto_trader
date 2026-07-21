@@ -539,15 +539,20 @@ def register_order_tools(mcp: FastMCP) -> None:
             "BOTH dry_run=False AND confirm=True. "
             "market (kr/us or equity_kr/equity_us) and/or symbol scope the run "
             "to matching open orders only — omit both to scan all open KIS mock "
-            "orders (unchanged default behavior). An unrecognized market value "
-            "is rejected (success=false + allowed_markets) rather than silently "
-            "treated as a full scan. Every path that has a valid scope (config "
-            "error, confirm-required, success, and unexpected-exception) echoes "
-            'the effective/canonical scope under `scope` (e.g. market="us" '
-            'always echoes back as "equity_us") — never the raw, pre-alias '
-            "request. The one exception is the unknown-market rejection: since "
-            "no valid scope exists there, it has no `scope` key and instead "
-            "echoes the verbatim request under `requested_scope`. "
+            "orders (unchanged default behavior). ledger_ids (list of positive "
+            "ints) further narrows to an explicit set of ledger rows — useful "
+            "to re-check specific previously-'stale' rows without a full scan. "
+            "An unrecognized market value, or an invalid ledger_ids (empty "
+            "list, negative/non-integer entries, or ids that don't exist) is "
+            "rejected (success=false + `selector` naming which one) rather "
+            "than silently treated as a full scan. Every path that has a "
+            "valid scope (config error, confirm-required, success, and "
+            "unexpected-exception) echoes the effective/canonical scope under "
+            '`scope` (e.g. market="us" always echoes back as "equity_us") — '
+            "never the raw, pre-alias request. The one exception is an "
+            "invalid-selector rejection: since no valid scope exists there, "
+            "it has no `scope` key and instead echoes the verbatim request "
+            "under `requested_scope` plus `selector`. "
             "Fails closed if KIS mock config is missing."
         ),
     )
@@ -557,15 +562,17 @@ def register_order_tools(mcp: FastMCP) -> None:
         limit: int = 100,
         market: str | None = None,
         symbol: str | None = None,
+        ledger_ids: list[int] | None = None,
     ):
-        # ROB-1018 fix #3: allowlist validation runs at this single
-        # front-layer point, BEFORE the config-error and confirm gates
-        # below — so an unknown market always short-circuits with the same
-        # rejection (requested_scope, no scope key) no matter what other
-        # conditions also hold. See resolve_kis_mock_reconcile_scope's
-        # docstring for why both layers must share this one function.
+        # ROB-1018 fix #3 / ROB-1007 fix #2/#3: selector validation runs at
+        # this single front-layer point, BEFORE the config-error and confirm
+        # gates below — so an invalid market or ledger_ids always
+        # short-circuits with the same rejection (requested_scope, no scope
+        # key, `selector` naming which one) no matter what other conditions
+        # also hold. See resolve_kis_mock_reconcile_scope's docstring for why
+        # both layers must share this one function.
         scope, scope_error = kis_mock_ledger.resolve_kis_mock_reconcile_scope(
-            market=market, symbol=symbol
+            market=market, symbol=symbol, ledger_ids=ledger_ids
         )
         if scope_error:
             return scope_error
@@ -587,7 +594,11 @@ def register_order_tools(mcp: FastMCP) -> None:
         # the `scope`/`requested_scope` already validated above because
         # both derive from the identical resolve_kis_mock_reconcile_scope.
         return await kis_mock_ledger.kis_mock_reconciliation_run_impl(
-            dry_run=dry_run, limit=limit, market=market, symbol=symbol
+            dry_run=dry_run,
+            limit=limit,
+            market=market,
+            symbol=symbol,
+            ledger_ids=ledger_ids,
         )
 
 

@@ -26,7 +26,9 @@ async def test_kis_mock_reconciliation_tool_dry_run_default(monkeypatch):
 
     result = await tools["kis_mock_reconciliation_run"]()
     assert result == {"success": True, "applied": 0}
-    mock_run.assert_awaited_once_with(dry_run=True, limit=100, market=None, symbol=None)
+    mock_run.assert_awaited_once_with(
+        dry_run=True, limit=100, market=None, symbol=None, ledger_ids=None
+    )
 
 
 @pytest.mark.asyncio
@@ -97,7 +99,9 @@ async def test_kis_mock_reconciliation_tool_apply_with_confirm(monkeypatch):
     )
 
     assert result == {"success": True, "applied": 3}
-    mock_run.assert_awaited_once_with(dry_run=False, limit=10, market=None, symbol=None)
+    mock_run.assert_awaited_once_with(
+        dry_run=False, limit=10, market=None, symbol=None, ledger_ids=None
+    )
 
 
 @pytest.mark.asyncio
@@ -119,7 +123,7 @@ async def test_kis_mock_reconciliation_tool_passes_market_and_symbol(monkeypatch
 
     assert result == {"success": True, "applied": 0}
     mock_run.assert_awaited_once_with(
-        dry_run=True, limit=10, market="us", symbol="AVGO"
+        dry_run=True, limit=10, market="us", symbol="AVGO", ledger_ids=None
     )
 
 
@@ -383,3 +387,125 @@ def test_tool_description_matches_scope_contract():
     # The stale round-1 claim ("always echoes the requested scope" as the
     # verbatim input) must be gone now that success/error paths normalize.
     assert "always echoes the requested" not in description.lower()
+
+
+# --- ROB-1007: ledger_ids selector + generalized selector-rejection shape ---
+
+
+@pytest.mark.asyncio
+async def test_kis_mock_reconciliation_tool_passes_ledger_ids(monkeypatch):
+    """ledger_ids flows through the MCP tool -> impl unchanged."""
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.orders_registration.validate_kis_mock_config",
+        lambda: [],
+    )
+
+    mock_run = AsyncMock(return_value={"success": True, "applied": 0})
+    monkeypatch.setattr(kis_mock_ledger, "kis_mock_reconciliation_run_impl", mock_run)
+
+    tools = build_tools()
+    result = await tools["kis_mock_reconciliation_run"](ledger_ids=[10, 20])
+
+    assert result == {"success": True, "applied": 0}
+    mock_run.assert_awaited_once_with(
+        dry_run=True, limit=100, market=None, symbol=None, ledger_ids=[10, 20]
+    )
+
+
+def test_resolve_scope_ledger_ids_valid_normalizes_to_int_list():
+    from app.mcp_server.tooling.kis_mock_ledger import resolve_kis_mock_reconcile_scope
+
+    scope, error = resolve_kis_mock_reconcile_scope(
+        market=None, symbol=None, ledger_ids=[3, 1, 2]
+    )
+
+    assert error is None
+    assert scope == {"market": None, "symbol": None, "ledger_ids": [3, 1, 2]}
+
+
+def test_resolve_scope_ledger_ids_omitted_unchanged_behavior():
+    """Omitting ledger_ids preserves the exact pre-ROB-1007 scope shape (no
+    extra key) so existing exact-dict-equality assertions elsewhere keep
+    passing."""
+    from app.mcp_server.tooling.kis_mock_ledger import resolve_kis_mock_reconcile_scope
+
+    scope, error = resolve_kis_mock_reconcile_scope(market="us", symbol="AVGO")
+
+    assert error is None
+    assert scope == {"market": "equity_us", "symbol": "AVGO"}
+    assert "ledger_ids" not in scope
+
+
+@pytest.mark.parametrize(
+    "bad_ledger_ids",
+    [
+        [],
+        [-1],
+        [0],
+        [1, "2"],
+        [1.5],
+        [True],
+    ],
+    ids=["empty", "negative", "zero", "non_integer_str", "float", "bool"],
+)
+def test_resolve_scope_rejects_invalid_ledger_ids_explicitly(bad_ledger_ids):
+    """Invalid ledger_ids must be rejected explicitly — never silently fall
+    through to a full scan."""
+    from app.mcp_server.tooling.kis_mock_ledger import resolve_kis_mock_reconcile_scope
+
+    scope, error = resolve_kis_mock_reconcile_scope(
+        market=None, symbol=None, ledger_ids=bad_ledger_ids
+    )
+
+    assert scope is None
+    assert error is not None
+    assert error["success"] is False
+    assert error["selector"] == "ledger_ids"
+    assert error["requested_scope"] == {
+        "market": None,
+        "symbol": None,
+        "ledger_ids": bad_ledger_ids,
+    }
+    # Must never look like a valid, effective scope.
+    assert "scope" not in error
+
+
+def test_error_shape_market_vs_ledger_ids_structurally_distinguishable():
+    """ROB-1007 fix #3: callers can tell structurally which selector was
+    rejected via the `selector` key, without string-parsing `error`."""
+    from app.mcp_server.tooling.kis_mock_ledger import resolve_kis_mock_reconcile_scope
+
+    _, market_error = resolve_kis_mock_reconcile_scope(market="crypto", symbol=None)
+    _, ledger_ids_error = resolve_kis_mock_reconcile_scope(
+        market=None, symbol=None, ledger_ids=[]
+    )
+
+    assert market_error["selector"] == "market"
+    assert "allowed_markets" in market_error
+    assert ledger_ids_error["selector"] == "ledger_ids"
+    assert "allowed_markets" not in ledger_ids_error
+    assert market_error["selector"] != ledger_ids_error["selector"]
+
+
+@pytest.mark.asyncio
+async def test_kis_mock_reconciliation_tool_rejects_invalid_ledger_ids_end_to_end(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.orders_registration.validate_kis_mock_config",
+        lambda: [],
+    )
+    mock_run = AsyncMock()
+    monkeypatch.setattr(kis_mock_ledger, "kis_mock_reconciliation_run_impl", mock_run)
+
+    tools = build_tools()
+    result = await tools["kis_mock_reconciliation_run"](ledger_ids=[])
+
+    assert result["success"] is False
+    assert result["selector"] == "ledger_ids"
+    assert "scope" not in result
+    mock_run.assert_not_called()
