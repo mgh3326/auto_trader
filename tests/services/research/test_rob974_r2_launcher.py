@@ -124,11 +124,19 @@ def test_no_arguments_are_dry_run_only(monkeypatch: pytest.MonkeyPatch) -> None:
     assert payload["default_state"] == "DISABLED"
     assert payload["run_requested"] is False
     assert payload["identity"]["attempts"] == 48
+    assert payload["identity"]["full_campaign_hash"] == (
+        "2c47864c7ab661f16be6c414a1140944ec36832bb268e86183555b56c6f85f53"
+    )
+    assert payload["identity"]["campaign_run_id"] == (
+        "rob974h6a-CvcCOcAO3hRQDUPzHdVBJFmkXi_dN6NmngCOBLk82lI"
+    )
     assert payload["target"]["required_runner_width"] == 64
     assert payload["target"]["required_alembic_head"] == (
         "20260722_rob1023_widen_runner"
     )
-    assert str(payload["target"]["output_root"]).endswith("-v3")
+    assert str(payload["target"]["output_root"]).endswith("-v4")
+    assert str(payload["target"]["preserved_v3_output_root"]).endswith("-v3")
+    assert str(payload["target"]["preserved_v3_run_log"]).endswith("-v3-run.log")
     assert all(value == 0 for value in payload["effects"].values())
     assert stderr.getvalue() == ""
 
@@ -162,6 +170,41 @@ def test_schema_guard_only_requires_database_url_without_other_effects() -> None
     assert stderr.getvalue() == (
         "AUTHORITY_OR_PREFLIGHT_REFUSED DATABASE_URL_ENV_ABSENT\n"
     )
+
+
+def test_preserved_v3_evidence_is_physically_pinned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launcher = _launcher()
+    output_root = tmp_path / "rob974-r2-c8bb8e88-v3"
+    output_root.mkdir()
+    json_bytes = b'{"v3":"json"}\n'
+    markdown_bytes = b"# v3\n"
+    log_bytes = b"v3 materialized\n"
+    (output_root / "scorecard.json").write_bytes(json_bytes)
+    (output_root / "scorecard.md").write_bytes(markdown_bytes)
+    run_log = tmp_path / "rob974-r2-c8bb8e88-v3-run.log"
+    run_log.write_bytes(log_bytes)
+    monkeypatch.setattr(launcher, "PRESERVED_V3_OUTPUT_ROOT", output_root)
+    monkeypatch.setattr(launcher, "PRESERVED_V3_RUN_LOG", run_log)
+    monkeypatch.setattr(
+        launcher, "PRESERVED_V3_JSON_SHA256", hashlib.sha256(json_bytes).hexdigest()
+    )
+    monkeypatch.setattr(
+        launcher,
+        "PRESERVED_V3_MARKDOWN_SHA256",
+        hashlib.sha256(markdown_bytes).hexdigest(),
+    )
+    monkeypatch.setattr(
+        launcher, "PRESERVED_V3_LOG_SHA256", hashlib.sha256(log_bytes).hexdigest()
+    )
+
+    launcher._require_preserved_v3_evidence()
+    (output_root / "scorecard.json").write_bytes(b"tampered\n")
+    with pytest.raises(
+        launcher.LaunchRefused, match="PRESERVED_V3_EVIDENCE_HASH_MISMATCH"
+    ):
+        launcher._require_preserved_v3_evidence()
 
 
 @pytest.mark.asyncio

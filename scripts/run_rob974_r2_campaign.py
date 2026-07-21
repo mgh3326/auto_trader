@@ -28,13 +28,13 @@ RESEARCH_ROOT = REPO_ROOT / "research" / "nautilus_scalping"
 # scanners classifying reviewed high-entropy evidence as credentials.
 FULL_CAMPAIGN_HASH = "".join(
     (
-        "c8bb8e88e129e007",
-        "2d0ea174adca5c4c",
-        "ce8158f2726c6397",
-        "030d2ae6e4619f39",
+        "2c47864c7ab661f1",
+        "6be6c414a1140944",
+        "ec36832bb268e861",
+        "83555b56c6f85f53",
     )
 )
-CAMPAIGN_RUN_ID = "rob974h6a-G4efMErFLrEyHWNztSKlo9j-ghlxQuPkwD0h1g6sQEw"
+CAMPAIGN_RUN_ID = "rob974h6a-CvcCOcAO3hRQDUPzHdVBJFmkXi_dN6NmngCOBLk82lI"
 EXACT_48_MAPPING_HASH = (
     "9ec3fdac35c3a98ed0f17bb5f10ab75fb1d68abf89a964e471c3182f53a11bf0"
 )
@@ -42,19 +42,19 @@ FEATURE_SOURCE_SHA256 = (
     "4f7609ad8ea22bcd8354ededc0c8fc13f14e67d9a9f19e64c081e13b3f4e8cf9"
 )
 ENGINE_SOURCE_SHA256 = (
-    "a3449251714eeca12806143d8b046aff0d3917cbe4f13ea11b79cb0f1d3f9339"
+    "26daadbb8a614191593d961754d07f2978ad371f6e4edada66a4e96249813957"
 )
 RUNNER_SOURCE_SHA256 = (
-    "09235b487e5436d2ca9899afeab89c4c1d2bd71db9d5b15e229c1b8d1be771d6"
+    "5314d2429801a2df78d7bbac852a3ae1c19567bf9be22c74704b907eaf818c55"
 )
 PBO_IMPLEMENTATION_SHA256 = (
     "58e42e9c7d875ae8d4f5e40f0fd698d28bc1f1b983a38be2d3d3b2be86312a41"
 )
 MERGED_MAIN_REFREEZE_HEAD = "".join(
-    ("00ad09c3fa", "56c55a4ca2", "57dbf00fb0", "f1a1c2d682")
+    ("b1fc2f40ed", "96d98824e3", "211ece8972", "1f747e66e4")
 )
 MERGED_MAIN_REFREEZE_TREE = "".join(
-    ("6e7b1c39f8", "08b70acb85", "298f34858b", "9014c7576c")
+    ("d437f5ddbe", "a2d6dd4c79", "cce3356036", "b8820f8c4c")
 )
 EXPECTED_BACKTEST_RUNNER_WIDTH = 64
 EXPECTED_ALEMBIC_HEAD = "20260722_rob1023_widen_runner"
@@ -81,13 +81,28 @@ EXPECTED_CORPUS_ROOT = Path(
     "rob941-4bcc2da979b47caa45b5f90a09c326aefff91fa605e110d55ef316d53c9a9351/"
     "data"
 )
-EXPECTED_OUTPUT_ROOT = Path("/Users/mgh3326/work/herdr-artifacts/rob974-r2-c8bb8e88-v3")
+EXPECTED_OUTPUT_ROOT = Path("/Users/mgh3326/work/herdr-artifacts/rob974-r2-2c47864c-v4")
+PRESERVED_V3_OUTPUT_ROOT = Path(
+    "/Users/mgh3326/work/herdr-artifacts/rob974-r2-c8bb8e88-v3"
+)
+PRESERVED_V3_RUN_LOG = Path(
+    "/Users/mgh3326/work/herdr-inbox/rob974-r2-c8bb8e88-v3-run.log"
+)
+PRESERVED_V3_JSON_SHA256 = (
+    "9c9217df278adc8440c4c08f76c7926987b1db71c9f080fae35836f387dad086"
+)
+PRESERVED_V3_MARKDOWN_SHA256 = (
+    "531d197c1ac4eeb03f0d706c12e7b9bcc225250c61e96a4c9c291ba3ebeee4dc"
+)
+PRESERVED_V3_LOG_SHA256 = (
+    "bad05098a1f06fb22c6897c433e644848342fdc61cfca8cd45442c668e9f5b1e"
+)
 DATABASE_URL_ENV = "ROB974_DATABASE_URL"
 WRITE_OPT_IN = "ROB974_R2_EMPIRICAL_WRITE=YES"
 PIT_CONFIRMATION = (
     "2025-07-01T00:00:00Z..2026-07-01T00:00:00Z/XRPUSDT,DOGEUSDT,SOLUSDT/PIT"
 )
-ONE_SHOT_APPROVAL = "ROB-1023/ROB-974-R2/c8bb8e88/V3-ONE-SHOT"
+ONE_SHOT_APPROVAL = "ROB-1025/ROB-974-R2/2c47864c/V4-ONE-SHOT"
 APPROVED_DB = ("localhost", 5432, "rob974_db", "postgres")
 
 CLI_USAGE_OR_PLAN_ERROR = 2
@@ -189,6 +204,8 @@ def _dry_run_payload() -> dict[str, object]:
             "output_root": str(EXPECTED_OUTPUT_ROOT),
             "required_runner_width": EXPECTED_BACKTEST_RUNNER_WIDTH,
             "required_alembic_head": EXPECTED_ALEMBIC_HEAD,
+            "preserved_v3_output_root": str(PRESERVED_V3_OUTPUT_ROOT),
+            "preserved_v3_run_log": str(PRESERVED_V3_RUN_LOG),
         },
         "effects": {
             "empirical_runs": 0,
@@ -225,6 +242,49 @@ def _git(*arguments: str) -> str:
     return result.stdout.strip()
 
 
+def _physical_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        raise LaunchRefused("PRESERVED_V3_EVIDENCE_MISSING_OR_UNSAFE") from None
+    return digest.hexdigest()
+
+
+def _require_preserved_v3_evidence() -> None:
+    try:
+        resolved_root = PRESERVED_V3_OUTPUT_ROOT.resolve(strict=True)
+        resolved_log = PRESERVED_V3_RUN_LOG.resolve(strict=True)
+        entries = tuple(PRESERVED_V3_OUTPUT_ROOT.iterdir())
+    except (OSError, RuntimeError):
+        raise LaunchRefused("PRESERVED_V3_EVIDENCE_MISSING_OR_UNSAFE") from None
+    if (
+        resolved_root != PRESERVED_V3_OUTPUT_ROOT
+        or resolved_log != PRESERVED_V3_RUN_LOG
+        or PRESERVED_V3_OUTPUT_ROOT.is_symlink()
+        or PRESERVED_V3_RUN_LOG.is_symlink()
+        or not PRESERVED_V3_OUTPUT_ROOT.is_dir()
+        or not PRESERVED_V3_RUN_LOG.is_file()
+    ):
+        raise LaunchRefused("PRESERVED_V3_EVIDENCE_MISSING_OR_UNSAFE")
+    expected_files = {
+        "scorecard.json": PRESERVED_V3_JSON_SHA256,
+        "scorecard.md": PRESERVED_V3_MARKDOWN_SHA256,
+    }
+    if {entry.name for entry in entries} != set(expected_files):
+        raise LaunchRefused("PRESERVED_V3_EVIDENCE_LAYOUT_MISMATCH")
+    for name, expected_sha256 in expected_files.items():
+        path = PRESERVED_V3_OUTPUT_ROOT / name
+        if path.is_symlink() or not path.is_file():
+            raise LaunchRefused("PRESERVED_V3_EVIDENCE_MISSING_OR_UNSAFE")
+        if _physical_sha256(path) != expected_sha256:
+            raise LaunchRefused("PRESERVED_V3_EVIDENCE_HASH_MISMATCH")
+    if _physical_sha256(PRESERVED_V3_RUN_LOG) != PRESERVED_V3_LOG_SHA256:
+        raise LaunchRefused("PRESERVED_V3_EVIDENCE_HASH_MISMATCH")
+
+
 def _require_exact_static_gates(
     arguments: argparse.Namespace, environ: Mapping[str, str]
 ) -> tuple[Path, Path, Path, str]:
@@ -255,6 +315,7 @@ def _require_exact_static_gates(
     database_url = environ.get(DATABASE_URL_ENV)
     if type(database_url) is not str or not database_url:
         raise LaunchRefused("DATABASE_URL_ENV_ABSENT")
+    _require_preserved_v3_evidence()
 
     try:
         manifest = Path(arguments.manifest).resolve(strict=True)
@@ -365,6 +426,7 @@ async def _execute_schema_guard(
 
     _install_runtime_paths()
     _resolve_database_target(database_url)
+    _require_preserved_v3_evidence()
 
     from sqlalchemy import text
     from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -390,6 +452,7 @@ async def _execute_schema_guard(
             "database_user": APPROVED_DB[3],
             "runner_width": EXPECTED_BACKTEST_RUNNER_WIDTH,
             "alembic_head": EXPECTED_ALEMBIC_HEAD,
+            "preserved_v3_evidence": True,
             "transaction_read_only": True,
             "writes": 0,
         },
