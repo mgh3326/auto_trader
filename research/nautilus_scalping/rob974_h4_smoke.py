@@ -10,7 +10,12 @@ from __future__ import annotations
 
 from rob974_h3_h2_adapter import verify_h2_contract
 from rob974_h3_manifest import FROZEN_H3_ROSTER, validate_manifest
-from rob974_h4_contracts import H4SourcePins, exact_h4_folds
+from rob974_h4_contracts import (
+    ATTRIBUTION_SCHEMA_VERSION,
+    H4SourcePins,
+    attribution_contract,
+    exact_h4_folds,
+)
 from rob974_h4_h6a_adapter import build_production_h4_plan
 from rob974_h4_plan import build_fixture_plan
 
@@ -32,6 +37,10 @@ def run_contract_fixture_smoke() -> dict[str, object]:
         "actual_h2_integration": "PASS",
         "actual_h3_integration": "PASS",
         "actual_h6a_integration": "PASS",
+        "actual_h4_contract": "PASS",
+        "actual_h4_contract_semantic": "typed_integration_not_empirical_closure",
+        "attribution_schema_version": ATTRIBUTION_SCHEMA_VERSION,
+        "contract_provenance": list(attribution_contract()["contract_provenance"]),
         "fake_free_full_scope": "DEFERRED_TO_H6B_INTEGRATION_E2E",
         "full_campaign_hash": production_plan.full_campaign_hash,
         "campaign_run_id": production_plan.campaign_run_id,

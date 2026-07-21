@@ -20,6 +20,12 @@ PBO_SLICES = 4
 PBO_DAYS = 365
 STRATEGIES: tuple[str, ...] = ("S3", "S4")
 
+ATTRIBUTION_SCHEMA_VERSION = "rob974.h4.selected_oos_attribution.v1"
+CONTRACT_PROVENANCE: tuple[str, ...] = ("actual", "fixture", "deferred")
+MARKET_RETURN_SEMANTIC = "M_t_24h_median_log_return"
+TERCILE_METHOD = "fold_train_all_complete_M_midrank_v1"
+TERCILE_BINS: tuple[str, ...] = ("lower", "middle", "top")
+
 
 def _sha256(value: object, name: str) -> str:
     if type(value) is not str:
@@ -100,6 +106,85 @@ def scorecard_contract() -> dict[str, object]:
             "pair_dependence_fail": "positive_pair_concentration_gt_0.70_and_other_two_pooled_E17_lte_0",
             "slow_only_fail": "half_life_8_32h_E17_lte_0_and_half_life_32_48h_E17_gt_0",
         },
+        "attribution": attribution_contract(),
+    }
+
+
+def attribution_contract() -> dict[str, object]:
+    """Return the orch-ratified H4.5 raw-attribution semantics.
+
+    These values are part of both the campaign policy and every row's policy
+    identity.  They intentionally describe only existing H2/H3 authorities;
+    no downstream fallback, zero fill, or post-hold regression is permitted.
+    """
+    return {
+        "schema_version": ATTRIBUTION_SCHEMA_VERSION,
+        "contract_provenance": list(CONTRACT_PROVENANCE),
+        "market_return": {
+            "semantic": MARKET_RETURN_SEMANTIC,
+            "source": "CommonSnapshot.M_at_signal_decision_ts",
+            "m_t_allowed": False,
+        },
+        "tercile": {
+            "method": TERCILE_METHOD,
+            "reference": "same_fold_train_all_complete_CommonSnapshot.M",
+            "rank": "(count(v<x)+0.5*count(v==x))/N",
+            "bins": {
+                "lower": "p<1/3",
+                "middle": "1/3<=p<2/3",
+                "top": "p>=2/3",
+            },
+            "ties_split": False,
+            "empty_or_nonfinite": "incomplete",
+        },
+        "realized_holding_minutes": {
+            "formula": "(exit_ts-entry_ts)/60000.0",
+            "materialization_owner": "H4",
+            "requirements": ["non_negative", "duration_aligned_to_60000ms"],
+        },
+        "S3": {
+            "entry_z": "absent_not_defined",
+            "fields": [
+                "S",
+                "Q",
+                "market_return",
+                "market_return_tercile",
+                "volatility_percentile",
+                "e13_bps",
+                "e17_bps",
+                "e22_bps",
+                "realized_holding_minutes",
+                "row_id",
+                "experiment_id",
+            ],
+        },
+        "S4": {
+            "entry_z": "S4Candidate.observed_z",
+            "D": "S4Candidate.D_bps",
+            "correlation": "S4Candidate.rho",
+            "half_life": "S4Candidate.half_life_4h_bars",
+            "beta_stability": "S4Candidate.beta_stability",
+            "realized_pair_beta": (
+                "sign(side_a)*weight_a*beta_a+sign(side_b)*weight_b*beta_b"
+            ),
+            "realized_pair_beta_timing": "entry_frozen_actual_H2_trade",
+            "post_hold_ols": "forbidden",
+            "fields": [
+                "entry_z",
+                "D",
+                "correlation",
+                "half_life",
+                "beta_stability",
+                "realized_pair_beta",
+                "market_return",
+                "e13_bps",
+                "e17_bps",
+                "e22_bps",
+                "realized_holding_minutes",
+                "row_id",
+                "experiment_id",
+            ],
+        },
     }
 
 
@@ -127,16 +212,22 @@ def campaign_verdict_contract() -> dict[str, object]:
 
 
 __all__ = [
+    "ATTRIBUTION_SCHEMA_VERSION",
+    "CONTRACT_PROVENANCE",
     "FOLD_COUNT",
     "H4SourcePins",
+    "MARKET_RETURN_SEMANTIC",
     "PBO_DAYS",
     "PBO_SCENARIO",
     "PBO_SLICES",
     "SCENARIOS",
     "STRATEGIES",
+    "TERCILE_BINS",
+    "TERCILE_METHOD",
     "WINDOW_END_MS",
     "WINDOW_START_MS",
     "exact_h4_folds",
+    "attribution_contract",
     "campaign_verdict_contract",
     "scorecard_contract",
     "validate_exact_config_ids",
