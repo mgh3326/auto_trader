@@ -405,6 +405,7 @@ class TestH6AAccountingGate:
     def test_nonzero_retry_makes_campaign_incomplete(self):
         seal = _accounting_seal(
             retry_attempts=1,
+            status_counts={"completed": 49, "rejected": 0, "crashed": 0, "timeout": 0},
             performance_usable=False,
             reason_codes=("h6_accounting_has_retries",),
         )

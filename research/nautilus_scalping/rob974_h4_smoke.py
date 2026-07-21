@@ -2,8 +2,9 @@
 
 The bounded CP8 fixture proves the H1/H2/H3/H4 contracts without running a
 year-long synthetic campaign.  CP9 additionally builds the real merged H6-A
-production identity from raw source pins.  The expensive fake-free full-scope
-run is deliberately delegated to H6-B's campaign-final integration E2E.
+production identity from raw source pins.  Fake-free closure belongs exclusively
+to H6-B's persisted scorecard; this smoke delegates that assertion instead of
+self-attesting a downstream receipt.
 """
 
 from __future__ import annotations
@@ -41,7 +42,7 @@ def run_contract_fixture_smoke() -> dict[str, object]:
         "actual_h4_contract_semantic": "typed_integration_not_empirical_closure",
         "attribution_schema_version": ATTRIBUTION_SCHEMA_VERSION,
         "contract_provenance": list(attribution_contract()["contract_provenance"]),
-        "fake_free_full_scope": "DEFERRED_TO_H6B_INTEGRATION_E2E",
+        "fake_free_full_scope": "DELEGATED_TO_H6B_SCORECARD",
         "full_campaign_hash": production_plan.full_campaign_hash,
         "campaign_run_id": production_plan.campaign_run_id,
         "source_pins": production_plan.source_pins.as_dict(),
