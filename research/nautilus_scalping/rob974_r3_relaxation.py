@@ -411,7 +411,10 @@ def _validate_ledgers(
         (config_id, fold_id) for config_id in R3_CONFIG_IDS for fold_id in R3_FOLD_IDS
     )
     actual_order: list[tuple[str, str]] = []
-    event_fold: dict[EconomicEvent, str] = {}
+    oos_base_signal_fold: dict[tuple[Family, tuple[str, ...], int], str] = {}
+    direction_by_fold_and_base: dict[
+        tuple[str, tuple[Family, tuple[str, ...], int]], Direction
+    ] = {}
     result: dict[tuple[str, str], CellFoldLedger] = {}
     for row in ledgers:
         if type(row) is not CellFoldLedger:
@@ -419,18 +422,40 @@ def _validate_ledgers(
         actual_order.append((row.config_id, row.fold_id))
         expected_family = row.config_id[:2]
         local_events: set[EconomicEvent] = set()
+        local_base_directions: dict[tuple[Family, tuple[str, ...], int], Direction] = {}
         for trade in row.trades:
             if trade.event.family != expected_family:
                 raise RelaxationInputError("trade family does not match its R3 config")
+            base_signal = (
+                trade.event.family,
+                trade.event.instruments,
+                trade.event.signal_ts,
+            )
+            local_direction = local_base_directions.get(base_signal)
+            if local_direction is not None and local_direction != trade.event.direction:
+                raise RelaxationInputError(
+                    "one config-independent base signal has multiple directions "
+                    f"in {row.config_id}/{row.fold_id}"
+                )
+            local_base_directions[base_signal] = trade.event.direction
+            fold_base = (row.fold_id, base_signal)
+            prior_direction = direction_by_fold_and_base.get(fold_base)
+            if prior_direction is not None and prior_direction != trade.event.direction:
+                raise RelaxationInputError(
+                    "direction drift for a config-independent base signal "
+                    f"in {row.fold_id}"
+                )
+            direction_by_fold_and_base[fold_base] = trade.event.direction
             if trade.event in local_events:
                 raise RelaxationInputError(
                     f"duplicate trade identity in {row.config_id}/{row.fold_id}"
                 )
             local_events.add(trade.event)
-            prior_fold = event_fold.get(trade.event)
-            if prior_fold is not None and prior_fold != row.fold_id:
-                raise RelaxationInputError("cross-fold trade identity collision")
-            event_fold[trade.event] = row.fold_id
+            if phase == "OOS":
+                prior_fold = oos_base_signal_fold.get(base_signal)
+                if prior_fold is not None and prior_fold != row.fold_id:
+                    raise RelaxationInputError("cross-fold trade identity collision")
+                oos_base_signal_fold[base_signal] = row.fold_id
         result[(row.config_id, row.fold_id)] = row
     if tuple(actual_order) != expected_order:
         raise RelaxationInputError(
