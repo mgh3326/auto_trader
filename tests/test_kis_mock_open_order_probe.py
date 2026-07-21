@@ -123,6 +123,28 @@ def test_redact_row_masks_account_and_secret_values(probe_module):
     assert "12345678" not in str(result)
 
 
+def test_sensitive_text_regex_matches_secrets_with_whitespace(probe_module):
+    """The _SENSITIVE_TEXT pattern must compile as a real regex (\\s as a
+    whitespace class), not a literal backslash-s — otherwise the second-layer
+    redaction never fires on any secret-shaped text containing spaces."""
+    assert (
+        probe_module._SENSITIVE_TEXT.sub(probe_module._REDACTED, "access_token: abc123")
+        == "[REDACTED]"
+    )
+    assert (
+        probe_module._SENSITIVE_TEXT.sub(
+            probe_module._REDACTED, "authorization: Bearer xyz"
+        )
+        == "[REDACTED] xyz"
+    )
+    assert (
+        probe_module._SENSITIVE_TEXT.sub(
+            probe_module._REDACTED, "app_secret: shhh, other: 1"
+        )
+        == "[REDACTED], other: 1"
+    )
+
+
 def test_probe_script_has_no_mutation_code_path(probe_module):
     """Static guard: the probe source must never reference an
     order-submit/modify/cancel client method — read-only inquiry methods

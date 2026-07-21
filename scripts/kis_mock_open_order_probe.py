@@ -34,7 +34,7 @@ REQUIRED_MOCK_ENV: tuple[str, ...] = (
 _REDACTED = "[REDACTED]"
 _SENSITIVE_TEXT = re.compile(
     r"(?i)(authorization|bearer|access[_ -]?token|app[_ -]?(?:key|secret)|"
-    r"account(?:[_ -]?(?:no|number))?|cano)\\s*[:=]\\s*[^,\\s}]+"
+    r"account(?:[_ -]?(?:no|number))?|cano)\s*[:=]\s*[^,\s}]+"
 )
 
 
