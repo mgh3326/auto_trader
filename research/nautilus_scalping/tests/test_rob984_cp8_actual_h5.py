@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import rob974_h3_evidence as h3_evidence
 import test_rob1001_h45_attribution as h4fx
 from rob945_pbo_grid import FROZEN_DAY_KEYS
 from rob974_h4_pbo import compute_h4_full_window_pbo
@@ -34,6 +35,7 @@ from rob974_h6b_artifacts import (
     read_persisted_scorecard_pair,
 )
 from rob974_h6b_cli import build_production_identity_plan
+from test_rob980_cp6_unique_evidence import _s3_output
 
 from app.services import rob974_h6b_materializer as materializer
 from app.services.research_canonical_hash import compute_identity_hashes
@@ -263,6 +265,60 @@ def test_actual_h4_h6a_h5_composition_is_typed_deterministic_and_canonical(tmp_p
     ) == materializer.h5_canonical.hash_canonical_bytes(canonical)
     assert h5.render_markdown(json.loads(canonical)).endswith(b"\n")
     assert h5.canonical_json_bytes(scorecard) == canonical
+
+
+def test_actual_h4_pbo_reason_is_h5_incomplete_not_materializer_error():
+    identity = build_production_identity_plan()
+    evidence = replace(
+        _pbo("S3"),
+        value=None,
+        reason_codes=("ambiguous_pbo_ranking",),
+    )
+    adapted = materializer._h5_pbo(identity=identity, evidence=evidence)
+    assert adapted.value is None
+    assert adapted.reason_codes == ("ambiguous_pbo_ranking",)
+    validation = materializer.h5_dual.validate_pbo_evidence(adapted)
+    assert validation.ok is False
+    assert validation.incomplete_reasons == ("ambiguous_pbo_ranking",)
+
+
+def test_actual_h3_zero_rejection_buckets_are_filtered_at_h5_dto_boundary():
+    output = _s3_output()
+    output = replace(
+        output,
+        decisions=tuple(
+            replace(
+                decision,
+                status="NO_SIGNAL",
+                candidate=None,
+                no_signal_reason="momentum",
+                generator_rejection_reason=None,
+            )
+            if decision.status == "GENERATOR_REJECTED"
+            else decision
+            for decision in output.decisions
+        ),
+        rejected=(),
+    )
+    source = h3_evidence.build_unique_generator_evidence(
+        output, fold_or_full_window="fold-00", phase="selected_oos"
+    )
+    assert any(
+        count == 0 for _reason, count in source.generator_rejection_reason_histogram
+    )
+    adapted = materializer._h6a_unique_evidence(source, fold_id="fold-00")
+    observed = dict(adapted.generator_rejection_subtotal_by_reason)
+    assert observed == {}
+    assert sum(observed.values()) == adapted.generator_rejected
+    materializer.h5_dual.UniqueGeneratorEvidence(
+        strategy="S3",
+        config_id="S3-00",
+        fold_id="fold-00",
+        accepted=adapted.generator_accepted,
+        rejected=adapted.generator_rejected,
+        accepted_input_hash=adapted.content_hash,
+        rejection_reason_histogram=observed,
+    )
 
 
 def test_raw_member_key_and_one_ulp_mutants_fail_before_scorecard():

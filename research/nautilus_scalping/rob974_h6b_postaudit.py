@@ -22,8 +22,13 @@ from sqlalchemy import text
 from app.services.rob974_h6b_materializer import (
     MATERIALIZED_EXIT,
     POSTAUDIT_FAILURE,
+    ActualCampaignStateInspector,
+    ActualMergedH5Composition,
+    ActualMergedH6AAccounting,
     ContractFixturePlan,
     DatabaseTarget,
+    ProductionExecutionPlan,
+    parse_persisted_attempt_record,
 )
 
 __all__ = [
@@ -36,16 +41,22 @@ __all__ = [
     "PostAuditOutcome",
     "PostAuditPorts",
     "PostAuditPreflightError",
+    "ProductionPostAuditAuthority",
     "PostAuditQueryPort",
     "PostAuditRawSnapshot",
     "PostAuditSeal",
     "ReadOnlyQueryViolation",
     "run_contract_fixture_postaudit",
+    "run_production_postaudit",
 ]
 
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 _CONTRACT_FIXTURE_DATABASE = "rob984_contract_fixture_test_db"
 _READ_ONLY_SQL = "SET TRANSACTION READ ONLY"
+_PROJECT_TEST_DB_TARGET = DatabaseTarget(
+    host="localhost", port=5432, database="test_db", user="postgres"
+)
+_PROJECT_TEST_DB_APPROVAL = "ROB984_CP9_ORCH_PROJECT_TEST_DB"
 
 
 class PostAuditError(RuntimeError):
@@ -96,6 +107,33 @@ class PostAuditAuthority:
             raise PostAuditPreflightError("CP5 authority must remain contract_fixture")
         if not isinstance(self.output_dir, Path) or not self.output_dir.is_absolute():
             raise PostAuditPreflightError("output_dir must be an absolute Path")
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionPostAuditAuthority:
+    """Exact CP9 standalone-audit authority for the disposable project DB."""
+
+    expected_target: DatabaseTarget
+    observed_target: DatabaseTarget
+    inherited_target: DatabaseTarget | None
+    output_dir: Path
+    approval_source: str = _PROJECT_TEST_DB_APPROVAL
+
+    def __post_init__(self) -> None:
+        for name in ("expected_target", "observed_target"):
+            if type(getattr(self, name)) is not DatabaseTarget:
+                raise PostAuditPreflightError(f"{name} must use exact type")
+        if (
+            self.inherited_target is not None
+            and type(self.inherited_target) is not DatabaseTarget
+        ):
+            raise PostAuditPreflightError(
+                "inherited target must use exact type or None"
+            )
+        if not isinstance(self.output_dir, Path) or not self.output_dir.is_absolute():
+            raise PostAuditPreflightError("output_dir must be an absolute Path")
+        if self.approval_source != _PROJECT_TEST_DB_APPROVAL:
+            raise PostAuditPreflightError("project test-DB approval source differs")
 
 
 @dataclass(frozen=True, slots=True)
@@ -587,6 +625,278 @@ async def run_contract_fixture_postaudit(
             disposition="POSTAUDIT_FAILURE",
             primary_error=primary_error,
         )
+    if native_interrupt is not None:
+        native_interrupt.rob984_postaudit_outcome = outcome
+        raise native_interrupt
+    return outcome
+
+
+def _validate_production_preflight(
+    *,
+    plan: ProductionExecutionPlan,
+    authority: ProductionPostAuditAuthority,
+    session_factory: SessionFactory,
+) -> None:
+    if type(plan) is not ProductionExecutionPlan:
+        raise PostAuditPreflightError("production audit requires exact execution plan")
+    if type(authority) is not ProductionPostAuditAuthority:
+        raise PostAuditPreflightError("production audit authority must use exact type")
+    if not callable(session_factory):
+        raise PostAuditPreflightError("production session_factory must be callable")
+    if (
+        authority.expected_target != _PROJECT_TEST_DB_TARGET
+        or authority.observed_target != _PROJECT_TEST_DB_TARGET
+    ):
+        raise PostAuditPreflightError(
+            "production post-audit target differs from reviewed project test_db"
+        )
+    if authority.inherited_target not in (None, _PROJECT_TEST_DB_TARGET):
+        raise PostAuditPreflightError("inherited project test-DB target conflicts")
+    if authority.output_dir != plan.output_root:
+        raise PostAuditPreflightError("post-audit output differs from execution plan")
+
+
+def _require_project_test_db_session(session: object) -> None:
+    try:
+        url = session.get_bind().url
+        target = DatabaseTarget(
+            host=url.host,
+            port=url.port,
+            database=url.database,
+            user=url.username,
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise PostAuditPreflightError(
+            "post-audit session bind target is unavailable or malformed"
+        ) from exc
+    if target != _PROJECT_TEST_DB_TARGET:
+        raise PostAuditPreflightError(
+            "post-audit session bind differs byte-for-byte from approval"
+        )
+
+
+def _build_production_h6a_seal(
+    *, plan: ProductionExecutionPlan, snapshot: object
+) -> PostAuditSeal:
+    from app.services.rob974_h6b_materializer import CampaignDbSnapshot
+
+    if type(snapshot) is not CampaignDbSnapshot:
+        raise PostAuditMismatch("actual query returned a non-canonical snapshot")
+    if snapshot.campaign_run_id != plan.campaign_run_id:
+        raise PostAuditMismatch("raw rows carry the wrong campaign run ID")
+    if snapshot.registered_mapping != plan.ordered_mapping:
+        raise PostAuditMismatch("registered exact-48 mapping differs")
+    if snapshot.mismatch_row_ids:
+        raise PostAuditMismatch("out-of-campaign rows are present")
+    if snapshot.out_of_plan_experiment_ids:
+        raise PostAuditMismatch("out-of-plan experiments are present")
+    if len(snapshot.attempts) != 48:
+        raise PostAuditMismatch("raw trial rows must contain exactly 48 attempts")
+
+    attempts = tuple(
+        parse_persisted_attempt_record(item, plan=plan) for item in snapshot.attempts
+    )
+    if tuple(attempt.row_id for attempt in attempts) != tuple(
+        row_id for row_id, _ in plan.ordered_mapping
+    ):
+        raise PostAuditMismatch("raw trial rows are missing, extra, or reordered")
+    accounting = ActualMergedH6AAccounting().reconstruct(
+        plan=plan,
+        registered_total=len(snapshot.registered_mapping),
+        attempts=snapshot.attempts,
+    )
+    required = {
+        "expected_total": 48,
+        "registered_total": 48,
+        "primary_attempts": 48,
+        "total_attempts": 48,
+        "retry_attempts": 0,
+        "accounting_complete": True,
+    }
+    for name, expected in required.items():
+        if getattr(accounting, name) != expected:
+            raise PostAuditMismatch(f"H6-A accounting field {name} is not exact")
+    if sum(accounting.status_counts.values()) != 48:
+        raise PostAuditMismatch("H6-A status-count sum must equal 48")
+    for name in (
+        "missing_row_ids",
+        "extra_experiment_ids",
+        "mismatch_row_ids",
+        "duplicate_or_gap_row_ids",
+    ):
+        if getattr(accounting, name) != ():
+            raise PostAuditMismatch(f"H6-A accounting carries non-empty {name}")
+
+    named: list[NamedAttemptEvidenceSeal] = []
+    for attempt in attempts:
+        unique_hashes = tuple(
+            (row.fold_id, row.content_hash) for row in attempt.unique_evidence
+        )
+        path_hashes = tuple(
+            (row.path_scenario, row.artifact_hash)
+            for row in attempt.path_scenario_evidence
+        )
+        if tuple(name for name, _ in unique_hashes) != h6a_evidence.FOLD_IDS:
+            raise PostAuditMismatch("named unique evidence differs")
+        if tuple(name for name, _ in path_hashes) != h6a_evidence.PATH_SCENARIOS:
+            raise PostAuditMismatch("named path evidence differs")
+        named.append(
+            NamedAttemptEvidenceSeal(
+                row_id=attempt.row_id,
+                unique_hashes=unique_hashes,
+                ordered_path_hashes=path_hashes,
+            )
+        )
+    return PostAuditSeal(
+        full_campaign_hash=plan.full_campaign_hash,
+        campaign_run_id=plan.campaign_run_id,
+        exact_48_mapping_hash=plan.exact_48_mapping_hash,
+        experiments=48,
+        trials=48,
+        strategy_counts=(("S3", 24), ("S4", 24)),
+        primary_attempts=accounting.primary_attempts,
+        total_attempts=accounting.total_attempts,
+        retry_attempts=accounting.retry_attempts,
+        status_counts=tuple(accounting.status_counts.items()),
+        out_of_plan_experiments=0,
+        out_of_campaign_trials=0,
+        scenario_names=h6a_evidence.PATH_SCENARIOS,
+        named_evidence=tuple(named),
+        trial_accounting_hash=accounting.trial_accounting_hash,
+    )
+
+
+def _verify_production_scorecard(
+    *, pair: h6b_artifacts.PersistedScorecardPair, expected: PostAuditSeal
+) -> None:
+    scorecard = pair.parsed_scorecard
+    lineage = scorecard.get("lineage")
+    accounting = scorecard.get("h6a_accounting")
+    if type(lineage) is not dict or type(accounting) is not dict:
+        raise PostAuditMismatch("persisted H5 lineage/accounting shape differs")
+    expected_lineage = {
+        "full_campaign_hash": expected.full_campaign_hash,
+        "campaign_run_id": expected.campaign_run_id,
+        "h6a_trial_accounting_hash": expected.trial_accounting_hash,
+    }
+    for name, value in expected_lineage.items():
+        if lineage.get(name) != value:
+            raise PostAuditMismatch(f"persisted H5 lineage field {name} differs")
+    expected_accounting = {
+        "actual_h6a_contract": "PASS",
+        "expected_total": 48,
+        "registered_total": 48,
+        "primary_attempts": 48,
+        "retry_attempts": 0,
+        "accounting_complete": True,
+        "trial_accounting_hash": expected.trial_accounting_hash,
+    }
+    for name, value in expected_accounting.items():
+        if accounting.get(name) != value:
+            raise PostAuditMismatch(f"persisted H5 accounting field {name} differs")
+    status_counts = accounting.get("status_counts")
+    if type(status_counts) is not dict or sum(status_counts.values()) != 48:
+        raise PostAuditMismatch("persisted H5 status counts differ")
+
+
+async def run_production_postaudit(
+    *,
+    plan: ProductionExecutionPlan,
+    authority: ProductionPostAuditAuthority,
+    session_factory: SessionFactory,
+) -> PostAuditOutcome:
+    """Audit committed test-DB state from a separate READ ONLY transaction."""
+    state = _AuditState()
+    try:
+        _validate_production_preflight(
+            plan=plan, authority=authority, session_factory=session_factory
+        )
+    except BaseException as exc:
+        if not isinstance(exc, Exception):
+            raise
+        return _outcome(
+            state,
+            exit_code=POSTAUDIT_FAILURE,
+            disposition="POSTAUDIT_FAILURE",
+            primary_error=exc,
+        )
+
+    session: object | None = None
+    begun = False
+    primary_error: BaseException | None = None
+    native_interrupt: BaseException | None = None
+    try:
+        state.trace.append("session_factory")
+        state.session_factory += 1
+        session = session_factory()
+        if session is None or isinstance(session, Awaitable):
+            raise PostAuditPreflightError(
+                "session factory must synchronously return one session"
+            )
+        _require_project_test_db_session(session)
+        state.trace.append("begin")
+        state.begin += 1
+        await session.begin()
+        begun = True
+
+        state.trace.append("set_transaction_read_only")
+        state.read_only_statement += 1
+        await session.execute(text(_READ_ONLY_SQL))
+
+        state.trace.append("fetch_canonical_raw_rows")
+        state.query += 1
+        snapshot = await ActualCampaignStateInspector().inspect(
+            _SelectOnlyAuditSession(session), plan=plan
+        )
+        state.trace.append("h6a_reconstruct")
+        state.seal = _build_production_h6a_seal(plan=plan, snapshot=snapshot)
+
+        state.trace.append("physical_scorecard_read")
+        state.artifact_read += 1
+        state.persisted_pair = h6b_artifacts.read_persisted_scorecard_pair(
+            output_dir=authority.output_dir,
+            h5_port=ActualMergedH5Composition(),
+        )
+        state.trace.append("h5_scorecard_compare")
+        _verify_production_scorecard(pair=state.persisted_pair, expected=state.seal)
+    except BaseException as exc:
+        primary_error = exc
+        if not isinstance(exc, Exception):
+            native_interrupt = exc
+
+    if session is not None and begun:
+        state.trace.append("rollback_read_only")
+        state.rollback += 1
+        try:
+            await session.rollback()
+        except BaseException as exc:
+            state.rollback_error = exc
+            if primary_error is None:
+                primary_error = exc
+            if not isinstance(exc, Exception):
+                native_interrupt = native_interrupt or exc
+    if session is not None:
+        state.trace.append("session_close")
+        state.close += 1
+        try:
+            await session.close()
+        except BaseException as exc:
+            state.close_error = exc
+            if primary_error is None:
+                primary_error = exc
+            if not isinstance(exc, Exception):
+                native_interrupt = native_interrupt or exc
+
+    outcome = _outcome(
+        state,
+        exit_code=MATERIALIZED_EXIT if primary_error is None else POSTAUDIT_FAILURE,
+        disposition=(
+            "POSTAUDIT_VERIFIED_READ_ONLY"
+            if primary_error is None
+            else "POSTAUDIT_FAILURE"
+        ),
+        primary_error=primary_error,
+    )
     if native_interrupt is not None:
         native_interrupt.rob984_postaudit_outcome = outcome
         raise native_interrupt

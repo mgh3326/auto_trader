@@ -248,10 +248,13 @@ def test_production_imports_use_only_actual_merged_h4_h5_and_no_forbidden_runtim
         h4_h5_imports.update(
             name for name in imports if name.startswith(("rob974_h4", "rob974_h5"))
         )
-    assert h4_h5_imports == {
-        "rob974_h4_h6a_adapter",
-        "rob974_h4_pbo",
-        "rob974_h4_runner",
+        assert h4_h5_imports == {
+            "rob974_h4_adapter",
+            "rob974_h4_contracts",
+            "rob974_h4_h6a_adapter",
+            "rob974_h4_pbo",
+            "rob974_h4_runner",
+            "rob974_h4_selection",
         "rob974_h5_canonical",
         "rob974_h5_contracts",
         "rob974_h5_dual_evidence",

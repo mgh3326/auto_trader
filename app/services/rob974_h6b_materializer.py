@@ -13,17 +13,29 @@ merged H4, H5, and H6-A APIs; fixture provenance is rejected there.
 from __future__ import annotations
 
 import json
+import math
 import re
+import sys
 import types
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
+import rob974_h2_h1_bridge as h2_h1_bridge
+import rob974_h2_ingress as h2_ingress
+import rob974_h2_scenarios as h2_scenarios
+import rob974_h3_evidence as h3_evidence
+import rob974_h3_h2_adapter as h3_h2_adapter
 import rob974_h3_manifest as h3_manifest
+import rob974_h3_s3 as h3_s3
+import rob974_h3_s4 as h3_s4
+import rob974_h4_adapter as h4_adapter
+import rob974_h4_contracts as h4_contracts
 import rob974_h4_h6a_adapter as h4_h6a_adapter
 import rob974_h4_pbo as h4_pbo
 import rob974_h4_runner as h4_runner
+import rob974_h4_selection as h4_selection
 import rob974_h5_canonical as h5_canonical
 import rob974_h5_contracts as h5_contracts
 import rob974_h5_dual_evidence as h5_dual
@@ -34,7 +46,13 @@ import rob974_h5_s4 as h5_s4
 import rob974_h6a_accounting as h6a_accounting
 import rob974_h6a_evidence as h6a_evidence
 import rob974_lineage as h1_lineage
+from rob974_features import FOUR_HOUR_MS, MinuteBar
+from sqlalchemy import or_, select
 
+from app.models.research_backtest import (
+    ResearchBacktestRun,
+    ResearchStrategyExperiment,
+)
 from app.schemas.research_backtest import StrategyExperimentIdentity
 from app.services.research_db_write_guard import ResearchDbPolicy
 from app.services.rob974_h6a_bridge import (
@@ -52,8 +70,11 @@ from research_contracts.canonical_hash import canonical_sha256
 __all__ = [
     "AUTHORITY_OR_PREFLIGHT_REFUSED",
     "ActualH4CampaignResult",
+    "ActualH4InputData",
     "ActualH4RunnerPort",
+    "ActualCampaignStateInspector",
     "ActualMergedH5Composition",
+    "ActualMergedH4Runner",
     "ActualMergedH6AAccounting",
     "CANONICAL_ROW_ORDER",
     "CLI_USAGE_OR_PLAN_ERROR",
@@ -86,6 +107,7 @@ __all__ = [
     "ProductionExecutionPlan",
     "ProductionExecutionPorts",
     "ProductionIdentityPlan",
+    "ProjectTestDbAuthority",
     "RunAuthority",
     "ReplayCollisionError",
     "SESSION_CLOSE_FAILURE",
@@ -94,7 +116,9 @@ __all__ = [
     "build_h4_member_trade_key",
     "build_production_execution_plan",
     "build_production_identity_plan",
+    "parse_persisted_attempt_record",
     "issue_contract_fixture_authorization",
+    "issue_project_test_db_authorization",
     "issue_run_authorization",
     "materialize_contract_fixture",
     "materialize_or_replay_contract_fixture",
@@ -167,6 +191,8 @@ CANONICAL_ROW_ORDER: tuple[str, ...] = tuple(
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 _GIT_OID_RE = re.compile(r"^[0-9a-f]{40}$")
 _EMPIRICAL_DATABASE = "rob974_db"
+_PROJECT_TEST_DB_TARGET = ("localhost", 5432, "test_db", "postgres")
+_PROJECT_TEST_DB_APPROVAL = "ROB984_CP9_ORCH_PROJECT_TEST_DB"
 
 
 class H6BPlanError(ValueError):
@@ -568,6 +594,48 @@ class RunAuthority:
         _exact_nonempty_str(self.one_shot_approval, "one_shot_approval")
 
 
+@dataclass(frozen=True, slots=True)
+class ProjectTestDbAuthority:
+    """Exact CP9-only authority for the reviewed disposable project DB.
+
+    This type is intentionally disjoint from :class:`RunAuthority`: the
+    empirical production gate continues to accept only ``rob974_db`` while
+    this harness-only issuer accepts exactly the repository/CI ``test_db``
+    tuple and cannot be reached from the operator CLI.
+    """
+
+    expected_full_campaign_hash: str
+    expected_campaign_run_id: str
+    expected_exact_48_mapping_hash: str
+    expected_target: DatabaseTarget
+    observed_target: DatabaseTarget
+    inherited_target: DatabaseTarget | None
+    write_opt_in: bool
+    expected_output_root: Path
+    requested_output_root: Path
+    expected_source_pins: ExactSourcePins
+    observed_source_pins: ExactSourcePins
+    one_shot_approval: str
+    approval_source: str = _PROJECT_TEST_DB_APPROVAL
+
+    def __post_init__(self) -> None:
+        _hex64(self.expected_full_campaign_hash, "expected_full_campaign_hash")
+        _exact_nonempty_str(self.expected_campaign_run_id, "expected_campaign_run_id")
+        _hex64(
+            self.expected_exact_48_mapping_hash,
+            "expected_exact_48_mapping_hash",
+        )
+        if type(self.write_opt_in) is not bool:
+            raise H6BPlanError("write_opt_in must be exact bool")
+        for name in ("expected_output_root", "requested_output_root"):
+            value = getattr(self, name)
+            if not isinstance(value, Path) or not value.is_absolute():
+                raise H6BPlanError(f"{name} must be an absolute Path")
+        _exact_nonempty_str(self.one_shot_approval, "one_shot_approval")
+        if self.approval_source != _PROJECT_TEST_DB_APPROVAL:
+            raise H6BPlanError("project test-DB approval source is not exact")
+
+
 _ISSUER_SEAL = object()
 
 
@@ -575,8 +643,10 @@ class IssuedOneShotAuthorization:
     """Mutable one-shot capability; its state is authorization-only."""
 
     __slots__ = (
+        "_approved_target",
         "_campaign_hash",
         "_mapping_hash",
+        "_mode",
         "_plan",
         "_run_id",
         "_token",
@@ -592,6 +662,8 @@ class IssuedOneShotAuthorization:
         mapping_hash: str,
         token: str,
         _plan: ProductionExecutionPlan | ContractFixturePlan | None = None,
+        _approved_target: DatabaseTarget | None = None,
+        _mode: str = "contract_fixture",
         _issuer: object,
     ) -> None:
         self._campaign_hash = campaign_hash
@@ -599,6 +671,8 @@ class IssuedOneShotAuthorization:
         self._mapping_hash = mapping_hash
         self._token = token
         self._plan = _plan
+        self._approved_target = _approved_target
+        self._mode = _mode
         self._used = False
         self._issuer = _issuer
 
@@ -612,6 +686,28 @@ class IssuedOneShotAuthorization:
         ):
             raise H6BPreflightRefused(
                 "one-shot authorization is not bound to this exact plan"
+            )
+
+    def _require_session_target(self, session: object) -> None:
+        if self._mode != "project_test_db":
+            return
+        if self._approved_target is None:
+            raise H6BPreflightRefused("project test-DB authorization lost its target")
+        try:
+            url = session.get_bind().url
+            resolved = DatabaseTarget(
+                host=url.host,
+                port=url.port,
+                database=url.database,
+                user=url.username,
+            )
+        except (AttributeError, H6BPlanError, TypeError) as exc:
+            raise H6BPreflightRefused(
+                "project test-DB session bind target is unavailable or malformed"
+            ) from exc
+        if resolved != self._approved_target:
+            raise H6BPreflightRefused(
+                "project test-DB session bind differs byte-for-byte from approval"
             )
 
     def _consume(self) -> tuple[str, str, str, str]:
@@ -668,6 +764,8 @@ def issue_run_authorization(
         mapping_hash=plan.exact_48_mapping_hash,
         token=authority.one_shot_approval,
         _plan=plan,
+        _approved_target=authority.approved_target,
+        _mode="production_empirical",
         _issuer=_ISSUER_SEAL,
     )
 
@@ -690,6 +788,56 @@ def issue_contract_fixture_authorization(
         mapping_hash=mapping_hash,
         token=token,
         _plan=plan,
+        _issuer=_ISSUER_SEAL,
+    )
+
+
+def issue_project_test_db_authorization(
+    plan: ProductionExecutionPlan,
+    authority: ProjectTestDbAuthority,
+) -> IssuedOneShotAuthorization:
+    """Issue CP9's one-shot capability without weakening production target gates."""
+    if type(plan) is not ProductionExecutionPlan:
+        raise H6BPreflightRefused("project test-DB requires exact production plan")
+    if type(authority) is not ProjectTestDbAuthority:
+        raise H6BPreflightRefused("test-DB authority must use the exact CP9 type")
+    expected = DatabaseTarget(
+        host=_PROJECT_TEST_DB_TARGET[0],
+        port=_PROJECT_TEST_DB_TARGET[1],
+        database=_PROJECT_TEST_DB_TARGET[2],
+        user=_PROJECT_TEST_DB_TARGET[3],
+    )
+    if authority.expected_target != expected or authority.observed_target != expected:
+        raise H6BPreflightRefused("project test-DB target differs from reviewed tuple")
+    if authority.inherited_target not in (None, expected):
+        raise H6BPreflightRefused("inherited project test-DB target conflicts")
+    if authority.write_opt_in is not True:
+        raise H6BPreflightRefused("project test-DB write opt-in is required")
+    if (
+        authority.expected_full_campaign_hash != plan.full_campaign_hash
+        or authority.expected_campaign_run_id != plan.campaign_run_id
+        or authority.expected_exact_48_mapping_hash != plan.exact_48_mapping_hash
+    ):
+        raise H6BPreflightRefused("project test-DB identity authority differs")
+    if (
+        authority.requested_output_root != authority.expected_output_root
+        or authority.expected_output_root != plan.output_root
+    ):
+        raise H6BPreflightRefused("project test-DB output root differs")
+    if authority.expected_source_pins != plan.source_pins:
+        raise H6BPreflightRefused("project test-DB expected source pins differ")
+    validate_source_pins_pair(
+        expected=plan.source_pins,
+        observed=authority.observed_source_pins,
+    )
+    return IssuedOneShotAuthorization(
+        campaign_hash=plan.full_campaign_hash,
+        run_id=plan.campaign_run_id,
+        mapping_hash=plan.exact_48_mapping_hash,
+        token=authority.one_shot_approval,
+        _plan=plan,
+        _approved_target=expected,
+        _mode="project_test_db",
         _issuer=_ISSUER_SEAL,
     )
 
@@ -993,6 +1141,871 @@ class ActualH4RunnerPort(Protocol):
     async def run(self, plan: ProductionIdentityPlan) -> ActualH4CampaignResult: ...
 
 
+@dataclass(frozen=True, slots=True)
+class ActualH4InputData:
+    """Persisted H1 rows supplied to the callback-free merged-H4 runner."""
+
+    h1_minutes: tuple[tuple[str, tuple[MinuteBar, ...]], ...]
+    corpus_end_ts: int
+    persisted_corpus_hash: str
+    persisted_feature_hash: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.h1_minutes) is not tuple
+            or tuple(symbol for symbol, _ in self.h1_minutes) != h3_manifest.SYMBOLS
+        ):
+            raise H6BPlanError("actual H4 input must use exact H1 symbol order")
+        for symbol, rows in self.h1_minutes:
+            if type(symbol) is not str or type(rows) is not tuple or not rows:
+                raise H6BPlanError("actual H4 input rows must be non-empty tuples")
+            if any(type(row) is not MinuteBar for row in rows):
+                raise H6BPlanError("actual H4 input must contain exact H1 MinuteBar")
+            if any(
+                right.ts <= left.ts for left, right in zip(rows, rows[1:], strict=False)
+            ):
+                raise H6BPlanError("actual H4 input minute rows must be ordered")
+        if type(self.corpus_end_ts) is not int:
+            raise H6BPlanError("actual H4 corpus_end_ts must be exact int")
+        if self.corpus_end_ts <= max(rows[-1].ts for _, rows in self.h1_minutes):
+            raise H6BPlanError("actual H4 corpus_end_ts must follow every minute")
+        _hex64(self.persisted_corpus_hash, "persisted_corpus_hash")
+        _hex64(self.persisted_feature_hash, "persisted_feature_hash")
+
+    @classmethod
+    def from_mapping(
+        cls,
+        rows: Mapping[str, Sequence[MinuteBar]],
+        *,
+        corpus_end_ts: int,
+        persisted_corpus_hash: str,
+        persisted_feature_hash: str,
+    ) -> ActualH4InputData:
+        if not isinstance(rows, Mapping) or set(rows) != set(h3_manifest.SYMBOLS):
+            raise H6BPlanError("actual H4 rows must cover exact selected universe")
+        return cls(
+            tuple((symbol, tuple(rows[symbol])) for symbol in h3_manifest.SYMBOLS),
+            corpus_end_ts,
+            persisted_corpus_hash,
+            persisted_feature_hash,
+        )
+
+    def as_dict(self) -> dict[str, tuple[MinuteBar, ...]]:
+        return dict(self.h1_minutes)
+
+
+@dataclass(frozen=True, slots=True)
+class _ActualExecutionSurface:
+    phase_context: h4_runner.ActualH1PhaseContext
+    raw_minutes: dict[str, tuple[MinuteBar, ...]]
+    minute_index: object
+    close_feature_index: dict[tuple[str, int], object]
+    pair_close_index: dict[tuple[str, int], object]
+
+
+def _actual_execution_surface(
+    data: ActualH4InputData, *, phase: h4_runner.H4Phase
+) -> _ActualExecutionSurface:
+    raw = {
+        symbol: tuple(row for row in rows if row.ts < phase.end_ms)
+        for symbol, rows in data.h1_minutes
+    }
+    context = h4_runner.build_actual_h1_phase_context(
+        raw_minutes=raw,
+        phase=phase,
+    )
+    normalized_minutes = tuple(
+        row
+        for symbol in h3_manifest.SYMBOLS
+        for row in h2_h1_bridge.from_h1_minute_bars(symbol, raw[symbol])
+    )
+    minute_index = h2_ingress.build_minute_index(normalized_minutes)
+    close_features = tuple(
+        row
+        for symbol in h3_manifest.SYMBOLS
+        for row in h2_h1_bridge.from_h1_close_features(
+            symbol,
+            context.feature_context.bars_for(symbol),
+            context.feature_context.snapshots,
+        )
+    )
+    pair_closes = tuple(
+        row
+        for symbol in h3_manifest.SYMBOLS
+        for row in h2_h1_bridge.from_h1_pair_leg_closes(
+            symbol, context.feature_context.bars_for(symbol)
+        )
+    )
+    return _ActualExecutionSurface(
+        phase_context=context,
+        raw_minutes=raw,
+        minute_index=minute_index,
+        close_feature_index={(row.symbol, row.close_ts): row for row in close_features},
+        pair_close_index={(row.symbol, row.close_ts): row for row in pair_closes},
+    )
+
+
+def _finite_h4_pf(values: list[float]) -> float:
+    """Transport H5's PF authority through H4's finite-only trace DTO.
+
+    H5 defines zero-loss profit as positive infinity and an empty/zero book
+    as undefined.  H4's selection DTO predates that representation and only
+    accepts finite floats, so the order-preserving finite maximum represents
+    positive infinity and exact zero represents an unrankable empty book.
+    No scorecard consumer sees this transport value; H5 recomputes PF from
+    raw selected-OOS attribution.
+    """
+    pf = h5_s3._profit_factor(values)
+    if pf is None or math.isnan(pf):
+        return 0.0
+    if math.isinf(pf):
+        return sys.float_info.max
+    return pf
+
+
+def _actual_h4_train_trace(
+    *,
+    strategy: str,
+    config_id: str,
+    terminal: h4_adapter.SealedS3Terminal | h4_adapter.SealedS4Terminal,
+) -> h4_selection.TrainCandidateTrace:
+    if strategy == "S3" and type(terminal) is h4_adapter.SealedS3Terminal:
+        rows = h2_scenarios.build_s3_scenario_ledger(
+            terminal.result.trades,
+            h2_scenarios.PATH_SCENARIO_PRIMARY_STRESS17,
+        )
+        unit_order = h3_manifest.SYMBOLS
+        values_by_unit = tuple((row.trade.symbol, row.e17_bps) for row in rows)
+        scenario_hash = h2_scenarios.s3_ledger_hash(rows)
+    elif strategy == "S4" and type(terminal) is h4_adapter.SealedS4Terminal:
+        rows = h2_scenarios.build_s4_scenario_ledger(
+            terminal.result.trades,
+            h2_scenarios.PATH_SCENARIO_PRIMARY_STRESS17,
+        )
+        unit_order = h3_manifest.PAIRS
+        values_by_unit = tuple(
+            (
+                row.trade.pair[0].removesuffix("USDT")
+                + "-"
+                + row.trade.pair[1].removesuffix("USDT"),
+                row.e17_bps,
+            )
+            for row in rows
+        )
+        scenario_hash = h2_scenarios.s4_ledger_hash(rows)
+    else:
+        raise H6BPlanError("actual H4 train terminal strategy/type differs")
+    values = [row.e17_bps for row in rows]
+    units: list[h4_selection.TrainUnitMetric] = []
+    for unit in unit_order:
+        selected = [value for row_unit, value in values_by_unit if row_unit == unit]
+        units.append(
+            h4_selection.TrainUnitMetric(
+                unit=unit,
+                completed_basket_trades=len(selected),
+                e17_bps=(math.fsum(selected) / len(selected) if selected else 0.0),
+            )
+        )
+    return h4_selection.TrainCandidateTrace(
+        config_id=config_id,
+        units=tuple(units),
+        pf=_finite_h4_pf(values),
+        pooled_e17_bps=(math.fsum(values) / len(values) if values else 0.0),
+        train_input_hash=terminal.input_seal_sha256,
+        train_scenario_hash=scenario_hash,
+    )
+
+
+def _h6a_unique_evidence(
+    evidence: h3_evidence.UniqueGeneratorEvidence,
+    *,
+    fold_id: str,
+) -> h6a_evidence.UniqueGeneratorEvidence:
+    if type(evidence) is not h3_evidence.UniqueGeneratorEvidence:
+        raise H6BPlanError("actual unique evidence must use exact H3 type")
+    if evidence.fold_or_full_window != fold_id:
+        raise H6BPlanError("actual unique evidence fold differs")
+    # H3 carries a closed taxonomy with literal zero buckets.  H6-A accepts
+    # that broader non-negative mapping, while H5's canonical DTO represents
+    # only observed reasons and requires every retained count to be positive.
+    # Filtering zero buckets preserves the exact generator-rejected subtotal;
+    # it does not merge no-signal reasons or recompute an outcome.
+    rejection_counts = {
+        reason: count
+        for reason, count in evidence.generator_rejection_reason_histogram
+        if count > 0
+    }
+    payload = {
+        "fold_id": fold_id,
+        "candidate_identity_hash": evidence.content_hash,
+        "evaluated_decision_units": evidence.evaluated_decision_units,
+        "no_signal": evidence.no_signal,
+        "candidate": evidence.candidate,
+        "generator_rejected": evidence.generator_rejected,
+        "generator_accepted": evidence.generator_accepted,
+        "generator_rejection_subtotal_by_reason": rejection_counts,
+    }
+    return h6a_evidence.UniqueGeneratorEvidence(
+        **payload,
+        content_hash=canonical_sha256(payload),
+    )
+
+
+def _terminal_reason_counts(
+    terminal: h4_adapter.SealedS3Terminal | h4_adapter.SealedS4Terminal,
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in (*terminal.result.no_trades, *terminal.result.incompletes):
+        reason = row.reason
+        counts[reason] = counts.get(reason, 0) + 1
+    return counts
+
+
+def _path_evidence(
+    *,
+    path_scenario: str,
+    selected: bool,
+    member_keys: tuple[str, ...],
+    no_trade_reason_counts: Mapping[str, int],
+) -> h6a_evidence.PathScenarioEvidence:
+    payload = {
+        "path_scenario": path_scenario,
+        "status": "completed" if selected else "never_selected",
+        "reason_code": None,
+        "trade_count": len(member_keys),
+        "member_trade_keys": tuple(sorted(member_keys)),
+        "no_trade_reason_counts": dict(no_trade_reason_counts),
+    }
+    return h6a_evidence.PathScenarioEvidence(
+        **payload,
+        artifact_hash=canonical_sha256(
+            {
+                **payload,
+                "member_trade_keys": sorted(member_keys),
+            }
+        ),
+    )
+
+
+class ActualMergedH4Runner:
+    """Callback-free owner of the merged H1/H2/H3/H4 campaign APIs."""
+
+    provenance = "actual_merged_h4"
+
+    def __init__(self, data: ActualH4InputData) -> None:
+        if type(data) is not ActualH4InputData:
+            raise H6BPlanError("actual H4 runner requires exact persisted input")
+        self._data = data
+        self.last_trace: tuple[str, ...] = ()
+        self.last_selected: tuple[tuple[str, str, str], ...] = ()
+        self.last_result: ActualH4CampaignResult | None = None
+
+    def _run_train_strategy(
+        self,
+        *,
+        strategy: str,
+        fold_id: str,
+        surface: _ActualExecutionSurface,
+        horizon_end_ts: int,
+    ) -> tuple[
+        tuple[h3_s3.S3GeneratorOutput | h3_s4.S4GeneratorOutput, ...],
+        tuple[h4_selection.TrainCandidateTrace, ...],
+        h4_selection.TrainSelection,
+    ]:
+        configs = (
+            h3_manifest.FROZEN_S3_CONFIGS
+            if strategy == "S3"
+            else h3_manifest.FROZEN_S4_CONFIGS
+        )
+        outputs: list[h3_s3.S3GeneratorOutput | h3_s4.S4GeneratorOutput] = []
+        factory_index = 0
+
+        def generator(config: object) -> tuple[object, ...]:
+            if strategy == "S3":
+                output = h3_s3.generate_s3_global(
+                    surface.phase_context.feature_context,
+                    surface.phase_context.emit_window,
+                    config,
+                )
+                intents = tuple(
+                    h3_h2_adapter.adapt_s3_candidate(item, fold_id=fold_id)
+                    for item in output.accepted
+                )
+            else:
+                output = h3_s4.generate_s4_global(
+                    surface.phase_context.feature_context,
+                    surface.phase_context.emit_window,
+                    config,
+                )
+                intents = tuple(
+                    h3_h2_adapter.adapt_s4_candidate(item, fold_id=fold_id)
+                    for item in output.accepted
+                )
+            outputs.append(output)
+            return intents
+
+        def fresh_engine() -> Callable[[tuple[object, ...]], object]:
+            nonlocal factory_index
+            config = configs[factory_index]
+            factory_index += 1
+
+            def run(intents: tuple[object, ...]) -> object:
+                if strategy == "S3":
+                    return h4_adapter.invoke_actual_s3_engine(
+                        candidates=intents,
+                        minute_index=surface.minute_index,
+                        close_feature_index=surface.close_feature_index,
+                        corpus_end_ts=self._data.corpus_end_ts,
+                        horizon_end_ts=horizon_end_ts,
+                        strategy=strategy,
+                        config_id=config.config_id,
+                        fold_id=fold_id,
+                    )
+                return h4_adapter.invoke_actual_s4_engine(
+                    candidates=intents,
+                    minute_index=surface.minute_index,
+                    pair_close_index=surface.pair_close_index,
+                    corpus_end_ts=self._data.corpus_end_ts,
+                    horizon_end_ts=horizon_end_ts,
+                    strategy=strategy,
+                    config_id=config.config_id,
+                    fold_id=fold_id,
+                )
+
+            return run
+
+        terminals = h4_selection.run_train_global_configs(
+            strategy=strategy,
+            configs=configs,
+            generator=generator,
+            fresh_primary_engine=fresh_engine,
+        )
+        traces = tuple(
+            _actual_h4_train_trace(
+                strategy=strategy,
+                config_id=config.config_id,
+                terminal=terminal,
+            )
+            for config, terminal in zip(configs, terminals, strict=True)
+        )
+        return (
+            tuple(outputs),
+            traces,
+            h4_selection.select_train_config(strategy, traces),
+        )
+
+    def _run_selected_strategy(
+        self,
+        *,
+        identity: ProductionIdentityPlan,
+        strategy: str,
+        fold: object,
+        config_id: str,
+        surface: _ActualExecutionSurface,
+        tercile: h4_runner.TercileAuthority | None,
+    ) -> tuple[
+        h3_s3.S3GeneratorOutput | h3_s4.S4GeneratorOutput,
+        tuple[h4_runner.SelectedOOSPathAttribution, ...],
+    ]:
+        config = h3_manifest.get_config(config_id)
+        generated: list[h3_s3.S3GeneratorOutput | h3_s4.S4GeneratorOutput] = []
+
+        def generator(_winner: object) -> tuple[object, ...]:
+            if strategy == "S3":
+                output = h3_s3.generate_s3_global(
+                    surface.phase_context.feature_context,
+                    surface.phase_context.emit_window,
+                    config,
+                )
+                intents = tuple(
+                    h3_h2_adapter.adapt_s3_candidate(item, fold_id=fold.fold_id)
+                    for item in output.accepted
+                )
+            else:
+                output = h3_s4.generate_s4_global(
+                    surface.phase_context.feature_context,
+                    surface.phase_context.emit_window,
+                    config,
+                )
+                intents = tuple(
+                    h3_h2_adapter.adapt_s4_candidate(item, fold_id=fold.fold_id)
+                    for item in output.accepted
+                )
+            generated.append(output)
+            return intents
+
+        def fresh_engine(
+            _scenario: str,
+        ) -> Callable[[tuple[object, ...]], object]:
+            def run(intents: tuple[object, ...]) -> object:
+                if strategy == "S3":
+                    return h4_adapter.invoke_actual_s3_engine(
+                        candidates=intents,
+                        minute_index=surface.minute_index,
+                        close_feature_index=surface.close_feature_index,
+                        corpus_end_ts=self._data.corpus_end_ts,
+                        horizon_end_ts=fold.oos_end_ms,
+                        strategy=strategy,
+                        config_id=config_id,
+                        fold_id=fold.fold_id,
+                    )
+                return h4_adapter.invoke_actual_s4_engine(
+                    candidates=intents,
+                    minute_index=surface.minute_index,
+                    pair_close_index=surface.pair_close_index,
+                    corpus_end_ts=self._data.corpus_end_ts,
+                    horizon_end_ts=fold.oos_end_ms,
+                    strategy=strategy,
+                    config_id=config_id,
+                    fold_id=fold.fold_id,
+                )
+
+            return run
+
+        terminals = h4_runner.run_selected_oos_paths(
+            winner=config,
+            generator=generator,
+            fresh_engine=fresh_engine,
+        )
+        if len(generated) != 1:
+            raise H6BPlanError("actual H4 selected generator call count differs")
+        output = generated[0]
+        spec = next(
+            row for row in identity._h4_plan.row_specs if row.row_id == config_id
+        )
+        paths: list[h4_runner.SelectedOOSPathAttribution] = []
+        for scenario, terminal in zip(
+            h6a_evidence.PATH_SCENARIOS, terminals, strict=True
+        ):
+            if strategy == "S3":
+                if tercile is None:
+                    raise H6BPlanError("actual S3 selected path lacks tercile")
+                path = h4_runner.bind_s3_attribution_path(
+                    row_spec=spec,
+                    fold_id=fold.fold_id,
+                    path_scenario=scenario,
+                    candidates=output.accepted,
+                    terminal=terminal,
+                    corpus_end_ts=self._data.corpus_end_ts,
+                    horizon_end_ts=fold.oos_end_ms,
+                    decision_snapshots=surface.phase_context.feature_context.snapshots,
+                    tercile_authority=tercile,
+                )
+            else:
+                path = h4_runner.bind_s4_attribution_path(
+                    row_spec=spec,
+                    fold_id=fold.fold_id,
+                    path_scenario=scenario,
+                    candidates=output.accepted,
+                    terminal=terminal,
+                    corpus_end_ts=self._data.corpus_end_ts,
+                    horizon_end_ts=fold.oos_end_ms,
+                    decision_snapshots=surface.phase_context.feature_context.snapshots,
+                )
+            paths.append(path)
+        return output, tuple(paths)
+
+    def _run_inactive_strategy(
+        self,
+        *,
+        strategy: str,
+        fold: object,
+        feature_context: h3_s3.FeatureContext,
+    ) -> tuple[
+        tuple[h3_s3.S3GeneratorOutput | h3_s4.S4GeneratorOutput, ...],
+        tuple[h4_selection.TrainCandidateTrace, ...],
+        h4_selection.TrainSelection,
+    ]:
+        """Run one real no-data decision close for a bounded inactive fold.
+
+        CP10 authorizes a bounded active event workload while retaining all
+        eight fold identities.  Fold-00 exercises the complete TRAIN/OOS
+        workload; later folds execute the real global generators and fresh
+        H2 terminals over their first OOS decision close, which is beyond the
+        persisted synthetic corpus and therefore must remain NO_SIGNAL.
+        """
+        configs = (
+            h3_manifest.FROZEN_S3_CONFIGS
+            if strategy == "S3"
+            else h3_manifest.FROZEN_S4_CONFIGS
+        )
+        window = h3_s3.EmitWindow(
+            fold.oos_start_ms,
+            fold.oos_start_ms + FOUR_HOUR_MS,
+        )
+        outputs: list[h3_s3.S3GeneratorOutput | h3_s4.S4GeneratorOutput] = []
+        factory_index = 0
+
+        def generator(config: object) -> tuple[object, ...]:
+            if strategy == "S3":
+                output = h3_s3.generate_s3_global(feature_context, window, config)
+                intents = tuple(
+                    h3_h2_adapter.adapt_s3_candidate(item, fold_id=fold.fold_id)
+                    for item in output.accepted
+                )
+            else:
+                output = h3_s4.generate_s4_global(feature_context, window, config)
+                intents = tuple(
+                    h3_h2_adapter.adapt_s4_candidate(item, fold_id=fold.fold_id)
+                    for item in output.accepted
+                )
+            outputs.append(output)
+            return intents
+
+        def fresh_engine() -> Callable[[tuple[object, ...]], object]:
+            nonlocal factory_index
+            config = configs[factory_index]
+            factory_index += 1
+
+            def run(intents: tuple[object, ...]) -> object:
+                if strategy == "S3":
+                    return h4_adapter.invoke_actual_s3_engine(
+                        candidates=intents,
+                        minute_index={},
+                        close_feature_index={},
+                        corpus_end_ts=self._data.corpus_end_ts,
+                        horizon_end_ts=fold.oos_end_ms,
+                        strategy=strategy,
+                        config_id=config.config_id,
+                        fold_id=fold.fold_id,
+                    )
+                return h4_adapter.invoke_actual_s4_engine(
+                    candidates=intents,
+                    minute_index={},
+                    pair_close_index={},
+                    corpus_end_ts=self._data.corpus_end_ts,
+                    horizon_end_ts=fold.oos_end_ms,
+                    strategy=strategy,
+                    config_id=config.config_id,
+                    fold_id=fold.fold_id,
+                )
+
+            return run
+
+        terminals = h4_selection.run_train_global_configs(
+            strategy=strategy,
+            configs=configs,
+            generator=generator,
+            fresh_primary_engine=fresh_engine,
+        )
+        if any(output.accepted for output in outputs):
+            raise H6BPlanError("inactive fold unexpectedly generated a candidate")
+        traces = tuple(
+            _actual_h4_train_trace(
+                strategy=strategy,
+                config_id=config.config_id,
+                terminal=terminal,
+            )
+            for config, terminal in zip(configs, terminals, strict=True)
+        )
+        selection = h4_selection.select_train_config(strategy, traces)
+        if selection.selected_config_id is not None:
+            raise H6BPlanError("inactive fold unexpectedly selected a config")
+        return tuple(outputs), traces, selection
+
+    def _run_pbo(
+        self,
+    ) -> tuple[h4_pbo.H4PboEvidence, h4_pbo.H4PboEvidence]:
+        surface = _actual_execution_surface(
+            self._data,
+            phase=h4_runner.H4Phase(
+                "pbo_full_window",
+                h4_contracts.WINDOW_START_MS,
+                h4_contracts.WINDOW_END_MS,
+            ),
+        )
+
+        def s3_generator(config: object) -> tuple[object, ...]:
+            output = h3_s3.generate_s3_global(
+                surface.phase_context.feature_context,
+                surface.phase_context.emit_window,
+                config,
+            )
+            return tuple(
+                replace(
+                    h3_h2_adapter.adapt_s3_candidate(item, fold_id="pbo-full-window"),
+                    fold_id=None,
+                )
+                for item in output.accepted
+            )
+
+        def s4_generator(config: object) -> tuple[object, ...]:
+            output = h3_s4.generate_s4_global(
+                surface.phase_context.feature_context,
+                surface.phase_context.emit_window,
+                config,
+            )
+            return tuple(
+                replace(
+                    h3_h2_adapter.adapt_s4_candidate(item, fold_id="pbo-full-window"),
+                    fold_id=None,
+                )
+                for item in output.accepted
+            )
+
+        s3_grid = h4_pbo.run_full_window_s3_configs(
+            configs=h3_manifest.FROZEN_S3_CONFIGS,
+            generator=s3_generator,
+            minute_index=surface.minute_index,
+            close_feature_index=surface.close_feature_index,
+        )
+        s4_grid = h4_pbo.run_full_window_s4_configs(
+            configs=h3_manifest.FROZEN_S4_CONFIGS,
+            generator=s4_generator,
+            minute_index=surface.minute_index,
+            pair_close_index=surface.pair_close_index,
+        )
+        return (
+            h4_pbo.compute_h4_full_window_pbo(
+                strategy="S3", daily_gross_bps_by_config=s3_grid
+            ),
+            h4_pbo.compute_h4_full_window_pbo(
+                strategy="S4", daily_gross_bps_by_config=s4_grid
+            ),
+        )
+
+    async def run(self, plan: ProductionIdentityPlan) -> ActualH4CampaignResult:
+        if type(plan) is not ProductionIdentityPlan:
+            raise H6BPreflightRefused("actual H4 runner requires production identity")
+        trace: list[str] = ["persisted_h1_input"]
+        folds = h4_contracts.exact_h4_folds()
+        unique_by_row: dict[str, list[h6a_evidence.UniqueGeneratorEvidence]] = {
+            row_id: [] for row_id in CANONICAL_ROW_ORDER
+        }
+        fold_trace_inputs: dict[
+            tuple[str, str],
+            tuple[h4_selection.TrainCandidateTrace, bool],
+        ] = {}
+        attribution_paths: list[h4_runner.SelectedOOSPathAttribution] = []
+        tercile_by_fold: dict[str, h4_runner.TercileAuthority] = {}
+        selected_rows: list[tuple[str, str, str]] = []
+
+        for fold in folds:
+            active_fold = fold.fold_index == 0
+            trace.append(
+                f"{fold.fold_id}:"
+                + ("train_h1" if active_fold else "bounded_inactive_h1")
+            )
+            if active_fold:
+                train_surface = _actual_execution_surface(
+                    self._data,
+                    phase=h4_runner.phase_for_fold(fold, "train"),
+                )
+                inactive_context = None
+            else:
+                phase = h4_runner.phase_for_fold(fold, "selected_oos")
+                raw = {
+                    symbol: tuple(row for row in rows if row.ts < phase.end_ms)
+                    for symbol, rows in self._data.h1_minutes
+                }
+                inactive_context = h4_runner.build_actual_h1_phase_context(
+                    raw_minutes=raw,
+                    phase=phase,
+                ).feature_context
+                train_surface = None
+            train_results: dict[
+                str,
+                tuple[
+                    tuple[h3_s3.S3GeneratorOutput | h3_s4.S4GeneratorOutput, ...],
+                    tuple[h4_selection.TrainCandidateTrace, ...],
+                    h4_selection.TrainSelection,
+                ],
+            ] = {}
+            for strategy in ("S3", "S4"):
+                if active_fold:
+                    if train_surface is None:
+                        raise H6BPlanError("active fold lost its TRAIN surface")
+                    trace.append(f"{fold.fold_id}:{strategy}:train_24")
+                    train_results[strategy] = self._run_train_strategy(
+                        strategy=strategy,
+                        fold_id=fold.fold_id,
+                        surface=train_surface,
+                        horizon_end_ts=fold.train_end_ms,
+                    )
+                else:
+                    if inactive_context is None:
+                        raise H6BPlanError("inactive fold lost its H1 context")
+                    trace.append(f"{fold.fold_id}:{strategy}:bounded_no_signal_24")
+                    train_results[strategy] = self._run_inactive_strategy(
+                        strategy=strategy,
+                        fold=fold,
+                        feature_context=inactive_context,
+                    )
+
+            winners = {
+                strategy: values[2].selected_config_id
+                for strategy, values in train_results.items()
+            }
+            oos_surface: _ActualExecutionSurface | None = None
+            if any(winners.values()):
+                trace.append(f"{fold.fold_id}:selected_oos_h1")
+                oos_surface = _actual_execution_surface(
+                    self._data,
+                    phase=h4_runner.phase_for_fold(fold, "selected_oos"),
+                )
+            for strategy in ("S3", "S4"):
+                outputs, traces, selection = train_results[strategy]
+                selected_id = selection.selected_config_id
+                output_by_id = {output.config_id: output for output in outputs}
+                trace_by_id = {row.config_id: row for row in traces}
+                selected_output = None
+                selected_paths: tuple[h4_runner.SelectedOOSPathAttribution, ...] = ()
+                tercile: h4_runner.TercileAuthority | None = None
+                if selected_id is not None:
+                    if oos_surface is None:
+                        raise H6BPlanError("selected H4 config lacks OOS surface")
+                    if strategy == "S3":
+                        if train_surface is None:
+                            raise H6BPlanError("selected S3 fold lacks TRAIN surface")
+                        train_snapshots = tuple(
+                            snapshot
+                            for snapshot in train_surface.phase_context.feature_context.snapshots
+                            if fold.train_start_ms
+                            <= snapshot.decision_ts
+                            < fold.train_end_ms
+                        )
+                        tercile = h4_runner.build_tercile_authority(
+                            fold_id=fold.fold_id,
+                            train_start_ms=fold.train_start_ms,
+                            train_end_ms=fold.train_end_ms,
+                            snapshots=train_snapshots,
+                        )
+                        tercile_by_fold[fold.fold_id] = tercile
+                    trace.append(f"{fold.fold_id}:{strategy}:selected_oos_three_paths")
+                    selected_output, selected_paths = self._run_selected_strategy(
+                        identity=plan,
+                        strategy=strategy,
+                        fold=fold,
+                        config_id=selected_id,
+                        surface=oos_surface,
+                        tercile=tercile,
+                    )
+                    attribution_paths.extend(selected_paths)
+                    selected_rows.append((strategy, fold.fold_id, selected_id))
+
+                for config in (
+                    h3_manifest.FROZEN_S3_CONFIGS
+                    if strategy == "S3"
+                    else h3_manifest.FROZEN_S4_CONFIGS
+                ):
+                    row_id = config.config_id
+                    source_output = (
+                        selected_output
+                        if row_id == selected_id and selected_output is not None
+                        else output_by_id[row_id]
+                    )
+                    h3_unique = h3_evidence.build_unique_generator_evidence(
+                        source_output,
+                        fold_or_full_window=fold.fold_id,
+                        phase=(
+                            "selected_oos"
+                            if row_id == selected_id or not active_fold
+                            else "train"
+                        ),
+                    )
+                    unique_by_row[row_id].append(
+                        _h6a_unique_evidence(h3_unique, fold_id=fold.fold_id)
+                    )
+                    fold_trace_inputs[(row_id, fold.fold_id)] = (
+                        trace_by_id[row_id],
+                        row_id == selected_id,
+                    )
+
+        trace.append("pbo_24x365_s3_s4")
+        pbo = self._run_pbo()
+        envelope = h4_runner.build_actual_attribution_envelope(
+            plan=plan._h4_plan,
+            paths=tuple(attribution_paths),
+            tercile_authorities=tuple(
+                tercile_by_fold[fold.fold_id]
+                for fold in folds
+                if fold.fold_id in tercile_by_fold
+            ),
+        )
+
+        raw_keys: dict[tuple[str, str], list[str]] = {}
+        path_reasons: dict[tuple[str, str], dict[str, int]] = {}
+        selected_folds: dict[str, set[str]] = {
+            row_id: set() for row_id in CANONICAL_ROW_ORDER
+        }
+        for path in envelope.paths:
+            selected_folds[path.lineage.row_id].add(path.lineage.fold_id)
+            raw_keys.setdefault((path.lineage.row_id, path.path_scenario), []).extend(
+                build_h4_member_trade_key(row) for row in path.rows
+            )
+            counts = path_reasons.setdefault(
+                (path.lineage.row_id, path.path_scenario), {}
+            )
+            for reason, count in _terminal_reason_counts(path.terminal).items():
+                counts[reason] = counts.get(reason, 0) + count
+
+        attempts: list[h6a_evidence.AttemptRecord] = []
+        for spec in plan._h4_plan.row_specs:
+            row_id = spec.row_id
+            unique = tuple(unique_by_row[row_id])
+            traces: list[h6a_evidence.FoldSelectionTrace] = []
+            for fold, evidence in zip(folds, unique, strict=True):
+                train_trace, selected = fold_trace_inputs[(row_id, fold.fold_id)]
+                eligible = tuple(unit.unit for unit in train_trace.eligible_units)
+                excluded = tuple(
+                    (unit.unit, "fewer_than_five_completed_trades")
+                    for unit in train_trace.units
+                    if unit.completed_basket_trades < 5
+                )
+                traces.append(
+                    h6a_evidence.FoldSelectionTrace(
+                        fold_id=fold.fold_id,
+                        fold_index=fold.fold_index,
+                        selected=selected,
+                        eligible_symbols_or_pairs=eligible,
+                        excluded_symbols_or_pairs=excluded,
+                        accepted_input_hash=evidence.content_hash,
+                        rejection_reason=None if selected else "not_selected",
+                        no_trade_reason_counts={},
+                    )
+                )
+            selected = bool(selected_folds[row_id])
+            path_rows = tuple(
+                _path_evidence(
+                    path_scenario=scenario,
+                    selected=selected,
+                    member_keys=tuple(raw_keys.get((row_id, scenario), ())),
+                    no_trade_reason_counts=path_reasons.get((row_id, scenario), {}),
+                )
+                for scenario in h6a_evidence.PATH_SCENARIOS
+            )
+            attempts.append(
+                h6a_evidence.build_attempt_record(
+                    row_id=row_id,
+                    experiment_id=spec.experiment_id,
+                    campaign_run_id=plan.campaign_run_id,
+                    full_campaign_hash=plan.full_campaign_hash,
+                    strategy_key=spec.strategy_key,
+                    retry_index=0,
+                    status="completed",
+                    reason_code=None,
+                    fold_traces=tuple(traces),
+                    unique_evidence=unique,
+                    path_scenario_evidence=path_rows,
+                    historical_executor_state=(
+                        h6a_evidence.HistoricalExecutorState()
+                        if row_id.startswith("S4-")
+                        else None
+                    ),
+                )
+            )
+        self.last_trace = tuple(trace)
+        self.last_selected = tuple(selected_rows)
+        result = ActualH4CampaignResult(
+            identity=plan,
+            attempts=tuple(attempts),
+            attribution=envelope,
+            pbo=pbo,
+        )
+        self.last_result = result
+        return result
+
+
 class ActualMergedH6AAccounting:
     provenance = "actual_merged_h6a"
 
@@ -1103,10 +2116,10 @@ def _h5_dual_evidence(
 def _h5_pbo(
     *, identity: ProductionIdentityPlan, evidence: h4_pbo.H4PboEvidence
 ) -> h5_dual.PboEvidence:
-    if evidence.reason_codes:
-        raise H6BPreflightRefused(
-            "actual production scorecard requires complete H4 PBO evidence"
-        )
+    # H5 owns this semantic boundary: an exact 24 x 365 x 4 H4 evaluator
+    # result with reason codes is honest incomplete evidence, not malformed
+    # evidence and not a materializer failure.  Preserve the actual H4 value
+    # and reasons so ``validate_pbo_evidence`` can make that distinction.
     return h5_dual.PboEvidence(
         strategy=evidence.strategy,
         config_count=evidence.config_count,
@@ -1315,6 +2328,251 @@ class CampaignDbSnapshot:
             and self.attempts == ()
             and self.mismatch_row_ids == ()
             and self.out_of_plan_experiment_ids == ()
+        )
+
+
+def _persisted_h6a_item(
+    *,
+    row: ResearchBacktestRun,
+    experiment_id: str,
+    plan: ProductionExecutionPlan,
+) -> H6AAttemptBatchItem:
+    raw = row.raw_payload
+    if type(raw) is not dict:
+        raise ReplayCollisionError("persisted H6-A trial raw_payload is not a dict")
+    if raw.get("campaign_run_id") != plan.campaign_run_id:
+        raise ReplayCollisionError("persisted H6-A trial campaign differs")
+    required = {
+        "row_id",
+        "retry_index",
+        "reason_code",
+        "fold_evidence_hash",
+        "run_identity",
+        "evidence_payload",
+        "h6a_evidence_fingerprint",
+    }
+    if not required <= raw.keys():
+        raise ReplayCollisionError("persisted H6-A trial payload is incomplete")
+    try:
+        item = H6AAttemptBatchItem(
+            row_id=raw["row_id"],
+            experiment_id=experiment_id,
+            retry_index=raw["retry_index"],
+            status=row.trial_status,
+            reason_code=raw["reason_code"],
+            fold_evidence_hash=raw["fold_evidence_hash"],
+            run_identity=raw["run_identity"],
+            evidence_payload=raw["evidence_payload"],
+            diagnostic_evidence=tuple(raw.get("diagnostic_evidence", ())),
+            diagnostic_overflow=raw.get("diagnostic_overflow"),
+        )
+    except Exception as exc:
+        raise ReplayCollisionError("persisted H6-A trial failed typed parsing") from exc
+    if raw["h6a_evidence_fingerprint"] != item.fingerprint():
+        raise ReplayCollisionError("persisted H6-A trial fingerprint differs")
+    if row.trial_idempotency_key != item.idempotency_key(plan.campaign_run_id):
+        raise ReplayCollisionError("persisted H6-A trial idempotency key differs")
+    return item
+
+
+def parse_persisted_attempt_record(
+    item: H6AAttemptBatchItem,
+    *,
+    plan: ProductionExecutionPlan,
+) -> h6a_evidence.AttemptRecord:
+    """Rebuild one exact H6-A attempt from its immutable persisted payload.
+
+    The database stores H6-A's mutation DTO plus H6-B's canonical evidence
+    envelope.  A standalone audit must not trust that JSON as an accounting
+    summary, so this boundary reconstructs every exact H6-A evidence type and
+    asks ``build_attempt_record`` to recompute both semantic hashes.
+    """
+    if type(item) is not H6AAttemptBatchItem:
+        raise ReplayCollisionError("persisted attempt must use exact H6-A batch type")
+    if type(plan) is not ProductionExecutionPlan:
+        raise ReplayCollisionError("persisted attempt parser requires production plan")
+    payload = item.evidence_payload
+    if not isinstance(payload, Mapping):
+        raise ReplayCollisionError("persisted attempt evidence payload is not a mapping")
+    if payload.get("schema_version") != "rob974_h6b_attempt_evidence.v1":
+        raise ReplayCollisionError("persisted attempt evidence schema differs")
+    if payload.get("row_id") != item.row_id:
+        raise ReplayCollisionError("persisted attempt evidence row differs")
+    specs = {spec.row_id: spec for spec in plan._identity._h4_plan.row_specs}
+    spec = specs.get(item.row_id)
+    if spec is None or payload.get("strategy_key") != spec.strategy_key:
+        raise ReplayCollisionError("persisted attempt strategy identity differs")
+
+    try:
+        fold_traces = tuple(
+            h6a_evidence.FoldSelectionTrace(
+                fold_id=row["fold_id"],
+                fold_index=row["fold_index"],
+                selected=row["selected"],
+                eligible_symbols_or_pairs=tuple(row["eligible_symbols_or_pairs"]),
+                excluded_symbols_or_pairs=tuple(
+                    tuple(pair) for pair in row["excluded_symbols_or_pairs"]
+                ),
+                accepted_input_hash=row["accepted_input_hash"],
+                rejection_reason=row["rejection_reason"],
+                no_trade_reason_counts=row["no_trade_reason_counts"],
+            )
+            for row in payload["fold_traces"]
+        )
+        unique_evidence = tuple(
+            h6a_evidence.UniqueGeneratorEvidence(
+                fold_id=row["fold_id"],
+                candidate_identity_hash=row["candidate_identity_hash"],
+                evaluated_decision_units=row["evaluated_decision_units"],
+                no_signal=row["no_signal"],
+                candidate=row["candidate"],
+                generator_rejected=row["generator_rejected"],
+                generator_accepted=row["generator_accepted"],
+                generator_rejection_subtotal_by_reason=(
+                    row["generator_rejection_subtotal_by_reason"]
+                ),
+                content_hash=row["content_hash"],
+            )
+            for row in payload["unique_evidence"]
+        )
+        path_evidence = tuple(
+            h6a_evidence.PathScenarioEvidence(
+                path_scenario=row["path_scenario"],
+                status=row["status"],
+                reason_code=row["reason_code"],
+                trade_count=row["trade_count"],
+                member_trade_keys=tuple(row["member_trade_keys"]),
+                no_trade_reason_counts=row["no_trade_reason_counts"],
+                artifact_hash=row["artifact_hash"],
+            )
+            for row in payload["path_scenario_evidence"]
+        )
+        historical_payload = payload["historical_executor_state"]
+        historical = (
+            None
+            if historical_payload is None
+            else h6a_evidence.HistoricalExecutorState(
+                order_id=historical_payload["order_id"],
+                executor_validated=historical_payload["executor_validated"],
+                pair_exec_fail=historical_payload["pair_exec_fail"],
+                demo_eligible=historical_payload["demo_eligible"],
+                promotion_blocked_reason=(
+                    historical_payload["promotion_blocked_reason"]
+                ),
+            )
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ReplayCollisionError(
+            "persisted attempt evidence failed exact H6-A parsing"
+        ) from exc
+    if len(path_evidence) != 3:
+        raise ReplayCollisionError("persisted attempt must carry exact three paths")
+
+    try:
+        return h6a_evidence.build_attempt_record(
+            row_id=item.row_id,
+            experiment_id=item.experiment_id,
+            campaign_run_id=plan.campaign_run_id,
+            full_campaign_hash=plan.full_campaign_hash,
+            strategy_key=spec.strategy_key,
+            retry_index=item.retry_index,
+            status=item.status,
+            reason_code=item.reason_code,
+            fold_traces=fold_traces,
+            unique_evidence=unique_evidence,
+            path_scenario_evidence=path_evidence,
+            historical_executor_state=historical,
+            claimed_fold_evidence_hash=item.fold_evidence_hash,
+            claimed_run_identity=item.run_identity,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ReplayCollisionError(
+            "persisted attempt evidence failed H6-A hash reconstruction"
+        ) from exc
+
+
+class ActualCampaignStateInspector:
+    """Scope canonical raw experiment/trial rows without aggregating them."""
+
+    provenance = "actual_read_only_campaign_state"
+
+    async def inspect(
+        self, session: object, *, plan: ProductionExecutionPlan
+    ) -> CampaignDbSnapshot:
+        if type(plan) is not ProductionExecutionPlan:
+            raise ReplayCollisionError(
+                "actual state inspector requires production plan"
+            )
+        mapping = dict(plan.ordered_mapping)
+        expected_ids = tuple(mapping.values())
+        experiment_result = await session.execute(
+            select(ResearchStrategyExperiment).where(
+                ResearchStrategyExperiment.experiment_id.in_(expected_ids)
+            )
+        )
+        experiments = tuple(experiment_result.scalars().all())
+        by_experiment_id = {row.experiment_id: row for row in experiments}
+        registered_mapping = tuple(
+            (row_id, experiment_id)
+            for row_id, experiment_id in plan.ordered_mapping
+            if experiment_id in by_experiment_id
+        )
+
+        campaign_json = ResearchBacktestRun.raw_payload["campaign_run_id"].astext
+        trial_result = await session.execute(
+            select(ResearchBacktestRun, ResearchStrategyExperiment.experiment_id)
+            .join(
+                ResearchStrategyExperiment,
+                ResearchStrategyExperiment.id
+                == ResearchBacktestRun.strategy_experiment_id,
+            )
+            .where(
+                or_(
+                    ResearchStrategyExperiment.experiment_id.in_(expected_ids),
+                    campaign_json == plan.campaign_run_id,
+                )
+            )
+        )
+        items: list[H6AAttemptBatchItem] = []
+        mismatch_row_ids: list[str] = []
+        out_of_plan: list[str] = []
+        for trial, experiment_id in trial_result.all():
+            raw = trial.raw_payload
+            campaign_run_id = raw.get("campaign_run_id") if type(raw) is dict else None
+            if experiment_id not in expected_ids:
+                if campaign_run_id == plan.campaign_run_id:
+                    out_of_plan.append(experiment_id)
+                continue
+            if campaign_run_id != plan.campaign_run_id:
+                raw_row_id = raw.get("row_id") if type(raw) is dict else None
+                mismatch_row_ids.append(
+                    raw_row_id if type(raw_row_id) is str else experiment_id
+                )
+                continue
+            items.append(
+                _persisted_h6a_item(
+                    row=trial,
+                    experiment_id=experiment_id,
+                    plan=plan,
+                )
+            )
+        item_by_row = {item.row_id: item for item in items}
+        if len(item_by_row) != len(items):
+            raise ReplayCollisionError("persisted H6-A trials duplicate a row ID")
+        attempts = tuple(
+            item_by_row[row_id]
+            for row_id in CANONICAL_ROW_ORDER
+            if row_id in item_by_row
+        )
+        present = bool(
+            registered_mapping or attempts or mismatch_row_ids or out_of_plan
+        )
+        return CampaignDbSnapshot(
+            campaign_run_id=plan.campaign_run_id if present else None,
+            registered_mapping=registered_mapping,
+            attempts=attempts,
+            mismatch_row_ids=tuple(sorted(mismatch_row_ids)),
+            out_of_plan_experiment_ids=tuple(sorted(out_of_plan)),
         )
 
 
@@ -1532,7 +2790,7 @@ class ProductionCampaignInput:
     guard_policy: ResearchDbPolicy
     strategy_name: str = "rob974-h6b"
     timeframe: str = "4h"
-    runner: str = "rob974-h6b-actual-h4"
+    runner: str = "rob974-h6b"
     provenance: str = "actual_merged_h4_h5"
 
     def __post_init__(self) -> None:
@@ -2325,6 +3583,7 @@ async def materialize_production(
             raise H6BPreflightRefused(
                 "session factory must synchronously return one session"
             )
+        authorization._require_session_target(session)
 
         state.trace.append("begin")
         state.begin += 1
