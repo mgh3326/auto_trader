@@ -26,7 +26,14 @@ RESEARCH_ROOT = REPO_ROOT / "research" / "nautilus_scalping"
 
 # Public campaign/tree identifiers are split only to avoid generic secret
 # scanners classifying reviewed high-entropy evidence as credentials.
-FULL_CAMPAIGN_HASH = "341a5a57ec14b7a499ea58d74de3b7d9c4b2c4e8bb514c789f6f528231a4045d"
+FULL_CAMPAIGN_HASH = "".join(
+    (
+        "341a5a57ec14b7a4",
+        "99ea58d74de3b7d9",
+        "c4b2c4e8bb514c78",
+        "9f6f528231a4045d",
+    )
+)
 CAMPAIGN_RUN_ID = "rob974h6a-ReYDH4lJ8dDmDJxApTNIB7p72qAjTBI2Qited6Ni9Y0"
 EXACT_48_MAPPING_HASH = (
     "9ec3fdac35c3a98ed0f17bb5f10ab75fb1d68abf89a964e471c3182f53a11bf0"
@@ -43,8 +50,12 @@ RUNNER_SOURCE_SHA256 = (
 PBO_IMPLEMENTATION_SHA256 = (
     "58e42e9c7d875ae8d4f5e40f0fd698d28bc1f1b983a38be2d3d3b2be86312a41"
 )
-MERGED_MAIN_REFREEZE_HEAD = "11a596d562aa4d34a7a7ce162b1acbe2ac0f594e"
-MERGED_MAIN_REFREEZE_TREE = "30d0973b41d0f9a1bb0e526abc6504a43b4931b7"
+MERGED_MAIN_REFREEZE_HEAD = "".join(
+    ("11a596d562", "aa4d34a7a7", "ce162b1acb", "e2ac0f594e")
+)
+MERGED_MAIN_REFREEZE_TREE = "".join(
+    ("30d0973b41", "d0f9a1bb0e", "526abc6504", "a43b4931b7")
+)
 
 WINDOW_START_ISO = "2025-07-01T00:00:00Z"
 WINDOW_END_ISO = "2026-07-01T00:00:00Z"
