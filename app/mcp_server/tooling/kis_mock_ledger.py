@@ -673,7 +673,7 @@ _ALLOWED_RECONCILE_MARKET_VALUES = sorted(_MARKET_ALIASES) + sorted(
 )
 
 
-def _normalize_kis_mock_reconcile_market(market: str | None) -> str | None:
+def normalize_kis_mock_reconcile_market(market: str | None) -> str | None:
     if market is None:
         return None
     return _MARKET_ALIASES.get(market, market)
@@ -700,8 +700,16 @@ async def kis_mock_reconciliation_run_impl(
     KR/US equity (``equity_kr``/``equity_us``). A silent pass-through would
     otherwise yield an ``orders_processed=0`` false-success indistinguishable
     from "scope matched but nothing was open".
+
+    Response contract (ROB-1018 fix #2): every success/error path returns
+    the *effective* (canonical, alias-normalized) scope under ``scope`` —
+    e.g. a requested ``market="us"`` always echoes back as ``"equity_us"``.
+    The one exception is the unknown-market rejection below: since no valid
+    scope was ever established, it has no ``scope`` key and instead echoes
+    the verbatim, unnormalized request under ``requested_scope`` so callers
+    can't mistake it for a scope that actually ran.
     """
-    normalized_market = _normalize_kis_mock_reconcile_market(market)
+    normalized_market = normalize_kis_mock_reconcile_market(market)
     if (
         normalized_market is not None
         and normalized_market not in _ALLOWED_RECONCILE_MARKETS
@@ -714,7 +722,7 @@ async def kis_mock_reconciliation_run_impl(
             ),
             "allowed_markets": _ALLOWED_RECONCILE_MARKET_VALUES,
             "account_mode": "kis_mock",
-            "scope": {"market": market, "symbol": symbol},
+            "requested_scope": {"market": market, "symbol": symbol},
         }
     try:
         async with _order_session_factory()() as db:

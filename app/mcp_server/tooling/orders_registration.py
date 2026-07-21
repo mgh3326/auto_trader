@@ -541,8 +541,13 @@ def register_order_tools(mcp: FastMCP) -> None:
             "to matching open orders only — omit both to scan all open KIS mock "
             "orders (unchanged default behavior). An unrecognized market value "
             "is rejected (success=false + allowed_markets) rather than silently "
-            "treated as a full scan. The response always echoes the requested "
-            "scope, including on every error path. "
+            "treated as a full scan. Every path that has a valid scope (config "
+            "error, confirm-required, success, and unexpected-exception) echoes "
+            'the effective/canonical scope under `scope` (e.g. market="us" '
+            'always echoes back as "equity_us") — never the raw, pre-alias '
+            "request. The one exception is the unknown-market rejection: since "
+            "no valid scope exists there, it has no `scope` key and instead "
+            "echoes the verbatim request under `requested_scope`. "
             "Fails closed if KIS mock config is missing."
         ),
     )
@@ -553,7 +558,10 @@ def register_order_tools(mcp: FastMCP) -> None:
         market: str | None = None,
         symbol: str | None = None,
     ):
-        scope = {"market": market, "symbol": symbol}
+        scope = {
+            "market": kis_mock_ledger.normalize_kis_mock_reconcile_market(market),
+            "symbol": symbol,
+        }
         config_error = _kis_mock_config_error()
         if config_error:
             return {**config_error, "scope": scope}
