@@ -640,7 +640,9 @@ def _krx_session_unavailable_response(
         market,
         warnings=[
             "KRX 세션이 만료되어 KR 스크리너를 일시적으로 사용할 수 없습니다. "
-            "잠시 후 다시 시도하세요."
+            "잠시 후 다시 시도하세요. 그동안에는 persisted preset 기반 "
+            "screen_stocks_snapshot(market='kr')를 사용하고, 장중 급등 후보는 "
+            "get_momentum_candidates(market='kr')로 확인하세요."
         ],
         meta_fields={
             "data_state": "unavailable",

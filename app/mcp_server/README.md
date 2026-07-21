@@ -177,6 +177,9 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `modify_order` Discord button flow example:
   - `modify_order(order_id="...", symbol="...", market="...", new_price=123.45, dry_run=false)`
 - `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters. **Single candidate-discovery entrypoint.**
+  - If the response has `meta.reason="krx_session_expired"`, KRX re-authentication was attempted once and did not recover the session. Use `screen_stocks_snapshot(market="kr")` for persisted-preset discovery, or `get_momentum_candidates(market="kr")` for intraday momentum candidates.
+- `get_krx_session_health()`
+  - Read-only authenticated KRX-session probe. It uses the normal KRX login/re-authentication path and reports `status`, `reason`, `retryable`, and `authenticated`; no market, broker, or order state is changed.
 - `screen_stocks_snapshot(preset=None, presets=None, market="kr", filters=None, exclude_watched=false, exclude_held=false, exclude_symbols=None, min_analyst_count=None, min_analyst_buy_count=None, min_market_cap=None, min_market_cap_eok=None, max_market_cap_eok=None, sort=None, limit=40, offset=0)`
   - Snapshot-backed discovery workflow. Pass either `preset="consecutive_gainers"` or `presets=["consecutive_gainers", "double_buy"]`; `preset` also accepts a comma-separated list for compatibility.
   - Returns symbols that matched the preset(s) from the persisted daily snapshots.
@@ -2141,6 +2144,7 @@ Allowed tools:
 - `get_indicators`
 - `screen_stocks`
 - `screen_stocks_snapshot`
+- `get_krx_session_health`
 - `get_top_stocks`
 - `get_news`
 - `get_fx_rate`

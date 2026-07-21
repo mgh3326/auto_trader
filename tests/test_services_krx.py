@@ -1446,6 +1446,41 @@ class TestKRXSessionExpired:
     """fetch_data raises a typed, classifiable error after re-auth LOGOUT."""
 
     @pytest.mark.asyncio
+    async def test_fetch_data_reauthenticates_after_logout_and_retries(
+        self, monkeypatch
+    ):
+        import httpx
+
+        from app.services.krx import KRXSessionManager
+
+        request_count = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal request_count
+            request_count += 1
+            if request_count == 1:
+                return httpx.Response(400, text="LOGOUT")
+            return httpx.Response(200, json={"OutBlock_1": [{"ISU_SRT_CD": "005930"}]})
+
+        manager = KRXSessionManager()
+        manager._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        manager._authenticated = True
+        login_count = 0
+
+        async def _existing_login_path() -> None:
+            nonlocal login_count
+            login_count += 1
+            manager._authenticated = True
+
+        monkeypatch.setattr(manager, "_login", _existing_login_path)
+
+        assert await manager.fetch_data(bld="dummy/bld") == [{"ISU_SRT_CD": "005930"}]
+        assert request_count == 2
+        assert login_count == 1
+
+        await manager.close()
+
+    @pytest.mark.asyncio
     async def test_fetch_data_raises_typed_error_after_reauth_logout(self, monkeypatch):
         import httpx
 
@@ -1475,3 +1510,27 @@ class TestKRXSessionExpired:
         from app.services.krx import KRXSessionExpiredError
 
         assert issubclass(KRXSessionExpiredError, httpx.HTTPStatusError)
+
+    @pytest.mark.asyncio
+    async def test_probe_health_reports_expired_session_without_writing(
+        self, monkeypatch
+    ):
+        from app.services.krx import KRXSessionExpiredError, KRXSessionManager
+
+        manager = KRXSessionManager()
+
+        async def _expired(**kwargs):
+            request = __import__("httpx").Request("POST", "https://example.test")
+            response = __import__("httpx").Response(400, request=request, text="LOGOUT")
+            raise KRXSessionExpiredError(
+                "KRX session expired after re-auth", request=request, response=response
+            )
+
+        monkeypatch.setattr(manager, "fetch_data", _expired)
+
+        assert await manager.probe_health() == {
+            "status": "unavailable",
+            "reason": "krx_session_expired",
+            "retryable": True,
+            "authenticated": False,
+        }
