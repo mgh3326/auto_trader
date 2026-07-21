@@ -12,6 +12,8 @@ merged H4, H5, and H6-A APIs; fixture provenance is rejected there.
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import math
 import re
@@ -108,6 +110,7 @@ __all__ = [
     "ProductionExecutionPorts",
     "ProductionIdentityPlan",
     "ProjectTestDbAuthority",
+    "ROB984_CP10_CLOSED_PREFIX",
     "RunAuthority",
     "ReplayCollisionError",
     "SESSION_CLOSE_FAILURE",
@@ -193,6 +196,10 @@ _GIT_OID_RE = re.compile(r"^[0-9a-f]{40}$")
 _EMPIRICAL_DATABASE = "rob974_db"
 _PROJECT_TEST_DB_TARGET = ("localhost", 5432, "test_db", "postgres")
 _PROJECT_TEST_DB_APPROVAL = "ROB984_CP9_ORCH_PROJECT_TEST_DB"
+ROB984_CP10_CLOSED_PREFIX = "CLOSED_BY_ROB984_CP10:sha256:"
+_ROB984_CP10_EXECUTION_EVIDENCE_SCHEMA = "rob974_h6b_cp10_execution_evidence.v1"
+_ROB984_CP10_CLOSURE_SCHEMA = "rob974_h6b_cp10_fake_free_closure.v1"
+_ROB984_CP10_EXECUTION_EVIDENCE_SEAL = object()
 
 
 class H6BPlanError(ValueError):
@@ -1032,6 +1039,90 @@ def _attempt_evidence_payload(attempt: h6a_evidence.AttemptRecord) -> dict[str, 
 
 
 @dataclass(frozen=True, slots=True)
+class _Rob984Cp10ExecutionEvidence:
+    """Sealed receipt issued only by the callback-free merged-H4 runner."""
+
+    persisted_corpus_hash: str
+    persisted_feature_hash: str
+    h4_attempt_batch_hash: str
+    h4_attribution_hash: str
+    raw_member_key_cross_sha256: str
+    selected_units: tuple[tuple[str, str, str], ...]
+    pbo_grid_evidence: tuple[tuple[str, int, int, int, str], ...]
+    evidence_sha256: str
+    _seal: object = field(repr=False, compare=False)
+
+    def _payload(self) -> dict[str, object]:
+        return {
+            "schema_version": _ROB984_CP10_EXECUTION_EVIDENCE_SCHEMA,
+            "persisted_corpus_hash": self.persisted_corpus_hash,
+            "persisted_feature_hash": self.persisted_feature_hash,
+            "h4_attempt_batch_hash": self.h4_attempt_batch_hash,
+            "h4_attribution_hash": self.h4_attribution_hash,
+            "raw_member_key_cross_sha256": self.raw_member_key_cross_sha256,
+            "selected_units": [list(item) for item in self.selected_units],
+            "pbo_grid_evidence": [list(item) for item in self.pbo_grid_evidence],
+        }
+
+    def __post_init__(self) -> None:
+        if self._seal is not _ROB984_CP10_EXECUTION_EVIDENCE_SEAL:
+            raise H6BPlanError(
+                "ROB-984 CP10 fake-free execution evidence was independently minted"
+            )
+        for name in (
+            "persisted_corpus_hash",
+            "persisted_feature_hash",
+            "h4_attempt_batch_hash",
+            "h4_attribution_hash",
+            "raw_member_key_cross_sha256",
+            "evidence_sha256",
+        ):
+            _hex64(getattr(self, name), name)
+        if (
+            type(self.selected_units) is not tuple
+            or not self.selected_units
+            or any(
+                type(item) is not tuple
+                or len(item) != 3
+                or item[0] not in ("S3", "S4")
+                or type(item[1]) is not str
+                or type(item[2]) is not str
+                for item in self.selected_units
+            )
+        ):
+            raise H6BPlanError("fake-free selected-unit evidence is malformed")
+        if type(self.pbo_grid_evidence) is not tuple or tuple(
+            item[0] for item in self.pbo_grid_evidence
+        ) != ("S3", "S4"):
+            raise H6BPlanError("fake-free PBO evidence must be ordered S3,S4")
+        for strategy, configs, days, slices, grid_hash in self.pbo_grid_evidence:
+            if (
+                type(strategy) is not str
+                or type(configs) is not int
+                or type(days) is not int
+                or type(slices) is not int
+                or (configs, days, slices) != (24, 365, 4)
+            ):
+                raise H6BPlanError("fake-free PBO dimensions differ from 24x365x4")
+            _hex64(grid_hash, "fake-free PBO grid hash")
+        if self.evidence_sha256 != canonical_sha256(self._payload()):
+            raise H6BPlanError("fake-free execution evidence seal mismatch")
+
+
+def _require_rob984_cp10_execution_evidence(
+    evidence: object,
+) -> _Rob984Cp10ExecutionEvidence:
+    if (
+        type(evidence) is not _Rob984Cp10ExecutionEvidence
+        or evidence._seal is not _ROB984_CP10_EXECUTION_EVIDENCE_SEAL
+    ):
+        raise H6BPlanError(
+            "CLOSED_BY_ROB984_CP10 requires sealed fake-free execution evidence"
+        )
+    return evidence
+
+
+@dataclass(frozen=True, slots=True)
 class ActualH4CampaignResult:
     """Exact actual-H4 output surface consumed by H6-A and canonical H5."""
 
@@ -1039,6 +1130,9 @@ class ActualH4CampaignResult:
     attempts: tuple[h6a_evidence.AttemptRecord, ...]
     attribution: h4_runner.SelectedOOSAttributionEnvelope
     pbo: tuple[h4_pbo.H4PboEvidence, h4_pbo.H4PboEvidence]
+    fake_free_execution_evidence: _Rob984Cp10ExecutionEvidence | None = field(
+        default=None, repr=False, compare=False
+    )
     provenance: str = "actual_merged_h4"
 
     def __post_init__(self) -> None:
@@ -1118,6 +1212,24 @@ class ActualH4CampaignResult:
                     raise H6BPlanError(
                         "H4 raw member keys differ from H6-A named path evidence"
                     )
+        if self.fake_free_execution_evidence is not None:
+            evidence = _require_rob984_cp10_execution_evidence(
+                self.fake_free_execution_evidence
+            )
+            if evidence.h4_attempt_batch_hash != canonical_sha256(
+                [item.fingerprint() for item in self.batch_items()]
+            ):
+                raise H6BPlanError("fake-free attempt-batch evidence differs")
+            if evidence.h4_attribution_hash != envelope.producer_seal_sha256:
+                raise H6BPlanError("fake-free attribution evidence differs")
+            if evidence.raw_member_key_cross_sha256 != (
+                _raw_member_key_cross_sha256(self)
+            ):
+                raise H6BPlanError("fake-free raw-member cross-seal differs")
+            if evidence.selected_units != _selected_units(self):
+                raise H6BPlanError("fake-free selected-unit evidence differs")
+            if evidence.pbo_grid_evidence != _pbo_grid_evidence(self):
+                raise H6BPlanError("fake-free PBO grid evidence differs")
 
     def batch_items(self) -> tuple[H6AAttemptBatchItem, ...]:
         return tuple(
@@ -1133,6 +1245,111 @@ class ActualH4CampaignResult:
             )
             for attempt in self.attempts
         )
+
+
+def _selected_units(
+    result: ActualH4CampaignResult,
+) -> tuple[tuple[str, str, str], ...]:
+    return tuple(
+        sorted(
+            {
+                (
+                    path.strategy,
+                    path.lineage.fold_id,
+                    path.lineage.row_id,
+                )
+                for path in result.attribution.paths
+            }
+        )
+    )
+
+
+def _pbo_grid_evidence(
+    result: ActualH4CampaignResult,
+) -> tuple[tuple[str, int, int, int, str], ...]:
+    return tuple(
+        (
+            item.strategy,
+            item.config_count,
+            item.day_count,
+            item.slices,
+            item.grid_seal_sha256,
+        )
+        for item in result.pbo
+    )
+
+
+def _raw_member_key_cross_sha256(result: ActualH4CampaignResult) -> str:
+    attempts = {item.row_id: item for item in result.attempts}
+    rows: list[dict[str, object]] = []
+    for path in sorted(
+        result.attribution.paths,
+        key=lambda item: (
+            item.strategy,
+            item.lineage.row_id,
+            item.lineage.fold_id,
+            h5_contracts.PATH_SCENARIOS.index(item.path_scenario),
+        ),
+    ):
+        h4_member_keys = tuple(
+            sorted(build_h4_member_trade_key(row) for row in path.rows)
+        )
+        h6a_path = next(
+            item
+            for item in attempts[path.lineage.row_id].path_scenario_evidence
+            if item.path_scenario == path.path_scenario
+        )
+        h6a_member_keys = tuple(sorted(h6a_path.member_trade_keys))
+        if h4_member_keys != h6a_member_keys:
+            raise H6BPlanError("fake-free raw-member evidence differs across H4/H6-A")
+        rows.append(
+            {
+                "strategy": path.strategy,
+                "row_id": path.lineage.row_id,
+                "fold_id": path.lineage.fold_id,
+                "path_scenario": path.path_scenario,
+                "member_trade_keys": list(h4_member_keys),
+            }
+        )
+    return canonical_sha256(
+        {
+            "schema_version": "rob974_h6b_cp10_raw_member_cross.v1",
+            "paths": rows,
+        }
+    )
+
+
+def _issue_rob984_cp10_execution_evidence(
+    *, data: ActualH4InputData, result: ActualH4CampaignResult
+) -> _Rob984Cp10ExecutionEvidence:
+    if (
+        type(data) is not ActualH4InputData
+        or type(result) is not ActualH4CampaignResult
+    ):
+        raise H6BPlanError("fake-free evidence issuer requires exact actual inputs")
+    payload = {
+        "schema_version": _ROB984_CP10_EXECUTION_EVIDENCE_SCHEMA,
+        "persisted_corpus_hash": data.persisted_corpus_hash,
+        "persisted_feature_hash": data.persisted_feature_hash,
+        "h4_attempt_batch_hash": canonical_sha256(
+            [item.fingerprint() for item in result.batch_items()]
+        ),
+        "h4_attribution_hash": result.attribution.producer_seal_sha256,
+        "raw_member_key_cross_sha256": _raw_member_key_cross_sha256(result),
+        "selected_units": [list(item) for item in _selected_units(result)],
+        "pbo_grid_evidence": [list(item) for item in _pbo_grid_evidence(result)],
+    }
+    return _Rob984Cp10ExecutionEvidence(
+        persisted_corpus_hash=data.persisted_corpus_hash,
+        persisted_feature_hash=data.persisted_feature_hash,
+        h4_attempt_batch_hash=payload["h4_attempt_batch_hash"],
+        h4_attribution_hash=result.attribution.producer_seal_sha256,
+        raw_member_key_cross_sha256=payload["raw_member_key_cross_sha256"],
+        selected_units=_selected_units(result),
+        pbo_grid_evidence=_pbo_grid_evidence(result),
+        evidence_sha256=canonical_sha256(payload),
+        _seal=_ROB984_CP10_EXECUTION_EVIDENCE_SEAL,
+    )
 
 
 class ActualH4RunnerPort(Protocol):
@@ -2002,6 +2219,13 @@ class ActualMergedH4Runner:
             attribution=envelope,
             pbo=pbo,
         )
+        result = replace(
+            result,
+            fake_free_execution_evidence=_issue_rob984_cp10_execution_evidence(
+                data=self._data,
+                result=result,
+            ),
+        )
         self.last_result = result
         return result
 
@@ -2134,6 +2358,79 @@ def _h5_pbo(
     )
 
 
+def _rob984_cp10_closed_marker(evidence_sha256: str) -> str:
+    return ROB984_CP10_CLOSED_PREFIX + _hex64(
+        evidence_sha256, "ROB-984 CP10 closure evidence hash"
+    )
+
+
+def _close_rob984_cp10_fake_free_markers(
+    *,
+    scorecard: dict[str, object],
+    h4_result: ActualH4CampaignResult,
+    accounting: h6a_accounting.CombinedAccountingReport,
+) -> dict[str, object]:
+    """Close H5's deferred marker only with sealed H6-B integration evidence."""
+
+    evidence = _require_rob984_cp10_execution_evidence(
+        h4_result.fake_free_execution_evidence
+    )
+    if type(scorecard) is not dict:
+        raise H6BPlanError("CP10 marker closure requires an exact scorecard dict")
+    contract = scorecard.get("h4_attribution_contract")
+    lineage = scorecard.get("lineage")
+    if type(contract) is not dict or type(lineage) is not dict:
+        raise H6BPlanError("CP10 marker closure requires H5 contract and lineage")
+    deferred = h5_contracts.FAKE_FREE_EMPIRICAL_CLOSURE
+    if (
+        contract.get("raw_member_key_cross_seal") != deferred
+        or contract.get("fake_free_empirical_closure") != deferred
+    ):
+        raise H6BPlanError("CP10 marker closure requires exact H5 deferred markers")
+    if (
+        lineage.get("full_campaign_hash") != h4_result.identity.full_campaign_hash
+        or lineage.get("campaign_run_id") != h4_result.identity.campaign_run_id
+        or lineage.get("h6a_trial_accounting_hash") != accounting.trial_accounting_hash
+    ):
+        raise H6BPlanError("CP10 marker closure lineage differs from actual evidence")
+
+    preclosure_json = h5_canonical.canonical_json_bytes(scorecard)
+    preclosure_markdown = h5_markdown.render_markdown(scorecard)
+    closure_payload = {
+        "schema_version": _ROB984_CP10_CLOSURE_SCHEMA,
+        "full_campaign_hash": h4_result.identity.full_campaign_hash,
+        "campaign_run_id": h4_result.identity.campaign_run_id,
+        "exact_48_mapping_hash": h4_result.identity.exact_48_mapping_hash,
+        "execution_evidence_sha256": evidence.evidence_sha256,
+        "persisted_corpus_hash": evidence.persisted_corpus_hash,
+        "persisted_feature_hash": evidence.persisted_feature_hash,
+        "h4_attempt_batch_hash": evidence.h4_attempt_batch_hash,
+        "h4_attribution_hash": evidence.h4_attribution_hash,
+        "raw_member_key_cross_sha256": evidence.raw_member_key_cross_sha256,
+        "selected_units": [list(item) for item in evidence.selected_units],
+        "pbo_grid_evidence": [list(item) for item in evidence.pbo_grid_evidence],
+        "h6a_trial_accounting_hash": accounting.trial_accounting_hash,
+        "preclosure_h5_semantic_sha256": h5_canonical.hash_canonical_bytes(
+            preclosure_json
+        ),
+        "preclosure_markdown_sha256": hashlib.sha256(preclosure_markdown).hexdigest(),
+    }
+    closure_sha256 = canonical_sha256(closure_payload)
+    closed = copy.deepcopy(scorecard)
+    closed_contract = closed["h4_attribution_contract"]
+    if type(closed_contract) is not dict:
+        raise H6BPlanError("CP10 closed scorecard contract is malformed")
+    closed_contract["raw_member_key_cross_seal"] = _rob984_cp10_closed_marker(
+        evidence.raw_member_key_cross_sha256
+    )
+    closed_contract["fake_free_empirical_closure"] = _rob984_cp10_closed_marker(
+        closure_sha256
+    )
+    h5_canonical.canonical_json_bytes(closed)
+    h5_markdown.render_markdown(closed)
+    return closed
+
+
 class ActualMergedH5Composition:
     """Pure composition adapter; every economic calculation remains in H5."""
 
@@ -2264,7 +2561,7 @@ class ActualMergedH5Composition:
         validation = h5_contracts.validate_envelope_and_accounting(
             envelope, accounting_contract.seal
         )
-        return h5_canonical.build_canonical_scorecard(
+        scorecard = h5_canonical.build_canonical_scorecard(
             envelope=envelope,
             h6a_seal=accounting,
             envelope_ok=validation.ok,
@@ -2273,6 +2570,13 @@ class ActualMergedH5Composition:
             s3_inputs=s3_inputs,
             s4_inputs=s4_inputs,
             campaign_decision=campaign,
+        )
+        if h4_result.fake_free_execution_evidence is None:
+            return scorecard
+        return _close_rob984_cp10_fake_free_markers(
+            scorecard=scorecard,
+            h4_result=h4_result,
+            accounting=accounting,
         )
 
     def canonical_json_bytes(self, scorecard: Mapping[str, object]) -> bytes:
@@ -3878,7 +4182,9 @@ async def materialize_production(
         _capture_materializer_exception(state, ports, exc)
         if primary_error is None:
             primary_error = exc
-        if isinstance(exc, ReplayCollisionError):
+        if isinstance(exc, ReplayCollisionError) or (
+            state.db_state != "ABSENT" or state.artifact_state != "ABSENT"
+        ):
             retry_forbidden = True
         if not isinstance(exc, Exception):
             native_interrupt = exc

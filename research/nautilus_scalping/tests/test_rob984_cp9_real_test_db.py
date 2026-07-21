@@ -165,8 +165,12 @@ async def test_cp9_actual_48_writer_commit_is_contained_by_outer_rollback(
             assert existing.registered_mapping == plan.ordered_mapping
             assert len(existing.attempts) == 48
             pytest.skip(
-                "exact committed CP9 campaign is immutable; outer-rollback proof "
-                "runs first on a fresh disposable test_db"
+                "ONE_TIME_FRESH_DISPOSABLE_DB_OBSERVATION: the exact committed "
+                "campaign is immutable and canonical experiment/trial keys forbid "
+                "a proof-only run-id namespace; orch must release a fresh approved "
+                "whole test_db facility, run this outer-rollback proof first, then "
+                "run the committed READ ONLY audit, and dispose only through the "
+                "approved whole-facility lifecycle (no row cleanup)"
             )
 
         async with engine.connect() as connection:
@@ -305,14 +309,12 @@ async def test_cp9_actual_runner_commits_then_fresh_connection_audits_read_only(
         )
         await inspection_session.rollback()
         await inspection_session.close()
-        artifact_state = DirectoryAtomicArtifactPort().probe(
-            output_dir=_PERSISTED_OUTPUT
-        ).state
+        artifact_state = (
+            DirectoryAtomicArtifactPort().probe(output_dir=_PERSISTED_OUTPUT).state
+        )
 
         if snapshot.is_absent() and artifact_state == "ABSENT":
-            prepared = prepare_fake_free_input(
-                tmp_path / "persisted-synthetic-corpus"
-            )
+            prepared = prepare_fake_free_input(tmp_path / "persisted-synthetic-corpus")
             campaign = materializer.ProductionCampaignInput(
                 plan=plan,
                 guard_policy=default_research_db_policy(),

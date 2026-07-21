@@ -12,13 +12,17 @@ import pytest_asyncio
 import rob974_h3_h2_adapter as h3_h2_adapter
 import rob974_h3_smoke as h3_smoke
 import rob974_h4_runner as h4_runner
+import rob974_h4_smoke as h4_smoke
 import test_rob962_frozen_production_delta as frozen_guard
 from rob974_features import FOUR_HOUR_MS, MINUTE_MS
 from rob974_h3_manifest import get_config
 from rob974_h3_s3 import EmitWindow, generate_s3_global
 from rob974_h3_s4 import generate_s4_global
 from rob974_h4_contracts import exact_h4_folds
-from rob974_h6b_artifacts import DirectoryAtomicArtifactPort
+from rob974_h6b_artifacts import (
+    ArtifactVerificationError,
+    DirectoryAtomicArtifactPort,
+)
 from rob974_h6b_postaudit import (
     ProductionPostAuditAuthority,
     run_production_postaudit,
@@ -44,6 +48,13 @@ _TARGET = materializer.DatabaseTarget(
 )
 _INTEGRATION_HEAD = "c3c31b76e3a79e9cf9573e066b1d7e278088fc8e"
 _INTEGRATION_TREE = "bc8091c50e720af86b610332714d077e7b461397"
+_DEFERRED_FAKE_FREE_MARKER = "DEFERRED_TO_H6B_INTEGRATION_E2E"
+_PRE_R1_FORENSIC_JSON_SHA256 = (
+    "ce77983a2d47a0d8137b0df4a1171090f2183363cf948aea9ed7ffc8e14cd704"
+)
+_CP10_RAW_MEMBER_KEY_CROSS_SHA256 = (
+    "3bc2b53a0caab2bed4c882277a1fa2375e915f55fdaa368445b8eee5b712d93f"
+)
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -76,9 +87,9 @@ async def _ensure_committed_fake_free_state(tmp_path) -> None:
         )
         await inspection.rollback()
         await inspection.close()
-        artifact_state = DirectoryAtomicArtifactPort().probe(
-            output_dir=_PERSISTED_OUTPUT
-        ).state
+        artifact_state = (
+            DirectoryAtomicArtifactPort().probe(output_dir=_PERSISTED_OUTPUT).state
+        )
 
         if snapshot.is_absent() and artifact_state == "ABSENT":
             prepared = prepare_fake_free_input(
@@ -138,7 +149,8 @@ async def _ensure_committed_fake_free_state(tmp_path) -> None:
 
 
 def test_cp10_persisted_fake_free_nonvacuity_and_exact_guard_seal() -> None:
-    scorecard = json.loads(_PERSISTED_OUTPUT.joinpath("scorecard.json").read_bytes())
+    scorecard_bytes = _PERSISTED_OUTPUT.joinpath("scorecard.json").read_bytes()
+    scorecard = json.loads(scorecard_bytes)
     assert scorecard["lineage"]["full_campaign_hash"] == (
         "341a5a57ec14b7a499ea58d74de3b7d9c4b2c4e8bb514c789f6f528231a4045d"
     )
@@ -175,6 +187,19 @@ def test_cp10_persisted_fake_free_nonvacuity_and_exact_guard_seal() -> None:
     }
     assert "THESIS_EXIT" in s3_exits
     assert {"MEAN_EXIT", "STALL_EXIT"} & s4_exits
+
+    attribution_contract = scorecard["h4_attribution_contract"]
+    fake_free_marker = attribution_contract["fake_free_empirical_closure"]
+    raw_cross_marker = attribution_contract["raw_member_key_cross_seal"]
+    if fake_free_marker.startswith(materializer.ROB984_CP10_CLOSED_PREFIX):
+        assert raw_cross_marker.startswith(materializer.ROB984_CP10_CLOSED_PREFIX)
+    else:
+        # This exact pair predates the R1 closure.  The collision contract
+        # makes it immutable forensic evidence; the actual runner's CLOSED
+        # output is exercised and physically published in the test below.
+        assert fake_free_marker == _DEFERRED_FAKE_FREE_MARKER
+        assert raw_cross_marker == _DEFERRED_FAKE_FREE_MARKER
+        assert sha256(scorecard_bytes).hexdigest() == _PRE_R1_FORENSIC_JSON_SHA256
 
     authorized = frozen_guard._AUTHORIZED_PRODUCTION_CHANGES
     authorized_paths = {paths[0] for status, paths in authorized if status == "A"}
@@ -321,8 +346,24 @@ async def test_cp10_actual_chain_is_deterministic_replay_noop_and_nonvacuous(
             campaign=campaign,
             ports=ports,
         )
-        assert replay.exit_code == 0, repr(replay.primary_error)
-        assert replay.disposition == "REPLAY_NOOP"
+        persisted = json.loads(before_json)
+        persisted_contract = persisted["h4_attribution_contract"]
+        persisted_is_closed = persisted_contract[
+            "fake_free_empirical_closure"
+        ].startswith(materializer.ROB984_CP10_CLOSED_PREFIX)
+        if persisted_is_closed:
+            assert replay.exit_code == 0, repr(replay.primary_error)
+            assert replay.disposition == "REPLAY_NOOP"
+            assert replay.primary_error is None
+        else:
+            assert sha256(before_json).hexdigest() == _PRE_R1_FORENSIC_JSON_SHA256
+            assert replay.exit_code == materializer.PRECOMMIT_FAILURE
+            assert replay.disposition == "PRECOMMIT_FAILURE"
+            assert isinstance(replay.primary_error, ArtifactVerificationError)
+            assert str(replay.primary_error) == (
+                "physical JSON bytes differ from H5 canonical bytes"
+            )
+            assert replay.retry_forbidden is True
         assert replay.counters.register == replay.counters.record == 0
         assert replay.counters.commit == replay.counters.stage == 0
         assert replay.counters.delete == replay.counters.publish == 0
@@ -343,8 +384,7 @@ async def test_cp10_actual_chain_is_deterministic_replay_noop_and_nonvacuous(
         assert all(path.rows for path in result.attribution.paths)
         assert len({id(path.terminal.result) for path in result.attribution.paths}) == 6
         assert {
-            (path.strategy, path.path_scenario)
-            for path in result.attribution.paths
+            (path.strategy, path.path_scenario) for path in result.attribution.paths
         } == {
             (strategy, scenario)
             for strategy in ("S3", "S4")
@@ -439,8 +479,7 @@ async def test_cp10_actual_chain_is_deterministic_replay_noop_and_nonvacuous(
         gap_decision = next(
             item
             for item in gap_output.decisions
-            if item.decision_ts == prepared.gap_close
-            and item.symbol == "SOLUSDT"
+            if item.decision_ts == prepared.gap_close and item.symbol == "SOLUSDT"
         )
         assert gap_decision.status == "NO_SIGNAL"
         assert gap_decision.no_signal_reason == "missing_required_context"
@@ -500,22 +539,50 @@ async def test_cp10_actual_chain_is_deterministic_replay_noop_and_nonvacuous(
             for trade in gapped.s4_engine_result.trades
         )
 
-        persisted = json.loads(before_json)
-        assert replay.scorecard == persisted
+        closed_scorecard = replay.scorecard
+        assert closed_scorecard is not None
+        closed_contract = closed_scorecard["h4_attribution_contract"]
+        assert closed_contract["fake_free_empirical_closure"].startswith(
+            materializer.ROB984_CP10_CLOSED_PREFIX
+        )
+        assert closed_contract["fake_free_empirical_closure"] == (
+            materializer.ROB984_CP10_CLOSED_PREFIX
+            + h4_smoke.ROB984_CP10_FAKE_FREE_EVIDENCE_SHA256
+        )
+        assert closed_contract["raw_member_key_cross_seal"] == (
+            materializer.ROB984_CP10_CLOSED_PREFIX + _CP10_RAW_MEMBER_KEY_CROSS_SHA256
+        )
         for strategy in ("S3", "S4"):
             stall_rows = [
                 row
-                for row in persisted["strategies"][strategy]["raw_attribution_rows"]
+                for row in closed_scorecard["strategies"][strategy][
+                    "raw_attribution_rows"
+                ]
                 if row["exit_reason"] == "STALL_EXIT"
             ]
             if stall_rows:
-                assert all(
-                    row["gross_bps"].hex() == "0x0.0p+0" for row in stall_rows
-                )
-        assert ports.h5.canonical_json_bytes(replay.scorecard) == before_json
-        assert ports.h5.render_markdown(replay.scorecard) == before_markdown
-        assert replay.accounting.trial_accounting_hash == (
-            persisted["lineage"]["h6a_trial_accounting_hash"]
+                assert all(row["gross_bps"].hex() == "0x0.0p+0" for row in stall_rows)
+        closed_output = (tmp_path / "r1-closed-scorecard").resolve()
+        staged = ports.artifacts.stage(
+            scorecard=closed_scorecard,
+            output_dir=closed_output,
+            h5_port=ports.h5,
+        )
+        published = ports.artifacts.publish(staged, h5_port=ports.h5)
+        closed_json = published.json_path.read_bytes()
+        closed_markdown = published.markdown_path.read_bytes()
+        closed_persisted = json.loads(closed_json)
+        assert closed_persisted == closed_scorecard
+        assert ports.h5.canonical_json_bytes(closed_scorecard) == closed_json
+        assert ports.h5.render_markdown(closed_scorecard) == closed_markdown
+        assert (
+            closed_persisted["h4_attribution_contract"]["fake_free_empirical_closure"]
+            == closed_contract["fake_free_empirical_closure"]
+        )
+        assert ports.artifacts.probe(output_dir=closed_output).staging_dirs == ()
+        assert (
+            replay.accounting.trial_accounting_hash
+            == (closed_persisted["lineage"]["h6a_trial_accounting_hash"])
         )
 
         audit = await run_production_postaudit(
@@ -549,9 +616,15 @@ async def test_cp10_actual_chain_is_deterministic_replay_noop_and_nonvacuous(
             ),
             "h4_attribution_hash": result.attribution.producer_seal_sha256,
             "h6a_trial_accounting_hash": replay.accounting.trial_accounting_hash,
-            "h5_semantic_hash": ports.h5.semantic_hash(replay.scorecard),
-            "json_sha256": sha256(after_json).hexdigest(),
-            "markdown_sha256": sha256(after_markdown).hexdigest(),
+            "h5_semantic_hash": ports.h5.semantic_hash(closed_scorecard),
+            "json_sha256": sha256(closed_json).hexdigest(),
+            "markdown_sha256": sha256(closed_markdown).hexdigest(),
+            "fake_free_empirical_closure": closed_contract[
+                "fake_free_empirical_closure"
+            ],
+            "raw_member_key_cross_seal": closed_contract["raw_member_key_cross_seal"],
+            "pre_r1_forensic_json_sha256": sha256(after_json).hexdigest(),
+            "pre_r1_forensic_markdown_sha256": sha256(after_markdown).hexdigest(),
             "manifest_hash": prepared.manifest_hash,
             "feature_hash": prepared.feature_hash,
             "selected": prepared.runner.last_selected,

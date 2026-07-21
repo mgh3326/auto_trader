@@ -2,8 +2,9 @@
 
 The bounded CP8 fixture proves the H1/H2/H3/H4 contracts without running a
 year-long synthetic campaign.  CP9 additionally builds the real merged H6-A
-production identity from raw source pins.  The expensive fake-free full-scope
-run is deliberately delegated to H6-B's campaign-final integration E2E.
+production identity from raw source pins.  ROB-984 CP10 closed the delegated
+fake-free full-scope run; this smoke records that downstream evidence receipt
+without becoming part of H4's runner source bundle or recomputing its evidence.
 """
 
 from __future__ import annotations
@@ -18,6 +19,24 @@ from rob974_h4_contracts import (
 )
 from rob974_h4_h6a_adapter import build_production_h4_plan
 from rob974_h4_plan import build_fixture_plan
+
+_DEFERRED_FAKE_FREE_FULL_SCOPE = "DEFERRED_TO_H6B_INTEGRATION_E2E"
+_CLOSED_FAKE_FREE_PREFIX = "CLOSED_BY_ROB984_CP10:sha256:"
+# Exact deterministic receipt from the ROB-984 R1 fake-free CP10 E2E.  This
+# file is intentionally outside RUNNER_SOURCE_FILES.
+ROB984_CP10_FAKE_FREE_EVIDENCE_SHA256 = (
+    "6f60e868df5c1d27f19094b5146e22c70a69ba89550f18397c0926ebce2ec326"
+)
+
+
+def _fake_free_full_scope_marker(evidence_sha256: str | None) -> str:
+    """Never emit CLOSED when the downstream CP10 evidence receipt is absent."""
+
+    if evidence_sha256 is None:
+        return _DEFERRED_FAKE_FREE_FULL_SCOPE
+    if evidence_sha256 != ROB984_CP10_FAKE_FREE_EVIDENCE_SHA256:
+        raise ValueError("ROB-984 CP10 fake-free evidence receipt differs")
+    return _CLOSED_FAKE_FREE_PREFIX + evidence_sha256
 
 
 def run_contract_fixture_smoke() -> dict[str, object]:
@@ -41,7 +60,10 @@ def run_contract_fixture_smoke() -> dict[str, object]:
         "actual_h4_contract_semantic": "typed_integration_not_empirical_closure",
         "attribution_schema_version": ATTRIBUTION_SCHEMA_VERSION,
         "contract_provenance": list(attribution_contract()["contract_provenance"]),
-        "fake_free_full_scope": "DEFERRED_TO_H6B_INTEGRATION_E2E",
+        "fake_free_full_scope": _fake_free_full_scope_marker(
+            ROB984_CP10_FAKE_FREE_EVIDENCE_SHA256
+        ),
+        "fake_free_full_scope_evidence_sha256": (ROB984_CP10_FAKE_FREE_EVIDENCE_SHA256),
         "full_campaign_hash": production_plan.full_campaign_hash,
         "campaign_run_id": production_plan.campaign_run_id,
         "source_pins": production_plan.source_pins.as_dict(),
