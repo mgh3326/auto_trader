@@ -50,17 +50,17 @@ _SIGNAL_TS = 240_000
 _CORPUS_END_TS = 10_000_000_000
 
 _RETIRED_FULL_CAMPAIGN_HASH = (
-    "abecb9ebf45cbb4971f2b71b2669351057ed92303dca2c88934f8eb8c27ebc09"
-)
-_RETIRED_CAMPAIGN_RUN_ID = "rob974h6a-owegcZSjwsSzLwl80QYcHfFZs2xY3UfipsIkYnU_Sl0"
-_ROB1001_FULL_CAMPAIGN_HASH = (
     "341a5a57ec14b7a499ea58d74de3b7d9c4b2c4e8bb514c789f6f528231a4045d"
 )
-_ROB1001_CAMPAIGN_RUN_ID = "rob974h6a-ReYDH4lJ8dDmDJxApTNIB7p72qAjTBI2Qited6Ni9Y0"
-_ROB1001_RUNNER_SOURCE_SHA256 = (
-    "eef75d09aac6ee862f8e3d959c6abd11e72b3faf072cee620ddb9309678af806"
+_RETIRED_CAMPAIGN_RUN_ID = "rob974h6a-ReYDH4lJ8dDmDJxApTNIB7p72qAjTBI2Qited6Ni9Y0"
+_ROB1012_FULL_CAMPAIGN_HASH = (
+    "c8bb8e88e129e0072d0ea174adca5c4cce8158f2726c6397030d2ae6e4619f39"
 )
-_ROB1001_EXPERIMENT_IDS = (
+_ROB1012_CAMPAIGN_RUN_ID = "rob974h6a-G4efMErFLrEyHWNztSKlo9j-ghlxQuPkwD0h1g6sQEw"
+_ROB1012_RUNNER_SOURCE_SHA256 = (
+    "09235b487e5436d2ca9899afeab89c4c1d2bd71db9d5b15e229c1b8d1be771d6"
+)
+_ROB1012_EXPERIMENT_IDS = (
     "d25fcec7187d664dc000ff792011e00c6f98142aaa48f4c2b60d8e773ed017ed",
     "4391e0cab744c93effc226392ed76b3290f84421b87118e4c4d13df1a1a956e1",
     "49629a555b6f419ffb8e8c98314a30015affa17ebbfb18c4fc8cff2257c2ca9e",
@@ -277,16 +277,16 @@ def production_plan():
     return build_production_h4_plan()
 
 
-def test_rob1001_policy_change_rederives_and_refreezes_campaign_identity(
+def test_rob1012_generator_change_rederives_and_refreezes_campaign_identity(
     production_plan,
 ):
-    assert production_plan.full_campaign_hash == _ROB1001_FULL_CAMPAIGN_HASH
-    assert production_plan.campaign_run_id == _ROB1001_CAMPAIGN_RUN_ID
+    assert production_plan.full_campaign_hash == _ROB1012_FULL_CAMPAIGN_HASH
+    assert production_plan.campaign_run_id == _ROB1012_CAMPAIGN_RUN_ID
     assert production_plan.h4_source_pins.runner_bundle_sha256 == (
-        _ROB1001_RUNNER_SOURCE_SHA256
+        _ROB1012_RUNNER_SOURCE_SHA256
     )
     assert tuple(row.experiment_id for row in production_plan.row_specs) == (
-        _ROB1001_EXPERIMENT_IDS
+        _ROB1012_EXPERIMENT_IDS
     )
     assert production_plan.full_campaign_hash != _RETIRED_FULL_CAMPAIGN_HASH
     assert production_plan.campaign_run_id != _RETIRED_CAMPAIGN_RUN_ID

@@ -1,4 +1,4 @@
-"""ROB-970 R1/R2 permits one exact post-ROB-970 production-source repair window.
+"""ROB-970 through ROB-1012 exact production-source repair window.
 
 ROB-970's own re-pin tip (``cc462d94``, which already includes its
 authorized S2 timestamp root fix + original Q2/Q3 diagnostic-evidence
@@ -58,6 +58,9 @@ _AUTHORIZED_PRODUCTION_CHANGES = [
     ("A", ("research/nautilus_scalping/rob974_h2_scenarios.py",)),
     # ROB-980 authorized additive modules.
     ("A", ("research/nautilus_scalping/rob974_h3_evidence.py",)),
+    # ROB-1012 repairs the already-authorized H3/H2 adapter in place.  The
+    # path remains A relative to the ROB-970 base; its exact new bytes are
+    # independently committed by the refrozen runner source bundle.
     ("A", ("research/nautilus_scalping/rob974_h3_h2_adapter.py",)),
     ("A", ("research/nautilus_scalping/rob974_h3_manifest.py",)),
     ("A", ("research/nautilus_scalping/rob974_h3_s3.py",)),
@@ -177,8 +180,12 @@ def test_rob970_r1_repair_is_the_only_post_rob970_production_delta():
     assert production_changes == sorted(_AUTHORIZED_PRODUCTION_CHANGES)
 
 
-def test_rob984_guard_is_resealed_at_exact_48_with_h6b_3():
+def test_rob1012_guard_is_resealed_at_exact_48_with_h3_adapter_and_h6b_3():
     assert len(_AUTHORIZED_PRODUCTION_CHANGES) == 48
+    assert (
+        "A",
+        ("research/nautilus_scalping/rob974_h3_h2_adapter.py",),
+    ) in _AUTHORIZED_PRODUCTION_CHANGES
     h4_changes = tuple(
         change
         for change in _AUTHORIZED_PRODUCTION_CHANGES

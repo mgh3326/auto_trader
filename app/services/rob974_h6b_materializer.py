@@ -2176,33 +2176,21 @@ class ActualMergedH4Runner:
             ),
         )
 
-        def s3_generator(config: object) -> tuple[object, ...]:
+        def s3_generator(config: object) -> list[object]:
             output = h3_s3.generate_s3_global(
                 surface.phase_context.feature_context,
                 surface.phase_context.emit_window,
                 config,
             )
-            return tuple(
-                replace(
-                    h3_h2_adapter.adapt_s3_candidate(item, fold_id="pbo-full-window"),
-                    fold_id=None,
-                )
-                for item in output.accepted
-            )
+            return h3_h2_adapter.adapt_s3_pbo_candidate_buffer(output)
 
-        def s4_generator(config: object) -> tuple[object, ...]:
+        def s4_generator(config: object) -> list[object]:
             output = h3_s4.generate_s4_global(
                 surface.phase_context.feature_context,
                 surface.phase_context.emit_window,
                 config,
             )
-            return tuple(
-                replace(
-                    h3_h2_adapter.adapt_s4_candidate(item, fold_id="pbo-full-window"),
-                    fold_id=None,
-                )
-                for item in output.accepted
-            )
+            return h3_h2_adapter.adapt_s4_pbo_candidate_buffer(output)
 
         s3_grid = h4_pbo.run_full_window_s3_configs(
             configs=h3_manifest.FROZEN_S3_CONFIGS,
