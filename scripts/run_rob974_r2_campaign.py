@@ -241,6 +241,10 @@ def _require_exact_static_gates(
     if any(getattr(arguments, name) != value for name, value in expected.items()):
         raise LaunchRefused("EXPLICIT_GATE_LITERAL_MISMATCH")
 
+    database_url = environ.get(DATABASE_URL_ENV)
+    if type(database_url) is not str or not database_url:
+        raise LaunchRefused("DATABASE_URL_ENV_ABSENT")
+
     try:
         manifest = Path(arguments.manifest).resolve(strict=True)
         corpus_root = Path(arguments.corpus_root).resolve(strict=True)
@@ -253,10 +257,6 @@ def _require_exact_static_gates(
         raise LaunchRefused("CORPUS_ROOT_PATH_MISMATCH")
     if not output_root.is_absolute() or output_root != EXPECTED_OUTPUT_ROOT:
         raise LaunchRefused("OUTPUT_ROOT_PATH_MISMATCH")
-
-    database_url = environ.get(DATABASE_URL_ENV)
-    if type(database_url) is not str or not database_url:
-        raise LaunchRefused("DATABASE_URL_ENV_ABSENT")
 
     try:
         if _git("status", "--porcelain", "--untracked-files=all"):
