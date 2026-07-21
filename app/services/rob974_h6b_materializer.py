@@ -110,6 +110,9 @@ __all__ = [
     "ProductionExecutionPorts",
     "ProductionIdentityPlan",
     "ProjectTestDbAuthority",
+    "ROB974_R2_PRODUCTION_RUNNER",
+    "ROB974_R2_PRODUCTION_STRATEGY_NAME",
+    "ROB974_R2_PRODUCTION_TIMEFRAME",
     "ROB984_CP10_CLOSED_PREFIX",
     "RunAuthority",
     "ReplayCollisionError",
@@ -142,6 +145,13 @@ COMMIT_FAILED_OR_UNKNOWN = 7
 POSTCOMMIT_PUBLISH_FAILURE = 8
 POSTAUDIT_FAILURE = 9
 SESSION_CLOSE_FAILURE = 10
+
+# Exact persistence metadata used by the sealed ROB-974 R2 production
+# launcher.  CP9/CP10 consume these defaults so their DB boundary matches the
+# production envelope instead of a shorter synthetic runner label.
+ROB974_R2_PRODUCTION_STRATEGY_NAME = "rob974-r2"
+ROB974_R2_PRODUCTION_TIMEFRAME = "1m_to_4h_pit"
+ROB974_R2_PRODUCTION_RUNNER = "rob974-h6b-all-folds"
 
 EXIT_DISPOSITION_TABLE: tuple[tuple[int, tuple[str, ...], str], ...] = (
     (
@@ -3082,9 +3092,9 @@ class ProductionCampaignInput:
 
     plan: ProductionExecutionPlan
     guard_policy: ResearchDbPolicy
-    strategy_name: str = "rob974-h6b"
-    timeframe: str = "4h"
-    runner: str = "rob974-h6b"
+    strategy_name: str = ROB974_R2_PRODUCTION_STRATEGY_NAME
+    timeframe: str = ROB974_R2_PRODUCTION_TIMEFRAME
+    runner: str = ROB974_R2_PRODUCTION_RUNNER
     provenance: str = "actual_merged_h4_h5"
 
     def __post_init__(self) -> None:

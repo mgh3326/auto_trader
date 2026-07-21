@@ -25,6 +25,7 @@ from app.models.base import Base
 # terminal outcomes. No winner-only filtering: crashed/timeout/rejected trials
 # each occupy a monotonic trial_index just like completed ones.
 TRIAL_STATUSES: tuple[str, ...] = ("completed", "rejected", "crashed", "timeout")
+BACKTEST_RUNNER_MAX_LENGTH = 64
 
 
 class ResearchStrategyExperiment(Base):
@@ -138,7 +139,9 @@ class ResearchBacktestRun(Base):
     market: Mapped[str] = mapped_column(String(32), nullable=False, default="spot")
     timeframe: Mapped[str] = mapped_column(String(16), nullable=False)
     timerange: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    runner: Mapped[str] = mapped_column(String(16), nullable=False)
+    runner: Mapped[str] = mapped_column(
+        String(BACKTEST_RUNNER_MAX_LENGTH), nullable=False
+    )
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

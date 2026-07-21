@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.models.research_backtest import BACKTEST_RUNNER_MAX_LENGTH
 from app.services.research_canonical_hash import IDENTITY_COMPONENTS, encode_canonical
 
 # ROB-846 — terminal trial outcomes; every invocation records exactly one.
@@ -107,7 +108,7 @@ class BacktestTrialRequest(BaseModel):
     status: TrialStatus
     strategy_name: str = Field(min_length=1)
     timeframe: str = Field(min_length=1)
-    runner: str = Field(min_length=1)
+    runner: str = Field(min_length=1, max_length=BACKTEST_RUNNER_MAX_LENGTH)
     run_id: str | None = None
     seed: int | None = None
     information_cutoff: datetime | None = None

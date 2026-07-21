@@ -55,7 +55,9 @@ from sqlalchemy import text
 # mirrored here.
 # v25 (ROB-920): update alpaca_paper_order_ledger check constraint to include canceled state.
 # v26 (ROB-954): add the dedicated terminal transition timestamp + scan index.
-SCHEMA_BOOTSTRAP_VERSION = 26
+# v27 (ROB-1023): widen research.backtest_runs.runner to preserve the exact
+# production execution-lineage label.
+SCHEMA_BOOTSTRAP_VERSION = 27
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -854,6 +856,7 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     # run/config/data hash linkage on research.promotion_candidates. create_all
     # skips existing tables, so a persistent test DB needs these ALTERs (they
     # are no-ops on a fresh DB where create_all already built the ORM shape).
+    "ALTER TABLE research.backtest_runs ALTER COLUMN runner TYPE VARCHAR(64)",
     "ALTER TABLE research.backtest_runs "
     "ADD COLUMN IF NOT EXISTS strategy_experiment_id BIGINT",
     "ALTER TABLE research.backtest_runs ADD COLUMN IF NOT EXISTS trial_index INTEGER",
