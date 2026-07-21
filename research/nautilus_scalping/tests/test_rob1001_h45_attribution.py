@@ -53,12 +53,12 @@ _RETIRED_FULL_CAMPAIGN_HASH = (
     "341a5a57ec14b7a499ea58d74de3b7d9c4b2c4e8bb514c789f6f528231a4045d"
 )
 _RETIRED_CAMPAIGN_RUN_ID = "rob974h6a-ReYDH4lJ8dDmDJxApTNIB7p72qAjTBI2Qited6Ni9Y0"
-_ROB1012_FULL_CAMPAIGN_HASH = (
-    "c8bb8e88e129e0072d0ea174adca5c4cce8158f2726c6397030d2ae6e4619f39"
+_ROB1025_FULL_CAMPAIGN_HASH = (
+    "2c47864c7ab661f16be6c414a1140944ec36832bb268e86183555b56c6f85f53"
 )
-_ROB1012_CAMPAIGN_RUN_ID = "rob974h6a-G4efMErFLrEyHWNztSKlo9j-ghlxQuPkwD0h1g6sQEw"
-_ROB1012_RUNNER_SOURCE_SHA256 = (
-    "09235b487e5436d2ca9899afeab89c4c1d2bd71db9d5b15e229c1b8d1be771d6"
+_ROB1025_CAMPAIGN_RUN_ID = "rob974h6a-CvcCOcAO3hRQDUPzHdVBJFmkXi_dN6NmngCOBLk82lI"
+_ROB1025_RUNNER_SOURCE_SHA256 = (
+    "5314d2429801a2df78d7bbac852a3ae1c19567bf9be22c74704b907eaf818c55"
 )
 _ROB1012_EXPERIMENT_IDS = (
     "d25fcec7187d664dc000ff792011e00c6f98142aaa48f4c2b60d8e773ed017ed",
@@ -280,10 +280,10 @@ def production_plan():
 def test_rob1012_generator_change_rederives_and_refreezes_campaign_identity(
     production_plan,
 ):
-    assert production_plan.full_campaign_hash == _ROB1012_FULL_CAMPAIGN_HASH
-    assert production_plan.campaign_run_id == _ROB1012_CAMPAIGN_RUN_ID
+    assert production_plan.full_campaign_hash == _ROB1025_FULL_CAMPAIGN_HASH
+    assert production_plan.campaign_run_id == _ROB1025_CAMPAIGN_RUN_ID
     assert production_plan.h4_source_pins.runner_bundle_sha256 == (
-        _ROB1012_RUNNER_SOURCE_SHA256
+        _ROB1025_RUNNER_SOURCE_SHA256
     )
     assert tuple(row.experiment_id for row in production_plan.row_specs) == (
         _ROB1012_EXPERIMENT_IDS

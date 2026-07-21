@@ -93,12 +93,13 @@ _AUTHORIZED_PRODUCTION_CHANGES = [
     ("A", ("research/nautilus_scalping/rob974_h5_markdown.py",)),
     ("A", ("research/nautilus_scalping/rob974_h5_s3.py",)),
     ("A", ("research/nautilus_scalping/rob974_h5_s4.py",)),
-    # ROB-984 authorized additive H6-B modules.  These three literal paths
-    # preserve the exact reviewed research scope; the app service remains
-    # outside this guard and no wildcard/prefix admits a future module.
+    # ROB-984 authorized additive H6-B modules.  ROB-1025 adds the exact app
+    # composition boundary because it now owns the PIT funding gate and the
+    # no-trade accounting invariant; no wildcard admits another app module.
     ("A", ("research/nautilus_scalping/rob974_h6b_artifacts.py",)),
     ("A", ("research/nautilus_scalping/rob974_h6b_postaudit.py",)),
     ("A", ("research/nautilus_scalping/rob974_h6b_cli.py",)),
+    ("A", ("app/services/rob974_h6b_materializer.py",)),
 ]
 _FROZEN_PATHS = (
     "research/nautilus_scalping",
@@ -106,6 +107,7 @@ _FROZEN_PATHS = (
     "app/schemas/research_campaign_bridge.py",
     "app/services/research_campaign_bridge.py",
     "app/services/research_db_write_guard.py",
+    "app/services/rob974_h6b_materializer.py",
     "research_contracts",
 )
 _TEST_SUPPORT_PATHS = frozenset({"research/nautilus_scalping/conftest.py"})
@@ -180,8 +182,8 @@ def test_rob970_r1_repair_is_the_only_post_rob970_production_delta():
     assert production_changes == sorted(_AUTHORIZED_PRODUCTION_CHANGES)
 
 
-def test_rob1012_guard_is_resealed_at_exact_48_with_h3_adapter_and_h6b_3():
-    assert len(_AUTHORIZED_PRODUCTION_CHANGES) == 48
+def test_rob1025_guard_is_resealed_at_exact_49_with_h3_adapter_and_h6b_app():
+    assert len(_AUTHORIZED_PRODUCTION_CHANGES) == 49
     assert (
         "A",
         ("research/nautilus_scalping/rob974_h3_h2_adapter.py",),
@@ -225,6 +227,10 @@ def test_rob1012_guard_is_resealed_at_exact_48_with_h3_adapter_and_h6b_3():
         ("A", ("research/nautilus_scalping/rob974_h6b_postaudit.py",)),
         ("A", ("research/nautilus_scalping/rob974_h6b_cli.py",)),
     )
+    assert (
+        "A",
+        ("app/services/rob974_h6b_materializer.py",),
+    ) in _AUTHORIZED_PRODUCTION_CHANGES
 
 
 def test_rob962_cost_model_bytes_and_derived_lineage_are_exactly_refrozen():

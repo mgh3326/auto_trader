@@ -165,8 +165,16 @@ def _render_dual_evidence(rows: Sequence[Mapping[str, Any]]) -> list[str]:
     for row in rows:
         lines.append(
             f"- {row['config_id']}/{row['fold_id']}: "
-            f"accepted={row['accepted']} rejected={row['rejected']}"
+            f"phase={row['phase']} evaluated={row['evaluated_decision_units']} "
+            f"no_signal={row['no_signal']} accepted={row['accepted']} "
+            f"rejected={row['rejected']}"
         )
+        no_signal_histogram = row["no_signal_reason_histogram"]
+        if no_signal_histogram:
+            reasons_str = ", ".join(
+                f"{k}={no_signal_histogram[k]}" for k in sorted(no_signal_histogram)
+            )
+            lines.append(f"  - no_signal_reasons: {reasons_str}")
         histogram = row["rejection_reason_histogram"]
         if histogram:
             # Sorted explicitly -- never trust the input mapping's own
@@ -179,6 +187,12 @@ def _render_dual_evidence(rows: Sequence[Mapping[str, Any]]) -> list[str]:
                 f"ledger_status={path['ledger_status']} "
                 f"trade_count={path['trade_count']}"
             )
+            no_trade_histogram = path["no_trade_reason_counts"]
+            if no_trade_histogram:
+                reasons_str = ", ".join(
+                    f"{k}={no_trade_histogram[k]}" for k in sorted(no_trade_histogram)
+                )
+                lines.append(f"    - no_trade_reasons: {reasons_str}")
     lines.append("")
     return lines
 

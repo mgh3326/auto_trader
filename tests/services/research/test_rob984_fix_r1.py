@@ -13,8 +13,8 @@ from app.models.research_backtest import (
 from app.services import rob974_h6b_materializer as materializer
 from research_contracts.canonical_hash import canonical_sha256
 
-_FULL_CAMPAIGN_HASH = "c8bb8e88e129e0072d0ea174adca5c4cce8158f2726c6397030d2ae6e4619f39"
-_CAMPAIGN_RUN_ID = "rob974h6a-G4efMErFLrEyHWNztSKlo9j-ghlxQuPkwD0h1g6sQEw"
+_FULL_CAMPAIGN_HASH = "2c47864c7ab661f16be6c414a1140944ec36832bb268e86183555b56c6f85f53"
+_CAMPAIGN_RUN_ID = "rob974h6a-CvcCOcAO3hRQDUPzHdVBJFmkXi_dN6NmngCOBLk82lI"
 _INTEGRATION_HEAD = "c3c31b76e3a79e9cf9573e066b1d7e278088fc8e"
 _INTEGRATION_TREE = "bc8091c50e720af86b610332714d077e7b461397"
 
@@ -40,6 +40,13 @@ def test_r1_closure_surface_is_explicit_and_identity_stays_pinned() -> None:
         for logical_path, _path in materializer.h4_h6a_adapter.RUNNER_SOURCE_FILES
     }
     assert "research/nautilus_scalping/rob974_h4_smoke.py" not in runner_paths
+    assert "app/services/rob974_h6b_materializer.py" in runner_paths
+    engine_paths = {
+        logical_path
+        for logical_path, _path in materializer.h4_h6a_adapter.ENGINE_SOURCE_FILES
+    }
+    assert "research/nautilus_scalping/funding_oi_archive.py" in engine_paths
+    assert "research/nautilus_scalping/rob944_gap_funding.py" in engine_paths
 
 
 def test_r1_outer_rollback_unique_run_namespace_is_structurally_refused(

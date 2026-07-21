@@ -298,7 +298,7 @@ def test_transaction_and_sql_ast_ownership_is_closed():
         assert forbidden not in upper
 
 
-def test_guard_is_exact_48_after_cp10_literal_h6b_seal():
+def test_guard_is_exact_49_after_rob1025_h6b_app_seal():
     guard = (
         _ROOT
         / "research/nautilus_scalping/tests/test_rob962_frozen_production_delta.py"
@@ -315,7 +315,7 @@ def test_guard_is_exact_48_after_cp10_literal_h6b_seal():
         )
     )
     authorized_changes = ast.literal_eval(assignment.value)
-    assert len(authorized_changes) == 48
+    assert len(authorized_changes) == 49
     h6b = {
         path
         for status, paths in authorized_changes
@@ -323,6 +323,7 @@ def test_guard_is_exact_48_after_cp10_literal_h6b_seal():
         if status == "A" and "rob974_h6b_" in path
     }
     assert h6b == {
+        "app/services/rob974_h6b_materializer.py",
         "research/nautilus_scalping/rob974_h6b_artifacts.py",
         "research/nautilus_scalping/rob974_h6b_cli.py",
         "research/nautilus_scalping/rob974_h6b_postaudit.py",

@@ -54,6 +54,7 @@ __all__ = [
     "ATTEMPT_STATUSES",
     "FOLD_COUNT",
     "FOLD_IDS",
+    "GENERATOR_PHASES",
     "PATH_SCENARIOS",
     "REASON_CHILD_EXECUTION_CRASHED",
     "REASON_CHILD_EXECUTION_TIMEOUT",
@@ -74,6 +75,12 @@ __all__ = [
 FOLD_COUNT = 8
 FOLD_IDS: tuple[str, ...] = tuple(f"fold-{i:02d}" for i in range(FOLD_COUNT))
 PATH_SCENARIOS: tuple[str, ...] = ("base13", "primary_stress17", "upward_stress22")
+GENERATOR_PHASES: tuple[str, ...] = (
+    "train",
+    "selected_oos",
+    "pbo_full_window",
+    "offline_smoke",
+)
 
 ATTEMPT_STATUSES: tuple[str, ...] = ("completed", "rejected", "crashed", "timeout")
 _SCENARIO_STATUSES: tuple[str, ...] = (*ATTEMPT_STATUSES, "never_selected")
@@ -224,9 +231,11 @@ class UniqueGeneratorEvidence:
     per (fold, scenario) triple."""
 
     fold_id: str
+    phase: str
     candidate_identity_hash: str
     evaluated_decision_units: int
     no_signal: int
+    no_signal_reason_histogram: Mapping[str, int]
     candidate: int
     generator_rejected: int
     generator_accepted: int
@@ -236,6 +245,10 @@ class UniqueGeneratorEvidence:
     def __post_init__(self) -> None:
         _require(
             self.fold_id in FOLD_IDS, f"fold_id {self.fold_id!r} is not a known fold"
+        )
+        _require(
+            self.phase in GENERATOR_PHASES,
+            f"phase {self.phase!r} is not a known generator phase",
         )
         _require_hex64(self.candidate_identity_hash, field="candidate_identity_hash")
         for name in (
@@ -251,6 +264,19 @@ class UniqueGeneratorEvidence:
         _require(
             self.evaluated_decision_units == self.no_signal + self.candidate,
             "evaluated_decision_units must equal no_signal + candidate",
+        )
+        _require(
+            isinstance(self.no_signal_reason_histogram, Mapping)
+            and all(type(k) is str for k in self.no_signal_reason_histogram)
+            and all(
+                type(v) is int and v >= 0
+                for v in self.no_signal_reason_histogram.values()
+            ),
+            "no_signal_reason_histogram must be a str->non-negative-int mapping",
+        )
+        _require(
+            sum(self.no_signal_reason_histogram.values()) == self.no_signal,
+            "no_signal_reason_histogram must sum to no_signal",
         )
         _require(
             self.candidate == self.generator_rejected + self.generator_accepted,
@@ -272,6 +298,11 @@ class UniqueGeneratorEvidence:
         )
         object.__setattr__(
             self,
+            "no_signal_reason_histogram",
+            _freeze_mapping(self.no_signal_reason_histogram),
+        )
+        object.__setattr__(
+            self,
             "generator_rejection_subtotal_by_reason",
             _freeze_mapping(self.generator_rejection_subtotal_by_reason),
         )
@@ -287,9 +318,11 @@ def _recompute_unique_evidence_hash(evidence: UniqueGeneratorEvidence) -> str:
     return canonical_sha256(
         {
             "fold_id": evidence.fold_id,
+            "phase": evidence.phase,
             "candidate_identity_hash": evidence.candidate_identity_hash,
             "evaluated_decision_units": evidence.evaluated_decision_units,
             "no_signal": evidence.no_signal,
+            "no_signal_reason_histogram": dict(evidence.no_signal_reason_histogram),
             "candidate": evidence.candidate,
             "generator_rejected": evidence.generator_rejected,
             "generator_accepted": evidence.generator_accepted,
@@ -495,6 +528,12 @@ class AttemptRecord:
             unique_fold_ids == list(FOLD_IDS),
             "unique_evidence must cover every fold, in canonical fold order, exactly once",
         )
+        for trace, evidence in zip(self.fold_traces, self.unique_evidence, strict=True):
+            if trace.selected:
+                _require(
+                    evidence.phase == "selected_oos",
+                    "a selected fold must carry selected_oos unique evidence",
+                )
 
         _require(
             isinstance(self.path_scenario_evidence, tuple)
@@ -602,9 +641,11 @@ def _fold_evidence_payload(
         "unique_evidence": [
             {
                 "fold_id": ev.fold_id,
+                "phase": ev.phase,
                 "candidate_identity_hash": ev.candidate_identity_hash,
                 "evaluated_decision_units": ev.evaluated_decision_units,
                 "no_signal": ev.no_signal,
+                "no_signal_reason_histogram": dict(ev.no_signal_reason_histogram),
                 "candidate": ev.candidate,
                 "generator_rejected": ev.generator_rejected,
                 "generator_accepted": ev.generator_accepted,

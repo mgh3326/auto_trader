@@ -88,7 +88,9 @@ FEATURE_SOURCE_FILES = _source_files(
 # H2: actual engines plus every execution-affecting ingress/cost/funding DTO seam.
 ENGINE_SOURCE_FILES = _source_files(
     "research/nautilus_scalping/rob940_cost_model.py",
+    "research/nautilus_scalping/funding_oi_archive.py",
     "research/nautilus_scalping/rob941_funding_sidecar.py",
+    "research/nautilus_scalping/rob944_gap_funding.py",
     "research/nautilus_scalping/rob974_h2_dtos.py",
     "research/nautilus_scalping/rob974_h2_h1_bridge.py",
     "research/nautilus_scalping/rob974_h2_ingress.py",
@@ -113,6 +115,11 @@ RUNNER_SOURCE_FILES = _source_files(
     "research/nautilus_scalping/rob974_h4_plan.py",
     "research/nautilus_scalping/rob974_h4_runner.py",
     "research/nautilus_scalping/rob974_h4_selection.py",
+    "research/nautilus_scalping/rob974_h5_canonical.py",
+    "research/nautilus_scalping/rob974_h5_dual_evidence.py",
+    "research/nautilus_scalping/rob974_h5_markdown.py",
+    "research/nautilus_scalping/rob974_h6a_evidence.py",
+    "app/services/rob974_h6b_materializer.py",
 )
 
 # PBO's own aggregator plus the frozen day-grid and reused CSCV primitive.

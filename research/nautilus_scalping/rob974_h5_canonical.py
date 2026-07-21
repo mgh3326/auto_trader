@@ -951,6 +951,18 @@ def _canonicalize_dual_evidence(
                 {
                     "config_id": config_id,
                     "fold_id": fold_id,
+                    "phase": unique.phase,
+                    "evaluated_decision_units": _exact_int(
+                        unique.evaluated_decision_units,
+                        "unique_evaluated_decision_units_malformed",
+                    ),
+                    "no_signal": _exact_int(
+                        unique.no_signal, "unique_no_signal_malformed"
+                    ),
+                    "no_signal_reason_histogram": {
+                        k: _exact_int(v, "unique_no_signal_histogram_value_malformed")
+                        for k, v in sorted(unique.no_signal_reason_histogram.items())
+                    },
                     "accepted": _exact_int(
                         unique.accepted, "unique_accepted_malformed"
                     ),
