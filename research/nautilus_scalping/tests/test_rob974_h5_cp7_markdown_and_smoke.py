@@ -213,6 +213,10 @@ def _s3_unique_evidence() -> UniqueGeneratorEvidence:
         strategy="S3",
         config_id="S3-00",
         fold_id="fold-00",
+        phase="selected_oos",
+        evaluated_decision_units=105,
+        no_signal=5,
+        no_signal_reason_histogram={"momentum": 5},
         accepted=90,
         rejected=10,
         accepted_input_hash=_HEX64_A,
@@ -840,11 +844,16 @@ _GOLDEN_MARKDOWN_BYTES = (
     b"- XRPUSDT: trades=40 e17_bps=10.0 e0_bps=15.0 pf=null "
     b"(pf_infinite_zero_loss_with_profit) avg_holding_minutes=10.0\n\n"
     b"### Dual Evidence\n\n"
-    b"- S3-00/fold-00: accepted=90 rejected=10\n"
+    b"- S3-00/fold-00: phase=selected_oos evaluated=105 no_signal=5 "
+    b"accepted=90 rejected=10\n"
+    b"  - no_signal_reasons: momentum=5\n"
     b"  - rejection_reasons: lookahead_bar=6, signal_close_fill=4\n"
     b"  - path[base13]: ledger_status=completed trade_count=40\n"
+    b"    - no_trade_reasons: unpriced_gap=3\n"
     b"  - path[primary_stress17]: ledger_status=completed trade_count=40\n"
-    b"  - path[upward_stress22]: ledger_status=completed trade_count=40\n\n"
+    b"    - no_trade_reasons: unpriced_gap=3\n"
+    b"  - path[upward_stress22]: ledger_status=completed trade_count=40\n"
+    b"    - no_trade_reasons: unpriced_gap=3\n\n"
     b"### PBO\n\n"
     b"- value: 0.35\n"
     b"- reason_codes: (none)\n\n"

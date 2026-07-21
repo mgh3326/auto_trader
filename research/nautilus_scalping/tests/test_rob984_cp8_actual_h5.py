@@ -60,11 +60,13 @@ def _unique(row_id: str) -> tuple[UniqueGeneratorEvidence, ...]:
     for index in range(FOLD_COUNT):
         kwargs = {
             "fold_id": f"fold-{index:02d}",
+            "phase": "selected_oos",
             "candidate_identity_hash": materializer.canonical_sha256(
                 {"row_id": row_id, "fold": index, "surface": "candidate"}
             ),
             "evaluated_decision_units": 3,
             "no_signal": 1,
+            "no_signal_reason_histogram": {"momentum": 1},
             "candidate": 2,
             "generator_rejected": 1,
             "generator_accepted": 1,
@@ -314,6 +316,10 @@ def test_actual_h3_zero_rejection_buckets_are_filtered_at_h5_dto_boundary():
         strategy="S3",
         config_id="S3-00",
         fold_id="fold-00",
+        phase=adapted.phase,
+        evaluated_decision_units=adapted.evaluated_decision_units,
+        no_signal=adapted.no_signal,
+        no_signal_reason_histogram=dict(adapted.no_signal_reason_histogram),
         accepted=adapted.generator_accepted,
         rejected=adapted.generator_rejected,
         accepted_input_hash=adapted.content_hash,

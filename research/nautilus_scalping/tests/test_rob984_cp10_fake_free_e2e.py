@@ -35,7 +35,7 @@ from test_rob984_cp9_real_test_db import _actual_result, _ActualRunner
 from app.services import rob974_h6b_materializer as materializer
 from app.services.research_db_write_guard import default_research_db_policy
 
-_PERSISTED_OUTPUT = Path("/private/tmp/strategy-worker-rob1012-test-db-e2e-pair")
+_PERSISTED_OUTPUT = Path("/private/tmp/strategy-worker-rob1025-test-db-e2e-pair")
 _H6B_RESEARCH_PATHS = {
     "research/nautilus_scalping/rob974_h6b_artifacts.py",
     "research/nautilus_scalping/rob974_h6b_cli.py",
@@ -52,7 +52,7 @@ _PRE_R1_FORENSIC_JSON_SHA256 = (
     "ce77983a2d47a0d8137b0df4a1171090f2183363cf948aea9ed7ffc8e14cd704"
 )
 _CP10_FAKE_FREE_CLOSURE_SHA256 = (
-    "a3bfced8c4b0de7919a79056b3e315403f941c933416cc876e3d53c1afe59885"
+    "126fd1aad5742fb3c70dbbb484824e2e0c03ee1f254a05cd5e31b3dcb7924d87"
 )
 _CP10_RAW_MEMBER_KEY_CROSS_SHA256 = (
     "3bc2b53a0caab2bed4c882277a1fa2375e915f55fdaa368445b8eee5b712d93f"
@@ -157,10 +157,10 @@ def test_cp10_persisted_fake_free_nonvacuity_and_exact_guard_seal() -> None:
     scorecard_bytes = _PERSISTED_OUTPUT.joinpath("scorecard.json").read_bytes()
     scorecard = json.loads(scorecard_bytes)
     assert scorecard["lineage"]["full_campaign_hash"] == (
-        "c8bb8e88e129e0072d0ea174adca5c4cce8158f2726c6397030d2ae6e4619f39"
+        "2c47864c7ab661f16be6c414a1140944ec36832bb268e86183555b56c6f85f53"
     )
     assert scorecard["lineage"]["campaign_run_id"] == (
-        "rob974h6a-G4efMErFLrEyHWNztSKlo9j-ghlxQuPkwD0h1g6sQEw"
+        "rob974h6a-CvcCOcAO3hRQDUPzHdVBJFmkXi_dN6NmngCOBLk82lI"
     )
     expected_dimensions = {
         "S3": {"XRPUSDT", "DOGEUSDT", "SOLUSDT"},
@@ -182,6 +182,21 @@ def test_cp10_persisted_fake_free_nonvacuity_and_exact_guard_seal() -> None:
             365,
             4,
         )
+        for evidence in scorecard["strategies"][strategy]["dual_evidence"]:
+            assert evidence["phase"] in {"train", "selected_oos"}
+            assert (
+                sum(evidence["no_signal_reason_histogram"].values())
+                == (evidence["no_signal"])
+            )
+            assert evidence["evaluated_decision_units"] == (
+                evidence["no_signal"] + evidence["accepted"] + evidence["rejected"]
+            )
+            for path in evidence["paths"]:
+                if evidence["accepted"] > 0 and path["trade_count"] == 0:
+                    assert (
+                        sum(path["no_trade_reason_counts"].values())
+                        == (evidence["accepted"])
+                    )
     s3_exits = {
         row["exit_reason"]
         for row in scorecard["strategies"]["S3"]["raw_attribution_rows"]
@@ -208,7 +223,7 @@ def test_cp10_persisted_fake_free_nonvacuity_and_exact_guard_seal() -> None:
 
     authorized = frozen_guard._AUTHORIZED_PRODUCTION_CHANGES
     authorized_paths = {paths[0] for status, paths in authorized if status == "A"}
-    assert len(authorized) == 48
+    assert len(authorized) == 49
     assert _H6B_RESEARCH_PATHS <= authorized_paths
 
 
@@ -308,6 +323,19 @@ async def test_cp10_actual_chain_is_deterministic_replay_noop_and_nonvacuous(
     )
 
     prepared = prepare_fake_free_input(tmp_path / "second-persisted-synthetic-corpus")
+    funding_sidecars = dict(prepared.input_data.funding_sidecars)
+    assert set(funding_sidecars) == {"XRPUSDT", "DOGEUSDT", "SOLUSDT"}
+    for sidecar in funding_sidecars.values():
+        assert len(sidecar.rows) == 1095
+        assert all(
+            1_000_000_000_000 <= row.calc_time < 10_000_000_000_000
+            for row in sidecar.rows
+        )
+        assert {row.funding_interval_hours for row in sidecar.rows} == {8}
+        assert all(
+            abs((right.calc_time - left.calc_time) - 8 * 60 * 60 * 1000) <= 12
+            for left, right in zip(sidecar.rows, sidecar.rows[1:], strict=False)
+        )
     identity = prepared.identity
     plan = materializer.build_production_execution_plan(
         identity=identity,
@@ -432,6 +460,8 @@ async def test_cp10_actual_chain_is_deterministic_replay_noop_and_nonvacuous(
             )
             assert unique.candidate > 0
             assert unique.generator_accepted > 0
+            assert unique.phase == "selected_oos"
+            assert sum(unique.no_signal_reason_histogram.values()) == unique.no_signal
             assert unique.candidate == (
                 unique.generator_rejected + unique.generator_accepted
             )
@@ -458,6 +488,10 @@ async def test_cp10_actual_chain_is_deterministic_replay_noop_and_nonvacuous(
             assert any(
                 item.generator_rejection_subtotal_by_reason for item in fold_zero
             )
+            assert all(
+                sum(item.no_signal_reason_histogram.values()) == item.no_signal
+                for item in fold_zero
+            )
 
         unique_by_strategy, paths_by_strategy = materializer._h5_dual_evidence(result)
         actual_unique = unique_by_strategy["S3"][("S3-20", "fold-00")]
@@ -465,6 +499,18 @@ async def test_cp10_actual_chain_is_deterministic_replay_noop_and_nonvacuous(
             scenario: paths_by_strategy["S3"][("S3-20", "fold-00", scenario)]
             for scenario in ("base13", "primary_stress17", "upward_stress22")
         }
+        for strategy, unique_rows in unique_by_strategy.items():
+            for (row_id, fold_id), unique_row in unique_rows.items():
+                for scenario in ("base13", "primary_stress17", "upward_stress22"):
+                    path = paths_by_strategy[strategy].get((row_id, fold_id, scenario))
+                    if (
+                        path is not None
+                        and unique_row.accepted > 0
+                        and path.trade_count == 0
+                    ):
+                        assert sum(path.no_trade_reason_counts.values()) == (
+                            unique_row.accepted
+                        )
         tripled = replace(
             actual_paths["base13"],
             unique_evidence_accepted_count=actual_unique.accepted * 3,

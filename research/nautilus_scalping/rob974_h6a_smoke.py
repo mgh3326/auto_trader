@@ -166,9 +166,11 @@ def _unique_evidence() -> tuple[h6a_evidence.UniqueGeneratorEvidence, ...]:
     for i in range(h6a_evidence.FOLD_COUNT):
         kwargs = {
             "fold_id": f"fold-{i:02d}",
+            "phase": "selected_oos",
             "candidate_identity_hash": _hex64(f"smoke-candidate-{i}"),
             "evaluated_decision_units": 10,
             "no_signal": 4,
+            "no_signal_reason_histogram": {"momentum": 4},
             "candidate": 6,
             "generator_rejected": 4,
             "generator_accepted": 2,
