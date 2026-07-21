@@ -296,6 +296,193 @@ async def test_run_passes_symbol_to_list_open_orders(db_session, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_passes_market_as_instrument_type_to_list_open_orders(
+    db_session, monkeypatch
+):
+    """ROB-1018: ``market`` must reach ``list_open_orders`` as the
+    ``instrument_type`` filter kwarg (the query-layer filter already existed;
+    only the plumbing to reach it was missing)."""
+    from app.services.kis_mock_lifecycle_service import KISMockLifecycleService
+
+    captured: dict = {}
+
+    async def _fake_list_open_orders(
+        self, *, limit=100, symbol=None, instrument_type=None, **kw
+    ):
+        captured["symbol"] = symbol
+        captured["instrument_type"] = instrument_type
+        captured["limit"] = limit
+        return []
+
+    monkeypatch.setattr(
+        KISMockLifecycleService, "list_open_orders", _fake_list_open_orders
+    )
+    result = await run_kis_mock_reconciliation(
+        db_session, market="equity_us", symbol="AVGO", dry_run=True
+    )
+    assert captured["instrument_type"] == "equity_us"
+    assert captured["symbol"] == "AVGO"
+    assert result["orders_processed"] == 0
+    assert result["scope"] == {"market": "equity_us", "symbol": "AVGO"}
+
+
+@pytest.mark.asyncio
+async def test_market_scope_excludes_out_of_scope_rows_end_to_end(monkeypatch):
+    """ROB-1018 core repro: a US-scoped run must never see KR rows as
+    transition candidates — the query layer (not just filtering after the
+    fact) must exclude them, so a US session cannot stale-transition a
+    resting KR order it never asked about."""
+    mock_db = AsyncMock()
+    mock_lifecycle_svc = AsyncMock()
+
+    async def _list_open_orders(*, limit=100, symbol=None, instrument_type=None):
+        # Simulate the real query-layer filter: only equity_us rows come back.
+        rows = [
+            _ledger_row(
+                ledger_id=65,
+                symbol="AVGO",
+                side="buy",
+                qty=Decimal("1"),
+                state="accepted",
+                baseline=Decimal("0"),
+                instrument_type="equity_us",
+            )
+        ]
+        return [
+            r
+            for r in rows
+            if instrument_type is None or r.instrument_type == instrument_type
+        ]
+
+    mock_lifecycle_svc.list_open_orders.side_effect = _list_open_orders
+    mock_lifecycle_svc.apply_lifecycle_transition.return_value = {"applied": True}
+    monkeypatch.setattr(
+        "app.jobs.kis_mock_reconciliation_job.KISMockLifecycleService",
+        lambda _: mock_lifecycle_svc,
+    )
+
+    fake_kis = _fake_kis_client(kr=[], us=[])
+
+    result = await run_kis_mock_reconciliation(
+        mock_db, market="equity_us", dry_run=True, kis_client=fake_kis
+    )
+
+    assert result["orders_processed"] == 1
+    ledger_ids = {e["detail"]["ledger_id"] for e in result["events"]}
+    assert ledger_ids == {65}
+    assert result["scope"] == {"market": "equity_us", "symbol": None}
+
+
+@pytest.mark.asyncio
+async def test_scope_defaults_to_none_preserves_full_scan(monkeypatch):
+    """ROB-1018: omitting market/symbol must keep the existing full-batch
+    behavior — both reach list_open_orders as None."""
+    from app.services.kis_mock_lifecycle_service import KISMockLifecycleService
+
+    captured: dict = {}
+
+    async def _fake_list_open_orders(
+        self, *, limit=100, symbol=None, instrument_type=None, **kw
+    ):
+        captured["symbol"] = symbol
+        captured["instrument_type"] = instrument_type
+        return []
+
+    monkeypatch.setattr(
+        KISMockLifecycleService, "list_open_orders", _fake_list_open_orders
+    )
+    mock_db = AsyncMock()
+    result = await run_kis_mock_reconciliation(mock_db, dry_run=True)
+    assert captured["symbol"] is None
+    assert captured["instrument_type"] is None
+    assert result["scope"] == {"market": None, "symbol": None}
+
+
+@pytest.mark.asyncio
+async def test_sell_to_zero_books_fill_when_scoped_by_market(monkeypatch):
+    """ROB-1018 x ROB-910 non-regression: scoping the order query by market
+    must NOT weaken holdings verification. A scoped US sell-to-zero still
+    books a fill because ``_collect_kis_mock_holdings`` always fetches BOTH
+    KR and US regardless of the order-query scope."""
+    mock_db = AsyncMock()
+    mock_lifecycle_svc = AsyncMock()
+    mock_lifecycle_svc.list_open_orders.return_value = [
+        _ledger_row(
+            ledger_id=54,
+            symbol="F",
+            side="sell",
+            qty=Decimal("1"),
+            state="accepted",
+            baseline=Decimal("1"),
+            instrument_type="equity_us",
+        )
+    ]
+    mock_lifecycle_svc.apply_lifecycle_transition.return_value = {"applied": True}
+    monkeypatch.setattr(
+        "app.jobs.kis_mock_reconciliation_job.KISMockLifecycleService",
+        lambda _: mock_lifecycle_svc,
+    )
+
+    # Both fetches succeed; US returns empty (F is now zero → not listed).
+    fake_kis = _fake_kis_client(kr=[], us=[])
+
+    result = await run_kis_mock_reconciliation(
+        mock_db, market="equity_us", dry_run=True, kis_client=fake_kis
+    )
+
+    # Both markets were still fetched — scoping orders never scopes holdings.
+    assert fake_kis.fetch_my_stocks.await_count == 2
+    args = mock_lifecycle_svc.apply_lifecycle_transition.call_args.kwargs
+    assert args["ledger_id"] == 54
+    assert args["next_state"] == "fill"
+    assert args["reason_code"] == "fill_detected"
+    assert result["scope"] == {"market": "equity_us", "symbol": None}
+
+
+@pytest.mark.asyncio
+async def test_sell_to_zero_stays_anomaly_when_scoped_and_market_fetch_fails(
+    monkeypatch,
+):
+    """ROB-1018 x ROB-910 non-regression: scoping must not cause a failed
+    market fetch to be silently treated as a verified zero. Fail-closed
+    (anomaly / holdings_snapshot_missing) is preserved under scope."""
+    mock_db = AsyncMock()
+    mock_lifecycle_svc = AsyncMock()
+    mock_lifecycle_svc.list_open_orders.return_value = [
+        _ledger_row(
+            ledger_id=54,
+            symbol="F",
+            side="sell",
+            qty=Decimal("1"),
+            state="accepted",
+            baseline=Decimal("1"),
+            instrument_type="equity_us",
+        )
+    ]
+    mock_lifecycle_svc.apply_lifecycle_transition.return_value = {"applied": True}
+    monkeypatch.setattr(
+        "app.jobs.kis_mock_reconciliation_job.KISMockLifecycleService",
+        lambda _: mock_lifecycle_svc,
+    )
+
+    # KR succeeds ([]), US fetch RAISES → US market unverified, even though
+    # the run is scoped to equity_us.
+    fake_kis = _fake_kis_client_seq(
+        side_effect=[[], RuntimeError("EGW00201 mock inquiry failed")]
+    )
+
+    result = await run_kis_mock_reconciliation(
+        mock_db, market="equity_us", dry_run=True, kis_client=fake_kis
+    )
+
+    args = mock_lifecycle_svc.apply_lifecycle_transition.call_args.kwargs
+    assert args["ledger_id"] == 54
+    assert args["next_state"] == "anomaly"
+    assert args["reason_code"] == "holdings_snapshot_missing"
+    assert result["scope"] == {"market": "equity_us", "symbol": None}
+
+
+@pytest.mark.asyncio
 async def test_sell_to_zero_books_fill_when_symbol_absent_but_fetch_ok(monkeypatch):
     """ROB-910 core reproduction: full sell to zero.
 

@@ -537,6 +537,10 @@ def register_order_tools(mcp: FastMCP) -> None:
             "holdings deltas and updates ledger lifecycle states. "
             "dry_run=True by default for safety. Applying transitions requires "
             "BOTH dry_run=False AND confirm=True. "
+            "market (kr/us or equity_kr/equity_us) and/or symbol scope the run "
+            "to matching open orders only — omit both to scan all open KIS mock "
+            "orders (unchanged default behavior). The response echoes the "
+            "applied scope. "
             "Fails closed if KIS mock config is missing."
         ),
     )
@@ -544,6 +548,8 @@ def register_order_tools(mcp: FastMCP) -> None:
         dry_run: bool = True,
         confirm: bool = False,
         limit: int = 100,
+        market: str | None = None,
+        symbol: str | None = None,
     ):
         config_error = _kis_mock_config_error()
         if config_error:
@@ -556,7 +562,7 @@ def register_order_tools(mcp: FastMCP) -> None:
                 "error": "confirm=True is required when dry_run=False",
             }
         return await kis_mock_ledger.kis_mock_reconciliation_run_impl(
-            dry_run=dry_run, limit=limit
+            dry_run=dry_run, limit=limit, market=market, symbol=symbol
         )
 
 

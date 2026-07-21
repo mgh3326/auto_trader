@@ -666,15 +666,41 @@ async def _record_kis_mock_order(
     }
 
 
+_MARKET_ALIASES = {"kr": "equity_kr", "us": "equity_us"}
+
+
+def _normalize_kis_mock_reconcile_market(market: str | None) -> str | None:
+    if market is None:
+        return None
+    return _MARKET_ALIASES.get(market, market)
+
+
 async def kis_mock_reconciliation_run_impl(
     *,
     dry_run: bool = True,
     limit: int = 100,
+    market: str | None = None,
+    symbol: str | None = None,
 ) -> dict[str, Any]:
-    """Execute KIS mock order reconciliation and return summary."""
+    """Execute KIS mock order reconciliation and return summary.
+
+    ``market``/``symbol`` (ROB-1018) narrow the open-order lookup so a
+    single-market/single-symbol reconciliation pass never proposes
+    transitions on out-of-scope rows (e.g. a US session no longer flips KR
+    resting orders to ``stale``). Both default to ``None``, preserving the
+    prior full-scan behavior for existing callers (TaskIQ periodic task,
+    unscoped MCP calls).
+    """
+    normalized_market = _normalize_kis_mock_reconcile_market(market)
     try:
         async with _order_session_factory()() as db:
-            return await run_kis_mock_reconciliation(db, dry_run=dry_run, limit=limit)
+            return await run_kis_mock_reconciliation(
+                db,
+                dry_run=dry_run,
+                limit=limit,
+                market=normalized_market,
+                symbol=symbol,
+            )
     except Exception as exc:
         logger.exception("Failed to run KIS mock reconciliation: %s", exc)
         return {

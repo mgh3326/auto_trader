@@ -151,6 +151,7 @@ async def run_kis_mock_reconciliation(
     dry_run: bool = True,
     limit: int = 100,
     symbol: str | None = None,
+    market: str | None = None,
     thresholds: ReconcilerThresholds | None = None,
     kis_client: KISClient | None = None,
 ) -> dict[str, Any]:
@@ -158,11 +159,20 @@ async def run_kis_mock_reconciliation(
 
     ``symbol`` (ROB-404) restricts reconciliation to one symbol's open orders —
     the delta-budget kernel groups by (symbol, side) so a single-symbol pass is
-    self-consistent. ``None`` keeps the full-batch behavior.
+    self-consistent. ``market`` (ROB-1018) restricts to one ``instrument_type``
+    (e.g. ``equity_kr``/``equity_us``) — prevents a US-scoped run from proposing
+    transitions on KR rows (and vice versa). Both default to ``None``, which
+    keeps the full-batch behavior. Neither narrows the holdings snapshot
+    fetch (``_collect_kis_mock_holdings`` always fetches KR + US) — the
+    ROB-910 zero-synthesis fail-closed guard for out-of-scope-fetch symbols is
+    unaffected by order scoping.
     """
     thresholds = thresholds or ReconcilerThresholds()
     lifecycle_svc = KISMockLifecycleService(db)
-    open_rows = await lifecycle_svc.list_open_orders(limit=limit, symbol=symbol)
+    open_rows = await lifecycle_svc.list_open_orders(
+        limit=limit, symbol=symbol, instrument_type=market
+    )
+    scope = {"market": market, "symbol": symbol}
     if not open_rows:
         return {
             "success": True,
@@ -173,6 +183,7 @@ async def run_kis_mock_reconciliation(
             "dry_run": dry_run,
             "transitions": [],
             "events": [],
+            "scope": scope,
             "message": "No open KIS mock orders found",
         }
 
@@ -274,4 +285,5 @@ async def run_kis_mock_reconciliation(
         "dry_run": dry_run,
         "transitions": transition_logs,
         "events": events,
+        "scope": scope,
     }

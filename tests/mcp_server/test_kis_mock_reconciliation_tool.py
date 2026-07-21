@@ -26,7 +26,7 @@ async def test_kis_mock_reconciliation_tool_dry_run_default(monkeypatch):
 
     result = await tools["kis_mock_reconciliation_run"]()
     assert result == {"success": True, "applied": 0}
-    mock_run.assert_awaited_once_with(dry_run=True, limit=100)
+    mock_run.assert_awaited_once_with(dry_run=True, limit=100, market=None, symbol=None)
 
 
 @pytest.mark.asyncio
@@ -69,4 +69,27 @@ async def test_kis_mock_reconciliation_tool_apply_with_confirm(monkeypatch):
     )
 
     assert result == {"success": True, "applied": 3}
-    mock_run.assert_awaited_once_with(dry_run=False, limit=10)
+    mock_run.assert_awaited_once_with(dry_run=False, limit=10, market=None, symbol=None)
+
+
+@pytest.mark.asyncio
+async def test_kis_mock_reconciliation_tool_passes_market_and_symbol(monkeypatch):
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.orders_registration.validate_kis_mock_config",
+        lambda: [],
+    )
+
+    mock_run = AsyncMock(return_value={"success": True, "applied": 0})
+    monkeypatch.setattr(kis_mock_ledger, "kis_mock_reconciliation_run_impl", mock_run)
+
+    tools = build_tools()
+    result = await tools["kis_mock_reconciliation_run"](
+        market="us", symbol="AVGO", limit=10
+    )
+
+    assert result == {"success": True, "applied": 0}
+    mock_run.assert_awaited_once_with(
+        dry_run=True, limit=10, market="us", symbol="AVGO"
+    )
