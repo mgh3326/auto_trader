@@ -86,6 +86,7 @@ TargetCancelFn = Callable[..., Any]
 SubmitEvidenceFetchFn = Callable[..., Any]
 RetrospectiveLookupFn = Callable[[int], Any]
 EligibilityGate = Callable[..., Any]
+OppositePendingCheckFn = Callable[..., Any]
 
 _PREVIEW_REASON = "order_proposal revalidation (rung {rung})"
 _SUBMIT_REASON = "order_proposal submit after revalidation (rung {rung})"
@@ -232,6 +233,34 @@ def _invalid_toss_preview_reason(
         if price is None or not str(price).strip():
             return "limit_price_missing"
     return None
+
+
+async def _default_toss_opposite_pending_check(
+    *, account_mode: str, market: str, symbol: str, side: str
+) -> dict[str, Any] | None:
+    """Toss-only pre-cancel atomicity guard (ROB-972 R1 fix).
+
+    Toss's live place path rejects on an opposite-side pending order just
+    before POST (``orders_toss_variants._opposite_pending_error``), but that
+    scan never runs during the dry-run preview
+    ``_revalidate_replace_preview`` uses -- so a replace could cancel the
+    original resting order, then have the replacement rejected by that same
+    guard, leaving the operator with nothing resting (the original ROB-972
+    round-1 finding). Re-running the scan here, before any cancel, catches a
+    losing race while the original order is still intact. Deliberately
+    toss_live-only: kis_live/upbit replace weren't implicated by the
+    incident that reproduced this gap, and neither broker's replace path
+    shares Toss's cancel-then-place two-step.
+    """
+    if account_mode != "toss_live":
+        return None
+    from app.mcp_server.tooling.orders_toss_variants import (
+        _client_context,
+        _opposite_pending_error,
+    )
+
+    async with _client_context() as client:
+        return await _opposite_pending_error(client, symbol, side, {})
 
 
 def _adapt_toss_submit_response(
@@ -537,6 +566,7 @@ async def revalidate_and_submit(
     buying_power_claimer: BuyingPowerClaimer = default_buying_power_claimer,
     buying_power_releaser: BuyingPowerReleaser = default_buying_power_releaser,
     eligibility_gate: EligibilityGate | None = None,
+    opposite_pending_check_fn: OppositePendingCheckFn = _default_toss_opposite_pending_check,
 ) -> list[RungOutcome]:
     """Revalidate + (maybe) submit every ``pending_approval`` rung.
 
@@ -581,6 +611,8 @@ async def revalidate_and_submit(
                 cancel_target_fn=cancel_target_fn,
                 correlation_mint=correlation_mint,
                 fetch_submit_evidence_fn=fetch_submit_evidence_fn,
+                eligibility_gate=eligibility_gate,
+                opposite_pending_check_fn=opposite_pending_check_fn,
             )
         elif action == "cancel":
             outcome = await _revalidate_cancel_rung(
@@ -590,6 +622,7 @@ async def revalidate_and_submit(
                 now=now,
                 fetch_target_fn=fetch_target_fn,
                 cancel_target_fn=cancel_target_fn,
+                eligibility_gate=eligibility_gate,
             )
         else:
             outcome = await _revalidate_place_rung(
@@ -606,6 +639,75 @@ async def revalidate_and_submit(
             )
         outcomes.append(outcome)
     return outcomes
+
+
+async def _apply_eligibility_gate(
+    *,
+    service: OrderProposalsService,
+    group: OrderProposal,
+    rung: OrderProposalRung,
+    preview: dict[str, Any],
+    now: datetime,
+    eligibility_gate: EligibilityGate | None,
+) -> RungOutcome | None:
+    """Run the auto-dispatch eligibility gate, failing closed on any error.
+
+    Returns ``None`` when the rung is eligible (or no gate is wired -- the
+    manual Telegram-click path never passes one). Otherwise reverts the rung
+    to ``pending_approval`` and returns an ``approval_required`` outcome so
+    the caller falls back to the normal human-approval message instead of
+    completing whatever broker action it was about to take.
+
+    ROB-972 round-1 finding: this used to run only from
+    ``_revalidate_place_rung``, so ``dispatch_proposal``'s auto-approve path
+    could reach a toss_live/kis_live/upbit cancel or replace's broker
+    mutation without ``evaluate_auto_approve_eligibility`` (which rejects
+    ``action_not_place`` first) ever being consulted -- a same-day resting
+    order could be auto-cancelled before the Telegram approval message was
+    even sent. ``_revalidate_cancel_rung``/``_revalidate_replace_rung`` now
+    call this too, with an empty ``preview`` (the ``action_not_place``
+    check short-circuits before ``preview`` is ever read).
+    """
+    if eligibility_gate is None:
+        return None
+    proposal_id = group.proposal_id
+    rung_index = rung.rung_index
+    try:
+        decision = await _maybe_await(
+            eligibility_gate(
+                group=group,
+                rung=rung,
+                preview=preview,
+                now=now,
+            )
+        )
+        eligible = (
+            decision.get("eligible")
+            if isinstance(decision, dict)
+            else getattr(decision, "eligible", False)
+        )
+        reason = (
+            decision.get("reason")
+            if isinstance(decision, dict)
+            else getattr(decision, "reason", "eligibility_unknown")
+        )
+        details = (
+            decision.get("details", {})
+            if isinstance(decision, dict)
+            else getattr(decision, "details", {})
+        )
+    except Exception as exc:  # noqa: BLE001 - auto path fails closed
+        eligible = False
+        reason = "eligibility_error"
+        details = {"error": str(exc)}
+    if eligible is True:
+        return None
+    await service.transition_rung(proposal_id, rung_index, new_state="pending_approval")
+    return RungOutcome(
+        rung_index,
+        "approval_required",
+        {"reason": str(reason), **dict(details or {})},
+    )
 
 
 async def _revalidate_place_rung(
@@ -722,44 +824,16 @@ async def _revalidate_place_rung(
             rung_index, "needs_reconfirm", {"before": before, "after": after}
         )
 
-    if eligibility_gate is not None:
-        try:
-            decision = await _maybe_await(
-                eligibility_gate(
-                    group=group,
-                    rung=rung,
-                    preview=preview,
-                    now=now,
-                )
-            )
-            eligible = (
-                decision.get("eligible")
-                if isinstance(decision, dict)
-                else getattr(decision, "eligible", False)
-            )
-            reason = (
-                decision.get("reason")
-                if isinstance(decision, dict)
-                else getattr(decision, "reason", "eligibility_unknown")
-            )
-            details = (
-                decision.get("details", {})
-                if isinstance(decision, dict)
-                else getattr(decision, "details", {})
-            )
-        except Exception as exc:  # noqa: BLE001 - auto path fails closed
-            eligible = False
-            reason = "eligibility_error"
-            details = {"error": str(exc)}
-        if eligible is not True:
-            await service.transition_rung(
-                proposal_id, rung_index, new_state="pending_approval"
-            )
-            return RungOutcome(
-                rung_index,
-                "approval_required",
-                {"reason": str(reason), **dict(details or {})},
-            )
+    gate_outcome = await _apply_eligibility_gate(
+        service=service,
+        group=group,
+        rung=rung,
+        preview=preview,
+        now=now,
+        eligibility_gate=eligibility_gate,
+    )
+    if gate_outcome is not None:
+        return gate_outcome
 
     buying_power_reservation: tuple[str, Decimal, str | None] | None = None
     if rung.side == "buy" and rung.limit_price is not None:
@@ -1158,6 +1232,50 @@ async def _cancel_and_confirm_target(
     return None
 
 
+async def _check_replace_opposite_pending(
+    *,
+    service: OrderProposalsService,
+    group: OrderProposal,
+    rung: OrderProposalRung,
+    now: datetime,
+    opposite_pending_check_fn: OppositePendingCheckFn,
+) -> RungOutcome | None:
+    """Pre-cancel guard: block a replace before it cancels the original.
+
+    ``opposite_pending_check_fn`` is a no-op (returns ``None``) for every
+    account_mode except toss_live -- see
+    ``_default_toss_opposite_pending_check``. Any exception (e.g. the Toss
+    client being unconfigured) fails closed: the rung reverts to
+    ``pending_approval`` and the original order is never touched, same as a
+    confirmed opposite-pending hit.
+    """
+    proposal_id = group.proposal_id
+    rung_index = rung.rung_index
+    try:
+        guard = await _maybe_await(
+            opposite_pending_check_fn(
+                account_mode=group.account_mode,
+                market=group.market,
+                symbol=group.symbol,
+                side=rung.side,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - fail closed: never cancel on an unknown guard state
+        await service.transition_rung(
+            proposal_id, rung_index, new_state="pending_approval"
+        )
+        return RungOutcome(
+            rung_index, "error", {"error": f"opposite_pending_check_error:{exc}"}
+        )
+    if guard is None:
+        return None
+    await service.transition_rung(proposal_id, rung_index, new_state="pending_approval")
+    error = (
+        guard.get("error") if isinstance(guard, dict) else None
+    ) or "opposite_pending_order_exists"
+    return RungOutcome(rung_index, "guard_blocked", {"error": error})
+
+
 async def _revalidate_replace_rung(
     *,
     service: OrderProposalsService,
@@ -1169,9 +1287,13 @@ async def _revalidate_replace_rung(
     cancel_target_fn: TargetCancelFn,
     correlation_mint: CorrelationMint,
     fetch_submit_evidence_fn: SubmitEvidenceFetchFn,
+    eligibility_gate: EligibilityGate | None = None,
+    opposite_pending_check_fn: OppositePendingCheckFn = _default_toss_opposite_pending_check,
 ) -> RungOutcome:
     proposal_client_order_id = (
-        _proposal_client_order_id(group.proposal_id, rung.rung_index)
+        _toss_proposal_client_order_id(group.proposal_id, rung.rung_index)
+        if group.account_mode == "toss_live"
+        else _proposal_client_order_id(group.proposal_id, rung.rung_index)
         if group.account_mode == "upbit"
         else None
     )
@@ -1185,6 +1307,25 @@ async def _revalidate_replace_rung(
     if target_outcome is not None:
         return target_outcome
 
+    # ROB-972 round-1 finding: an auto-dispatch eligibility gate previously
+    # only ran for `place` rungs, so a toss_live/kis_live/upbit auto-dispatch
+    # could reach the cancel below without ever consulting
+    # `evaluate_auto_approve_eligibility` (which rejects `action_not_place`
+    # first, before it would even read `preview`). Applying the same gate
+    # here means the manual Telegram-click path (`eligibility_gate=None`) is
+    # unaffected, but auto-dispatch always falls back to human approval for
+    # cancel/replace, same as it always has for `place`.
+    gate_outcome = await _apply_eligibility_gate(
+        service=service,
+        group=group,
+        rung=rung,
+        preview={},
+        now=now,
+        eligibility_gate=eligibility_gate,
+    )
+    if gate_outcome is not None:
+        return gate_outcome
+
     preview, preview_outcome = await _revalidate_replace_preview(
         service=service,
         group=group,
@@ -1195,6 +1336,23 @@ async def _revalidate_replace_rung(
     )
     if preview_outcome is not None:
         return preview_outcome
+
+    # ROB-972 round-1 finding: Toss's live place path rejects an
+    # opposite-side pending order just before POST, but the dry-run preview
+    # above never runs that scan -- so without this check, a replace could
+    # cancel the original order below and then have the replacement
+    # rejected by that same guard, leaving the operator with nothing
+    # resting. Re-check here, before any cancel, so a losing race is caught
+    # while the original order is still intact.
+    opposite_outcome = await _check_replace_opposite_pending(
+        service=service,
+        group=group,
+        rung=rung,
+        now=now,
+        opposite_pending_check_fn=opposite_pending_check_fn,
+    )
+    if opposite_outcome is not None:
+        return opposite_outcome
 
     proposal_id = group.proposal_id
     rung_index = rung.rung_index
@@ -1287,6 +1445,7 @@ async def _revalidate_cancel_rung(
     now: datetime,
     fetch_target_fn: TargetFetchFn,
     cancel_target_fn: TargetCancelFn,
+    eligibility_gate: EligibilityGate | None = None,
 ) -> RungOutcome:
     target_outcome = await _validate_target_action(
         service=service,
@@ -1297,6 +1456,22 @@ async def _revalidate_cancel_rung(
     )
     if target_outcome is not None:
         return target_outcome
+
+    # ROB-972 round-1 finding: see the matching comment in
+    # `_revalidate_replace_rung` -- without this, auto-dispatch could reach
+    # `BROKER_CANCEL` below for a toss_live/kis_live/upbit cancel proposal
+    # without ever consulting the eligibility gate, which rejects
+    # `action_not_place` before it reads `preview`.
+    gate_outcome = await _apply_eligibility_gate(
+        service=service,
+        group=group,
+        rung=rung,
+        preview={},
+        now=now,
+        eligibility_gate=eligibility_gate,
+    )
+    if gate_outcome is not None:
+        return gate_outcome
 
     proposal_id = group.proposal_id
     rung_index = rung.rung_index
