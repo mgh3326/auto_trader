@@ -342,6 +342,48 @@ def adapt_s4_candidate(candidate: S4Candidate, *, fold_id: str) -> S4PairSignalI
     )
 
 
+def adapt_s3_pbo_candidate_buffer(
+    output: S3GeneratorOutput,
+) -> list[S3SignalIntent]:
+    """Adapt one H3 invocation into a fresh no-fold PBO candidate buffer.
+
+    A built-in empty tuple is a process-wide singleton in CPython.  Returning
+    ``tuple(adapted for ...)`` therefore aliases two configs whenever both H3
+    invocations accept no candidates.  PBO requires container independence
+    even for an empty result, so this generator-side boundary deliberately
+    materializes a new list on every call.  Candidate order and values are
+    unchanged; the H2 engine sorts a copy and never mutates this buffer.
+    """
+
+    verify_h2_contract()
+    if type(output) is not S3GeneratorOutput:
+        raise TypeError("output must be exact H3 S3GeneratorOutput")
+    return [
+        dataclasses.replace(
+            adapt_s3_candidate(candidate, fold_id="pbo-full-window"),
+            fold_id=None,
+        )
+        for candidate in output.accepted
+    ]
+
+
+def adapt_s4_pbo_candidate_buffer(
+    output: S4GeneratorOutput,
+) -> list[S4PairSignalIntent]:
+    """Adapt one H3 invocation into a fresh no-fold PBO candidate buffer."""
+
+    verify_h2_contract()
+    if type(output) is not S4GeneratorOutput:
+        raise TypeError("output must be exact H3 S4GeneratorOutput")
+    return [
+        dataclasses.replace(
+            adapt_s4_candidate(candidate, fold_id="pbo-full-window"),
+            fold_id=None,
+        )
+        for candidate in output.accepted
+    ]
+
+
 def _plain(value: object) -> object:
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {
@@ -536,7 +578,9 @@ __all__ = [
     "H2_MERGE_SHA",
     "INTEGRATION_SCHEMA_VERSION",
     "adapt_s3_candidate",
+    "adapt_s3_pbo_candidate_buffer",
     "adapt_s4_candidate",
+    "adapt_s4_pbo_candidate_buffer",
     "run_h2_integration",
     "verify_h2_contract",
 ]

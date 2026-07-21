@@ -35,7 +35,7 @@ from test_rob984_cp9_real_test_db import _actual_result, _ActualRunner
 from app.services import rob974_h6b_materializer as materializer
 from app.services.research_db_write_guard import default_research_db_policy
 
-_PERSISTED_OUTPUT = Path("/private/tmp/strategy-worker-rob984-test-db-e2e-pair")
+_PERSISTED_OUTPUT = Path("/private/tmp/strategy-worker-rob1012-test-db-e2e-pair")
 _H6B_RESEARCH_PATHS = {
     "research/nautilus_scalping/rob974_h6b_artifacts.py",
     "research/nautilus_scalping/rob974_h6b_cli.py",
@@ -52,7 +52,7 @@ _PRE_R1_FORENSIC_JSON_SHA256 = (
     "ce77983a2d47a0d8137b0df4a1171090f2183363cf948aea9ed7ffc8e14cd704"
 )
 _CP10_FAKE_FREE_CLOSURE_SHA256 = (
-    "6f60e868df5c1d27f19094b5146e22c70a69ba89550f18397c0926ebce2ec326"
+    "a3bfced8c4b0de7919a79056b3e315403f941c933416cc876e3d53c1afe59885"
 )
 _CP10_RAW_MEMBER_KEY_CROSS_SHA256 = (
     "3bc2b53a0caab2bed4c882277a1fa2375e915f55fdaa368445b8eee5b712d93f"
@@ -154,10 +154,10 @@ def test_cp10_persisted_fake_free_nonvacuity_and_exact_guard_seal() -> None:
     scorecard_bytes = _PERSISTED_OUTPUT.joinpath("scorecard.json").read_bytes()
     scorecard = json.loads(scorecard_bytes)
     assert scorecard["lineage"]["full_campaign_hash"] == (
-        "341a5a57ec14b7a499ea58d74de3b7d9c4b2c4e8bb514c789f6f528231a4045d"
+        "c8bb8e88e129e0072d0ea174adca5c4cce8158f2726c6397030d2ae6e4619f39"
     )
     assert scorecard["lineage"]["campaign_run_id"] == (
-        "rob974h6a-ReYDH4lJ8dDmDJxApTNIB7p72qAjTBI2Qited6Ni9Y0"
+        "rob974h6a-G4efMErFLrEyHWNztSKlo9j-ghlxQuPkwD0h1g6sQEw"
     )
     expected_dimensions = {
         "S3": {"XRPUSDT", "DOGEUSDT", "SOLUSDT"},
