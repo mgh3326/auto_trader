@@ -255,14 +255,14 @@ def test_production_imports_use_only_actual_merged_h4_h5_and_no_forbidden_runtim
             "rob974_h4_pbo",
             "rob974_h4_runner",
             "rob974_h4_selection",
-        "rob974_h5_canonical",
-        "rob974_h5_contracts",
-        "rob974_h5_dual_evidence",
-        "rob974_h5_gates",
-        "rob974_h5_markdown",
-        "rob974_h5_s3",
-        "rob974_h5_s4",
-    }
+            "rob974_h5_canonical",
+            "rob974_h5_contracts",
+            "rob974_h5_dual_evidence",
+            "rob974_h5_gates",
+            "rob974_h5_markdown",
+            "rob974_h5_s3",
+            "rob974_h5_s4",
+        }
 
 
 def test_transaction_and_sql_ast_ownership_is_closed():

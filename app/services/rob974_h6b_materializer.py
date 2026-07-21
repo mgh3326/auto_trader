@@ -2393,7 +2393,9 @@ def parse_persisted_attempt_record(
         raise ReplayCollisionError("persisted attempt parser requires production plan")
     payload = item.evidence_payload
     if not isinstance(payload, Mapping):
-        raise ReplayCollisionError("persisted attempt evidence payload is not a mapping")
+        raise ReplayCollisionError(
+            "persisted attempt evidence payload is not a mapping"
+        )
     if payload.get("schema_version") != "rob974_h6b_attempt_evidence.v1":
         raise ReplayCollisionError("persisted attempt evidence schema differs")
     if payload.get("row_id") != item.row_id:
