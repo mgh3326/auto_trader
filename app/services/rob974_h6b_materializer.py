@@ -24,8 +24,13 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
+import rob941_funding_sidecar as h1_funding
+import rob944_gap_funding as h4_funding
+import rob974_h2_dtos as h2_dtos
 import rob974_h2_h1_bridge as h2_h1_bridge
 import rob974_h2_ingress as h2_ingress
+import rob974_h2_s3_engine as h2_s3_engine
+import rob974_h2_s4_engine as h2_s4_engine
 import rob974_h2_scenarios as h2_scenarios
 import rob974_h3_evidence as h3_evidence
 import rob974_h3_h2_adapter as h3_h2_adapter
@@ -48,6 +53,7 @@ import rob974_h5_s4 as h5_s4
 import rob974_h6a_accounting as h6a_accounting
 import rob974_h6a_evidence as h6a_evidence
 import rob974_lineage as h1_lineage
+from funding_oi_archive import FundingRow
 from rob974_features import FOUR_HOUR_MS, MinuteBar
 from sqlalchemy import or_, select, text
 
@@ -1366,6 +1372,7 @@ class ActualH4InputData:
     corpus_end_ts: int
     persisted_corpus_hash: str
     persisted_feature_hash: str
+    funding_sidecars: tuple[tuple[str, h1_funding.FundingSidecar], ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -1388,6 +1395,26 @@ class ActualH4InputData:
             raise H6BPlanError("actual H4 corpus_end_ts must follow every minute")
         _hex64(self.persisted_corpus_hash, "persisted_corpus_hash")
         _hex64(self.persisted_feature_hash, "persisted_feature_hash")
+        if self.funding_sidecars:
+            if (
+                type(self.funding_sidecars) is not tuple
+                or tuple(symbol for symbol, _ in self.funding_sidecars)
+                != h3_manifest.SYMBOLS
+            ):
+                raise H6BPlanError(
+                    "actual H4 funding must use exact selected symbol order"
+                )
+            for symbol, sidecar in self.funding_sidecars:
+                if (
+                    type(symbol) is not str
+                    or type(sidecar) is not h1_funding.FundingSidecar
+                    or sidecar.symbol != symbol
+                    or not sidecar.rows
+                    or any(type(row) is not FundingRow for row in sidecar.rows)
+                ):
+                    raise H6BPlanError(
+                        "actual H4 funding must contain exact nonempty sidecars"
+                    )
 
     @classmethod
     def from_mapping(
@@ -1397,14 +1424,27 @@ class ActualH4InputData:
         corpus_end_ts: int,
         persisted_corpus_hash: str,
         persisted_feature_hash: str,
+        funding_sidecars: Mapping[str, h1_funding.FundingSidecar] | None = None,
     ) -> ActualH4InputData:
         if not isinstance(rows, Mapping) or set(rows) != set(h3_manifest.SYMBOLS):
             raise H6BPlanError("actual H4 rows must cover exact selected universe")
+        if funding_sidecars is not None and (
+            not isinstance(funding_sidecars, Mapping)
+            or set(funding_sidecars) != set(h3_manifest.SYMBOLS)
+        ):
+            raise H6BPlanError("actual H4 funding must cover exact selected universe")
         return cls(
             tuple((symbol, tuple(rows[symbol])) for symbol in h3_manifest.SYMBOLS),
             corpus_end_ts,
             persisted_corpus_hash,
             persisted_feature_hash,
+            (
+                ()
+                if funding_sidecars is None
+                else tuple(
+                    (symbol, funding_sidecars[symbol]) for symbol in h3_manifest.SYMBOLS
+                )
+            ),
         )
 
     def as_dict(self) -> dict[str, tuple[MinuteBar, ...]]:
@@ -1485,11 +1525,13 @@ def _actual_h4_train_trace(
     strategy: str,
     config_id: str,
     terminal: h4_adapter.SealedS3Terminal | h4_adapter.SealedS4Terminal,
+    funding_lookup: object | None = None,
 ) -> h4_selection.TrainCandidateTrace:
     if strategy == "S3" and type(terminal) is h4_adapter.SealedS3Terminal:
         rows = h2_scenarios.build_s3_scenario_ledger(
             terminal.result.trades,
             h2_scenarios.PATH_SCENARIO_PRIMARY_STRESS17,
+            funding_lookup,
         )
         unit_order = h3_manifest.SYMBOLS
         values_by_unit = tuple((row.trade.symbol, row.e17_bps) for row in rows)
@@ -1498,6 +1540,7 @@ def _actual_h4_train_trace(
         rows = h2_scenarios.build_s4_scenario_ledger(
             terminal.result.trades,
             h2_scenarios.PATH_SCENARIO_PRIMARY_STRESS17,
+            funding_lookup,
         )
         unit_order = h3_manifest.PAIRS
         values_by_unit = tuple(
@@ -1614,13 +1657,25 @@ class ActualMergedH4Runner:
         data: ActualH4InputData,
         *,
         execute_all_folds: bool = False,
+        require_pit_funding: bool = False,
     ) -> None:
         if type(data) is not ActualH4InputData:
             raise H6BPlanError("actual H4 runner requires exact persisted input")
         if type(execute_all_folds) is not bool:
             raise H6BPlanError("execute_all_folds must be exact bool")
+        if type(require_pit_funding) is not bool:
+            raise H6BPlanError("require_pit_funding must be exact bool")
+        if require_pit_funding and not data.funding_sidecars:
+            raise H6BPlanError("required PIT funding sidecars are absent")
         self._data = data
         self._execute_all_folds = execute_all_folds
+        self._require_pit_funding = require_pit_funding
+        self._funding_by_symbol = dict(data.funding_sidecars)
+        self._funding_lookup = (
+            h4_funding.build_funding_lookup(self._funding_by_symbol)
+            if require_pit_funding
+            else None
+        )
         self.last_trace: tuple[str, ...] = ()
         self.last_selected: tuple[tuple[str, str, str], ...] = ()
         self.last_result: ActualH4CampaignResult | None = None
@@ -1628,6 +1683,184 @@ class ActualMergedH4Runner:
     def _fold_is_active(self, fold: object) -> bool:
         """Keep CP10's bounded mode default; launchers opt into all folds."""
         return self._execute_all_folds or getattr(fold, "fold_index", None) == 0
+
+    def _s3_funding_gate(
+        self, intent: h2_dtos.S3SignalIntent
+    ) -> h4_selection.FundingGateResult:
+        sidecar = self._funding_by_symbol[intent.symbol]
+        observed = h4_funding.evaluate_funding_entry_gate(
+            sidecar,
+            side=intent.side,
+            entry_ts_ms=intent.signal_ts,
+            max_hold_ms=h2_s3_engine.MAX_HOLD_MS,
+        )
+        return h4_selection.s3_funding_gate(observed.expected_cost_bps)
+
+    def _s4_funding_gate(
+        self, intent: h2_dtos.S4PairSignalIntent
+    ) -> h4_selection.FundingGateResult:
+        symbol_a, symbol_b = intent.pair
+        observed_a = h4_funding.evaluate_funding_entry_gate(
+            self._funding_by_symbol[symbol_a],
+            side=intent.side_a,
+            entry_ts_ms=intent.signal_ts,
+            max_hold_ms=h2_s4_engine.MAX_HOLD_MS,
+        )
+        observed_b = h4_funding.evaluate_funding_entry_gate(
+            self._funding_by_symbol[symbol_b],
+            side=intent.side_b,
+            entry_ts_ms=intent.signal_ts,
+            max_hold_ms=h2_s4_engine.MAX_HOLD_MS,
+        )
+        return h4_selection.s4_funding_gate(
+            leg_a_signed_bps=observed_a.expected_cost_bps,
+            leg_b_signed_bps=observed_b.expected_cost_bps,
+            weight_a=intent.weight_a,
+            weight_b=intent.weight_b,
+        )
+
+    def _invoke_s3(
+        self,
+        *,
+        intents: tuple[object, ...],
+        minute_index: object,
+        close_feature_index: object,
+        horizon_end_ts: int,
+        strategy: str,
+        config_id: str,
+        fold_id: str,
+    ) -> h4_adapter.SealedS3Terminal:
+        if not self._require_pit_funding:
+            return h4_adapter.invoke_actual_s3_engine(
+                candidates=intents,
+                minute_index=minute_index,
+                close_feature_index=close_feature_index,
+                corpus_end_ts=self._data.corpus_end_ts,
+                horizon_end_ts=horizon_end_ts,
+                strategy=strategy,
+                config_id=config_id,
+                fold_id=fold_id,
+            )
+        if any(type(intent) is not h2_dtos.S3SignalIntent for intent in intents):
+            raise H6BPlanError("PIT funding received non-S3 intent")
+        accepted: list[h2_dtos.S3SignalIntent] = []
+        rejected: list[h2_dtos.S3NoTradeRecord] = []
+        for raw_intent in intents:
+            intent = raw_intent
+            if (intent.symbol, intent.signal_ts) not in minute_index:
+                accepted.append(intent)
+                continue
+            gate = self._s3_funding_gate(intent)
+            if gate.accepted:
+                accepted.append(intent)
+            else:
+                rejected.append(
+                    h2_dtos.S3NoTradeRecord(
+                        symbol=intent.symbol,
+                        side=intent.side,
+                        config_id=intent.config_id,
+                        fold_id=intent.fold_id,
+                        signal_ts=intent.signal_ts,
+                        reason=gate.reason or "funding_gate_rejected",
+                    )
+                )
+        terminal = h4_adapter.invoke_actual_s3_engine(
+            candidates=tuple(accepted),
+            minute_index=minute_index,
+            close_feature_index=close_feature_index,
+            corpus_end_ts=self._data.corpus_end_ts,
+            horizon_end_ts=horizon_end_ts,
+            strategy=strategy,
+            config_id=config_id,
+            fold_id=fold_id,
+        )
+        result = h2_dtos.S3EngineResult(
+            terminal.result.trades,
+            (*terminal.result.no_trades, *rejected),
+            terminal.result.incompletes,
+        )
+        h4_adapter.validate_s3_terminal(intents, result)
+        return h4_adapter.SealedS3Terminal(
+            result,
+            h4_adapter.seal_s3_engine_input(
+                intents,
+                corpus_end_ts=self._data.corpus_end_ts,
+                horizon_end_ts=horizon_end_ts,
+            ),
+            h4_adapter.seal_s3_engine_output(result),
+        )
+
+    def _invoke_s4(
+        self,
+        *,
+        intents: tuple[object, ...],
+        minute_index: object,
+        pair_close_index: object,
+        horizon_end_ts: int,
+        strategy: str,
+        config_id: str,
+        fold_id: str,
+    ) -> h4_adapter.SealedS4Terminal:
+        if not self._require_pit_funding:
+            return h4_adapter.invoke_actual_s4_engine(
+                candidates=intents,
+                minute_index=minute_index,
+                pair_close_index=pair_close_index,
+                corpus_end_ts=self._data.corpus_end_ts,
+                horizon_end_ts=horizon_end_ts,
+                strategy=strategy,
+                config_id=config_id,
+                fold_id=fold_id,
+            )
+        if any(type(intent) is not h2_dtos.S4PairSignalIntent for intent in intents):
+            raise H6BPlanError("PIT funding received non-S4 intent")
+        accepted: list[h2_dtos.S4PairSignalIntent] = []
+        rejected: list[h2_dtos.S4NoTradeRecord] = []
+        for raw_intent in intents:
+            intent = raw_intent
+            if any(
+                (symbol, intent.signal_ts) not in minute_index for symbol in intent.pair
+            ):
+                accepted.append(intent)
+                continue
+            gate = self._s4_funding_gate(intent)
+            if gate.accepted:
+                accepted.append(intent)
+            else:
+                rejected.append(
+                    h2_dtos.S4NoTradeRecord(
+                        pair=intent.pair,
+                        config_id=intent.config_id,
+                        fold_id=intent.fold_id,
+                        signal_ts=intent.signal_ts,
+                        reason=gate.reason or "funding_gate_rejected",
+                    )
+                )
+        terminal = h4_adapter.invoke_actual_s4_engine(
+            candidates=tuple(accepted),
+            minute_index=minute_index,
+            pair_close_index=pair_close_index,
+            corpus_end_ts=self._data.corpus_end_ts,
+            horizon_end_ts=horizon_end_ts,
+            strategy=strategy,
+            config_id=config_id,
+            fold_id=fold_id,
+        )
+        result = h2_dtos.S4EngineResult(
+            terminal.result.trades,
+            (*terminal.result.no_trades, *rejected),
+            terminal.result.incompletes,
+        )
+        h4_adapter.validate_s4_terminal(intents, result)
+        return h4_adapter.SealedS4Terminal(
+            result,
+            h4_adapter.seal_s4_engine_input(
+                intents,
+                corpus_end_ts=self._data.corpus_end_ts,
+                horizon_end_ts=horizon_end_ts,
+            ),
+            h4_adapter.seal_s4_engine_output(result),
+        )
 
     def _run_train_strategy(
         self,
@@ -1680,21 +1913,19 @@ class ActualMergedH4Runner:
 
             def run(intents: tuple[object, ...]) -> object:
                 if strategy == "S3":
-                    return h4_adapter.invoke_actual_s3_engine(
-                        candidates=intents,
+                    return self._invoke_s3(
+                        intents=intents,
                         minute_index=surface.minute_index,
                         close_feature_index=surface.close_feature_index,
-                        corpus_end_ts=self._data.corpus_end_ts,
                         horizon_end_ts=horizon_end_ts,
                         strategy=strategy,
                         config_id=config.config_id,
                         fold_id=fold_id,
                     )
-                return h4_adapter.invoke_actual_s4_engine(
-                    candidates=intents,
+                return self._invoke_s4(
+                    intents=intents,
                     minute_index=surface.minute_index,
                     pair_close_index=surface.pair_close_index,
-                    corpus_end_ts=self._data.corpus_end_ts,
                     horizon_end_ts=horizon_end_ts,
                     strategy=strategy,
                     config_id=config.config_id,
@@ -1714,6 +1945,7 @@ class ActualMergedH4Runner:
                 strategy=strategy,
                 config_id=config.config_id,
                 terminal=terminal,
+                funding_lookup=self._funding_lookup,
             )
             for config, terminal in zip(configs, terminals, strict=True)
         )
@@ -1768,21 +2000,19 @@ class ActualMergedH4Runner:
         ) -> Callable[[tuple[object, ...]], object]:
             def run(intents: tuple[object, ...]) -> object:
                 if strategy == "S3":
-                    return h4_adapter.invoke_actual_s3_engine(
-                        candidates=intents,
+                    return self._invoke_s3(
+                        intents=intents,
                         minute_index=surface.minute_index,
                         close_feature_index=surface.close_feature_index,
-                        corpus_end_ts=self._data.corpus_end_ts,
                         horizon_end_ts=fold.oos_end_ms,
                         strategy=strategy,
                         config_id=config_id,
                         fold_id=fold.fold_id,
                     )
-                return h4_adapter.invoke_actual_s4_engine(
-                    candidates=intents,
+                return self._invoke_s4(
+                    intents=intents,
                     minute_index=surface.minute_index,
                     pair_close_index=surface.pair_close_index,
-                    corpus_end_ts=self._data.corpus_end_ts,
                     horizon_end_ts=fold.oos_end_ms,
                     strategy=strategy,
                     config_id=config_id,
@@ -1819,6 +2049,7 @@ class ActualMergedH4Runner:
                     horizon_end_ts=fold.oos_end_ms,
                     decision_snapshots=surface.phase_context.feature_context.snapshots,
                     tercile_authority=tercile,
+                    funding_lookup=self._funding_lookup,
                 )
             else:
                 path = h4_runner.bind_s4_attribution_path(
@@ -1830,6 +2061,7 @@ class ActualMergedH4Runner:
                     corpus_end_ts=self._data.corpus_end_ts,
                     horizon_end_ts=fold.oos_end_ms,
                     decision_snapshots=surface.phase_context.feature_context.snapshots,
+                    funding_lookup=self._funding_lookup,
                 )
             paths.append(path)
         return output, tuple(paths)

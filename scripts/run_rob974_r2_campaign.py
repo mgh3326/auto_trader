@@ -115,6 +115,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-mapping-hash")
     parser.add_argument("--integration-head-sha")
     parser.add_argument("--integration-tree-sha")
+    parser.add_argument("--launcher-sha256")
     parser.add_argument("--feature-source-sha256")
     parser.add_argument("--engine-source-sha256")
     parser.add_argument("--runner-source-sha256")
@@ -139,6 +140,7 @@ _REQUIRED = (
     "expected_mapping_hash",
     "integration_head_sha",
     "integration_tree_sha",
+    "launcher_sha256",
     "feature_source_sha256",
     "engine_source_sha256",
     "runner_source_sha256",
@@ -240,6 +242,10 @@ def _require_exact_static_gates(
     }
     if any(getattr(arguments, name) != value for name, value in expected.items()):
         raise LaunchRefused("EXPLICIT_GATE_LITERAL_MISMATCH")
+    if hashlib.sha256(Path(__file__).read_bytes()).hexdigest() != (
+        arguments.launcher_sha256
+    ):
+        raise LaunchRefused("LAUNCHER_PHYSICAL_SHA256_MISMATCH")
 
     database_url = environ.get(DATABASE_URL_ENV)
     if type(database_url) is not str or not database_url:
@@ -383,6 +389,7 @@ def _load_exact_real_input(
 ) -> tuple[object, dict]:
     import rob941_offline_loader
     import rob974_lineage
+    from rob941_funding_sidecar import FundingSidecar
     from rob974_features import MinuteBar, compute_common_features
 
     from app.services.rob974_h6b_materializer import ActualH4InputData
@@ -406,6 +413,7 @@ def _load_exact_real_input(
         raise LaunchRefused("OFFLINE_CORPUS_RESULT_MALFORMED")
 
     selected: dict[str, tuple[MinuteBar, ...]] = {}
+    sidecars: dict[str, FundingSidecar] = {}
     funding_evidence: dict[str, dict[str, int]] = {}
     for symbol in SELECTED_SYMBOLS:
         raw_rows = klines.get(symbol)
@@ -445,6 +453,7 @@ def _load_exact_real_input(
             )
             for row in raw_rows
         )
+        sidecars[symbol] = FundingSidecar.from_rows(symbol, funding_rows)
         funding_evidence[symbol] = {
             "rows": len(funding_rows),
             "first_calc_time": funding_rows[0].calc_time,
@@ -458,6 +467,7 @@ def _load_exact_real_input(
         corpus_end_ts=WINDOW_END_MS,
         persisted_corpus_hash=manifest.content_hash(),
         persisted_feature_hash=feature_hash,
+        funding_sidecars=sidecars,
     )
     evidence = {
         "parent_content_sha256": manifest.content_hash(),
@@ -542,6 +552,7 @@ def _success_payload(
             "attempts": len(runner.last_result.attempts),
             "selected_strategy_folds": len(runner.last_selected),
             "all_folds_mode": True,
+            "pit_funding_gate_and_realized_ledger": True,
         },
         "h6a_accounting": {
             "expected_total": accounting.expected_total,
@@ -614,7 +625,11 @@ async def _execute_run(
 
     artifacts = DirectoryAtomicArtifactPort()
     inspector = ActualCampaignStateInspector()
-    runner = ActualMergedH4Runner(input_data, execute_all_folds=True)
+    runner = ActualMergedH4Runner(
+        input_data,
+        execute_all_folds=True,
+        require_pit_funding=True,
+    )
     accounting_port = ActualMergedH6AAccounting()
     h5_port = ActualMergedH5Composition()
     engine = create_async_engine(database_url, poolclass=NullPool)

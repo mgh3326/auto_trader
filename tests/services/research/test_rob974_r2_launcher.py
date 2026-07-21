@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import io
 import json
@@ -9,7 +10,10 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+from funding_oi_archive import FundingRow
+from rob941_funding_sidecar import FundingSidecar
 from rob974_features import MINUTE_MS, SYMBOLS, MinuteBar
+from rob974_h2_dtos import S3SignalIntent
 from rob974_h4_contracts import exact_h4_folds
 
 from app.services.rob974_h6b_materializer import (
@@ -41,6 +45,22 @@ def _one_bar_input() -> ActualH4InputData:
     )
 
 
+def _funded_one_bar_input(rate: float) -> ActualH4InputData:
+    start = 1_751_328_000_000
+    rows = {symbol: (MinuteBar(start, 1.0, 1.0, 1.0, 1.0, 1.0),) for symbol in SYMBOLS}
+    sidecars = {
+        symbol: FundingSidecar.from_rows(symbol, (FundingRow(start, 8, rate),))
+        for symbol in SYMBOLS
+    }
+    return ActualH4InputData.from_mapping(
+        rows,
+        corpus_end_ts=start + MINUTE_MS,
+        persisted_corpus_hash="a" * 64,
+        persisted_feature_hash="b" * 64,
+        funding_sidecars=sidecars,
+    )
+
+
 def _sealed_arguments(launcher: ModuleType) -> list[str]:
     return [
         "--run",
@@ -58,6 +78,8 @@ def _sealed_arguments(launcher: ModuleType) -> list[str]:
         "1" * 40,
         "--integration-tree-sha",
         "2" * 40,
+        "--launcher-sha256",
+        hashlib.sha256(_SCRIPT.read_bytes()).hexdigest(),
         "--feature-source-sha256",
         launcher.FEATURE_SOURCE_SHA256,
         "--engine-source-sha256",
@@ -151,12 +173,49 @@ def test_actual_h4_runner_rejects_truthy_non_bool_full_fold_gate() -> None:
         ActualMergedH4Runner(_one_bar_input(), execute_all_folds=1)  # type: ignore[arg-type]
 
 
+def test_production_runner_requires_and_applies_pit_funding() -> None:
+    with pytest.raises(H6BPlanError, match="required PIT funding sidecars are absent"):
+        ActualMergedH4Runner(_one_bar_input(), require_pit_funding=True)
+
+    start = 1_751_328_000_000
+    runner = ActualMergedH4Runner(
+        _funded_one_bar_input(0.0004), require_pit_funding=True
+    )
+    intent = S3SignalIntent(
+        symbol="XRPUSDT",
+        side="long",
+        signal_ts=start,
+        entry_sl_distance=0.01,
+        entry_tp_distance=0.02,
+        config_id="S3-00",
+        fold_id="fold-00",
+        volatility_percentile=0.5,
+    )
+    terminal = runner._invoke_s3(
+        intents=(intent,),
+        minute_index={("XRPUSDT", start): object()},
+        close_feature_index={},
+        horizon_end_ts=start + 48 * 3_600_000,
+        strategy="S3",
+        config_id="S3-00",
+        fold_id="fold-00",
+    )
+    assert terminal.result.trades == ()
+    assert tuple(row.reason for row in terminal.result.no_trades) == (
+        "expected_funding_cost_above_3bps",
+    )
+    assert runner._funding_lookup is not None
+    crossings = runner._funding_lookup("XRPUSDT", "long", start, start + 1)
+    assert tuple(item.rate_bps for item in crossings) == (4.0,)
+
+
 def test_launcher_reuses_materializer_and_has_no_broker_surface() -> None:
     source = _SCRIPT.read_text(encoding="utf-8")
     assert "materialize_production" in source
     assert "build_production_execution_plan" in source
     assert "DirectoryAtomicArtifactPort" in source
     assert "execute_all_folds=True" in source
+    assert "require_pit_funding=True" in source
     assert "taskiq" not in source.lower()
     assert "broker" not in "\n".join(
         line
