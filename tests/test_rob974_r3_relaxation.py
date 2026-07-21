@@ -30,6 +30,27 @@ OOS_STARTS_MS = (
     1_776_222_000_000,
     1_778_641_200_000,
 )
+TRAIN_STARTS_MS = (
+    1_751_328_000_000,
+    1_753_747_200_000,
+    1_756_166_400_000,
+    1_758_585_600_000,
+    1_761_004_800_000,
+    1_763_424_000_000,
+    1_765_843_200_000,
+    1_768_262_400_000,
+)
+TRAIN_ENDS_MS = (
+    1_761_696_000_000,
+    1_764_115_200_000,
+    1_766_534_400_000,
+    1_768_953_600_000,
+    1_771_372_800_000,
+    1_773_792_000_000,
+    1_776_211_200_000,
+    1_778_630_400_000,
+)
+OVERLAPPING_TRAIN_SIGNAL_START_MS = 1_755_000_000_000
 
 
 def _trade(
@@ -39,8 +60,11 @@ def _trade(
     fold_index: int,
     event_index: int,
     gross_bps: float,
+    signal_start_ms: int | None = None,
 ) -> RelaxationTrade:
-    signal_ts = OOS_STARTS_MS[fold_index] + event_index * 60_000
+    signal_ts = (
+        OOS_STARTS_MS[fold_index] if signal_start_ms is None else signal_start_ms
+    ) + event_index * 60_000
     leg_count = len(instruments)
     direction = (
         ("long" if event_index % 2 == 0 else "short")
@@ -75,7 +99,9 @@ def _trade(
     )
 
 
-def _cell_trade_map(fold_index: int) -> dict[str, tuple[RelaxationTrade, ...]]:
+def _cell_trade_map(
+    fold_index: int, *, signal_start_ms: int | None = None
+) -> dict[str, tuple[RelaxationTrade, ...]]:
     def trades(
         family: str,
         instruments: tuple[str, ...],
@@ -88,6 +114,7 @@ def _cell_trade_map(fold_index: int) -> dict[str, tuple[RelaxationTrade, ...]]:
                 fold_index=fold_index,
                 event_index=event_index,
                 gross_bps=(20.0 if event_index < 5 else -100.0 + 10.0 * fold_index),
+                signal_start_ms=signal_start_ms,
             )
             for event_index in event_indices
         )
@@ -126,6 +153,30 @@ def _cell_trade_map(fold_index: int) -> dict[str, tuple[RelaxationTrade, ...]]:
 
 def _ledgers() -> tuple[CellFoldLedger, ...]:
     by_fold = tuple(_cell_trade_map(index) for index in range(8))
+    return tuple(
+        CellFoldLedger(
+            config_id=config_id,
+            fold_id=fold_id,
+            basket_trade_count=len(by_fold[fold_index][config_id]),
+            trades=by_fold[fold_index][config_id],
+        )
+        for config_id in R3_CONFIG_IDS
+        for fold_index, fold_id in enumerate(R3_FOLD_IDS)
+    )
+
+
+def _train_ledgers_with_real_overlap() -> tuple[CellFoldLedger, ...]:
+    by_fold = (
+        _cell_trade_map(0, signal_start_ms=OVERLAPPING_TRAIN_SIGNAL_START_MS),
+        _cell_trade_map(0, signal_start_ms=OVERLAPPING_TRAIN_SIGNAL_START_MS),
+        *(
+            _cell_trade_map(
+                index,
+                signal_start_ms=TRAIN_STARTS_MS[index] + 3_600_000,
+            )
+            for index in range(2, 8)
+        ),
+    )
     return tuple(
         CellFoldLedger(
             config_id=config_id,
@@ -286,6 +337,76 @@ def test_train_layers_are_diagnostic_and_never_emit_verdict_flag() -> None:
     assert report.train_diagnostic.phase == "TRAIN"
     assert all(ray.monotone_edge_decay is None for ray in report.train_diagnostic.rays)
     assert all(ray.monotone_edge_decay is not None for ray in report.oos.rays)
+
+
+def test_overlapping_train_folds_may_repeat_the_exact_economic_event() -> None:
+    train_ledgers = _train_ledgers_with_real_overlap()
+    fold_00 = train_ledgers[0]
+    fold_01 = train_ledgers[1]
+    assert fold_00.config_id == fold_01.config_id == "S3-R3-00"
+    assert fold_00.trades == fold_01.trades
+    signal_ts = fold_00.trades[0].event.signal_ts
+    assert TRAIN_STARTS_MS[0] <= signal_ts < TRAIN_ENDS_MS[0]
+    assert TRAIN_STARTS_MS[1] <= signal_ts < TRAIN_ENDS_MS[1]
+
+    report = analyze_relaxation_campaign(
+        campaign_hash=CAMPAIGN_HASH,
+        oos_ledgers=_ledgers(),
+        train_ledgers=train_ledgers,
+    )
+    assert report.operational_status == "COMPLETE"
+    assert report.train_diagnostic is not None
+    assert report.train_diagnostic.operational_status == "COMPLETE"
+
+
+def test_opposite_direction_cannot_be_laundered_as_a_new_layer() -> None:
+    ledgers = _ledgers()
+    looser = next(
+        row
+        for row in ledgers
+        if (row.config_id, row.fold_id) == ("S3-R3-02", "fold-00")
+    )
+    shared = looser.trades[0]
+    opposite = replace(
+        shared,
+        event=replace(shared.event, direction="short"),
+        execution=replace(shared.execution, leg_sides=("short",)),
+    )
+    with pytest.raises(RelaxationInputError, match="multiple directions"):
+        analyze_relaxation_campaign(
+            campaign_hash=CAMPAIGN_HASH,
+            oos_ledgers=_replace_ledger(
+                ledgers,
+                looser.config_id,
+                looser.fold_id,
+                trades=(*looser.trades, opposite),
+            ),
+        )
+
+
+def test_direction_reversal_across_configs_in_one_fold_is_rejected() -> None:
+    ledgers = _ledgers()
+    looser = next(
+        row
+        for row in ledgers
+        if (row.config_id, row.fold_id) == ("S3-R3-02", "fold-00")
+    )
+    shared = looser.trades[0]
+    reversed_trade = replace(
+        shared,
+        event=replace(shared.event, direction="short"),
+        execution=replace(shared.execution, leg_sides=("short",)),
+    )
+    with pytest.raises(RelaxationInputError, match="direction drift"):
+        analyze_relaxation_campaign(
+            campaign_hash=CAMPAIGN_HASH,
+            oos_ledgers=_replace_ledger(
+                ledgers,
+                looser.config_id,
+                looser.fold_id,
+                trades=(reversed_trade, *looser.trades[1:]),
+            ),
+        )
 
 
 def test_core_economic_drift_is_operational_incomplete_not_a_new_layer() -> None:
