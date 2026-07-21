@@ -51,11 +51,14 @@ PBO_IMPLEMENTATION_SHA256 = (
     "58e42e9c7d875ae8d4f5e40f0fd698d28bc1f1b983a38be2d3d3b2be86312a41"
 )
 MERGED_MAIN_REFREEZE_HEAD = "".join(
-    ("7e5ff595ea", "b0a35b73a6", "e326105159", "ac8fea56de")
+    ("00ad09c3fa", "56c55a4ca2", "57dbf00fb0", "f1a1c2d682")
 )
 MERGED_MAIN_REFREEZE_TREE = "".join(
-    ("3426ed5bf6", "5a6666c8ae", "41de60d922", "ac9d923fd0")
+    ("6e7b1c39f8", "08b70acb85", "298f34858b", "9014c7576c")
 )
+EXPECTED_BACKTEST_RUNNER_WIDTH = 64
+EXPECTED_ALEMBIC_HEAD = "20260722_rob1023_widen_runner"
+SCHEMA_GUARD_ONLY_ARGUMENT = "--schema-guard-only"
 
 WINDOW_START_ISO = "2025-07-01T00:00:00Z"
 WINDOW_END_ISO = "2026-07-01T00:00:00Z"
@@ -78,13 +81,13 @@ EXPECTED_CORPUS_ROOT = Path(
     "rob941-4bcc2da979b47caa45b5f90a09c326aefff91fa605e110d55ef316d53c9a9351/"
     "data"
 )
-EXPECTED_OUTPUT_ROOT = Path("/Users/mgh3326/work/herdr-artifacts/rob974-r2-c8bb8e88")
+EXPECTED_OUTPUT_ROOT = Path("/Users/mgh3326/work/herdr-artifacts/rob974-r2-c8bb8e88-v3")
 DATABASE_URL_ENV = "ROB974_DATABASE_URL"
 WRITE_OPT_IN = "ROB974_R2_EMPIRICAL_WRITE=YES"
 PIT_CONFIRMATION = (
     "2025-07-01T00:00:00Z..2026-07-01T00:00:00Z/XRPUSDT,DOGEUSDT,SOLUSDT/PIT"
 )
-ONE_SHOT_APPROVAL = "ROB-1012/ROB-974-R2/c8bb8e88/ONE-SHOT"
+ONE_SHOT_APPROVAL = "ROB-1023/ROB-974-R2/c8bb8e88/V3-ONE-SHOT"
 APPROVED_DB = ("localhost", 5432, "rob974_db", "postgres")
 
 CLI_USAGE_OR_PLAN_ERROR = 2
@@ -184,6 +187,8 @@ def _dry_run_payload() -> dict[str, object]:
             "database": "rob974_db",
             "database_url_source": DATABASE_URL_ENV,
             "output_root": str(EXPECTED_OUTPUT_ROOT),
+            "required_runner_width": EXPECTED_BACKTEST_RUNNER_WIDTH,
+            "required_alembic_head": EXPECTED_ALEMBIC_HEAD,
         },
         "effects": {
             "empirical_runs": 0,
@@ -323,6 +328,73 @@ def _resolve_database_target(database_url: str) -> object:
     if target != expected:
         raise LaunchRefused("DATABASE_URL_TARGET_MISMATCH")
     return target
+
+
+async def _fetch_and_validate_live_schema(session: object) -> None:
+    from sqlalchemy import text
+
+    result = await session.execute(
+        text(
+            "SELECT current_database(), current_user, "
+            "column_info.character_maximum_length, "
+            "(SELECT version_num FROM alembic_version) "
+            "FROM information_schema.columns AS column_info "
+            "WHERE column_info.table_schema = 'research' "
+            "AND column_info.table_name = 'backtest_runs' "
+            "AND column_info.column_name = 'runner'"
+        )
+    )
+    row = result.one_or_none()
+    if row is None:
+        raise LaunchRefused("LIVE_DATABASE_SCHEMA_RUNNER_COLUMN_MISSING")
+    values = tuple(row)
+    if values[:2] != APPROVED_DB[2:]:
+        raise LaunchRefused("LIVE_DATABASE_SCHEMA_TARGET_MISMATCH")
+    if values[2] != EXPECTED_BACKTEST_RUNNER_WIDTH:
+        raise LaunchRefused("LIVE_DATABASE_SCHEMA_RUNNER_WIDTH_MISMATCH")
+    if values[3] != EXPECTED_ALEMBIC_HEAD:
+        raise LaunchRefused("LIVE_DATABASE_SCHEMA_ALEMBIC_HEAD_MISMATCH")
+
+
+async def _execute_schema_guard(
+    *, environ: Mapping[str, str], stdout: TextIOBase
+) -> int:
+    database_url = environ.get(DATABASE_URL_ENV)
+    if type(database_url) is not str or not database_url:
+        raise LaunchRefused("DATABASE_URL_ENV_ABSENT")
+
+    _install_runtime_paths()
+    _resolve_database_target(database_url)
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    session = AsyncSession(bind=engine, expire_on_commit=False)
+    try:
+        await session.begin()
+        await session.execute(text("SET TRANSACTION READ ONLY"))
+        await _fetch_and_validate_live_schema(session)
+    finally:
+        if session.in_transaction():
+            await session.rollback()
+        await session.close()
+        await engine.dispose()
+
+    _write_json(
+        stdout,
+        {
+            "schema_version": "rob974_r2_schema_guard.v1",
+            "database": APPROVED_DB[2],
+            "database_user": APPROVED_DB[3],
+            "runner_width": EXPECTED_BACKTEST_RUNNER_WIDTH,
+            "alembic_head": EXPECTED_ALEMBIC_HEAD,
+            "transaction_read_only": True,
+            "writes": 0,
+        },
+    )
+    return 0
 
 
 def _require_identity(arguments: argparse.Namespace) -> tuple[object, object]:
@@ -499,6 +571,7 @@ async def _read_only_target_and_state_probe(
     try:
         await session.begin()
         await session.execute(text("SET TRANSACTION READ ONLY"))
+        await _fetch_and_validate_live_schema(session)
         row = (
             await session.execute(
                 text(
@@ -729,6 +802,25 @@ def run_cli(
     if not argv:
         _write_json(stdout, _dry_run_payload())
         return 0
+    if tuple(argv) == (SCHEMA_GUARD_ONLY_ARGUMENT,):
+        try:
+            return asyncio.run(
+                _execute_schema_guard(
+                    environ=os.environ if environ is None else environ,
+                    stdout=stdout,
+                )
+            )
+        except LaunchRefused as exc:
+            stderr.write("AUTHORITY_OR_PREFLIGHT_REFUSED " + exc.reason_code + "\n")
+            return AUTHORITY_OR_PREFLIGHT_REFUSED
+        except KeyboardInterrupt:
+            stderr.write("INTERRUPTED audit_state_before_retry\n")
+            return 130
+        except Exception as exc:
+            stderr.write(
+                f"AUTHORITY_OR_PREFLIGHT_REFUSED UNEXPECTED_{type(exc).__name__}\n"
+            )
+            return AUTHORITY_OR_PREFLIGHT_REFUSED
     try:
         arguments = _parser().parse_args(list(argv))
     except (TypeError, ValueError):

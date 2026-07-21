@@ -124,6 +124,11 @@ def test_no_arguments_are_dry_run_only(monkeypatch: pytest.MonkeyPatch) -> None:
     assert payload["default_state"] == "DISABLED"
     assert payload["run_requested"] is False
     assert payload["identity"]["attempts"] == 48
+    assert payload["target"]["required_runner_width"] == 64
+    assert payload["target"]["required_alembic_head"] == (
+        "20260722_rob1023_widen_runner"
+    )
+    assert str(payload["target"]["output_root"]).endswith("-v3")
     assert all(value == 0 for value in payload["effects"].values())
     assert stderr.getvalue() == ""
 
@@ -138,6 +143,66 @@ def test_partial_run_arguments_fail_before_runtime() -> None:
     )
     assert stdout.getvalue() == ""
     assert stderr.getvalue() == "CLI_USAGE_OR_PLAN_ERROR\n"
+
+
+def test_schema_guard_only_requires_database_url_without_other_effects() -> None:
+    launcher = _launcher()
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    assert (
+        launcher.run_cli(
+            (launcher.SCHEMA_GUARD_ONLY_ARGUMENT,),
+            stdout=stdout,
+            stderr=stderr,
+            environ={},
+        )
+        == launcher.AUTHORITY_OR_PREFLIGHT_REFUSED
+    )
+    assert stdout.getvalue() == ""
+    assert stderr.getvalue() == (
+        "AUTHORITY_OR_PREFLIGHT_REFUSED DATABASE_URL_ENV_ABSENT\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_live_schema_guard_pins_runner_width_and_alembic_head() -> None:
+    launcher = _launcher()
+
+    class _Result:
+        def __init__(self, row: tuple[object, ...] | None) -> None:
+            self._row = row
+
+        def one_or_none(self) -> tuple[object, ...] | None:
+            return self._row
+
+    class _Session:
+        def __init__(self, row: tuple[object, ...] | None) -> None:
+            self.row = row
+            self.statements: list[str] = []
+
+        async def execute(self, statement: object) -> _Result:
+            self.statements.append(str(statement))
+            return _Result(self.row)
+
+    expected = (
+        "rob974_db",
+        "postgres",
+        launcher.EXPECTED_BACKTEST_RUNNER_WIDTH,
+        launcher.EXPECTED_ALEMBIC_HEAD,
+    )
+    good = _Session(expected)
+    await launcher._fetch_and_validate_live_schema(good)
+    assert len(good.statements) == 1
+    assert "information_schema.columns" in good.statements[0]
+    assert "column_info.column_name = 'runner'" in good.statements[0]
+
+    for row, reason in (
+        (None, "LIVE_DATABASE_SCHEMA_RUNNER_COLUMN_MISSING"),
+        ((*expected[:2], 16, expected[3]), "RUNNER_WIDTH_MISMATCH"),
+        ((*expected[:3], "stale_head"), "ALEMBIC_HEAD_MISMATCH"),
+    ):
+        with pytest.raises(launcher.LaunchRefused, match=reason):
+            await launcher._fetch_and_validate_live_schema(_Session(row))
 
 
 def test_sealed_arguments_without_secret_dsn_fail_before_runtime_imports() -> None:
