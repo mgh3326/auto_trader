@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-import sqlalchemy as sa
-
 from alembic import op
 
 revision: str = "20260720_rob976_support"
@@ -18,64 +16,40 @@ down_revision = '20260721_rob954_terminalized_at'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+_TABLE = "invest_screener_snapshots"
+_INDEX = "ix_invest_screener_snapshots_market_support_distance"
+
+# IF NOT EXISTS / IF EXISTS mirror the rob954 pattern (see
+# 20260721_rob954_terminalized_at.py): the migration acceptance test creates
+# current Base.metadata first (columns already present), stamps an older
+# revision, then upgrades to head, so these statements must be idempotent.
+# Production upgrades still add the genuinely absent columns normally.
+_COLUMNS = (
+    ("daily_turnover", "NUMERIC(30, 2)"),
+    ("market_cap", "NUMERIC(30, 2)"),
+    ("market_cap_source", "VARCHAR(32)"),
+    ("market_cap_snapshot_date", "DATE"),
+    ("support_price", "NUMERIC(20, 6)"),
+    ("support_kind", "VARCHAR(255)"),
+    ("support_strength", "VARCHAR(20)"),
+    ("dist_to_support_pct", "NUMERIC(10, 4)"),
+    ("support_computed_at", "TIMESTAMP WITH TIME ZONE"),
+)
+
 
 def upgrade() -> None:
-    op.add_column(
-        "invest_screener_snapshots",
-        sa.Column("daily_turnover", sa.Numeric(30, 2), nullable=True),
-    )
-    op.add_column(
-        "invest_screener_snapshots",
-        sa.Column("market_cap", sa.Numeric(30, 2), nullable=True),
-    )
-    op.add_column(
-        "invest_screener_snapshots",
-        sa.Column("market_cap_source", sa.String(32), nullable=True),
-    )
-    op.add_column(
-        "invest_screener_snapshots",
-        sa.Column("market_cap_snapshot_date", sa.Date(), nullable=True),
-    )
-    op.add_column(
-        "invest_screener_snapshots",
-        sa.Column("support_price", sa.Numeric(20, 6), nullable=True),
-    )
-    op.add_column(
-        "invest_screener_snapshots",
-        sa.Column("support_kind", sa.String(255), nullable=True),
-    )
-    op.add_column(
-        "invest_screener_snapshots",
-        sa.Column("support_strength", sa.String(20), nullable=True),
-    )
-    op.add_column(
-        "invest_screener_snapshots",
-        sa.Column("dist_to_support_pct", sa.Numeric(10, 4), nullable=True),
-    )
-    op.add_column(
-        "invest_screener_snapshots",
-        sa.Column("support_computed_at", sa.TIMESTAMP(timezone=True), nullable=True),
-    )
-    op.create_index(
-        "ix_invest_screener_snapshots_market_support_distance",
-        "invest_screener_snapshots",
-        ["market", "snapshot_date", "dist_to_support_pct"],
-        unique=False,
-        postgresql_where=sa.text("dist_to_support_pct IS NOT NULL"),
+    for column, coltype in _COLUMNS:
+        op.execute(
+            f"ALTER TABLE {_TABLE} ADD COLUMN IF NOT EXISTS {column} {coltype}"
+        )
+    op.execute(
+        f"CREATE INDEX IF NOT EXISTS {_INDEX} "
+        f"ON {_TABLE} (market, snapshot_date, dist_to_support_pct) "
+        "WHERE dist_to_support_pct IS NOT NULL"
     )
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "ix_invest_screener_snapshots_market_support_distance",
-        table_name="invest_screener_snapshots",
-    )
-    op.drop_column("invest_screener_snapshots", "support_computed_at")
-    op.drop_column("invest_screener_snapshots", "dist_to_support_pct")
-    op.drop_column("invest_screener_snapshots", "support_strength")
-    op.drop_column("invest_screener_snapshots", "support_kind")
-    op.drop_column("invest_screener_snapshots", "support_price")
-    op.drop_column("invest_screener_snapshots", "market_cap_snapshot_date")
-    op.drop_column("invest_screener_snapshots", "market_cap_source")
-    op.drop_column("invest_screener_snapshots", "market_cap")
-    op.drop_column("invest_screener_snapshots", "daily_turnover")
+    op.execute(f"DROP INDEX IF EXISTS {_INDEX}")
+    for column, _ in reversed(_COLUMNS):
+        op.execute(f"ALTER TABLE {_TABLE} DROP COLUMN IF EXISTS {column}")
