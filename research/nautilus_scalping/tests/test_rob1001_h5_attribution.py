@@ -143,6 +143,19 @@ def test_actual_consumer_preserves_lineage_and_M_t_without_legacy_4h_alias(
     assert s4.attribution.beta_stability == 0.10
 
 
+def test_actual_attribution_forbids_legacy_market_return_4h(actual_h4_contract):
+    _, _, contract = actual_h4_contract
+    actual_trade = contract.trades[0]
+    assert contract.contract_provenance == "actual"
+    assert actual_trade.attribution is not None
+
+    with pytest.raises(
+        H5InputError,
+        match="^actual_attribution_forbids_legacy_market_return_4h$",
+    ):
+        replace(actual_trade, market_return_4h=0.01)
+
+
 def test_fixture_and_deferred_can_never_claim_actual_pass(actual_h4_contract):
     plan, _, _ = actual_h4_contract
     fixture = fixture_h4_attribution_result()

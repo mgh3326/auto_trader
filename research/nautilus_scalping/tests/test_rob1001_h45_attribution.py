@@ -35,6 +35,7 @@ from rob974_h4_runner import (
     H4AttributionError,
     S3SelectedOOSAttribution,
     S4SelectedOOSAttribution,
+    SelectedOOSAttributionEnvelope,
     assign_market_return_tercile,
     bind_s3_attribution_path,
     bind_s4_attribution_path,
@@ -485,3 +486,37 @@ def test_deferred_envelope_forces_empty_rows(production_plan):
     assert envelope.paths == ()
     assert envelope.rows == ()
     assert envelope.deferred_reason == "h6b_empirical_materializer_pending"
+
+
+def test_deferred_envelope_rejects_nonempty_paths_and_tercile_authorities(
+    production_plan, tercile_authority
+):
+    candidate = _s3_candidate()
+    path = bind_s3_attribution_path(
+        row_spec=production_plan.row_specs[0],
+        fold_id="fold-00",
+        path_scenario="base13",
+        candidates=(candidate,),
+        terminal=_s3_terminal(candidate),
+        corpus_end_ts=_CORPUS_END_TS,
+        horizon_end_ts=None,
+        decision_snapshots=(_snapshot(_SIGNAL_TS, m=-0.4, M=0.02),),
+        tercile_authority=tercile_authority,
+    )
+
+    with pytest.raises(
+        H4AttributionError,
+        match=r"^deferred attribution forces rows=\(\)$",
+    ):
+        SelectedOOSAttributionEnvelope(
+            schema_version=ATTRIBUTION_SCHEMA_VERSION,
+            contract_provenance="deferred",
+            full_campaign_hash=production_plan.full_campaign_hash,
+            campaign_run_id=production_plan.campaign_run_id,
+            source_pins=production_plan.source_pins,
+            h4_source_pins=production_plan.h4_source_pins,
+            paths=(path,),
+            tercile_authorities=(tercile_authority,),
+            deferred_reason="h6b_empirical_materializer_pending",
+            producer_seal_sha256="0" * 64,
+        )
