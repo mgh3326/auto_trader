@@ -12,7 +12,7 @@ dual_evidence -> gates -> S3/S4 falsification -> canonical -> markdown)
 covering every campaign-decision branch.
 
 ``contract_fixture_scorecard_smoke=PASS`` / ``actual_h4_contract=
-NOT_EVALUATED`` / ``actual_h6a_contract=NOT_EVALUATED`` /
+FIXTURE_ONLY`` / ``actual_h6a_contract=NOT_EVALUATED`` /
 ``db_sessions_created=0`` / ``db_queries=0`` / ``db_writes=0`` /
 ``commit_calls=0`` / ``rollback_calls=0`` / ``empirical_runs=0`` /
 ``corpus_campaign_runs=0`` / ``physical_stage_publish_calls=0`` -- this
@@ -29,9 +29,11 @@ import json
 import pytest
 from rob974_h5_canonical import (
     StrategyCanonicalInputs,
-    build_canonical_scorecard,
     canonical_json_bytes,
     hash_canonical_bytes,
+)
+from rob974_h5_canonical import (
+    build_canonical_scorecard as _build_canonical_scorecard,
 )
 from rob974_h5_contracts import (
     FOLD_IDS,
@@ -39,6 +41,7 @@ from rob974_h5_contracts import (
     H5InputError,
     H6AAccountingSeal,
     MetricTrade,
+    fixture_h4_attribution_result,
 )
 from rob974_h5_dual_evidence import (
     PathInvocationEvidence,
@@ -61,6 +64,13 @@ _HEX64_B = "b" * 64
 _HEX64_C = "c" * 64
 _DAY_MS = 24 * 60 * 60 * 1000
 _MONTH_MS = 30 * _DAY_MS
+
+
+def build_canonical_scorecard(**kwargs):
+    """All predecessor CP7 cases are explicitly fixture-provenance cases."""
+    return _build_canonical_scorecard(
+        h4_attribution=fixture_h4_attribution_result(), **kwargs
+    )
 
 
 def _envelope(**overrides) -> CampaignEnvelope:
@@ -779,7 +789,7 @@ class TestNeverCallsWriterOrPhysicalIO:
 # semantic OR presentation change requires a conscious re-freeze, never a
 # silent drift.
 _GOLDEN_MARKDOWN_BYTES = (
-    b"# H5 Scorecard (h5_scorecard_v1)\n\n"
+    b"# H5 Scorecard (h5_scorecard_v2)\n\n"
     b"## Lineage\n"
     b"- campaign_run_id: run-cp7\n"
     b"- full_campaign_hash: " + b"a" * 64 + b"\n"
@@ -799,6 +809,17 @@ _GOLDEN_MARKDOWN_BYTES = (
     b"## Envelope Validation\n"
     b"- ok: true\n"
     b"- incomplete_reasons: (none)\n\n"
+    b"## H4 Attribution Contract\n"
+    b"- actual_h4_contract: FIXTURE_ONLY\n"
+    b"- contract_provenance: fixture\n"
+    b"- schema_version: null\n"
+    b"- market_return_semantic: M_t_24h_median_log_return\n"
+    b"- typed_path_cross_check: NOT_APPLICABLE\n"
+    b"- path_count: 0\n"
+    b"- trade_count: 0\n"
+    b"- raw_member_key_cross_seal: DEFERRED_TO_H6B_INTEGRATION_E2E\n"
+    b"- fake_free_empirical_closure: DEFERRED_TO_H6B_INTEGRATION_E2E\n"
+    b"- incomplete_reasons: fixture_h4_attribution_not_actual\n\n"
     b"## Strategy S3\n\n"
     b"### Common Gates\n"
     b"- passed: false\n"

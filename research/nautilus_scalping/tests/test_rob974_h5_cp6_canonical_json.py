@@ -21,12 +21,14 @@ import pytest
 from rob974_h5_canonical import (
     ACTUAL_H4_LEDGER_KEY_NOT_EVALUATED,
     StrategyCanonicalInputs,
-    build_canonical_scorecard,
     canonical_json_bytes,
     chronological_key,
     hash_canonical_bytes,
     sanitize_bucket,
     sort_trades_chronologically,
+)
+from rob974_h5_canonical import (
+    build_canonical_scorecard as _build_canonical_scorecard,
 )
 from rob974_h5_contracts import (
     FOLD_IDS,
@@ -34,6 +36,7 @@ from rob974_h5_contracts import (
     H5InputError,
     H6AAccountingSeal,
     MetricTrade,
+    fixture_h4_attribution_result,
 )
 from rob974_h5_gates import evaluate_common_gates
 from rob974_h5_s3 import evaluate_s3_falsification
@@ -47,6 +50,13 @@ from rob974_h5_s4 import (
 
 _HEX64_A = "a" * 64
 _HEX64_B = "b" * 64
+
+
+def build_canonical_scorecard(**kwargs):
+    """All predecessor CP6 cases are explicitly fixture-provenance cases."""
+    return _build_canonical_scorecard(
+        h4_attribution=fixture_h4_attribution_result(), **kwargs
+    )
 
 
 def _envelope(**overrides) -> CampaignEnvelope:

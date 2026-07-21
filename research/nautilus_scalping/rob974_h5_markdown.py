@@ -29,6 +29,20 @@ from rob974_h5_contracts import (
     S4_PAIRS,
     STRATEGIES,
 )
+from rob974_h5_s3 import (
+    S3_ABS_M_BIN_ORDER,
+    S3_ABS_S_BIN_ORDER,
+    S3_DIRECTION_ORDER,
+    S3_Q_BIN_ORDER,
+    S3_VOLATILITY_BIN_ORDER,
+)
+from rob974_h5_s4 import (
+    S4_ABS_Z_BIN_ORDER,
+    S4_D_BIN_ORDER,
+    S4_HALF_LIFE_BIN_ORDER,
+    S4_MARKET_RETURN_BIN_ORDER,
+    S4_RHO_BIN_ORDER,
+)
 
 __all__ = ["render_markdown"]
 
@@ -66,6 +80,82 @@ def _render_ordered_buckets(
     by_key: Mapping[str, Mapping[str, Any]], order: Sequence[str]
 ) -> list[str]:
     return [_render_bucket_line(key, by_key[key]) for key in order if key in by_key]
+
+
+def _render_attribution_bucket_line(label: str, bucket: Mapping[str, Any]) -> str:
+    pf17 = _fmt(bucket["pf17"])
+    if bucket.get("pf17_reason"):
+        pf17 = f"{pf17} ({bucket['pf17_reason']})"
+    return (
+        f"- {label}: trades={bucket['trades']} e0_bps={_fmt(bucket['e0_bps'])} "
+        f"e13_bps={_fmt(bucket['e13_bps'])} "
+        f"e17_bps={_fmt(bucket['e17_bps'])} "
+        f"e22_bps={_fmt(bucket['e22_bps'])} pf17={pf17} "
+        f"avg_holding_minutes={_fmt(bucket['avg_holding_minutes'])}"
+    )
+
+
+def _render_registered_attribution(
+    *, title: str, by_key: Mapping[str, Mapping[str, Any]], order: Sequence[str]
+) -> list[str]:
+    if not by_key:
+        return []
+    lines = [f"### Attribution: {title}", ""]
+    lines.extend(
+        _render_attribution_bucket_line(key, by_key[key])
+        for key in order
+        if key in by_key
+    )
+    lines.append("")
+    return lines
+
+
+def _render_h4_attribution_contract(contract: Mapping[str, Any]) -> list[str]:
+    return [
+        "## H4 Attribution Contract",
+        f"- actual_h4_contract: {contract['actual_h4_contract']}",
+        f"- contract_provenance: {contract['contract_provenance']}",
+        f"- schema_version: {_fmt(contract['schema_version'])}",
+        f"- market_return_semantic: {contract['market_return_semantic']}",
+        f"- typed_path_cross_check: {contract['typed_path_cross_check']}",
+        f"- path_count: {contract['path_count']}",
+        f"- trade_count: {contract['trade_count']}",
+        f"- raw_member_key_cross_seal: {contract['raw_member_key_cross_seal']}",
+        f"- fake_free_empirical_closure: {contract['fake_free_empirical_closure']}",
+        f"- incomplete_reasons: {_fmt_list(contract['incomplete_reasons'])}",
+        "",
+    ]
+
+
+def _render_raw_attribution_rows(
+    strategy: str, rows: Sequence[Mapping[str, Any]]
+) -> list[str]:
+    if not rows:
+        return []
+    lines = ["### Raw Attribution Rows", ""]
+    for row in rows:
+        common = (
+            f"- {row['row_id']}/{row['fold_id']}/{row['path_scenario']}: "
+            f"experiment_id={row['experiment_id']} dimension={row['dimension']} "
+            f"direction={row['direction']} market_return={row['market_return']} "
+            f"holding_minutes={row['realized_holding_minutes']} "
+            f"e13={row['e13_bps']} e17={row['e17_bps']} e22={row['e22_bps']}"
+        )
+        if strategy == "S3":
+            lines.append(
+                f"{common} S={row['S']} Q={row['Q']} "
+                f"tercile={row['market_return_tercile']} "
+                f"volatility_percentile={row['volatility_percentile']}"
+            )
+        else:
+            lines.append(
+                f"{common} entry_z={row['entry_z']} D={row['D']} "
+                f"rho={row['correlation']} half_life={row['half_life']} "
+                f"beta_stability={row['beta_stability']} "
+                f"realized_pair_beta={row['realized_pair_beta']}"
+            )
+    lines.append("")
+    return lines
 
 
 def _render_dual_evidence(rows: Sequence[Mapping[str, Any]]) -> list[str]:
@@ -155,6 +245,47 @@ def _render_strategy(strategy: str, entry: Mapping[str, Any]) -> list[str]:
     )
     lines.append("")
 
+    attribution = falsification["attribution"]
+    if strategy == "S3":
+        registered = (
+            ("by_abs_S_bin", S3_ABS_S_BIN_ORDER),
+            ("by_pullback_Q_bin", S3_Q_BIN_ORDER),
+            ("by_abs_M_bin", S3_ABS_M_BIN_ORDER),
+            ("by_volatility_percentile_bin", S3_VOLATILITY_BIN_ORDER),
+        )
+        for key, order in registered:
+            lines.extend(
+                _render_registered_attribution(
+                    title=key, by_key=attribution[key], order=order
+                )
+            )
+        top_cross = attribution["top_tercile_by_direction_and_abs_M_bin"]
+        for direction in S3_DIRECTION_ORDER:
+            if direction in top_cross:
+                lines.extend(
+                    _render_registered_attribution(
+                        title=f"top_tercile/{direction}/by_abs_M_bin",
+                        by_key=top_cross[direction],
+                        order=S3_ABS_M_BIN_ORDER,
+                    )
+                )
+    else:
+        registered = (
+            ("by_abs_z_bin", S4_ABS_Z_BIN_ORDER),
+            ("by_D_bps_bin", S4_D_BIN_ORDER),
+            ("by_rho_bin", S4_RHO_BIN_ORDER),
+            ("by_half_life_hours_bin", S4_HALF_LIFE_BIN_ORDER),
+            ("by_M_24h_bin", S4_MARKET_RETURN_BIN_ORDER),
+        )
+        for key, order in registered:
+            lines.extend(
+                _render_registered_attribution(
+                    title=key, by_key=attribution[key], order=order
+                )
+            )
+
+    lines.extend(_render_raw_attribution_rows(strategy, entry["raw_attribution_rows"]))
+
     lines.extend(_render_dual_evidence(entry["dual_evidence"]))
     lines.extend(_render_pbo(entry["pbo"]))
     lines.extend(_render_pair_executor_state(entry.get("pair_executor_state")))
@@ -193,6 +324,8 @@ def render_markdown(canonical: Mapping[str, Any]) -> bytes:
     lines.append(f"- ok: {_fmt(env_val['ok'])}")
     lines.append(f"- incomplete_reasons: {_fmt_list(env_val['incomplete_reasons'])}")
     lines.append("")
+
+    lines.extend(_render_h4_attribution_contract(canonical["h4_attribution_contract"]))
 
     for strategy in STRATEGIES:
         lines.extend(_render_strategy(strategy, canonical["strategies"][strategy]))

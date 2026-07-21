@@ -47,6 +47,8 @@ __all__ = [
     "EnvelopeValidationResult",
     "H5InputError",
     "H6AAccountingSeal",
+    "FAKE_FREE_EMPIRICAL_CLOSURE",
+    "MARKET_RETURN_SEMANTIC",
     "MetricTrade",
     "TradeAttribution",
     "H4AttributionContractResult",
@@ -329,7 +331,8 @@ _S4_DIMENSION_SET = frozenset(S4_PAIRS)
 
 _H4_CONTRACT_STATUSES = ("PASS", "FIXTURE_ONLY", "DEFERRED")
 _H4_CONTRACT_PROVENANCE = ("actual", "fixture", "deferred")
-_MARKET_RETURN_SEMANTIC = "M_t_24h_median_log_return"
+MARKET_RETURN_SEMANTIC = "M_t_24h_median_log_return"
+FAKE_FREE_EMPIRICAL_CLOSURE = "DEFERRED_TO_H6B_INTEGRATION_E2E"
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,7 +379,7 @@ class TradeAttribution:
             "attribution_row_provenance_unknown",
         )
         _require(
-            self.market_return_semantic == _MARKET_RETURN_SEMANTIC,
+            self.market_return_semantic == MARKET_RETURN_SEMANTIC,
             "attribution_market_return_semantic_drift",
         )
         for name in (
@@ -629,7 +632,7 @@ def _attribution_from_h4_row(
         "row_id": row.lineage.row_id,
         "experiment_id": row.lineage.experiment_id,
         "contract_provenance": "actual",
-        "market_return_semantic": _MARKET_RETURN_SEMANTIC,
+        "market_return_semantic": MARKET_RETURN_SEMANTIC,
         "e13_bps": row.scenario_row.e13_bps,
         "e17_bps": row.scenario_row.e17_bps,
         "e22_bps": row.scenario_row.e22_bps,

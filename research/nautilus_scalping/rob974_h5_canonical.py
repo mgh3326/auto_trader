@@ -21,12 +21,11 @@ bytes. ``reasons``/``incomplete_reasons`` are already alphabetically sorted
 tuples from CP1-CP5 and pass through unchanged (still a fixed, explicit
 order).
 
-Trades feeding CP6 canonicalization carry a fixture-derived chronological
-key (``fold_id``, ``config_id``, ``entry_ts``, ``exit_ts``, ``dimension``,
-``path_scenario``) -- ``actual_h4_ledger_key`` is intentionally the
-``NOT_EVALUATED`` sentinel in CP6/CP7; only CP8's actual H4 integration may
-bind it to a real ledger-derived key. A collision in the fixture
-chronological key (two trades mapping to the same key) makes ordering
+Trades carry a deterministic chronological key (``fold_id``, ``config_id``,
+``entry_ts``, ``exit_ts``, ``dimension``, ``path_scenario``). Typed H4 path
+seals and raw rows are canonicalized here, while ``actual_h4_ledger_key``
+remains ``NOT_EVALUATED`` because the raw-member-key cross-seal is explicitly
+owned by H6-B integration. A chronological-key collision makes ordering
 ambiguous and is rejected rather than silently tie-broken.
 
 This module never touches a clock, the filesystem, or directory iteration
@@ -44,31 +43,52 @@ from dataclasses import dataclass
 from typing import Any
 
 from rob974_h5_contracts import (
+    FAKE_FREE_EMPIRICAL_CLOSURE,
     FOLD_IDS,
+    MARKET_RETURN_SEMANTIC,
     PATH_SCENARIOS,
     STRATEGIES,
     CampaignEnvelope,
     EnvelopeValidationResult,
+    H4AttributionContractResult,
     H5InputError,
     H6AAccountingSeal,
     MetricTrade,
     config_ids_for,
+    consume_h4_attribution,
+    fixture_h4_attribution_result,
     validate_envelope_and_accounting,
 )
 from rob974_h5_dual_evidence import (
+    H4AttributionCrossCheck,
     PathInvocationEvidence,
     PboEvidence,
     UniqueGeneratorEvidence,
+    cross_check_h4_attribution_contract,
 )
-from rob974_h5_gates import CommonGateResult
-from rob974_h5_s3 import S3FalsificationResult
+from rob974_h5_gates import CommonGateResult, evaluate_common_gates
+from rob974_h5_s3 import (
+    S3_ABS_M_BIN_ORDER,
+    S3_ABS_S_BIN_ORDER,
+    S3_DIRECTION_ORDER,
+    S3_Q_BIN_ORDER,
+    S3_VOLATILITY_BIN_ORDER,
+    S3FalsificationResult,
+    evaluate_s3_falsification,
+)
 from rob974_h5_s4 import (
+    S4_ABS_Z_BIN_ORDER,
+    S4_D_BIN_ORDER,
+    S4_HALF_LIFE_BIN_ORDER,
+    S4_MARKET_RETURN_BIN_ORDER,
+    S4_RHO_BIN_ORDER,
     CampaignDecisionResult,
     S4FalsificationResult,
     S4PairExecutorState,
     StrategyRankMetrics,
     compute_campaign_decision,
     compute_direct_verdict,
+    evaluate_s4_falsification,
 )
 
 __all__ = [
@@ -85,7 +105,7 @@ __all__ = [
     "validate_scorecard_consistency",
 ]
 
-SCHEMA_VERSION = "h5_scorecard_v1"
+SCHEMA_VERSION = "h5_scorecard_v2"
 ACTUAL_H4_LEDGER_KEY_NOT_EVALUATED = "NOT_EVALUATED"
 CLOSED_STATUS_ORDER: tuple[str, ...] = ("completed", "rejected", "crashed", "timeout")
 
@@ -177,6 +197,65 @@ def sanitize_bucket(bucket: Mapping[str, Any]) -> dict:
     }
 
 
+def sanitize_attribution_bucket(bucket: Mapping[str, Any]) -> dict:
+    """Sanitize one H4-backed registered-bin bucket without losing E paths."""
+    trades = _exact_int(bucket["trades"], "attribution_bucket_trades_malformed")
+    values: dict[str, float | None] = {}
+    for name in (
+        "e0_bps",
+        "e13_bps",
+        "e17_bps",
+        "e22_bps",
+        "avg_holding_minutes",
+    ):
+        value = bucket[name]
+        values[name] = (
+            _exact_float(value, f"attribution_bucket_{name}_malformed")
+            if value is not None
+            else None
+        )
+    pf17 = bucket["pf17"]
+    pf17_reason: str | None = None
+    if pf17 is not None:
+        _require(type(pf17) is float, "attribution_bucket_pf17_malformed")
+        if math.isinf(pf17):
+            pf17_reason = _PF_REASON_INFINITE
+            pf17 = None
+        elif math.isnan(pf17):
+            pf17_reason = _PF_REASON_UNDEFINED
+            pf17 = None
+    return {
+        "trades": trades,
+        "e0_bps": values["e0_bps"],
+        "e13_bps": values["e13_bps"],
+        "e17_bps": values["e17_bps"],
+        "e22_bps": values["e22_bps"],
+        "pf17": pf17,
+        "pf17_reason": pf17_reason,
+        "avg_holding_minutes": values["avg_holding_minutes"],
+    }
+
+
+def canonicalize_registered_attribution(
+    value: object, *, bin_order: Sequence[str], authority: str
+) -> dict:
+    if value is None:
+        return {}
+    _require(isinstance(value, Mapping), f"{authority}_mapping_malformed")
+    _require(set(value) == set(bin_order), f"{authority}_bin_domain_mismatch")
+    return {
+        name: sanitize_attribution_bucket(
+            _as_mapping(value[name], f"{authority}_{name}_bucket_malformed")
+        )
+        for name in bin_order
+    }
+
+
+def _as_mapping(value: object, reason: str) -> Mapping[str, Any]:
+    _require(isinstance(value, Mapping), reason)
+    return value
+
+
 def canonicalize_by_exit_reason(
     by_exit_reason: Mapping[str, Mapping[str, Any]], *, exit_reason_order: Sequence[str]
 ) -> dict:
@@ -237,6 +316,98 @@ class ScorecardConsistencyResult:
     s3_direct_verdict: str
     s4_direct_verdict: str
     campaign_decision: CampaignDecisionResult
+    h4_attribution_cross_check: H4AttributionCrossCheck | None
+
+
+def _validate_h4_campaign_binding(
+    *, envelope: CampaignEnvelope, h4_attribution: H4AttributionContractResult
+) -> None:
+    h4_envelope = h4_attribution.envelope
+    _require(h4_envelope is not None, "canonical_h4_envelope_missing")
+    _require(
+        envelope.full_campaign_hash == h4_envelope.full_campaign_hash,
+        "canonical_h4_full_campaign_hash_mismatch",
+    )
+    _require(
+        envelope.campaign_run_id == h4_envelope.campaign_run_id,
+        "canonical_h4_campaign_run_id_mismatch",
+    )
+    _require(
+        envelope.h4_runner_source_hash
+        == h4_envelope.h4_source_pins.runner_bundle_sha256
+        == h4_envelope.source_pins.runner_source_sha256,
+        "canonical_h4_runner_source_pin_mismatch",
+    )
+    _require(
+        envelope.h4_pbo_source_hash
+        == h4_envelope.h4_source_pins.pbo_source_sha256
+        == h4_envelope.source_pins.pbo_implementation_sha256,
+        "canonical_h4_pbo_source_pin_mismatch",
+    )
+    _require(
+        envelope.h2_engine_source_hash == h4_envelope.source_pins.engine_source_sha256,
+        "canonical_h4_engine_source_pin_mismatch",
+    )
+    _require(
+        all(
+            path.lineage.row_id in envelope.expected_experiment_ids
+            for path in h4_envelope.paths
+        ),
+        "canonical_h4_row_id_outside_campaign_domain",
+    )
+
+
+def _merge_h4_path_evidence(
+    s3_inputs: StrategyCanonicalInputs, s4_inputs: StrategyCanonicalInputs
+) -> dict[tuple[str, str, str], PathInvocationEvidence]:
+    overlap = set(s3_inputs.paths_by_key).intersection(s4_inputs.paths_by_key)
+    _require(not overlap, "canonical_h4_path_evidence_key_overlap")
+    return {**s3_inputs.paths_by_key, **s4_inputs.paths_by_key}
+
+
+def _validate_actual_h4_aggregates(
+    *,
+    h4_attribution: H4AttributionContractResult,
+    s3_inputs: StrategyCanonicalInputs,
+    s4_inputs: StrategyCanonicalInputs,
+) -> None:
+    for strategy, inputs in (("S3", s3_inputs), ("S4", s4_inputs)):
+        primary = tuple(
+            trade
+            for trade in h4_attribution.trades
+            if trade.strategy == strategy and trade.path_scenario == "primary_stress17"
+        )
+        upward = tuple(
+            trade
+            for trade in h4_attribution.trades
+            if trade.strategy == strategy and trade.path_scenario == "upward_stress22"
+        )
+        recomputed_common = evaluate_common_gates(
+            primary_trades=primary, upward_trades=upward
+        )
+        _require(
+            _canonicalize_common_gates(recomputed_common)
+            == _canonicalize_common_gates(inputs.common_gates),
+            f"canonical_{strategy.lower()}_h4_common_gates_mismatch",
+        )
+        if strategy == "S3":
+            recomputed_falsification = evaluate_s3_falsification(
+                primary_trades=primary, upward_trades=upward
+            )
+            _require(
+                _canonicalize_s3_falsification(recomputed_falsification)
+                == _canonicalize_s3_falsification(inputs.falsification),
+                "canonical_s3_h4_falsification_mismatch",
+            )
+        else:
+            recomputed_falsification = evaluate_s4_falsification(
+                primary_trades=primary, upward_trades=upward
+            )
+            _require(
+                _canonicalize_s4_falsification(recomputed_falsification)
+                == _canonicalize_s4_falsification(inputs.falsification),
+                "canonical_s4_h4_falsification_mismatch",
+            )
 
 
 def _validate_reasons_and_passed(
@@ -327,6 +498,7 @@ def validate_scorecard_consistency(
     h6a_seal: H6AAccountingSeal,
     envelope_ok: bool,
     envelope_incomplete_reasons: tuple[str, ...],
+    h4_attribution: H4AttributionContractResult,
     s3_inputs: StrategyCanonicalInputs,
     s4_inputs: StrategyCanonicalInputs,
     campaign_decision: CampaignDecisionResult,
@@ -346,6 +518,22 @@ def validate_scorecard_consistency(
         and all(type(reason) is str for reason in envelope_incomplete_reasons),
         "canonical_envelope_validation_reasons_malformed",
     )
+    _require(
+        type(h4_attribution) is H4AttributionContractResult,
+        "canonical_h4_attribution_contract_type_mismatch",
+    )
+    if h4_attribution.actual_h4_contract == "FIXTURE_ONLY":
+        _require(
+            h4_attribution == fixture_h4_attribution_result(),
+            "canonical_h4_fixture_contract_drift",
+        )
+    else:
+        _require(
+            h4_attribution.envelope is not None
+            and consume_h4_attribution(h4_attribution.envelope) == h4_attribution,
+            "canonical_h4_attribution_reprojection_mismatch",
+        )
+        _validate_h4_campaign_binding(envelope=envelope, h4_attribution=h4_attribution)
     recomputed_envelope = validate_envelope_and_accounting(envelope, h6a_seal)
     _require(
         envelope_ok == recomputed_envelope.ok
@@ -377,6 +565,18 @@ def validate_scorecard_consistency(
         type(s4_inputs.falsification) is S4FalsificationResult,
         "canonical_s4_falsification_type_mismatch",
     )
+
+    h4_cross_check: H4AttributionCrossCheck | None = None
+    if h4_attribution.actual_h4_contract == "PASS":
+        h4_cross_check = cross_check_h4_attribution_contract(
+            h4_contract=h4_attribution,
+            paths_by_key=_merge_h4_path_evidence(s3_inputs, s4_inputs),
+        )
+        _validate_actual_h4_aggregates(
+            h4_attribution=h4_attribution,
+            s3_inputs=s3_inputs,
+            s4_inputs=s4_inputs,
+        )
 
     _validate_reasons_and_passed(
         authority="s3_common_gates",
@@ -444,6 +644,7 @@ def validate_scorecard_consistency(
         s3_direct_verdict=recomputed_s3_verdict,
         s4_direct_verdict=recomputed_s4_verdict,
         campaign_decision=recomputed_campaign,
+        h4_attribution_cross_check=h4_cross_check,
     )
 
 
@@ -527,6 +728,59 @@ def _canonicalize_common_gates(gates: CommonGateResult) -> dict:
 
 
 def _canonicalize_s3_falsification(result: S3FalsificationResult) -> dict:
+    attribution = {
+        "by_exit_reason": canonicalize_by_exit_reason(
+            _as_mapping(
+                result.attribution["by_exit_reason"],
+                "s3_by_exit_reason_malformed",
+            ),
+            exit_reason_order=("TP", "SL", "THESIS_EXIT", "TIMEOUT"),
+        ),
+        "by_symbol": canonicalize_by_dimension(
+            _as_mapping(result.attribution["by_symbol"], "s3_by_symbol_malformed"),
+            dimension_order=("XRPUSDT", "DOGEUSDT", "SOLUSDT"),
+        ),
+        "by_abs_S_bin": canonicalize_registered_attribution(
+            result.attribution.get("by_abs_S_bin"),
+            bin_order=S3_ABS_S_BIN_ORDER,
+            authority="s3_abs_S",
+        ),
+        "by_pullback_Q_bin": canonicalize_registered_attribution(
+            result.attribution.get("by_pullback_Q_bin"),
+            bin_order=S3_Q_BIN_ORDER,
+            authority="s3_Q",
+        ),
+        "by_abs_M_bin": canonicalize_registered_attribution(
+            result.attribution.get("by_abs_M_bin"),
+            bin_order=S3_ABS_M_BIN_ORDER,
+            authority="s3_abs_M",
+        ),
+        "by_volatility_percentile_bin": canonicalize_registered_attribution(
+            result.attribution.get("by_volatility_percentile_bin"),
+            bin_order=S3_VOLATILITY_BIN_ORDER,
+            authority="s3_volatility",
+        ),
+    }
+    top_cross_value = result.attribution.get("top_tercile_by_direction_and_abs_M_bin")
+    if top_cross_value is None:
+        top_cross = {}
+    else:
+        top_cross_mapping = _as_mapping(
+            top_cross_value, "s3_top_tercile_cross_malformed"
+        )
+        _require(
+            set(top_cross_mapping) == set(S3_DIRECTION_ORDER),
+            "s3_top_tercile_direction_domain_mismatch",
+        )
+        top_cross = {
+            direction: canonicalize_registered_attribution(
+                top_cross_mapping[direction],
+                bin_order=S3_ABS_M_BIN_ORDER,
+                authority=f"s3_top_tercile_{direction}",
+            )
+            for direction in S3_DIRECTION_ORDER
+        }
+    attribution["top_tercile_by_direction_and_abs_M_bin"] = top_cross
     return {
         "passed": result.passed,
         "reasons": list(result.reasons),
@@ -551,20 +805,49 @@ def _canonicalize_s3_falsification(result: S3FalsificationResult) -> dict:
             if result.first_4h_sl_dependence is not None
             else None
         ),
-        "attribution": {
-            "by_exit_reason": canonicalize_by_exit_reason(
-                result.attribution["by_exit_reason"],
-                exit_reason_order=("TP", "SL", "THESIS_EXIT", "TIMEOUT"),
-            ),
-            "by_symbol": canonicalize_by_dimension(
-                result.attribution["by_symbol"],
-                dimension_order=("XRPUSDT", "DOGEUSDT", "SOLUSDT"),
-            ),
-        },
+        "attribution": attribution,
     }
 
 
 def _canonicalize_s4_falsification(result: S4FalsificationResult) -> dict:
+    attribution = {
+        "by_exit_reason": canonicalize_by_exit_reason(
+            _as_mapping(
+                result.attribution["by_exit_reason"],
+                "s4_by_exit_reason_malformed",
+            ),
+            exit_reason_order=("TP", "SL", "MEAN_EXIT", "STALL_EXIT", "TIMEOUT"),
+        ),
+        "by_pair": canonicalize_by_dimension(
+            _as_mapping(result.attribution["by_pair"], "s4_by_pair_malformed"),
+            dimension_order=("XRP-DOGE", "XRP-SOL", "DOGE-SOL"),
+        ),
+        "by_abs_z_bin": canonicalize_registered_attribution(
+            result.attribution.get("by_abs_z_bin"),
+            bin_order=S4_ABS_Z_BIN_ORDER,
+            authority="s4_abs_z",
+        ),
+        "by_D_bps_bin": canonicalize_registered_attribution(
+            result.attribution.get("by_D_bps_bin"),
+            bin_order=S4_D_BIN_ORDER,
+            authority="s4_D",
+        ),
+        "by_rho_bin": canonicalize_registered_attribution(
+            result.attribution.get("by_rho_bin"),
+            bin_order=S4_RHO_BIN_ORDER,
+            authority="s4_rho",
+        ),
+        "by_half_life_hours_bin": canonicalize_registered_attribution(
+            result.attribution.get("by_half_life_hours_bin"),
+            bin_order=S4_HALF_LIFE_BIN_ORDER,
+            authority="s4_half_life",
+        ),
+        "by_M_24h_bin": canonicalize_registered_attribution(
+            result.attribution.get("by_M_24h_bin"),
+            bin_order=S4_MARKET_RETURN_BIN_ORDER,
+            authority="s4_M_24h",
+        ),
+    }
     return {
         "passed": result.passed,
         "reasons": list(result.reasons),
@@ -596,16 +879,7 @@ def _canonicalize_s4_falsification(result: S4FalsificationResult) -> dict:
             if result.pair_concentration is not None
             else None
         ),
-        "attribution": {
-            "by_exit_reason": canonicalize_by_exit_reason(
-                result.attribution["by_exit_reason"],
-                exit_reason_order=("TP", "SL", "MEAN_EXIT", "STALL_EXIT", "TIMEOUT"),
-            ),
-            "by_pair": canonicalize_by_dimension(
-                result.attribution["by_pair"],
-                dimension_order=("XRP-DOGE", "XRP-SOL", "DOGE-SOL"),
-            ),
-        },
+        "attribution": attribution,
     }
 
 
@@ -704,8 +978,205 @@ def _canonicalize_pair_executor_state(state: S4PairExecutorState) -> dict:
     }
 
 
+def _canonicalize_raw_attribution_trade(trade: MetricTrade) -> dict:
+    attribution = trade.attribution
+    _require(
+        attribution is not None and attribution.contract_provenance == "actual",
+        "canonical_raw_attribution_requires_actual_row",
+    )
+    common = {
+        "row_id": attribution.row_id,
+        "experiment_id": attribution.experiment_id,
+        "contract_provenance": attribution.contract_provenance,
+        "fold_id": trade.fold_id,
+        "path_scenario": trade.path_scenario,
+        "dimension": trade.dimension,
+        "direction": trade.direction,
+        "entry_ts": _exact_int(trade.entry_ts, "raw_attribution_entry_ts_malformed"),
+        "exit_ts": _exact_int(trade.exit_ts, "raw_attribution_exit_ts_malformed"),
+        "exit_reason": trade.exit_reason,
+        "gross_bps": _exact_float(
+            trade.gross_bps, "raw_attribution_gross_bps_malformed"
+        ),
+        "selected_net_bps": _exact_float(
+            trade.net_bps, "raw_attribution_selected_net_bps_malformed"
+        ),
+        "e13_bps": _exact_float(attribution.e13_bps, "raw_attribution_e13_malformed"),
+        "e17_bps": _exact_float(attribution.e17_bps, "raw_attribution_e17_malformed"),
+        "e22_bps": _exact_float(attribution.e22_bps, "raw_attribution_e22_malformed"),
+        "market_return": _exact_float(
+            attribution.market_return, "raw_attribution_market_return_malformed"
+        ),
+        "market_return_semantic": attribution.market_return_semantic,
+        "realized_holding_minutes": _exact_float(
+            attribution.realized_holding_minutes,
+            "raw_attribution_holding_malformed",
+        ),
+        "tp_bps": _exact_float(trade.tp_bps, "raw_attribution_tp_malformed"),
+        "sl_bps": _exact_float(trade.sl_bps, "raw_attribution_sl_malformed"),
+    }
+    if trade.strategy == "S3":
+        return {
+            **common,
+            "S": _exact_float(attribution.S, "raw_attribution_S_malformed"),
+            "Q": _exact_float(attribution.Q, "raw_attribution_Q_malformed"),
+            "q_min": _exact_float(attribution.q_min, "raw_attribution_q_min_malformed"),
+            "market_return_tercile": attribution.market_return_tercile,
+            "volatility_percentile": _exact_float(
+                attribution.volatility_percentile,
+                "raw_attribution_volatility_malformed",
+            ),
+        }
+    return {
+        **common,
+        "entry_z": _exact_float(
+            attribution.entry_z, "raw_attribution_entry_z_malformed"
+        ),
+        "entry_z_threshold": _exact_float(
+            attribution.entry_z_threshold,
+            "raw_attribution_entry_z_threshold_malformed",
+        ),
+        "D": _exact_float(attribution.D, "raw_attribution_D_malformed"),
+        "D_unit": "bps",
+        "correlation": _exact_float(
+            attribution.correlation, "raw_attribution_correlation_malformed"
+        ),
+        "correlation_semantic": "entry_time_pair_leg_rho",
+        "half_life": _exact_float(
+            attribution.half_life, "raw_attribution_half_life_malformed"
+        ),
+        "half_life_unit": "4h_bars",
+        "beta_stability": _exact_float(
+            attribution.beta_stability,
+            "raw_attribution_beta_stability_malformed",
+        ),
+        "realized_pair_beta": _exact_float(
+            attribution.realized_pair_beta,
+            "raw_attribution_realized_pair_beta_malformed",
+        ),
+        "realized_pair_beta_semantic": "signed_net_applied_entry_frozen_beta",
+        "gross_notional": _exact_float(
+            trade.gross_notional, "raw_attribution_gross_notional_malformed"
+        ),
+    }
+
+
+def _canonicalize_raw_attribution_rows(
+    *, strategy: str, h4_attribution: H4AttributionContractResult
+) -> list[dict]:
+    trades = tuple(
+        trade for trade in h4_attribution.trades if trade.strategy == strategy
+    )
+    return [
+        _canonicalize_raw_attribution_trade(trade)
+        for trade in sort_trades_chronologically(trades)
+    ]
+
+
+def _canonicalize_h4_attribution_contract(
+    *,
+    h4_attribution: H4AttributionContractResult,
+    cross_check: H4AttributionCrossCheck | None,
+) -> dict:
+    envelope = h4_attribution.envelope
+    if envelope is None:
+        schema_version = None
+        full_campaign_hash = None
+        campaign_run_id = None
+        producer_seal = None
+        source_pins = None
+        h4_source_pins = None
+        deferred_reason = None
+        paths: list[dict] = []
+        tercile_authorities: list[dict] = []
+    else:
+        schema_version = envelope.schema_version
+        full_campaign_hash = envelope.full_campaign_hash
+        campaign_run_id = envelope.campaign_run_id
+        producer_seal = envelope.producer_seal_sha256
+        source_pins = {
+            "feature_source_sha256": envelope.source_pins.feature_source_sha256,
+            "engine_source_sha256": envelope.source_pins.engine_source_sha256,
+            "runner_source_sha256": envelope.source_pins.runner_source_sha256,
+            "pbo_implementation_sha256": (
+                envelope.source_pins.pbo_implementation_sha256
+            ),
+        }
+        h4_source_pins = {
+            "runner_bundle_sha256": envelope.h4_source_pins.runner_bundle_sha256,
+            "pbo_source_sha256": envelope.h4_source_pins.pbo_source_sha256,
+        }
+        deferred_reason = envelope.deferred_reason
+        paths = [
+            {
+                "strategy": path.strategy,
+                "row_id": path.lineage.row_id,
+                "experiment_id": path.lineage.experiment_id,
+                "fold_id": path.lineage.fold_id,
+                "path_scenario": path.path_scenario,
+                "h2_input_seal_sha256": path.terminal.input_seal_sha256,
+                "h2_output_seal_sha256": path.terminal.output_seal_sha256,
+                "engine_input_count": _exact_int(
+                    path.engine_input_count, "h4_path_engine_input_count_malformed"
+                ),
+                "scenario_ledger_hash": path.scenario_ledger_hash,
+                "row_count": len(path.rows),
+            }
+            for path in sorted(
+                envelope.paths,
+                key=lambda value: (
+                    value.strategy,
+                    value.lineage.row_id,
+                    value.lineage.fold_id,
+                    PATH_SCENARIOS.index(value.path_scenario),
+                ),
+            )
+        ]
+        tercile_authorities = [
+            {
+                "fold_id": authority.fold_id,
+                "train_start_ms": authority.train_start_ms,
+                "train_end_ms": authority.train_end_ms,
+                "method": authority.method,
+                "market_return_semantic": authority.market_return_semantic,
+                "reference_count": authority.reference_count,
+                "reference_hash": authority.reference_hash,
+                "complete": authority.complete,
+                "incomplete_reason": authority.incomplete_reason,
+            }
+            for authority in sorted(
+                envelope.tercile_authorities, key=lambda value: value.fold_id
+            )
+        ]
+    return {
+        "actual_h4_contract": h4_attribution.actual_h4_contract,
+        "contract_provenance": h4_attribution.contract_provenance,
+        "schema_version": schema_version,
+        "market_return_semantic": MARKET_RETURN_SEMANTIC,
+        "full_campaign_hash": full_campaign_hash,
+        "campaign_run_id": campaign_run_id,
+        "producer_seal_sha256": producer_seal,
+        "source_pins": source_pins,
+        "h4_source_pins": h4_source_pins,
+        "typed_path_cross_check": "PASS"
+        if cross_check is not None
+        else "NOT_APPLICABLE",
+        "path_count": len(paths),
+        "trade_count": len(h4_attribution.trades),
+        "raw_member_key_cross_seal": FAKE_FREE_EMPIRICAL_CLOSURE,
+        "fake_free_empirical_closure": FAKE_FREE_EMPIRICAL_CLOSURE,
+        "deferred_reason": deferred_reason,
+        "incomplete_reasons": list(h4_attribution.incomplete_reasons),
+        "tercile_authorities": tercile_authorities,
+        "paths": paths,
+    }
+
+
 def _canonicalize_strategy(
-    inputs: StrategyCanonicalInputs, *, direct_verdict: str
+    inputs: StrategyCanonicalInputs,
+    *,
+    direct_verdict: str,
+    h4_attribution: H4AttributionContractResult,
 ) -> dict:
     _require(
         inputs.strategy in STRATEGIES, "strategy_canonical_inputs_strategy_unknown"
@@ -723,6 +1194,9 @@ def _canonicalize_strategy(
             paths_by_key=inputs.paths_by_key,
         ),
         "pbo": _canonicalize_pbo(inputs.pbo),
+        "raw_attribution_rows": _canonicalize_raw_attribution_rows(
+            strategy=inputs.strategy, h4_attribution=h4_attribution
+        ),
         "direct_verdict": direct_verdict,
     }
     if inputs.pair_executor_state is not None:
@@ -738,6 +1212,7 @@ def build_canonical_scorecard(
     h6a_seal: H6AAccountingSeal,
     envelope_ok: bool,
     envelope_incomplete_reasons: tuple[str, ...],
+    h4_attribution: H4AttributionContractResult,
     s3_inputs: StrategyCanonicalInputs,
     s4_inputs: StrategyCanonicalInputs,
     campaign_decision: CampaignDecisionResult,
@@ -757,6 +1232,7 @@ def build_canonical_scorecard(
         h6a_seal=h6a_seal,
         envelope_ok=envelope_ok,
         envelope_incomplete_reasons=envelope_incomplete_reasons,
+        h4_attribution=h4_attribution,
         s3_inputs=s3_inputs,
         s4_inputs=s4_inputs,
         campaign_decision=campaign_decision,
@@ -812,10 +1288,14 @@ def build_canonical_scorecard(
     }
     strategies = {
         "S3": _canonicalize_strategy(
-            s3_inputs, direct_verdict=consistency.s3_direct_verdict
+            s3_inputs,
+            direct_verdict=consistency.s3_direct_verdict,
+            h4_attribution=h4_attribution,
         ),
         "S4": _canonicalize_strategy(
-            s4_inputs, direct_verdict=consistency.s4_direct_verdict
+            s4_inputs,
+            direct_verdict=consistency.s4_direct_verdict,
+            h4_attribution=h4_attribution,
         ),
     }
     canonical_campaign = consistency.campaign_decision
@@ -833,6 +1313,10 @@ def build_canonical_scorecard(
         "lineage": lineage,
         "h6a_accounting": h6a_accounting,
         "envelope_validation": envelope_validation,
+        "h4_attribution_contract": _canonicalize_h4_attribution_contract(
+            h4_attribution=h4_attribution,
+            cross_check=consistency.h4_attribution_cross_check,
+        ),
         "strategies": strategies,
         "campaign_decision": campaign,
     }

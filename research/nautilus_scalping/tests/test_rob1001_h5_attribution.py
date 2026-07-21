@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
+import test_rob974_h5_cp6_canonical_json as cp6fx
 import test_rob1001_h45_attribution as h4fx
 from rob974_h4_runner import (
     bind_s3_attribution_path,
@@ -13,7 +14,13 @@ from rob974_h4_runner import (
     build_deferred_attribution_envelope,
     build_tercile_authority,
 )
+from rob974_h5_canonical import (
+    StrategyCanonicalInputs,
+    build_canonical_scorecard,
+    canonical_json_bytes,
+)
 from rob974_h5_contracts import (
+    CampaignEnvelope,
     H5InputError,
     consume_h4_attribution,
     fixture_h4_attribution_result,
@@ -22,6 +29,8 @@ from rob974_h5_dual_evidence import (
     PathInvocationEvidence,
     cross_check_h4_attribution_contract,
 )
+from rob974_h5_gates import evaluate_common_gates
+from rob974_h5_markdown import render_markdown
 from rob974_h5_s3 import (
     S3_ABS_M_BIN_ORDER,
     S3_ABS_S_BIN_ORDER,
@@ -33,8 +42,11 @@ from rob974_h5_s4 import (
     S4_ABS_Z_BIN_ORDER,
     S4_D_BIN_ORDER,
     S4_HALF_LIFE_BIN_ORDER,
+    S4_HISTORICAL_PAIR_EXECUTOR_STATE,
     S4_MARKET_RETURN_BIN_ORDER,
     S4_RHO_BIN_ORDER,
+    compute_campaign_decision,
+    compute_direct_verdict,
     evaluate_s4_falsification,
 )
 
@@ -177,13 +189,12 @@ def test_h4_paths_bind_to_h5_dual_evidence_without_fabricating_member_keys(
     assert cross.trade_count == 6
     assert cross.raw_member_key_cross_seal == "DEFERRED_TO_H6B_INTEGRATION_E2E"
 
+    missing_path_evidence = dict(path_evidence)
+    missing_path_evidence.pop(next(iter(missing_path_evidence)))
     with pytest.raises(H5InputError, match="evidence_set_mismatch"):
         cross_check_h4_attribution_contract(
             h4_contract=result,
-            paths_by_key={
-                **path_evidence,
-                ("S3-01", "fold-00", "base13"): next(iter(path_evidence.values())),
-            },
+            paths_by_key=missing_path_evidence,
         )
 
     first_key = next(iter(path_evidence))
@@ -266,3 +277,238 @@ def test_s4_registered_bins_use_M_t_and_preserve_raw_beta_fields(actual_h4_contr
     assert result.attribution["by_M_24h_bin"]["(0.03,inf)"]["trades"] == 1
     assert primary[0].attribution.realized_pair_beta == 0.0
     assert primary[0].attribution.beta_stability == 0.10
+
+
+def _campaign_envelope_for_h4(h4_envelope, **overrides) -> CampaignEnvelope:
+    fields = {
+        "full_campaign_hash": h4_envelope.full_campaign_hash,
+        "campaign_run_id": h4_envelope.campaign_run_id,
+        "h4_runner_source_hash": h4_envelope.h4_source_pins.runner_bundle_sha256,
+        "h4_pbo_source_hash": h4_envelope.h4_source_pins.pbo_source_sha256,
+        "h2_engine_source_hash": h4_envelope.source_pins.engine_source_sha256,
+    }
+    fields.update(overrides)
+    return cp6fx._envelope(**fields)
+
+
+def _actual_canonical_inputs(contract):
+    paths_by_strategy = {"S3": {}, "S4": {}}
+    for path in contract.envelope.paths:
+        paths_by_strategy[path.strategy][
+            (path.lineage.row_id, path.lineage.fold_id, path.path_scenario)
+        ] = PathInvocationEvidence(
+            strategy=path.strategy,
+            config_id=path.lineage.row_id,
+            fold_id=path.lineage.fold_id,
+            path_scenario=path.path_scenario,
+            unique_evidence_hash="a" * 64,
+            unique_evidence_accepted_count=path.engine_input_count,
+            engine_input_hash=path.terminal.input_seal_sha256,
+            engine_input_count=path.engine_input_count,
+            no_trade_reason_counts={},
+            ledger_status="completed",
+            trade_count=len(path.rows),
+            artifact_hash="b" * 64,
+        )
+
+    strategy_inputs = {}
+    for strategy in ("S3", "S4"):
+        primary = tuple(
+            trade
+            for trade in contract.trades
+            if trade.strategy == strategy and trade.path_scenario == "primary_stress17"
+        )
+        upward = tuple(
+            trade
+            for trade in contract.trades
+            if trade.strategy == strategy and trade.path_scenario == "upward_stress22"
+        )
+        common = evaluate_common_gates(primary_trades=primary, upward_trades=upward)
+        if strategy == "S3":
+            falsification = evaluate_s3_falsification(
+                primary_trades=primary, upward_trades=upward
+            )
+            exit_order = ("TP", "SL", "THESIS_EXIT", "TIMEOUT")
+            dimension_order = ("XRPUSDT", "DOGEUSDT", "SOLUSDT")
+            executor_state = None
+        else:
+            falsification = evaluate_s4_falsification(
+                primary_trades=primary, upward_trades=upward
+            )
+            exit_order = ("TP", "SL", "MEAN_EXIT", "STALL_EXIT", "TIMEOUT")
+            dimension_order = ("XRP-DOGE", "XRP-SOL", "DOGE-SOL")
+            executor_state = S4_HISTORICAL_PAIR_EXECUTOR_STATE
+        direct = compute_direct_verdict(
+            incomplete_reasons=falsification.incomplete_reasons,
+            hard_gate_reasons=common.reasons + falsification.reasons,
+        )
+        strategy_inputs[strategy] = StrategyCanonicalInputs(
+            strategy=strategy,
+            common_gates=common,
+            falsification=falsification,
+            direct_verdict=direct,
+            exit_reason_order=exit_order,
+            dimension_order=dimension_order,
+            unique_by_key={},
+            paths_by_key=paths_by_strategy[strategy],
+            pbo=None,
+            pair_executor_state=executor_state,
+        )
+    return strategy_inputs["S3"], strategy_inputs["S4"]
+
+
+def _build_actual_scorecard(actual_h4_contract, **envelope_overrides):
+    _, h4_envelope, contract = actual_h4_contract
+    s3_inputs, s4_inputs = _actual_canonical_inputs(contract)
+    campaign = compute_campaign_decision(
+        s3_direct_verdict=s3_inputs.direct_verdict,
+        s4_direct_verdict=s4_inputs.direct_verdict,
+    )
+    return build_canonical_scorecard(
+        envelope=_campaign_envelope_for_h4(h4_envelope, **envelope_overrides),
+        h6a_seal=cp6fx._seal(),
+        envelope_ok=True,
+        envelope_incomplete_reasons=(),
+        h4_attribution=contract,
+        s3_inputs=s3_inputs,
+        s4_inputs=s4_inputs,
+        campaign_decision=campaign,
+    )
+
+
+def test_canonical_json_seals_actual_contract_raw_rows_and_registered_bins(
+    actual_h4_contract,
+):
+    scorecard = _build_actual_scorecard(actual_h4_contract)
+    contract = scorecard["h4_attribution_contract"]
+    assert scorecard["schema_version"] == "h5_scorecard_v2"
+    assert contract["actual_h4_contract"] == "PASS"
+    assert contract["contract_provenance"] == "actual"
+    assert contract["market_return_semantic"] == "M_t_24h_median_log_return"
+    assert contract["typed_path_cross_check"] == "PASS"
+    assert contract["fake_free_empirical_closure"] == (
+        "DEFERRED_TO_H6B_INTEGRATION_E2E"
+    )
+    assert (
+        contract["producer_seal_sha256"] == actual_h4_contract[1].producer_seal_sha256
+    )
+    assert contract["paths"][0]["h2_input_seal_sha256"]
+    assert contract["source_pins"]["engine_source_sha256"]
+
+    s3_rows = scorecard["strategies"]["S3"]["raw_attribution_rows"]
+    s4_rows = scorecard["strategies"]["S4"]["raw_attribution_rows"]
+    assert len(s3_rows) == len(s4_rows) == 3
+    assert "entry_z" not in s3_rows[0]
+    assert s3_rows[0]["market_return_semantic"] == "M_t_24h_median_log_return"
+    assert s4_rows[0]["entry_z"] == 1.9
+    assert s4_rows[0]["realized_pair_beta"] == 0.0
+    assert (
+        tuple(
+            scorecard["strategies"]["S3"]["falsification"]["attribution"][
+                "by_abs_S_bin"
+            ]
+        )
+        == S3_ABS_S_BIN_ORDER
+    )
+    assert (
+        tuple(
+            scorecard["strategies"]["S4"]["falsification"]["attribution"][
+                "by_M_24h_bin"
+            ]
+        )
+        == S4_MARKET_RETURN_BIN_ORDER
+    )
+    canonical_json_bytes(scorecard)
+
+
+def test_markdown_renders_only_canonical_attribution_contract(actual_h4_contract):
+    markdown = render_markdown(_build_actual_scorecard(actual_h4_contract)).decode()
+    assert "## H4 Attribution Contract" in markdown
+    assert "actual_h4_contract: PASS" in markdown
+    assert "contract_provenance: actual" in markdown
+    assert "fake_free_empirical_closure: DEFERRED_TO_H6B_INTEGRATION_E2E" in markdown
+    assert "### Raw Attribution Rows" in markdown
+    assert "realized_pair_beta=0.0" in markdown
+
+
+def test_fixture_canonical_status_is_explicit_and_has_no_raw_rows():
+    s3_inputs = cp6fx._build_strategy_inputs("S3")
+    s4_inputs = cp6fx._build_strategy_inputs("S4")
+    fixture = fixture_h4_attribution_result()
+    scorecard = build_canonical_scorecard(
+        envelope=cp6fx._envelope(),
+        h6a_seal=cp6fx._seal(),
+        envelope_ok=True,
+        envelope_incomplete_reasons=(),
+        h4_attribution=fixture,
+        s3_inputs=s3_inputs,
+        s4_inputs=s4_inputs,
+        campaign_decision=compute_campaign_decision(
+            s3_direct_verdict=s3_inputs.direct_verdict,
+            s4_direct_verdict=s4_inputs.direct_verdict,
+        ),
+    )
+    assert scorecard["h4_attribution_contract"]["actual_h4_contract"] == "FIXTURE_ONLY"
+    assert scorecard["h4_attribution_contract"]["typed_path_cross_check"] == (
+        "NOT_APPLICABLE"
+    )
+    assert scorecard["strategies"]["S3"]["raw_attribution_rows"] == []
+    assert scorecard["strategies"]["S4"]["raw_attribution_rows"] == []
+
+
+def test_deferred_canonical_status_forces_zero_paths_and_rows(actual_h4_contract):
+    plan, _, _ = actual_h4_contract
+    deferred_envelope = build_deferred_attribution_envelope(
+        plan=plan, reason="h6b_empirical_materializer_pending"
+    )
+    deferred = consume_h4_attribution(deferred_envelope)
+    s3_inputs = cp6fx._build_strategy_inputs("S3")
+    s4_inputs = cp6fx._build_strategy_inputs("S4")
+    scorecard = build_canonical_scorecard(
+        envelope=_campaign_envelope_for_h4(deferred_envelope),
+        h6a_seal=cp6fx._seal(),
+        envelope_ok=True,
+        envelope_incomplete_reasons=(),
+        h4_attribution=deferred,
+        s3_inputs=s3_inputs,
+        s4_inputs=s4_inputs,
+        campaign_decision=compute_campaign_decision(
+            s3_direct_verdict=s3_inputs.direct_verdict,
+            s4_direct_verdict=s4_inputs.direct_verdict,
+        ),
+    )
+    contract = scorecard["h4_attribution_contract"]
+    assert contract["actual_h4_contract"] == "DEFERRED"
+    assert contract["contract_provenance"] == "deferred"
+    assert contract["path_count"] == contract["trade_count"] == 0
+    assert contract["paths"] == []
+    assert scorecard["strategies"]["S3"]["raw_attribution_rows"] == []
+
+
+def test_canonical_rejects_stale_campaign_source_pin(actual_h4_contract):
+    with pytest.raises(H5InputError, match="runner_source_pin_mismatch"):
+        _build_actual_scorecard(actual_h4_contract, h4_runner_source_hash="f" * 64)
+
+
+def test_canonical_rejects_aggregate_not_derived_from_h4_rows(actual_h4_contract):
+    _, h4_envelope, contract = actual_h4_contract
+    s3_inputs, s4_inputs = _actual_canonical_inputs(contract)
+    forged_s3 = replace(
+        s3_inputs,
+        common_gates=replace(s3_inputs.common_gates, pooled_e17_bps=999.0),
+    )
+    campaign = compute_campaign_decision(
+        s3_direct_verdict=s3_inputs.direct_verdict,
+        s4_direct_verdict=s4_inputs.direct_verdict,
+    )
+    with pytest.raises(H5InputError, match="s3_h4_common_gates_mismatch"):
+        build_canonical_scorecard(
+            envelope=_campaign_envelope_for_h4(h4_envelope),
+            h6a_seal=cp6fx._seal(),
+            envelope_ok=True,
+            envelope_incomplete_reasons=(),
+            h4_attribution=contract,
+            s3_inputs=forged_s3,
+            s4_inputs=s4_inputs,
+            campaign_decision=campaign,
+        )
