@@ -95,6 +95,26 @@ async def test_unwired_preset_with_filters_warns(patched) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_support_proximity_preset_dispatches_and_warns_on_filters(
+    patched,
+) -> None:
+    """ROB-976: preset='support_proximity' reaches build_screener_results (MCP
+    exposure, AC2/AC4) and — although its persisted base snapshot is identified,
+    its adjustable-filter catalog is not wired — filters= produces the honest
+    '필터 미적용' warning
+    rather than silently dropping them."""
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="support_proximity",
+        market="kr",
+        filters=[{"field": "per", "operator": "lte", "value": 8}],
+    )
+    assert patched["preset_id"] == "support_proximity"
+    assert out["snapshotKind"] == "invest_screener_snapshots"
+    assert any("배선되지 않" in w for w in out["warnings"])
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_high_yield_value_with_filters_warns(patched) -> None:
     # ROB-445: high_yield_value HAS a snapshot_kind (market_valuation_snapshots) but
     # build_screener_results does NOT thread its filters → it must still warn (the old

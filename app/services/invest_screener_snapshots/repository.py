@@ -27,6 +27,15 @@ class SnapshotUpsert(BaseModel):
     week_change_rate: Decimal | None = None
     closes_window: list[Any] = Field(default_factory=list)
     daily_volume: int | None = None
+    daily_turnover: Decimal | None = None
+    market_cap: Decimal | None = None
+    market_cap_source: str | None = None
+    market_cap_snapshot_date: dt.date | None = None
+    support_price: Decimal | None = None
+    support_kind: str | None = None
+    support_strength: str | None = None
+    dist_to_support_pct: Decimal | None = None
+    support_computed_at: dt.datetime | None = None
     source: str
 
 

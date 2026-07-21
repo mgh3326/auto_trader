@@ -17,6 +17,7 @@ from .invest_momentum_event_snapshot import (
     InvestThemeEventSnapshot,
     InvestThemeEventSnapshotStock,
 )
+from .invest_screener_snapshot import InvestScreenerSnapshot
 from .investment_reports import (
     InvestmentReport,
     InvestmentReportItem,
@@ -204,6 +205,7 @@ __all__ = [
     "InvestorFlowSnapshot",
     "InvestCryptoScreenerSnapshot",
     "InvestKrFundamentalsSnapshot",
+    "InvestScreenerSnapshot",
     "InvestMomentumEventSnapshot",
     "InvestThemeEventSnapshot",
     "InvestThemeEventSnapshotStock",

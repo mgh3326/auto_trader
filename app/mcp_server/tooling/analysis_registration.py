@@ -114,8 +114,9 @@ def register_analysis_tools(
     @mcp.tool(
         name="get_top_stocks",
         description=(
-            "Use for a simple ranking-type sort with no filter parameters; for "
-            "filtered candidate discovery use screen_stocks or the persisted-preset "
+            "Use for a simple ranking-type sort (optionally with KR market-cap/"
+            "turnover quality floors); for richer filtered candidate discovery use "
+            "screen_stocks or the persisted-preset "
             "screen_stocks_snapshot, and for KR intraday 급등 scoring use "
             "get_momentum_candidates. Get top stocks by ranking type across different "
             "markets (KR/US/Crypto). "
@@ -127,6 +128,18 @@ def register_analysis_tools(
             "provenance tag, and apply a default-ON liquidity filter "
             "(|foreign_net_amount| >= FOREIGNERS_MIN_NET_AMOUNT_KRW, default 1억 "
             "KRW; pass include_illiquid=true to bypass). "
+            "min_market_cap/min_turnover (KR only, raw KRW) are fail-closed "
+            "quality floors. min_market_cap uses only the normalized Naver-backed "
+            "market_valuation_snapshots value (never the provider-unit KR "
+            "fundamentals backfill); min_turnover uses trade_amount, falling back "
+            "to price*volume. Unknown values cannot establish a pass. Excluded "
+            "counts echo under market_cap_filter / "
+            "turnover_filter; if the filter empties an otherwise non-empty "
+            "losers page, the response is status=degraded with degraded_reason "
+            "(never the generic 'no losing stocks' message). Useful on "
+            "ranking_type=losers to cut illiquid junk-cap noise before a "
+            "지지선 매수 후보 scan; for a ranked-by-support-distance view use "
+            "screen_stocks_snapshot(preset='support_proximity') instead. "
             "US: volume, market_cap, gainers, losers "
             "Crypto: volume, gainers, losers, relative_strength (vs BTC 24h)."
         ),
@@ -136,12 +149,16 @@ def register_analysis_tools(
         ranking_type: str = "volume",
         limit: int = 20,
         include_illiquid: bool = False,
+        min_market_cap: float | None = None,
+        min_turnover: float | None = None,
     ) -> dict[str, Any]:
         return await get_top_stocks_impl(
             market=market,
             ranking_type=ranking_type,
             limit=limit,
             include_illiquid=include_illiquid,
+            min_market_cap=min_market_cap,
+            min_turnover=min_turnover,
         )
 
     @mcp.tool(
@@ -377,6 +394,14 @@ def register_analysis_tools(
             "list (e.g. 'consecutive_gainers,double_buy'); presets can also be a "
             "list for multi-preset sweeps with symbol deduplication and "
             "matchedPresets tagging. "
+            "preset='support_proximity' (KR, ROB-976) ranks a quality-filtered "
+            "blue-chip universe by distance to its nearest support level. The "
+            "bounded builder reuses get_support_resistance's fib/volume-profile/"
+            "Bollinger clustering on one completed OHLCV frame and persists its "
+            "price/support/distance plus normalized market cap atomically; this "
+            "tool only reads that snapshot and never recalculates a level. Symbols "
+            "with no stored support below the snapshot price are excluded. "
+            "riskContext on each row carries the support kind/strength. "
             "filters=[{field, operator(gte|lte|eq), value}] tune the preset's "
             "thresholds (threaded for consecutive_gainers and crypto). "
             "exclude_held hides KIS-live portfolio symbols; exclude_watched is "
@@ -395,10 +420,10 @@ def register_analysis_tools(
             "min_analyst_* filters resolve consensus from the cache and only the "
             "returned page is enriched. "
             "priceLabel, changePctLabel, and metricValueLabel are values at the "
-            "snapshot time and "
-            "may be stale by up to one session; before confirming a candidate, "
-            "revalidate price/change with get_quote and technical analysis with "
-            "analyze_stock_batch. analysisContext.rsi14, when present, is the "
+            "snapshot time and may be stale by up to one session; before confirming "
+            "a top candidate, revalidate it separately (get_quote / "
+            "get_support_resistance / analyze_stock_batch). "
+            "analysisContext.rsi14, when present, is the "
             "separately exposed RSI field. "
             "Results are capped (default 40) and paginated via limit/offset."
         ),
