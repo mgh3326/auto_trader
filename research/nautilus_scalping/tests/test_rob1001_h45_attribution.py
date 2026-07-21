@@ -48,6 +48,68 @@ _MINUTE_MS = 60_000
 _SIGNAL_TS = 240_000
 _CORPUS_END_TS = 10_000_000_000
 
+_RETIRED_FULL_CAMPAIGN_HASH = (
+    "abecb9ebf45cbb4971f2b71b2669351057ed92303dca2c88934f8eb8c27ebc09"
+)
+_RETIRED_CAMPAIGN_RUN_ID = "rob974h6a-owegcZSjwsSzLwl80QYcHfFZs2xY3UfipsIkYnU_Sl0"
+_ROB1001_FULL_CAMPAIGN_HASH = (
+    "341a5a57ec14b7a499ea58d74de3b7d9c4b2c4e8bb514c789f6f528231a4045d"
+)
+_ROB1001_CAMPAIGN_RUN_ID = "rob974h6a-ReYDH4lJ8dDmDJxApTNIB7p72qAjTBI2Qited6Ni9Y0"
+_ROB1001_RUNNER_SOURCE_SHA256 = (
+    "eef75d09aac6ee862f8e3d959c6abd11e72b3faf072cee620ddb9309678af806"
+)
+_ROB1001_EXPERIMENT_IDS = (
+    "d25fcec7187d664dc000ff792011e00c6f98142aaa48f4c2b60d8e773ed017ed",
+    "4391e0cab744c93effc226392ed76b3290f84421b87118e4c4d13df1a1a956e1",
+    "49629a555b6f419ffb8e8c98314a30015affa17ebbfb18c4fc8cff2257c2ca9e",
+    "211eabb29c0f47f7f939d1191416320f7138721a485b91ccb56b0ae7cf9b4f67",
+    "b90667b683b50b0f8f3dd2af242ab4c8dfff2a33902fab43aa44794b5033e7be",
+    "4fcede2526f90569c77a5b636248caef29bd264d27c45b4e1a6f00043c99218c",
+    "b83b24f7063c50ef20a56e0bdfa84ff001c73470c195a0cdf236592e68e51852",
+    "15d4185e75012b332bb4ce99813ee6590354b5d42420e55d2a51026e0cfb8835",
+    "1309bc20d053c0d31c7cb7229f436b412fc55208aaedf49c7abb8586db4be03a",
+    "3b63b40ec775190f54d7a289d2c87da99becb72076ec59b93c0deab23b4d1995",
+    "e3e00988e987c43a8afdfb58078398bd2931a37b7c2abb15d92ddc3bbce7d08d",
+    "977d852283e57d816e00468cc0034bf9ff93e5eedaf851c1b45160c08186b474",
+    "63b2525f34d48bf045a9e5f051696b49545b528d4c3a0b064cccb7e447454ef5",
+    "1b3e181eed6591422156281e1c51e91391c4ecfb52fe58bebf06c8cb313cc0fe",
+    "6ea65811d95b5b9729c081d34ac9de77208d729d35802b1495f8e16e189f66bb",
+    "c3460c6d1c5d1fc547dc3f6e44ef97780ab88752e70eaa543b07c67e28691f04",
+    "66164eea435508c56cb45e32cc83b3dd74ef65f9a08d931291bc1fbc75b4baa0",
+    "f718945d51d7d9c02bd370909ab6b3828e5b0a70e8b597114981404bca0ede3b",
+    "28d42ca3d9126f76488f4ec2c7c283d7dd63cffa621502367c266e5d7b93f22c",
+    "15e9c7bf140191989dc614ef49e5c9301a1ab1add55c0f471fba3586fdc96750",
+    "a4cca850865cebf7f587cbe45ddc56e231ae1b9ab10294a9a7118c6dbba46d5c",
+    "07d2816d829f80f47243f724b291279185490c692712c00c6b06227319924d9a",
+    "5e4806a04ee10100c5c8fea48afd744af49572a0389304d37ca2926adcfeb68c",
+    "6ec46a6ca3b500d00d60ef9de6efc3f90aae5582905fe915af2610b9611ef521",
+    "7a53d00145a5dae19cca35f9fd9d0cd3f55b10c419b0ad9cf6e54cdb9abb87b0",
+    "27c21af0ba1312d8b9ff95ea8bebf53d5c407992b8a254c87b8fa6e3c8f1a966",
+    "96c08362d09a02206d0dc8f58b822f0ed0257c56e95d2e96c5000290772499be",
+    "57c5a6be74c513bce1c4f1647404510ffbafc8f77a5d0b4f432f591b930529e7",
+    "eec2cb79a66b639c54910e7581465ea3ef79ae543c2632d3f0e632dbc55a580b",
+    "3700fd15f0492fcc8caaf89169b8465c6b50a3438fa3a5160434b89f7de7e1ab",
+    "ef9104f939e3c6be3e7a2565dc438c6a3f382c304ebb971382efe54d49c52420",
+    "3f380a779b2eccf855d7b67ba0430f8255d1e96f4643721490b04da6c453c24d",
+    "8f053ca42000dd3ad339b6ab7634c921c3c383d39b2dd4fdbb2613834a650131",
+    "ae9bb0b91606ffc6d43e919832fdf91211b7ca502d7c7f27b9cfacc0acd567be",
+    "17975759f72812429095dbf64a4f5cfa8c731678c832cdfe5edf3ec8b1cf926c",
+    "85151f66d6ea0d45c5a2a508809a3c5cae73ee7a7be9538540a9601d0f04cb8e",
+    "6e0dc81a088ebfd28e452ecfa90480e221919836dea96865d5357fec8cd1785b",
+    "378ddb98408c5fa8c060aa04b5d1c38cbb852f4be10101e4aba8245d0983c8c2",
+    "498594b65b95a24047a5a8be8b9a11ce9f1174db47b943375b86dfe9f5cd2576",
+    "f55ccb7a801c754acd56958fd32c87c7d191266aa270b61164e787ba85a5a07d",
+    "f5643f2caa56cdf71ee45a13069b5740ea89a31ba7b9fc0d71ea4c73aa4ef49d",
+    "d02c9a7c54c77b62fe0ece45976d410c5ca62ba1a00b2eccc3ce6a0a7e5330cd",
+    "51e88abaa874a9835203076ef32a0d56cf3700b725a4968c8a2b967d81c3368e",
+    "4ceb18cf7941a023b43e3f4c0b5ce2a7f6357b974c47a22e6d9b6d0ec06faf0c",
+    "902f007e8a0f8e55565e74e362dc6ca9f146dac25633533fd37cdbe8d73dbf67",
+    "bedcc8c49fc2323588c501250d9bcfd43eb085ee56176de7f62f5037e33437dc",
+    "b1a31efc59444599ec24bddc5d83702f1b2adabec3cc32563be5febe32eb4650",
+    "b11a976a0e690f14c4438d2132134f4145cecda4304e588aa1abc9068cedcbc8",
+)
+
 
 def _snapshot(ts: int, *, m: float, M: float) -> CommonSnapshot:
     features = tuple(
@@ -212,6 +274,21 @@ def _s4_terminal(candidate: S4Candidate) -> SealedS4Terminal:
 @pytest.fixture(scope="module")
 def production_plan():
     return build_production_h4_plan()
+
+
+def test_rob1001_policy_change_rederives_and_refreezes_campaign_identity(
+    production_plan,
+):
+    assert production_plan.full_campaign_hash == _ROB1001_FULL_CAMPAIGN_HASH
+    assert production_plan.campaign_run_id == _ROB1001_CAMPAIGN_RUN_ID
+    assert production_plan.h4_source_pins.runner_bundle_sha256 == (
+        _ROB1001_RUNNER_SOURCE_SHA256
+    )
+    assert tuple(row.experiment_id for row in production_plan.row_specs) == (
+        _ROB1001_EXPERIMENT_IDS
+    )
+    assert production_plan.full_campaign_hash != _RETIRED_FULL_CAMPAIGN_HASH
+    assert production_plan.campaign_run_id != _RETIRED_CAMPAIGN_RUN_ID
 
 
 @pytest.fixture(scope="module")
