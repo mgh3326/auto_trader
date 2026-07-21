@@ -350,9 +350,24 @@ def _serialize_alpaca_paper_db_suites(request):
     autouse fixtures wrap module autouse fixtures), so a peer never runs while
     another suite's committed cleanup is in flight. The intra-test
     ``asyncio.gather`` concurrency the exactly-once claim tests rely on still
-    runs inside the lock (one process holds it for the whole test)."""
+    runs inside the lock (one process holds it for the whole test).
+
+    ROB-954 round-2: ``test_trade_retrospective_pending.py`` doesn't seed the
+    shared ``alpaca_paper_order_ledger`` table itself, but its
+    ``account_mode=None`` scans read it with exact ``total_pending ==`` counts
+    over a wide ``2000-01-01``..``2100-01-01`` window — a peer alpaca_paper
+    suite committing a ``rob73-``/``rob74-crypto-`` row mid-test inflates that
+    count exactly like the write/write races above, so it needs the same
+    cross-worker serialization even though it is read-mostly here. (Do not
+    also wrap this file's own cleanup in ``_alpaca_paper_db_suite_lock()`` —
+    ``fcntl.flock`` is not reentrant across separate ``open()`` calls even
+    within one process, so nesting it under this fixture would deadlock.)"""
     path = str(getattr(request.node, "fspath", "") or "")
-    if "alpaca_paper" not in path and "paper_approval_packet" not in path:
+    if (
+        "alpaca_paper" not in path
+        and "paper_approval_packet" not in path
+        and "test_trade_retrospective_pending" not in path
+    ):
         yield
         return
     with _alpaca_paper_db_suite_lock():
