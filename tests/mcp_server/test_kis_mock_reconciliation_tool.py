@@ -202,6 +202,76 @@ async def test_kis_mock_reconciliation_tool_rejects_unknown_market_end_to_end(
 
 
 @pytest.mark.asyncio
+async def test_kis_mock_reconciliation_tool_rejects_unknown_market_even_with_config_error(
+    monkeypatch,
+):
+    """ROB-1018 fix #3 (round 3), cross-condition (a).
+
+    Round 2 shipped allowlist validation only inside the impl, reachable
+    only *after* the front-layer config-error short-circuit. That meant an
+    unknown market combined with a broken KIS mock config never reached the
+    allowlist check at all — it returned the config-error response with the
+    raw, unnormalized market crammed into `scope` (contract violation: no
+    `requested_scope`, wrong-shaped `scope`). Validation must now run BEFORE
+    the config-error gate so the same unknown-market rejection always wins.
+    """
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.orders_registration.validate_kis_mock_config",
+        lambda: ["KIS_MOCK_APP_KEY"],
+    )
+
+    tools = build_tools()
+    result = await tools["kis_mock_reconciliation_run"](
+        market="CrYpTo-X", symbol="AVGO"
+    )
+
+    assert result["success"] is False
+    # The unknown-market rejection wins over the config error: no `scope`,
+    # the verbatim request under `requested_scope`, and an error message
+    # about the bad market (not about missing KIS mock config).
+    assert "scope" not in result
+    assert result["requested_scope"] == {"market": "CrYpTo-X", "symbol": "AVGO"}
+    assert "CrYpTo-X" in result["error"]
+    assert set(result["allowed_markets"]) == {"kr", "us", "equity_kr", "equity_us"}
+
+
+@pytest.mark.asyncio
+async def test_kis_mock_reconciliation_tool_rejects_unknown_market_even_with_apply_gate(
+    monkeypatch,
+):
+    """ROB-1018 fix #3 (round 3), cross-condition (b).
+
+    Same defect, different second condition: an unknown market combined
+    with `dry_run=False, confirm=False` must still be rejected as an
+    unknown market (not as a confirm-required error) — the allowlist check
+    must win regardless of what other gate would otherwise also fire.
+    """
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.orders_registration.validate_kis_mock_config",
+        lambda: [],
+    )
+    mock_run = AsyncMock()
+    monkeypatch.setattr(kis_mock_ledger, "kis_mock_reconciliation_run_impl", mock_run)
+
+    tools = build_tools()
+    result = await tools["kis_mock_reconciliation_run"](
+        market="CrYpTo-X", symbol="AVGO", dry_run=False, confirm=False
+    )
+
+    assert result["success"] is False
+    assert "scope" not in result
+    assert result["requested_scope"] == {"market": "CrYpTo-X", "symbol": "AVGO"}
+    assert "CrYpTo-X" in result["error"]
+    assert set(result["allowed_markets"]) == {"kr", "us", "equity_kr", "equity_us"}
+    # Never reaches confirm-required (no "confirm" error text) and never
+    # calls the impl.
+    assert "confirm" not in result["error"].lower()
+    mock_run.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_scope_contract_consistent_across_all_paths_for_market_us(monkeypatch):
     """ROB-1018 fix #2 (round 2), TDD requirement #1.
 

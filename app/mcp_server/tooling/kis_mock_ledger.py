@@ -679,6 +679,59 @@ def normalize_kis_mock_reconcile_market(market: str | None) -> str | None:
     return _MARKET_ALIASES.get(market, market)
 
 
+def resolve_kis_mock_reconcile_scope(
+    *, market: str | None, symbol: str | None
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Single front-layer point: validate, normalize, and shape the
+    reconciliation scope selector set (ROB-1018 fix #3).
+
+    This is the ONE place that (a) checks ``market`` against the allowlist
+    and (b) decides how the scope gets echoed back. Both the MCP tool
+    registration (front layer) and :func:`kis_mock_reconciliation_run_impl`
+    call this *same* function so the two layers can never shape the
+    response differently or disagree on what counts as a valid market —
+    that divergence (allowlist check only living in impl, reachable only
+    after config-error/confirm gates ran first) was the ROB-1018 round-3
+    defect. Callers must invoke this *before* any other gate (config error,
+    confirm-required) so an unknown market always short-circuits with the
+    same rejection shape regardless of what other conditions also hold.
+
+    Adding a new selector (e.g. ROB-1007's ``ledger_ids``) means adding a
+    parameter here and including it in both dicts below — no restructuring
+    of call sites or gating order.
+
+    Returns ``(scope, error)`` — exactly one is not ``None``:
+
+    - ``scope``: the effective/canonical selectors (alias-normalized
+      ``market``, e.g. ``"us"`` -> ``"equity_us"``), safe to use for the
+      rest of the request (further gating and the impl call itself).
+    - ``error``: a ready-to-return rejection dict for an unrecognized
+      ``market`` (typo or unsupported venue — KIS mock only covers
+      KR/US equity). It carries the verbatim, unnormalized request under
+      ``requested_scope`` (never ``scope``, since no valid scope was ever
+      established) so callers can't mistake it for a scope that actually
+      ran. A silent pass-through would otherwise yield an
+      ``orders_processed=0`` false-success indistinguishable from "scope
+      matched but nothing was open".
+    """
+    normalized_market = normalize_kis_mock_reconcile_market(market)
+    if (
+        normalized_market is not None
+        and normalized_market not in _ALLOWED_RECONCILE_MARKETS
+    ):
+        return None, {
+            "success": False,
+            "error": (
+                f"unknown market '{market}' — allowed values: "
+                f"{_ALLOWED_RECONCILE_MARKET_VALUES}"
+            ),
+            "allowed_markets": _ALLOWED_RECONCILE_MARKET_VALUES,
+            "account_mode": "kis_mock",
+            "requested_scope": {"market": market, "symbol": symbol},
+        }
+    return {"market": normalized_market, "symbol": symbol}, None
+
+
 async def kis_mock_reconciliation_run_impl(
     *,
     dry_run: bool = True,
@@ -695,43 +748,25 @@ async def kis_mock_reconciliation_run_impl(
     prior full-scan behavior for existing callers (TaskIQ periodic task,
     unscoped MCP calls).
 
-    An unrecognized ``market`` (typo or unsupported venue) is rejected
-    explicitly rather than silently passed through — KIS mock only covers
-    KR/US equity (``equity_kr``/``equity_us``). A silent pass-through would
-    otherwise yield an ``orders_processed=0`` false-success indistinguishable
-    from "scope matched but nothing was open".
-
-    Response contract (ROB-1018 fix #2): every success/error path returns
-    the *effective* (canonical, alias-normalized) scope under ``scope`` —
-    e.g. a requested ``market="us"`` always echoes back as ``"equity_us"``.
-    The one exception is the unknown-market rejection below: since no valid
-    scope was ever established, it has no ``scope`` key and instead echoes
-    the verbatim, unnormalized request under ``requested_scope`` so callers
-    can't mistake it for a scope that actually ran.
+    Response contract (ROB-1018 fix #2/#3): every success/error path
+    returns the *effective* (canonical, alias-normalized) scope under
+    ``scope`` — e.g. a requested ``market="us"`` always echoes back as
+    ``"equity_us"``. The one exception is the unknown-market rejection,
+    handled by :func:`resolve_kis_mock_reconcile_scope` before any other
+    work happens here: it has no ``scope`` key and instead echoes the
+    verbatim, unnormalized request under ``requested_scope``.
     """
-    normalized_market = normalize_kis_mock_reconcile_market(market)
-    if (
-        normalized_market is not None
-        and normalized_market not in _ALLOWED_RECONCILE_MARKETS
-    ):
-        return {
-            "success": False,
-            "error": (
-                f"unknown market '{market}' — allowed values: "
-                f"{_ALLOWED_RECONCILE_MARKET_VALUES}"
-            ),
-            "allowed_markets": _ALLOWED_RECONCILE_MARKET_VALUES,
-            "account_mode": "kis_mock",
-            "requested_scope": {"market": market, "symbol": symbol},
-        }
+    scope, scope_error = resolve_kis_mock_reconcile_scope(market=market, symbol=symbol)
+    if scope_error:
+        return scope_error
     try:
         async with _order_session_factory()() as db:
             return await run_kis_mock_reconciliation(
                 db,
                 dry_run=dry_run,
                 limit=limit,
-                market=normalized_market,
-                symbol=symbol,
+                market=scope["market"],
+                symbol=scope["symbol"],
             )
     except Exception as exc:
         logger.exception("Failed to run KIS mock reconciliation: %s", exc)
@@ -740,7 +775,7 @@ async def kis_mock_reconciliation_run_impl(
             "error": str(exc),
             "source": "mcp",
             "account_mode": "kis_mock",
-            "scope": {"market": normalized_market, "symbol": symbol},
+            "scope": scope,
         }
 
 

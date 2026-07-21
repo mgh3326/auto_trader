@@ -558,10 +558,17 @@ def register_order_tools(mcp: FastMCP) -> None:
         market: str | None = None,
         symbol: str | None = None,
     ):
-        scope = {
-            "market": kis_mock_ledger.normalize_kis_mock_reconcile_market(market),
-            "symbol": symbol,
-        }
+        # ROB-1018 fix #3: allowlist validation runs at this single
+        # front-layer point, BEFORE the config-error and confirm gates
+        # below — so an unknown market always short-circuits with the same
+        # rejection (requested_scope, no scope key) no matter what other
+        # conditions also hold. See resolve_kis_mock_reconcile_scope's
+        # docstring for why both layers must share this one function.
+        scope, scope_error = kis_mock_ledger.resolve_kis_mock_reconcile_scope(
+            market=market, symbol=symbol
+        )
+        if scope_error:
+            return scope_error
         config_error = _kis_mock_config_error()
         if config_error:
             return {**config_error, "scope": scope}
@@ -573,6 +580,12 @@ def register_order_tools(mcp: FastMCP) -> None:
                 "error": "confirm=True is required when dry_run=False",
                 "scope": scope,
             }
+        # Pass the raw request through (not the pre-normalized `scope`) —
+        # kis_mock_reconciliation_run_impl calls the same resolve helper
+        # itself and is the authoritative normalization point for the
+        # actual reconciliation call; this call can never disagree with
+        # the `scope`/`requested_scope` already validated above because
+        # both derive from the identical resolve_kis_mock_reconcile_scope.
         return await kis_mock_ledger.kis_mock_reconciliation_run_impl(
             dry_run=dry_run, limit=limit, market=market, symbol=symbol
         )
