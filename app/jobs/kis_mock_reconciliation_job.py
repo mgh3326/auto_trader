@@ -30,6 +30,7 @@ from app.services.kis_mock_holdings_reconciler import (
     classify_orders,
 )
 from app.services.kis_mock_lifecycle_service import KISMockLifecycleService
+from app.services.kis_mock_reconcile_scope import resolve_kis_mock_reconcile_scope
 
 
 def _to_decimal(val: Any) -> Decimal:
@@ -152,6 +153,7 @@ async def run_kis_mock_reconciliation(
     limit: int = 100,
     symbol: str | None = None,
     market: str | None = None,
+    ledger_ids: list[int] | None = None,
     thresholds: ReconcilerThresholds | None = None,
     kis_client: KISClient | None = None,
 ) -> dict[str, Any]:
@@ -161,18 +163,52 @@ async def run_kis_mock_reconciliation(
     the delta-budget kernel groups by (symbol, side) so a single-symbol pass is
     self-consistent. ``market`` (ROB-1018) restricts to one ``instrument_type``
     (e.g. ``equity_kr``/``equity_us``) — prevents a US-scoped run from proposing
-    transitions on KR rows (and vice versa). Both default to ``None``, which
-    keeps the full-batch behavior. Neither narrows the holdings snapshot
-    fetch (``_collect_kis_mock_holdings`` always fetches KR + US) — the
-    ROB-910 zero-synthesis fail-closed guard for out-of-scope-fetch symbols is
+    transitions on KR rows (and vice versa). ``ledger_ids`` (ROB-1007) restricts
+    to an explicit set of ledger rows. All three default to ``None``, which
+    keeps the full-batch behavior. None narrow the holdings snapshot fetch
+    (``_collect_kis_mock_holdings`` always fetches KR + US) — the ROB-910
+    zero-synthesis fail-closed guard for out-of-scope-fetch symbols is
     unaffected by order scoping.
+
+    ROB-1007 R4: this function is called directly by two job-layer callers
+    that bypass the MCP tool surface (``app/tasks/kis_mock_reconciliation_tasks.py``,
+    ``kis_mock_execution_consumer.py``) and previously built ``scope`` inline
+    without ever running it through :func:`resolve_kis_mock_reconcile_scope` —
+    an unknown ``market`` at this layer silently produced a false
+    ``success=True, orders_processed=0`` rather than the ``success=False``
+    the MCP layer already guaranteed. This call re-validates through the same
+    chokepoint so both entry points share one allowlist/shape, regardless of
+    whether a caller already validated (idempotent — normalization is stable).
     """
+    scope, scope_error = resolve_kis_mock_reconcile_scope(
+        market=market, symbol=symbol, ledger_ids=ledger_ids
+    )
+    if scope_error:
+        return {**scope_error, "broker": "kis"}
+
     thresholds = thresholds or ReconcilerThresholds()
     lifecycle_svc = KISMockLifecycleService(db)
+
+    resolved_ledger_ids = scope.get("ledger_ids")
+    if resolved_ledger_ids is not None:
+        existing_ids = await lifecycle_svc.existing_ledger_ids(resolved_ledger_ids)
+        missing_ids = sorted(set(resolved_ledger_ids) - existing_ids)
+        if missing_ids:
+            return {
+                "success": False,
+                "error": f"unknown ledger_ids: {missing_ids}",
+                "selector": "ledger_ids",
+                "account_mode": "kis_mock",
+                "broker": "kis",
+                "scope": scope,
+            }
+
     open_rows = await lifecycle_svc.list_open_orders(
-        limit=limit, symbol=symbol, instrument_type=market
+        limit=limit,
+        symbol=scope["symbol"],
+        instrument_type=scope["market"],
+        ledger_ids=resolved_ledger_ids,
     )
-    scope = {"market": market, "symbol": symbol}
     if not open_rows:
         return {
             "success": True,
