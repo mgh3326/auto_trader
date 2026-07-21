@@ -27,7 +27,7 @@ _INTEGRATION_TREE = "bc8091c50e720af86b610332714d077e7b461397"
 _TARGET = materializer.DatabaseTarget(
     host="localhost", port=5432, database="test_db", user="postgres"
 )
-_PERSISTED_OUTPUT = Path("/private/tmp/strategy-worker-rob984-test-db-e2e-pair")
+_PERSISTED_OUTPUT = Path("/private/tmp/strategy-worker-rob1012-test-db-e2e-pair")
 
 
 class _HarnessSession:
@@ -284,10 +284,10 @@ async def test_cp9_actual_runner_commits_then_fresh_connection_audits_read_only(
 ) -> None:
     identity = build_production_identity_plan()
     assert identity.full_campaign_hash == (
-        "341a5a57ec14b7a499ea58d74de3b7d9c4b2c4e8bb514c789f6f528231a4045d"
+        "c8bb8e88e129e0072d0ea174adca5c4cce8158f2726c6397030d2ae6e4619f39"
     )
     assert identity.campaign_run_id == (
-        "rob974h6a-ReYDH4lJ8dDmDJxApTNIB7p72qAjTBI2Qited6Ni9Y0"
+        "rob974h6a-G4efMErFLrEyHWNztSKlo9j-ghlxQuPkwD0h1g6sQEw"
     )
     plan = materializer.build_production_execution_plan(
         identity=identity,
