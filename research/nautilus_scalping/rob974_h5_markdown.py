@@ -309,6 +309,7 @@ def render_markdown(canonical: Mapping[str, Any]) -> bytes:
 
     h6a = canonical["h6a_accounting"]
     lines.append("## H6-A Accounting")
+    lines.append(f"- actual_h6a_contract: {h6a['actual_h6a_contract']}")
     lines.append(f"- expected_total: {h6a['expected_total']}")
     lines.append(f"- registered_total: {h6a['registered_total']}")
     lines.append(f"- accounting_complete: {_fmt(h6a['accounting_complete'])}")

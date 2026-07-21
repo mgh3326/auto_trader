@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 
 import pytest
+import rob974_h6a_accounting as h6a_accounting
 import test_rob974_h5_cp6_canonical_json as cp6fx
 import test_rob1001_h45_attribution as h4fx
 from rob974_h4_runner import (
@@ -20,10 +22,12 @@ from rob974_h5_canonical import (
     canonical_json_bytes,
 )
 from rob974_h5_contracts import (
+    H6A_CONTRACT_STATUSES,
     CampaignEnvelope,
     H5InputError,
     consume_h4_attribution,
     fixture_h4_attribution_result,
+    resolve_h6a_accounting_contract,
 )
 from rob974_h5_dual_evidence import (
     PathInvocationEvidence,
@@ -304,6 +308,40 @@ def _campaign_envelope_for_h4(h4_envelope, **overrides) -> CampaignEnvelope:
     return cp6fx._envelope(**fields)
 
 
+def _production_h6a_report(plan):
+    """Exercise H6-A's production accounting builder against the exact H4 plan.
+
+    The attempt rows are hermetic integration evidence, not an empirical
+    campaign claim.  What is under test is the real H6-A reconstruction and
+    trial-seal type crossing the H5 boundary without an H5 fixture seal.
+    """
+    attempts = tuple(
+        h6a_accounting.AttemptAccountingRow(
+            row_id=spec.row_id,
+            experiment_id=spec.experiment_id,
+            retry_index=0,
+            status="completed",
+            reason_code=None,
+            fold_evidence_hash=hashlib.sha256(
+                f"rob983-cp8-fold:{spec.experiment_id}".encode()
+            ).hexdigest(),
+            run_identity=hashlib.sha256(
+                f"rob983-cp8-run:{plan.campaign_run_id}:{spec.experiment_id}".encode()
+            ).hexdigest(),
+        )
+        for spec in plan.row_specs
+    )
+    return h6a_accounting.build_combined_accounting(
+        campaign_run_id=plan.campaign_run_id,
+        canonical_row_ids=tuple(spec.row_id for spec in plan.row_specs),
+        row_id_to_experiment_id={
+            spec.row_id: spec.experiment_id for spec in plan.row_specs
+        },
+        registered_total=len(plan.row_specs),
+        attempts=attempts,
+    )
+
+
 def _actual_canonical_inputs(contract):
     paths_by_strategy = {"S3": {}, "S4": {}}
     for path in contract.envelope.paths:
@@ -370,8 +408,15 @@ def _actual_canonical_inputs(contract):
     return strategy_inputs["S3"], strategy_inputs["S4"]
 
 
-def _build_actual_scorecard(actual_h4_contract, **envelope_overrides):
-    _, h4_envelope, contract = actual_h4_contract
+def _build_actual_scorecard(
+    actual_h4_contract, *, h6a_input=None, **envelope_overrides
+):
+    plan, h4_envelope, contract = actual_h4_contract
+    if h6a_input is None:
+        h6a_input = _production_h6a_report(plan)
+    envelope_overrides.setdefault(
+        "h6a_trial_accounting_hash", h6a_input.trial_accounting_hash
+    )
     s3_inputs, s4_inputs = _actual_canonical_inputs(contract)
     campaign = compute_campaign_decision(
         s3_direct_verdict=s3_inputs.direct_verdict,
@@ -379,7 +424,7 @@ def _build_actual_scorecard(actual_h4_contract, **envelope_overrides):
     )
     return build_canonical_scorecard(
         envelope=_campaign_envelope_for_h4(h4_envelope, **envelope_overrides),
-        h6a_seal=cp6fx._seal(),
+        h6a_seal=h6a_input,
         envelope_ok=True,
         envelope_incomplete_reasons=(),
         h4_attribution=contract,
@@ -394,7 +439,8 @@ def test_canonical_json_seals_actual_contract_raw_rows_and_registered_bins(
 ):
     scorecard = _build_actual_scorecard(actual_h4_contract)
     contract = scorecard["h4_attribution_contract"]
-    assert scorecard["schema_version"] == "h5_scorecard_v2"
+    assert scorecard["schema_version"] == "h5_scorecard_v3"
+    assert scorecard["h6a_accounting"]["actual_h6a_contract"] == "PASS"
     assert contract["actual_h4_contract"] == "PASS"
     assert contract["contract_provenance"] == "actual"
     assert contract["market_return_semantic"] == "M_t_24h_median_log_return"
@@ -436,6 +482,7 @@ def test_canonical_json_seals_actual_contract_raw_rows_and_registered_bins(
 
 def test_markdown_renders_only_canonical_attribution_contract(actual_h4_contract):
     markdown = render_markdown(_build_actual_scorecard(actual_h4_contract)).decode()
+    assert "actual_h6a_contract: PASS" in markdown
     assert "## H4 Attribution Contract" in markdown
     assert "actual_h4_contract: PASS" in markdown
     assert "contract_provenance: actual" in markdown
@@ -462,6 +509,7 @@ def test_fixture_canonical_status_is_explicit_and_has_no_raw_rows():
         ),
     )
     assert scorecard["h4_attribution_contract"]["actual_h4_contract"] == "FIXTURE_ONLY"
+    assert scorecard["h6a_accounting"]["actual_h6a_contract"] == "FIXTURE_ONLY"
     assert scorecard["h4_attribution_contract"]["typed_path_cross_check"] == (
         "NOT_APPLICABLE"
     )
@@ -501,6 +549,52 @@ def test_deferred_canonical_status_forces_zero_paths_and_rows(actual_h4_contract
 def test_canonical_rejects_stale_campaign_source_pin(actual_h4_contract):
     with pytest.raises(H5InputError, match="runner_source_pin_mismatch"):
         _build_actual_scorecard(actual_h4_contract, h4_runner_source_hash="f" * 64)
+
+
+def test_fixture_h6a_seal_can_never_claim_actual_pass(actual_h4_contract):
+    plan, _, _ = actual_h4_contract
+    production_report = _production_h6a_report(plan)
+    literal_fixture = cp6fx._seal()
+    assert literal_fixture.trial_accounting_hash == "b" * 64
+    same_digest_fixture = cp6fx._seal(
+        trial_accounting_hash=production_report.trial_accounting_hash
+    )
+    for fixture_seal in (literal_fixture, same_digest_fixture):
+        scorecard = _build_actual_scorecard(
+            actual_h4_contract,
+            h6a_input=fixture_seal,
+        )
+        assert scorecard["h4_attribution_contract"]["actual_h4_contract"] == "PASS"
+        assert scorecard["h6a_accounting"]["actual_h6a_contract"] == "FIXTURE_ONLY"
+        assert scorecard["h6a_accounting"]["actual_h6a_contract"] != "PASS"
+
+
+def test_actual_h6a_report_must_bind_campaign_run_id(actual_h4_contract):
+    plan, _, _ = actual_h4_contract
+    forged_report = replace(
+        _production_h6a_report(plan),
+        campaign_run_id="rob974h6a-forged",
+    )
+    with pytest.raises(H5InputError, match="actual_h6a_campaign_run_id_mismatch"):
+        _build_actual_scorecard(actual_h4_contract, h6a_input=forged_report)
+
+
+def test_h6a_contract_status_domain_and_not_evaluated_sentinel_are_closed():
+    assert H6A_CONTRACT_STATUSES == ("PASS", "FIXTURE_ONLY", "NOT_EVALUATED")
+    result = resolve_h6a_accounting_contract(None)
+    assert result.actual_h6a_contract == "NOT_EVALUATED"
+    assert result.seal is None
+    assert result.campaign_run_id is None
+
+
+def test_actual_h6a_report_stale_usable_flag_is_rejected(actual_h4_contract):
+    plan, _, _ = actual_h4_contract
+    forged_report = replace(
+        _production_h6a_report(plan),
+        performance_usable=False,
+    )
+    with pytest.raises(H5InputError, match="performance_usable_forged_or_stale"):
+        resolve_h6a_accounting_contract(forged_report)
 
 
 def test_canonical_rejects_aggregate_not_derived_from_h4_rows(actual_h4_contract):

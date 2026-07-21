@@ -65,6 +65,7 @@ _ALLOWED = {
     "re",
     "typing",
     "rob974_h4_runner",
+    "rob974_h6a_accounting",
     "rob974_h5_canonical",
     "rob974_h5_contracts",
     "rob974_h5_dual_evidence",
