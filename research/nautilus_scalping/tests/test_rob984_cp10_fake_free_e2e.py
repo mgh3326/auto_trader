@@ -12,7 +12,6 @@ import pytest_asyncio
 import rob974_h3_h2_adapter as h3_h2_adapter
 import rob974_h3_smoke as h3_smoke
 import rob974_h4_runner as h4_runner
-import rob974_h4_smoke as h4_smoke
 import test_rob962_frozen_production_delta as frozen_guard
 from rob974_features import FOUR_HOUR_MS, MINUTE_MS
 from rob974_h3_manifest import get_config
@@ -51,6 +50,9 @@ _INTEGRATION_TREE = "bc8091c50e720af86b610332714d077e7b461397"
 _DEFERRED_FAKE_FREE_MARKER = "DEFERRED_TO_H6B_INTEGRATION_E2E"
 _PRE_R1_FORENSIC_JSON_SHA256 = (
     "ce77983a2d47a0d8137b0df4a1171090f2183363cf948aea9ed7ffc8e14cd704"
+)
+_CP10_FAKE_FREE_CLOSURE_SHA256 = (
+    "6f60e868df5c1d27f19094b5146e22c70a69ba89550f18397c0926ebce2ec326"
 )
 _CP10_RAW_MEMBER_KEY_CROSS_SHA256 = (
     "3bc2b53a0caab2bed4c882277a1fa2375e915f55fdaa368445b8eee5b712d93f"
@@ -546,8 +548,7 @@ async def test_cp10_actual_chain_is_deterministic_replay_noop_and_nonvacuous(
             materializer.ROB984_CP10_CLOSED_PREFIX
         )
         assert closed_contract["fake_free_empirical_closure"] == (
-            materializer.ROB984_CP10_CLOSED_PREFIX
-            + h4_smoke.ROB984_CP10_FAKE_FREE_EVIDENCE_SHA256
+            materializer.ROB984_CP10_CLOSED_PREFIX + _CP10_FAKE_FREE_CLOSURE_SHA256
         )
         assert closed_contract["raw_member_key_cross_seal"] == (
             materializer.ROB984_CP10_CLOSED_PREFIX + _CP10_RAW_MEMBER_KEY_CROSS_SHA256
