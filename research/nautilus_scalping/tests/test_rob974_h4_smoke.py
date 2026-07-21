@@ -7,4 +7,7 @@ def test_contract_fixture_smoke_declares_all_predecessor_integrations() -> None:
     assert report["actual_h1_integration"] == "PASS"
     assert report["actual_h2_integration"] == "PASS"
     assert report["actual_h3_integration"] == "PASS"
-    assert report["actual_h6a_integration"] == "NOT_EVALUATED"
+    assert report["actual_h6a_integration"] == "PASS"
+    assert report["fake_free_full_scope"] == "DEFERRED_TO_H6B_INTEGRATION_E2E"
+    assert len(report["full_campaign_hash"]) == 64
+    assert report["campaign_run_id"].startswith("rob974h6a-")
