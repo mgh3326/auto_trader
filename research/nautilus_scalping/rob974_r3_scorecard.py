@@ -55,9 +55,11 @@ from rob974_r3_relaxation import (
     CellFoldLedger,
     PhaseLedgerEvidence,
     RelaxationCampaignAnalysis,
+    RelaxationInputError,
     RelaxationTrade,
     TerminalIncompleteEvidence,
     analyze_relaxation_campaign,
+    derive_terminal_attempt_reason,
 )
 from rob974_r3_relaxation_h2_adapter import (
     R3H2CellFoldInput,
@@ -1332,16 +1334,13 @@ def _require_attempt_payload(
             f"{attempt.row_id}: attempt phase/fold headers are unordered"
         )
 
-    expected_status = "rejected" if incomplete_rows else "completed"
-    expected_reason = (
-        (
-            "rejected:data_gap_in_position"
-            if attempt.row_id.startswith("S3-")
-            else "rejected:data_gap_in_pair_position"
-        )
-        if incomplete_rows
-        else None
-    )
+    try:
+        expected_reason = derive_terminal_attempt_reason(tuple(incomplete_rows))
+    except (TypeError, RelaxationInputError) as exc:
+        raise R3ScorecardError(
+            f"{attempt.row_id}: terminal reason evidence is malformed or ambiguous"
+        ) from exc
+    expected_status = "rejected" if expected_reason is not None else "completed"
     if (attempt.status, attempt.reason_code) != (expected_status, expected_reason):
         raise R3ScorecardError(
             f"{attempt.row_id}: attempt status/reason differs from terminal evidence"

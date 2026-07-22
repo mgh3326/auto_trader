@@ -56,6 +56,11 @@ _TERMINAL_INCOMPLETE_REASONS = {
         "fold_horizon_rejected",
     ),
 }
+_ALL_TERMINAL_INCOMPLETE_REASONS = frozenset(
+    reason
+    for family_reasons in _TERMINAL_INCOMPLETE_REASONS.values()
+    for reason in family_reasons
+)
 _FOLD_BY_ID = {fold.fold_id: fold for fold in exact_h4_folds()}
 
 Phase = Literal["TRAIN", "OOS"]
@@ -93,6 +98,35 @@ def _exact_tuple(value: object, name: str) -> tuple[object, ...]:
     if type(value) is not tuple:
         raise TypeError(f"{name} must be an exact built-in tuple")
     return value
+
+
+def derive_terminal_attempt_reason(incomplete_rows: object) -> str | None:
+    """Derive one attempt reason from the terminal rows themselves.
+
+    The exact-three execution paths intentionally repeat the same terminal
+    rows.  Repetition is harmless, but heterogeneous terminal reasons cannot
+    be represented honestly by the attempt DTO's singular ``reason_code`` and
+    therefore fail closed instead of being collapsed by strategy family.
+    """
+
+    rows = _exact_tuple(incomplete_rows, "attempt terminal incomplete rows")
+    if not rows:
+        return None
+    reasons: set[str] = set()
+    for row in rows:
+        if type(row) is not dict:
+            raise TypeError("attempt terminal incomplete rows must be exact dicts")
+        reason = row.get("reason")
+        if type(reason) is not str or reason not in _ALL_TERMINAL_INCOMPLETE_REASONS:
+            raise RelaxationInputError(
+                "attempt terminal reason is outside the closed engine taxonomy"
+            )
+        reasons.add(reason)
+    if len(reasons) != 1:
+        raise RelaxationInputError(
+            "one attempt cannot collapse heterogeneous terminal reasons"
+        )
+    return f"rejected:{next(iter(reasons))}"
 
 
 def _mean_gross_bps(trades: tuple[RelaxationTrade, ...]) -> float | None:

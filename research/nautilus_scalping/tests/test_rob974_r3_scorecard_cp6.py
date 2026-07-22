@@ -998,6 +998,55 @@ def test_accounting_issuer_refuses_caller_projected_attempt_rows() -> None:
         )
 
 
+def test_accounting_reason_is_derived_from_terminal_evidence_not_family() -> None:
+    from app.services.rob974_r3_h6a_bridge import R3AttemptBatchItem
+    from research_contracts.canonical_hash import canonical_sha256
+
+    context = _production_context()
+    source_attempts = list(_complete_accounting(context).source_attempts)
+    original = source_attempts[0]
+    payload = scorecard_module._plain(original.evidence_payload)
+    for path in payload["phase_fold_paths"][0]["path_evidence"]:
+        path["incompletes"] = 1
+        path["terminal_incomplete_rows"] = [{"reason": "fold_horizon_rejected"}]
+    fold_hash = canonical_sha256(payload)
+    authoritative = R3AttemptBatchItem(
+        row_id=original.row_id,
+        experiment_id=original.experiment_id,
+        retry_index=0,
+        status="rejected",
+        reason_code="rejected:fold_horizon_rejected",
+        fold_evidence_hash=fold_hash,
+        run_identity=canonical_sha256(
+            {
+                "full_campaign_hash": context.campaign_identity_sha256,
+                "campaign_run_id": context.campaign_run_id,
+                "row_id": original.row_id,
+                "experiment_id": original.experiment_id,
+                "fold_evidence_hash": fold_hash,
+            }
+        ),
+        evidence_payload=payload,
+    )
+    source_attempts[0] = authoritative
+
+    issued = issue_r3_scorecard_accounting(
+        evidence_context=context,
+        attempts=tuple(source_attempts),
+    )
+    assert issued.attempts[0].reason_code == "rejected:fold_horizon_rejected"
+
+    source_attempts[0] = dataclasses.replace(
+        authoritative,
+        reason_code="rejected:data_gap_in_position",
+    )
+    with pytest.raises(ValueError, match="differs from terminal evidence"):
+        issue_r3_scorecard_accounting(
+            evidence_context=context,
+            attempts=tuple(source_attempts),
+        )
+
+
 def test_fold_scenario_issuer_has_no_raw_market_value_injection_surface() -> None:
     assert tuple(inspect.signature(issue_r3_fold_scenario_attribution).parameters) == (
         "path_scenario",

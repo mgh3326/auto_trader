@@ -67,6 +67,7 @@ _REASONS: dict[str, frozenset[str]] = {
         {
             "rejected:data_gap_in_position",
             "rejected:data_gap_in_pair_position",
+            "rejected:fold_horizon_rejected",
             "insufficient_train_evidence_all_folds",
         }
     ),

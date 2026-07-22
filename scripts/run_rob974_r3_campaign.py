@@ -1437,6 +1437,11 @@ def _build_attempts(
     cell_evidence: Mapping[str, list[dict[str, object]]],
     gate_reports: Mapping[tuple[str, str], object],
 ) -> tuple[object, ...]:
+    from rob974_r3_relaxation import (
+        RelaxationInputError,
+        derive_terminal_attempt_reason,
+    )
+
     from app.services.rob974_r3_h6a_bridge import R3AttemptBatchItem
     from research_contracts.canonical_hash import canonical_sha256
 
@@ -1469,16 +1474,11 @@ def _build_attempts(
             for path in cell["path_evidence"]
             for row in path["terminal_incomplete_rows"]
         )
-        if incomplete_rows:
-            status = "rejected"
-            reason_code = (
-                "rejected:data_gap_in_position"
-                if row_id.startswith("S3-")
-                else "rejected:data_gap_in_pair_position"
-            )
-        else:
-            status = "completed"
-            reason_code = None
+        try:
+            reason_code = derive_terminal_attempt_reason(incomplete_rows)
+        except (TypeError, RelaxationInputError) as exc:
+            raise LaunchRefused("ATTEMPT_TERMINAL_REASON_DRIFT") from exc
+        status = "rejected" if reason_code is not None else "completed"
         fold_evidence_hash = canonical_sha256(evidence_payload)
         run_identity = canonical_sha256(
             {

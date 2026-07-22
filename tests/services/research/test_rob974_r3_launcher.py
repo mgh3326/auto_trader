@@ -641,11 +641,11 @@ def test_terminal_incomplete_is_rejected_and_completed_mutation_fails_replay() -
         plan=plan, cell_evidence=cell_evidence, gate_reports=reports
     )
     assert attempts[0].status == "rejected"
-    assert attempts[0].reason_code == "rejected:data_gap_in_position"
+    assert attempts[0].reason_code == "rejected:fold_horizon_rejected"
     assert all(item.status == "completed" for item in attempts[1:])
     accounting_rows = launcher._attempt_accounting_rows(attempts)
     assert accounting_rows[0].status == "rejected"
-    assert accounting_rows[0].reason_code == "rejected:data_gap_in_position"
+    assert accounting_rows[0].reason_code == "rejected:fold_horizon_rejected"
     assert tuple(row.status for row in accounting_rows[1:]) == ("completed",) * 11
 
     specs = launcher._registration_specs(plan)
