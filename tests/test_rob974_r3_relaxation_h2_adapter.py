@@ -16,6 +16,7 @@ from rob974_h3_h2_adapter import adapt_s3_candidate
 from rob974_h3_s3 import S3Candidate
 from rob974_h3_s4 import HISTORICAL_NOTIONAL_ASSUMPTION, S4Candidate
 from rob974_h4_adapter import (
+    H4ContractDrift,
     SealedS3Terminal,
     seal_s3_engine_input,
     seal_s3_engine_output,
@@ -348,6 +349,29 @@ def _replace_terminal_result(
     return replace(source, terminal=terminal)
 
 
+def _replace_s3_authority(
+    source: R3H2CellFoldInput,
+    candidates: tuple[S3Candidate, ...],
+    result: S3EngineResult,
+) -> R3H2CellFoldInput:
+    intents = tuple(
+        adapt_s3_candidate(candidate, fold_id=source.fold_id)
+        for candidate in candidates
+    )
+    terminal = _sealed_s3(
+        result,
+        intents,
+        corpus_end_ts=source.corpus_end_ts,
+        horizon_end_ts=source.horizon_end_ts,
+    )
+    return replace(
+        source,
+        h3_candidates=candidates,
+        engine_intents=intents,
+        terminal=terminal,
+    )
+
+
 def test_exact_manifest_major_12x8_builder_normalizes_sealed_h4_terminals() -> None:
     evidence = normalize_r3_phase_ledgers(phase="OOS", sources=_oos_sources())
     expected_headers = tuple(
@@ -485,8 +509,11 @@ def test_trade_phase_exit_horizon_is_inclusive_and_one_ms_over_rejected() -> Non
         signal_ts=0,
         reason="next_tick_unavailable",
     )
-    bad_no_trade_source = _replace_terminal_result(
-        source, S3EngineResult((), (bad_no_trade,), ())
+    assert type(source.config) is R3S3Config
+    bad_no_trade_source = _replace_s3_authority(
+        source,
+        (_s3_candidate(source.config, 0),),
+        S3EngineResult((), (bad_no_trade,), ()),
     )
     with pytest.raises(RelaxationInputError, match="no-trade signal"):
         normalize_r3_phase_ledgers(
@@ -537,14 +564,22 @@ def test_sealed_terminal_output_hash_is_recomputed_at_m3_ingress() -> None:
         replace(source, terminal=forged)
 
 
-def test_input_authority_rejects_alternate_valid_seal_before_output_evidence() -> None:
+def test_input_authority_rejects_alternate_valid_input_seal() -> None:
     source = _oos_sources()[3 * 8]
     assert type(source.terminal) is SealedR3S4Terminal
     alternate = "f" * 64
     assert alternate != source.terminal.input_seal_sha256
+    forged = replace(source.terminal, input_seal_sha256=alternate)
+    with pytest.raises(RelaxationInputError, match="input hash"):
+        replace(source, terminal=forged)
+
+
+def test_input_seal_failure_precedes_output_and_ledger_evidence() -> None:
+    source = _oos_sources()[3 * 8]
+    assert type(source.terminal) is SealedR3S4Terminal
     forged = replace(
         source.terminal,
-        input_seal_sha256=alternate,
+        input_seal_sha256="f" * 64,
         output_seal_sha256="0" * 64,
     )
     with pytest.raises(RelaxationInputError, match="input hash"):
@@ -600,6 +635,24 @@ def test_input_authority_rejects_nonexact_intent_type_and_order() -> None:
         replace(source, engine_intents=(second_intent, first_intent))
 
 
+def test_exact_empty_input_seal_cannot_authorize_unknown_output_identity() -> None:
+    source = _oos_sources()[0]
+    assert type(source.terminal.result) is S3EngineResult
+    forged_terminal = _sealed_s3(
+        source.terminal.result,
+        (),
+        corpus_end_ts=source.corpus_end_ts,
+        horizon_end_ts=source.horizon_end_ts,
+    )
+    with pytest.raises(H4ContractDrift, match="unknown candidate identity"):
+        replace(
+            source,
+            h3_candidates=(),
+            engine_intents=(),
+            terminal=forged_terminal,
+        )
+
+
 def test_terminal_incomplete_preserves_prefix_but_suppresses_all_phase_statistics() -> (
     None
 ):
@@ -620,8 +673,15 @@ def test_terminal_incomplete_preserves_prefix_but_suppresses_all_phase_statistic
         entry_price=1.0,
         reason="data_gap_in_position",
     )
-    incomplete_source = _replace_terminal_result(
-        source, S3EngineResult((prefix_trade,), (), (incomplete,))
+    original_candidate = source.h3_candidates[0]
+    assert type(original_candidate) is S3Candidate
+    incomplete_candidate = _s3_candidate(
+        config, incomplete.signal_ts, symbol=incomplete.symbol
+    )
+    incomplete_source = _replace_s3_authority(
+        source,
+        (original_candidate, incomplete_candidate),
+        S3EngineResult((prefix_trade,), (), (incomplete,)),
     )
     evidence = normalize_r3_phase_ledgers(
         phase="OOS", sources=(incomplete_source, *sources[1:])
