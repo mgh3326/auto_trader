@@ -10,8 +10,13 @@ from app.services.kr_symbol_universe_service import is_nxt_eligible
 
 from . import constants
 from .base import _log_kis_api_failure
+from .order_throttle import (
+    MAX_THROTTLE_RESUBMITS,
+    is_provider_throttle_reject,
+    throttle_backoff_seconds,
+)
 from .pre_send import PreSendHook
-from .send_outcome import OrderSendOutcomeTracker
+from .send_outcome import OrderSendDisposition, OrderSendOutcomeTracker
 
 if TYPE_CHECKING:
     from .protocols import KISClientProtocol
@@ -253,6 +258,7 @@ class DomesticOrderClient:
         pre_send_hook: PreSendHook | None = None,
         send_outcome: OrderSendOutcomeTracker | None = None,
         _token_retry_depth: int = 0,
+        _throttle_retry_depth: int = 0,
     ) -> dict:
         """
         국내주식 주문 (매수/매도)
@@ -331,6 +337,14 @@ class DomesticOrderClient:
             f"tr_id: {tr_id}, routing: {body['EXCG_ID_DVSN_CD']}"
         )
 
+        # ROB-BAC: always observe the send outcome, so a gateway throttle
+        # rejection (provably NOT_CREATED) can be told apart from an ambiguous
+        # one. Callers that pass their own tracker keep it — their contract is
+        # unchanged, and a locally created tracker is never returned.
+        outcome = (
+            send_outcome if send_outcome is not None else OrderSendOutcomeTracker()
+        )
+
         js = await self._parent._request_with_rate_limit(
             "POST",
             self._parent._kis_url(constants.DOMESTIC_ORDER_URL),
@@ -347,12 +361,11 @@ class DomesticOrderClient:
             # ROB-843 P1: mock-only freshness re-check fired at the actual HTTP
             # send boundary (None for live → identical behavior).
             pre_send_hook=pre_send_hook,
-            send_outcome=send_outcome,
+            send_outcome=outcome,
         )
 
         if js.get("rt_cd") != "0":
-            if send_outcome is not None:
-                send_outcome.mark_provider_rejected()
+            outcome.mark_provider_rejected()
             msg_cd = js.get("msg_cd", "")
             msg1 = js.get("msg1", "")
             _log_kis_api_failure(
@@ -397,7 +410,56 @@ class DomesticOrderClient:
                     pre_send_hook=pre_send_hook,
                     send_outcome=send_outcome,
                     _token_retry_depth=_token_retry_depth + 1,
+                    _throttle_retry_depth=_throttle_retry_depth,
                 )
+
+            # ROB-BAC: a gateway per-second throttle rejection is declined
+            # *before* the order engine — the <500 response with rt_cd != "0"
+            # and no ODNO proves no order exists, so a bounded re-POST carries
+            # no double-submit risk. ROB-645's "never re-POST" still governs
+            # every ambiguous outcome: the NOT_CREATED check below excludes the
+            # 5xx-with-body case, and timeouts never reach here at all.
+            if is_provider_throttle_reject(msg_cd, msg1):
+                if outcome.disposition is not OrderSendDisposition.NOT_CREATED:
+                    logging.error(
+                        "국내주식 주문 초당한도 거절이나 결과 불확정(http=%s) - "
+                        "fail-closed (stock_code=%s, order_type=%s)",
+                        outcome.last_http_status,
+                        stock_code,
+                        order_type,
+                    )
+                elif _throttle_retry_depth < MAX_THROTTLE_RESUBMITS:
+                    delay = throttle_backoff_seconds(_throttle_retry_depth)
+                    logging.warning(
+                        "국내주식 주문 초당 거래건수 초과(%s) - %.2fs 후 재전송(%d/%d) "
+                        "(stock_code=%s, order_type=%s)",
+                        msg_cd,
+                        delay,
+                        _throttle_retry_depth + 1,
+                        MAX_THROTTLE_RESUBMITS,
+                        stock_code,
+                        order_type,
+                    )
+                    await asyncio.sleep(delay)
+                    return await self.order_korea_stock(
+                        stock_code,
+                        order_type,
+                        quantity,
+                        price,
+                        is_mock,
+                        pre_send_hook=pre_send_hook,
+                        send_outcome=send_outcome,
+                        _token_retry_depth=_token_retry_depth,
+                        _throttle_retry_depth=_throttle_retry_depth + 1,
+                    )
+                else:
+                    logging.error(
+                        "국내주식 주문 초당한도 재전송 캡(%d) 초과 - fail-closed "
+                        "(stock_code=%s, order_type=%s)",
+                        MAX_THROTTLE_RESUBMITS,
+                        stock_code,
+                        order_type,
+                    )
 
             error_msg = f"{msg_cd} {msg1}"
             raise RuntimeError(error_msg)
