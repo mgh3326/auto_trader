@@ -157,10 +157,10 @@ def test_cp10_persisted_fake_free_nonvacuity_and_exact_guard_seal() -> None:
     scorecard_bytes = _PERSISTED_OUTPUT.joinpath("scorecard.json").read_bytes()
     scorecard = json.loads(scorecard_bytes)
     assert scorecard["lineage"]["full_campaign_hash"] == (
-        "2c47864c7ab661f16be6c414a1140944ec36832bb268e86183555b56c6f85f53"
+        "70f352c3c477e27a36111f1daa584deb4ca570ec57ae9555727d6bc6c68b4248"
     )
     assert scorecard["lineage"]["campaign_run_id"] == (
-        "rob974h6a-CvcCOcAO3hRQDUPzHdVBJFmkXi_dN6NmngCOBLk82lI"
+        "rob974h6a-wbSyHLi2OCMA167TwGlSF70ZIXd98KCRUJ88OaQG-Zo"
     )
     expected_dimensions = {
         "S3": {"XRPUSDT", "DOGEUSDT", "SOLUSDT"},

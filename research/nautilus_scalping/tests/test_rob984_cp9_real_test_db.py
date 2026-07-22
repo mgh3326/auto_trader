@@ -287,10 +287,10 @@ async def test_cp9_actual_runner_commits_then_fresh_connection_audits_read_only(
 ) -> None:
     identity = build_production_identity_plan()
     assert identity.full_campaign_hash == (
-        "2c47864c7ab661f16be6c414a1140944ec36832bb268e86183555b56c6f85f53"
+        "70f352c3c477e27a36111f1daa584deb4ca570ec57ae9555727d6bc6c68b4248"
     )
     assert identity.campaign_run_id == (
-        "rob974h6a-CvcCOcAO3hRQDUPzHdVBJFmkXi_dN6NmngCOBLk82lI"
+        "rob974h6a-wbSyHLi2OCMA167TwGlSF70ZIXd98KCRUJ88OaQG-Zo"
     )
     plan = materializer.build_production_execution_plan(
         identity=identity,

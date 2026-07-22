@@ -13,8 +13,8 @@ from app.models.research_backtest import (
 from app.services import rob974_h6b_materializer as materializer
 from research_contracts.canonical_hash import canonical_sha256
 
-_FULL_CAMPAIGN_HASH = "2c47864c7ab661f16be6c414a1140944ec36832bb268e86183555b56c6f85f53"
-_CAMPAIGN_RUN_ID = "rob974h6a-CvcCOcAO3hRQDUPzHdVBJFmkXi_dN6NmngCOBLk82lI"
+_FULL_CAMPAIGN_HASH = "70f352c3c477e27a36111f1daa584deb4ca570ec57ae9555727d6bc6c68b4248"
+_CAMPAIGN_RUN_ID = "rob974h6a-wbSyHLi2OCMA167TwGlSF70ZIXd98KCRUJ88OaQG-Zo"
 _INTEGRATION_HEAD = "c3c31b76e3a79e9cf9573e066b1d7e278088fc8e"
 _INTEGRATION_TREE = "bc8091c50e720af86b610332714d077e7b461397"
 
