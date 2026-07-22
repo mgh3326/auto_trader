@@ -73,6 +73,18 @@ class SealedR3S4Terminal:
     input_seal_sha256: str
     output_seal_sha256: str
 
+    def __post_init__(self) -> None:
+        if type(self.result) is not R3S4EngineResult:
+            raise TypeError("result must be an exact R3S4EngineResult")
+        for name in ("input_seal_sha256", "output_seal_sha256"):
+            value = getattr(self, name)
+            if (
+                type(value) is not str
+                or len(value) != 64
+                or any(character not in "0123456789abcdef" for character in value)
+            ):
+                raise ValueError(f"{name} must be lowercase 64-hex")
+
 
 @dataclass(frozen=True, slots=True)
 class R3S4FrozenParityEvidence:

@@ -348,10 +348,17 @@ class R3S4IncompleteRecord:
         object.__setattr__(self, "pair", _pair(self.pair))
         object.__setattr__(self, "side_a", _side(self.side_a, "side_a"))
         object.__setattr__(self, "side_b", _side(self.side_b, "side_b"))
+        if (self.side_a, self.side_b) not in (
+            ("short", "long"),
+            ("long", "short"),
+        ):
+            raise ValueError("R3 S4 incomplete legs must have opposing sides")
         _config(self.config_id)
         object.__setattr__(self, "fold_id", _fold_id(self.fold_id))
         for name in ("signal_ts", "entry_ts"):
             object.__setattr__(self, name, _exact_int(getattr(self, name), name))
+        if self.entry_ts < self.signal_ts:
+            raise ValueError("R3 S4 incomplete entry_ts must not precede signal_ts")
         for name in ("entry_price_a", "entry_price_b"):
             value = _finite_float(getattr(self, name), name)
             object.__setattr__(self, name, value)

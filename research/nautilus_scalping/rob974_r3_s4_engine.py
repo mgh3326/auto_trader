@@ -64,11 +64,12 @@ def run_r3_s4_pair_basket_stream(
 ) -> R3S4EngineResult:
     """Run the frozen mechanics through the exact registered R3 S4 lineage."""
 
-    if any(type(candidate) is not R3S4PairSignalIntent for candidate in candidates):
+    candidate_rows = tuple(candidates)
+    if any(type(candidate) is not R3S4PairSignalIntent for candidate in candidate_rows):
         raise TypeError("candidates must contain exact R3S4PairSignalIntent values")
 
     ordered = sorted(
-        candidates, key=lambda candidate: (candidate.signal_ts, candidate.pair)
+        candidate_rows, key=lambda candidate: (candidate.signal_ts, candidate.pair)
     )
     seen_identity: set[tuple[tuple[str, str], int]] = set()
     for candidate in ordered:
