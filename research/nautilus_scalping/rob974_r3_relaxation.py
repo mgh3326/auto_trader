@@ -1,9 +1,9 @@
 """Pure ROB-974 R3 relaxation-layer and monotone-edge evidence.
 
 The public entry point consumes the complete canonical 12-cell by eight-fold
-ledger.  Callers cannot provide edges: the frozen directed rays below are the
-only graph authority.  The module has no database, network, broker, filesystem,
-or wall-clock dependencies.
+ledger.  Callers cannot provide edges: the manifest-owned frozen directed rays
+are the only graph authority.  The module has no database, network, broker,
+filesystem, or wall-clock dependencies.
 """
 
 from __future__ import annotations
@@ -13,12 +13,17 @@ import math
 import random
 from dataclasses import dataclass, replace
 from hashlib import sha256
-from typing import Literal
+from typing import Literal, cast
 
-R3_FOLD_IDS: tuple[str, ...] = tuple(f"fold-{index:02d}" for index in range(8))
-R3_CONFIG_IDS: tuple[str, ...] = tuple(
-    f"S3-R3-{index:02d}" for index in range(3)
-) + tuple(f"S4-R3-{index:02d}" for index in range(9))
+from rob974_h4_contracts import exact_h4_folds
+from rob974_r3_manifest import (
+    FROZEN_R3_ROSTER,
+    R3_RELAXATION_RAYS,
+    R3RelaxationRay,
+)
+
+R3_FOLD_IDS: tuple[str, ...] = tuple(fold.fold_id for fold in exact_h4_folds())
+R3_CONFIG_IDS: tuple[str, ...] = tuple(row.config_id for row in FROZEN_R3_ROSTER)
 BOOTSTRAP_RESAMPLES = 10_000
 SAMPLE_QUALIFYING_BASKET_TRADES = 5
 
@@ -133,6 +138,12 @@ class TradeExecution:
     mae_bps: float
     gross_bps: float
     exit_reason: str
+    volatility_percentile: float | None = None
+    beta_a: float | None = None
+    beta_b: float | None = None
+    spread_mu: float | None = None
+    spread_sigma: float | None = None
+    observed_z: float | None = None
 
     def __post_init__(self) -> None:
         _exact_int(self.entry_ts, "entry_ts")
@@ -169,6 +180,17 @@ class TradeExecution:
                 raise ValueError("gross_notional must be positive when present")
         for name in ("mfe_bps", "mae_bps", "gross_bps"):
             _finite_float(getattr(self, name), name)
+        for name in (
+            "volatility_percentile",
+            "beta_a",
+            "beta_b",
+            "spread_mu",
+            "spread_sigma",
+            "observed_z",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                _finite_float(value, name)
         _exact_str(self.exit_reason, "exit_reason")
 
 
@@ -196,11 +218,27 @@ class RelaxationTrade:
                 raise ValueError(
                     "S3 direction must equal its single execution leg side"
                 )
+            if any(
+                getattr(self.execution, name) is not None
+                for name in (
+                    "beta_a",
+                    "beta_b",
+                    "spread_mu",
+                    "spread_sigma",
+                    "observed_z",
+                )
+            ):
+                raise ValueError("S3 cannot carry S4 entry-frozen economics")
             return
         if self.execution.gross_notional is None:
             raise ValueError("S4 gross_notional is required")
         if self.execution.exit_reason not in _S4_EXIT_REASONS:
             raise ValueError("S4 exit_reason is outside the frozen H2 values")
+        if self.execution.volatility_percentile is not None:
+            raise ValueError("S4 volatility_percentile must be absent/None")
+        for name in ("beta_a", "beta_b", "spread_mu", "spread_sigma", "observed_z"):
+            if getattr(self.execution, name) is None:
+                raise ValueError(f"S4 {name} entry-frozen economics are required")
         expected_sides = (
             ("long", "short")
             if self.event.direction == "long_a_short_b"
@@ -236,29 +274,6 @@ class CellFoldLedger:
             raise RelaxationInputError(
                 "basket_trade_count must equal the exact trade ledger length"
             )
-
-
-@dataclass(frozen=True, slots=True)
-class RelaxationRay:
-    ray_id: str
-    family: Family
-    cells: tuple[str, ...]
-
-
-R3_RELAXATION_RAYS: tuple[RelaxationRay, ...] = (
-    RelaxationRay("S3:S@M0", "S3", ("S3-R3-00", "S3-R3-02")),
-    RelaxationRay("S3:M@S0", "S3", ("S3-R3-01", "S3-R3-02")),
-    RelaxationRay(
-        "S4:z@d140",
-        "S4",
-        ("S4-R3-00", "S4-R3-02", "S4-R3-05", "S4-R3-08"),
-    ),
-    RelaxationRay("S4:z@d160", "S4", ("S4-R3-01", "S4-R3-04", "S4-R3-07")),
-    RelaxationRay("S4:z@d180", "S4", ("S4-R3-03", "S4-R3-06")),
-    RelaxationRay("S4:d@z1.0", "S4", ("S4-R3-01", "S4-R3-02")),
-    RelaxationRay("S4:d@z0.8", "S4", ("S4-R3-03", "S4-R3-04", "S4-R3-05")),
-    RelaxationRay("S4:d@z0.6", "S4", ("S4-R3-06", "S4-R3-07", "S4-R3-08")),
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,6 +347,9 @@ class RayAnalysis:
     operational_status: OperationalStatus
     incomplete_reasons: tuple[str, ...]
     steps: tuple[RelaxationStepAnalysis, ...]
+    all_pooled_deltas_nonpositive: bool | None
+    two_steps_seven_of_eight_negative: bool | None
+    all_new_layers_below_strict_core: bool | None
     monotone_edge_decay: bool | None
 
 
@@ -395,6 +413,24 @@ def _trade_bytes(trade: RelaxationTrade) -> bytes:
         "leg_weights": [_float_bytes(value) for value in execution.leg_weights],
         "mae_bps": _float_bytes(execution.mae_bps),
         "mfe_bps": _float_bytes(execution.mfe_bps),
+        "volatility_percentile": (
+            None
+            if execution.volatility_percentile is None
+            else _float_bytes(execution.volatility_percentile)
+        ),
+        "beta_a": None if execution.beta_a is None else _float_bytes(execution.beta_a),
+        "beta_b": None if execution.beta_b is None else _float_bytes(execution.beta_b),
+        "spread_mu": (
+            None if execution.spread_mu is None else _float_bytes(execution.spread_mu)
+        ),
+        "spread_sigma": (
+            None
+            if execution.spread_sigma is None
+            else _float_bytes(execution.spread_sigma)
+        ),
+        "observed_z": (
+            None if execution.observed_z is None else _float_bytes(execution.observed_z)
+        ),
         "signal_ts": event.signal_ts,
     }
     return json.dumps(
@@ -678,7 +714,7 @@ def _pooled_e0(cohorts: tuple[FoldLayerCohort, ...], field: str) -> float | None
 def _analyze_step(
     *,
     campaign_hash: str,
-    ray: RelaxationRay,
+    ray: R3RelaxationRay,
     strict_id: str,
     looser_id: str,
     ledgers: dict[tuple[str, str], CellFoldLedger],
@@ -756,7 +792,9 @@ def _analyze_phase(
                 looser_id=looser_id,
                 ledgers=ledgers,
             )
-            for strict_id, looser_id in zip(ray.cells[:-1], ray.cells[1:], strict=True)
+            for strict_id, looser_id in zip(
+                ray.config_ids[:-1], ray.config_ids[1:], strict=True
+            )
         )
         reasons = _ordered_unique(
             tuple(
@@ -766,24 +804,36 @@ def _analyze_phase(
             )
         )
         complete = not reasons
+        all_pooled_deltas_nonpositive = None
+        two_steps_seven_of_eight_negative = None
+        all_new_layers_below_strict_core = None
         monotone = None
         if phase == "OOS" and complete:
+            all_pooled_deltas_nonpositive = all(
+                step.paired_delta_e0_bps is not None and step.paired_delta_e0_bps <= 0.0
+                for step in steps
+            )
+            two_steps_seven_of_eight_negative = (
+                sum(step.seven_of_eight_negative for step in steps) >= 2
+            )
+            all_new_layers_below_strict_core = all(
+                step.new_layer_below_strict_core for step in steps
+            )
             monotone = (
-                all(
-                    step.paired_delta_e0_bps is not None
-                    and step.paired_delta_e0_bps <= 0.0
-                    for step in steps
-                )
-                and sum(step.seven_of_eight_negative for step in steps) >= 2
-                and all(step.new_layer_below_strict_core for step in steps)
+                all_pooled_deltas_nonpositive
+                and two_steps_seven_of_eight_negative
+                and all_new_layers_below_strict_core
             )
         rays.append(
             RayAnalysis(
                 ray.ray_id,
-                ray.family,
+                cast(Family, ray.family),
                 "COMPLETE" if complete else "INCOMPLETE",
                 reasons,
                 steps,
+                all_pooled_deltas_nonpositive,
+                two_steps_seven_of_eight_negative,
+                all_new_layers_below_strict_core,
                 monotone,
             )
         )
@@ -805,7 +855,16 @@ def _suppress_oos_verdict_flags(
 ) -> PhaseRelaxationAnalysis:
     return replace(
         phase,
-        rays=tuple(replace(ray, monotone_edge_decay=None) for ray in phase.rays),
+        rays=tuple(
+            replace(
+                ray,
+                all_pooled_deltas_nonpositive=None,
+                two_steps_seven_of_eight_negative=None,
+                all_new_layers_below_strict_core=None,
+                monotone_edge_decay=None,
+            )
+            for ray in phase.rays
+        ),
     )
 
 
@@ -868,7 +927,6 @@ __all__ = [
     "RayAnalysis",
     "RelaxationCampaignAnalysis",
     "RelaxationInputError",
-    "RelaxationRay",
     "RelaxationStepAnalysis",
     "RelaxationTrade",
     "TradeExecution",
