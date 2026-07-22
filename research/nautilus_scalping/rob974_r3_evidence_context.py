@@ -35,7 +35,7 @@ class R3ProductionEvidenceContext:
     folds: tuple[Fold, ...]
     phases: tuple[str, str]
     operational_status: str
-    operational_blocker_reason: str
+    operational_blocker_reason: str | None
     _plan: R3ProductionPlan = field(repr=False, compare=False)
     _seal: object = field(repr=False, compare=False)
 
@@ -137,6 +137,5 @@ def require_r3_production_evidence_context(
         raise R3ProductionEvidenceContextError(
             "production evidence requires the exact issued context type"
         )
-    plan = _require_seal_and_plan(context)
-    _validate_fields_against_plan(context, plan)
+    _validate_issued_context(context)
     return context

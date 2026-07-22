@@ -5,9 +5,11 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
+import rob974_r3_evidence_context as evidence_context_module
 from rob974_r3_evidence_context import (
     R3ProductionEvidenceContextError,
     issue_r3_production_evidence_context,
+    require_r3_production_evidence_context,
 )
 from rob974_r3_gate_adapter import (
     ProductionGateEvidenceError,
@@ -95,6 +97,19 @@ def test_plan_issued_context_seals_real_campaign_mapping_folds_and_phases() -> N
                 *context.ordered_mapping[1:],
             ),
         )
+
+
+def test_issued_context_is_rechecked_against_a_fresh_canonical_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context()
+    monkeypatch.setattr(
+        evidence_context_module,
+        "build_production_r3_plan",
+        lambda: object(),
+    )
+    with pytest.raises(R3ProductionEvidenceContextError, match="freshly derived"):
+        require_r3_production_evidence_context(context)
 
 
 def test_exact_24_report_192_cell_envelope_is_promoted_by_ready_plan() -> None:

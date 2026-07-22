@@ -1,11 +1,10 @@
-"""Pure ROB-974 R3 production identity and non-production topology seam.
+"""Pure ROB-974 R3 production identity and exact all-cell topology seam.
 
 This module freezes the preregistered 3+9 rows over the real eight H4 folds.
 It performs no corpus observation, persistence, network, broker, order, fill,
-or H2 engine operation.  Production execution is deliberately fail-closed:
-six preregistered S4 cells can accept observed ``|z| < 1`` candidates that the
-frozen R2 H2 DTO refuses, so only a clearly named topology simulator is
-available until a separately approved execution seam resolves that mismatch.
+or engine operation itself.  The additive R3 S4 lineage accepts the exact
+preregistered signed observed-z floor without changing any frozen R2 source;
+the production entry point reuses the already sealed exact-12 fan-out.
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Never
+from typing import Any, Literal
 
 import rob974_h3_manifest as r2_manifest
 import rob974_r3_identity as r3_identity
@@ -29,6 +28,7 @@ from rob974_h4_h6a_adapter import (
     build_production_h4_plan,
     source_bundle_sha256,
 )
+from rob974_r3_h4_s4_adapter import R3_ENGINE_SOURCE_FILES
 from rob974_r3_shape import (
     R3_CANONICAL_ROW_ORDER,
     Exact12MappingError,
@@ -66,16 +66,9 @@ _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 _HERE = Path(__file__).resolve().parent
 _REPO_ROOT = _HERE.parent.parent
 
-R3_OPERATIONAL_STATUS = "INCOMPLETE"
-R3_OPERATIONAL_BLOCKER_REASON = "h2_s4_observed_z_floor_blocks_preregistered_cells"
-R3_BLOCKED_CONFIG_IDS: tuple[str, ...] = tuple(
-    config.config_id
-    for config in r3_manifest.FROZEN_R3_S4_CONFIGS
-    if config.z_entry in (0.60, 0.80)
-)
-_EXPECTED_BLOCKED_CONFIG_IDS = tuple(f"S4-R3-{index:02d}" for index in range(3, 9))
-if R3_BLOCKED_CONFIG_IDS != _EXPECTED_BLOCKED_CONFIG_IDS:
-    raise RuntimeError("R3 execution blocker roster drifted")
+R3_OPERATIONAL_STATUS = "COMPLETE"
+R3_OPERATIONAL_BLOCKER_REASON: None = None
+R3_BLOCKED_CONFIG_IDS: tuple[str, ...] = ()
 
 Phase = Literal["train", "oos"]
 R3Config = r3_manifest.R3S3Config | r3_manifest.R3S4Config
@@ -127,6 +120,7 @@ R3_RUNNER_SOURCE_FILES = RUNNER_SOURCE_FILES + _source_files(
     "research/nautilus_scalping/rob974_r3_relaxation.py",
     "research/nautilus_scalping/rob974_r3_relaxation_h2_adapter.py",
     "research/nautilus_scalping/rob974_r3_evidence_context.py",
+    "research/nautilus_scalping/rob974_r3_h4_s4_adapter.py",
     "research/nautilus_scalping/rob974_r3_plan.py",
     "research/nautilus_scalping/rob974_r3_postaudit.py",
     "app/services/rob974_r3_h6a_bridge.py",
@@ -205,7 +199,7 @@ def _plan_payload_without_run_identity(plan: R3ProductionPlan) -> dict[str, obje
     return {
         "schema_version": "rob974.r3.production_plan.v1",
         "lineage": "ROB-974-R3",
-        "production_state": "identity_ready_execution_incomplete",
+        "production_state": "identity_ready_execution_enabled",
         "r2_frozen_parent_full_campaign_hash": _R2_FROZEN_FULL_CAMPAIGN_HASH,
         "preregistration_document_sha256": (
             r3_manifest.PREREGISTRATION_DOCUMENT_SHA256
@@ -232,10 +226,12 @@ def _plan_payload_without_run_identity(plan: R3ProductionPlan) -> dict[str, obje
             "fresh_candidate_buffer_per_phase_fold_cell": True,
             "fresh_engine_state_per_phase_fold_cell_scenario": True,
             "operational_status": plan.operational_status,
-            "production_execution_enabled": False,
+            "production_execution_enabled": True,
             "blocker_reason": plan.operational_blocker_reason,
             "affected_config_ids": list(plan.blocked_config_ids),
-            "frozen_h2_observed_z_abs_min": 1.0,
+            "frozen_r2_h2_observed_z_abs_min": 1.0,
+            "r3_observed_z_abs_min": 0.60,
+            "r3_s4_execution_lineage": "rob974.r3.s4.signed_observed_z.v1",
             "topology_simulator_is_non_production": True,
         },
         "pbo": {
@@ -259,7 +255,7 @@ class R3ProductionPlan:
     ordered_mapping: tuple[tuple[str, str], ...]
     exact_12_mapping_hash: str
     operational_status: str
-    operational_blocker_reason: str
+    operational_blocker_reason: str | None
     blocked_config_ids: tuple[str, ...]
     full_campaign_hash: str
     campaign_run_id: str
@@ -304,7 +300,7 @@ class R3ProductionPlan:
         if self.exact_12_mapping_hash != mapping_hash:
             raise R3PlanError("production R3 exact-12 mapping hash drifted")
         if self.operational_status != R3_OPERATIONAL_STATUS:
-            raise R3PlanError("production R3 operational status must remain INCOMPLETE")
+            raise R3PlanError("production R3 operational status drifted")
         if self.operational_blocker_reason != R3_OPERATIONAL_BLOCKER_REASON:
             raise R3PlanError("production R3 execution blocker reason drifted")
         if self.blocked_config_ids != R3_BLOCKED_CONFIG_IDS:
@@ -388,7 +384,7 @@ def _rows() -> tuple[r3_identity.R3CampaignConfigRow, ...]:
 def _source_pins(r2_plan: Any) -> R3SourcePins:
     return R3SourcePins(
         feature_source_sha256=r2_plan.source_pins.feature_source_sha256,
-        engine_source_sha256=r2_plan.source_pins.engine_source_sha256,
+        engine_source_sha256=source_bundle_sha256(R3_ENGINE_SOURCE_FILES),
         runner_source_sha256=source_bundle_sha256(R3_RUNNER_SOURCE_FILES),
         pbo_implementation_sha256=source_bundle_sha256(R3_PBO_SOURCE_FILES),
     )
@@ -505,7 +501,7 @@ def _identity_components(
 
 
 def build_production_r3_plan() -> R3ProductionPlan:
-    """Build the real exact-12 identity while keeping execution fail-closed."""
+    """Build the real exact-12 identity over the approved R3 execution seam."""
 
     r2_plan = build_production_h4_plan()
     if r2_plan.full_campaign_hash != _R2_FROZEN_FULL_CAMPAIGN_HASH:
@@ -638,13 +634,19 @@ def run_r3_all_cell_campaign(
     *,
     candidate_factory: CandidateFactory,
     engine_factory: EngineFactory,
-) -> Never:
-    """Refuse production globally before the first callback while incomplete."""
+) -> tuple[R3InvocationResult, ...]:
+    """Execute the exact all-cell fan-out through the approved R3 seam."""
 
     checked = _require_plan(plan)
-    raise R3ProductionExecutionBlocked(
-        f"{checked.operational_status}: {checked.operational_blocker_reason}; "
-        "zero candidate or engine callbacks were invoked"
+    if checked.operational_status != "COMPLETE":  # pragma: no cover - DTO guard
+        raise R3ProductionExecutionBlocked(
+            f"{checked.operational_status}: {checked.operational_blocker_reason}; "
+            "zero candidate or engine callbacks were invoked"
+        )
+    return simulate_r3_all_cell_topology(
+        checked,
+        candidate_factory=candidate_factory,
+        engine_factory=engine_factory,
     )
 
 

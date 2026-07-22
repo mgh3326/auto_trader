@@ -561,7 +561,7 @@ class RelaxationCampaignAnalysis:
     exact_12_mapping_hash: str
     ordered_mapping: tuple[tuple[str, str], ...]
     plan_operational_status: str
-    plan_operational_blocker_reason: str
+    plan_operational_blocker_reason: str | None
     evidence_promoted: bool
     operational_status: OperationalStatus
     incomplete_reasons: tuple[str, ...]
