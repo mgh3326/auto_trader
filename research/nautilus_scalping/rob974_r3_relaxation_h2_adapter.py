@@ -1,11 +1,14 @@
 """Exact sealed-H4-terminal to R3 relaxation-evidence normalization.
 
 Callers cannot submit a trade prefix or a caller-counted basket total.  Every
-config/fold supplies the exact family H4 sealed terminal, whose output seal,
-bucket types, lineage, and terminal-halt shape are revalidated here.  Trades
-before an incomplete remain forensic ledger rows, while terminal evidence is
-carried into ``PhaseLedgerEvidence`` so §7 computes no statistics for that
-phase.  Signed S4 observed z is preserved without clamp or substitution.
+config/fold supplies exact H3 candidates, their exactly derived engine intents,
+the corpus/horizon authority, and the family H4 sealed terminal.  The input
+seal and candidate-result partition are authenticated before the existing
+output seal, bucket lineage, terminal-halt, or ledger paths are evaluated.
+Trades before an incomplete remain forensic ledger rows, while terminal
+evidence is carried into ``PhaseLedgerEvidence`` so §7 computes no statistics
+for that phase.  Signed S4 observed z is preserved without clamp or
+substitution.
 
 Pure boundary code: no execution, persistence, discovery, empirical work,
 network, broker, order/fill, randomness, or current-time behavior.
@@ -23,14 +26,26 @@ from rob974_h2_dtos import (
     S3EngineResult,
     S3IncompleteRecord,
     S3NoTradeRecord,
+    S3SignalIntent,
     S3Trade,
 )
+from rob974_h3_h2_adapter import adapt_s3_candidate
 from rob974_h3_manifest import PAIRS, SYMBOLS
-from rob974_h4_adapter import SealedS3Terminal, seal_s3_engine_output
+from rob974_h3_s3 import S3Candidate
+from rob974_h3_s4 import S4Candidate
+from rob974_h4_adapter import (
+    SealedS3Terminal,
+    seal_s3_engine_input,
+    seal_s3_engine_output,
+    validate_s3_terminal,
+)
 from rob974_h4_contracts import exact_h4_folds
+from rob974_r3_h3_adapter import adapt_r3_s4_candidate_for_execution
 from rob974_r3_h4_s4_adapter import (
     SealedR3S4Terminal,
+    seal_r3_s4_engine_input,
     seal_r3_s4_engine_output,
+    validate_r3_s4_terminal,
 )
 from rob974_r3_manifest import (
     FROZEN_R3_ROSTER,
@@ -52,6 +67,7 @@ from rob974_r3_s4_dtos import (
     R3S4EngineResult,
     R3S4IncompleteRecord,
     R3S4NoTradeRecord,
+    R3S4PairSignalIntent,
     R3S4PairTrade,
 )
 
@@ -94,6 +110,111 @@ def _identity(row: object) -> tuple[object, int]:
 def _terminal_sort_key(identity: tuple[object, int]) -> tuple[object, ...]:
     instrument, signal_ts = identity
     return signal_ts, instrument
+
+
+def _h3_candidate_identity(candidate: S3Candidate | S4Candidate) -> tuple[object, int]:
+    if type(candidate) is S3Candidate:
+        return candidate.symbol, candidate.decision_ts
+    if type(candidate) is S4Candidate:
+        return (candidate.symbol_a, candidate.symbol_b), candidate.decision_ts
+    raise TypeError("H3 candidate has an unsupported exact type")
+
+
+def _engine_intent_identity(
+    intent: S3SignalIntent | R3S4PairSignalIntent,
+) -> tuple[object, int]:
+    if type(intent) is S3SignalIntent:
+        return intent.symbol, intent.signal_ts
+    if type(intent) is R3S4PairSignalIntent:
+        return intent.pair, intent.signal_ts
+    raise TypeError("engine intent has an unsupported exact type")
+
+
+def _validate_input_authority(source: R3H2CellFoldInput) -> None:
+    if type(source.corpus_end_ts) is not int:
+        raise TypeError("corpus_end_ts must be built-in int")
+    if source.horizon_end_ts is not None and type(source.horizon_end_ts) is not int:
+        raise TypeError("horizon_end_ts must be built-in int or None")
+    if type(source.h3_candidates) is not tuple:
+        raise TypeError("h3_candidates must be an exact built-in tuple")
+    if type(source.engine_intents) is not tuple:
+        raise TypeError("engine_intents must be an exact built-in tuple")
+
+    if type(source.config) is R3S3Config:
+        if type(source.terminal) is not SealedS3Terminal:
+            raise TypeError("R3 S3 cell requires exact SealedS3Terminal")
+        if any(
+            type(candidate) is not S3Candidate for candidate in source.h3_candidates
+        ):
+            raise TypeError("R3 S3 cell requires exact H3 S3Candidate values")
+        if any(type(intent) is not S3SignalIntent for intent in source.engine_intents):
+            raise TypeError("R3 S3 cell requires exact H2 S3SignalIntent values")
+        derived_intents = tuple(
+            adapt_s3_candidate(candidate, fold_id=source.fold_id)
+            for candidate in source.h3_candidates
+        )
+        seal_input = seal_s3_engine_input
+    else:
+        if type(source.terminal) is not SealedR3S4Terminal:
+            raise TypeError("R3 S4 cell requires exact SealedR3S4Terminal")
+        if any(
+            type(candidate) is not S4Candidate for candidate in source.h3_candidates
+        ):
+            raise TypeError("R3 S4 cell requires exact H3 S4Candidate values")
+        if any(
+            type(intent) is not R3S4PairSignalIntent for intent in source.engine_intents
+        ):
+            raise TypeError("R3 S4 cell requires exact R3S4PairSignalIntent values")
+        derived_intents = tuple(
+            adapt_r3_s4_candidate_for_execution(candidate, fold_id=source.fold_id)
+            for candidate in source.h3_candidates
+        )
+        seal_input = seal_r3_s4_engine_input
+
+    if any(
+        candidate.config_id != source.config.config_id
+        for candidate in source.h3_candidates
+    ):
+        raise RelaxationInputError("H3 candidate config_id differs from its R3 cell")
+    candidate_identities = tuple(
+        _h3_candidate_identity(candidate) for candidate in source.h3_candidates
+    )
+    if len(candidate_identities) != len(set(candidate_identities)):
+        raise RelaxationInputError("duplicate H3 candidate identity")
+    if derived_intents != source.engine_intents:
+        raise RelaxationInputError(
+            "provided engine intents differ from exactly derived engine intents"
+        )
+    intent_identities = tuple(
+        _engine_intent_identity(intent) for intent in source.engine_intents
+    )
+    if intent_identities != candidate_identities:
+        raise RelaxationInputError("H3 candidate/engine intent identity or order drift")
+    if any(
+        intent.config_id != source.config.config_id or intent.fold_id != source.fold_id
+        for intent in source.engine_intents
+    ):
+        raise RelaxationInputError("engine intent config/fold lineage drift")
+
+    _hex64(source.terminal.input_seal_sha256, "terminal input seal")
+    recomputed_seal = seal_input(
+        derived_intents,
+        corpus_end_ts=source.corpus_end_ts,
+        horizon_end_ts=source.horizon_end_ts,
+    )
+    if recomputed_seal != source.terminal.input_seal_sha256:
+        raise RelaxationInputError(
+            "sealed terminal input hash does not match authority"
+        )
+    if type(source.config) is R3S3Config:
+        validate_s3_terminal(derived_intents, source.terminal.result)
+    else:
+        validate_r3_s4_terminal(
+            derived_intents,
+            source.terminal.result,
+            config_id=source.config.config_id,
+            fold_id=source.fold_id,
+        )
 
 
 def _validate_terminal(source: R3H2CellFoldInput) -> None:
@@ -164,16 +285,21 @@ def _validate_terminal(source: R3H2CellFoldInput) -> None:
 
 @dataclass(frozen=True, slots=True)
 class R3H2CellFoldInput:
-    """One exact config/fold's sealed H4 terminal, never a raw trade prefix."""
+    """One exact H3-derived config/fold input and its sealed H4 terminal."""
 
     config: R3S3Config | R3S4Config
     fold_id: str
+    h3_candidates: tuple[S3Candidate, ...] | tuple[S4Candidate, ...]
+    engine_intents: tuple[S3SignalIntent, ...] | tuple[R3S4PairSignalIntent, ...]
+    corpus_end_ts: int
+    horizon_end_ts: int | None
     terminal: SealedS3Terminal | SealedR3S4Terminal
 
     def __post_init__(self) -> None:
         assert_registered_r3_config(self.config)
         if type(self.fold_id) is not str or self.fold_id not in _FOLD_BY_ID:
             raise RelaxationInputError("fold_id is outside the exact H4 folds")
+        _validate_input_authority(self)
         _validate_terminal(self)
 
 
