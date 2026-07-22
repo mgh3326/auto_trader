@@ -135,20 +135,16 @@ def test_low_z_dto_uses_exact_registered_threshold_and_one_ulp_guards(
     with pytest.raises(ValueError, match="below its registered R3 threshold"):
         _intent(config_id, sign=sign, observed_z=math.copysign(below, float(sign)))
     with pytest.raises(ValueError, match="registered R3 config"):
-        dataclasses.replace(
-            exact, z_threshold=math.nextafter(config.z_entry, math.inf)
-        )
+        dataclasses.replace(exact, z_threshold=math.nextafter(config.z_entry, math.inf))
 
 
-def _low_z_stall_fixture(z_at_boundary: float) -> tuple[
-    R3S4PairSignalIntent, list[MinuteBar], list[S4PairLegClose]
-]:
+def _low_z_stall_fixture(
+    z_at_boundary: float,
+) -> tuple[R3S4PairSignalIntent, list[MinuteBar], list[S4PairLegClose]]:
     # Equal closes give a zero frozen spread. Choosing mu=-z makes
     # z_frozen exactly the requested binary float without a tolerance.
     mu = -z_at_boundary
-    candidate = _intent(
-        "S4-R3-08", observed_z=0.60, mu=mu, sigma=1.0
-    )
+    candidate = _intent("S4-R3-08", observed_z=0.60, mu=mu, sigma=1.0)
     count = 3 * frozen_s4_engine.FOUR_H_MS // _MINUTE_MS + 1
     bars = _bars("XRPUSDT", 0, count) + _bars("DOGEUSDT", 0, count)
     closes = []
@@ -221,12 +217,14 @@ def _parity_case(
     if case == "MEAN_EXIT":
         count = frozen_s4_engine.FOUR_H_MS // _MINUTE_MS + 1
         closes = [
-            S4PairLegClose(symbol, frozen_s4_engine.FOUR_H_MS, 1.0)
-            for symbol in _PAIR
+            S4PairLegClose(symbol, frozen_s4_engine.FOUR_H_MS, 1.0) for symbol in _PAIR
         ]
-        return [candidate], _bars(_PAIR[0], 0, count) + _bars(
-            _PAIR[1], 0, count
-        ), closes, None
+        return (
+            [candidate],
+            _bars(_PAIR[0], 0, count) + _bars(_PAIR[1], 0, count),
+            closes,
+            None,
+        )
     if case == "STALL_EXIT":
         count = 2 * frozen_s4_engine.FOUR_H_MS // _MINUTE_MS + 1
         closes = [
@@ -234,9 +232,12 @@ def _parity_case(
             for boundary in (1, 2)
             for symbol, close in ((_PAIR[0], math.exp(4.0)), (_PAIR[1], 1.0))
         ]
-        return [candidate], _bars(_PAIR[0], 0, count) + _bars(
-            _PAIR[1], 0, count
-        ), closes, None
+        return (
+            [candidate],
+            _bars(_PAIR[0], 0, count) + _bars(_PAIR[1], 0, count),
+            closes,
+            None,
+        )
     if case == "TIMEOUT":
         count = 9 * frozen_s4_engine.FOUR_H_MS // _MINUTE_MS + 1
         closes = [
@@ -244,20 +245,24 @@ def _parity_case(
             for boundary in range(1, 10)
             for symbol, close in ((_PAIR[0], math.exp(1.0)), (_PAIR[1], 1.0))
         ]
-        return [candidate], _bars(_PAIR[0], 0, count) + _bars(
-            _PAIR[1], 0, count
-        ), closes, None
+        return (
+            [candidate],
+            _bars(_PAIR[0], 0, count) + _bars(_PAIR[1], 0, count),
+            closes,
+            None,
+        )
     if case == "NEXT_TICK":
-        return [candidate], _bars(_PAIR[0], _MINUTE_MS, 1) + _bars(
-            _PAIR[1], 0, 1
-        ), [], None
+        return (
+            [candidate],
+            _bars(_PAIR[0], _MINUTE_MS, 1) + _bars(_PAIR[1], 0, 1),
+            [],
+            None,
+        )
     if case == "G_MISMATCH":
         bad = dataclasses.replace(candidate, gross_notional=13.0)
         return [bad], _bars(_PAIR[0], 0, 1) + _bars(_PAIR[1], 0, 1), [], None
     if case == "INCOMPLETE":
-        return [candidate], _bars(_PAIR[0], 0, 1) + _bars(
-            _PAIR[1], 0, 1
-        ), [], None
+        return [candidate], _bars(_PAIR[0], 0, 1) + _bars(_PAIR[1], 0, 1), [], None
     if case == "GLOBAL_ORDER":
         second = _intent(
             config_id,
@@ -310,7 +315,9 @@ def _parity_case(
     ),
 )
 @pytest.mark.parametrize("sign", (-1, 1))
-@pytest.mark.parametrize("config", FROZEN_R3_S4_CONFIGS[:3], ids=lambda row: row.config_id)
+@pytest.mark.parametrize(
+    "config", FROZEN_R3_S4_CONFIGS[:3], ids=lambda row: row.config_id
+)
 def test_adversarial_representable_matrix_is_byte_and_economic_identical(
     case: str, sign: int, config: R3S4Config
 ) -> None:
@@ -332,9 +339,7 @@ def test_adversarial_representable_matrix_is_byte_and_economic_identical(
 def test_parity_matrix_detects_stall_eligibility_two_to_three_walk_mutant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    candidates, bars, closes, horizon_end_ts = _parity_case(
-        "STALL_EXIT", "S4-R3-00", 1
-    )
+    candidates, bars, closes, horizon_end_ts = _parity_case("STALL_EXIT", "S4-R3-00", 1)
     original_walk = r3_s4_engine._frozen_walk_s4_position
 
     def _eligibility_three_mutant(*args: object, **kwargs: object):
@@ -399,9 +404,7 @@ def test_r3_engine_and_h4_reject_frozen_r2_candidate_type() -> None:
         config_id=r3_candidate.config_id,
         fold_id=r3_candidate.fold_id,
     )
-    minute_index = build_minute_index(
-        _bars(_PAIR[0], 0, 1) + _bars(_PAIR[1], 0, 1)
-    )
+    minute_index = build_minute_index(_bars(_PAIR[0], 0, 1) + _bars(_PAIR[1], 0, 1))
     with pytest.raises(TypeError, match="exact R3S4PairSignalIntent"):
         r3_s4_engine.run_r3_s4_pair_basket_stream(
             [frozen_candidate],  # type: ignore[list-item]
