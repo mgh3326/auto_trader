@@ -116,10 +116,13 @@ def test_exact_12_roster_anchors_exclusions_and_single_ray_authority() -> None:
     assert manifest.S4_EXCLUDED_CELLS == ((1.20, 140), (1.00, 180))
     assert manifest.S4_SATURATION_Z_LT == 0.60
     assert manifest.S4_DUPLICATE_D_MIN_BP_LT == 140
-    assert tuple(
-        (ray.ray_id, ray.family, ray.axis, ray.config_ids)
-        for ray in manifest.R3_RELAXATION_RAYS
-    ) == _EXPECTED_RAYS
+    assert (
+        tuple(
+            (ray.ray_id, ray.family, ray.axis, ray.config_ids)
+            for ray in manifest.R3_RELAXATION_RAYS
+        )
+        == _EXPECTED_RAYS
+    )
     assert manifest.R3_ADJACENCY_EDGES == tuple(
         (left, right)
         for _ray_id, _family, _axis, config_ids in _EXPECTED_RAYS
@@ -156,7 +159,9 @@ def test_manifest_contract_commits_prereg_roster_anchors_axes_and_graph() -> Non
     )
 
 
-def test_manifest_rejects_anchor_excluded_saturated_duplicate_reorder_and_rename() -> None:
+def test_manifest_rejects_anchor_excluded_saturated_duplicate_reorder_and_rename() -> (
+    None
+):
     rows = manifest.FROZEN_R3_ROSTER
     excluded_s3 = dataclasses.replace(rows[0], S_min=0.05, M_min_bp=25)
     excluded_s4 = dataclasses.replace(rows[3], z_entry=1.20, d_min_bp=140)
@@ -182,10 +187,14 @@ def test_r2_anchor_projection_and_h2_engine_bytes_are_unchanged() -> None:
         "2c47864c7ab661f16be6c414a1140944ec36832bb268e86183555b56c6f85f53"
     )
     root = Path(__file__).resolve().parents[1]
-    assert hashlib.sha256((root / "rob974_h2_s3_engine.py").read_bytes()).hexdigest() == (
+    assert hashlib.sha256(
+        (root / "rob974_h2_s3_engine.py").read_bytes()
+    ).hexdigest() == (
         "766c1cdd0d55f9127413c0d84679dc17c8e6f84be6c06235fa7c5dd033bbd405"
     )
-    assert hashlib.sha256((root / "rob974_h2_s4_engine.py").read_bytes()).hexdigest() == (
+    assert hashlib.sha256(
+        (root / "rob974_h2_s4_engine.py").read_bytes()
+    ).hexdigest() == (
         "90c6c82eb2b82b8d66576cad7e3219f0b9a4dc2841704464277fd4488043c87e"
     )
 
@@ -262,7 +271,9 @@ def _s4_estimate(config_id: str, **changes) -> s4.S4Estimate:
     return s4.S4Estimate(**values)
 
 
-def test_s3_atomic_predicates_and_r3_adapter_use_inclusive_zero_without_epsilon() -> None:
+def test_s3_atomic_predicates_and_r3_adapter_use_inclusive_zero_without_epsilon() -> (
+    None
+):
     exact = predicates.evaluate_s3_threshold_predicates(
         market_return_24h=0.0,
         bplus=2,
@@ -304,9 +315,7 @@ def test_s3_atomic_predicates_and_r3_adapter_use_inclusive_zero_without_epsilon(
     assert rejected.no_signal_reason == "market_regime"
 
     config = manifest.get_r3_config("S3-R3-02")
-    outcome = adapter.evaluate_r3_s3_gates(
-        _s3_metrics(config.config_id, S=0.0), config
-    )
+    outcome = adapter.evaluate_r3_s3_gates(_s3_metrics(config.config_id, S=0.0), config)
     assert outcome.candidate is not None
     assert outcome.candidate.config_id == "S3-R3-02"
     failed = adapter.evaluate_r3_s3_gates(
@@ -315,7 +324,9 @@ def test_s3_atomic_predicates_and_r3_adapter_use_inclusive_zero_without_epsilon(
     assert failed.no_signal_reason == "trend_strength"
 
 
-def test_s3_moving_threshold_exact_boundaries_pass_and_one_ulp_failing_side_fails() -> None:
+def test_s3_moving_threshold_exact_boundaries_pass_and_one_ulp_failing_side_fails() -> (
+    None
+):
     s_config = manifest.get_r3_config("S3-R3-00")
     assert adapter.evaluate_r3_s3_gates(
         _s3_metrics(s_config.config_id, S=0.05), s_config
@@ -395,3 +406,29 @@ def test_s4_atomic_and_adapter_threshold_boundaries_are_inclusive() -> None:
         ).no_signal_reason
         == "absolute_distance"
     )
+
+
+def test_full_atomic_evaluators_and_candidate_first_fail_composition_are_identical() -> (
+    None
+):
+    s3_config = manifest.get_r3_config("S3-R3-02")
+    assert type(s3_config) is manifest.R3S3Config
+    s3_metrics = _s3_metrics(s3_config.config_id, ER=0.34)
+    s3_atoms = adapter.evaluate_r3_s3_atoms(s3_metrics, s3_config)
+    assert len(s3_atoms.gate_results) == 11
+    assert dict(s3_atoms.gate_results)["efficiency_ratio"] is False
+    assert (
+        adapter.evaluate_r3_s3_gates(s3_metrics, s3_config).no_signal_reason
+        == "efficiency"
+    )
+
+    s4_config = manifest.get_r3_config("S4-R3-00")
+    assert type(s4_config) is manifest.R3S4Config
+    estimate = _s4_estimate(s4_config.config_id, rho=0.59, D_bps=150.0)
+    observation = adapter.R3S4GateObservation.from_estimate(estimate)
+    s4_atoms = adapter.evaluate_r3_s4_atoms(observation, s4_config)
+    assert len(s4_atoms.gate_results) == 11
+    assert dict(s4_atoms.gate_results)["rho"] is False
+    assert dict(s4_atoms.gate_results)["d_min_distance"] is True
+    assert dict(s4_atoms.gate_results)["notional_feasibility"] is True
+    assert adapter.evaluate_r3_s4_gates(estimate, s4_config).no_signal_reason == "rho"

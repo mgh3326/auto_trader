@@ -9,6 +9,9 @@ import pytest
 from rob974_features import Bar4h, CommonSnapshot, SymbolFeature
 from rob974_h3_manifest import PAIRS, SYMBOLS, get_config
 from rob974_h3_s3 import FeatureContext
+from rob974_r3_gate_adapter import observe_r3_s4_pair
+from rob974_r3_h3_adapter import evaluate_r3_s4_atoms
+from rob974_r3_manifest import R3S4Config, get_r3_config
 
 H4 = 4 * 60 * 60 * 1000
 
@@ -373,3 +376,86 @@ def test_exact_types_and_invalid_pair_fail_closed(s4):
         s4.estimate_s4_pair(context, config, True, "XRP-DOGE")
     with pytest.raises(ValueError):
         s4.estimate_s4_pair(context, config, 121 * H4, "DOGE-XRP")
+
+
+def test_r3_gate_observation_matches_frozen_estimator_on_open_phi_context(s4):
+    context = _normal_context(151)
+    r2_config = get_config("S4-02")
+    r3_config = get_r3_config("S4-R3-00")
+    assert type(r3_config) is R3S4Config
+    r2 = s4.estimate_s4_pair(context, r2_config, 151 * H4, "XRP-DOGE")
+    r3 = observe_r3_s4_pair(context, r3_config, 151 * H4, "XRP-DOGE")
+    assert r2.rejection_reason is None
+    assert r2.estimate is not None
+    assert r3.context_failure_reason is None
+    assert r3.observation is not None
+    expected = r2.estimate
+    actual = r3.observation
+    pairs = (
+        (actual.z_current, expected.z),
+        (actual.z_prior, expected.z_prior),
+        (actual.rho, expected.rho),
+        (actual.half_life_4h_bars, expected.half_life_4h_bars),
+        (actual.beta_stability, expected.beta_stability),
+        (actual.d_fraction, expected.D_fraction),
+        (actual.d_bps, expected.D_bps),
+        (actual.sigma_pair, expected.sigma_pair),
+        (actual.weight_a, expected.weight_a),
+        (actual.weight_b, expected.weight_b),
+    )
+    assert all(left is not None and left.hex() == right.hex() for left, right in pairs)
+
+
+@pytest.mark.parametrize("kind", ("beta", "rho", "phi"))
+def test_r3_gate_observation_context_failures_match_frozen_estimator(s4, kind):
+    context = _degenerate_context(kind, 151)
+    r2_config = get_config("S4-02")
+    r3_config = get_r3_config("S4-R3-00")
+    assert type(r3_config) is R3S4Config
+    r2 = s4.estimate_s4_pair(context, r2_config, 151 * H4, "XRP-DOGE")
+    r3 = observe_r3_s4_pair(context, r3_config, 151 * H4, "XRP-DOGE")
+    assert r3.observation is None
+    assert r3.context_failure_reason == r2.rejection_reason
+
+
+def test_r3_gate_observation_missing_context_matches_frozen_estimator(s4):
+    context = _normal_context(149)
+    r2_config = get_config("S4-02")
+    r3_config = get_r3_config("S4-R3-00")
+    assert type(r3_config) is R3S4Config
+    r2 = s4.estimate_s4_pair(context, r2_config, 149 * H4, "XRP-DOGE")
+    r3 = observe_r3_s4_pair(context, r3_config, 149 * H4, "XRP-DOGE")
+    assert (
+        r3.context_failure_reason == r2.rejection_reason == "missing_required_context"
+    )
+
+
+def test_r3_gate_observation_retains_finite_phi_outside_as_atomic_failure(s4):
+    context = _normal_context(151)
+    bars = {symbol: list(context.bars_for(symbol)) for symbol in SYMBOLS}
+    bars["XRPUSDT"] = [
+        dataclasses.replace(
+            bar,
+            open=(price := math.exp(1.0 if index % 2 else -1.0)),
+            high=price,
+            low=price,
+            close=price,
+        )
+        for index, bar in enumerate(bars["XRPUSDT"])
+    ]
+    mutated = FeatureContext.from_h1(
+        {symbol: tuple(values) for symbol, values in bars.items()}, context.snapshots
+    )
+    r2_config = get_config("S4-02")
+    r3_config = get_r3_config("S4-R3-00")
+    assert type(r3_config) is R3S4Config
+    r2 = s4.estimate_s4_pair(mutated, r2_config, 151 * H4, "XRP-DOGE")
+    r3 = observe_r3_s4_pair(mutated, r3_config, 151 * H4, "XRP-DOGE")
+    assert r2.rejection_reason == "phi_not_in_open_unit_interval"
+    assert r3.context_failure_reason is None
+    assert r3.observation is not None
+    assert math.isfinite(r3.observation.phi)
+    atoms = evaluate_r3_s4_atoms(r3.observation, r3_config)
+    assert atoms.phi_open_unit_interval is False
+    assert atoms.half_life is False
+    assert len(atoms.gate_results) == 11
