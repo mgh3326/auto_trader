@@ -8,7 +8,13 @@ from typing import TYPE_CHECKING, Any
 from app.core.symbol import to_kis_symbol
 
 from . import constants
+from .order_throttle import (
+    MAX_THROTTLE_RESUBMITS,
+    is_provider_throttle_reject,
+    throttle_backoff_seconds,
+)
 from .pre_send import PreSendHook
+from .send_outcome import OrderSendDisposition, OrderSendOutcomeTracker
 
 if TYPE_CHECKING:
     from .protocols import KISClientProtocol
@@ -102,7 +108,9 @@ class OverseasOrderClient:
         is_mock: bool = False,
         *,
         pre_send_hook: PreSendHook | None = None,
+        send_outcome: OrderSendOutcomeTracker | None = None,
         _token_retry_depth: int = 0,
+        _throttle_retry_depth: int = 0,
     ) -> dict:
         """
         해외주식 주문 (매수/매도)
@@ -203,6 +211,12 @@ class OverseasOrderClient:
             body.get("OVRS_ORD_UNPR"),
         )
 
+        # ROB-BAC: see order_korea_stock — always observe the send outcome so a
+        # gateway throttle rejection can be told apart from an ambiguous one.
+        outcome = (
+            send_outcome if send_outcome is not None else OrderSendOutcomeTracker()
+        )
+
         js = await self._parent._request_with_rate_limit(
             "POST",
             self._parent._kis_url(constants.OVERSEAS_ORDER_URL),
@@ -216,9 +230,11 @@ class OverseasOrderClient:
             max_retries_override=0,
             # ROB-843 P1: mock-only freshness re-check at the HTTP send boundary.
             pre_send_hook=pre_send_hook,
+            send_outcome=outcome,
         )
 
         if js.get("rt_cd") != "0":
+            outcome.mark_provider_rejected()
             if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
                 if _token_retry_depth >= _MAX_TOKEN_REFRESH_RESUBMITS:
                     # ROB-733: 캡 초과 → 재-POST 대신 fail-closed. 실 자금 다중 제출 차단.
@@ -253,8 +269,62 @@ class OverseasOrderClient:
                     price,
                     is_mock,
                     pre_send_hook=pre_send_hook,
+                    send_outcome=send_outcome,
                     _token_retry_depth=_token_retry_depth + 1,
+                    _throttle_retry_depth=_throttle_retry_depth,
                 )
+
+            # ROB-BAC: bounded re-POST on a gateway per-second throttle. The
+            # rejection is issued before the order engine, so the <500 response
+            # with rt_cd != "0" and no ODNO proves no order was created — the
+            # one rt_cd != "0" family for which ROB-645's "never re-POST" does
+            # not apply. Ambiguous outcomes (5xx-with-body, timeouts) still
+            # fail closed via the NOT_CREATED check.
+            if is_provider_throttle_reject(js.get("msg_cd"), js.get("msg1")):
+                if outcome.disposition is not OrderSendDisposition.NOT_CREATED:
+                    logging.error(
+                        "해외주식 주문 초당한도 거절이나 결과 불확정(http=%s) - "
+                        "fail-closed (symbol=%s, exchange=%s, order_type=%s)",
+                        outcome.last_http_status,
+                        symbol,
+                        exchange_code,
+                        order_type,
+                    )
+                elif _throttle_retry_depth < MAX_THROTTLE_RESUBMITS:
+                    delay = throttle_backoff_seconds(_throttle_retry_depth)
+                    logging.warning(
+                        "해외주식 주문 초당 거래건수 초과(%s) - %.2fs 후 재전송(%d/%d) "
+                        "(symbol=%s, exchange=%s, order_type=%s)",
+                        js.get("msg_cd"),
+                        delay,
+                        _throttle_retry_depth + 1,
+                        MAX_THROTTLE_RESUBMITS,
+                        symbol,
+                        exchange_code,
+                        order_type,
+                    )
+                    await asyncio.sleep(delay)
+                    return await self.order_overseas_stock(
+                        symbol,
+                        exchange_code,
+                        order_type,
+                        quantity,
+                        price,
+                        is_mock,
+                        pre_send_hook=pre_send_hook,
+                        send_outcome=send_outcome,
+                        _token_retry_depth=_token_retry_depth,
+                        _throttle_retry_depth=_throttle_retry_depth + 1,
+                    )
+                else:
+                    logging.error(
+                        "해외주식 주문 초당한도 재전송 캡(%d) 초과 - fail-closed "
+                        "(symbol=%s, exchange=%s, order_type=%s)",
+                        MAX_THROTTLE_RESUBMITS,
+                        symbol,
+                        exchange_code,
+                        order_type,
+                    )
 
             error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
             logging.error(f"해외주식 주문 실패: {error_msg}")
