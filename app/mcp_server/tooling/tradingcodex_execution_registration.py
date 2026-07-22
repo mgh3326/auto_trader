@@ -22,6 +22,9 @@ from app.mcp_server.tooling.forecast_registration import (
     register_forecast_tools,
 )
 from app.mcp_server.tooling.forecast_tools import forecast_save as _forecast_save
+from app.mcp_server.tooling.forecast_tools import (
+    missed_opportunity_save as _missed_opportunity_save,
+)
 from app.mcp_server.tooling.fundamentals_registration import register_fundamentals_tools
 from app.mcp_server.tooling.investment_reports_handlers import (
     INVESTMENT_REPORT_TOOL_NAMES,
@@ -137,6 +140,7 @@ _TRADINGCODEX_EXECUTION_LEARNING_READ_TOOL_NAMES: set[str] = {
 
 _TRADINGCODEX_EXECUTION_LEARNING_WRITE_TOOL_NAMES: set[str] = {
     "forecast_save",
+    "missed_opportunity_save",
     "save_trade_retrospective",
 }
 
@@ -277,6 +281,51 @@ def _register_learning_write_tools(mcp: FastMCP) -> None:
             report_uuid=report_uuid,
             report_item_uuid=report_item_uuid,
             correlation_id=correlation_id,
+        )
+
+    @mcp.tool(
+        name="missed_opportunity_save",
+        description=(
+            "tradingcodex_execution: publish the DB-only ROB-1017 D+5 missed "
+            "cohort. Requires explicit created_by such as 'tradingcodex'."
+        ),
+    )
+    async def missed_opportunity_save(
+        created_by: str | None = None,
+        market: str = "",
+        session_date: str = "",
+        account_mode: str = "",
+        index_symbol: str = "",
+        index_change_pct: float = 0.0,
+        new_buy_count: int = 0,
+        candidates: list[dict] | None = None,
+        session_label: str = "",
+        top_n: int = 3,
+        model_label: str | None = None,
+        policy_version: str | None = None,
+        artifact_uuid: str | None = None,
+        report_uuid: str | None = None,
+    ) -> dict[str, Any]:
+        label = _clean_label(created_by)
+        if label is None:
+            return _created_by_required(
+                "missed_opportunity_save", parameter="created_by"
+            )
+        return await _missed_opportunity_save(
+            created_by=label,
+            market=market,
+            session_date=session_date,
+            account_mode=account_mode,
+            index_symbol=index_symbol,
+            index_change_pct=index_change_pct,
+            new_buy_count=new_buy_count,
+            candidates=candidates or [],
+            session_label=session_label,
+            top_n=top_n,
+            model_label=model_label,
+            policy_version=policy_version,
+            artifact_uuid=artifact_uuid,
+            report_uuid=report_uuid,
         )
 
     @mcp.tool(

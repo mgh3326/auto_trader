@@ -1075,7 +1075,8 @@ class TradeRetrospective(Base):
         CheckConstraint(
             "trigger_type IS NULL OR trigger_type IN ("
             "'fill','partial_fill','rejected_order','cancelled','expired',"
-            "'thesis_change','policy_violation','stale_evidence','guardrail_block','stop_loss'"
+            "'thesis_change','policy_violation','stale_evidence','guardrail_block',"
+            "'stop_loss','missed_opportunity'"
             ")",
             name="ck_trade_retrospectives_trigger_type",
         ),
@@ -1326,10 +1327,11 @@ class TradeForecast(Base):
 
     ``forecast_id`` is the idempotency key (client-supplied to update while open,
     or auto-generated). ``forecast_target`` is a structured JSONB claim; the
-    ``price_target`` kind resolves deterministically against loaded daily OHLCV
-    (ROB-639), non-price kinds resolve via an operator-supplied manual outcome
-    (evidence required). ``correlation_id`` aligns with trade_retrospectives
-    (ROB-647) so a postmortem can cite the forecast it graded.
+    ``price_target`` and ``return_at_horizon`` resolve deterministically against
+    loaded daily OHLCV (ROB-639/ROB-1017); other kinds use an operator-supplied
+    manual outcome (evidence required). ``correlation_id`` aligns with
+    trade_retrospectives (ROB-647) so a postmortem can cite the forecast it
+    graded.
     """
 
     __tablename__ = "trade_forecasts"

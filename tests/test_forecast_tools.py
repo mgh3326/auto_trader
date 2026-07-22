@@ -21,6 +21,7 @@ _EXPECTED_NAMES = {
     "forecast_resolve",
     "get_forecasts",
     "get_forecast_calibration",
+    "missed_opportunity_save",
 }
 
 

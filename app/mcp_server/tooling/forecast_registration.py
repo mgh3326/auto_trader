@@ -10,6 +10,7 @@ from app.mcp_server.tooling.forecast_tools import (
     forecast_save,
     get_forecast_calibration,
     get_forecasts,
+    missed_opportunity_save,
 )
 
 FORECAST_TOOL_NAMES: set[str] = {
@@ -17,6 +18,7 @@ FORECAST_TOOL_NAMES: set[str] = {
     "forecast_resolve",
     "get_forecasts",
     "get_forecast_calibration",
+    "missed_opportunity_save",
 }
 
 
@@ -40,6 +42,22 @@ def register_forecast_tools(mcp: Any) -> None:
         ),
     )(forecast_save)
     _ = mcp.tool(
+        name="missed_opportunity_save",
+        description=(
+            "ROB-1017 session-close storage hook. If and only if the absolute "
+            "same-day index move is greater than 2% and new_buy_count is zero, "
+            "atomically publish exactly top_n ranked unbought candidates as "
+            "linked D+5 return_at_horizon forecasts and trade retrospectives "
+            "with trigger_type=missed_opportunity. Each candidate requires "
+            "symbol, matching instrument_type, D0 reference_price, "
+            "target_return_pct, probability/confidence, and rejection_reason. "
+            "KR/US D+5 means five confirmed trading sessions; crypto uses five "
+            "calendar days. Exact retries are idempotent; changing membership "
+            "under the same session_label is rejected. DB learning writes only: "
+            "no broker/order/live mutation."
+        ),
+    )(missed_opportunity_save)
+    _ = mcp.tool(
         name="forecast_resolve",
         description=(
             "Resolve due forecasts deterministically and score them (Brier = "
@@ -49,11 +67,13 @@ def register_forecast_tools(mcp: Any) -> None:
             "without it, resolves every open forecast whose review_date has "
             "passed (up to limit). price_target forecasts resolve against loaded "
             "daily OHLCV (ROB-639 DB-first, equity_kr/equity_us/crypto). "
+            "return_at_horizon forecasts resolve against the exact review-date "
+            "daily close and store the observed point return. "
             "Placeholder forecasts whose target kind is "
             "'no_resolvable_forecast' auto-close without an outcome or Brier "
             "score (dry-run reports 'would_close_no_claim'; persisted status is "
             "'closed_no_claim'). "
-            "Non-price kinds (or price forecasts you must override) require an "
+            "Other non-price kinds (or forecasts you must override) require an "
             "explicit forecast_id plus manual_outcome (bool) and manual_evidence. "
             "Idempotent: a closed forecast is never re-scored. "
             "Missing daily candles for a not-yet-loaded symbol are lazily "

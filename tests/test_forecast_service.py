@@ -36,6 +36,20 @@ def _price_target(direction: str = "at_or_above", target_price: float = 130.0) -
     }
 
 
+def _return_at_horizon(
+    direction: str = "at_or_above",
+    target_return_pct: float = 2.0,
+    reference_price: float = 100.0,
+) -> dict:
+    return {
+        "kind": "return_at_horizon",
+        "direction": direction,
+        "target_return_pct": target_return_pct,
+        "reference_price": reference_price,
+        "cohort": "missed_opportunity",
+    }
+
+
 def _candles(highs: list[float]) -> list[DailyCandleRow]:
     return [
         DailyCandleRow(
@@ -100,6 +114,44 @@ async def test_save_rejects_bad_price_target(db_session: AsyncSession):
             probability=0.6,
             review_date="2026-07-15",
         )
+
+
+@pytest.mark.asyncio
+async def test_save_validates_return_at_horizon_target(db_session: AsyncSession):
+    with pytest.raises(svc.ForecastValidationError):
+        await svc.save_forecast(
+            db_session,
+            created_by="codex",
+            symbol="005930",
+            instrument_type="equity_kr",
+            forecast_target=_return_at_horizon(reference_price=0),
+            probability=0.6,
+            review_date="2026-07-28",
+        )
+
+    _, row = await svc.save_forecast(
+        db_session,
+        created_by="codex",
+        symbol="005930",
+        instrument_type="equity_kr",
+        forecast_target=_return_at_horizon(),
+        probability=0.6,
+        forecast_start_date="2026-07-21",
+        review_date="2026-07-28",
+    )
+    assert row.forecast_target["kind"] == "return_at_horizon"
+
+
+def test_classify_return_at_horizon_uses_horizon_close():
+    outcome, observed = svc.classify_return_at_horizon_outcome(
+        horizon_candle=_candles([112.0])[0],
+        direction="at_or_above",
+        reference_price=100.0,
+        target_return_pct=5.0,
+    )
+    # _candles close = high - 2, therefore the D+5 close is 110 (+10%).
+    assert outcome is True
+    assert observed == pytest.approx(10.0)
 
 
 @pytest.mark.asyncio

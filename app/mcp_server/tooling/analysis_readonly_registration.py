@@ -84,6 +84,7 @@ ANALYSIS_READONLY_TOOL_NAMES: set[str] = {
     "analysis_artifact_get",
     "analysis_bundle_get",
     "forecast_save",
+    "missed_opportunity_save",
     "session_context_append",
     "session_context_get_recent",
 }
