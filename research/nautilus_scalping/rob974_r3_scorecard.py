@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from funding_oi_archive import FundingRow
 from rob940_cost_model import (
@@ -67,11 +67,18 @@ from rob974_r3_relaxation_h2_adapter import (
 )
 from rob974_r3_s4_dtos import R3S4PairTrade
 
+from research_contracts.canonical_hash import canonical_sha256
+
+if TYPE_CHECKING:
+    from app.services.rob974_h6b_materializer import ActualH4InputData
+    from app.services.rob974_r3_h6a_bridge import R3AttemptBatchItem
+
 R3_SCORECARD_SCHEMA_VERSION = "rob974.r3.h5.scorecard.v1"
 _PBO_NOT_OBSERVED_REASON = "pbo_not_available_from_frozen_r3_inputs"
 _ZERO_TRADES_REASON = "zero_oos_basket_trades"
 _OPERATIONAL_INCOMPLETE_REASON = "operational_evidence_incomplete"
 _ISSUED_LEDGER_SEAL = object()
+_ISSUED_MARKET_INPUT_SEAL = object()
 
 _SECTION3_CLAIMS: tuple[tuple[str, str, str], ...] = (
     (
@@ -357,6 +364,274 @@ class R3TradeRiskAttribution:
         return get_r3_config(self.candidate.config_id)
 
 
+def _require_exact_actual_h4_input_data(value: object) -> Any:
+    """Keep the app/service graph off this module's default import path."""
+
+    from app.services.rob974_h6b_materializer import ActualH4InputData
+
+    if type(value) is not ActualH4InputData:
+        raise TypeError("market authority requires exact ActualH4InputData")
+    return value
+
+
+def _production_dataset_component(
+    context: R3ProductionEvidenceContext,
+) -> dict[str, Any]:
+    components = tuple(
+        _plain(spec.components["dataset_manifest"]) for spec in context._plan.row_specs
+    )
+    if not components or any(item != components[0] for item in components[1:]):
+        raise R3ScorecardError("R3 plan dataset manifest differs across exact-12 rows")
+    component = components[0]
+    manifest = component.get("manifest")
+    content_sha256 = component.get("content_sha256")
+    if (
+        type(manifest) is not dict
+        or type(content_sha256) is not str
+        or canonical_sha256(manifest) != content_sha256
+    ):
+        raise R3ScorecardError("R3 plan dataset manifest content hash drifted")
+    return component
+
+
+def _feature_snapshot_hash(snapshots: tuple[CommonSnapshot, ...]) -> str:
+    # Byte-identical to scripts/run_rob974_r3_campaign.py::_feature_hash.
+    return canonical_sha256(
+        [
+            {
+                **snapshot.__dict__,
+                "features": [feature.__dict__ for feature in snapshot.features],
+            }
+            for snapshot in snapshots
+        ]
+    )
+
+
+def _market_payload_hash(
+    *,
+    dataset_content_sha256: str,
+    feature_snapshot_sha256: str,
+    snapshots: tuple[CommonSnapshot, ...],
+    funding_sidecars: tuple[FundingSidecar, ...],
+    funding_manifest_hashes: tuple[tuple[str, str], ...],
+) -> str:
+    return canonical_sha256(
+        {
+            "schema_version": "rob974.r3.h5.market_input_authority.v1",
+            "dataset_content_sha256": dataset_content_sha256,
+            "feature_snapshot_sha256": feature_snapshot_sha256,
+            "snapshots": _plain(snapshots),
+            "funding_sidecars": [
+                {
+                    "symbol": sidecar.symbol,
+                    "rows": [row.__dict__ for row in sidecar.rows],
+                }
+                for sidecar in funding_sidecars
+            ],
+            "funding_manifest_hashes": [list(item) for item in funding_manifest_hashes],
+        }
+    )
+
+
+def _validate_market_input_and_derive(
+    *,
+    context: R3ProductionEvidenceContext,
+    actual_h4_input_data: object,
+) -> tuple[
+    str,
+    str,
+    tuple[CommonSnapshot, ...],
+    tuple[FundingSidecar, ...],
+    tuple[tuple[str, str], ...],
+]:
+    data = _require_exact_actual_h4_input_data(actual_h4_input_data)
+    component = _production_dataset_component(context)
+    manifest = component["manifest"]
+    content_sha256 = component["content_sha256"]
+    if data.persisted_corpus_hash != content_sha256:
+        raise R3ScorecardError(
+            "actual H4 input corpus hash differs from canonical R3 dataset manifest"
+        )
+    if component.get("selected_universe") != list(
+        SYMBOLS
+    ) or data.corpus_end_ts != component.get("window_end_ms"):
+        raise R3ScorecardError("actual H4 input scope differs from canonical R3 corpus")
+
+    kline_by_symbol = {
+        row.get("symbol"): row
+        for row in manifest.get("klines", [])
+        if type(row) is dict
+    }
+    minute_mapping = dict(data.h1_minutes)
+    if tuple(minute_mapping) != SYMBOLS:
+        raise R3ScorecardError("actual H4 input minute order differs from R3 universe")
+    for symbol in SYMBOLS:
+        declared = kline_by_symbol.get(symbol)
+        rows = minute_mapping[symbol]
+        if type(declared) is not dict:
+            raise R3ScorecardError(f"{symbol}: canonical kline manifest is missing")
+        if (
+            len(rows) != declared.get("row_count")
+            or rows[0].ts != declared.get("min_open_time_ms")
+            or rows[-1].ts != declared.get("max_open_time_ms")
+            or any(
+                right.ts - left.ts != 60_000
+                for left, right in zip(rows, rows[1:], strict=False)
+            )
+        ):
+            raise R3ScorecardError(
+                f"{symbol}: actual H4 minutes differ from canonical manifest coverage"
+            )
+
+    # This is the exact launcher feature projection.  It makes every scorecard
+    # snapshot a derived value of ActualH4InputData, never a caller argument.
+    from rob974_features import compute_common_features
+
+    snapshots = compute_common_features(minute_mapping)
+    observed_feature_hash = _feature_snapshot_hash(snapshots)
+    if observed_feature_hash != data.persisted_feature_hash:
+        raise R3ScorecardError(
+            "actual H4 input feature hash differs from recomputed minute features"
+        )
+
+    funding_sidecars = tuple(sidecar for _symbol, sidecar in data.funding_sidecars)
+    _validate_funding_sidecars(funding_sidecars)
+    funding_by_symbol = {
+        row.get("symbol"): row
+        for row in manifest.get("funding", [])
+        if type(row) is dict
+    }
+    funding_manifest_hashes: list[tuple[str, str]] = []
+    for sidecar in funding_sidecars:
+        declared = funding_by_symbol.get(sidecar.symbol)
+        rows = sidecar.rows
+        if type(declared) is not dict:
+            raise R3ScorecardError(
+                f"{sidecar.symbol}: canonical funding manifest is missing"
+            )
+        normalized_hash = canonical_sha256([row.__dict__ for row in rows])
+        declared_hash = declared.get("normalized_shard_sha256")
+        if (
+            not _is_lower_hex64(declared_hash)
+            or normalized_hash != declared_hash
+            or len(rows) != declared.get("row_count")
+            or rows[0].calc_time != declared.get("min_calc_time_ms")
+            or rows[-1].calc_time != declared.get("max_calc_time_ms")
+        ):
+            raise R3ScorecardError(
+                f"{sidecar.symbol}: funding rows differ from canonical manifest"
+            )
+        funding_manifest_hashes.append((sidecar.symbol, declared_hash))
+    return (
+        content_sha256,
+        observed_feature_hash,
+        snapshots,
+        funding_sidecars,
+        tuple(funding_manifest_hashes),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class R3MarketInputAuthority:
+    """Plan/corpus-bound market inputs used by every OOS scenario receipt."""
+
+    _evidence_context: R3ProductionEvidenceContext = field(repr=False, compare=False)
+    _actual_h4_input_data: object = field(repr=False, compare=False)
+    _seal: object = field(repr=False, compare=False)
+    dataset_content_sha256: str = field(init=False)
+    feature_snapshot_sha256: str = field(init=False)
+    snapshots: tuple[CommonSnapshot, ...] = field(init=False, repr=False)
+    funding_sidecars: tuple[FundingSidecar, ...] = field(init=False, repr=False)
+    funding_manifest_hashes: tuple[tuple[str, str], ...] = field(init=False)
+    market_payload_sha256: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if self._seal is not _ISSUED_MARKET_INPUT_SEAL:
+            raise R3ScorecardError("market input authority was not code-issued")
+        context = require_r3_production_evidence_context(self._evidence_context)
+        content_hash, feature_hash, snapshots, sidecars, funding_hashes = (
+            _validate_market_input_and_derive(
+                context=context,
+                actual_h4_input_data=self._actual_h4_input_data,
+            )
+        )
+        object.__setattr__(self, "dataset_content_sha256", content_hash)
+        object.__setattr__(self, "feature_snapshot_sha256", feature_hash)
+        object.__setattr__(self, "snapshots", snapshots)
+        object.__setattr__(self, "funding_sidecars", sidecars)
+        object.__setattr__(self, "funding_manifest_hashes", funding_hashes)
+        object.__setattr__(
+            self,
+            "market_payload_sha256",
+            _market_payload_hash(
+                dataset_content_sha256=content_hash,
+                feature_snapshot_sha256=feature_hash,
+                snapshots=snapshots,
+                funding_sidecars=sidecars,
+                funding_manifest_hashes=funding_hashes,
+            ),
+        )
+
+
+def issue_r3_market_input_authority(
+    *,
+    evidence_context: object,
+    actual_h4_input_data: ActualH4InputData,
+) -> R3MarketInputAuthority:
+    context = require_r3_production_evidence_context(evidence_context)
+    return R3MarketInputAuthority(
+        _evidence_context=context,
+        _actual_h4_input_data=actual_h4_input_data,
+        _seal=_ISSUED_MARKET_INPUT_SEAL,
+    )
+
+
+def _market_values_for_source(
+    *,
+    source: R3H2CellFoldInput,
+    authority: R3MarketInputAuthority,
+) -> tuple[tuple[CommonSnapshot, ...], tuple[FundingSidecar, ...]]:
+    if type(authority) is not R3MarketInputAuthority:
+        raise TypeError("market_input_authority must be exact R3MarketInputAuthority")
+    if authority._seal is not _ISSUED_MARKET_INPUT_SEAL:
+        raise R3ScorecardError("market input authority was not code-issued")
+    if source.fold_id not in R3_FOLD_IDS:
+        raise R3ScorecardError("source fold is outside market authority plan")
+    if (
+        _feature_snapshot_hash(authority.snapshots) != authority.feature_snapshot_sha256
+        or tuple(
+            (
+                sidecar.symbol,
+                canonical_sha256([row.__dict__ for row in sidecar.rows]),
+            )
+            for sidecar in authority.funding_sidecars
+        )
+        != authority.funding_manifest_hashes
+        or _market_payload_hash(
+            dataset_content_sha256=authority.dataset_content_sha256,
+            feature_snapshot_sha256=authority.feature_snapshot_sha256,
+            snapshots=authority.snapshots,
+            funding_sidecars=authority.funding_sidecars,
+            funding_manifest_hashes=authority.funding_manifest_hashes,
+        )
+        != authority.market_payload_sha256
+    ):
+        raise R3ScorecardError("market input authority payload digest drifted")
+    by_ts = {snapshot.decision_ts: snapshot for snapshot in authority.snapshots}
+    if len(by_ts) != len(authority.snapshots):
+        raise R3ScorecardError("market authority has duplicate snapshot timestamps")
+    try:
+        selected = tuple(
+            by_ts[candidate.decision_ts] for candidate in source.h3_candidates
+        )
+    except KeyError as exc:
+        raise R3ScorecardError(
+            "H3 candidate lacks a minute-derived CommonSnapshot"
+        ) from exc
+    _validate_snapshot_authority(source, selected)
+    return selected, authority.funding_sidecars
+
+
 @dataclass(frozen=True, slots=True)
 class R3FoldScenarioAttribution:
     """One independently issued cost-scenario path for a config/fold."""
@@ -366,6 +641,7 @@ class R3FoldScenarioAttribution:
     decision_snapshots: tuple[CommonSnapshot, ...]
     funding_sidecars: tuple[FundingSidecar, ...]
     rows: tuple[R3TradeRiskAttribution, ...]
+    market_input_authority: R3MarketInputAuthority = field(repr=False, compare=False)
     _seal: object = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -375,6 +651,17 @@ class R3FoldScenarioAttribution:
             raise R3ScorecardError("fold scenario order drifted")
         if type(self.source) is not R3H2CellFoldInput:
             raise TypeError("source must be exact R3H2CellFoldInput")
+        expected_snapshots, expected_sidecars = _market_values_for_source(
+            source=self.source,
+            authority=self.market_input_authority,
+        )
+        if (
+            self.decision_snapshots != expected_snapshots
+            or self.funding_sidecars != expected_sidecars
+        ):
+            raise R3ScorecardError(
+                "scenario market values differ from code-issued input authority"
+            )
         _validate_snapshot_authority(self.source, self.decision_snapshots)
         _validate_funding_sidecars(self.funding_sidecars)
         if type(self.rows) is not tuple or any(
@@ -472,15 +759,18 @@ def issue_r3_fold_scenario_attribution(
     *,
     path_scenario: str,
     source: R3H2CellFoldInput,
-    decision_snapshots: tuple[CommonSnapshot, ...],
-    funding_sidecars: tuple[FundingSidecar, ...],
+    market_input_authority: R3MarketInputAuthority,
 ) -> R3FoldScenarioAttribution:
-    """Bind one actual scenario path without accepting derived economics."""
+    """Bind one actual scenario path without caller-supplied market values."""
 
     if path_scenario not in PATH_SCENARIOS:
         raise R3ScorecardError("path_scenario is outside exact-three order")
     if type(source) is not R3H2CellFoldInput:
         raise TypeError("source must be exact R3H2CellFoldInput")
+    decision_snapshots, funding_sidecars = _market_values_for_source(
+        source=source,
+        authority=market_input_authority,
+    )
     _validate_snapshot_authority(source, decision_snapshots)
     _validate_funding_sidecars(funding_sidecars)
     snapshot_by_ts = {row.decision_ts: row for row in decision_snapshots}
@@ -593,6 +883,7 @@ def issue_r3_fold_scenario_attribution(
         decision_snapshots=decision_snapshots,
         funding_sidecars=funding_sidecars,
         rows=tuple(rows),
+        market_input_authority=market_input_authority,
         _seal=_ISSUED_LEDGER_SEAL,
     )
 
@@ -623,6 +914,7 @@ class R3FoldOOSInput:
                 receipt.source != primary.source
                 or receipt.decision_snapshots != primary.decision_snapshots
                 or receipt.funding_sidecars != primary.funding_sidecars
+                or receipt.market_input_authority is not primary.market_input_authority
             ):
                 raise R3ScorecardError(
                     "scenario paths differ from frozen membership/PIT authority"
@@ -879,9 +1171,7 @@ class R3ScorecardAccountingEvidence:
 
     report: Exact12AccountingReport
     attempts: tuple[AttemptAccountingRow, ...]
-    registered_total: int
-    mismatch_row_ids: tuple[str, ...]
-    extra_experiment_ids: tuple[str, ...]
+    source_attempts: tuple[R3AttemptBatchItem, ...] = field(repr=False)
     _evidence_context: R3ProductionEvidenceContext = field(repr=False, compare=False)
     _seal: object = field(repr=False, compare=False)
 
@@ -895,13 +1185,19 @@ class R3ScorecardAccountingEvidence:
             type(item) is not AttemptAccountingRow for item in self.attempts
         ):
             raise TypeError("attempts must be exact AttemptAccountingRow tuple")
+        derived = _derive_attempt_accounting_rows(
+            context=context,
+            attempts=self.source_attempts,
+        )
+        if self.attempts != derived:
+            raise R3ScorecardError(
+                "scorecard accounting rows differ from original attempt evidence"
+            )
         recomputed = build_exact_12_accounting(
             campaign_run_id=context.campaign_run_id,
             ordered_mapping=context.ordered_mapping,
-            registered_total=self.registered_total,
-            attempts=self.attempts,
-            mismatch_row_ids=self.mismatch_row_ids,
-            extra_experiment_ids=self.extra_experiment_ids,
+            registered_total=12,
+            attempts=derived,
         )
         if self.report != recomputed:
             raise R3ScorecardError(
@@ -909,29 +1205,227 @@ class R3ScorecardAccountingEvidence:
             )
 
 
+def _is_lower_hex64(value: object) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _require_attempt_payload(
+    *,
+    context: R3ProductionEvidenceContext,
+    attempt: object,
+) -> dict[str, Any]:
+    payload = _plain(attempt.evidence_payload)
+    expected_keys = (
+        "schema_version",
+        "row_id",
+        "phase_fold_paths",
+        "section5_gate_report_sha256",
+        "primary_relaxation_path",
+        "path_scenarios",
+        "funding_gate_projection",
+    )
+    if type(payload) is not dict or tuple(payload) != expected_keys:
+        raise R3ScorecardError(
+            f"{attempt.row_id}: attempt evidence payload keys/order drifted"
+        )
+    if (
+        payload["schema_version"] != "rob974.r3.h6a.attempt_evidence.v1"
+        or payload["row_id"] != attempt.row_id
+        or payload["primary_relaxation_path"] != PATH_SCENARIOS[1]
+        or payload["path_scenarios"] != list(PATH_SCENARIOS)
+        or payload["funding_gate_projection"] != "once_before_three_fresh_engines"
+    ):
+        raise R3ScorecardError(f"{attempt.row_id}: attempt evidence header drifted")
+    gate_hashes = payload["section5_gate_report_sha256"]
+    if (
+        type(gate_hashes) is not dict
+        or tuple(gate_hashes) != ("TRAIN", "OOS")
+        or any(not _is_lower_hex64(value) for value in gate_hashes.values())
+    ):
+        raise R3ScorecardError(
+            f"{attempt.row_id}: section5 gate evidence hashes drifted"
+        )
+
+    cells = payload["phase_fold_paths"]
+    expected_headers = tuple(
+        (phase, fold.fold_id) for phase in ("TRAIN", "OOS") for fold in context.folds
+    )
+    if type(cells) is not list or len(cells) != len(expected_headers):
+        raise R3ScorecardError(
+            f"{attempt.row_id}: attempt phase/fold coverage is not exact 2x8"
+        )
+    actual_headers: list[tuple[object, object]] = []
+    incomplete_rows: list[dict[str, Any]] = []
+    for cell in cells:
+        if type(cell) is not dict or tuple(cell) != (
+            "phase",
+            "fold_id",
+            "accepted_decision_units",
+            "path_evidence",
+        ):
+            raise R3ScorecardError(f"{attempt.row_id}: attempt cell keys/order drifted")
+        actual_headers.append((cell["phase"], cell["fold_id"]))
+        _exact_nonnegative_int(
+            cell["accepted_decision_units"],
+            f"{attempt.row_id} accepted_decision_units",
+        )
+        paths = cell["path_evidence"]
+        if type(paths) is not list or len(paths) != len(PATH_SCENARIOS):
+            raise R3ScorecardError(
+                f"{attempt.row_id}: attempt path evidence is not exact-three"
+            )
+        path_projections: list[dict[str, Any]] = []
+        for scenario, path in zip(PATH_SCENARIOS, paths, strict=True):
+            if type(path) is not dict or tuple(path) != (
+                "path_scenario",
+                "input_seal_sha256",
+                "output_seal_sha256",
+                "member_trade_keys",
+                "basket_trades",
+                "no_trades",
+                "incompletes",
+                "terminal_incomplete_rows",
+            ):
+                raise R3ScorecardError(
+                    f"{attempt.row_id}: attempt path keys/order drifted"
+                )
+            members = path["member_trade_keys"]
+            terminals = path["terminal_incomplete_rows"]
+            if (
+                path["path_scenario"] != scenario
+                or not _is_lower_hex64(path["input_seal_sha256"])
+                or not _is_lower_hex64(path["output_seal_sha256"])
+                or type(members) is not list
+                or members != sorted(members)
+                or len(members) != len(set(members))
+                or any(not _is_lower_hex64(value) for value in members)
+                or type(terminals) is not list
+                or any(type(row) is not dict for row in terminals)
+            ):
+                raise R3ScorecardError(
+                    f"{attempt.row_id}: attempt path evidence drifted"
+                )
+            for name in ("basket_trades", "no_trades", "incompletes"):
+                _exact_nonnegative_int(path[name], f"{attempt.row_id} {name}")
+            if path["basket_trades"] != len(members) or path["incompletes"] != len(
+                terminals
+            ):
+                raise R3ScorecardError(
+                    f"{attempt.row_id}: attempt path counts differ from evidence rows"
+                )
+            # The launcher runs fresh engines but requires exact output parity;
+            # only the scenario label may differ across these three receipts.
+            path_projections.append(
+                {key: value for key, value in path.items() if key != "path_scenario"}
+            )
+            incomplete_rows.extend(terminals)
+        if any(value != path_projections[0] for value in path_projections[1:]):
+            raise R3ScorecardError(
+                f"{attempt.row_id}: exact-three path evidence is not parity-bound"
+            )
+    if tuple(actual_headers) != expected_headers:
+        raise R3ScorecardError(
+            f"{attempt.row_id}: attempt phase/fold headers are unordered"
+        )
+
+    expected_status = "rejected" if incomplete_rows else "completed"
+    expected_reason = (
+        (
+            "rejected:data_gap_in_position"
+            if attempt.row_id.startswith("S3-")
+            else "rejected:data_gap_in_pair_position"
+        )
+        if incomplete_rows
+        else None
+    )
+    if (attempt.status, attempt.reason_code) != (expected_status, expected_reason):
+        raise R3ScorecardError(
+            f"{attempt.row_id}: attempt status/reason differs from terminal evidence"
+        )
+    expected_fold_hash = canonical_sha256(payload)
+    if attempt.fold_evidence_hash != expected_fold_hash:
+        raise R3ScorecardError(
+            f"{attempt.row_id}: fold_evidence_hash differs from canonical payload"
+        )
+    expected_run_identity = canonical_sha256(
+        {
+            "full_campaign_hash": context.campaign_identity_sha256,
+            "campaign_run_id": context.campaign_run_id,
+            "row_id": attempt.row_id,
+            "experiment_id": attempt.experiment_id,
+            "fold_evidence_hash": expected_fold_hash,
+        }
+    )
+    if attempt.run_identity != expected_run_identity:
+        raise R3ScorecardError(
+            f"{attempt.row_id}: run_identity differs from canonical plan/payload"
+        )
+    return payload
+
+
+def _derive_attempt_accounting_rows(
+    *,
+    context: R3ProductionEvidenceContext,
+    attempts: tuple[R3AttemptBatchItem, ...],
+) -> tuple[AttemptAccountingRow, ...]:
+    from app.services.rob974_r3_h6a_bridge import R3AttemptBatchItem
+
+    if (
+        type(attempts) is not tuple
+        or len(attempts) != 12
+        or any(type(item) is not R3AttemptBatchItem for item in attempts)
+    ):
+        raise TypeError("attempts must be exact 12 R3AttemptBatchItem originals")
+    if tuple(item.row_id for item in attempts) != tuple(
+        row.config_id for row in FROZEN_R3_ROSTER
+    ):
+        raise R3ScorecardError("original attempts must use canonical exact-12 order")
+    experiment_by_row = dict(context.ordered_mapping)
+    rows: list[AttemptAccountingRow] = []
+    for attempt in attempts:
+        if (
+            attempt.experiment_id != experiment_by_row[attempt.row_id]
+            or attempt.retry_index != 0
+        ):
+            raise R3ScorecardError(
+                f"{attempt.row_id}: original attempt differs from plan mapping"
+            )
+        _require_attempt_payload(context=context, attempt=attempt)
+        rows.append(
+            AttemptAccountingRow(
+                row_id=attempt.row_id,
+                experiment_id=attempt.experiment_id,
+                retry_index=attempt.retry_index,
+                status=attempt.status,
+                reason_code=attempt.reason_code,
+                fold_evidence_hash=attempt.fold_evidence_hash,
+                run_identity=attempt.run_identity,
+            )
+        )
+    return tuple(rows)
+
+
 def issue_r3_scorecard_accounting(
     *,
     evidence_context: object,
-    registered_total: int,
-    attempts: tuple[AttemptAccountingRow, ...],
-    mismatch_row_ids: tuple[str, ...] = (),
-    extra_experiment_ids: tuple[str, ...] = (),
+    attempts: tuple[R3AttemptBatchItem, ...],
 ) -> R3ScorecardAccountingEvidence:
     context = require_r3_production_evidence_context(evidence_context)
+    derived = _derive_attempt_accounting_rows(context=context, attempts=attempts)
     report = build_exact_12_accounting(
         campaign_run_id=context.campaign_run_id,
         ordered_mapping=context.ordered_mapping,
-        registered_total=registered_total,
-        attempts=attempts,
-        mismatch_row_ids=mismatch_row_ids,
-        extra_experiment_ids=extra_experiment_ids,
+        registered_total=12,
+        attempts=derived,
     )
     return R3ScorecardAccountingEvidence(
         report=report,
-        attempts=attempts,
-        registered_total=registered_total,
-        mismatch_row_ids=mismatch_row_ids,
-        extra_experiment_ids=extra_experiment_ids,
+        attempts=derived,
+        source_attempts=attempts,
         _evidence_context=context,
         _seal=_ISSUED_LEDGER_SEAL,
     )
@@ -2459,20 +2953,139 @@ def _validate_scorecard_order(scorecard: Mapping[str, object]) -> None:
     if scorecard.get("schema_version") != R3_SCORECARD_SCHEMA_VERSION:
         raise R3ScorecardError("R3 scorecard schema version mismatch")
     cells = scorecard.get("cells")
-    if type(cells) is not list or [cell.get("config_id") for cell in cells] != [
-        row.config_id for row in FROZEN_R3_ROSTER
-    ]:
+    if (
+        type(cells) is not list
+        or any(type(cell) is not dict for cell in cells)
+        or [cell.get("config_id") for cell in cells]
+        != [row.config_id for row in FROZEN_R3_ROSTER]
+    ):
         raise R3ScorecardError("R3 scorecard cells are unordered or incomplete")
     section3 = scorecard.get("section3_falsification")
-    if type(section3) is not list or [row.get("claim_id") for row in section3] != [
-        claim_id for claim_id, _claim, _death in _SECTION3_CLAIMS
-    ]:
+    if (
+        type(section3) is not list
+        or any(type(row) is not dict for row in section3)
+        or [row.get("claim_id") for row in section3]
+        != [claim_id for claim_id, _claim, _death in _SECTION3_CLAIMS]
+    ):
         raise R3ScorecardError("R3 §3 falsification rows are unordered or incomplete")
+
+    gate = scorecard.get("section5_gate_audit")
+    if type(gate) is not dict:
+        raise R3ScorecardError("R3 §5 gate audit is malformed")
+    report_order = gate.get("report_order")
+    reports = gate.get("reports")
+    evidence_order = gate.get("evidence_cell_order")
+    if not any((report_order, reports, evidence_order)):
+        if (
+            report_order != []
+            or reports != []
+            or evidence_order != []
+            or gate.get("status") != "INCOMPLETE"
+        ):
+            raise R3ScorecardError("R3 §5 empty evidence order is malformed")
+    else:
+        expected_report_headers = [
+            (config.config_id, phase)
+            for config in FROZEN_R3_ROSTER
+            for phase in ("TRAIN", "OOS")
+        ]
+        if (
+            type(report_order) is not list
+            or type(reports) is not list
+            or len(report_order) != len(expected_report_headers)
+            or len(reports) != len(expected_report_headers)
+            or any(type(row) is not dict for row in report_order)
+            or any(type(row) is not dict for row in reports)
+        ):
+            raise R3ScorecardError("R3 §5 reports are unordered or incomplete")
+        for order_row, report, (config_id, phase) in zip(
+            report_order,
+            reports,
+            expected_report_headers,
+            strict=True,
+        ):
+            scope = report.get("scope")
+            folds = report.get("folds")
+            if (
+                order_row.get("config_id") != config_id
+                or order_row.get("phase") != phase
+                or order_row.get("fold_ids") != list(R3_FOLD_IDS)
+                or type(scope) is not dict
+                or scope.get("config_id") != config_id
+                or scope.get("phase") != phase
+                or type(folds) is not list
+                or any(type(fold) is not dict for fold in folds)
+                or [fold.get("fold_id") for fold in folds] != list(R3_FOLD_IDS)
+            ):
+                raise R3ScorecardError("R3 §5 nested report/fold order drifted")
+        expected_cells = [
+            [config.config_id, phase, fold_id]
+            for config in FROZEN_R3_ROSTER
+            for phase in ("TRAIN", "OOS")
+            for fold_id in R3_FOLD_IDS
+        ]
+        if evidence_order != expected_cells:
+            raise R3ScorecardError("R3 §5 evidence cell order drifted")
+
     relaxation = scorecard.get("section7_relaxation")
     if type(relaxation) is not dict or relaxation.get("ray_order") != [
         ray.ray_id for ray in R3_RELAXATION_RAYS
     ]:
         raise R3ScorecardError("R3 relaxation rays are unordered or incomplete")
+    for name in ("oos", "train_diagnostic"):
+        phase = relaxation.get(name)
+        if phase is None:
+            if name == "oos" and relaxation.get("status") != "INCOMPLETE":
+                raise R3ScorecardError("R3 OOS relaxation evidence is missing")
+            continue
+        if (
+            type(phase) is not dict
+            or phase.get("fold_ids") != list(R3_FOLD_IDS)
+            or type(phase.get("rays")) is not list
+        ):
+            raise R3ScorecardError("R3 nested relaxation phase/fold order drifted")
+        rays = phase["rays"]
+        if phase.get("statistics_computed") is False:
+            if rays:
+                raise R3ScorecardError(
+                    "R3 nested relaxation rays exist without computed statistics"
+                )
+            continue
+        if (
+            phase.get("statistics_computed") is not True
+            or any(type(ray) is not dict for ray in rays)
+            or [ray.get("ray_id") for ray in rays]
+            != [ray.ray_id for ray in R3_RELAXATION_RAYS]
+        ):
+            raise R3ScorecardError("R3 nested relaxation ray order drifted")
+        for ray_payload, ray_contract in zip(rays, R3_RELAXATION_RAYS, strict=True):
+            steps = ray_payload.get("steps")
+            expected_pairs = list(
+                zip(
+                    ray_contract.config_ids[:-1],
+                    ray_contract.config_ids[1:],
+                    strict=True,
+                )
+            )
+            if (
+                type(steps) is not list
+                or len(steps) != len(expected_pairs)
+                or any(type(step) is not dict for step in steps)
+            ):
+                raise R3ScorecardError("R3 nested relaxation steps are incomplete")
+            for step, (strict_id, looser_id) in zip(steps, expected_pairs, strict=True):
+                folds = step.get("folds")
+                if (
+                    step.get("step_id") != f"{strict_id}->{looser_id}"
+                    or step.get("strict_config_id") != strict_id
+                    or step.get("looser_config_id") != looser_id
+                    or type(folds) is not list
+                    or any(type(fold) is not dict for fold in folds)
+                    or [fold.get("fold_id") for fold in folds] != list(R3_FOLD_IDS)
+                ):
+                    raise R3ScorecardError(
+                        "R3 nested relaxation step/fold order drifted"
+                    )
 
 
 def canonical_r3_json_bytes(scorecard: Mapping[str, object]) -> bytes:
@@ -2555,6 +3168,7 @@ __all__ = [
     "R3FoldOOSInput",
     "R3FoldOOSLedger",
     "R3FoldScenarioAttribution",
+    "R3MarketInputAuthority",
     "R3PrunedBoundaryNeighbor",
     "R3ScorecardAccountingEvidence",
     "R3ScorecardError",
@@ -2566,6 +3180,7 @@ __all__ = [
     "hash_r3_canonical_bytes",
     "issue_r3_all_cell_oos_ledger",
     "issue_r3_fold_scenario_attribution",
+    "issue_r3_market_input_authority",
     "issue_r3_scorecard_accounting",
     "issue_r3_scorecard_relaxation_evidence",
     "verify_r3_artifact_pair",

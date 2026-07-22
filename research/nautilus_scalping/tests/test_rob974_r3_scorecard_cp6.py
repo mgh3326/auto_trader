@@ -12,6 +12,8 @@ import dataclasses
 import inspect
 import json
 import math
+import subprocess
+import sys
 from functools import lru_cache
 
 import pytest
@@ -69,6 +71,7 @@ from rob974_r3_scorecard import (
     hash_r3_canonical_bytes,
     issue_r3_all_cell_oos_ledger,
     issue_r3_fold_scenario_attribution,
+    issue_r3_market_input_authority,
     issue_r3_scorecard_accounting,
     issue_r3_scorecard_relaxation_evidence,
     verify_r3_artifact_pair,
@@ -78,6 +81,49 @@ from rob974_r3_scorecard import (
 @lru_cache(maxsize=1)
 def _production_context():
     return issue_r3_production_evidence_context(build_production_r3_plan())
+
+
+@lru_cache(maxsize=1)
+def _unit_market_authority():
+    """Issue a unit-size authority without touching the production corpus."""
+
+    from rob974_features import MinuteBar
+
+    from app.services.rob974_h6b_materializer import ActualH4InputData
+    from research_contracts.canonical_hash import canonical_sha256
+
+    context = _production_context()
+    component = scorecard_module._production_dataset_component(context)
+    minute_ts = component["window_start_ms"]
+    minute = MinuteBar(minute_ts, 1.0, 1.0, 1.0, 1.0, 1.0)
+    actual_data = ActualH4InputData.from_mapping(
+        dict.fromkeys(SYMBOLS, (minute,)),
+        corpus_end_ts=component["window_end_ms"],
+        persisted_corpus_hash=component["content_sha256"],
+        persisted_feature_hash=canonical_sha256([]),
+    )
+    snapshots = ()
+    sidecars = tuple(FundingSidecar.from_rows(symbol, ()) for symbol in SYMBOLS)
+    funding_hashes = tuple((symbol, canonical_sha256([])) for symbol in SYMBOLS)
+    original = scorecard_module._validate_market_input_and_derive
+
+    def unit_market_derivation(**_kwargs):
+        return (
+            component["content_sha256"],
+            canonical_sha256([]),
+            snapshots,
+            sidecars,
+            funding_hashes,
+        )
+
+    scorecard_module._validate_market_input_and_derive = unit_market_derivation
+    try:
+        return issue_r3_market_input_authority(
+            evidence_context=context,
+            actual_h4_input_data=actual_data,
+        )
+    finally:
+        scorecard_module._validate_market_input_and_derive = original
 
 
 def _empty_source(config, fold) -> R3H2CellFoldInput:
@@ -117,6 +163,7 @@ def _empty_source(config, fold) -> R3H2CellFoldInput:
 @lru_cache(maxsize=1)
 def _empty_cells() -> tuple[R3CellOOSInput, ...]:
     plan = build_production_r3_plan()
+    market_authority = _unit_market_authority()
     return tuple(
         R3CellOOSInput(
             config_id=config.config_id,
@@ -126,11 +173,7 @@ def _empty_cells() -> tuple[R3CellOOSInput, ...]:
                         issue_r3_fold_scenario_attribution(
                             path_scenario=scenario,
                             source=_empty_source(config, fold),
-                            decision_snapshots=(),
-                            funding_sidecars=tuple(
-                                FundingSidecar.from_rows(symbol, ())
-                                for symbol in SYMBOLS
-                            ),
+                            market_input_authority=market_authority,
                         )
                         for scenario in PATH_SCENARIOS
                     ),
@@ -143,22 +186,73 @@ def _empty_cells() -> tuple[R3CellOOSInput, ...]:
 
 
 def _complete_accounting(context) -> R3ScorecardAccountingEvidence:
-    attempts = tuple(
-        AttemptAccountingRow(
-            row_id=config_id,
-            experiment_id=experiment_id,
-            retry_index=0,
-            status="completed",
-            reason_code=None,
-            fold_evidence_hash=context.campaign_identity_sha256,
-            run_identity=experiment_id,
+    from app.services.rob974_r3_h6a_bridge import R3AttemptBatchItem
+    from research_contracts.canonical_hash import canonical_sha256
+
+    attempts = []
+    for row_id, experiment_id in context.ordered_mapping:
+        cells = [
+            {
+                "phase": phase,
+                "fold_id": fold.fold_id,
+                "accepted_decision_units": 0,
+                "path_evidence": [
+                    {
+                        "path_scenario": scenario,
+                        "input_seal_sha256": canonical_sha256(
+                            [row_id, phase, fold.fold_id, "input"]
+                        ),
+                        "output_seal_sha256": canonical_sha256(
+                            [row_id, phase, fold.fold_id, "output"]
+                        ),
+                        "member_trade_keys": [],
+                        "basket_trades": 0,
+                        "no_trades": 0,
+                        "incompletes": 0,
+                        "terminal_incomplete_rows": [],
+                    }
+                    for scenario in PATH_SCENARIOS
+                ],
+            }
+            for phase in ("TRAIN", "OOS")
+            for fold in context.folds
+        ]
+        payload = {
+            "schema_version": "rob974.r3.h6a.attempt_evidence.v1",
+            "row_id": row_id,
+            "phase_fold_paths": cells,
+            "section5_gate_report_sha256": {
+                "TRAIN": canonical_sha256([row_id, "TRAIN"]),
+                "OOS": canonical_sha256([row_id, "OOS"]),
+            },
+            "primary_relaxation_path": PATH_SCENARIOS[1],
+            "path_scenarios": list(PATH_SCENARIOS),
+            "funding_gate_projection": "once_before_three_fresh_engines",
+        }
+        fold_hash = canonical_sha256(payload)
+        attempts.append(
+            R3AttemptBatchItem(
+                row_id=row_id,
+                experiment_id=experiment_id,
+                retry_index=0,
+                status="completed",
+                reason_code=None,
+                fold_evidence_hash=fold_hash,
+                run_identity=canonical_sha256(
+                    {
+                        "full_campaign_hash": context.campaign_identity_sha256,
+                        "campaign_run_id": context.campaign_run_id,
+                        "row_id": row_id,
+                        "experiment_id": experiment_id,
+                        "fold_evidence_hash": fold_hash,
+                    }
+                ),
+                evidence_payload=payload,
+            )
         )
-        for config_id, experiment_id in context.ordered_mapping
-    )
     return issue_r3_scorecard_accounting(
         evidence_context=context,
-        registered_total=12,
-        attempts=attempts,
+        attempts=tuple(attempts),
     )
 
 
@@ -812,67 +906,45 @@ def test_duplicate_funding_timestamp_is_rejected_before_attribution() -> None:
     )
 
     with pytest.raises(ValueError, match="strictly chronological"):
-        issue_r3_fold_scenario_attribution(
-            path_scenario=PATH_SCENARIOS[0],
-            source=_empty_source(config, fold),
-            decision_snapshots=(),
-            funding_sidecars=sidecars,
-        )
+        scorecard_module._validate_funding_sidecars(sidecars)
 
 
-def test_trade_attribution_is_one_to_one_and_half_life_units_are_explicit() -> None:
+def test_fold_attribution_requires_market_input_authority() -> None:
     config = FROZEN_R3_ROSTER[-1]
     assert type(config) is R3S4Config
     fold = _production_context().folds[0]
-    source, snapshots = _s4_source_and_snapshots(config, fold, count=2)
-    receipt = issue_r3_fold_scenario_attribution(
-        path_scenario=PATH_SCENARIOS[1],
-        source=source,
-        decision_snapshots=snapshots,
-        funding_sidecars=tuple(
-            FundingSidecar.from_rows(symbol, ()) for symbol in SYMBOLS
-        ),
-    )
+    source, _snapshots = _s4_source_and_snapshots(config, fold, count=2)
 
-    assert len(receipt.rows) == len(source.terminal.result.trades) == 2
-    assert tuple(row.source_engine_trade for row in receipt.rows) == (
-        source.terminal.result.trades
-    )
-    assert receipt.rows[0].half_life_4h_bars == 2.0
-    assert receipt.rows[0].half_life_hours == 8.0
-    assert receipt.rows[0].realized_holding_minutes == 600.0
-
-    with pytest.raises(ValueError, match="economics were not derived"):
-        dataclasses.replace(receipt.rows[0], half_life_hours=2.0)
-    with pytest.raises(ValueError, match="terminal trades"):
-        dataclasses.replace(receipt, rows=receipt.rows[:-1])
+    with pytest.raises(TypeError, match="exact R3MarketInputAuthority"):
+        issue_r3_fold_scenario_attribution(
+            path_scenario=PATH_SCENARIOS[1],
+            source=source,
+            market_input_authority=None,  # type: ignore[arg-type]
+        )
 
 
 def test_fold_scenarios_cannot_mix_source_membership_authorities() -> None:
     config = FROZEN_R3_ROSTER[-1]
     assert type(config) is R3S4Config
-    fold = _production_context().folds[0]
-    source_one, snapshots_one = _s4_source_and_snapshots(config, fold, count=1)
-    source_two, snapshots_two = _s4_source_and_snapshots(config, fold, count=2)
-    sidecars = tuple(FundingSidecar.from_rows(symbol, ()) for symbol in SYMBOLS)
+    fold_one, fold_two = _production_context().folds[:2]
+    source_one = _empty_source(config, fold_one)
+    source_two = _empty_source(config, fold_two)
+    authority = _unit_market_authority()
     receipts = (
         issue_r3_fold_scenario_attribution(
             path_scenario=PATH_SCENARIOS[0],
             source=source_one,
-            decision_snapshots=snapshots_one,
-            funding_sidecars=sidecars,
+            market_input_authority=authority,
         ),
         issue_r3_fold_scenario_attribution(
             path_scenario=PATH_SCENARIOS[1],
             source=source_two,
-            decision_snapshots=snapshots_two,
-            funding_sidecars=sidecars,
+            market_input_authority=authority,
         ),
         issue_r3_fold_scenario_attribution(
             path_scenario=PATH_SCENARIOS[2],
             source=source_one,
-            decision_snapshots=snapshots_one,
-            funding_sidecars=sidecars,
+            market_input_authority=authority,
         ),
     )
 
@@ -940,3 +1012,216 @@ def test_canonical_json_rejects_reversed_nested_relaxation_rays() -> None:
 
     with pytest.raises(ValueError, match="nested.*ray"):
         canonical_r3_json_bytes(scorecard)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "expected_message"),
+    (
+        ("fold_evidence_hash", "fold_evidence_hash"),
+        ("run_identity", "run_identity"),
+    ),
+)
+def test_accounting_recomputes_original_attempt_hashes(
+    field_name: str,
+    expected_message: str,
+) -> None:
+    context = _production_context()
+    source_attempts = list(_complete_accounting(context).source_attempts)
+    source_attempts[0] = dataclasses.replace(
+        source_attempts[0],
+        **{field_name: "0" * 64},
+    )
+
+    with pytest.raises(ValueError, match=expected_message):
+        issue_r3_scorecard_accounting(
+            evidence_context=context,
+            attempts=tuple(source_attempts),
+        )
+
+
+def test_accounting_rejects_rehashed_but_reordered_payload() -> None:
+    from research_contracts.canonical_hash import canonical_sha256
+
+    context = _production_context()
+    source_attempts = list(_complete_accounting(context).source_attempts)
+    original = source_attempts[0]
+    payload = scorecard_module._plain(original.evidence_payload)
+    payload["phase_fold_paths"].reverse()
+    fold_hash = canonical_sha256(payload)
+    source_attempts[0] = dataclasses.replace(
+        original,
+        evidence_payload=payload,
+        fold_evidence_hash=fold_hash,
+        run_identity=canonical_sha256(
+            {
+                "full_campaign_hash": context.campaign_identity_sha256,
+                "campaign_run_id": context.campaign_run_id,
+                "row_id": original.row_id,
+                "experiment_id": original.experiment_id,
+                "fold_evidence_hash": fold_hash,
+            }
+        ),
+    )
+
+    with pytest.raises(ValueError, match="headers are unordered"):
+        issue_r3_scorecard_accounting(
+            evidence_context=context,
+            attempts=tuple(source_attempts),
+        )
+
+
+def test_market_authority_rejects_stored_snapshot_and_funding_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rob974_features import MinuteBar
+
+    from app.services.rob974_h6b_materializer import ActualH4InputData
+    from research_contracts.canonical_hash import canonical_sha256
+
+    context = _production_context()
+    config = FROZEN_R3_ROSTER[-1]
+    assert type(config) is R3S4Config
+    fold = context.folds[0]
+    source, snapshots = _s4_source_and_snapshots(config, fold, count=2)
+    sidecars = tuple(FundingSidecar.from_rows(symbol, ()) for symbol in SYMBOLS)
+    funding_hashes = tuple((symbol, canonical_sha256([])) for symbol in SYMBOLS)
+
+    def unit_market_derivation(**_kwargs):
+        return (
+            "a" * 64,
+            scorecard_module._feature_snapshot_hash(snapshots),
+            snapshots,
+            sidecars,
+            funding_hashes,
+        )
+
+    monkeypatch.setattr(
+        scorecard_module,
+        "_validate_market_input_and_derive",
+        unit_market_derivation,
+    )
+    minute_ts = fold.oos_start_ms
+    minute = MinuteBar(minute_ts, 1.0, 1.0, 1.0, 1.0, 1.0)
+    actual_data = ActualH4InputData.from_mapping(
+        dict.fromkeys(SYMBOLS, (minute,)),
+        corpus_end_ts=minute_ts + 60_000,
+        persisted_corpus_hash="a" * 64,
+        persisted_feature_hash="b" * 64,
+    )
+
+    snapshot_authority = issue_r3_market_input_authority(
+        evidence_context=context,
+        actual_h4_input_data=actual_data,
+    )
+    altered = dataclasses.replace(
+        snapshot_authority.snapshots[0],
+        M=snapshot_authority.snapshots[0].M + 0.01,
+    )
+    object.__setattr__(
+        snapshot_authority,
+        "snapshots",
+        (altered, *snapshot_authority.snapshots[1:]),
+    )
+    with pytest.raises(ValueError, match="payload digest drifted"):
+        issue_r3_fold_scenario_attribution(
+            path_scenario=PATH_SCENARIOS[1],
+            source=source,
+            market_input_authority=snapshot_authority,
+        )
+
+    funding_authority = issue_r3_market_input_authority(
+        evidence_context=context,
+        actual_h4_input_data=actual_data,
+    )
+    mutated_sidecars = (
+        FundingSidecar.from_rows(
+            SYMBOLS[0],
+            (FundingRow(fold.oos_start_ms, 8, 0.0001),),
+        ),
+        *funding_authority.funding_sidecars[1:],
+    )
+    object.__setattr__(funding_authority, "funding_sidecars", mutated_sidecars)
+    with pytest.raises(ValueError, match="payload digest drifted"):
+        issue_r3_fold_scenario_attribution(
+            path_scenario=PATH_SCENARIOS[1],
+            source=source,
+            market_input_authority=funding_authority,
+        )
+
+
+def test_market_authority_does_not_trust_actual_input_string_pins_alone() -> None:
+    from rob974_features import MinuteBar
+
+    from app.services.rob974_h6b_materializer import ActualH4InputData
+
+    context = _production_context()
+    component = scorecard_module._production_dataset_component(context)
+    minute_ts = component["window_start_ms"]
+    minute = MinuteBar(minute_ts, 1.0, 1.0, 1.0, 1.0, 1.0)
+    forged = ActualH4InputData.from_mapping(
+        dict.fromkeys(SYMBOLS, (minute,)),
+        corpus_end_ts=component["window_end_ms"],
+        persisted_corpus_hash=component["content_sha256"],
+        persisted_feature_hash="b" * 64,
+    )
+
+    with pytest.raises(ValueError, match="canonical manifest coverage"):
+        issue_r3_market_input_authority(
+            evidence_context=context,
+            actual_h4_input_data=forged,
+        )
+
+
+def test_feature_snapshot_hash_is_launcher_payload_parity() -> None:
+    from research_contracts.canonical_hash import canonical_sha256
+
+    snapshots = (_snapshot(_production_context().folds[0].oos_start_ms),)
+    expected = canonical_sha256(
+        [
+            {
+                **snapshot.__dict__,
+                "features": [feature.__dict__ for feature in snapshot.features],
+            }
+            for snapshot in snapshots
+        ]
+    )
+    assert scorecard_module._feature_snapshot_hash(snapshots) == expected
+
+
+def test_canonical_json_rejects_nested_step_fold_and_gate_report_reordering() -> None:
+    canonical = canonical_r3_json_bytes(_complete_zero_scorecard()[-1])
+
+    reversed_steps = json.loads(canonical)
+    reversed_steps["section7_relaxation"]["oos"]["rays"][2]["steps"].reverse()
+    with pytest.raises(ValueError, match="step/fold order"):
+        canonical_r3_json_bytes(reversed_steps)
+
+    reversed_folds = json.loads(canonical)
+    reversed_folds["section7_relaxation"]["oos"]["rays"][0]["steps"][0][
+        "folds"
+    ].reverse()
+    with pytest.raises(ValueError, match="step/fold order"):
+        canonical_r3_json_bytes(reversed_folds)
+
+    reversed_reports = json.loads(canonical)
+    reversed_reports["section5_gate_audit"]["reports"].reverse()
+    with pytest.raises(ValueError, match="nested report/fold order"):
+        canonical_r3_json_bytes(reversed_reports)
+
+
+def test_default_scorecard_import_keeps_app_service_graph_lazy() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; import rob974_r3_scorecard; "
+                "assert 'app.services.rob974_h6b_materializer' not in sys.modules; "
+                "assert 'app.services.rob974_r3_h6a_bridge' not in sys.modules"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
