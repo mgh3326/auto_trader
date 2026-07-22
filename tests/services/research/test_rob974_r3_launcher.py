@@ -795,6 +795,60 @@ def test_complete_scorecard_result_is_research_eligible() -> None:
     }
 
 
+def test_result_payload_refuses_unusable_accounting_with_complete_verdict() -> None:
+    launcher = _launcher()
+    computed = SimpleNamespace(
+        engine_invocations=576,
+        accepted_decision_units=1,
+        basket_trades=1,
+        accounting=SimpleNamespace(
+            expected_total=12,
+            registered_total=12,
+            primary_attempts=12,
+            total_attempts=12,
+            retry_attempts=0,
+            status_counts=(
+                ("completed", 11),
+                ("rejected", 1),
+                ("crashed", 0),
+                ("timeout", 0),
+            ),
+            accounting_complete=True,
+            performance_usable=False,
+            trial_accounting_hash="9" * 64,
+        ),
+        scorecard={
+            "operational": {"status": "COMPLETE", "incomplete_reasons": []},
+            "campaign_verdict": {
+                "operational_status": "COMPLETE",
+                "research_decision": "NARROW",
+                "reason_codes": ["single_full_gate_pruned_boundary_winner"],
+            },
+        },
+        artifact_pair=SimpleNamespace(
+            semantic_sha256="a" * 64,
+            markdown_sha256="b" * 64,
+        ),
+    )
+    plan = SimpleNamespace(
+        full_campaign_hash="c" * 64,
+        campaign_run_id="rob974r3-authority-conflict-test",
+        exact_12_mapping_hash="d" * 64,
+    )
+
+    with pytest.raises(
+        launcher.LaunchRefused,
+        match="RESULT_ACCOUNTING_SCORECARD_AUTHORITY_CONFLICT",
+    ):
+        launcher._result_payload(
+            disposition="MATERIALIZED",
+            plan=plan,
+            corpus_evidence={"content_sha256": "e" * 64},
+            computed=computed,
+            output_root=Path("/tmp/rob974-r3-authority-conflict-test"),
+        )
+
+
 def test_launcher_wires_stable_m4_scorecard_and_markdown_seams() -> None:
     source = _SCRIPT.read_text(encoding="utf-8")
     for name in (
