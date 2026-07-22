@@ -5,8 +5,8 @@ from dataclasses import replace
 from hashlib import sha256
 
 import pytest
-
-from research.nautilus_scalping.rob974_r3_relaxation import (
+from rob974_r3_manifest import R3_RELAXATION_RAYS as MANIFEST_RELAXATION_RAYS
+from rob974_r3_relaxation import (
     BOOTSTRAP_RESAMPLES,
     R3_CONFIG_IDS,
     R3_FOLD_IDS,
@@ -95,6 +95,16 @@ def _trade(
             mae_bps=-10.0,
             gross_bps=gross_bps,
             exit_reason="TP",
+            volatility_percentile=50.0 if family == "S3" else None,
+            beta_a=None if family == "S3" else 1.0,
+            beta_b=None if family == "S3" else 1.0,
+            spread_mu=None if family == "S3" else 0.0,
+            spread_sigma=None if family == "S3" else 1.0,
+            observed_z=(
+                None
+                if family == "S3"
+                else (1.1 if direction == "short_a_long_b" else -1.1)
+            ),
         ),
     )
 
@@ -209,19 +219,52 @@ def _replace_ledger(
     )
 
 
+def _replace_event_gross(
+    ledgers: tuple[CellFoldLedger, ...],
+    *,
+    config_ids: tuple[str, ...],
+    event_index: int,
+    gross_by_fold: tuple[float, ...],
+) -> tuple[CellFoldLedger, ...]:
+    result = ledgers
+    for fold_index, fold_id in enumerate(R3_FOLD_IDS):
+        for config_id in config_ids:
+            row = next(
+                item
+                for item in result
+                if (item.config_id, item.fold_id) == (config_id, fold_id)
+            )
+            signal_ts = OOS_STARTS_MS[fold_index] + event_index * 60_000
+            changed = tuple(
+                replace(
+                    trade,
+                    execution=replace(
+                        trade.execution, gross_bps=gross_by_fold[fold_index]
+                    ),
+                )
+                if trade.event.signal_ts == signal_ts
+                else trade
+                for trade in row.trades
+            )
+            assert changed != row.trades
+            result = _replace_ledger(result, config_id, fold_id, trades=changed)
+    return result
+
+
 def test_frozen_ray_graph_is_exact_and_caller_cannot_supply_edges() -> None:
-    assert tuple((ray.ray_id, ray.cells) for ray in R3_RELAXATION_RAYS) == (
-        ("S3:S@M0", ("S3-R3-00", "S3-R3-02")),
-        ("S3:M@S0", ("S3-R3-01", "S3-R3-02")),
+    assert R3_RELAXATION_RAYS is MANIFEST_RELAXATION_RAYS
+    assert tuple((ray.ray_id, ray.config_ids) for ray in R3_RELAXATION_RAYS) == (
+        ("S3-S-M0", ("S3-R3-00", "S3-R3-02")),
+        ("S3-M-S0", ("S3-R3-01", "S3-R3-02")),
         (
-            "S4:z@d140",
+            "S4-Z-D140",
             ("S4-R3-00", "S4-R3-02", "S4-R3-05", "S4-R3-08"),
         ),
-        ("S4:z@d160", ("S4-R3-01", "S4-R3-04", "S4-R3-07")),
-        ("S4:z@d180", ("S4-R3-03", "S4-R3-06")),
-        ("S4:d@z1.0", ("S4-R3-01", "S4-R3-02")),
-        ("S4:d@z0.8", ("S4-R3-03", "S4-R3-04", "S4-R3-05")),
-        ("S4:d@z0.6", ("S4-R3-06", "S4-R3-07", "S4-R3-08")),
+        ("S4-Z-D160", ("S4-R3-01", "S4-R3-04", "S4-R3-07")),
+        ("S4-Z-D180", ("S4-R3-03", "S4-R3-06")),
+        ("S4-D-Z1.0", ("S4-R3-01", "S4-R3-02")),
+        ("S4-D-Z0.8", ("S4-R3-03", "S4-R3-04", "S4-R3-05")),
+        ("S4-D-Z0.6", ("S4-R3-06", "S4-R3-07", "S4-R3-08")),
     )
 
 
@@ -237,7 +280,10 @@ def test_production_shaped_e2e_separates_cohorts_and_monotone_evidence() -> None
     assert tuple(ray.ray_id for ray in report.oos.rays) == tuple(
         ray.ray_id for ray in R3_RELAXATION_RAYS
     )
-    d140 = next(ray for ray in report.oos.rays if ray.ray_id == "S4:z@d140")
+    d140 = next(ray for ray in report.oos.rays if ray.ray_id == "S4-Z-D140")
+    assert d140.all_pooled_deltas_nonpositive is True
+    assert d140.two_steps_seven_of_eight_negative is True
+    assert d140.all_new_layers_below_strict_core is True
     assert d140.monotone_edge_decay is True
     assert len(d140.steps) == 3
     first_fold = d140.steps[0].folds[0]
@@ -259,7 +305,7 @@ def test_production_shaped_e2e_separates_cohorts_and_monotone_evidence() -> None
 
     # One-step rays cannot independently satisfy the frozen two-adjacent-step
     # requirement, even when their sole edge is negative in all eight folds.
-    one_step = {"S3:S@M0", "S3:M@S0", "S4:z@d180", "S4:d@z1.0"}
+    one_step = {"S3-S-M0", "S3-M-S0", "S4-Z-D180", "S4-D-Z1.0"}
     assert all(
         ray.monotone_edge_decay is False
         for ray in report.oos.rays
@@ -335,7 +381,16 @@ def test_train_layers_are_diagnostic_and_never_emit_verdict_flag() -> None:
 
     assert report.train_diagnostic is not None
     assert report.train_diagnostic.phase == "TRAIN"
-    assert all(ray.monotone_edge_decay is None for ray in report.train_diagnostic.rays)
+    assert all(
+        (
+            ray.all_pooled_deltas_nonpositive,
+            ray.two_steps_seven_of_eight_negative,
+            ray.all_new_layers_below_strict_core,
+            ray.monotone_edge_decay,
+        )
+        == (None, None, None, None)
+        for ray in report.train_diagnostic.rays
+    )
     assert all(ray.monotone_edge_decay is not None for ray in report.oos.rays)
 
 
@@ -436,10 +491,133 @@ def test_core_economic_drift_is_operational_incomplete_not_a_new_layer() -> None
     assert report.operational_status == "INCOMPLETE"
     assert report.incomplete_reasons == ("core_trade_drift",)
     assert all(ray.monotone_edge_decay is None for ray in report.oos.rays)
-    affected = next(ray for ray in report.oos.rays if ray.ray_id == "S4:z@d140")
+    affected = next(ray for ray in report.oos.rays if ray.ray_id == "S4-Z-D140")
     assert affected.steps[0].operational_status == "INCOMPLETE"
     assert affected.steps[0].incomplete_reason == "core_trade_drift"
     assert affected.steps[0].folds[0].new_layer == ()
+
+
+@pytest.mark.parametrize(
+    ("config_id", "field", "value"),
+    (
+        ("S3-R3-02", "volatility_percentile", 51.0),
+        ("S4-R3-02", "beta_a", 1.1),
+        ("S4-R3-02", "beta_b", 1.1),
+        ("S4-R3-02", "spread_mu", 0.1),
+        ("S4-R3-02", "spread_sigma", 1.1),
+        ("S4-R3-02", "observed_z", -1.2),
+    ),
+)
+def test_family_entry_economics_are_part_of_core_bytes(
+    config_id: str, field: str, value: float
+) -> None:
+    ledgers = _ledgers()
+    row = next(
+        item
+        for item in ledgers
+        if (item.config_id, item.fold_id) == (config_id, "fold-00")
+    )
+    drifted = replace(
+        row.trades[0],
+        execution=replace(row.trades[0].execution, **{field: value}),
+    )
+    report = analyze_relaxation_campaign(
+        campaign_hash=CAMPAIGN_HASH,
+        oos_ledgers=_replace_ledger(
+            ledgers,
+            config_id,
+            "fold-00",
+            trades=(drifted, *row.trades[1:]),
+        ),
+    )
+    assert report.operational_status == "INCOMPLETE"
+    assert "core_trade_drift" in report.incomplete_reasons
+    assert all(
+        (
+            ray.all_pooled_deltas_nonpositive,
+            ray.two_steps_seven_of_eight_negative,
+            ray.all_new_layers_below_strict_core,
+            ray.monotone_edge_decay,
+        )
+        == (None, None, None, None)
+        for ray in report.oos.rays
+    )
+
+
+def test_condition_one_has_an_independent_multi_step_mutant() -> None:
+    mutated = _replace_event_gross(
+        _ledgers(),
+        config_ids=("S4-R3-06", "S4-R3-07", "S4-R3-08"),
+        event_index=12,
+        gross_by_fold=(200.0,) * 8,
+    )
+    report = analyze_relaxation_campaign(
+        campaign_hash=CAMPAIGN_HASH, oos_ledgers=mutated
+    )
+    ray = next(item for item in report.oos.rays if item.ray_id == "S4-Z-D140")
+    assert ray.all_pooled_deltas_nonpositive is False
+    assert ray.two_steps_seven_of_eight_negative is True
+    assert ray.all_new_layers_below_strict_core is False
+    assert ray.monotone_edge_decay is False
+
+
+def test_condition_two_has_an_independent_multi_step_mutant() -> None:
+    mutated = _replace_event_gross(
+        _ledgers(),
+        config_ids=tuple(f"S4-R3-{index:02d}" for index in range(1, 9)),
+        event_index=10,
+        gross_by_fold=(30.0, 30.0, -100.0, -100.0, -100.0, -100.0, -100.0, -100.0),
+    )
+    mutated = _replace_event_gross(
+        mutated,
+        config_ids=tuple(f"S4-R3-{index:02d}" for index in range(3, 9)),
+        event_index=11,
+        gross_by_fold=(30.0, 30.0, -100.0, -100.0, -100.0, -100.0, -100.0, -100.0),
+    )
+    report = analyze_relaxation_campaign(
+        campaign_hash=CAMPAIGN_HASH, oos_ledgers=mutated
+    )
+    ray = next(item for item in report.oos.rays if item.ray_id == "S4-Z-D140")
+    assert ray.all_pooled_deltas_nonpositive is True
+    assert ray.two_steps_seven_of_eight_negative is False
+    assert ray.all_new_layers_below_strict_core is True
+    assert ray.monotone_edge_decay is False
+
+
+def test_condition_three_strict_equality_has_an_independent_mutant() -> None:
+    baseline = _ledgers()
+    strict_means = tuple(
+        sum(
+            trade.execution.gross_bps
+            for trade in next(
+                row
+                for row in baseline
+                if (row.config_id, row.fold_id) == ("S4-R3-00", fold_id)
+            ).trades
+        )
+        / len(
+            next(
+                row
+                for row in baseline
+                if (row.config_id, row.fold_id) == ("S4-R3-00", fold_id)
+            ).trades
+        )
+        for fold_id in R3_FOLD_IDS
+    )
+    mutated = _replace_event_gross(
+        baseline,
+        config_ids=tuple(f"S4-R3-{index:02d}" for index in range(1, 9)),
+        event_index=10,
+        gross_by_fold=strict_means,
+    )
+    report = analyze_relaxation_campaign(
+        campaign_hash=CAMPAIGN_HASH, oos_ledgers=mutated
+    )
+    ray = next(item for item in report.oos.rays if item.ray_id == "S4-Z-D140")
+    assert ray.all_pooled_deltas_nonpositive is True
+    assert ray.two_steps_seven_of_eight_negative is True
+    assert ray.all_new_layers_below_strict_core is False
+    assert ray.monotone_edge_decay is False
 
 
 def test_core_byte_equivalence_distinguishes_positive_and_negative_zero() -> None:
@@ -536,7 +714,7 @@ def test_only_both_sample_qualified_folds_enter_paired_statistics() -> None:
         campaign_hash=CAMPAIGN_HASH,
         oos_ledgers=ledgers,
     )
-    step = next(ray for ray in report.oos.rays if ray.ray_id == "S4:z@d140").steps[0]
+    step = next(ray for ray in report.oos.rays if ray.ray_id == "S4-Z-D140").steps[0]
     assert step.comparable_fold_ids == tuple(
         f"fold-{index:02d}" for index in range(2, 8)
     )
@@ -569,7 +747,7 @@ def test_ties_are_excluded_from_one_sided_less_sign_test() -> None:
         campaign_hash=CAMPAIGN_HASH,
         oos_ledgers=ledgers,
     )
-    step = next(ray for ray in report.oos.rays if ray.ray_id == "S4:z@d140").steps[0]
+    step = next(ray for ray in report.oos.rays if ray.ray_id == "S4-Z-D140").steps[0]
     assert step.sign_test.negative_count == 6
     assert step.sign_test.tie_count == 2
     assert step.sign_test.effective_n == 6
@@ -586,13 +764,13 @@ def test_bootstrap_seed_and_ci_are_canonical_and_deterministic() -> None:
         campaign_hash=CAMPAIGN_HASH,
         oos_ledgers=_ledgers(),
     )
-    step = next(ray for ray in first.oos.rays if ray.ray_id == "S4:z@d140").steps[0]
-    repeated = next(ray for ray in second.oos.rays if ray.ray_id == "S4:z@d140").steps[
+    step = next(ray for ray in first.oos.rays if ray.ray_id == "S4-Z-D140").steps[0]
+    repeated = next(ray for ray in second.oos.rays if ray.ray_id == "S4-Z-D140").steps[
         0
     ]
     seed_material = (
         "rob974.r3.relaxation.bootstrap.v1\x00"
-        f"{CAMPAIGN_HASH}\x00S4:z@d140\x00S4-R3-00->S4-R3-02"
+        f"{CAMPAIGN_HASH}\x00S4-Z-D140\x00S4-R3-00->S4-R3-02"
     ).encode()
     assert step.bootstrap.seed_sha256 == sha256(seed_material).hexdigest()
     assert step.bootstrap == repeated.bootstrap
