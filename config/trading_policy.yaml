@@ -61,7 +61,7 @@ thresholds:
     unit: count
     semantics: max symbols per theme; theme overlap is a disclosure item, not an auto-reject
       — strong expected-value candidates may be proposed with overlap stated in thesis
-      (operator risk direction 2026-07-22; concentration backstop = sector_concentration cap)
+      (operator risk direction 2026-07-22; concentration backstop = portfolio.sector_cluster_cap_pct)
   order.day_expiry_kst:
     lanes: [buy, sell]
     value: "20:00"
