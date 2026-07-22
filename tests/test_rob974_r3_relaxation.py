@@ -876,7 +876,7 @@ def test_production_analyzer_requires_the_exact_plan_issued_context() -> None:
         replace(EVIDENCE_CONTEXT, campaign_identity_sha256="f" * 64)
 
 
-def test_plan_blocker_is_global_and_suppresses_oos_verdict_flags() -> None:
+def test_ready_plan_promotes_complete_oos_evidence_and_verdict_flags() -> None:
     report = _analyze_relaxation_campaign(
         evidence_context=EVIDENCE_CONTEXT,
         oos_evidence=PhaseLedgerEvidence("OOS", _ledgers(), ()),
@@ -886,21 +886,22 @@ def test_plan_blocker_is_global_and_suppresses_oos_verdict_flags() -> None:
     assert report.campaign_run_id == EVIDENCE_CONTEXT.campaign_run_id
     assert report.exact_12_mapping_hash == EVIDENCE_CONTEXT.exact_12_mapping_hash
     assert report.ordered_mapping == EVIDENCE_CONTEXT.ordered_mapping
-    assert report.plan_operational_status == "INCOMPLETE"
-    assert report.operational_status == "INCOMPLETE"
-    assert report.evidence_promoted is False
-    assert report.incomplete_reasons == (
-        "PLAN:INCOMPLETE:h2_s4_observed_z_floor_blocks_preregistered_cells",
-    )
+    assert report.plan_operational_status == "COMPLETE"
+    assert report.plan_operational_blocker_reason is None
+    assert report.operational_status == "COMPLETE"
+    assert report.evidence_promoted is True
+    assert report.incomplete_reasons == ()
     assert report.oos.statistics_computed is True
     assert all(
-        (
-            ray.all_pooled_deltas_nonpositive,
-            ray.two_steps_seven_of_eight_negative,
-            ray.all_new_layers_below_strict_core,
-            ray.monotone_edge_decay,
+        all(
+            value is not None
+            for value in (
+                ray.all_pooled_deltas_nonpositive,
+                ray.two_steps_seven_of_eight_negative,
+                ray.all_new_layers_below_strict_core,
+                ray.monotone_edge_decay,
+            )
         )
-        == (None, None, None, None)
         for ray in report.oos.rays
     )
 

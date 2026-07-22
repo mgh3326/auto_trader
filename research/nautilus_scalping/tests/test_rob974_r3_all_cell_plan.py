@@ -13,6 +13,7 @@ import rob974_r3_postaudit as postaudit
 from rob974_h2_dtos import Z_ENTRY_ABS_MIN
 from rob974_h4_contracts import SCENARIOS, exact_h4_folds
 from rob974_h4_h6a_adapter import build_production_h4_plan
+from rob974_r3_h4_s4_adapter import R3_ENGINE_SOURCE_FILES
 from rob974_r3_shape import R3_CANONICAL_ROW_ORDER, compute_exact_12_mapping_hash
 
 
@@ -95,14 +96,23 @@ def test_production_plan_issues_real_exact_12_identity_over_eight_real_folds() -
     assert payload["execution"]["oos_threshold_feedback"] is False
     assert payload["execution"]["candidate_batches"] == 12 * 8 * 2
     assert payload["execution"]["engine_invocations"] == 12 * 8 * 2 * 3
-    assert payload["execution"]["operational_status"] == "INCOMPLETE"
-    assert payload["execution"]["production_execution_enabled"] is False
-    assert payload["execution"]["blocker_reason"] == (
-        "h2_s4_observed_z_floor_blocks_preregistered_cells"
+    assert payload["production_state"] == "identity_ready_execution_enabled"
+    assert payload["execution"]["operational_status"] == "COMPLETE"
+    assert payload["execution"]["production_execution_enabled"] is True
+    assert payload["execution"]["blocker_reason"] is None
+    assert payload["execution"]["affected_config_ids"] == []
+    assert payload["execution"]["frozen_r2_h2_observed_z_abs_min"] == 1.0
+    assert payload["execution"]["r3_observed_z_abs_min"] == 0.60
+    assert payload["execution"]["r3_s4_execution_lineage"] == (
+        "rob974.r3.s4.signed_observed_z.v1"
     )
-    assert payload["execution"]["affected_config_ids"] == [
-        f"S4-R3-{index:02d}" for index in range(3, 9)
-    ]
+
+    assert plan.source_pins.engine_source_sha256 == (
+        plan_module.source_bundle_sha256(R3_ENGINE_SOURCE_FILES)
+    )
+    assert plan.source_pins.engine_source_sha256 != (
+        build_production_h4_plan().source_pins.engine_source_sha256
+    )
 
     assert build_production_h4_plan().full_campaign_hash == (
         "2c47864c7ab661f16be6c414a1140944ec36832bb268e86183555b56c6f85f53"
@@ -125,6 +135,7 @@ def test_runner_source_pin_covers_every_wave_one_production_boundary() -> None:
         "research/nautilus_scalping/rob974_r3_relaxation.py",
         "research/nautilus_scalping/rob974_r3_relaxation_h2_adapter.py",
         "research/nautilus_scalping/rob974_r3_evidence_context.py",
+        "research/nautilus_scalping/rob974_r3_h4_s4_adapter.py",
         "research/nautilus_scalping/rob974_r3_plan.py",
         "research/nautilus_scalping/rob974_r3_postaudit.py",
         "app/services/rob974_r3_h6a_bridge.py",
@@ -275,25 +286,36 @@ def test_nonproduction_topology_rejects_shared_buffer_and_engine_state() -> None
         )
 
 
-def test_production_execution_fails_globally_before_first_callback() -> None:
+def test_production_execution_reuses_exact_all_cell_topology() -> None:
     plan = plan_module.build_production_r3_plan()
-    callbacks: list[str] = []
+    candidate_calls: list[tuple[str, str, str]] = []
+    engine_calls: list[plan_module.R3InvocationKey] = []
 
     def candidates(phase, config, fold):
-        callbacks.append("candidate")
-        raise AssertionError("production guard called candidate factory")
-
-    def engine(key):
-        callbacks.append("engine")
-        raise AssertionError("production guard called engine factory")
-
-    with pytest.raises(plan_module.R3ProductionExecutionBlocked):
-        plan_module.run_r3_all_cell_campaign(
-            plan,
-            candidate_factory=candidates,
-            engine_factory=engine,
+        candidate_calls.append((phase, config.config_id, fold.fold_id))
+        return plan_module.R3CandidateBuffer(
+            phase=phase,
+            row_id=config.config_id,
+            fold_id=fold.fold_id,
+            candidates=((phase, config.config_id, fold.fold_id),),
         )
-    assert callbacks == []
+
+    def fresh_engine(key):
+        engine_calls.append(key)
+        return plan_module.R3FreshEngine(
+            invocation=key,
+            state_token=object(),
+            execute=lambda batch, key=key: (key, batch),
+        )
+
+    results = plan_module.run_r3_all_cell_campaign(
+        plan,
+        candidate_factory=candidates,
+        engine_factory=fresh_engine,
+    )
+    assert len(candidate_calls) == 12 * 8 * 2
+    assert len(engine_calls) == len(results) == 12 * 8 * 2 * 3
+    assert tuple(result.invocation for result in results) == tuple(engine_calls)
 
 
 def test_low_z_r3_candidate_is_blocked_before_frozen_h2_adapter(

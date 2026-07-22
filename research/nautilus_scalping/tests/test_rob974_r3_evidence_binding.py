@@ -79,7 +79,8 @@ def test_plan_issued_context_seals_real_campaign_mapping_folds_and_phases() -> N
     assert context.ordered_mapping == plan.ordered_mapping
     assert context.folds == plan.folds
     assert context.phases == ("TRAIN", "OOS")
-    assert context.operational_status == "INCOMPLETE"
+    assert context.operational_status == "COMPLETE"
+    assert context.operational_blocker_reason is None
     assert context.operational_blocker_reason == plan.operational_blocker_reason
 
     with pytest.raises(R3ProductionEvidenceContextError, match="campaign identity"):
@@ -96,7 +97,7 @@ def test_plan_issued_context_seals_real_campaign_mapping_folds_and_phases() -> N
         )
 
 
-def test_exact_24_report_192_cell_envelope_stays_incomplete_until_plan_ready() -> None:
+def test_exact_24_report_192_cell_envelope_is_promoted_by_ready_plan() -> None:
     context = _context()
     reports = _reports(context)
     envelope = build_production_gate_campaign_evidence(
@@ -114,9 +115,9 @@ def test_exact_24_report_192_cell_envelope_stays_incomplete_until_plan_ready() -
     assert envelope.evidence_cell_order == expected_keys
     assert len(envelope.evidence_cell_order) == 12 * 2 * 8 == 192
     assert envelope.coverage_complete is True
-    assert envelope.operational_status == "INCOMPLETE"
-    assert envelope.evidence_promoted is False
-    assert envelope.incomplete_reason == context.operational_blocker_reason
+    assert envelope.operational_status == "COMPLETE"
+    assert envelope.evidence_promoted is True
+    assert envelope.incomplete_reason is None
     assert envelope.campaign_identity_sha256 == context.campaign_identity_sha256
     assert envelope.exact_12_mapping_hash == context.exact_12_mapping_hash
     assert envelope.ordered_mapping == context.ordered_mapping
