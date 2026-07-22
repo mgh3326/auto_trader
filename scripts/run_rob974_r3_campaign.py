@@ -727,6 +727,7 @@ def _load_m4_api() -> SimpleNamespace:
         verify_r3_markdown_semantic_binding,
     )
     from rob974_r3_scorecard import (
+        R3_SCORECARD_SCHEMA_VERSION,
         R3CellOOSInput,
         R3FoldOOSInput,
         build_r3_artifact_pair,
@@ -735,12 +736,15 @@ def _load_m4_api() -> SimpleNamespace:
         hash_r3_canonical_bytes,
         issue_r3_all_cell_oos_ledger,
         issue_r3_fold_scenario_attribution,
+        issue_r3_scorecard_accounting,
+        issue_r3_scorecard_relaxation_evidence,
         verify_r3_artifact_pair,
     )
 
-    if "rob974.r3.h5.scorecard.v1" != "rob974.r3.h5.scorecard.v1":
-        raise AssertionError("unreachable schema literal guard")
+    if R3_SCORECARD_SCHEMA_VERSION != "rob974.r3.h5.scorecard.v1":
+        raise LaunchRefused("M4_SCORECARD_SCHEMA_VERSION_DRIFT")
     return SimpleNamespace(
+        R3_SCORECARD_SCHEMA_VERSION=R3_SCORECARD_SCHEMA_VERSION,
         R3CellOOSInput=R3CellOOSInput,
         R3FoldOOSInput=R3FoldOOSInput,
         build_r3_artifact_pair=build_r3_artifact_pair,
@@ -749,6 +753,8 @@ def _load_m4_api() -> SimpleNamespace:
         hash_r3_canonical_bytes=hash_r3_canonical_bytes,
         issue_r3_all_cell_oos_ledger=issue_r3_all_cell_oos_ledger,
         issue_r3_fold_scenario_attribution=issue_r3_fold_scenario_attribution,
+        issue_r3_scorecard_accounting=issue_r3_scorecard_accounting,
+        issue_r3_scorecard_relaxation_evidence=(issue_r3_scorecard_relaxation_evidence),
         verify_r3_artifact_pair=verify_r3_artifact_pair,
         render_r3_markdown=render_r3_markdown,
         verify_r3_markdown_semantic_binding=verify_r3_markdown_semantic_binding,
@@ -1478,6 +1484,25 @@ def _build_attempts(
     return tuple(attempts)
 
 
+def _attempt_accounting_rows(attempts: tuple[object, ...]) -> tuple[object, ...]:
+    """Project the exact persistence attempts into the shared accounting DTO."""
+
+    from rob974_h6a_accounting import AttemptAccountingRow
+
+    return tuple(
+        AttemptAccountingRow(
+            row_id=item.row_id,
+            experiment_id=item.experiment_id,
+            retry_index=item.retry_index,
+            status=item.status,
+            reason_code=item.reason_code,
+            fold_evidence_hash=item.fold_evidence_hash,
+            run_identity=item.run_identity,
+        )
+        for item in attempts
+    )
+
+
 class _M4ArtifactPort:
     """Narrow pure adapter accepted by the frozen directory-atomic primitive."""
 
@@ -1524,7 +1549,6 @@ def _compute_actual_campaign(*, plan: object, input_data: object) -> ComputedCam
     """Precompute all 12x2x8x3 evidence before opening a write transaction."""
 
     import rob974_h4_runner as h4_runner
-    from rob974_h6a_accounting import AttemptAccountingRow
     from rob974_r3_accounting import build_exact_12_accounting
     from rob974_r3_evidence_context import issue_r3_production_evidence_context
     from rob974_r3_gate_adapter import (
@@ -1534,7 +1558,6 @@ def _compute_actual_campaign(*, plan: object, input_data: object) -> ComputedCam
         build_r3_s4_fold_source,
     )
     from rob974_r3_manifest import R3S3Config, R3S4Config
-    from rob974_r3_relaxation import analyze_relaxation_campaign
     from rob974_r3_relaxation_h2_adapter import normalize_r3_phase_ledgers
 
     from app.services.rob974_h6b_materializer import _actual_execution_surface
@@ -1679,7 +1702,7 @@ def _compute_actual_campaign(*, plan: object, input_data: object) -> ComputedCam
             for source in primary_sources[("OOS", config.config_id)]
         ),
     )
-    relaxation_evidence = analyze_relaxation_campaign(
+    relaxation_evidence = m4.issue_r3_scorecard_relaxation_evidence(
         evidence_context=evidence_context,
         oos_evidence=oos_evidence,
         train_evidence=train_evidence,
@@ -1708,26 +1731,23 @@ def _compute_actual_campaign(*, plan: object, input_data: object) -> ComputedCam
         s4_specs=registration_specs[1],
         row_id_to_experiment_id=mapping,
     )
+    attempt_accounting_rows = _attempt_accounting_rows(attempts)
     accounting = build_exact_12_accounting(
         campaign_run_id=plan.campaign_run_id,
         ordered_mapping=plan.ordered_mapping,
         registered_total=12,
-        attempts=tuple(
-            AttemptAccountingRow(
-                row_id=item.row_id,
-                experiment_id=item.experiment_id,
-                retry_index=item.retry_index,
-                status=item.status,
-                reason_code=item.reason_code,
-                fold_evidence_hash=item.fold_evidence_hash,
-                run_identity=item.run_identity,
-            )
-            for item in attempts
-        ),
+        attempts=attempt_accounting_rows,
     )
+    scorecard_accounting = m4.issue_r3_scorecard_accounting(
+        evidence_context=evidence_context,
+        registered_total=12,
+        attempts=attempt_accounting_rows,
+    )
+    if scorecard_accounting.report != accounting:
+        raise LaunchRefused("M4_ISSUED_ACCOUNTING_REPORT_DRIFT")
     scorecard = m4.build_r3_scorecard(
         evidence_context=evidence_context,
-        accounting=accounting,
+        accounting=scorecard_accounting,
         oos_ledger=oos_ledger,
         gate_evidence=gate_evidence,
         relaxation_evidence=relaxation_evidence,

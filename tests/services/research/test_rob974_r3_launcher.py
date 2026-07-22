@@ -566,6 +566,10 @@ def test_terminal_incomplete_is_rejected_and_completed_mutation_fails_replay() -
     assert attempts[0].status == "rejected"
     assert attempts[0].reason_code == "rejected:data_gap_in_position"
     assert all(item.status == "completed" for item in attempts[1:])
+    accounting_rows = launcher._attempt_accounting_rows(attempts)
+    assert accounting_rows[0].status == "rejected"
+    assert accounting_rows[0].reason_code == "rejected:data_gap_in_position"
+    assert tuple(row.status for row in accounting_rows[1:]) == ("completed",) * 11
 
     specs = launcher._registration_specs(plan)
     contract = issue_r3_materialization_contract(
@@ -624,6 +628,8 @@ def test_launcher_wires_stable_m4_scorecard_and_markdown_seams() -> None:
         "verify_r3_artifact_pair",
         "issue_r3_fold_scenario_attribution",
         "issue_r3_all_cell_oos_ledger",
+        "issue_r3_scorecard_accounting",
+        "issue_r3_scorecard_relaxation_evidence",
         "R3CellOOSInput",
         "R3FoldOOSInput",
         "render_r3_markdown",
@@ -631,6 +637,9 @@ def test_launcher_wires_stable_m4_scorecard_and_markdown_seams() -> None:
     ):
         assert name in source
     assert "rob974.r3.h5.scorecard.v1" in source
+    assert "accounting=scorecard_accounting" in source
+    assert "relaxation_evidence = m4.issue_r3_scorecard_relaxation_evidence" in source
+    assert "from rob974_r3_relaxation import analyze_relaxation_campaign" not in source
 
 
 def test_read_only_engine_enforces_connection_default_read_only(
@@ -1210,9 +1219,13 @@ def test_launcher_calls_actual_m4_api_when_integrated() -> None:
         seal_s3_engine_output,
     )
     from rob974_h4_contracts import exact_h4_folds
+    from rob974_h6a_accounting import AttemptAccountingRow
     from rob974_r3_evidence_context import issue_r3_production_evidence_context
     from rob974_r3_manifest import get_r3_config
+    from rob974_r3_relaxation import CellFoldLedger, PhaseLedgerEvidence
     from rob974_r3_relaxation_h2_adapter import R3H2CellFoldInput
+
+    from research_contracts.canonical_hash import canonical_sha256
 
     api = launcher._load_m4_api()
     plan = launcher._build_candidate_production_plan()
@@ -1251,6 +1264,51 @@ def test_launcher_calls_actual_m4_api_when_integrated() -> None:
     fold_input = api.R3FoldOOSInput(scenario_attributions=receipts)
     assert fold_input.primary.source is source
     assert context.campaign_identity_sha256 == plan.full_campaign_hash
+
+    attempt_rows = tuple(
+        AttemptAccountingRow(
+            row_id=row_id,
+            experiment_id=experiment_id,
+            retry_index=0,
+            status="completed",
+            reason_code=None,
+            fold_evidence_hash=canonical_sha256([row_id, "fold-evidence"]),
+            run_identity=canonical_sha256([row_id, "run-identity"]),
+        )
+        for row_id, experiment_id in plan.ordered_mapping
+    )
+    accounting = api.issue_r3_scorecard_accounting(
+        evidence_context=context,
+        registered_total=12,
+        attempts=attempt_rows,
+    )
+    assert accounting.attempts == attempt_rows
+    assert accounting.report.accounting_complete is True
+    assert accounting.report.performance_usable is True
+
+    def empty_phase(phase: str) -> object:
+        return PhaseLedgerEvidence(
+            phase,
+            tuple(
+                CellFoldLedger(config.config_id, item.fold_id, 0, ())
+                for config in plan.manifest_rows
+                for item in plan.folds
+            ),
+            (),
+        )
+
+    oos_evidence = empty_phase("OOS")
+    train_evidence = empty_phase("TRAIN")
+    relaxation = api.issue_r3_scorecard_relaxation_evidence(
+        evidence_context=context,
+        oos_evidence=oos_evidence,
+        train_evidence=train_evidence,
+    )
+    assert relaxation.oos_evidence is oos_evidence
+    assert relaxation.train_evidence is train_evidence
+    assert relaxation.analysis.schema_version == "rob974.r3.relaxation.v1"
+    assert relaxation.analysis.operational_status == "COMPLETE"
+    assert api.R3_SCORECARD_SCHEMA_VERSION == "rob974.r3.h5.scorecard.v1"
 
 
 def test_launcher_has_no_broker_order_or_fill_import_surface() -> None:
