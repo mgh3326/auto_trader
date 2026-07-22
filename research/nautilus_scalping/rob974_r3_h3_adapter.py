@@ -17,12 +17,14 @@ import rob974_h3_s3 as s3
 import rob974_h3_s4 as s4
 from rob974_features import MINUTE_MS
 from rob974_h2_dtos import Z_ENTRY_ABS_MIN, S4PairSignalIntent
+from rob974_h2_s4_engine import MAX_HOLD_BARS as FROZEN_S4_MAX_HOLD_BARS
 from rob974_r3_manifest import (
     R3S3Config,
     R3S4Config,
     assert_registered_r3_config,
     get_r3_config,
 )
+from rob974_r3_s4_dtos import R3S4PairSignalIntent
 
 __all__ = [
     "R3H2ExecutionSeamBlocked",
@@ -30,6 +32,7 @@ __all__ = [
     "R3S4GateAtoms",
     "R3S4GateObservation",
     "adapt_r3_s4_candidate_for_h2",
+    "adapt_r3_s4_candidate_for_execution",
     "evaluate_r3_s3_atoms",
     "evaluate_r3_s3_gates",
     "evaluate_r3_s4_atoms",
@@ -497,3 +500,54 @@ def adapt_r3_s4_candidate_for_h2(
             "candidate was not adapted"
         )
     return h3_h2_adapter.adapt_s4_candidate(candidate, fold_id=fold_id)
+
+
+def adapt_r3_s4_candidate_for_execution(
+    candidate: s4.S4Candidate, *, fold_id: str
+) -> R3S4PairSignalIntent:
+    """Adapt an accepted H3 candidate into the exact R3 execution lineage.
+
+    The signed observed z and unsigned registered-cell threshold remain
+    separate fields.  Neither value is clamped, substituted, or reconstructed.
+    CP3's production-plan INCOMPLETE blocker remains independent of this pure
+    seam until the captain completes adversarial verification.
+    """
+
+    if type(candidate) is not s4.S4Candidate:
+        raise TypeError("candidate must be exact H3 S4Candidate")
+    if type(fold_id) is not str or not fold_id:
+        raise TypeError("fold_id must be a non-empty exact built-in str")
+    config = get_r3_config(candidate.config_id)
+    if type(config) is not R3S4Config:
+        raise R3H2ExecutionSeamBlocked(
+            "R3 S4 execution seam requires a frozen R3 S4 config"
+        )
+    if candidate.max_hold_4h_bars != FROZEN_S4_MAX_HOLD_BARS:
+        raise R3H2ExecutionSeamBlocked(
+            "R3 H3 maximum hold differs from the frozen S4 walk authority"
+        )
+    if candidate.volatility_percentile is not None or (
+        candidate.volatility_percentile_provenance != "not_defined_for_s4"
+    ):
+        raise R3H2ExecutionSeamBlocked(
+            "R3 S4 volatility-null provenance differs from the frozen authority"
+        )
+    return R3S4PairSignalIntent(
+        pair=(candidate.symbol_a, candidate.symbol_b),
+        signal_ts=candidate.decision_ts,
+        side_a=candidate.side_a,
+        side_b=candidate.side_b,
+        weight_a=candidate.weight_a,
+        weight_b=candidate.weight_b,
+        beta_a=candidate.beta_a,
+        beta_b=candidate.beta_b,
+        mu=candidate.mu,
+        sigma=candidate.effective_mad_scale,
+        observed_z=candidate.observed_z,
+        z_threshold=config.z_entry,
+        gross_notional=candidate.gross_notional_usd,
+        entry_sl_distance=candidate.d_SL,
+        entry_tp_distance=candidate.d_TP,
+        config_id=candidate.config_id,
+        fold_id=fold_id,
+    )
