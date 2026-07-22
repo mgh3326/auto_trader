@@ -49,12 +49,53 @@ def test_default_and_plan_are_zero_effect_paths(
     assert payload["refreeze"]["status"] == "CP8_PENDING_FINAL_REFREEZE"
     assert payload["identity"]["attempts"] == 12
     assert payload["identity"]["folds"] == 8
+    assert payload["identity"]["final_hashes"] == "PENDING_CP8"
     assert payload["target"]["database"] == "rob974_r3_db"
     assert payload["target"]["output_root_template"].endswith(
         "rob974-r3-<full-hash-prefix>-v1"
     )
     assert all(value == 0 for value in payload["effects"].values())
     assert stderr.getvalue() == ""
+
+
+def test_refrozen_plan_exposes_current_literal_identity_pins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launcher = _launcher()
+    pins = replace(
+        launcher.FINAL_REFREEZE,
+        status="CP8_REFROZEN",
+        approved_integration_head_sha="1" * 40,
+        approved_integration_tree_sha="2" * 40,
+        full_campaign_hash="3" * 64,
+        campaign_run_id="rob974r3-refrozen-test",
+        exact_12_mapping_hash="4" * 64,
+        feature_source_sha256="5" * 64,
+        engine_source_sha256="6" * 64,
+        runner_source_sha256="7" * 64,
+        pbo_implementation_sha256="8" * 64,
+    )
+    monkeypatch.setattr(launcher, "FINAL_REFREEZE", pins)
+
+    stdout = io.StringIO()
+    assert (
+        launcher.run_cli(("--plan",), stdout=stdout, stderr=io.StringIO(), environ={})
+        == 0
+    )
+    payload = json.loads(stdout.getvalue())
+    assert payload["refreeze"]["status"] == "CP8_REFROZEN"
+    assert payload["identity"]["final_hashes"] == {
+        "full_campaign_hash": "3" * 64,
+        "campaign_run_id": "rob974r3-refrozen-test",
+        "exact_12_mapping_hash": "4" * 64,
+        "source_pins": {
+            "feature_source_sha256": "5" * 64,
+            "engine_source_sha256": "6" * 64,
+            "runner_source_sha256": "7" * 64,
+            "pbo_implementation_sha256": "8" * 64,
+        },
+    }
+    assert all(value == 0 for value in payload["effects"].values())
 
 
 def test_launcher_approved_database_literal_is_r3_only() -> None:
@@ -616,6 +657,84 @@ def test_output_root_is_canonical_full_hash_prefix_v1() -> None:
     assert launcher._output_root_for(full_hash) == Path(
         "/Users/mgh3326/work/herdr-artifacts/rob974-r3-43f4ce12-v1"
     )
+
+
+@pytest.mark.parametrize(
+    ("disposition", "commit_confirmed"),
+    [("MATERIALIZED", True), ("REPLAY_NOOP", False)],
+)
+def test_incomplete_result_payload_is_machine_readable_without_changing_exit_zero(
+    disposition: str,
+    commit_confirmed: bool,
+) -> None:
+    launcher = _launcher()
+    incomplete_reasons = [
+        "accounting:performance_unusable",
+        "oos_ledger:OOS:S3:S3-R3-00:fold-00:data_gap_in_position",
+    ]
+    computed = SimpleNamespace(
+        engine_invocations=576,
+        accepted_decision_units=1,
+        basket_trades=0,
+        accounting=SimpleNamespace(
+            expected_total=12,
+            registered_total=12,
+            primary_attempts=12,
+            total_attempts=12,
+            retry_attempts=0,
+            status_counts=(
+                ("completed", 11),
+                ("rejected", 1),
+                ("crashed", 0),
+                ("timeout", 0),
+            ),
+            accounting_complete=True,
+            performance_usable=False,
+            trial_accounting_hash="9" * 64,
+        ),
+        scorecard={
+            "operational": {
+                "status": "INCOMPLETE",
+                "incomplete_reasons": incomplete_reasons,
+            },
+            "campaign_verdict": {
+                "operational_status": "INCOMPLETE",
+                "research_decision": None,
+                "reason_codes": ["operational_evidence_incomplete"],
+            },
+        },
+        artifact_pair=SimpleNamespace(
+            semantic_sha256="a" * 64,
+            markdown_sha256="b" * 64,
+        ),
+    )
+    plan = SimpleNamespace(
+        full_campaign_hash="c" * 64,
+        campaign_run_id="rob974r3-incomplete-test",
+        exact_12_mapping_hash="d" * 64,
+    )
+    payload = launcher._result_payload(
+        disposition=disposition,
+        plan=plan,
+        corpus_evidence={"content_sha256": "e" * 64},
+        computed=computed,
+        output_root=Path("/tmp/rob974-r3-incomplete-test"),
+    )
+    stream = io.StringIO()
+    launcher._write_json(stream, payload)
+    decoded = json.loads(stream.getvalue())
+
+    assert decoded["exit_code"] == 0
+    assert decoded["disposition"] == disposition
+    assert decoded["commit_confirmed"] is commit_confirmed
+    assert decoded["accounting"]["performance_usable"] is False
+    assert decoded["accounting"]["status_counts"]["rejected"] == 1
+    assert decoded["operational"] == {
+        "status": "INCOMPLETE",
+        "incomplete_reasons": incomplete_reasons,
+    }
+    assert decoded["campaign_verdict"]["operational_status"] == "INCOMPLETE"
+    assert decoded["campaign_verdict"]["research_decision"] is None
 
 
 def test_launcher_wires_stable_m4_scorecard_and_markdown_seams() -> None:

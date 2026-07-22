@@ -303,6 +303,23 @@ def _write_json(stream: TextIOBase, payload: Mapping[str, object]) -> None:
     )
 
 
+def _dry_run_final_hashes() -> str | dict[str, object]:
+    pins = FINAL_REFREEZE
+    if pins.status != "CP8_REFROZEN":
+        return "PENDING_CP8"
+    return {
+        "full_campaign_hash": pins.full_campaign_hash,
+        "campaign_run_id": pins.campaign_run_id,
+        "exact_12_mapping_hash": pins.exact_12_mapping_hash,
+        "source_pins": {
+            "feature_source_sha256": pins.feature_source_sha256,
+            "engine_source_sha256": pins.engine_source_sha256,
+            "runner_source_sha256": pins.runner_source_sha256,
+            "pbo_implementation_sha256": pins.pbo_implementation_sha256,
+        },
+    }
+
+
 def _dry_run_payload() -> dict[str, object]:
     return {
         "schema_version": "rob974_r3_launcher_plan.v1",
@@ -318,7 +335,7 @@ def _dry_run_payload() -> dict[str, object]:
             "family_counts": {"S3": 3, "S4": 9},
             "folds": 8,
             "phases": ["TRAIN", "OOS"],
-            "final_hashes": "PENDING_CP8",
+            "final_hashes": _dry_run_final_hashes(),
         },
         "target": {
             "database": "rob974_r3_db",
@@ -2348,6 +2365,50 @@ async def _postcommit_read_only_audit(
         ) from exc
 
 
+def _scorecard_result_sections(
+    scorecard: Mapping[str, object],
+) -> tuple[dict[str, object], dict[str, object]]:
+    operational = scorecard.get("operational")
+    campaign_verdict = scorecard.get("campaign_verdict")
+    if not isinstance(operational, Mapping) or not isinstance(
+        campaign_verdict, Mapping
+    ):
+        raise LaunchRefused("SCORECARD_RESULT_SECTIONS_MISSING")
+    status = operational.get("status")
+    incomplete_reasons = operational.get("incomplete_reasons")
+    verdict_status = campaign_verdict.get("operational_status")
+    research_decision = campaign_verdict.get("research_decision")
+    reason_codes = campaign_verdict.get("reason_codes")
+    if (
+        status not in ("COMPLETE", "INCOMPLETE")
+        or verdict_status != status
+        or type(incomplete_reasons) is not list
+        or any(type(item) is not str for item in incomplete_reasons)
+        or type(reason_codes) is not list
+        or any(type(item) is not str for item in reason_codes)
+        or (
+            status == "INCOMPLETE"
+            and (not incomplete_reasons or research_decision is not None)
+        )
+        or (
+            status == "COMPLETE"
+            and research_decision not in ("CONTINUE", "NARROW", "TERMINATE")
+        )
+    ):
+        raise LaunchRefused("SCORECARD_RESULT_SECTIONS_MALFORMED")
+    return (
+        {
+            "status": status,
+            "incomplete_reasons": list(incomplete_reasons),
+        },
+        {
+            "operational_status": verdict_status,
+            "research_decision": research_decision,
+            "reason_codes": list(reason_codes),
+        },
+    )
+
+
 def _result_payload(
     *,
     disposition: str,
@@ -2356,6 +2417,7 @@ def _result_payload(
     computed: ComputedCampaign,
     output_root: Path,
 ) -> dict[str, object]:
+    operational, campaign_verdict = _scorecard_result_sections(computed.scorecard)
     return {
         "schema_version": "rob974_r3_launcher_result.v1",
         "exit_code": 0,
@@ -2387,8 +2449,11 @@ def _result_payload(
             "retry_attempts": computed.accounting.retry_attempts,
             "status_counts": dict(computed.accounting.status_counts),
             "accounting_complete": computed.accounting.accounting_complete,
+            "performance_usable": computed.accounting.performance_usable,
             "trial_accounting_hash": computed.accounting.trial_accounting_hash,
         },
+        "operational": operational,
+        "campaign_verdict": campaign_verdict,
         "artifacts": {
             "directory": str(output_root),
             "json": str(output_root / "scorecard.json"),
