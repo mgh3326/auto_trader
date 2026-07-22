@@ -60,6 +60,7 @@ __all__ = [
     "REASON_CHILD_EXECUTION_TIMEOUT",
     "REASON_DATA_GAP_IN_PAIR_POSITION",
     "REASON_DATA_GAP_IN_POSITION",
+    "REASON_FOLD_HORIZON_REJECTED",
     "REASON_GLOBAL_CORPUS_LOAD_FAILED",
     "REASON_INSUFFICIENT_TRAIN_EVIDENCE_ALL_FOLDS",
     "AttemptEvidenceError",
@@ -90,14 +91,27 @@ REASON_CHILD_EXECUTION_TIMEOUT = "child_execution_timeout"
 REASON_GLOBAL_CORPUS_LOAD_FAILED = "global_corpus_load_failed"
 REASON_DATA_GAP_IN_POSITION = "rejected:data_gap_in_position"
 REASON_DATA_GAP_IN_PAIR_POSITION = "rejected:data_gap_in_pair_position"
+REASON_FOLD_HORIZON_REJECTED = "rejected:fold_horizon_rejected"
 REASON_INSUFFICIENT_TRAIN_EVIDENCE_ALL_FOLDS = "insufficient_train_evidence_all_folds"
 
+# ROB-974 R3 boundary fix: an attempt whose walk hit its phase boundary is
+# still `rejected` -- the walk did NOT complete inside the phase it was
+# accounted against, so it can never be booked as `completed`.  But its
+# reason must stay DISTINCT from the two data-gap reasons: a horizon
+# rejection is a phase-truncation fact (the position was still open when the
+# fold's PIT window ended), NOT evidence that the corpus is missing minutes.
+# Collapsing the two is exactly what made R3 read 342 "data gaps" over a
+# corpus with zero missing minutes.  Before this entry existed, relabelling
+# the engine reason alone would have left the attempt un-bookable (the
+# closed allowlist below rejects any reason it does not name), so the two
+# changes are only meaningful together.
 ALLOWED_REASONS_BY_STATUS: dict[str, frozenset[str]] = {
     "completed": frozenset(),  # must be exactly None -- checked separately
     "rejected": frozenset(
         {
             REASON_DATA_GAP_IN_POSITION,
             REASON_DATA_GAP_IN_PAIR_POSITION,
+            REASON_FOLD_HORIZON_REJECTED,
             REASON_INSUFFICIENT_TRAIN_EVIDENCE_ALL_FOLDS,
         }
     ),

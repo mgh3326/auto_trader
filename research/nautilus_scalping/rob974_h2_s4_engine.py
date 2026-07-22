@@ -74,10 +74,10 @@ changes -- see ``/tmp/strategy-worker-rob979-sonnet-checkpoints.md`` CP3 entry):
     mismatched intent, it never silently substitutes its own recomputed
     value (H2 does not re-estimate/override H3's entry-frozen values, AC33).
   * EOF/gap/horizon 4-way split mirrors ``rob974_h2_s3_engine`` exactly
-    (including D1's inclusive ``horizon_end_ts`` equality: the check is
-    ``next_ts > horizon_end_ts``, never ``>=``, so an exact
-    ``signal_ts + strategy_max_hold == phase_end`` boundary is still
-    readable/evaluable), but a gap in EITHER leg's minute bar is terminal
+    (including the EXCLUSIVE ``horizon_end_ts`` convention: the check is
+    ``next_ts >= horizon_end_ts``, because callers pass ``phase.end_ms``
+    and the phase context admits only ``row.ts < phase.end_ms``), but a gap
+    in EITHER leg's minute bar is terminal
     ``data_gap_in_pair_position`` (AC23) -- no rehedge, no forward-fill, no
     single-leg continuation.
   * MFE/MAE capping (AC26) mirrors S3: every non-exit minute (including the
@@ -329,12 +329,15 @@ def _walk_s4_position(
         tracker.observe(g_max_bound * 1e4)
 
         next_ts = cur_a.open_time + _MIN_MS
-        # R2 fix (verify-R1 finding 1, mirrors rob974_h2_s3_engine): D1's
-        # approved fold boundary is INCLUSIVE -- exact
-        # `signal_ts + strategy_max_hold == phase_end` must still be
-        # readable/evaluable; only reading STRICTLY PAST phase_end is a
-        # horizon violation.
-        if horizon_end_ts is not None and next_ts > horizon_end_ts:
+        # ROB-974 R3 boundary fix (mirrors rob974_h2_s3_engine -- see the
+        # full rationale there): `horizon_end_ts` is EXCLUSIVE because every
+        # caller passes `phase.end_ms` and the phase context that builds
+        # `minute_index` admits only `row.ts < phase.end_ms`.  Under the
+        # earlier `>` the `phase_end` bar passed the horizon guard, was then
+        # absent from the index, and the boundary position was misreported
+        # as `data_gap_in_pair_position` (342 R3 occurrences over a corpus
+        # with zero missing minutes) while `fold_horizon_rejected` was dead.
+        if horizon_end_ts is not None and next_ts >= horizon_end_ts:
             return _S4Incomplete("fold_horizon_rejected", entry_ts, e_a, e_b)
         if next_ts >= corpus_end_ts:
             return _S4Incomplete("early_eof", entry_ts, e_a, e_b)

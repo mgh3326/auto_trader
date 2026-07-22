@@ -146,6 +146,12 @@ REASON_ALLOWLIST_BY_STATUS: dict[str, frozenset[str]] = {
         {
             "rejected:data_gap_in_position",
             "rejected:data_gap_in_pair_position",
+            # ROB-974 R3 boundary fix -- a phase-boundary truncation is
+            # `rejected` but is NOT a corpus data gap.  This literal must
+            # stay byte-identical to rob974_h6a_evidence's own set; the
+            # duplication is deliberate (see above) and parity-tested in
+            # tests/services/research/test_rob974_h6a_reason_taxonomy.py.
+            "rejected:fold_horizon_rejected",
             "insufficient_train_evidence_all_folds",
         }
     ),
