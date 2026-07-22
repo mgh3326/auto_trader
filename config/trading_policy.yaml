@@ -2,7 +2,7 @@
 # Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
 # (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
 # Repo is public; exposing these values is an accepted decision.
-version: "2026-07-17.3"
+version: "2026-07-22.1"
 captured_as_of: "2026-07-17"
 source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key"
 
@@ -57,9 +57,11 @@ thresholds:
     semantics: over-concentration cap per sector cluster (~9-10%)
   portfolio.max_symbols_per_theme:
     lanes: [buy, discovery]
-    value: 1
+    value: 2
     unit: count
-    semantics: one symbol per theme
+    semantics: max symbols per theme; theme overlap is a disclosure item, not an auto-reject
+      — strong expected-value candidates may be proposed with overlap stated in thesis
+      (operator risk direction 2026-07-22; concentration backstop = sector_concentration cap)
   order.day_expiry_kst:
     lanes: [buy, sell]
     value: "20:00"
