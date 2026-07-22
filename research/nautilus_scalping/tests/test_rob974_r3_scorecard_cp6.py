@@ -9,6 +9,8 @@ boundary is reachable from this test module.
 from __future__ import annotations
 
 import dataclasses
+import inspect
+import json
 import math
 from functools import lru_cache
 
@@ -900,3 +902,41 @@ def test_relaxation_receipt_is_cross_sealed_to_issued_primary_oos_ledger() -> No
         )["campaign_verdict"]["research_decision"]
         is None
     )
+
+
+def test_accounting_issuer_refuses_caller_projected_attempt_rows() -> None:
+    context = _production_context()
+    projected = tuple(
+        AttemptAccountingRow(
+            row_id=row_id,
+            experiment_id=experiment_id,
+            retry_index=0,
+            status="completed",
+            reason_code=None,
+            fold_evidence_hash="a" * 64,
+            run_identity="b" * 64,
+        )
+        for row_id, experiment_id in context.ordered_mapping
+    )
+
+    with pytest.raises(TypeError, match="R3AttemptBatchItem"):
+        issue_r3_scorecard_accounting(
+            evidence_context=context,
+            attempts=projected,
+        )
+
+
+def test_fold_scenario_issuer_has_no_raw_market_value_injection_surface() -> None:
+    assert tuple(inspect.signature(issue_r3_fold_scenario_attribution).parameters) == (
+        "path_scenario",
+        "source",
+        "market_input_authority",
+    )
+
+
+def test_canonical_json_rejects_reversed_nested_relaxation_rays() -> None:
+    scorecard = json.loads(canonical_r3_json_bytes(_complete_zero_scorecard()[-1]))
+    scorecard["section7_relaxation"]["oos"]["rays"].reverse()
+
+    with pytest.raises(ValueError, match="nested.*ray"):
+        canonical_r3_json_bytes(scorecard)
