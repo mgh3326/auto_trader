@@ -5,6 +5,7 @@ import hashlib
 import math
 
 import pytest
+from rob974_r3_evidence_context import issue_r3_production_evidence_context
 from rob974_r3_gate_metrics import (
     R3_CONFIG_IDS,
     S3_GATE_SCHEMA,
@@ -17,11 +18,14 @@ from rob974_r3_gate_metrics import (
     build_gate_audit,
     validate_gate_audit,
 )
+from rob974_r3_plan import build_production_r3_plan
 
 from research_contracts.canonical_hash import canonical_json
 
-CAMPAIGN_SHA256 = "0622ae5bba7bd42f3a9a72bb5b518a73f877c94d32c2e75ee8c6e4e6ec31e9cb"
-EXPERIMENT_SHA256 = "b2f03a23285945c8fda84c56a040fe2466541e8250e0b01ea987ba9d315e7ac5"
+EVIDENCE_CONTEXT = issue_r3_production_evidence_context(build_production_r3_plan())
+CAMPAIGN_SHA256 = EVIDENCE_CONTEXT.campaign_identity_sha256
+EXPERIMENT_BY_CONFIG = dict(EVIDENCE_CONTEXT.ordered_mapping)
+EXPERIMENT_SHA256 = EXPERIMENT_BY_CONFIG["S3-R3-02"]
 CONFIG_SHA256 = "7b752d2b902e0176aa92855ac3ae96e7d87f42bb9fc2db968af7516eed35ef81"
 
 R3_CONFIG_IDENTITY_PAYLOADS: tuple[dict[str, object], ...] = tuple(
@@ -75,23 +79,36 @@ def _scope(
     family: str = "S3",
     config_id: str = "S3-R3-02",
     config_sha256: str = CONFIG_SHA256,
+    experiment_sha256: str = EXPERIMENT_SHA256,
 ) -> AuditScope:
     return AuditScope(
         phase=phase,
         family=family,
         config_id=config_id,
         campaign_identity_sha256=CAMPAIGN_SHA256,
-        experiment_identity_sha256=EXPERIMENT_SHA256,
+        experiment_identity_sha256=experiment_sha256,
         config_identity_sha256=config_sha256,
     )
 
 
-def _unit(unit_id: str, schema=S3_GATE_SCHEMA, **overrides: bool):
+def _unit(
+    unit_id: str,
+    schema=S3_GATE_SCHEMA,
+    *,
+    market_direction: str | None = None,
+    **overrides: bool,
+):
     unknown = set(overrides) - {gate.name for gate in schema.gates}
     if unknown:
         raise ValueError(f"unknown fixture gate override: {sorted(unknown)}")
     values = tuple((gate.name, overrides.get(gate.name, True)) for gate in schema.gates)
-    return ContextValidDecisionUnit(unit_id=unit_id, gate_results=values)
+    if schema.family == "S3" and market_direction is None:
+        market_direction = "long"
+    return ContextValidDecisionUnit(
+        unit_id=unit_id,
+        gate_results=values,
+        market_direction=market_direction,
+    )
 
 
 def _batch(
@@ -120,6 +137,7 @@ def _two_fold_fixture() -> tuple[GateAuditBatch, GateAuditBatch]:
             _unit("2025-10-29T03:00:00Z:XRPUSDT:long"),
             _unit(
                 "2025-10-29T07:00:00Z:DOGEUSDT:long",
+                market_direction="short",
                 market_magnitude=False,
             ),
             _unit(
@@ -131,7 +149,12 @@ def _two_fold_fixture() -> tuple[GateAuditBatch, GateAuditBatch]:
     )
     fold_01 = _batch(
         "fold-01",
-        (_unit("2025-11-26T03:00:00Z:XRPUSDT:short"),),
+        (
+            _unit(
+                "2025-11-26T03:00:00Z:XRPUSDT:short",
+                market_direction="short",
+            ),
+        ),
     )
     return fold_00, fold_01
 
@@ -162,6 +185,9 @@ def test_fold_and_pooled_metrics_preserve_raw_counts_and_sum_pooling() -> None:
     assert fold.context_valid_denominator == 3
     assert fold.required_context_failures == 1
     assert fold.required_context_rate.as_tuple() == (3, 4, 0.75, None)
+    assert fold.s3_market_direction is not None
+    assert fold.s3_market_direction.long_rate.as_tuple() == (2, 3, 2 / 3, None)
+    assert fold.s3_market_direction.short_rate.as_tuple() == (1, 3, 1 / 3, None)
     assert fold.joint_pass_rate.as_tuple() == (1, 3, 1 / 3, None)
     assert _named(fold.single_gate_pass_rates, "market_magnitude").rate.as_tuple() == (
         2,
@@ -205,6 +231,9 @@ def test_fold_and_pooled_metrics_preserve_raw_counts_and_sum_pooling() -> None:
     pooled = report.pooled
     assert pooled.context_valid_denominator == 4
     assert pooled.required_context_failures == 1
+    assert pooled.s3_market_direction is not None
+    assert pooled.s3_market_direction.long_rate.as_tuple() == (2, 4, 0.5, None)
+    assert pooled.s3_market_direction.short_rate.as_tuple() == (2, 4, 0.5, None)
     assert pooled.joint_pass_rate.as_tuple() == (2, 4, 0.5, None)
     pooled_single = _named(pooled.single_gate_pass_rates, "market_magnitude").rate
     assert pooled_single.as_tuple() == (3, 4, 0.75, None)
@@ -213,6 +242,9 @@ def test_fold_and_pooled_metrics_preserve_raw_counts_and_sum_pooling() -> None:
     assert rate_range.minimum == pytest.approx(2 / 3)
     assert rate_range.maximum == 1.0
     assert rate_range.reason is None
+    direction_range = _named(report.fold_rate_ranges, "market_direction:long")
+    assert direction_range.minimum == 0.0
+    assert direction_range.maximum == pytest.approx(2 / 3)
 
     validate_gate_audit(report=report, batches=batches)
 
@@ -235,6 +267,19 @@ def test_zero_denominator_and_zero_product_are_null_with_closed_reasons() -> Non
     empty = _batch("fold-00", (), required_context_failures=2)
     empty_report = build_gate_audit(expected_scope=_scope(), batches=(empty,))
     assert empty_report.folds[0].joint_pass_rate.as_tuple() == (
+        0,
+        0,
+        None,
+        "zero_denominator",
+    )
+    assert empty_report.folds[0].s3_market_direction is not None
+    assert empty_report.folds[0].s3_market_direction.long_rate.as_tuple() == (
+        0,
+        0,
+        None,
+        "zero_denominator",
+    )
+    assert empty_report.folds[0].s3_market_direction.short_rate.as_tuple() == (
         0,
         0,
         None,
@@ -346,6 +391,28 @@ def test_s3_dominant_m_removes_breadth_but_dominant_s_retains_it() -> None:
         0.5,
         None,
     )
+
+
+def test_s3_market_direction_is_categorical_and_never_enters_gate_arithmetic() -> None:
+    long_batch = _batch("fold-00", (_unit("unit", market_direction="long"),))
+    short_batch = _batch("fold-00", (_unit("unit", market_direction="short"),))
+    long_report = build_gate_audit(expected_scope=_scope(), batches=(long_batch,))
+    short_report = build_gate_audit(expected_scope=_scope(), batches=(short_batch,))
+
+    long_fold = long_report.folds[0]
+    short_fold = short_report.folds[0]
+    assert long_fold.s3_market_direction != short_fold.s3_market_direction
+    assert long_fold.joint_pass_rate == short_fold.joint_pass_rate
+    assert long_fold.single_gate_pass_rates == short_fold.single_gate_pass_rates
+    assert (
+        long_fold.sequential_conditional_pass_rates
+        == short_fold.sequential_conditional_pass_rates
+    )
+    assert long_fold.leave_one_gate_out_rates == short_fold.leave_one_gate_out_rates
+    assert long_fold.dominant_removed_rates == short_fold.dominant_removed_rates
+    assert long_fold.kappa == short_fold.kappa
+    assert long_fold.pairwise == short_fold.pairwise
+    assert "market_direction" not in tuple(gate.name for gate in S3_GATE_SCHEMA.gates)
 
 
 @pytest.mark.parametrize(
@@ -536,6 +603,7 @@ def test_production_shaped_all_r3_ids_eight_folds_and_full_hashes() -> None:
             family=family,
             config_id=config_id,
             config_sha256=config_hash,
+            experiment_sha256=EXPERIMENT_BY_CONFIG[config_id],
         )
         schema = S3_GATE_SCHEMA if family == "S3" else S4_GATE_SCHEMA
         batches = tuple(
