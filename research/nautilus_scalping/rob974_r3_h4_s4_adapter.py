@@ -8,7 +8,13 @@ from pathlib import Path
 
 import rob974_h2_s4_engine as frozen_s4_engine
 from rob944_diagnostic_evidence import capture_child_failure_evidence
-from rob974_h2_dtos import S4EngineResult, S4PairSignalIntent
+from rob974_h2_dtos import (
+    S4EngineResult,
+    S4IncompleteRecord,
+    S4NoTradeRecord,
+    S4PairSignalIntent,
+    S4PairTrade,
+)
 from rob974_h4_adapter import H4ContractDrift
 from rob974_h4_h6a_adapter import ENGINE_SOURCE_FILES
 from rob974_r3_s4_dtos import (
@@ -169,7 +175,7 @@ def _incomplete_payload(row: R3S4IncompleteRecord) -> dict[str, object]:
 def seal_r3_s4_engine_input(
     candidates: object, *, corpus_end_ts: int, horizon_end_ts: int | None
 ) -> str:
-    if not isinstance(candidates, (list, tuple)):
+    if type(candidates) not in (list, tuple):
         raise TypeError("candidates must be a list or tuple")
     payload = {
         "schema_version": "rob974_r3_h4_s4_engine_input_v1",
@@ -199,7 +205,7 @@ def _identity(row: object) -> tuple[tuple[str, str], int]:
 def validate_r3_s4_terminal(
     candidates: object, result: object, *, config_id: str, fold_id: str | None
 ) -> None:
-    if not isinstance(candidates, (list, tuple)) or any(
+    if type(candidates) not in (list, tuple) or any(
         type(candidate) is not R3S4PairSignalIntent for candidate in candidates
     ):
         raise TypeError("candidates must contain exact R3S4PairSignalIntent values")
@@ -211,6 +217,9 @@ def validate_r3_s4_terminal(
     ):
         raise H4ContractDrift("R3 H4 invocation lineage differs from its candidates")
 
+    candidate_identities = tuple(_identity(candidate) for candidate in candidates)
+    if len(candidate_identities) != len(set(candidate_identities)):
+        raise H4ContractDrift("R3 H4 input contains duplicate candidate identities")
     by_identity = {_identity(candidate): candidate for candidate in candidates}
     seen: set[tuple[tuple[str, str], int]] = set()
     for bucket in (result.trades, result.no_trades, result.incompletes):
@@ -227,6 +236,27 @@ def validate_r3_s4_terminal(
                 )
     if not result.incompletes and seen != set(by_identity):
         raise H4ContractDrift("R3 engine did not resolve every candidate identity")
+    if len(result.incompletes) > 1:
+        raise H4ContractDrift("R3 engine emitted more than one terminal incomplete")
+    if result.incompletes:
+        incomplete = result.incompletes[0]
+        candidate = by_identity[_identity(incomplete)]
+        if (incomplete.side_a, incomplete.side_b) != (
+            candidate.side_a,
+            candidate.side_b,
+        ):
+            raise H4ContractDrift("R3 incomplete changed candidate leg directions")
+        ordered_identities = tuple(
+            sorted(
+                candidate_identities, key=lambda identity: (identity[1], identity[0])
+            )
+        )
+        incomplete_index = ordered_identities.index(_identity(incomplete))
+        expected_prefix = set(ordered_identities[: incomplete_index + 1])
+        if seen != expected_prefix:
+            raise H4ContractDrift(
+                "R3 incomplete output is not the exact resolved-prefix partition"
+            )
 
     for trade in result.trades:
         candidate = by_identity[_identity(trade)]
@@ -366,7 +396,7 @@ def _economic_candidate_payload(candidate: object) -> dict[str, object]:
 
 
 def _economic_row_payload(row: object) -> dict[str, object]:
-    if type(row) in (R3S4PairTrade,) or row.__class__.__name__ == "S4PairTrade":
+    if type(row) in (R3S4PairTrade, S4PairTrade):
         observed_z = row.observed_z if type(row) is R3S4PairTrade else row.z_entry
         return {
             "kind": "trade",
@@ -404,7 +434,7 @@ def _economic_row_payload(row: object) -> dict[str, object]:
             "pair_exec_fail": row.pair_exec_fail,
             "promotion_status": row.promotion_status,
         }
-    if type(row) in (R3S4NoTradeRecord,) or row.__class__.__name__ == "S4NoTradeRecord":
+    if type(row) in (R3S4NoTradeRecord, S4NoTradeRecord):
         return {
             "kind": "no_trade",
             "pair": list(row.pair),
@@ -413,6 +443,8 @@ def _economic_row_payload(row: object) -> dict[str, object]:
             "signal_ts": row.signal_ts,
             "reason": row.reason,
         }
+    if type(row) not in (R3S4IncompleteRecord, S4IncompleteRecord):
+        raise TypeError("parity row has an unsupported exact type")
     return {
         "kind": "incomplete",
         "pair": list(row.pair),
@@ -450,7 +482,7 @@ def assert_r3_s4_frozen_parity(
     corpus_end_ts: int,
     horizon_end_ts: int | None = None,
 ) -> R3S4FrozenParityEvidence:
-    if not isinstance(candidates, (list, tuple)) or any(
+    if type(candidates) not in (list, tuple) or any(
         type(candidate) is not R3S4PairSignalIntent for candidate in candidates
     ):
         raise TypeError("parity candidates must be exact R3S4PairSignalIntent values")
@@ -477,22 +509,30 @@ def assert_r3_s4_frozen_parity(
     if r2_input_bytes != r3_input_bytes:
         raise R3S4ParityDrift("R3/frozen input canonical bytes differ")
 
-    frozen_result = frozen_s4_engine.run_s4_pair_basket_stream(
-        frozen_candidates,
-        minute_index,  # type: ignore[arg-type]
-        pair_close_index,  # type: ignore[arg-type]
-        corpus_end_ts=corpus_end_ts,
-        horizon_end_ts=horizon_end_ts,
+    def _capture(callable_, call_candidates: object) -> dict[str, object]:
+        try:
+            result = callable_(
+                call_candidates,
+                minute_index,
+                pair_close_index,
+                corpus_end_ts=corpus_end_ts,
+                horizon_end_ts=horizon_end_ts,
+            )
+        except Exception as exc:
+            return {
+                "kind": "exception",
+                "type_module": type(exc).__module__,
+                "type_name": type(exc).__qualname__,
+                "args": tuple(exc.args),
+            }
+        return {"kind": "result", "result": _economic_result_payload(result)}
+
+    frozen_outcome = _capture(
+        frozen_s4_engine.run_s4_pair_basket_stream, frozen_candidates
     )
-    r3_result = run_r3_s4_pair_basket_stream(
-        r3_candidates,
-        minute_index,  # type: ignore[arg-type]
-        pair_close_index,  # type: ignore[arg-type]
-        corpus_end_ts=corpus_end_ts,
-        horizon_end_ts=horizon_end_ts,
-    )
-    r2_output_bytes = _canonical_bytes(_economic_result_payload(frozen_result))
-    r3_output_bytes = _canonical_bytes(_economic_result_payload(r3_result))
+    r3_outcome = _capture(run_r3_s4_pair_basket_stream, r3_candidates)
+    r2_output_bytes = _canonical_bytes(frozen_outcome)
+    r3_output_bytes = _canonical_bytes(r3_outcome)
     if r2_output_bytes != r3_output_bytes:
         raise R3S4ParityDrift("R3/frozen output canonical bytes differ")
     return R3S4FrozenParityEvidence(
