@@ -2314,6 +2314,7 @@ Allowed tools:
 - `analysis_artifact_get`
 - `analysis_bundle_get` (only when `ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED=true`)
 - `forecast_save`
+- `missed_opportunity_save`
 - `session_context_append`
 - `session_context_get_recent`
 
@@ -2331,6 +2332,7 @@ Persistence tools on this profile require explicit provenance:
 - pass `created_by="codex"` for `analysis_artifact_save`
 - pass `created_by="codex"` in every `session_context_append` entry
 - pass `created_by="codex"` to `forecast_save`
+- pass `created_by="codex"` to `missed_opportunity_save`
 
 ### Codex Config Example
 
@@ -2426,6 +2428,7 @@ Allowed write/order tools:
 - `kiwoom_mock_cancel_order`
 - `kiwoom_mock_modify_order`
 - `forecast_save`
+- `missed_opportunity_save`
 - `save_trade_retrospective`
 - `investment_watch_create`
 
@@ -2521,6 +2524,7 @@ provenance.
 
 Write provenance requirements:
 - pass `created_by="tradingcodex"` to `forecast_save`
+- pass `created_by="tradingcodex"` to `missed_opportunity_save`
 - pass `created_by_profile="tradingcodex"` to `save_trade_retrospective`
 - pass `created_by="tradingcodex"` to `investment_watch_create`
 - missing or blank labels return `{"success": false, "error": "created_by_required", ...}` before any database write
@@ -2569,6 +2573,31 @@ terminal forecast ID and retain the old row in quarantine. See
 [`docs/runbooks/forecast-terminal-close.md`](../../docs/runbooks/forecast-terminal-close.md)
 for source-basis limits, the legacy-row procedure, read-only dry-run settings,
 and the ROB-1041/1042/1043 split.
+
+`return_at_horizon` is the second auto-resolvable forecast kind. It compares
+the exact `review_date` daily close with `forecast_target.reference_price`,
+stores the point return in `observed_value`, and scores the probability against
+`target_return_pct` and `direction`. A missing exact-horizon candle remains
+`unresolved_no_data`; an earlier candle is never substituted.
+
+### Missed-opportunity session close (ROB-1017)
+
+`missed_opportunity_save` is the DB-only close hook for buy/discovery sessions.
+It emits nothing unless `abs(index_change_pct) > 2` and `new_buy_count == 0`.
+When required, `candidates` must contain exactly `top_n` ranked entries, each
+with `symbol`, market-matching `instrument_type`, D0 `reference_price`,
+`target_return_pct`, `probability`, and `rejection_reason`. KR/US review dates
+advance five confirmed exchange sessions; crypto advances five calendar days.
+Each candidate creates a deterministic `return_at_horizon` forecast plus a
+linked unfilled retrospective with `trigger_type=missed_opportunity`. Exact
+retries are idempotent and changing cohort membership under the same
+`session_label` is rejected. This tool has no broker/order/live mutation path.
+
+`get_retrospective_aggregate` keeps these D0→D+5 returns out of realized-trade
+strategy/day groups and exposes them under `missed_cohort` with scored/pending
+counts, positive-opportunity rate, and average opportunity return. Process
+grouping by `trigger_type` still includes the cohort.
+>>>>>>> a2e33fdd1 (feat(ROB-1017): score volatile zero-buy missed opportunities)
 
 ### Typed KIS order tools
 

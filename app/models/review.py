@@ -1075,7 +1075,8 @@ class TradeRetrospective(Base):
         CheckConstraint(
             "trigger_type IS NULL OR trigger_type IN ("
             "'fill','partial_fill','rejected_order','cancelled','expired',"
-            "'thesis_change','policy_violation','stale_evidence','guardrail_block','stop_loss'"
+            "'thesis_change','policy_violation','stale_evidence','guardrail_block',"
+            "'stop_loss','missed_opportunity'"
             ")",
             name="ck_trade_retrospectives_trigger_type",
         ),
@@ -1325,15 +1326,14 @@ class TradeForecast(Base):
     (LLM boundary); the record/resolve/score logic here is fully deterministic.
 
     ``forecast_id`` is the idempotency key (client-supplied to update while open,
-    or auto-generated). ``forecast_target`` is a structured JSONB claim. The
-    Versioned ``price_target`` claims retain their window high/low touch
-    semantics; versionless legacy rows are quarantined. The additive
-    ``terminal_close`` kind uses exactly the review-date regular-session close
-    under a versioned equality contract. Corporate-action adjustment is
-    intentionally unsupported pending ROB-1043. Other kinds resolve via an
-    operator-supplied manual outcome (evidence required).
-    ``correlation_id`` aligns with trade_retrospectives (ROB-647) so a postmortem
-    can cite the forecast it graded.
+    or auto-generated). ``forecast_target`` is a structured JSONB claim; the
+    versioned ``price_target``, ``terminal_close``, and ``return_at_horizon`` claims
+    resolve deterministically against loaded daily OHLCV (ROB-639/ROB-1017);
+    versionless legacy rows are quarantined; corporate-action adjustment is
+    unsupported pending ROB-1043; other kinds use an operator-supplied manual
+    outcome (evidence required). ``correlation_id`` aligns with
+    trade_retrospectives (ROB-647) so a postmortem can cite the forecast it
+    graded.
     """
 
     __tablename__ = "trade_forecasts"

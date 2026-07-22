@@ -10,6 +10,7 @@ from app.mcp_server.tooling.forecast_tools import (
     forecast_save,
     get_forecast_calibration,
     get_forecasts,
+    missed_opportunity_save,
 )
 
 FORECAST_TOOL_NAMES: set[str] = {
@@ -17,6 +18,7 @@ FORECAST_TOOL_NAMES: set[str] = {
     "forecast_resolve",
     "get_forecasts",
     "get_forecast_calibration",
+    "missed_opportunity_save",
 }
 
 
@@ -45,6 +47,22 @@ def register_forecast_tools(mcp: Any) -> None:
         ),
     )(forecast_save)
     _ = mcp.tool(
+        name="missed_opportunity_save",
+        description=(
+            "ROB-1017 session-close storage hook. If and only if the absolute "
+            "same-day index move is greater than 2% and new_buy_count is zero, "
+            "atomically publish exactly top_n ranked unbought candidates as "
+            "linked D+5 return_at_horizon forecasts and trade retrospectives "
+            "with trigger_type=missed_opportunity. Each candidate requires "
+            "symbol, matching instrument_type, D0 reference_price, "
+            "target_return_pct, probability/confidence, and rejection_reason. "
+            "KR/US D+5 means five confirmed trading sessions; crypto uses five "
+            "calendar days. Exact retries are idempotent; changing membership "
+            "under the same session_label is rejected. DB learning writes only: "
+            "no broker/order/live mutation."
+        ),
+    )(missed_opportunity_save)
+    _ = mcp.tool(
         name="forecast_resolve",
         description=(
             "Resolve due forecasts deterministically and score them (Brier = "
@@ -60,7 +78,9 @@ def register_forecast_tools(mcp: Any) -> None:
             "forecasts use only one allowlisted review-date regular-session close "
             "after that session is calendar-final (never high/low, adj_close, or "
             "extended-hours data): up is close >= target and down is close < "
-            "target. Missing, duplicate, stale, untrusted, invalid, or non-final "
+            "target. return_at_horizon forecasts resolve against the exact "
+            "review-date daily close and store the observed point return. "
+            "Missing, duplicate, stale, untrusted, invalid, or non-final "
             "data leaves the row open with a typed unresolved status. "
             "Placeholder forecasts whose target kind is "
             "'no_resolvable_forecast' auto-close without an outcome or Brier "

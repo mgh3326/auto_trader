@@ -70,15 +70,17 @@ from app.services.trade_journal.retrospective_query_filters import (
 # upsert) from "caller explicitly set None" (clear the field).
 _UNSET: Any = object()
 
-_VALID_ACCOUNT_MODES = {
-    "kis_mock",
-    "kiwoom_mock",
-    "kis_live",
-    "toss_live",
-    "alpaca_paper",
-    "upbit_live",
-    "paper",
-}
+VALID_ACCOUNT_MODES: frozenset[str] = frozenset(
+    {
+        "kis_mock",
+        "kiwoom_mock",
+        "kis_live",
+        "toss_live",
+        "alpaca_paper",
+        "upbit_live",
+        "paper",
+    }
+)
 _VALID_OUTCOMES = {
     "filled",
     "partially_filled",
@@ -371,7 +373,7 @@ async def save_retrospective(
     policy_version: Any = _UNSET,
     actor: str = "internal:save_retrospective",
 ) -> tuple[str, TradeRetrospective]:
-    if account_mode not in _VALID_ACCOUNT_MODES:
+    if account_mode not in VALID_ACCOUNT_MODES:
         raise RetrospectiveValidationError(f"invalid account_mode: {account_mode}")
     if outcome not in _VALID_OUTCOMES:
         raise RetrospectiveValidationError(
@@ -924,6 +926,30 @@ def _is_decided(r: TradeRetrospective) -> bool:
     return r.realized_pnl is not None or r.pnl_pct is not None
 
 
+def _missed_cohort_summary(
+    rows: list[TradeRetrospective],
+) -> dict[str, Any]:
+    missed = [r for r in rows if r.trigger_type == "missed_opportunity"]
+    scored = [r for r in missed if r.pnl_pct is not None]
+    positive = sum(1 for r in scored if r.pnl_pct is not None and r.pnl_pct > 0)
+    by_market: dict[str, int] = {}
+    for row in missed:
+        key = row.market or "unknown"
+        by_market[key] = by_market.get(key, 0) + 1
+    return {
+        "sample_size": len(missed),
+        "scored_sample_size": len(scored),
+        "pending_sample_size": len(missed) - len(scored),
+        "positive_opportunities": positive,
+        "non_positive_opportunities": len(scored) - positive,
+        "positive_opportunity_rate_pct": (
+            positive / len(scored) * 100.0 if scored else None
+        ),
+        "avg_opportunity_return_pct": _avg([r.pnl_pct for r in scored]),
+        "by_market": by_market,
+    }
+
+
 def _prefix_like(raw: str) -> str:
     """Prefix-match token for `Column.ilike(..., escape="\\\\")`.
 
@@ -976,7 +1002,18 @@ async def build_retrospective_aggregate(
 
     groups: dict[str, list[TradeRetrospective]] = {}
     excluded_no_evidence = 0
+    excluded_missed_opportunity = 0
     for r in rows:
+        # Missed-opportunity pnl_pct is D0->D+5 opportunity return, not realized
+        # trade PnL. Keep it out of PnL-oriented strategy/day groups and expose
+        # it through the explicitly labeled cohort below. Process dimensions
+        # still include it so trigger/root-cause audits remain complete.
+        if r.trigger_type == "missed_opportunity" and group_by in (
+            "strategy",
+            "day",
+        ):
+            excluded_missed_opportunity += 1
+            continue
         if not r.fill_evidence_available and not include_no_evidence:
             excluded_no_evidence += 1
             continue
@@ -1041,6 +1078,8 @@ async def build_retrospective_aggregate(
         "group_by": group_by,
         "groups": out,
         "excluded_no_fill_evidence": excluded_no_evidence,
+        "excluded_missed_opportunity": excluded_missed_opportunity,
+        "missed_cohort": _missed_cohort_summary(rows),
     }
 
 

@@ -33,6 +33,7 @@ VALID_TRIGGER_TYPES: frozenset[str] = frozenset(
         "stale_evidence",
         "guardrail_block",
         "stop_loss",
+        "missed_opportunity",
     }
 )
 
@@ -50,6 +51,53 @@ VALID_ROOT_CAUSE_CLASSES: frozenset[str] = frozenset(
 VALID_NEXT_ACTION_STATUSES: frozenset[str] = frozenset(
     {"open", "in_progress", "done", "obsolete", "expired"}
 )
+
+
+class MissedOpportunityCandidate(BaseModel):
+    """One ranked, unbought candidate in a volatile zero-entry session.
+
+    The caller supplies the D0 reference price and the probability of meeting
+    ``target_return_pct`` at D+5. The storage service owns ranking, horizon,
+    idempotency, and the linked forecast/retrospective writes.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str
+    instrument_type: str
+    reference_price: float = Field(gt=0)
+    target_return_pct: float = Field(gt=-100)
+    probability: float = Field(ge=0, le=1)
+    rejection_reason: str
+    evidence_ids: list[str] = Field(default_factory=list)
+    report_item_uuid: str | None = None
+
+    @field_validator("symbol", "rejection_reason")
+    @classmethod
+    def _required_text(cls, value: str) -> str:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            raise ValueError("must be a non-empty string")
+        return cleaned
+
+    @field_validator("instrument_type")
+    @classmethod
+    def _supported_instrument(cls, value: str) -> str:
+        if value not in {"equity_kr", "equity_us", "crypto"}:
+            raise ValueError(
+                "instrument_type must be one of equity_kr, equity_us, crypto"
+            )
+        return value
+
+    @field_validator("report_item_uuid")
+    @classmethod
+    def _optional_non_empty_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("report_item_uuid must be non-empty when provided")
+        return cleaned
 
 
 class Deviation(BaseModel):
