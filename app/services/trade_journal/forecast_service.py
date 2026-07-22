@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import math
 import uuid
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -80,6 +81,7 @@ _VALID_INSTRUMENTS = {t.value for t in InstrumentType}
 # Instrument types with a loaded daily-candle store → deterministic auto-resolve.
 _AUTO_RESOLVABLE_INSTRUMENTS = {"equity_kr", "equity_us", "crypto"}
 _PRICE_DIRECTIONS = {"at_or_above", "at_or_below"}
+_AUTO_RESOLVABLE_FORECAST_KINDS = {"price_target", "return_at_horizon"}
 _GROUP_BY_FIELDS = {"created_by", "session_label", "model_label", "day"}
 _NO_RESOLVABLE_FORECAST_KIND = "no_resolvable_forecast"
 _CLOSED_NO_CLAIM_STATUS = "closed_no_claim"
@@ -125,6 +127,29 @@ def classify_price_target_outcome(
         extreme = min(c.low for c in candles)
         return extreme <= target_price, extreme
     raise ForecastValidationError(f"invalid price-target direction: {direction!r}")
+
+
+def classify_return_at_horizon_outcome(
+    *,
+    horizon_candle: DailyCandleRow,
+    direction: str,
+    reference_price: float,
+    target_return_pct: float,
+) -> tuple[bool, float]:
+    """Resolve a point-to-point return claim against the horizon close."""
+
+    if not math.isfinite(reference_price) or reference_price <= 0:
+        raise ForecastValidationError("reference_price must be a finite number > 0")
+    if not math.isfinite(target_return_pct) or target_return_pct <= -100:
+        raise ForecastValidationError(
+            "target_return_pct must be a finite number > -100"
+        )
+    observed = (float(horizon_candle.close) / reference_price - 1.0) * 100.0
+    if direction == "at_or_above":
+        return observed >= target_return_pct, observed
+    if direction == "at_or_below":
+        return observed <= target_return_pct, observed
+    raise ForecastValidationError(f"invalid return-at-horizon direction: {direction!r}")
 
 
 def _to_decimal(x: float | None) -> Decimal | None:
@@ -187,6 +212,33 @@ def _validate_forecast_target(target: Any) -> None:
             ) from exc
         if price_f <= 0:
             raise ForecastValidationError("price_target.target_price must be > 0")
+    elif kind == "return_at_horizon":
+        direction = target.get("direction")
+        if direction not in _PRICE_DIRECTIONS:
+            raise ForecastValidationError(
+                "return_at_horizon.direction must be one of "
+                f"{sorted(_PRICE_DIRECTIONS)}"
+            )
+        try:
+            reference_price = float(target.get("reference_price"))
+        except (TypeError, ValueError) as exc:
+            raise ForecastValidationError(
+                "return_at_horizon.reference_price must be a number"
+            ) from exc
+        try:
+            target_return_pct = float(target.get("target_return_pct"))
+        except (TypeError, ValueError) as exc:
+            raise ForecastValidationError(
+                "return_at_horizon.target_return_pct must be a number"
+            ) from exc
+        if not math.isfinite(reference_price) or reference_price <= 0:
+            raise ForecastValidationError(
+                "return_at_horizon.reference_price must be a finite number > 0"
+            )
+        if not math.isfinite(target_return_pct) or target_return_pct <= -100:
+            raise ForecastValidationError(
+                "return_at_horizon.target_return_pct must be a finite number > -100"
+            )
 
 
 def serialize_forecast(r: TradeForecast) -> dict[str, Any]:
@@ -649,8 +701,8 @@ async def resolve_forecast(
 
     ``persist=False`` computes the outcome/Brier and returns a preview without
     mutating the row (the dry-run default at the tool boundary). Price-target
-    forecasts resolve against loaded daily OHLCV; other kinds require
-    ``manual_outcome`` + ``manual_evidence``.
+    and return-at-horizon forecasts resolve against loaded daily OHLCV; other
+    kinds require ``manual_outcome`` + ``manual_evidence``.
     """
     repo = ForecastRepository(db)
     row = await repo.get_by_forecast_id(_coerce_forecast_id(forecast_id))
@@ -714,7 +766,7 @@ async def resolve_forecast(
             "resolved_kind": kind,
             "manual_evidence": manual_evidence,
         }
-    elif kind == "price_target":
+    elif kind in _AUTO_RESOLVABLE_FORECAST_KINDS:
         if instrument not in _AUTO_RESOLVABLE_INSTRUMENTS:
             return {
                 "status": "requires_manual",
@@ -763,19 +815,51 @@ async def resolve_forecast(
             }
 
         direction = target.get("direction")
-        target_price = float(target.get("target_price"))
-        outcome, observed = classify_price_target_outcome(
-            candles, direction=direction, target_price=target_price
-        )
-        resolution_source = "ohlcv_day"
-        detail = {
-            "window_start": start_date.isoformat(),
-            "window_end": row.review_date.isoformat(),
-            "candles": len(candles),
-            "direction": direction,
-            "target_price": target_price,
-            "observed_extreme": observed,
-        }
+        if kind == "price_target":
+            target_price = float(target.get("target_price"))
+            outcome, observed = classify_price_target_outcome(
+                candles, direction=direction, target_price=target_price
+            )
+            resolution_source = "ohlcv_day"
+            detail = {
+                "window_start": start_date.isoformat(),
+                "window_end": row.review_date.isoformat(),
+                "candles": len(candles),
+                "direction": direction,
+                "target_price": target_price,
+                "observed_extreme": observed,
+            }
+        else:
+            horizon_candles = [
+                candle for candle in candles if _row_date(candle) == row.review_date
+            ]
+            if not horizon_candles:
+                return {
+                    "status": "unresolved_no_data",
+                    "changed": False,
+                    "reason": "no daily close for the exact horizon date",
+                    "forecast": serialize_forecast(row),
+                }
+            horizon_candle = max(horizon_candles, key=lambda candle: candle.time_utc)
+            reference_price = float(target.get("reference_price"))
+            target_return_pct = float(target.get("target_return_pct"))
+            outcome, observed = classify_return_at_horizon_outcome(
+                horizon_candle=horizon_candle,
+                direction=direction,
+                reference_price=reference_price,
+                target_return_pct=target_return_pct,
+            )
+            resolution_source = "ohlcv_day_close"
+            detail = {
+                "window_start": start_date.isoformat(),
+                "horizon_date": row.review_date.isoformat(),
+                "candles": len(candles),
+                "direction": direction,
+                "reference_price": reference_price,
+                "target_return_pct": target_return_pct,
+                "horizon_close": float(horizon_candle.close),
+                "observed_return_pct": observed,
+            }
     else:
         return {
             "status": "requires_manual",
@@ -814,10 +898,22 @@ async def resolve_forecast(
     # Reload server-computed columns (updated_at onupdate) within the async
     # context so serialize_forecast doesn't trigger a lazy sync refresh.
     await db.refresh(row)
+    retrospective_synced = False
+    if kind == "return_at_horizon" and observed is not None:
+        from app.services.trade_journal.missed_opportunity_service import (
+            sync_resolved_missed_retrospective,
+        )
+
+        retrospective_synced = await sync_resolved_missed_retrospective(
+            db,
+            forecast=row,
+            observed_return_pct=float(observed),
+        )
     return {
         "status": "resolved",
         "changed": True,
         "computed": computed,
+        "retrospective_synced": retrospective_synced,
         "forecast": serialize_forecast(row),
     }
 

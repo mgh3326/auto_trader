@@ -59,6 +59,7 @@ AVAILABLE_TOOL_NAMES = [
     "forecast_resolve",
     "get_forecasts",
     "get_forecast_calibration",
+    "missed_opportunity_save",
     # Crypto research tools
     "get_crypto_profile",
     "get_kimchi_premium",

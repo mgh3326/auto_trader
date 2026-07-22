@@ -98,6 +98,10 @@ LANE_SEQUENCES: dict[str, list[dict[str, Any]]] = {
             "tool": "kis_live_place_order",
             "purpose": "spend down KIS deposit; dry_run preview -> live",
         },
+        {
+            "tool": "missed_opportunity_save",
+            "purpose": "session close: if |index move| >2% and zero new buys, publish top-N D+5 missed cohort",
+        },
     ],
     "sell": [
         {
@@ -137,6 +141,10 @@ LANE_SEQUENCES: dict[str, list[dict[str, Any]]] = {
         {"tool": "get_disclosures", "purpose": "rights-issue / overhang filter"},
         {"tool": "analyze_stock_batch", "purpose": "deep confirm on ranked survivors"},
         {"tool": "toss_place_order", "purpose": "winners only, support-line limit"},
+        {
+            "tool": "missed_opportunity_save",
+            "purpose": "session close: if |index move| >2% and zero new buys, publish top-N D+5 missed cohort",
+        },
     ],
 }
 
@@ -154,6 +162,9 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "decision_bucket=deferred_no_action item with confidence + rejection "
         "reason, and leave a resolvable forecast_save (price_target, e.g. "
         "'no +X% within N days') so calibration isn't censored (ROB-712)",
+        "session-close opportunity cost: when |index_change_pct| > 2% and zero new buys, "
+        "call missed_opportunity_save for exactly the top-N unbought candidates; "
+        "their D+5 close returns form the missed cohort (ROB-1017)",
     ],
     "sell": [
         "loss guard: sell price >= avg * sell.loss_guard_min_multiple",
@@ -173,6 +184,9 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "decision_bucket=deferred_no_action item with confidence + rejection "
         "reason, and leave a resolvable forecast_save (price_target, e.g. "
         "'no +X% within N days') so calibration isn't censored (ROB-712)",
+        "session-close opportunity cost: when |index_change_pct| > 2% and zero new buys, "
+        "call missed_opportunity_save for exactly the top-N unbought candidates; "
+        "their D+5 close returns form the missed cohort (ROB-1017)",
     ],
     "bootstrap": [
         "context-load only; no order mutation in this lane",
@@ -232,6 +246,8 @@ MARKET_EXECUTION_TOOLS: dict[str, frozenset[str]] = {
 _PLACE_ORDER_TOOLS: frozenset[str] = frozenset(
     {"place_order", "toss_place_order", "kis_live_place_order"}
 )
+
+_SESSION_CLOSE_TOOLS: frozenset[str] = frozenset({"missed_opportunity_save"})
 
 # ROB-659: dry-run / approval-minting precursor tools. They send no broker
 # mutation, and under TOSS_APPROVAL_HASH_MODE=required an executing lane MUST call
@@ -386,6 +402,7 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "list_active_watches",
         "investment_watch_events_list_recent",
         "modify_journal_entry",
+        "missed_opportunity_save",
         "paper_list_pending_orders",
         "research_session_get",
         "research_session_list_recent",
@@ -452,8 +469,19 @@ def build_route_plan(
     # tool so the advisory shows + allows it instead of leaving the lane
     # execution-less with place_order misclassified as blocked (ROB-658).
     if lane_place_tools and not (lane_place_tools & registered_tools):
-        for tool in sorted(market_exec & registered_tools):
-            seq_steps.append({"tool": tool, "purpose": _MARKET_EXEC_PURPOSE[lane]})
+        market_steps = [
+            {"tool": tool, "purpose": _MARKET_EXEC_PURPOSE[lane]}
+            for tool in sorted(market_exec & registered_tools)
+        ]
+        close_index = next(
+            (
+                index
+                for index, step in enumerate(seq_steps)
+                if step["tool"] in _SESSION_CLOSE_TOOLS
+            ),
+            len(seq_steps),
+        )
+        seq_steps[close_index:close_index] = market_steps
 
     standard_tool_sequence = [
         {"step": i, "tool": step["tool"], "purpose": step["purpose"]}

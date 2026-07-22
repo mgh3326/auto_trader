@@ -129,6 +129,14 @@ lanes:
    `investment_report_create` response surfaces a `warnings` advisory when an
    item is missing `confidence`.
 
+8. **Volatile zero-entry close (ROB-1017):** before ending the session, call
+   `missed_opportunity_save`. When the same-day absolute index move is strictly
+   greater than 2% and `new_buy_count=0`, the call must contain exactly the
+   ranked top N unbought candidates with confidence, D0 reference price, target
+   return, and rejection reason. The storage service publishes their D+5 close
+   return forecasts and linked `trigger_type=missed_opportunity` rows. A move of
+   exactly ±2% does not trigger the obligation.
+
 ```yaml
 # playbook-machine-readable: buy lane (ROB-649 source)
 lanes:
@@ -146,6 +154,7 @@ lanes:
         confirm: true
       - tool: kis_live_place_order    # KIS deposit spend-down; dry_run preview -> live
         confirm: true
+      - tool: missed_opportunity_save # mandatory volatile zero-entry session-close hook
     gates:
       - recovery_gate     # deploy reserve only when >= recovery_gate.min_conditions_met
       - loss_guard        # sell price >= avg * sell.loss_guard_min_multiple (sell-side)
@@ -246,6 +255,12 @@ recurring new-buy discovery-and-ranking round. It has no code definition yet;
    `investment_report_create` response surfaces a `warnings` advisory when an
    item is missing `confidence`.
 
+7. **Volatile zero-entry close (ROB-1017):** call
+   `missed_opportunity_save` before ending the session. A strict
+   `abs(index_change_pct) > 2` move with zero new buys requires exactly top N
+   ranked unbought candidates; their D+5 close-return forecasts and linked
+   missed retrospectives are one atomic cohort.
+
 ```yaml
 # playbook-machine-readable: discovery lane / candidate tournament (ROB-649 source)
 lanes:
@@ -263,6 +278,7 @@ lanes:
       - tool: analyze_stock_batch     # deep confirm on ranked survivors
       - tool: toss_place_order        # winners only, support-line limit
         confirm: true
+      - tool: missed_opportunity_save # mandatory volatile zero-entry session-close hook
 ```
 
 ---

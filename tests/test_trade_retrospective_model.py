@@ -136,6 +136,30 @@ async def test_invalid_trigger_type_rejected_by_db(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_missed_opportunity_trigger_round_trip(db_session: AsyncSession):
+    row = TradeRetrospective(
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="toss_live",
+        outcome="unfilled",
+        correlation_id="missed-opportunity:kr:2026-07-21:1:005930",
+        trigger_type="missed_opportunity",
+        next_actions=[{"action": "score the D+5 forecast"}],
+    )
+    db_session.add(row)
+    await db_session.commit()
+
+    got = (
+        await db_session.execute(
+            select(TradeRetrospective).where(
+                TradeRetrospective.correlation_id == row.correlation_id
+            )
+        )
+    ).scalar_one()
+    assert got.trigger_type == "missed_opportunity"
+
+
+@pytest.mark.asyncio
 async def test_invalid_root_cause_rejected_by_db(db_session: AsyncSession):
     from sqlalchemy.exc import IntegrityError
 

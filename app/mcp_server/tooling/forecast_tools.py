@@ -18,6 +18,15 @@ from app.services.trade_journal.forecast_service import (
     save_forecast,
     serialize_forecast,
 )
+from app.services.trade_journal.missed_opportunity_service import (
+    MissedOpportunityValidationError,
+)
+from app.services.trade_journal.missed_opportunity_service import (
+    save_missed_opportunities as _save_missed_opportunities,
+)
+from app.services.trade_journal.trade_retrospective_service import (
+    RetrospectiveValidationError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +101,56 @@ async def forecast_save(
     except Exception as exc:  # noqa: BLE001
         logger.exception("forecast_save failed")
         return {"success": False, "error": f"forecast_save failed: {exc}"}
+
+
+async def missed_opportunity_save(
+    created_by: str,
+    market: str,
+    session_date: str,
+    account_mode: str,
+    index_symbol: str,
+    index_change_pct: float,
+    new_buy_count: int,
+    candidates: list[dict],
+    session_label: str,
+    top_n: int = 3,
+    model_label: str | None = None,
+    policy_version: str | None = None,
+    artifact_uuid: str | None = None,
+    report_uuid: str | None = None,
+) -> dict[str, Any]:
+    """Publish the mandatory D+5 missed cohort for a qualifying session."""
+
+    try:
+        async with _session_factory()() as db:
+            result = await _save_missed_opportunities(
+                db,
+                created_by=created_by,
+                market=market,
+                session_date=session_date,
+                account_mode=account_mode,
+                index_symbol=index_symbol,
+                index_change_pct=index_change_pct,
+                new_buy_count=new_buy_count,
+                candidates=candidates,
+                session_label=session_label,
+                top_n=top_n,
+                model_label=model_label,
+                policy_version=policy_version,
+                artifact_uuid=artifact_uuid,
+                report_uuid=report_uuid,
+            )
+            await db.commit()
+        return {"success": True, **result}
+    except (
+        MissedOpportunityValidationError,
+        ForecastValidationError,
+        RetrospectiveValidationError,
+    ) as exc:
+        return {"success": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("missed_opportunity_save failed")
+        return {"success": False, "error": f"missed_opportunity_save failed: {exc}"}
 
 
 async def forecast_resolve(

@@ -57,7 +57,9 @@ from sqlalchemy import text
 # v26 (ROB-954): add the dedicated terminal transition timestamp + scan index.
 # v27 (ROB-1023): widen research.backtest_runs.runner to preserve the exact
 # production execution-lineage label.
-SCHEMA_BOOTSTRAP_VERSION = 27
+# v28 (ROB-1017): widen the retrospective trigger CHECK with
+# missed_opportunity.
+SCHEMA_BOOTSTRAP_VERSION = 28
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -794,12 +796,14 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ALTER TABLE review.trade_retrospectives ADD COLUMN IF NOT EXISTS policy_version TEXT",
     "ALTER TABLE review.trade_retrospectives DROP CONSTRAINT IF EXISTS "
     "ck_trade_retrospectives_trigger_type",
+    "ALTER TABLE review.trade_retrospectives DROP CONSTRAINT IF EXISTS "
+    "ck_trade_retrospectives_ck_trade_retrospectives_trigger_type",
     "ALTER TABLE review.trade_retrospectives "
     "ADD CONSTRAINT ck_trade_retrospectives_trigger_type "
     "CHECK (trigger_type IS NULL OR trigger_type IN ("
     "'fill','partial_fill','rejected_order','cancelled','expired',"
     "'thesis_change','policy_violation','stale_evidence',"
-    "'guardrail_block','stop_loss'))",
+    "'guardrail_block','stop_loss','missed_opportunity'))",
     "ALTER TABLE review.trade_retrospectives DROP CONSTRAINT IF EXISTS "
     "ck_trade_retrospectives_root_cause_class",
     "ALTER TABLE review.trade_retrospectives "
