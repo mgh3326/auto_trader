@@ -24,6 +24,7 @@ from rob974_h4_adapter import (
     H4ContractDrift,
     SealedS3Terminal,
     invoke_actual_s3_engine,
+    seal_s3_engine_input,
     seal_s3_engine_output,
 )
 from rob974_h4_contracts import exact_h4_folds
@@ -41,6 +42,7 @@ from rob974_r3_h4_s4_adapter import (
     SealedR3S4Terminal,
     assert_r3_s4_frozen_parity,
     invoke_r3_s4_engine,
+    seal_r3_s4_engine_input,
     seal_r3_s4_engine_output,
     validate_r3_s4_terminal,
 )
@@ -728,8 +730,9 @@ def test_production_shaped_all_12_cells_cross_h3_engine_h4_and_m3() -> None:
     fold = exact_h4_folds()[0]
     decision_ts = fold.oos_start_ms + frozen_s4_engine.FOUR_H_MS
     completed: list[str] = []
-    executed_terminals: dict[str, SealedS3Terminal | SealedR3S4Terminal] = {}
+    executed_sources: dict[str, R3H2CellFoldInput] = {}
     for config in FROZEN_R3_ROSTER:
+        corpus_end_ts = decision_ts + 2 * _MINUTE_MS
         if type(config) is R3S3Config:
             outcome = evaluate_r3_s3_gates(_s3_metrics(config, decision_ts), config)
             assert outcome.candidate is not None
@@ -744,7 +747,7 @@ def test_production_shaped_all_12_cells_cross_h3_engine_h4_and_m3() -> None:
                 candidates=[intent],
                 minute_index=build_minute_index(bars),
                 close_feature_index={},
-                corpus_end_ts=decision_ts + 2 * _MINUTE_MS,
+                corpus_end_ts=corpus_end_ts,
                 horizon_end_ts=fold.oos_end_ms,
                 strategy="S3",
                 config_id=config.config_id,
@@ -772,7 +775,7 @@ def test_production_shaped_all_12_cells_cross_h3_engine_h4_and_m3() -> None:
                 candidates=[intent],
                 minute_index=build_minute_index(bars),
                 pair_close_index={},
-                corpus_end_ts=decision_ts + 2 * _MINUTE_MS,
+                corpus_end_ts=corpus_end_ts,
                 horizon_end_ts=fold.oos_end_ms,
                 strategy="S4",
                 config_id=config.config_id,
@@ -781,7 +784,15 @@ def test_production_shaped_all_12_cells_cross_h3_engine_h4_and_m3() -> None:
             assert type(terminal.result) is R3S4EngineResult
             assert len(terminal.result.trades) == 1
         assert terminal.result.incompletes == ()
-        executed_terminals[config.config_id] = terminal
+        executed_sources[config.config_id] = R3H2CellFoldInput(
+            config=config,
+            fold_id=fold.fold_id,
+            h3_candidates=(outcome.candidate,),
+            engine_intents=(intent,),
+            corpus_end_ts=corpus_end_ts,
+            horizon_end_ts=fold.oos_end_ms,
+            terminal=terminal,
+        )
         completed.append(config.config_id)
     assert tuple(completed) == tuple(row.config_id for row in FROZEN_R3_ROSTER)
 
@@ -789,24 +800,50 @@ def test_production_shaped_all_12_cells_cross_h3_engine_h4_and_m3() -> None:
     for config in FROZEN_R3_ROSTER:
         for current_fold in exact_h4_folds():
             if current_fold.fold_id == fold.fold_id:
-                terminal = executed_terminals[config.config_id]
+                source = executed_sources[config.config_id]
             elif type(config) is R3S3Config:
                 empty = S3EngineResult((), (), ())
+                corpus_end_ts = current_fold.oos_end_ms
                 terminal = SealedS3Terminal(
-                    empty, "a" * 64, seal_s3_engine_output(empty)
+                    empty,
+                    seal_s3_engine_input(
+                        (),
+                        corpus_end_ts=corpus_end_ts,
+                        horizon_end_ts=current_fold.oos_end_ms,
+                    ),
+                    seal_s3_engine_output(empty),
+                )
+                source = R3H2CellFoldInput(
+                    config=config,
+                    fold_id=current_fold.fold_id,
+                    h3_candidates=(),
+                    engine_intents=(),
+                    corpus_end_ts=corpus_end_ts,
+                    horizon_end_ts=current_fold.oos_end_ms,
+                    terminal=terminal,
                 )
             else:
                 empty_r3 = R3S4EngineResult((), (), ())
+                corpus_end_ts = current_fold.oos_end_ms
                 terminal = SealedR3S4Terminal(
-                    empty_r3, "a" * 64, seal_r3_s4_engine_output(empty_r3)
+                    empty_r3,
+                    seal_r3_s4_engine_input(
+                        (),
+                        corpus_end_ts=corpus_end_ts,
+                        horizon_end_ts=current_fold.oos_end_ms,
+                    ),
+                    seal_r3_s4_engine_output(empty_r3),
                 )
-            sources.append(
-                R3H2CellFoldInput(
+                source = R3H2CellFoldInput(
                     config=config,
                     fold_id=current_fold.fold_id,
+                    h3_candidates=(),
+                    engine_intents=(),
+                    corpus_end_ts=corpus_end_ts,
+                    horizon_end_ts=current_fold.oos_end_ms,
                     terminal=terminal,
                 )
-            )
+            sources.append(source)
     evidence = normalize_r3_phase_ledgers(phase="OOS", sources=tuple(sources))
     assert evidence.operational_status == "COMPLETE"
     assert len(evidence.ledgers) == 12 * 8
