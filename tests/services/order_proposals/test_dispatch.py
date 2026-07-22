@@ -438,10 +438,10 @@ async def test_dispatch_auto_eligible_buy_or_sell_rests_without_approval(
     refreshed, rungs = await service.get_proposal(group.proposal_id)
     assert rungs[0].state == "resting"
     assert refreshed.approved_by_telegram_user_id is None
-    assert refreshed.source_asof["auto_approved"]["policy_version"] == "2026-07-17.3"
+    assert refreshed.source_asof["auto_approved"]["policy_version"] == "2026-07-22.1"
     text, keyboard, _chat_id = notifier.sent_messages[0]
     assert "자동 접수됨" in text
-    assert "auto:policy@2026-07-17.3" in text
+    assert "auto:policy@2026-07-22.1" in text
     assert keyboard["inline_keyboard"][0][0]["text"] == "취소"
     assert keyboard["inline_keyboard"][0][0]["callback_data"].startswith("vc:")
 

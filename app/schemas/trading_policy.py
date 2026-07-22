@@ -87,6 +87,7 @@ class PolicyRecoveryGate(BaseModel):
     of: int
     missing_or_null_threshold: str
     conditions: list[PolicyRecoveryCondition]
+    advisory_context: list[PolicyRecoveryCondition] = Field(default_factory=list)
 
 
 class PolicySupportResistanceRule(BaseModel):
