@@ -12,10 +12,20 @@ from pathlib import Path
 import pytest
 import rob974_h2_s4_engine as frozen_s4_engine
 import rob974_r3_s4_engine as r3_s4_engine
-from rob974_h2_dtos import MinuteBar, S4PairLegClose, S4PairSignalIntent
+from rob974_h2_dtos import (
+    MinuteBar,
+    S3EngineResult,
+    S4PairLegClose,
+    S4PairSignalIntent,
+)
 from rob974_h2_ingress import build_minute_index
 from rob974_h3_h2_adapter import adapt_s3_candidate
-from rob974_h4_adapter import H4ContractDrift, invoke_actual_s3_engine
+from rob974_h4_adapter import (
+    H4ContractDrift,
+    SealedS3Terminal,
+    invoke_actual_s3_engine,
+    seal_s3_engine_output,
+)
 from rob974_h4_contracts import exact_h4_folds
 from rob974_h4_h6a_adapter import ENGINE_SOURCE_FILES, build_production_h4_plan
 from rob974_r3_h3_adapter import (
@@ -28,8 +38,10 @@ from rob974_r3_h3_adapter import (
 from rob974_r3_h4_s4_adapter import (
     R3_ENGINE_SOURCE_FILES,
     R3S4ParityDrift,
+    SealedR3S4Terminal,
     assert_r3_s4_frozen_parity,
     invoke_r3_s4_engine,
+    seal_r3_s4_engine_output,
     validate_r3_s4_terminal,
 )
 from rob974_r3_manifest import (
@@ -40,8 +52,8 @@ from rob974_r3_manifest import (
     get_r3_config,
 )
 from rob974_r3_relaxation_h2_adapter import (
-    normalize_r3_s3_trade,
-    normalize_r3_s4_trade,
+    R3H2CellFoldInput,
+    normalize_r3_phase_ledgers,
 )
 from rob974_r3_s4_dtos import (
     R3S4EngineResult,
@@ -301,8 +313,26 @@ def _parity_case(
     if case == "G_MISMATCH":
         bad = dataclasses.replace(candidate, gross_notional=13.0)
         return [bad], _bars(_PAIR[0], 0, 1) + _bars(_PAIR[1], 0, 1), [], None
+    if case == "G_INFEASIBLE":
+        bad = dataclasses.replace(
+            candidate, weight_a=0.05, weight_b=0.95, gross_notional=120.0
+        )
+        return [bad], _bars(_PAIR[0], 0, 1) + _bars(_PAIR[1], 0, 1), [], None
     if case == "INCOMPLETE":
         return [candidate], _bars(_PAIR[0], 0, 1) + _bars(_PAIR[1], 0, 1), [], None
+    if case == "HORIZON_INCOMPLETE":
+        return [candidate], _bars(_PAIR[0], 0, 1) + _bars(_PAIR[1], 0, 1), [], 0
+    if case == "CONSERVATIVE_SL":
+        if sign > 0:
+            leg_a = (1.0, 1.6, 1.0, 1.0)
+            leg_b = (1.0, 1.0, 0.6, 1.0)
+        else:
+            leg_a = (1.0, 1.0, 0.6, 1.0)
+            leg_b = (1.0, 1.6, 1.0, 1.0)
+        bars = _bars("XRPUSDT", 0, 2, overrides={1: leg_a}) + _bars(
+            "DOGEUSDT", 0, 2, overrides={1: leg_b}
+        )
+        return [candidate], bars, [], None
     if case == "GLOBAL_ORDER":
         second = _intent(
             config_id,
@@ -349,7 +379,10 @@ def _parity_case(
         "TIMEOUT",
         "NEXT_TICK",
         "G_MISMATCH",
+        "G_INFEASIBLE",
         "INCOMPLETE",
+        "HORIZON_INCOMPLETE",
+        "CONSERVATIVE_SL",
         "GLOBAL_ORDER",
         "EXACT_REENTRY",
     ),
@@ -695,6 +728,7 @@ def test_production_shaped_all_12_cells_cross_h3_engine_h4_and_m3() -> None:
     fold = exact_h4_folds()[0]
     decision_ts = fold.oos_start_ms + frozen_s4_engine.FOUR_H_MS
     completed: list[str] = []
+    executed_terminals: dict[str, SealedS3Terminal | SealedR3S4Terminal] = {}
     for config in FROZEN_R3_ROSTER:
         if type(config) is R3S3Config:
             outcome = evaluate_r3_s3_gates(_s3_metrics(config, decision_ts), config)
@@ -717,12 +751,6 @@ def test_production_shaped_all_12_cells_cross_h3_engine_h4_and_m3() -> None:
                 fold_id=fold.fold_id,
             )
             assert len(terminal.result.trades) == 1
-            normalized = normalize_r3_s3_trade(
-                trade=terminal.result.trades[0],
-                config=config,
-                fold_id=fold.fold_id,
-            )
-            assert normalized.event.family == "S3"
         else:
             outcome = evaluate_r3_s4_gates(_s4_estimate(config, decision_ts), config)
             assert outcome.candidate is not None
@@ -752,15 +780,42 @@ def test_production_shaped_all_12_cells_cross_h3_engine_h4_and_m3() -> None:
             )
             assert type(terminal.result) is R3S4EngineResult
             assert len(terminal.result.trades) == 1
-            normalized = normalize_r3_s4_trade(
-                trade=terminal.result.trades[0],
-                config=config,
-                fold_id=fold.fold_id,
-            )
-            assert normalized.event.family == "S4"
-            assert normalized.execution.observed_z == config.z_entry
+        assert terminal.result.incompletes == ()
+        executed_terminals[config.config_id] = terminal
         completed.append(config.config_id)
     assert tuple(completed) == tuple(row.config_id for row in FROZEN_R3_ROSTER)
+
+    sources: list[R3H2CellFoldInput] = []
+    for config in FROZEN_R3_ROSTER:
+        for current_fold in exact_h4_folds():
+            if current_fold.fold_id == fold.fold_id:
+                terminal = executed_terminals[config.config_id]
+            elif type(config) is R3S3Config:
+                empty = S3EngineResult((), (), ())
+                terminal = SealedS3Terminal(
+                    empty, "a" * 64, seal_s3_engine_output(empty)
+                )
+            else:
+                empty_r3 = R3S4EngineResult((), (), ())
+                terminal = SealedR3S4Terminal(
+                    empty_r3, "a" * 64, seal_r3_s4_engine_output(empty_r3)
+                )
+            sources.append(
+                R3H2CellFoldInput(
+                    config=config,
+                    fold_id=current_fold.fold_id,
+                    terminal=terminal,
+                )
+            )
+    evidence = normalize_r3_phase_ledgers(phase="OOS", sources=tuple(sources))
+    assert evidence.operational_status == "COMPLETE"
+    assert len(evidence.ledgers) == 12 * 8
+    for config_index, config in enumerate(FROZEN_R3_ROSTER):
+        ledger = evidence.ledgers[config_index * 8]
+        assert ledger.basket_trade_count == len(ledger.trades) == 1
+        assert ledger.trades[0].event.family == config.config_id[:2]
+        if type(config) is R3S4Config:
+            assert ledger.trades[0].execution.observed_z == config.z_entry
 
 
 def test_frozen_r2_execution_sources_and_full_identity_are_unchanged() -> None:
