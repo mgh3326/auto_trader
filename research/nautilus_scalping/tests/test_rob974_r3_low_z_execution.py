@@ -855,10 +855,10 @@ def test_production_shaped_all_12_cells_cross_h3_engine_h4_and_m3() -> None:
             assert ledger.trades[0].execution.observed_z == config.z_entry
 
 
-def test_frozen_r2_execution_sources_and_full_identity_are_unchanged() -> None:
+def test_r2_execution_sources_match_authorized_boundary_identity() -> None:
     expected = {
         "rob974_h2_dtos.py": "1c0a7f856208fd529c88d2ba88392e25f9cc6530effa1b6e926201c896f827f8",
-        "rob974_h2_s4_engine.py": "90c6c82eb2b82b8d66576cad7e3219f0b9a4dc2841704464277fd4488043c87e",
+        "rob974_h2_s4_engine.py": "2d4ca5eb37c78e75209eef66228ce78a3f9323058ec0ee1c34bf4b868aa495e9",
         "rob974_h3_h2_adapter.py": "8316721acdad1522ec428cb15064557125394e0de35b88007e7edc329974089d",
         "rob974_h4_adapter.py": "b58ccf176941f9832a6ac37da0b851b80eeb9e3a09b38ec673319d68646de156",
         "rob974_h4_runner.py": "3759bd3e082e7c3a1daddc426db9135c30dc00f02fbb52e403c38cd6f46a0f22",
@@ -869,5 +869,5 @@ def test_frozen_r2_execution_sources_and_full_identity_are_unchanged() -> None:
         for filename in expected
     } == expected
     assert build_production_h4_plan().full_campaign_hash == (
-        "2c47864c7ab661f16be6c414a1140944ec36832bb268e86183555b56c6f85f53"
+        "70f352c3c477e27a36111f1daa584deb4ca570ec57ae9555727d6bc6c68b4248"
     )

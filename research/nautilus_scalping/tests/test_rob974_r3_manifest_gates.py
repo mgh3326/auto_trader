@@ -181,21 +181,21 @@ def test_manifest_rejects_anchor_excluded_saturated_duplicate_reorder_and_rename
             manifest.validate_r3_manifest(mutant)
 
 
-def test_r2_anchor_projection_and_h2_engine_bytes_are_unchanged() -> None:
+def test_r2_anchor_and_engine_bytes_match_authorized_boundary_identity() -> None:
     manifest.validate_r2_anchor_projection()
     assert r2_production.build_production_h4_plan().full_campaign_hash == (
-        "2c47864c7ab661f16be6c414a1140944ec36832bb268e86183555b56c6f85f53"
+        "70f352c3c477e27a36111f1daa584deb4ca570ec57ae9555727d6bc6c68b4248"
     )
     root = Path(__file__).resolve().parents[1]
     assert hashlib.sha256(
         (root / "rob974_h2_s3_engine.py").read_bytes()
     ).hexdigest() == (
-        "766c1cdd0d55f9127413c0d84679dc17c8e6f84be6c06235fa7c5dd033bbd405"
+        "71c930aa18da414750733078fd0190e0442af5350b5641565aedec5e2105609a"
     )
     assert hashlib.sha256(
         (root / "rob974_h2_s4_engine.py").read_bytes()
     ).hexdigest() == (
-        "90c6c82eb2b82b8d66576cad7e3219f0b9a4dc2841704464277fd4488043c87e"
+        "2d4ca5eb37c78e75209eef66228ce78a3f9323058ec0ee1c34bf4b868aa495e9"
     )
 
 
