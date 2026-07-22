@@ -15,23 +15,29 @@ def _raw() -> dict:
 
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-07-17.3"
+    assert doc.version == "2026-07-22.1"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
     assert doc.thresholds["screen.rsi_max"].value == 45
     assert doc.thresholds["buy.deep_limit_pct_range"].value == [-12, -3]
+    assert doc.thresholds["portfolio.max_symbols_per_theme"].value == 2
     assert set(doc.market_overrides.keys()) == {"kr", "us", "crypto"}
     assert "semis_memory" in doc.sector_clusters
     assert "sell.trim_preplace" in doc.decision_rules
     trim_rule = doc.decision_rules["sell.trim_preplace"]
     assert trim_rule.lanes == ["sell"]
     assert [tier.id for tier in trim_rule.tiers] == [
+        "profit_realization",
         "rsi_confirmed_resistance",
         "ultra_near_resistance",
         "watch_zone",
     ]
-    assert trim_rule.tiers[1].conditions["resistance_near_pct_max"] == 2
+    assert trim_rule.tiers[0].conditions["profit_pct_min"] == 8
+    assert trim_rule.tiers[2].conditions["resistance_near_pct_max"] == 2
+    assert trim_rule.tie_breaks["multiple_tiers_matched"] == (
+        "first_matching_tier_wins"
+    )
     assert trim_rule.tie_breaks["sell.upside_place_max_pct"] == "size_limit_only"
 
 
@@ -52,23 +58,24 @@ def test_crypto_market_rules_preserve_report_derived_and_null_thresholds():
     gate = rules.recovery_gate
 
     assert gate.min_conditions_met == 2
-    assert gate.of == 4
+    assert gate.of == 2
     assert [condition.id for condition in gate.conditions] == [
-        "fear_greed",
         "alt_breadth_24h",
         "btc_long_short_ratio",
-        "btc_kimchi_premium",
     ]
-    assert gate.conditions[0].threshold is None
-    assert (gate.conditions[1].operator, gate.conditions[1].threshold) == (
+    assert (gate.conditions[0].operator, gate.conditions[0].threshold) == (
         "gt",
         50,
     )
-    assert (gate.conditions[2].operator, gate.conditions[2].threshold) == (
+    assert (gate.conditions[1].operator, gate.conditions[1].threshold) == (
         "lte",
         1.5,
     )
-    assert gate.conditions[3].threshold is None
+    assert [context.id for context in gate.advisory_context] == [
+        "fear_greed",
+        "btc_kimchi_premium",
+    ]
+    assert all(context.threshold is None for context in gate.advisory_context)
     assert rules.no_chasing.daily_change_pct_threshold is None
     assert rules.no_chasing.min_trade_value_24h_krw is None
     assert rules.support_resistance.source_priority == [

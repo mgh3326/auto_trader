@@ -5,7 +5,7 @@ from app.services import trading_policy_service as svc
 
 def test_version_stamp_has_version_and_hash():
     stamp = svc.policy_version_stamp()
-    assert stamp["version"] == "2026-07-17.3"
+    assert stamp["version"] == "2026-07-22.1"
     assert len(stamp["content_hash"]) == 12
 
 
@@ -15,13 +15,15 @@ def test_content_hash_stable_across_calls():
 
 def test_get_policy_for_buy_kr_includes_cap_and_version():
     view = svc.get_policy_for("kr", "buy")
-    assert view["version"] == "2026-07-17.3"
+    assert view["version"] == "2026-07-22.1"
     assert view["content_hash"]
     t = view["thresholds"]
     # buy lane references these (playbook lane tags)
     assert t["portfolio.sector_cluster_cap_pct"]["value"] == 10
     assert t["portfolio.sector_cluster_cap_pct"]["source"] == "default"
+    assert t["portfolio.max_symbols_per_theme"]["value"] == 2
     assert t["recovery_gate.min_conditions_met"]["value"] == 2
+    assert t["recovery_gate.min_conditions_met"]["of"] == 2
     assert t["sell.loss_guard_min_multiple"]["value"] == 1.01
     # sell-only threshold must NOT appear in the buy lane
     assert "sell.rsi_place_min" not in t
@@ -31,7 +33,7 @@ def test_get_policy_for_buy_kr_includes_cap_and_version():
 def test_get_policy_for_crypto_buy_exposes_report_derived_market_rules():
     view = svc.get_policy_for("crypto", "buy")
 
-    assert view["version"] == "2026-07-17.3"
+    assert view["version"] == "2026-07-22.1"
     assert set(view["market_rules"]) == {
         "recovery_gate",
         "support_resistance",
@@ -39,7 +41,15 @@ def test_get_policy_for_crypto_buy_exposes_report_derived_market_rules():
     }
     gate = view["market_rules"]["recovery_gate"]
     assert gate["min_conditions_met"] == 2
-    assert gate["of"] == 4
+    assert gate["of"] == 2
+    assert [condition["id"] for condition in gate["conditions"]] == [
+        "alt_breadth_24h",
+        "btc_long_short_ratio",
+    ]
+    assert [context["id"] for context in gate["advisory_context"]] == [
+        "fear_greed",
+        "btc_kimchi_premium",
+    ]
     assert "lanes" not in gate
     assert view["market_rules"]["no_chasing"]["daily_change_pct_threshold"] is None
 
@@ -60,12 +70,13 @@ def test_get_policy_for_sell_lane_has_sell_keys():
     assert t["sell.rsi_place_min"]["value"] == 58
     assert "screen.rsi_max" not in t
     rule = view["decision_rules"]["sell.trim_preplace"]
-    assert rule["tiers"][0]["id"] == "rsi_confirmed_resistance"
-    assert rule["tiers"][0]["conditions"]["rsi_min_policy_key"] == (
+    assert rule["tiers"][0]["id"] == "profit_realization"
+    assert rule["tiers"][0]["conditions"]["profit_pct_min"] == 8
+    assert rule["tiers"][1]["conditions"]["rsi_min_policy_key"] == (
         "sell.rsi_place_min"
     )
-    assert rule["tiers"][1]["conditions"]["resistance_near_pct_max"] == 2
-    assert rule["tiers"][2]["action"] == "register_watch"
+    assert rule["tiers"][2]["conditions"]["resistance_near_pct_max"] == 2
+    assert rule["tiers"][3]["action"] == "register_watch"
     assert rule["tie_breaks"]["sell.upside_place_max_pct"] == "size_limit_only"
 
 

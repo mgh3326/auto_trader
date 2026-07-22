@@ -2,9 +2,9 @@
 # Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
 # (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
 # Repo is public; exposing these values is an accepted decision.
-version: "2026-07-17.3"
-captured_as_of: "2026-07-17"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key"
+version: "2026-07-22.1"
+captured_as_of: "2026-07-22"
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22"
 
 authority:
   scope: judgment_policy_only
@@ -48,8 +48,8 @@ thresholds:
     lanes: [buy]
     value: 2
     unit: count
-    of: 4
-    semantics: min recovery-gate conditions to deploy reserve (else support-conditional only)
+    of: 2
+    semantics: min countable recovery-gate conditions to deploy reserve (else support-conditional only)
   portfolio.sector_cluster_cap_pct:
     lanes: [buy, sell]
     value: 10
@@ -57,9 +57,11 @@ thresholds:
     semantics: over-concentration cap per sector cluster (~9-10%)
   portfolio.max_symbols_per_theme:
     lanes: [buy, discovery]
-    value: 1
+    value: 2
     unit: count
-    semantics: one symbol per theme
+    semantics: max symbols per theme; theme overlap is a disclosure item, not an auto-reject
+      — strong expected-value candidates may be proposed with overlap stated in thesis
+      (operator risk direction 2026-07-22; concentration backstop = sector_concentration cap)
   order.day_expiry_kst:
     lanes: [buy, sell]
     value: "20:00"
@@ -150,8 +152,20 @@ thresholds:
 decision_rules:
   sell.trim_preplace:
     lanes: [sell]
-    semantics: "Tie-break when resistance-near favors PLACE but upside-rich would otherwise allow WATCH: resistance proximity can pre-place only a small trim; upside richness limits size, not eligibility."
+    semantics: >-
+      Tiers are evaluated in declared priority order and the first match wins.
+      profit_realization is resistance-distance-independent; global exclusions
+      apply to every tier. When resistance-near favors PLACE but upside-rich
+      would otherwise allow WATCH, resistance proximity can pre-place only a
+      small trim; upside richness limits size, not eligibility.
     tiers:
+      - id: profit_realization
+        conditions:
+          # Fable governance advisory Q3-#4 Phase 1 seed; follow-up sell-policy
+          # research must recalibrate this initial threshold.
+          profit_pct_min: 8
+        action: preplace_small_trim_ladder
+        sizing: small_trim_only
       - id: rsi_confirmed_resistance
         conditions:
           rsi_min_policy_key: sell.rsi_place_min
@@ -172,6 +186,8 @@ decision_rules:
         action: register_watch
         sizing: no_preplaced_trim
     tie_breaks:
+      tier_priority: "profit_realization > rsi_confirmed_resistance > ultra_near_resistance > watch_zone"
+      multiple_tiers_matched: first_matching_tier_wins
       sell.upside_place_max_pct: size_limit_only
     exclusions:
       - single_share_position
@@ -183,18 +199,14 @@ market_rules:
     recovery_gate:
       lanes: [buy]
       advisory: true
-      semantics: reserve deployment recovery frame; otherwise support-conditional only
+      semantics: >-
+        reserve deployment recovery frame; otherwise support-conditional only.
+        advisory_context is qualitative reference only, is not part of the gate
+        count, and receives thresholds in the crypto-gate redesign round.
       min_conditions_met: 2
-      of: 4
+      of: 2
       missing_or_null_threshold: do_not_infer_or_count_as_met
       conditions:
-        - id: fear_greed
-          metric: crypto_fear_greed_index
-          sources: [alternative_me]
-          operator: null
-          threshold: null
-          unit: index
-          semantics: reports cite a recovering trend but define no pass cutoff
         - id: alt_breadth_24h
           metric: upbit_alt_breadth_24h
           sources: [upbit_open_api_ticker_derived]
@@ -209,13 +221,21 @@ market_rules:
           threshold: 1.5
           unit: ratio
           semantics: both report inputs should remain at or below the threshold
+      advisory_context:
+        - id: fear_greed
+          metric: crypto_fear_greed_index
+          sources: [alternative_me]
+          operator: null
+          threshold: null
+          unit: index
+          semantics: qualitative reference only; no pass cutoff and excluded from gate count
         - id: btc_kimchi_premium
           metric: btc_kimchi_premium
           sources: [upbit_binance_fx]
           operator: null
           threshold: null
           unit: percent
-          semantics: reports interpret discount and domestic FOMO qualitatively; no pass cutoff
+          semantics: qualitative reference only; no pass cutoff and excluded from gate count
     support_resistance:
       lanes: [buy, sell, discovery]
       advisory: true
