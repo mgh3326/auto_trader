@@ -98,6 +98,41 @@ def test_refrozen_plan_exposes_current_literal_identity_pins(
     assert all(value == 0 for value in payload["effects"].values())
 
 
+def test_malformed_refrozen_plan_fails_closed_without_effects_or_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launcher = _launcher()
+    monkeypatch.setattr(
+        launcher,
+        "FINAL_REFREEZE",
+        replace(launcher.FINAL_REFREEZE, status="CP8_REFROZEN"),
+    )
+    calls: list[str] = []
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        calls.append("effect")
+        raise AssertionError("malformed plan crossed an effect boundary")
+
+    for name in (
+        "_install_runtime_paths",
+        "_execute_schema_guard",
+        "_execute_refrozen_run",
+        "_load_exact_real_input",
+    ):
+        monkeypatch.setattr(launcher, name, forbidden)
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    assert (
+        launcher.run_cli(("--plan",), stdout=stdout, stderr=stderr, environ={})
+        == launcher.AUTHORITY_OR_PREFLIGHT_REFUSED
+    )
+    assert stdout.getvalue() == ""
+    assert stderr.getvalue() == (
+        "AUTHORITY_OR_PREFLIGHT_REFUSED CP8_REFREEZE_GIT_PINS_MALFORMED\n"
+    )
+    assert calls == []
+
+
 def test_launcher_approved_database_literal_is_r3_only() -> None:
     source = _SCRIPT.read_text(encoding="utf-8")
     assert 'APPROVED_DB = ("localhost", 5432, "rob974_r3_db", "postgres")' in source
@@ -734,7 +769,29 @@ def test_incomplete_result_payload_is_machine_readable_without_changing_exit_zer
         "incomplete_reasons": incomplete_reasons,
     }
     assert decoded["campaign_verdict"]["operational_status"] == "INCOMPLETE"
+    assert decoded["campaign_verdict"]["research_eligible"] is False
     assert decoded["campaign_verdict"]["research_decision"] is None
+
+
+def test_complete_scorecard_result_is_research_eligible() -> None:
+    launcher = _launcher()
+    operational, verdict = launcher._scorecard_result_sections(
+        {
+            "operational": {"status": "COMPLETE", "incomplete_reasons": []},
+            "campaign_verdict": {
+                "operational_status": "COMPLETE",
+                "research_decision": "NARROW",
+                "reason_codes": ["single_full_gate_pruned_boundary_winner"],
+            },
+        }
+    )
+    assert operational == {"status": "COMPLETE", "incomplete_reasons": []}
+    assert verdict == {
+        "operational_status": "COMPLETE",
+        "research_eligible": True,
+        "research_decision": "NARROW",
+        "reason_codes": ["single_full_gate_pruned_boundary_winner"],
+    }
 
 
 def test_launcher_wires_stable_m4_scorecard_and_markdown_seams() -> None:

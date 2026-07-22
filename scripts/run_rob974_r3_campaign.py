@@ -307,6 +307,7 @@ def _dry_run_final_hashes() -> str | dict[str, object]:
     pins = FINAL_REFREEZE
     if pins.status != "CP8_REFROZEN":
         return "PENDING_CP8"
+    pins = _require_cp8_final_refreeze()
     return {
         "full_campaign_hash": pins.full_campaign_hash,
         "campaign_run_id": pins.campaign_run_id,
@@ -2392,7 +2393,10 @@ def _scorecard_result_sections(
         )
         or (
             status == "COMPLETE"
-            and research_decision not in ("CONTINUE", "NARROW", "TERMINATE")
+            and (
+                incomplete_reasons
+                or research_decision not in ("CONTINUE", "NARROW", "TERMINATE")
+            )
         )
     ):
         raise LaunchRefused("SCORECARD_RESULT_SECTIONS_MALFORMED")
@@ -2403,6 +2407,7 @@ def _scorecard_result_sections(
         },
         {
             "operational_status": verdict_status,
+            "research_eligible": status == "COMPLETE",
             "research_decision": research_decision,
             "reason_codes": list(reason_codes),
         },
@@ -2615,8 +2620,12 @@ def run_cli(
         stderr.write("CLI_USAGE_OR_PLAN_ERROR\n")
         return CLI_USAGE_OR_PLAN_ERROR
     if not argv or tuple(argv) == (PLAN_ARGUMENT,):
-        _write_json(stdout, _dry_run_payload())
-        return 0
+        try:
+            _write_json(stdout, _dry_run_payload())
+            return 0
+        except LaunchRefused as exc:
+            stderr.write("AUTHORITY_OR_PREFLIGHT_REFUSED " + exc.reason_code + "\n")
+            return AUTHORITY_OR_PREFLIGHT_REFUSED
     active_environ = os.environ if environ is None else environ
     if tuple(argv) == (SCHEMA_GUARD_ONLY_ARGUMENT,):
         try:
