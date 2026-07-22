@@ -109,6 +109,27 @@ def test_production_plan_issues_real_exact_12_identity_over_eight_real_folds() -
     )
 
 
+def test_runner_source_pin_covers_every_wave_one_production_boundary() -> None:
+    logical_paths = tuple(path for path, _physical in plan_module.R3_RUNNER_SOURCE_FILES)
+    required = (
+        "research/nautilus_scalping/rob974_r3_shape.py",
+        "research/nautilus_scalping/rob974_r3_identity.py",
+        "research/nautilus_scalping/rob974_r3_accounting.py",
+        "research/nautilus_scalping/rob974_r3_manifest.py",
+        "research/nautilus_scalping/rob974_r3_h3_adapter.py",
+        "research/nautilus_scalping/rob974_r3_gate_metrics.py",
+        "research/nautilus_scalping/rob974_r3_gate_adapter.py",
+        "research/nautilus_scalping/rob974_r3_relaxation.py",
+        "research/nautilus_scalping/rob974_r3_relaxation_h2_adapter.py",
+        "research/nautilus_scalping/rob974_r3_plan.py",
+        "research/nautilus_scalping/rob974_r3_postaudit.py",
+        "app/services/rob974_r3_h6a_bridge.py",
+        "app/services/rob974_r3_materializer.py",
+    )
+    assert all(logical_path in logical_paths for logical_path in required)
+    assert len(logical_paths) == len(set(logical_paths))
+
+
 def test_plan_rejects_partial_mapping_fold_source_and_hash_drift() -> None:
     plan = plan_module.build_production_r3_plan()
     mutants = (

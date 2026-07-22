@@ -41,6 +41,8 @@ __all__ = [
     "R3_BLOCKED_CONFIG_IDS",
     "R3_OPERATIONAL_BLOCKER_REASON",
     "R3_OPERATIONAL_STATUS",
+    "R3_PBO_SOURCE_FILES",
+    "R3_RUNNER_SOURCE_FILES",
     "R3CandidateBuffer",
     "R3FreshEngine",
     "R3InvocationKey",
@@ -113,15 +115,23 @@ def _source_files(*logical_paths: str) -> tuple[tuple[str, Path], ...]:
     )
 
 
-_R3_RUNNER_SOURCE_FILES = RUNNER_SOURCE_FILES + _source_files(
+R3_RUNNER_SOURCE_FILES = RUNNER_SOURCE_FILES + _source_files(
     "research/nautilus_scalping/rob974_h3_gate_predicates.py",
     "research/nautilus_scalping/rob974_r3_shape.py",
     "research/nautilus_scalping/rob974_r3_identity.py",
+    "research/nautilus_scalping/rob974_r3_accounting.py",
     "research/nautilus_scalping/rob974_r3_manifest.py",
     "research/nautilus_scalping/rob974_r3_h3_adapter.py",
+    "research/nautilus_scalping/rob974_r3_gate_metrics.py",
+    "research/nautilus_scalping/rob974_r3_gate_adapter.py",
+    "research/nautilus_scalping/rob974_r3_relaxation.py",
+    "research/nautilus_scalping/rob974_r3_relaxation_h2_adapter.py",
     "research/nautilus_scalping/rob974_r3_plan.py",
+    "research/nautilus_scalping/rob974_r3_postaudit.py",
+    "app/services/rob974_r3_h6a_bridge.py",
+    "app/services/rob974_r3_materializer.py",
 )
-_R3_PBO_SOURCE_FILES = PBO_SOURCE_FILES + _source_files(
+R3_PBO_SOURCE_FILES = PBO_SOURCE_FILES + _source_files(
     "research/nautilus_scalping/rob974_r3_shape.py",
     "research/nautilus_scalping/rob974_r3_manifest.py",
     "research/nautilus_scalping/rob974_r3_plan.py",
@@ -378,8 +388,8 @@ def _source_pins(r2_plan: Any) -> R3SourcePins:
     return R3SourcePins(
         feature_source_sha256=r2_plan.source_pins.feature_source_sha256,
         engine_source_sha256=r2_plan.source_pins.engine_source_sha256,
-        runner_source_sha256=source_bundle_sha256(_R3_RUNNER_SOURCE_FILES),
-        pbo_implementation_sha256=source_bundle_sha256(_R3_PBO_SOURCE_FILES),
+        runner_source_sha256=source_bundle_sha256(R3_RUNNER_SOURCE_FILES),
+        pbo_implementation_sha256=source_bundle_sha256(R3_PBO_SOURCE_FILES),
     )
 
 
