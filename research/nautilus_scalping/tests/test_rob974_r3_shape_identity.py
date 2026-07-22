@@ -147,6 +147,20 @@ def test_r3_identity_rejects_11_13_split_reorder_duplicate_and_r2_injection() ->
             identity.validate_r3_campaign_rows(mutant)
 
 
+@pytest.mark.parametrize("reserved", ("row_id", "hypothesis", "authority_label"))
+def test_r3_identity_params_cannot_relabel_reserved_manifest_fields(
+    reserved: str,
+) -> None:
+    with pytest.raises(identity.Exact12IdentityError):
+        identity.R3CampaignConfigRow(
+            row_id="S3-R3-00",
+            params={reserved: "caller-shadow"},
+            hypothesis="sealed hypothesis",
+            authority_label="sealed authority",
+            provenance="production",
+        )
+
+
 def test_r3_identity_builds_exact_order_unique_64_hex_experiment_ids() -> None:
     specs = _specs()
     assert tuple(spec.row_id for spec in specs) == shape.R3_CANONICAL_ROW_ORDER
