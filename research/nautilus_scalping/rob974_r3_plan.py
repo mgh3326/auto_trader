@@ -120,6 +120,8 @@ R3_RUNNER_SOURCE_FILES = RUNNER_SOURCE_FILES + _source_files(
     "research/nautilus_scalping/rob974_r3_relaxation.py",
     "research/nautilus_scalping/rob974_r3_relaxation_h2_adapter.py",
     "research/nautilus_scalping/rob974_r3_evidence_context.py",
+    "research/nautilus_scalping/rob974_r3_scorecard.py",
+    "research/nautilus_scalping/rob974_r3_markdown.py",
     "research/nautilus_scalping/rob974_r3_h4_s4_adapter.py",
     "research/nautilus_scalping/rob974_r3_plan.py",
     "research/nautilus_scalping/rob974_r3_postaudit.py",

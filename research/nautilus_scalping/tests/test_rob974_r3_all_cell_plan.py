@@ -12,7 +12,7 @@ import rob974_r3_plan as plan_module
 import rob974_r3_postaudit as postaudit
 from rob974_h2_dtos import Z_ENTRY_ABS_MIN
 from rob974_h4_contracts import SCENARIOS, exact_h4_folds
-from rob974_h4_h6a_adapter import build_production_h4_plan
+from rob974_h4_h6a_adapter import RUNNER_SOURCE_FILES, build_production_h4_plan
 from rob974_r3_h4_s4_adapter import R3_ENGINE_SOURCE_FILES
 from rob974_r3_shape import R3_CANONICAL_ROW_ORDER, compute_exact_12_mapping_hash
 
@@ -135,6 +135,8 @@ def test_runner_source_pin_covers_every_wave_one_production_boundary() -> None:
         "research/nautilus_scalping/rob974_r3_relaxation.py",
         "research/nautilus_scalping/rob974_r3_relaxation_h2_adapter.py",
         "research/nautilus_scalping/rob974_r3_evidence_context.py",
+        "research/nautilus_scalping/rob974_r3_scorecard.py",
+        "research/nautilus_scalping/rob974_r3_markdown.py",
         "research/nautilus_scalping/rob974_r3_h4_s4_adapter.py",
         "research/nautilus_scalping/rob974_r3_plan.py",
         "research/nautilus_scalping/rob974_r3_postaudit.py",
@@ -142,6 +144,11 @@ def test_runner_source_pin_covers_every_wave_one_production_boundary() -> None:
         "app/services/rob974_r3_materializer.py",
     )
     assert all(logical_path in logical_paths for logical_path in required)
+    r2_logical_paths = {path for path, _physical in RUNNER_SOURCE_FILES}
+    assert (
+        tuple(path for path in logical_paths if path not in r2_logical_paths)
+        == required
+    )
     assert len(logical_paths) == len(set(logical_paths))
 
 
