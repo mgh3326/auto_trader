@@ -114,6 +114,7 @@ def test_runner_source_pin_covers_every_wave_one_production_boundary() -> None:
         path for path, _physical in plan_module.R3_RUNNER_SOURCE_FILES
     )
     required = (
+        "research/nautilus_scalping/rob974_h3_gate_predicates.py",
         "research/nautilus_scalping/rob974_r3_shape.py",
         "research/nautilus_scalping/rob974_r3_identity.py",
         "research/nautilus_scalping/rob974_r3_accounting.py",
@@ -123,6 +124,7 @@ def test_runner_source_pin_covers_every_wave_one_production_boundary() -> None:
         "research/nautilus_scalping/rob974_r3_gate_adapter.py",
         "research/nautilus_scalping/rob974_r3_relaxation.py",
         "research/nautilus_scalping/rob974_r3_relaxation_h2_adapter.py",
+        "research/nautilus_scalping/rob974_r3_evidence_context.py",
         "research/nautilus_scalping/rob974_r3_plan.py",
         "research/nautilus_scalping/rob974_r3_postaudit.py",
         "app/services/rob974_r3_h6a_bridge.py",

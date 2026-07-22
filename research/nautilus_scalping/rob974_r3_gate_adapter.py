@@ -11,7 +11,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import rob974_h3_s3 as s3
 import rob974_h3_s4 as s4
@@ -19,6 +19,10 @@ from rob944_folds import Fold
 from rob974_features import FOUR_HOUR_MS, SYMBOLS
 from rob974_h3_manifest import get_config
 from rob974_h4_contracts import exact_h4_folds
+from rob974_r3_evidence_context import (
+    R3ProductionEvidenceContext,
+    require_r3_production_evidence_context,
+)
 from rob974_r3_gate_metrics import (
     S3_GATE_SCHEMA,
     S4_GATE_SCHEMA,
@@ -35,6 +39,7 @@ from rob974_r3_h3_adapter import (
     evaluate_r3_s4_atoms,
 )
 from rob974_r3_manifest import (
+    FROZEN_R3_ROSTER,
     R3S3Config,
     R3S4Config,
     assert_registered_r3_config,
@@ -46,13 +51,17 @@ __all__ = [
     "R3_GATE_UNIT_ID_VERSION",
     "R3_S4_CONTEXT_FAILURES",
     "ProductionFoldGateSource",
+    "ProductionGateCampaignEvidence",
+    "ProductionGateEvidenceError",
     "R3S4ObservationOutcome",
     "build_production_gate_audit",
     "build_production_gate_batches",
+    "build_production_gate_campaign_evidence",
     "build_r3_s3_fold_source",
     "build_r3_s4_fold_source",
     "canonical_gate_unit_id",
     "observe_r3_s4_pair",
+    "production_gate_audit_scope",
     "r3_gate_config_identity_sha256",
 ]
 
@@ -64,6 +73,11 @@ R3_S4_CONTEXT_FAILURES = (
     "degenerate_rho_variance",
     "degenerate_phi_denominator",
 )
+_PRODUCTION_EVIDENCE_ENVELOPE_SEAL = object()
+
+
+class ProductionGateEvidenceError(GateAuditValidationError):
+    """Campaign-level production gate evidence is incomplete or misbound."""
 
 
 def canonical_gate_unit_id(
@@ -99,6 +113,52 @@ def r3_gate_config_identity_sha256(config: R3S3Config | R3S4Config) -> str:
             "config_id": config.config_id,
             "parameters": parameters,
         }
+    )
+
+
+def _scope_from_checked_context(
+    *,
+    evidence_context: R3ProductionEvidenceContext,
+    config: R3S3Config | R3S4Config,
+    phase: str,
+) -> AuditScope:
+    if type(config) not in (R3S3Config, R3S4Config):
+        raise TypeError("config must be an exact R3 config DTO")
+    assert_registered_r3_config(config)
+    if phase not in evidence_context.phases:
+        raise ProductionGateEvidenceError(
+            "production gate phase must be exact TRAIN or OOS"
+        )
+    experiment_by_config = dict(evidence_context.ordered_mapping)
+    try:
+        experiment_id = experiment_by_config[config.config_id]
+    except KeyError as exc:  # pragma: no cover - context independently seals this
+        raise ProductionGateEvidenceError(
+            "config is absent from the issued exact-12 mapping"
+        ) from exc
+    return AuditScope(
+        phase=phase,
+        family="S3" if type(config) is R3S3Config else "S4",
+        config_id=config.config_id,
+        campaign_identity_sha256=evidence_context.campaign_identity_sha256,
+        experiment_identity_sha256=experiment_id,
+        config_identity_sha256=r3_gate_config_identity_sha256(config),
+    )
+
+
+def production_gate_audit_scope(
+    *,
+    evidence_context: object,
+    config: R3S3Config | R3S4Config,
+    phase: str,
+) -> AuditScope:
+    """Derive, rather than accept, one plan-bound production report scope."""
+
+    checked = require_r3_production_evidence_context(evidence_context)
+    return _scope_from_checked_context(
+        evidence_context=checked,
+        config=config,
+        phase=phase,
     )
 
 
@@ -379,23 +439,19 @@ def _source_identity(unit: GateSourceUnit) -> tuple[int, str]:
 
 def build_production_gate_batches(
     *,
-    scope: AuditScope,
+    evidence_context: object,
+    phase: str,
     config: R3S3Config | R3S4Config,
     fold_sources: tuple[ProductionFoldGateSource, ...],
 ) -> tuple[GateAuditBatch, ...]:
     """Build exact-eight, complete-grid TRAIN/OOS batches in canonical order."""
 
-    if type(scope) is not AuditScope:
-        raise TypeError("scope must be exact AuditScope")
-    if type(config) not in (R3S3Config, R3S4Config):
-        raise TypeError("config must be an exact R3 config DTO")
-    assert_registered_r3_config(config)
-    if scope.config_id != config.config_id or not config.config_id.startswith(
-        scope.family
-    ):
-        raise GateAuditValidationError("scope/config authority mismatch")
-    if scope.config_identity_sha256 != r3_gate_config_identity_sha256(config):
-        raise GateAuditValidationError("scope/config hash authority mismatch")
+    checked_context = require_r3_production_evidence_context(evidence_context)
+    scope = _scope_from_checked_context(
+        evidence_context=checked_context,
+        config=config,
+        phase=phase,
+    )
     if (
         type(fold_sources) is not tuple
         or len(fold_sources) != 8
@@ -436,7 +492,9 @@ def build_production_gate_batches(
                     raise GateAuditValidationError("S3 source/config identity mismatch")
                 if type(config) is not R3S3Config:
                     raise TypeError("S3 scope requires exact R3S3Config")
-                gate_results = evaluate_r3_s3_atoms(unit.metrics, config).gate_results
+                atomic = evaluate_r3_s3_atoms(unit.metrics, config)
+                gate_results = atomic.gate_results
+                market_direction = atomic.side
             else:
                 if type(unit) is not R3S4ObservationOutcome:
                     raise TypeError(
@@ -452,6 +510,7 @@ def build_production_gate_batches(
                 gate_results = evaluate_r3_s4_atoms(
                     unit.observation, config
                 ).gate_results
+                market_direction = None
             audited.append(
                 ContextValidDecisionUnit(
                     canonical_gate_unit_id(
@@ -460,6 +519,7 @@ def build_production_gate_batches(
                         symbol_or_pair=member,
                     ),
                     gate_results,
+                    market_direction,
                 )
             )
         batches.append(
@@ -478,11 +538,150 @@ def build_production_gate_batches(
 
 def build_production_gate_audit(
     *,
-    scope: AuditScope,
+    evidence_context: object,
+    phase: str,
     config: R3S3Config | R3S4Config,
     fold_sources: tuple[ProductionFoldGateSource, ...],
 ) -> GateAuditReport:
+    scope = production_gate_audit_scope(
+        evidence_context=evidence_context,
+        config=config,
+        phase=phase,
+    )
     batches = build_production_gate_batches(
-        scope=scope, config=config, fold_sources=fold_sources
+        evidence_context=evidence_context,
+        phase=phase,
+        config=config,
+        fold_sources=fold_sources,
     )
     return build_gate_audit(expected_scope=scope, batches=batches)
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionGateCampaignEvidence:
+    schema_version: str
+    campaign_identity_sha256: str
+    campaign_run_id: str
+    exact_12_mapping_hash: str
+    ordered_mapping: tuple[tuple[str, str], ...]
+    reports: tuple[GateAuditReport, ...]
+    evidence_cell_order: tuple[tuple[str, str, str], ...]
+    coverage_complete: bool
+    operational_status: str
+    incomplete_reason: str | None
+    evidence_promoted: bool
+    _evidence_context: R3ProductionEvidenceContext = field(repr=False, compare=False)
+    _seal: object = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        _validate_production_gate_campaign_evidence(self)
+
+
+def _validate_production_gate_campaign_evidence(
+    envelope: ProductionGateCampaignEvidence,
+) -> None:
+    if envelope._seal is not _PRODUCTION_EVIDENCE_ENVELOPE_SEAL:
+        raise ProductionGateEvidenceError(
+            "production gate campaign evidence was not code-issued"
+        )
+    context = require_r3_production_evidence_context(envelope._evidence_context)
+    if envelope.schema_version != "rob974-r3-gate-campaign-evidence-v1":
+        raise ProductionGateEvidenceError("campaign evidence schema version drifted")
+    if type(envelope.reports) is not tuple or any(
+        type(report) is not GateAuditReport for report in envelope.reports
+    ):
+        raise ProductionGateEvidenceError(
+            "campaign evidence reports must be an exact GateAuditReport tuple"
+        )
+    expected_headers = tuple(
+        (config.config_id, phase)
+        for config in FROZEN_R3_ROSTER
+        for phase in context.phases
+    )
+    actual_headers = tuple(
+        (report.scope.config_id, report.scope.phase) for report in envelope.reports
+    )
+    if actual_headers != expected_headers:
+        raise ProductionGateEvidenceError(
+            "campaign evidence requires canonical 12x2 report order"
+        )
+    expected_fold_ids = tuple(fold.fold_id for fold in context.folds)
+    for report, config, phase in zip(
+        envelope.reports,
+        (config for config in FROZEN_R3_ROSTER for _phase in context.phases),
+        (phase for _config in FROZEN_R3_ROSTER for phase in context.phases),
+        strict=True,
+    ):
+        expected_scope = _scope_from_checked_context(
+            evidence_context=context,
+            config=config,
+            phase=phase,
+        )
+        if report.scope != expected_scope:
+            raise ProductionGateEvidenceError(
+                f"{config.config_id}/{phase}: report differs from its issued scope"
+            )
+        if tuple(fold.fold_id for fold in report.folds) != expected_fold_ids:
+            raise ProductionGateEvidenceError(
+                f"{config.config_id}/{phase}: report lacks exact eight-fold evidence"
+            )
+    expected_cells = tuple(
+        (config.config_id, phase, fold.fold_id)
+        for config in FROZEN_R3_ROSTER
+        for phase in context.phases
+        for fold in context.folds
+    )
+    if envelope.evidence_cell_order != expected_cells:
+        raise ProductionGateEvidenceError("campaign evidence 192-cell order drifted")
+    identity_fields = (
+        envelope.campaign_identity_sha256 == context.campaign_identity_sha256,
+        envelope.campaign_run_id == context.campaign_run_id,
+        envelope.exact_12_mapping_hash == context.exact_12_mapping_hash,
+        envelope.ordered_mapping == context.ordered_mapping,
+    )
+    if not all(identity_fields):
+        raise ProductionGateEvidenceError(
+            "campaign evidence identity differs from the issued plan"
+        )
+    promoted = context.operational_status == "COMPLETE"
+    expected_reason = None if promoted else context.operational_blocker_reason
+    if (
+        envelope.coverage_complete is not True
+        or envelope.operational_status != context.operational_status
+        or envelope.incomplete_reason != expected_reason
+        or envelope.evidence_promoted is not promoted
+    ):
+        raise ProductionGateEvidenceError(
+            "campaign evidence promotion differs from plan operational status"
+        )
+
+
+def build_production_gate_campaign_evidence(
+    *,
+    evidence_context: object,
+    reports: tuple[GateAuditReport, ...],
+) -> ProductionGateCampaignEvidence:
+    """Validate exact config-major 12x2x8 coverage without lifting CP3."""
+
+    context = require_r3_production_evidence_context(evidence_context)
+    promoted = context.operational_status == "COMPLETE"
+    return ProductionGateCampaignEvidence(
+        schema_version="rob974-r3-gate-campaign-evidence-v1",
+        campaign_identity_sha256=context.campaign_identity_sha256,
+        campaign_run_id=context.campaign_run_id,
+        exact_12_mapping_hash=context.exact_12_mapping_hash,
+        ordered_mapping=context.ordered_mapping,
+        reports=reports,
+        evidence_cell_order=tuple(
+            (config.config_id, phase, fold.fold_id)
+            for config in FROZEN_R3_ROSTER
+            for phase in context.phases
+            for fold in context.folds
+        ),
+        coverage_complete=True,
+        operational_status=context.operational_status,
+        incomplete_reason=(None if promoted else context.operational_blocker_reason),
+        evidence_promoted=promoted,
+        _evidence_context=context,
+        _seal=_PRODUCTION_EVIDENCE_ENVELOPE_SEAL,
+    )

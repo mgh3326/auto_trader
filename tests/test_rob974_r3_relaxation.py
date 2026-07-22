@@ -3,9 +3,16 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 from hashlib import sha256
+from types import SimpleNamespace
 
 import pytest
+import rob974_r3_relaxation as relaxation_module
+from rob974_r3_evidence_context import (
+    R3ProductionEvidenceContextError,
+    issue_r3_production_evidence_context,
+)
 from rob974_r3_manifest import R3_RELAXATION_RAYS as MANIFEST_RELAXATION_RAYS
+from rob974_r3_plan import build_production_r3_plan
 from rob974_r3_relaxation import (
     BOOTSTRAP_RESAMPLES,
     R3_CONFIG_IDS,
@@ -13,12 +20,19 @@ from rob974_r3_relaxation import (
     R3_RELAXATION_RAYS,
     CellFoldLedger,
     EconomicEvent,
+    PhaseLedgerEvidence,
     RelaxationInputError,
     RelaxationTrade,
+    TerminalIncompleteEvidence,
     TradeExecution,
-    analyze_relaxation_campaign,
+)
+from rob974_r3_relaxation import (
+    analyze_relaxation_campaign as _analyze_relaxation_campaign,
 )
 
+EVIDENCE_CONTEXT = issue_r3_production_evidence_context(build_production_r3_plan())
+# The unchanged pure statistical reducer keeps its original fixed 64-hex seed
+# golden. Production-bound tests below use EVIDENCE_CONTEXT exclusively.
 CAMPAIGN_HASH = "a91d467635a70b10b70b26af0bbc5f72abf16fd6b8f59a794a2c21f6de29a031"
 OOS_STARTS_MS = (
     1_761_706_800_000,
@@ -51,6 +65,45 @@ TRAIN_ENDS_MS = (
     1_778_630_400_000,
 )
 OVERLAPPING_TRAIN_SIGNAL_START_MS = 1_755_000_000_000
+
+
+def analyze_relaxation_campaign(
+    *,
+    campaign_hash: object,
+    oos_ledgers: object,
+    train_ledgers: object | None = None,
+):
+    """Exercise the unchanged pure reducer independently of production blocking."""
+
+    if campaign_hash != CAMPAIGN_HASH:
+        raise AssertionError("test helper requires the actual plan-issued identity")
+    oos = relaxation_module._analyze_phase(  # noqa: SLF001
+        campaign_hash=CAMPAIGN_HASH,
+        phase="OOS",
+        raw_ledgers=oos_ledgers,
+    )
+    train = (
+        None
+        if train_ledgers is None
+        else relaxation_module._analyze_phase(  # noqa: SLF001
+            campaign_hash=CAMPAIGN_HASH,
+            phase="TRAIN",
+            raw_ledgers=train_ledgers,
+        )
+    )
+    reasons = tuple(
+        dict.fromkeys(
+            oos.incomplete_reasons + (() if train is None else train.incomplete_reasons)
+        )
+    )
+    if reasons:
+        oos = relaxation_module._suppress_oos_verdict_flags(oos)  # noqa: SLF001
+    return SimpleNamespace(
+        operational_status="INCOMPLETE" if reasons else "COMPLETE",
+        incomplete_reasons=reasons,
+        oos=oos,
+        train_diagnostic=train,
+    )
 
 
 def _trade(
@@ -172,6 +225,36 @@ def _ledgers() -> tuple[CellFoldLedger, ...]:
         )
         for config_id in R3_CONFIG_IDS
         for fold_index, fold_id in enumerate(R3_FOLD_IDS)
+    )
+
+
+def _terminal_incomplete(
+    *,
+    phase: str = "OOS",
+    config_id: str = "S3-R3-00",
+    fold_index: int = 0,
+    event_index: int = 100,
+    reason: str = "data_gap_in_position",
+) -> TerminalIncompleteEvidence:
+    family = config_id[:2]
+    signal_start = (
+        OOS_STARTS_MS[fold_index] if phase == "OOS" else TRAIN_STARTS_MS[fold_index]
+    )
+    signal_ts = signal_start + event_index * 60_000
+    signal_identity = EconomicEvent(
+        family=family,
+        instruments=(("XRPUSDT",) if family == "S3" else ("XRPUSDT", "DOGEUSDT")),
+        signal_ts=signal_ts,
+        direction="long" if family == "S3" else "long_a_short_b",
+    )
+    return TerminalIncompleteEvidence(
+        phase=phase,
+        family=family,
+        config_id=config_id,
+        fold_id=R3_FOLD_IDS[fold_index],
+        signal_identity=signal_identity,
+        entry_ts=signal_ts + 60_000,
+        reason=reason,
     )
 
 
@@ -782,16 +865,114 @@ def test_bootstrap_seed_and_ci_are_canonical_and_deterministic() -> None:
     assert step.bootstrap.ci_upper_bps == pytest.approx(-6.138392857142857)
 
 
-@pytest.mark.parametrize(
-    "campaign_hash",
-    ["abc", "A" * 64, "0" * 64, "g" * 64, True],
-)
-def test_campaign_hash_must_be_a_real_full_lowercase_sha(campaign_hash: object) -> None:
-    with pytest.raises((TypeError, ValueError, RelaxationInputError)):
-        analyze_relaxation_campaign(
-            campaign_hash=campaign_hash,
-            oos_ledgers=_ledgers(),
+def test_production_analyzer_requires_the_exact_plan_issued_context() -> None:
+    evidence = PhaseLedgerEvidence("OOS", _ledgers(), ())
+    with pytest.raises(R3ProductionEvidenceContextError, match="exact issued"):
+        _analyze_relaxation_campaign(
+            evidence_context=object(),
+            oos_evidence=evidence,
         )
+    with pytest.raises(R3ProductionEvidenceContextError, match="campaign identity"):
+        replace(EVIDENCE_CONTEXT, campaign_identity_sha256="f" * 64)
+
+
+def test_plan_blocker_is_global_and_suppresses_oos_verdict_flags() -> None:
+    report = _analyze_relaxation_campaign(
+        evidence_context=EVIDENCE_CONTEXT,
+        oos_evidence=PhaseLedgerEvidence("OOS", _ledgers(), ()),
+    )
+
+    assert report.campaign_hash == EVIDENCE_CONTEXT.campaign_identity_sha256
+    assert report.campaign_run_id == EVIDENCE_CONTEXT.campaign_run_id
+    assert report.exact_12_mapping_hash == EVIDENCE_CONTEXT.exact_12_mapping_hash
+    assert report.ordered_mapping == EVIDENCE_CONTEXT.ordered_mapping
+    assert report.plan_operational_status == "INCOMPLETE"
+    assert report.operational_status == "INCOMPLETE"
+    assert report.evidence_promoted is False
+    assert report.incomplete_reasons == (
+        "PLAN:INCOMPLETE:h2_s4_observed_z_floor_blocks_preregistered_cells",
+    )
+    assert report.oos.statistics_computed is True
+    assert all(
+        (
+            ray.all_pooled_deltas_nonpositive,
+            ray.two_steps_seven_of_eight_negative,
+            ray.all_new_layers_below_strict_core,
+            ray.monotone_edge_decay,
+        )
+        == (None, None, None, None)
+        for ray in report.oos.rays
+    )
+
+
+def test_oos_terminal_incomplete_skips_all_relaxation_statistics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    terminal = _terminal_incomplete()
+    evidence = PhaseLedgerEvidence("OOS", _ledgers(), (terminal,))
+
+    def forbidden_statistics(**_kwargs):
+        raise AssertionError("terminal-incomplete prefix reached relaxation statistics")
+
+    monkeypatch.setattr(relaxation_module, "_analyze_phase", forbidden_statistics)
+    report = _analyze_relaxation_campaign(
+        evidence_context=EVIDENCE_CONTEXT,
+        oos_evidence=evidence,
+    )
+
+    assert report.operational_status == "INCOMPLETE"
+    assert report.oos.operational_status == "INCOMPLETE"
+    assert report.oos.terminal_incompletes == (terminal,)
+    assert report.oos.statistics_computed is False
+    assert report.oos.rays == ()
+    assert terminal.reason in report.oos.incomplete_reasons[0]
+
+
+def test_train_terminal_incomplete_suppresses_otherwise_computed_oos() -> None:
+    terminal = _terminal_incomplete(phase="TRAIN")
+    report = _analyze_relaxation_campaign(
+        evidence_context=EVIDENCE_CONTEXT,
+        oos_evidence=PhaseLedgerEvidence("OOS", _ledgers(), ()),
+        train_evidence=PhaseLedgerEvidence("TRAIN", _ledgers(), (terminal,)),
+    )
+
+    assert report.train_diagnostic is not None
+    assert report.train_diagnostic.statistics_computed is False
+    assert report.train_diagnostic.rays == ()
+    assert report.oos.statistics_computed is True
+    assert report.oos.rays
+    assert all(ray.monotone_edge_decay is None for ray in report.oos.rays)
+
+
+def test_phase_terminal_evidence_is_canonical_unique_and_not_a_completed_trade() -> (
+    None
+):
+    ledgers = _ledgers()
+    first = _terminal_incomplete(event_index=100)
+    second_same_cell = _terminal_incomplete(event_index=101)
+    with pytest.raises(RelaxationInputError, match="at most one"):
+        PhaseLedgerEvidence("OOS", ledgers, (first, second_same_cell))
+
+    completed = ledgers[0].trades[0]
+    completed_terminal = TerminalIncompleteEvidence(
+        phase="OOS",
+        family="S3",
+        config_id=ledgers[0].config_id,
+        fold_id=ledgers[0].fold_id,
+        signal_identity=completed.event,
+        entry_ts=completed.execution.entry_ts,
+        reason="data_gap_in_position",
+    )
+    with pytest.raises(RelaxationInputError, match="completed trade"):
+        PhaseLedgerEvidence("OOS", ledgers, (completed_terminal,))
+
+    train_terminal = _terminal_incomplete(phase="TRAIN")
+    with pytest.raises(RelaxationInputError, match="differs from its phase"):
+        PhaseLedgerEvidence("OOS", ledgers, (train_terminal,))
+    with pytest.raises(RelaxationInputError, match="canonical 12x8 order"):
+        PhaseLedgerEvidence("OOS", (ledgers[1], ledgers[0], *ledgers[2:]), ())
+    with pytest.raises(RelaxationInputError, match="closed family taxonomy"):
+        replace(first, reason="caller_free_form_reason")
 
 
 def test_full_ledger_roster_and_order_are_fail_closed() -> None:

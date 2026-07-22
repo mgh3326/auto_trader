@@ -38,6 +38,7 @@ __all__ = [
     "PairwiseTable",
     "RateMetric",
     "RateRange",
+    "S3MarketDirectionDiagnostic",
     "build_gate_audit",
     "validate_gate_audit",
 ]
@@ -235,6 +236,7 @@ class AuditScope:
 class ContextValidDecisionUnit:
     unit_id: str
     gate_results: tuple[tuple[str, bool], ...]
+    market_direction: str | None = None
 
     def __post_init__(self) -> None:
         if not _str(self.unit_id, "unit_id"):
@@ -246,6 +248,11 @@ class ContextValidDecisionUnit:
                 raise TypeError("gate result entries must be exact name/bool tuples")
             _str(item[0], "gate result name")
             _bool(item[1], "gate result value")
+        if self.market_direction is not None and (
+            type(self.market_direction) is not str
+            or self.market_direction not in ("long", "short")
+        ):
+            raise ValueError("market_direction must be long, short, or None")
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,6 +303,18 @@ class GateAuditBatch:
         for unit in self.units:
             if tuple(name for name, _ in unit.gate_results) != expected_names:
                 raise GateAuditValidationError("atomic gate keys/order mismatch")
+        if self.scope.family == "S3" and any(
+            unit.market_direction not in ("long", "short") for unit in self.units
+        ):
+            raise GateAuditValidationError(
+                "S3 context-valid units require market direction diagnostics"
+            )
+        if self.scope.family == "S4" and any(
+            unit.market_direction is not None for unit in self.units
+        ):
+            raise GateAuditValidationError(
+                "S4 units cannot carry S3 market direction diagnostics"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,6 +352,35 @@ class RateMetric:
 
     def as_tuple(self) -> tuple[int, int, float | None, str | None]:
         return self.numerator, self.denominator, self.value, self.reason
+
+
+@dataclass(frozen=True, slots=True)
+class S3MarketDirectionDiagnostic:
+    """Non-gating S3 market-sign split over context-valid units."""
+
+    denominator: int
+    long_rate: RateMetric
+    short_rate: RateMetric
+
+    def __post_init__(self) -> None:
+        denominator = _int(self.denominator, "market direction denominator")
+        if denominator < 0:
+            raise GateAuditValidationError(
+                "market direction denominator must not be negative"
+            )
+        if (
+            type(self.long_rate) is not RateMetric
+            or type(self.short_rate) is not RateMetric
+        ):
+            raise TypeError("market direction rates must use exact RateMetric")
+        if (
+            self.long_rate.denominator != denominator
+            or self.short_rate.denominator != denominator
+            or self.long_rate.numerator + self.short_rate.numerator != denominator
+        ):
+            raise GateAuditValidationError(
+                "market direction counts must partition the context-valid denominator"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -441,6 +489,7 @@ class FoldAuditMetrics:
     context_valid_denominator: int
     required_context_failures: int
     required_context_rate: RateMetric
+    s3_market_direction: S3MarketDirectionDiagnostic | None
     joint_pass_rate: RateMetric
     single_gate_pass_rates: tuple[NamedRate, ...]
     sequential_conditional_pass_rates: tuple[NamedRate, ...]
@@ -531,6 +580,16 @@ def _compute_metrics(
     names = tuple(gate.name for gate in schema.gates)
     rows = tuple(tuple(value for _, value in unit.gate_results) for unit in units)
     denominator = len(rows)
+    market_direction = None
+    if schema.family == "S3":
+        directions = tuple(unit.market_direction for unit in units)
+        long_count = sum(direction == "long" for direction in directions)
+        short_count = sum(direction == "short" for direction in directions)
+        market_direction = S3MarketDirectionDiagnostic(
+            denominator=denominator,
+            long_rate=_rate(long_count, denominator),
+            short_rate=_rate(short_count, denominator),
+        )
     single = tuple(
         NamedRate(name, _rate(sum(row[index] for row in rows), denominator))
         for index, name in enumerate(names)
@@ -622,6 +681,7 @@ def _compute_metrics(
         context_valid_denominator=denominator,
         required_context_failures=required_context_failures,
         required_context_rate=_rate(denominator, evaluated_decision_units),
+        s3_market_direction=market_direction,
         joint_pass_rate=joint_rate,
         single_gate_pass_rates=single,
         sequential_conditional_pass_rates=tuple(sequential_items),
@@ -637,6 +697,13 @@ def _rate_entries(metric: FoldAuditMetrics) -> tuple[tuple[str, float | None], .
         ("required_context", metric.required_context_rate.value),
         ("joint", metric.joint_pass_rate.value),
     ]
+    if metric.s3_market_direction is not None:
+        entries.extend(
+            (
+                ("market_direction:long", metric.s3_market_direction.long_rate.value),
+                ("market_direction:short", metric.s3_market_direction.short_rate.value),
+            )
+        )
     for prefix, items in (
         ("single", metric.single_gate_pass_rates),
         ("sequential", metric.sequential_conditional_pass_rates),
