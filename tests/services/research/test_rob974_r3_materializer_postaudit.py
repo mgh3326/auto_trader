@@ -17,18 +17,33 @@ from app.services.research_canonical_hash import (
     derive_experiment_id,
 )
 
+_CONTRACT_HASHES = {
+    "S3": "0bdfc36e13057076ce0fdd242c61f13be9e9ec01d78958d426ad4a1f46e7793f",
+    "S4": "75ad9550edcd1571f7b69c686095bbcda8a8163cbd43394ea376118d8be49e27",
+}
+
 
 def _hex(label: str) -> str:
     return hashlib.sha256(label.encode()).hexdigest()
 
 
 def _identity(row_id: str, strategy_key: str) -> StrategyExperimentIdentity:
+    slug = row_id[:2]
+    strategy_version = f"rob974_r3_{slug.lower()}_gate.v1"
     return StrategyExperimentIdentity(
         strategy_key=strategy_key,
-        strategy_version="r3.v1",
+        strategy_version=strategy_version,
         hypothesis="rob974 r3 frozen hypothesis",
-        strategy={"slug": row_id[:2], "lineage": "R3"},
-        code={"source_sha256": _hex("code")},
+        strategy={
+            "slug": slug,
+            "lineage": "R3",
+            "strategy_key": strategy_key,
+            "strategy_version": strategy_version,
+        },
+        code={
+            "contract_hash": _CONTRACT_HASHES[slug],
+            "contract_key": strategy_key,
+        },
         params={"row_id": row_id},
         dataset_manifest={"corpus": "production-shaped-fixture"},
         universe={"symbols": ["XRPUSDT", "DOGEUSDT", "SOLUSDT"]},
@@ -44,8 +59,14 @@ def _identity(row_id: str, strategy_key: str) -> StrategyExperimentIdentity:
 def _specs() -> tuple[
     tuple[StrategyExperimentIdentity, ...], tuple[StrategyExperimentIdentity, ...]
 ]:
-    s3 = tuple(_identity(f"S3-R3-{index:02d}", "rob974.r3.s3") for index in range(3))
-    s4 = tuple(_identity(f"S4-R3-{index:02d}", "rob974.r3.s4") for index in range(9))
+    s3 = tuple(
+        _identity(f"S3-R3-{index:02d}", "rob974.r3.s3.threshold-relaxation")
+        for index in range(3)
+    )
+    s4 = tuple(
+        _identity(f"S4-R3-{index:02d}", "rob974.r3.s4.threshold-relaxation")
+        for index in range(9)
+    )
     return s3, s4
 
 

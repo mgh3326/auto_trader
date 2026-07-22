@@ -23,14 +23,18 @@ from app.schemas.research_backtest import (
     StrategyExperimentIdentity,
 )
 from app.services import strategy_experiment_registry as registry
-from app.services.research_campaign_bridge import register_campaign_experiments
 from app.services.research_canonical_hash import (
     IDENTITY_COMPONENTS,
     canonical_sha256,
     compute_identity_hashes,
     derive_experiment_id,
 )
-from app.services.research_db_write_guard import ResearchDbPolicy
+from app.services.research_db_write_guard import (
+    ResearchDbPolicy,
+    ResearchDbTarget,
+    assert_research_write_authorized,
+    resolve_research_db_target,
+)
 
 __all__ = [
     "R3_CANONICAL_ROW_ORDER",
@@ -76,6 +80,21 @@ _FULL_IDENTITY_FIELDS: tuple[str, ...] = (
     "strategy_key",
     "strategy_version",
 ) + _IDENTITY_HASH_FIELDS
+_FAMILY_SEMANTICS: dict[str, tuple[str, str, str, str]] = {
+    "S3": (
+        "rob974.r3.s3.threshold-relaxation",
+        "rob974_r3_s3_gate.v1",
+        "rob974.r3.s3.threshold-relaxation",
+        "0bdfc36e13057076ce0fdd242c61f13be9e9ec01d78958d426ad4a1f46e7793f",
+    ),
+    "S4": (
+        "rob974.r3.s4.threshold-relaxation",
+        "rob974_r3_s4_gate.v1",
+        "rob974.r3.s4.threshold-relaxation",
+        "75ad9550edcd1571f7b69c686095bbcda8a8163cbd43394ea376118d8be49e27",
+    ),
+}
+_MISSING = object()
 
 
 class Exact12ApprovalContextError(ValueError):
@@ -194,6 +213,7 @@ def _preflight_slice(
     specs: tuple[StrategyExperimentIdentity, ...],
     *,
     expected_order: tuple[str, ...],
+    expected_family: str,
     mapping: dict[str, str],
 ) -> dict[str, dict[str, str]]:
     if type(specs) is not tuple or any(
@@ -204,8 +224,42 @@ def _preflight_slice(
         )
     if tuple(_spec_row_id(spec) for spec in specs) != expected_order:
         raise Exact12BatchValidationError("R3 registration slice order/split drift")
+    (
+        expected_strategy_key,
+        expected_version,
+        expected_contract_key,
+        expected_contract_hash,
+    ) = _FAMILY_SEMANTICS[expected_family]
     expected: dict[str, dict[str, str]] = {}
     for row_id, spec in zip(expected_order, specs, strict=True):
+        if (
+            spec.strategy_key != expected_strategy_key
+            or spec.strategy_version != expected_version
+        ):
+            raise Exact12BatchValidationError(
+                f"{row_id}: strategy key/version differs from R3 {expected_family}"
+            )
+        if type(spec.strategy) is not dict or (
+            spec.strategy.get("slug"),
+            spec.strategy.get("lineage"),
+            spec.strategy.get("strategy_key"),
+            spec.strategy.get("strategy_version"),
+        ) != (
+            expected_family,
+            "R3",
+            expected_strategy_key,
+            expected_version,
+        ):
+            raise Exact12BatchValidationError(
+                f"{row_id}: strategy component is not semantic R3 {expected_family}"
+            )
+        if type(spec.code) is not dict or (
+            spec.code.get("contract_key") != expected_contract_key
+            or spec.code.get("contract_hash") != expected_contract_hash
+        ):
+            raise Exact12BatchValidationError(
+                f"{row_id}: code component is not the R3 {expected_family} contract"
+            )
         hashes = compute_identity_hashes(spec.components())
         experiment_id = derive_experiment_id(
             spec.strategy_key, spec.strategy_version, hashes
@@ -233,11 +287,27 @@ def validate_r3_registration_surface(
 
     compute_exact_12_mapping_hash(row_id_to_experiment_id)
     expected_s3 = _preflight_slice(
-        s3_specs, expected_order=_R3_S3_ROW_ORDER, mapping=row_id_to_experiment_id
+        s3_specs,
+        expected_order=_R3_S3_ROW_ORDER,
+        expected_family="S3",
+        mapping=row_id_to_experiment_id,
     )
     expected_s4 = _preflight_slice(
-        s4_specs, expected_order=_R3_S4_ROW_ORDER, mapping=row_id_to_experiment_id
+        s4_specs,
+        expected_order=_R3_S4_ROW_ORDER,
+        expected_family="S4",
+        mapping=row_id_to_experiment_id,
     )
+    s3_contract_hashes = {spec.code["contract_hash"] for spec in s3_specs}
+    s4_contract_hashes = {spec.code["contract_hash"] for spec in s4_specs}
+    if (
+        len(s3_contract_hashes) != 1
+        or len(s4_contract_hashes) != 1
+        or s3_contract_hashes == s4_contract_hashes
+    ):
+        raise Exact12BatchValidationError(
+            "R3 family contract hashes must be internally fixed and mutually distinct"
+        )
     return expected_s3, expected_s4
 
 
@@ -260,6 +330,31 @@ def _verify_registered(
 RegisterExperimentsFn = Callable[..., Awaitable[list[ResearchStrategyExperiment]]]
 
 
+async def _default_register_r3_slice(
+    session: AsyncSession,
+    *,
+    specs: list[StrategyExperimentIdentity],
+    guard_opt_in_enabled: bool,
+    guard_policy: ResearchDbPolicy,
+) -> list[ResearchStrategyExperiment]:
+    """Register one already-sealed 3/9 slice without touching R2's exact-24 API."""
+
+    if type(specs) is not list or len(specs) not in (3, 9):
+        raise Exact12BatchValidationError(
+            "default R3 registrar requires exact 3/9 slice"
+        )
+    target: ResearchDbTarget = resolve_research_db_target(session)
+    assert_research_write_authorized(
+        opt_in_enabled=guard_opt_in_enabled,
+        target=target,
+        policy=guard_policy,
+    )
+    registered: list[ResearchStrategyExperiment] = []
+    for spec in specs:
+        registered.append(await registry.register_experiment(session, spec))
+    return registered
+
+
 async def register_r3_campaign(
     session: AsyncSession,
     *,
@@ -271,7 +366,7 @@ async def register_r3_campaign(
     row_id_to_experiment_id: dict[str, str],
     guard_opt_in_enabled: bool,
     guard_policy: ResearchDbPolicy,
-    register_experiments_fn: RegisterExperimentsFn = register_campaign_experiments,
+    register_experiments_fn: RegisterExperimentsFn = _default_register_r3_slice,
 ) -> tuple[list[ResearchStrategyExperiment], list[ResearchStrategyExperiment]]:
     mapping_hash = compute_exact_12_mapping_hash(row_id_to_experiment_id)
     _require_approval(
@@ -398,10 +493,30 @@ async def _default_find_existing_trial(
     )
 
 
-def _stored_fingerprint(row: ResearchBacktestRun) -> object:
-    if type(row.raw_payload) is not dict:
-        return None
-    return row.raw_payload.get("r3_h6a_evidence_fingerprint")
+def _require_stored_attempt_payload(
+    row: ResearchBacktestRun,
+    *,
+    expected_payload: dict[str, Any],
+    expected_experiment_pk: int,
+    expected_idempotency_key: str,
+    expected_status: str,
+    row_id: str,
+    collision_context: str,
+) -> None:
+    raw_payload = row.raw_payload
+    outer_matches = (
+        getattr(row, "strategy_experiment_id", _MISSING) == expected_experiment_pk
+        and getattr(row, "trial_idempotency_key", _MISSING)
+        == expected_idempotency_key
+        and getattr(row, "trial_status", _MISSING) == expected_status
+    )
+    payload_matches = type(raw_payload) is dict and not any(
+        raw_payload.get(key, _MISSING) != value for key, value in expected_payload.items()
+    )
+    if not outer_matches or not payload_matches:
+        raise Exact12TerminalEvidenceMismatch(
+            f"{row_id}: {collision_context} exact-12 replay refused"
+        )
 
 
 FindExistingTrialFn = Callable[..., Awaitable[ResearchBacktestRun | None]]
@@ -456,10 +571,13 @@ async def record_r3_attempts(
                     idempotency_key=key,
                     raw_payload={
                         "r3_h6a_evidence_fingerprint": fingerprint,
+                        "full_campaign_hash": full_campaign_hash,
                         "campaign_run_id": campaign_run_id,
                         "exact_12_mapping_hash": mapping_hash,
                         "row_id": item.row_id,
+                        "experiment_id": item.experiment_id,
                         "retry_index": 0,
+                        "status": item.status,
                         "reason_code": item.reason_code,
                         "fold_evidence_hash": item.fold_evidence_hash,
                         "run_identity": item.run_identity,
@@ -468,26 +586,58 @@ async def record_r3_attempts(
                 ),
             )
         )
-    results: list[ResearchBacktestRun] = []
-    for item, key, fingerprint, request in prepared:
+    target: ResearchDbTarget = resolve_research_db_target(session)
+    assert_research_write_authorized(
+        opt_in_enabled=guard_opt_in_enabled,
+        target=target,
+        policy=guard_policy,
+    )
+    existing_rows: list[ResearchBacktestRun | None] = []
+    for item, key, _fingerprint, _request in prepared:
         existing = await find_existing_trial_fn(
             session,
             experiment_pk=row_id_to_experiment_pk[item.row_id],
             idempotency_key=key,
         )
+        existing_rows.append(existing)
+    for (item, _key, _fingerprint, request), existing in zip(
+        prepared, existing_rows, strict=True
+    ):
         if existing is not None:
-            if _stored_fingerprint(existing) != fingerprint:
-                raise Exact12TerminalEvidenceMismatch(
-                    f"{item.row_id}: divergent exact-12 replay refused"
-                )
-            results.append(existing)
-            continue
+            _require_stored_attempt_payload(
+                existing,
+                expected_payload=request.raw_payload,
+                expected_experiment_pk=row_id_to_experiment_pk[item.row_id],
+                expected_idempotency_key=request.idempotency_key,
+                expected_status=item.status,
+                row_id=item.row_id,
+                collision_context="divergent stored",
+            )
+    existing_count = sum(row is not None for row in existing_rows)
+    if existing_count not in (0, 12):
+        raise Exact12TerminalEvidenceMismatch(
+            "partial exact-12 replay asymmetry refused before append"
+        )
+    if existing_count == 12:
+        return [row for row in existing_rows if row is not None]
+
+    results: list[ResearchBacktestRun] = []
+    for (item, _key, _fingerprint, request), existing in zip(
+        prepared, existing_rows, strict=True
+    ):
+        if existing is not None:  # unreachable after the all-or-none check
+            raise AssertionError("partial R3 replay escaped asymmetry preflight")
         returned = await record_trial_fn(
             session, experiment_id=item.experiment_id, request=request
         )
-        if _stored_fingerprint(returned) != fingerprint:
-            raise Exact12TerminalEvidenceMismatch(
-                f"{item.row_id}: concurrent divergent exact-12 replay refused"
-            )
+        _require_stored_attempt_payload(
+            returned,
+            expected_payload=request.raw_payload,
+            expected_experiment_pk=row_id_to_experiment_pk[item.row_id],
+            expected_idempotency_key=request.idempotency_key,
+            expected_status=item.status,
+            row_id=item.row_id,
+            collision_context="concurrent divergent",
+        )
         results.append(returned)
     return results
