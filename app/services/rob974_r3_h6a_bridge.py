@@ -506,12 +506,12 @@ def _require_stored_attempt_payload(
     raw_payload = row.raw_payload
     outer_matches = (
         getattr(row, "strategy_experiment_id", _MISSING) == expected_experiment_pk
-        and getattr(row, "trial_idempotency_key", _MISSING)
-        == expected_idempotency_key
+        and getattr(row, "trial_idempotency_key", _MISSING) == expected_idempotency_key
         and getattr(row, "trial_status", _MISSING) == expected_status
     )
     payload_matches = type(raw_payload) is dict and not any(
-        raw_payload.get(key, _MISSING) != value for key, value in expected_payload.items()
+        raw_payload.get(key, _MISSING) != value
+        for key, value in expected_payload.items()
     )
     if not outer_matches or not payload_matches:
         raise Exact12TerminalEvidenceMismatch(

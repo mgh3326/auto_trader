@@ -56,9 +56,7 @@ def _s3_side(value: object) -> str:
     return value
 
 
-def s3_market_magnitude_passes(
-    market_return_24h: float, m_min_bp: int
-) -> bool:
+def s3_market_magnitude_passes(market_return_24h: float, m_min_bp: int) -> bool:
     value = _float(market_return_24h, "market_return_24h")
     threshold = _nonnegative_int(m_min_bp, "m_min_bp") / 10_000.0
     return abs(value) >= threshold
@@ -87,9 +85,7 @@ def s3_trend_sign_passes(side: S3Side, trend_strength: float) -> bool:
     return value >= 0.0 if direction == "long" else value <= 0.0
 
 
-def s3_trend_magnitude_passes(
-    trend_strength: float, s_min: float
-) -> bool:
+def s3_trend_magnitude_passes(trend_strength: float, s_min: float) -> bool:
     value = _float(trend_strength, "trend_strength")
     threshold = _nonnegative_float(s_min, "s_min")
     return abs(value) >= threshold
@@ -117,12 +113,8 @@ def evaluate_s3_threshold_predicates(
     direction = s3_market_direction(market_return_24h)
     return S3ThresholdPredicates(
         market_direction=direction,
-        market_magnitude=s3_market_magnitude_passes(
-            market_return_24h, m_min_bp
-        ),
-        market_breadth=s3_market_breadth_passes(
-            direction, bplus, bminus, breadth_min
-        ),
+        market_magnitude=s3_market_magnitude_passes(market_return_24h, m_min_bp),
+        market_breadth=s3_market_breadth_passes(direction, bplus, bminus, breadth_min),
         trend_sign=s3_trend_sign_passes(direction, trend_strength),
         trend_magnitude=s3_trend_magnitude_passes(trend_strength, s_min),
     )

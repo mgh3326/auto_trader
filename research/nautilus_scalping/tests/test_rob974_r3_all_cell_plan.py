@@ -110,7 +110,9 @@ def test_production_plan_issues_real_exact_12_identity_over_eight_real_folds() -
 
 
 def test_runner_source_pin_covers_every_wave_one_production_boundary() -> None:
-    logical_paths = tuple(path for path, _physical in plan_module.R3_RUNNER_SOURCE_FILES)
+    logical_paths = tuple(
+        path for path, _physical in plan_module.R3_RUNNER_SOURCE_FILES
+    )
     required = (
         "research/nautilus_scalping/rob974_r3_shape.py",
         "research/nautilus_scalping/rob974_r3_identity.py",

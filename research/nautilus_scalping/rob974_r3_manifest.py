@@ -198,9 +198,7 @@ class R3RelaxationRay:
         if self.family not in ("S3", "S4"):
             raise R3ManifestError("ray family must be S3 or S4")
         allowed_axes = (
-            ("S_min", "M_min_bp")
-            if self.family == "S3"
-            else ("z_entry", "d_min_bp")
+            ("S_min", "M_min_bp") if self.family == "S3" else ("z_entry", "d_min_bp")
         )
         if self.axis not in allowed_axes:
             raise R3ManifestError("ray axis differs from its family")
@@ -276,7 +274,9 @@ def validate_r3_manifest(rows: tuple[R3S3Config | R3S4Config, ...]) -> None:
         if (row.z_entry, row.d_min_bp) in S4_EXCLUDED_CELLS:
             raise R3ManifestError("R3 S4 manifest contains a preregistered exclusion")
         if row.z_entry < S4_SATURATION_Z_LT:
-            raise R3ManifestError("R3 S4 manifest enters the preregistered saturation zone")
+            raise R3ManifestError(
+                "R3 S4 manifest enters the preregistered saturation zone"
+            )
         if row.d_min_bp < S4_DUPLICATE_D_MIN_BP_LT:
             raise R3ManifestError("R3 S4 manifest enters the duplicate d_min zone")
         if (row.W, row.k_SL, row.R_TP) != S4_R2_ANCHOR.as_tuple()[1:]:
@@ -299,14 +299,13 @@ def validate_r3_relaxation_rays(rays: tuple[R3RelaxationRay, ...]) -> None:
             raise R3ManifestError("relaxation ray crosses strategy families")
         moving = tuple(getattr(config, ray.axis) for config in configs)
         if any(
-            right >= left
-            for left, right in zip(moving[:-1], moving[1:], strict=True)
+            right >= left for left, right in zip(moving[:-1], moving[1:], strict=True)
         ):
             raise R3ManifestError("relaxation ray must be strictly loosening")
         fixed_fields = (
-            ("M_min_bp",) if ray.axis == "S_min" else ("S_min",)
-        ) if ray.family == "S3" else (
-            ("d_min_bp",) if ray.axis == "z_entry" else ("z_entry",)
+            (("M_min_bp",) if ray.axis == "S_min" else ("S_min",))
+            if ray.family == "S3"
+            else (("d_min_bp",) if ray.axis == "z_entry" else ("z_entry",))
         )
         for field_name in fixed_fields:
             if len({getattr(config, field_name) for config in configs}) != 1:
