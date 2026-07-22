@@ -16,6 +16,8 @@ import re
 from dataclasses import dataclass
 from itertools import combinations
 
+from rob974_r3_manifest import FROZEN_R3_ROSTER
+
 __all__ = [
     "R3_CONFIG_IDS",
     "S3_GATE_SCHEMA",
@@ -40,9 +42,7 @@ __all__ = [
     "validate_gate_audit",
 ]
 
-R3_CONFIG_IDS: tuple[str, ...] = tuple(f"S3-R3-{index:02d}" for index in range(3)) + (
-    tuple(f"S4-R3-{index:02d}" for index in range(9))
-)
+R3_CONFIG_IDS: tuple[str, ...] = tuple(row.config_id for row in FROZEN_R3_ROSTER)
 _PHASES = ("TRAIN", "OOS")
 _FOLD_ID = re.compile(r"fold-0[0-7]\Z")
 _NULL_REASONS = (
