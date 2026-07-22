@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import inspect
 import math
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -15,7 +17,7 @@ from rob974_h2_ingress import build_minute_index
 from rob974_h3_h2_adapter import adapt_s3_candidate
 from rob974_h4_adapter import invoke_actual_s3_engine
 from rob974_h4_contracts import exact_h4_folds
-from rob974_h4_h6a_adapter import build_production_h4_plan
+from rob974_h4_h6a_adapter import ENGINE_SOURCE_FILES, build_production_h4_plan
 from rob974_r3_h3_adapter import (
     adapt_r3_s4_candidate_for_execution,
     evaluate_r3_s3_gates,
@@ -24,6 +26,7 @@ from rob974_r3_h3_adapter import (
     s4,
 )
 from rob974_r3_h4_s4_adapter import (
+    R3_ENGINE_SOURCE_FILES,
     R3S4ParityDrift,
     assert_r3_s4_frozen_parity,
     invoke_r3_s4_engine,
@@ -187,6 +190,38 @@ def test_low_z_golden_stall_boundary_above_051_stalls(above: float) -> None:
     assert result.trades[0].exit_ts == 2 * frozen_s4_engine.FOUR_H_MS
 
 
+def test_same_low_z_path_proves_clamp_to_one_changes_stall_to_timeout() -> None:
+    boundary = 0.51
+    mu = -boundary
+    true_candidate = _intent("S4-R3-08", observed_z=0.60, mu=mu, sigma=1.0)
+    clamped_mutant = dataclasses.replace(true_candidate, observed_z=1.0)
+    count = 9 * frozen_s4_engine.FOUR_H_MS // _MINUTE_MS + 1
+    bars = _bars("XRPUSDT", 0, count) + _bars("DOGEUSDT", 0, count)
+    closes: list[S4PairLegClose] = []
+    for k in range(1, 10):
+        spread_increment = 0.0 if k <= 2 else 0.01
+        closes.extend(
+            (
+                S4PairLegClose(
+                    "XRPUSDT",
+                    k * frozen_s4_engine.FOUR_H_MS,
+                    math.exp(2.0 * spread_increment),
+                ),
+                S4PairLegClose("DOGEUSDT", k * frozen_s4_engine.FOUR_H_MS, 1.0),
+            )
+        )
+    true_result = _run_r3([true_candidate], bars, closes)
+    mutant_result = _run_r3([clamped_mutant], bars, closes)
+    assert (true_result.trades[0].exit_reason, true_result.trades[0].exit_ts) == (
+        "STALL_EXIT",
+        3 * frozen_s4_engine.FOUR_H_MS,
+    )
+    assert (mutant_result.trades[0].exit_reason, mutant_result.trades[0].exit_ts) == (
+        "TIMEOUT",
+        9 * frozen_s4_engine.FOUR_H_MS,
+    )
+
+
 def _parity_case(
     case: str, config_id: str, sign: int
 ) -> tuple[
@@ -336,6 +371,72 @@ def test_adversarial_representable_matrix_is_byte_and_economic_identical(
     assert len(evidence.input_sha256) == len(evidence.output_sha256) == 64
 
 
+@pytest.mark.parametrize("config", FROZEN_R3_S4_CONFIGS, ids=lambda row: row.config_id)
+@pytest.mark.parametrize("magnitude", (1.0, 1.1, 1.9))
+@pytest.mark.parametrize("sign", (-1, 1))
+def test_parity_covers_every_registered_threshold_class_and_observed_magnitude(
+    config: R3S4Config, magnitude: float, sign: int
+) -> None:
+    if magnitude < config.z_entry:
+        pytest.skip("observed magnitude is invalid for this registered cell")
+    candidate = _intent(
+        config.config_id,
+        sign=sign,
+        observed_z=math.copysign(magnitude, float(sign)),
+    )
+    candidates, bars, closes, horizon = _parity_case("TP", config.config_id, sign)
+    candidates[0] = candidate
+    evidence = assert_r3_s4_frozen_parity(
+        candidates=candidates,
+        minute_index=build_minute_index(bars),
+        pair_close_index={(row.symbol, row.close_ts): row for row in closes},
+        corpus_end_ts=_CORPUS_END,
+        horizon_end_ts=horizon,
+    )
+    assert evidence.r2_output_bytes == evidence.r3_output_bytes
+
+
+def _source_mutant(function: object, old: str, new: str):
+    source = textwrap.dedent(inspect.getsource(function))
+    assert source.count(old) == 1
+    namespace = dict(function.__globals__)  # type: ignore[attr-defined]
+    exec(compile(source.replace(old, new), "<r3-parity-mutant>", "exec"), namespace)
+    return namespace[function.__name__]  # type: ignore[attr-defined]
+
+
+def test_parity_detects_real_stall_comparator_gt_to_gte_source_mutant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_z = 1.0
+    strict_boundary = frozen_s4_engine.STALL_EXIT_Z_FRACTION * observed_z
+    candidate = _intent(
+        "S4-R3-01", observed_z=observed_z, mu=-strict_boundary, sigma=1.0
+    )
+    count = 3 * frozen_s4_engine.FOUR_H_MS // _MINUTE_MS + 1
+    bars = _bars("XRPUSDT", 0, count) + _bars("DOGEUSDT", 0, count)
+    closes = [
+        S4PairLegClose(symbol, k * frozen_s4_engine.FOUR_H_MS, close)
+        for k in (1, 2, 3)
+        for symbol, close in (
+            ("XRPUSDT", 1.0 if k <= 2 else math.exp(0.02)),
+            ("DOGEUSDT", 1.0),
+        )
+    ]
+    mutant = _source_mutant(
+        frozen_s4_engine._walk_s4_position,
+        ") > STALL_EXIT_Z_FRACTION * abs(cand.z_entry)",
+        ") >= STALL_EXIT_Z_FRACTION * abs(cand.z_entry)",
+    )
+    monkeypatch.setattr(r3_s4_engine, "_frozen_walk_s4_position", mutant)
+    with pytest.raises(R3S4ParityDrift, match="output canonical bytes"):
+        assert_r3_s4_frozen_parity(
+            candidates=[candidate],
+            minute_index=build_minute_index(bars),
+            pair_close_index={(row.symbol, row.close_ts): row for row in closes},
+            corpus_end_ts=_CORPUS_END,
+        )
+
+
 def test_parity_matrix_detects_stall_eligibility_two_to_three_walk_mutant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -369,11 +470,12 @@ def test_parity_matrix_detects_global_position_lt_to_lte_mutant(
     candidates, bars, closes, horizon_end_ts = _parity_case(
         "EXACT_REENTRY", "S4-R3-00", 1
     )
-    monkeypatch.setattr(
-        r3_s4_engine,
-        "_position_is_open",
-        lambda signal_ts, exit_ts: exit_ts is not None and signal_ts <= exit_ts,
+    mutant = _source_mutant(
+        r3_s4_engine._position_is_open,
+        "signal_ts < exit_ts",
+        "signal_ts <= exit_ts",
     )
+    monkeypatch.setattr(r3_s4_engine, "_position_is_open", mutant)
     with pytest.raises(R3S4ParityDrift, match="output canonical bytes"):
         assert_r3_s4_frozen_parity(
             candidates=candidates,
@@ -382,6 +484,32 @@ def test_parity_matrix_detects_global_position_lt_to_lte_mutant(
             corpus_end_ts=_CORPUS_END,
             horizon_end_ts=horizon_end_ts,
         )
+
+
+def test_duplicate_upfront_error_has_exact_type_args_parity() -> None:
+    candidate = _intent("S4-R3-00")
+    evidence = assert_r3_s4_frozen_parity(
+        candidates=[candidate, candidate],
+        minute_index=build_minute_index(
+            _bars("XRPUSDT", 0, 1) + _bars("DOGEUSDT", 0, 1)
+        ),
+        pair_close_index={},
+        corpus_end_ts=_CORPUS_END,
+    )
+    assert evidence.r2_output_bytes == evidence.r3_output_bytes
+
+
+def test_r3_engine_inventory_extends_frozen_inventory_with_manifest_dto_engine() -> (
+    None
+):
+    logical_paths = tuple(path for path, _ in R3_ENGINE_SOURCE_FILES)
+    assert R3_ENGINE_SOURCE_FILES[: len(ENGINE_SOURCE_FILES)] == ENGINE_SOURCE_FILES
+    assert logical_paths[-3:] == (
+        "research/nautilus_scalping/rob974_r3_manifest.py",
+        "research/nautilus_scalping/rob974_r3_s4_dtos.py",
+        "research/nautilus_scalping/rob974_r3_s4_engine.py",
+    )
+    assert len(logical_paths) == len(set(logical_paths))
 
 
 def test_r3_engine_and_h4_reject_frozen_r2_candidate_type() -> None:
