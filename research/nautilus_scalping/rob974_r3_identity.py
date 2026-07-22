@@ -49,6 +49,7 @@ _NON_PARAMS_COMPONENTS: tuple[str, ...] = (
 )
 Provenance = Literal["fixture_identity", "production"]
 _PROVENANCE = frozenset({"fixture_identity", "production"})
+_RESERVED_PARAM_KEYS = frozenset({"row_id", "hypothesis", "authority_label"})
 
 
 class Exact12IdentityError(ValueError):
@@ -108,6 +109,10 @@ class R3CampaignConfigRow:
         _slug(self.row_id)
         if type(self.params) is not dict:
             raise Exact12IdentityError("params must be an exact dict")
+        if _RESERVED_PARAM_KEYS & self.params.keys():
+            raise Exact12IdentityError(
+                "params cannot override row_id, hypothesis, or authority_label"
+            )
         if type(self.hypothesis) is not str or not self.hypothesis:
             raise Exact12IdentityError("hypothesis must be non-empty exact str")
         if type(self.authority_label) is not str or not self.authority_label:
