@@ -16,6 +16,10 @@ from hashlib import sha256
 from typing import Literal, cast
 
 from rob974_h4_contracts import exact_h4_folds
+from rob974_r3_evidence_context import (
+    R3ProductionEvidenceContext,
+    require_r3_production_evidence_context,
+)
 from rob974_r3_manifest import (
     FROZEN_R3_ROSTER,
     R3_RELAXATION_RAYS,
@@ -38,6 +42,21 @@ _S3_DIRECTIONS = ("long", "short")
 _S4_DIRECTIONS = ("long_a_short_b", "short_a_long_b")
 _S3_EXIT_REASONS = ("TP", "SL", "THESIS_EXIT", "TIMEOUT")
 _S4_EXIT_REASONS = ("TP", "SL", "MEAN_EXIT", "STALL_EXIT", "TIMEOUT")
+_TERMINAL_INCOMPLETE_REASONS = {
+    "S3": (
+        "data_gap_in_position",
+        "early_eof",
+        "missing_future_data",
+        "fold_horizon_rejected",
+    ),
+    "S4": (
+        "data_gap_in_pair_position",
+        "early_eof",
+        "missing_future_data",
+        "fold_horizon_rejected",
+    ),
+}
+_FOLD_BY_ID = {fold.fold_id: fold for fold in exact_h4_folds()}
 
 Phase = Literal["TRAIN", "OOS"]
 Family = Literal["S3", "S4"]
@@ -121,6 +140,66 @@ class EconomicEvent:
             type(self.direction) is not str or self.direction not in _S4_DIRECTIONS
         ):
             raise ValueError("S4 direction must be long_a_short_b or short_a_long_b")
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalIncompleteEvidence:
+    """Neutral, exact lineage for one entered-but-unresolvable engine outcome."""
+
+    phase: Phase
+    family: Family
+    config_id: str
+    fold_id: str
+    signal_identity: EconomicEvent
+    entry_ts: int
+    reason: str
+
+    def __post_init__(self) -> None:
+        if type(self.phase) is not str or self.phase not in ("TRAIN", "OOS"):
+            raise RelaxationInputError("terminal phase must be exact TRAIN or OOS")
+        if type(self.family) is not str or self.family not in ("S3", "S4"):
+            raise RelaxationInputError("terminal family must be exact S3 or S4")
+        if (
+            type(self.config_id) is not str
+            or self.config_id not in R3_CONFIG_IDS
+            or not self.config_id.startswith(f"{self.family}-")
+        ):
+            raise RelaxationInputError(
+                "terminal family/config is outside the canonical R3 roster"
+            )
+        if type(self.fold_id) is not str or self.fold_id not in R3_FOLD_IDS:
+            raise RelaxationInputError("terminal fold is outside exact H4 folds")
+        if type(self.signal_identity) is not EconomicEvent:
+            raise TypeError("signal_identity must be an exact EconomicEvent")
+        if self.signal_identity.family != self.family:
+            raise RelaxationInputError(
+                "terminal signal identity differs from its family"
+            )
+        _exact_int(self.entry_ts, "terminal entry_ts")
+        if self.entry_ts < self.signal_identity.signal_ts:
+            raise RelaxationInputError(
+                "terminal entry_ts must not precede its signal identity"
+            )
+        if (
+            type(self.reason) is not str
+            or self.reason not in _TERMINAL_INCOMPLETE_REASONS[self.family]
+        ):
+            raise RelaxationInputError(
+                "terminal reason is outside the closed family taxonomy"
+            )
+        fold = _FOLD_BY_ID[self.fold_id]
+        start_ms, end_ms = (
+            (fold.train_start_ms, fold.train_end_ms)
+            if self.phase == "TRAIN"
+            else (fold.oos_start_ms, fold.oos_end_ms)
+        )
+        if not (
+            start_ms <= self.signal_identity.signal_ts < end_ms
+            and start_ms <= self.entry_ts < end_ms
+        ):
+            raise RelaxationInputError(
+                "terminal signal/entry timestamps are outside the phase fold"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,6 +356,116 @@ class CellFoldLedger:
 
 
 @dataclass(frozen=True, slots=True)
+class PhaseLedgerEvidence:
+    """Exact phase ledger plus canonical terminal-incomplete engine evidence."""
+
+    phase: Phase
+    ledgers: tuple[CellFoldLedger, ...]
+    terminal_incompletes: tuple[TerminalIncompleteEvidence, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.phase) is not str or self.phase not in ("TRAIN", "OOS"):
+            raise RelaxationInputError("phase evidence must be exact TRAIN or OOS")
+        if type(self.ledgers) is not tuple or any(
+            type(ledger) is not CellFoldLedger for ledger in self.ledgers
+        ):
+            raise TypeError("phase evidence ledgers must be exact CellFoldLedger tuple")
+        expected_headers = tuple(
+            (config_id, fold_id)
+            for config_id in R3_CONFIG_IDS
+            for fold_id in R3_FOLD_IDS
+        )
+        actual_headers = tuple(
+            (ledger.config_id, ledger.fold_id) for ledger in self.ledgers
+        )
+        if actual_headers != expected_headers:
+            raise RelaxationInputError(
+                "phase evidence ledgers must have exact canonical 12x8 order"
+            )
+        if type(self.terminal_incompletes) is not tuple or any(
+            type(item) is not TerminalIncompleteEvidence
+            for item in self.terminal_incompletes
+        ):
+            raise TypeError(
+                "terminal_incompletes must be exact TerminalIncompleteEvidence tuple"
+            )
+        if any(item.phase != self.phase for item in self.terminal_incompletes):
+            raise RelaxationInputError(
+                "terminal incomplete evidence differs from its phase envelope"
+            )
+        header_set = set(expected_headers)
+        if any(
+            (item.config_id, item.fold_id) not in header_set
+            for item in self.terminal_incompletes
+        ):
+            raise RelaxationInputError(
+                "terminal incomplete evidence has no canonical ledger"
+            )
+        config_order = {
+            config_id: index for index, config_id in enumerate(R3_CONFIG_IDS)
+        }
+        fold_order = {fold_id: index for index, fold_id in enumerate(R3_FOLD_IDS)}
+
+        def canonical_key(item: TerminalIncompleteEvidence) -> tuple[object, ...]:
+            signal = item.signal_identity
+            return (
+                config_order[item.config_id],
+                fold_order[item.fold_id],
+                signal.signal_ts,
+                signal.instruments,
+                signal.direction,
+                item.entry_ts,
+                item.reason,
+            )
+
+        if self.terminal_incompletes != tuple(
+            sorted(self.terminal_incompletes, key=canonical_key)
+        ):
+            raise RelaxationInputError(
+                "terminal incomplete evidence must use canonical cell/signal order"
+            )
+        identities = tuple(
+            (item.config_id, item.fold_id, item.signal_identity)
+            for item in self.terminal_incompletes
+        )
+        if len(identities) != len(set(identities)):
+            raise RelaxationInputError("duplicate terminal incomplete signal identity")
+        terminal_cells = tuple(
+            (item.config_id, item.fold_id) for item in self.terminal_incompletes
+        )
+        if len(terminal_cells) != len(set(terminal_cells)):
+            raise RelaxationInputError(
+                "engine permits at most one terminal incomplete per config/fold"
+            )
+        ledger_by_header = {
+            (ledger.config_id, ledger.fold_id): ledger for ledger in self.ledgers
+        }
+        if any(
+            item.signal_identity
+            in {
+                trade.event
+                for trade in ledger_by_header[(item.config_id, item.fold_id)].trades
+            }
+            for item in self.terminal_incompletes
+        ):
+            raise RelaxationInputError(
+                "terminal incomplete signal cannot also be a completed trade"
+            )
+
+    @property
+    def operational_status(self) -> OperationalStatus:
+        return "INCOMPLETE" if self.terminal_incompletes else "COMPLETE"
+
+    @property
+    def incomplete_reasons(self) -> tuple[str, ...]:
+        return tuple(
+            f"{item.phase}:{item.family}:{item.config_id}:{item.fold_id}:"
+            f"{item.signal_identity.signal_ts}:{item.entry_ts}:{item.reason}"
+            for item in self.terminal_incompletes
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class FoldLayerCohort:
     fold_id: str
     strict_basket_trade_count: int
@@ -359,6 +548,8 @@ class PhaseRelaxationAnalysis:
     fold_ids: tuple[str, ...]
     operational_status: OperationalStatus
     incomplete_reasons: tuple[str, ...]
+    terminal_incompletes: tuple[TerminalIncompleteEvidence, ...]
+    statistics_computed: bool
     rays: tuple[RayAnalysis, ...]
 
 
@@ -366,24 +557,16 @@ class PhaseRelaxationAnalysis:
 class RelaxationCampaignAnalysis:
     schema_version: Literal["rob974.r3.relaxation.v1"]
     campaign_hash: str
+    campaign_run_id: str
+    exact_12_mapping_hash: str
+    ordered_mapping: tuple[tuple[str, str], ...]
+    plan_operational_status: str
+    plan_operational_blocker_reason: str
+    evidence_promoted: bool
     operational_status: OperationalStatus
     incomplete_reasons: tuple[str, ...]
     oos: PhaseRelaxationAnalysis
     train_diagnostic: PhaseRelaxationAnalysis | None
-
-
-def _campaign_hash(value: object) -> str:
-    if type(value) is not str:
-        raise TypeError("campaign_hash must be a built-in str")
-    if (
-        len(value) != 64
-        or any(char not in "0123456789abcdef" for char in value)
-        or value == "0" * 64
-    ):
-        raise RelaxationInputError(
-            "campaign_hash must be a non-placeholder lowercase full SHA-256"
-        )
-    return value
 
 
 def _float_bytes(value: float) -> str:
@@ -842,11 +1025,29 @@ def _analyze_phase(
         tuple(reason for ray in ray_tuple for reason in ray.incomplete_reasons)
     )
     return PhaseRelaxationAnalysis(
-        phase,
-        R3_FOLD_IDS,
-        "INCOMPLETE" if phase_reasons else "COMPLETE",
-        phase_reasons,
-        ray_tuple,
+        phase=phase,
+        fold_ids=R3_FOLD_IDS,
+        operational_status="INCOMPLETE" if phase_reasons else "COMPLETE",
+        incomplete_reasons=phase_reasons,
+        terminal_incompletes=(),
+        statistics_computed=True,
+        rays=ray_tuple,
+    )
+
+
+def _terminal_incomplete_phase(
+    evidence: PhaseLedgerEvidence,
+) -> PhaseRelaxationAnalysis:
+    if not evidence.terminal_incompletes:  # pragma: no cover - caller guard
+        raise AssertionError("terminal-incomplete phase requires terminal evidence")
+    return PhaseRelaxationAnalysis(
+        phase=evidence.phase,
+        fold_ids=R3_FOLD_IDS,
+        operational_status="INCOMPLETE",
+        incomplete_reasons=evidence.incomplete_reasons,
+        terminal_incompletes=evidence.terminal_incompletes,
+        statistics_computed=False,
+        rays=(),
     )
 
 
@@ -870,42 +1071,78 @@ def _suppress_oos_verdict_flags(
 
 def analyze_relaxation_campaign(
     *,
-    campaign_hash: object,
-    oos_ledgers: object,
-    train_ledgers: object | None = None,
+    evidence_context: object,
+    oos_evidence: object,
+    train_evidence: object | None = None,
 ) -> RelaxationCampaignAnalysis:
     """Build exact R3 §7 cohort/statistical evidence without side effects.
 
-    ``oos_ledgers`` and optional ``train_ledgers`` must each be the canonical
-    config-major 12x8 tuple.  TRAIN cohorts are retained only as diagnostics;
+    Phase evidence must carry the canonical config-major 12x8 tuple.  TRAIN
+    cohorts are retained only as diagnostics;
     ``monotone_edge_decay`` is always ``None`` for TRAIN.  Any operational
     incompleteness suppresses every OOS verdict flag rather than laundering a
-    partial ray into research evidence.
+    partial ray into research evidence.  A terminal-incomplete engine phase is
+    never sent through cohort, Delta E0, sign-test, or bootstrap calculations.
     """
 
-    checked_hash = _campaign_hash(campaign_hash)
-    oos = _analyze_phase(
-        campaign_hash=checked_hash,
-        phase="OOS",
-        raw_ledgers=oos_ledgers,
+    context: R3ProductionEvidenceContext = require_r3_production_evidence_context(
+        evidence_context
+    )
+    if type(oos_evidence) is not PhaseLedgerEvidence or oos_evidence.phase != "OOS":
+        raise RelaxationInputError("oos_evidence must be exact OOS PhaseLedgerEvidence")
+    if train_evidence is not None and (
+        type(train_evidence) is not PhaseLedgerEvidence
+        or train_evidence.phase != "TRAIN"
+    ):
+        raise RelaxationInputError(
+            "train_evidence must be exact TRAIN PhaseLedgerEvidence or None"
+        )
+    checked_hash = context.campaign_identity_sha256
+    oos = (
+        _terminal_incomplete_phase(oos_evidence)
+        if oos_evidence.terminal_incompletes
+        else _analyze_phase(
+            campaign_hash=checked_hash,
+            phase="OOS",
+            raw_ledgers=oos_evidence.ledgers,
+        )
     )
     train = (
         None
-        if train_ledgers is None
-        else _analyze_phase(
-            campaign_hash=checked_hash,
-            phase="TRAIN",
-            raw_ledgers=train_ledgers,
+        if train_evidence is None
+        else (
+            _terminal_incomplete_phase(train_evidence)
+            if train_evidence.terminal_incompletes
+            else _analyze_phase(
+                campaign_hash=checked_hash,
+                phase="TRAIN",
+                raw_ledgers=train_evidence.ledgers,
+            )
+        )
+    )
+    plan_reasons = (
+        ()
+        if context.operational_status == "COMPLETE"
+        else (
+            f"PLAN:{context.operational_status}:{context.operational_blocker_reason}",
         )
     )
     reasons = _ordered_unique(
-        oos.incomplete_reasons + (() if train is None else train.incomplete_reasons)
+        plan_reasons
+        + oos.incomplete_reasons
+        + (() if train is None else train.incomplete_reasons)
     )
     if reasons:
         oos = _suppress_oos_verdict_flags(oos)
     return RelaxationCampaignAnalysis(
         "rob974.r3.relaxation.v1",
         checked_hash,
+        context.campaign_run_id,
+        context.exact_12_mapping_hash,
+        context.ordered_mapping,
+        context.operational_status,
+        context.operational_blocker_reason,
+        context.operational_status == "COMPLETE" and not reasons,
         "INCOMPLETE" if reasons else "COMPLETE",
         reasons,
         oos,
@@ -923,6 +1160,7 @@ __all__ = [
     "ExactSignTest",
     "FoldBlockBootstrap",
     "FoldLayerCohort",
+    "PhaseLedgerEvidence",
     "PhaseRelaxationAnalysis",
     "RayAnalysis",
     "RelaxationCampaignAnalysis",
@@ -930,5 +1168,6 @@ __all__ = [
     "RelaxationStepAnalysis",
     "RelaxationTrade",
     "TradeExecution",
+    "TerminalIncompleteEvidence",
     "analyze_relaxation_campaign",
 ]

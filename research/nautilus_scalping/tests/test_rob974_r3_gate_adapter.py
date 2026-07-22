@@ -9,6 +9,10 @@ import rob974_h3_s4 as s4
 from rob944_folds import Fold
 from rob974_features import FOUR_HOUR_MS, SYMBOLS
 from rob974_h4_contracts import exact_h4_folds
+from rob974_r3_evidence_context import (
+    R3ProductionEvidenceContextError,
+    issue_r3_production_evidence_context,
+)
 from rob974_r3_gate_adapter import (
     R3_GATE_UNIT_ID_VERSION,
     ProductionFoldGateSource,
@@ -16,29 +20,17 @@ from rob974_r3_gate_adapter import (
     build_production_gate_audit,
     build_production_gate_batches,
     canonical_gate_unit_id,
-    r3_gate_config_identity_sha256,
 )
-from rob974_r3_gate_metrics import AuditScope, GateAuditValidationError
+from rob974_r3_gate_metrics import GateAuditValidationError
 from rob974_r3_h3_adapter import R3S4GateObservation
 from rob974_r3_manifest import R3S3Config, R3S4Config, get_r3_config
+from rob974_r3_plan import build_production_r3_plan
 
-_CAMPAIGN = "a" * 64
-_EXPERIMENT = "b" * 64
+_EVIDENCE_CONTEXT = issue_r3_production_evidence_context(build_production_r3_plan())
 
 
 def _fold(index: int) -> Fold:
     return exact_h4_folds()[index]
-
-
-def _scope(config: R3S3Config | R3S4Config, phase: str = "TRAIN") -> AuditScope:
-    return AuditScope(
-        phase=phase,
-        family="S3" if type(config) is R3S3Config else "S4",
-        config_id=config.config_id,
-        campaign_identity_sha256=_CAMPAIGN,
-        experiment_identity_sha256=_EXPERIMENT,
-        config_identity_sha256=r3_gate_config_identity_sha256(config),
-    )
 
 
 def _s3_metrics(config_id: str, decision_ts: int, symbol: str) -> s3.S3Metrics:
@@ -158,7 +150,10 @@ def test_s3_complete_source_grid_builds_exact_eight_canonical_batches() -> None:
     config = get_r3_config("S3-R3-02")
     assert type(config) is R3S3Config
     batches = build_production_gate_batches(
-        scope=_scope(config), config=config, fold_sources=_s3_sources(config)
+        evidence_context=_EVIDENCE_CONTEXT,
+        phase="TRAIN",
+        config=config,
+        fold_sources=_s3_sources(config),
     )
 
     assert tuple(batch.fold_id for batch in batches) == tuple(
@@ -181,13 +176,18 @@ def test_s3_complete_source_grid_builds_exact_eight_canonical_batches() -> None:
         decision_ts=_fold(0).train_start_ms,
         symbol_or_pair="XRPUSDT",
     )
+    assert batches[0].units[0].market_direction == "long"
+    assert "market_direction" not in dict(batches[0].units[0].gate_results)
 
 
 def test_s4_finite_phi_outside_is_context_valid_and_all_atoms_are_retained() -> None:
     config = get_r3_config("S4-R3-00")
     assert type(config) is R3S4Config
     batches = build_production_gate_batches(
-        scope=_scope(config), config=config, fold_sources=_s4_sources(config)
+        evidence_context=_EVIDENCE_CONTEXT,
+        phase="TRAIN",
+        config=config,
+        fold_sources=_s4_sources(config),
     )
 
     first = batches[0]
@@ -210,24 +210,33 @@ def test_exact_eight_fold_hash_and_phase_authority_fail_closed() -> None:
     assert type(config) is R3S3Config
     sources = _s3_sources(config)
     train = build_production_gate_audit(
-        scope=_scope(config, "TRAIN"), config=config, fold_sources=sources
+        evidence_context=_EVIDENCE_CONTEXT,
+        phase="TRAIN",
+        config=config,
+        fold_sources=sources,
     )
     assert train.threshold_authority is True
     assert train.diagnostic_only is False
 
     with pytest.raises(GateAuditValidationError, match="exactly eight"):
         build_production_gate_batches(
-            scope=_scope(config), config=config, fold_sources=sources[:-1]
+            evidence_context=_EVIDENCE_CONTEXT,
+            phase="TRAIN",
+            config=config,
+            fold_sources=sources[:-1],
         )
-    bad_hash = dataclasses.replace(_scope(config), config_identity_sha256="c" * 64)
-    with pytest.raises(GateAuditValidationError, match="config hash authority"):
-        build_production_gate_batches(
-            scope=bad_hash, config=config, fold_sources=sources
+    with pytest.raises(R3ProductionEvidenceContextError, match="campaign identity"):
+        dataclasses.replace(
+            _EVIDENCE_CONTEXT,
+            campaign_identity_sha256="c" * 64,
         )
     reordered = (sources[1], sources[0], *sources[2:])
     with pytest.raises(GateAuditValidationError, match="exact H4 authority"):
         build_production_gate_batches(
-            scope=_scope(config), config=config, fold_sources=reordered
+            evidence_context=_EVIDENCE_CONTEXT,
+            phase="TRAIN",
+            config=config,
+            fold_sources=reordered,
         )
 
 
@@ -236,7 +245,10 @@ def test_oos_flags_and_source_grid_order_are_not_caller_selected() -> None:
     assert type(config) is R3S3Config
     sources = _s3_sources(config, "OOS")
     report = build_production_gate_audit(
-        scope=_scope(config, "OOS"), config=config, fold_sources=sources
+        evidence_context=_EVIDENCE_CONTEXT,
+        phase="OOS",
+        config=config,
+        fold_sources=sources,
     )
     assert report.diagnostic_only is True
     assert report.threshold_authority is False
@@ -244,7 +256,8 @@ def test_oos_flags_and_source_grid_order_are_not_caller_selected() -> None:
     malformed = dataclasses.replace(sources[0], units=tuple(reversed(sources[0].units)))
     with pytest.raises(GateAuditValidationError, match="reordered source grid"):
         build_production_gate_batches(
-            scope=_scope(config, "OOS"),
+            evidence_context=_EVIDENCE_CONTEXT,
+            phase="OOS",
             config=config,
             fold_sources=(malformed, *sources[1:]),
         )
@@ -258,7 +271,8 @@ def test_oos_flags_and_source_grid_order_are_not_caller_selected() -> None:
     )
     with pytest.raises(GateAuditValidationError, match="exact H4 authority"):
         build_production_gate_batches(
-            scope=_scope(config, "OOS"),
+            evidence_context=_EVIDENCE_CONTEXT,
+            phase="OOS",
             config=config,
             fold_sources=(boundary_mutant, *sources[1:]),
         )

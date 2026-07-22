@@ -126,6 +126,7 @@ R3_RUNNER_SOURCE_FILES = RUNNER_SOURCE_FILES + _source_files(
     "research/nautilus_scalping/rob974_r3_gate_adapter.py",
     "research/nautilus_scalping/rob974_r3_relaxation.py",
     "research/nautilus_scalping/rob974_r3_relaxation_h2_adapter.py",
+    "research/nautilus_scalping/rob974_r3_evidence_context.py",
     "research/nautilus_scalping/rob974_r3_plan.py",
     "research/nautilus_scalping/rob974_r3_postaudit.py",
     "app/services/rob974_r3_h6a_bridge.py",
