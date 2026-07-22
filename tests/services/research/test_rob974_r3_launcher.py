@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import io
 import json
 from dataclasses import replace
@@ -803,6 +804,7 @@ def test_launcher_wires_stable_m4_scorecard_and_markdown_seams() -> None:
         "build_r3_artifact_pair",
         "verify_r3_artifact_pair",
         "issue_r3_fold_scenario_attribution",
+        "issue_r3_market_input_authority",
         "issue_r3_all_cell_oos_ledger",
         "issue_r3_scorecard_accounting",
         "issue_r3_scorecard_relaxation_evidence",
@@ -815,7 +817,81 @@ def test_launcher_wires_stable_m4_scorecard_and_markdown_seams() -> None:
     assert "rob974.r3.h5.scorecard.v1" in source
     assert "accounting=scorecard_accounting" in source
     assert "relaxation_evidence = m4.issue_r3_scorecard_relaxation_evidence" in source
+    assert "decision_snapshots=decision_snapshots" not in source
+    assert "funding_sidecars=funding_sidecars" not in source
     assert "from rob974_r3_relaxation import analyze_relaxation_campaign" not in source
+
+
+def test_m4_campaign_issuer_reuses_authority_and_original_attempts() -> None:
+    launcher = _launcher()
+    authority = object()
+    accounting = object()
+    authority_calls: list[dict[str, object]] = []
+    attribution_calls: list[dict[str, object]] = []
+    accounting_calls: list[dict[str, object]] = []
+
+    def issue_authority(**kwargs: object) -> object:
+        authority_calls.append(kwargs)
+        return authority
+
+    def issue_attribution(**kwargs: object) -> tuple[object, ...]:
+        attribution_calls.append(kwargs)
+        return (kwargs["path_scenario"], kwargs["source"])
+
+    def issue_accounting(**kwargs: object) -> object:
+        accounting_calls.append(kwargs)
+        return accounting
+
+    api = SimpleNamespace(
+        issue_r3_market_input_authority=issue_authority,
+        issue_r3_fold_scenario_attribution=issue_attribution,
+        issue_r3_scorecard_accounting=issue_accounting,
+    )
+    evidence_context = object()
+    input_data = object()
+    market_input_authority = api.issue_r3_market_input_authority(
+        evidence_context=evidence_context,
+        actual_h4_input_data=input_data,
+    )
+    issuer = launcher._M4CampaignIssuer(
+        api=api,
+        evidence_context=evidence_context,
+        market_input_authority=market_input_authority,
+    )
+    scenario_sources = tuple(
+        (scenario, object()) for scenario in launcher.PATH_SCENARIOS
+    )
+
+    first = issuer.issue_fold_scenario_attributions(scenario_sources)
+    second = issuer.issue_fold_scenario_attributions(scenario_sources)
+    attempts = tuple(object() for _index in range(12))
+    observed_accounting = issuer.issue_scorecard_accounting(attempts)
+
+    assert authority_calls == [
+        {
+            "evidence_context": evidence_context,
+            "actual_h4_input_data": input_data,
+        }
+    ]
+    assert (
+        inspect.getsource(launcher._compute_actual_campaign).count(
+            "m4.issue_r3_market_input_authority("
+        )
+        == 1
+    )
+    assert issuer.market_input_authority is authority
+    assert first == second
+    assert len(attribution_calls) == 6
+    assert all(
+        call["market_input_authority"] is authority for call in attribution_calls
+    )
+    assert all("decision_snapshots" not in call for call in attribution_calls)
+    assert all("funding_sidecars" not in call for call in attribution_calls)
+    assert observed_accounting is accounting
+    assert accounting_calls == [
+        {"evidence_context": evidence_context, "attempts": attempts}
+    ]
+    assert accounting_calls[0]["attempts"] is attempts
 
 
 def test_read_only_engine_enforces_connection_default_read_only(
@@ -1383,10 +1459,16 @@ def test_postcommit_audit_failure_has_dedicated_exit_and_forensic_message(
     )
 
 
-def test_launcher_calls_actual_m4_api_when_integrated() -> None:
+def test_launcher_calls_actual_m4_api_when_integrated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     pytest.importorskip("rob974_r3_scorecard")
     launcher = _launcher()
+    from dataclasses import dataclass
+
+    import rob974_r3_scorecard as scorecard_module
     from rob941_funding_sidecar import FundingSidecar
+    from rob974_features import MinuteBar
     from rob974_h2_dtos import S3EngineResult
     from rob974_h3_manifest import SYMBOLS
     from rob974_h4_adapter import (
@@ -1395,12 +1477,12 @@ def test_launcher_calls_actual_m4_api_when_integrated() -> None:
         seal_s3_engine_output,
     )
     from rob974_h4_contracts import exact_h4_folds
-    from rob974_h6a_accounting import AttemptAccountingRow
     from rob974_r3_evidence_context import issue_r3_production_evidence_context
     from rob974_r3_manifest import get_r3_config
     from rob974_r3_relaxation import CellFoldLedger, PhaseLedgerEvidence
     from rob974_r3_relaxation_h2_adapter import R3H2CellFoldInput
 
+    from app.services.rob974_h6b_materializer import ActualH4InputData
     from research_contracts.canonical_hash import canonical_sha256
 
     api = launcher._load_m4_api()
@@ -1426,14 +1508,48 @@ def test_launcher_calls_actual_m4_api_when_integrated() -> None:
             seal_s3_engine_output(result),
         ),
     )
+    component = scorecard_module._production_dataset_component(context)
+    minute = MinuteBar(
+        component["window_start_ms"],
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+    )
+    actual_data = ActualH4InputData.from_mapping(
+        dict.fromkeys(SYMBOLS, (minute,)),
+        corpus_end_ts=component["window_end_ms"],
+        persisted_corpus_hash=component["content_sha256"],
+        persisted_feature_hash=canonical_sha256([]),
+    )
+    sidecars = tuple(FundingSidecar.from_rows(symbol, ()) for symbol in SYMBOLS)
+    funding_hashes = tuple((symbol, canonical_sha256([])) for symbol in SYMBOLS)
+
+    def unit_market_derivation(**_kwargs: object) -> tuple[object, ...]:
+        return (
+            component["content_sha256"],
+            canonical_sha256([]),
+            (),
+            sidecars,
+            funding_hashes,
+        )
+
+    with monkeypatch.context() as unit_market:
+        unit_market.setattr(
+            scorecard_module,
+            "_validate_market_input_and_derive",
+            unit_market_derivation,
+        )
+        market_input_authority = api.issue_r3_market_input_authority(
+            evidence_context=context,
+            actual_h4_input_data=actual_data,
+        )
     receipts = tuple(
         api.issue_r3_fold_scenario_attribution(
             path_scenario=scenario,
             source=source,
-            decision_snapshots=(),
-            funding_sidecars=tuple(
-                FundingSidecar.from_rows(symbol, ()) for symbol in SYMBOLS
-            ),
+            market_input_authority=market_input_authority,
         )
         for scenario in launcher.PATH_SCENARIOS
     )
@@ -1441,24 +1557,51 @@ def test_launcher_calls_actual_m4_api_when_integrated() -> None:
     assert fold_input.primary.source is source
     assert context.campaign_identity_sha256 == plan.full_campaign_hash
 
-    attempt_rows = tuple(
-        AttemptAccountingRow(
-            row_id=row_id,
-            experiment_id=experiment_id,
-            retry_index=0,
-            status="completed",
-            reason_code=None,
-            fold_evidence_hash=canonical_sha256([row_id, "fold-evidence"]),
-            run_identity=canonical_sha256([row_id, "run-identity"]),
-        )
-        for row_id, experiment_id in plan.ordered_mapping
+    @dataclass(frozen=True)
+    class GateReport:
+        phase: str
+
+    path_projection = {
+        "input_seal_sha256": canonical_sha256(["empty", "input"]),
+        "output_seal_sha256": canonical_sha256(["empty", "output"]),
+        "member_trade_keys": [],
+        "basket_trades": 0,
+        "no_trades": 0,
+        "incompletes": 0,
+        "terminal_incomplete_rows": [],
+    }
+    cell_evidence = {
+        row_id: [
+            {
+                "phase": phase,
+                "fold_id": item.fold_id,
+                "accepted_decision_units": 0,
+                "path_evidence": [
+                    {"path_scenario": scenario, **path_projection}
+                    for scenario in launcher.PATH_SCENARIOS
+                ],
+            }
+            for phase in ("TRAIN", "OOS")
+            for item in plan.folds
+        ]
+        for row_id, _experiment_id in plan.ordered_mapping
+    }
+    gate_reports = {
+        (row_id, phase): GateReport(phase)
+        for row_id, _experiment_id in plan.ordered_mapping
+        for phase in ("TRAIN", "OOS")
+    }
+    attempts = launcher._build_attempts(
+        plan=plan,
+        cell_evidence=cell_evidence,
+        gate_reports=gate_reports,
     )
     accounting = api.issue_r3_scorecard_accounting(
         evidence_context=context,
-        registered_total=12,
-        attempts=attempt_rows,
+        attempts=attempts,
     )
-    assert accounting.attempts == attempt_rows
+    assert accounting.source_attempts is attempts
+    assert accounting.attempts == launcher._attempt_accounting_rows(attempts)
     assert accounting.report.accounting_complete is True
     assert accounting.report.performance_usable is True
 

@@ -754,6 +754,7 @@ def _load_m4_api() -> SimpleNamespace:
         hash_r3_canonical_bytes,
         issue_r3_all_cell_oos_ledger,
         issue_r3_fold_scenario_attribution,
+        issue_r3_market_input_authority,
         issue_r3_scorecard_accounting,
         issue_r3_scorecard_relaxation_evidence,
         verify_r3_artifact_pair,
@@ -771,6 +772,7 @@ def _load_m4_api() -> SimpleNamespace:
         hash_r3_canonical_bytes=hash_r3_canonical_bytes,
         issue_r3_all_cell_oos_ledger=issue_r3_all_cell_oos_ledger,
         issue_r3_fold_scenario_attribution=issue_r3_fold_scenario_attribution,
+        issue_r3_market_input_authority=issue_r3_market_input_authority,
         issue_r3_scorecard_accounting=issue_r3_scorecard_accounting,
         issue_r3_scorecard_relaxation_evidence=(issue_r3_scorecard_relaxation_evidence),
         verify_r3_artifact_pair=verify_r3_artifact_pair,
@@ -1521,6 +1523,41 @@ def _attempt_accounting_rows(attempts: tuple[object, ...]) -> tuple[object, ...]
     )
 
 
+class _M4CampaignIssuer:
+    """Bind one actual market-input authority to every M4 campaign receipt."""
+
+    def __init__(
+        self,
+        *,
+        api: SimpleNamespace,
+        evidence_context: object,
+        market_input_authority: object,
+    ) -> None:
+        self._api = api
+        self._evidence_context = evidence_context
+        self.market_input_authority = market_input_authority
+
+    def issue_fold_scenario_attributions(
+        self,
+        scenario_sources: Sequence[tuple[str, object]],
+    ) -> tuple[object, ...]:
+        market_input_authority = self.market_input_authority
+        return tuple(
+            self._api.issue_r3_fold_scenario_attribution(
+                path_scenario=scenario,
+                source=source,
+                market_input_authority=market_input_authority,
+            )
+            for scenario, source in scenario_sources
+        )
+
+    def issue_scorecard_accounting(self, attempts: tuple[object, ...]) -> object:
+        return self._api.issue_r3_scorecard_accounting(
+            evidence_context=self._evidence_context,
+            attempts=attempts,
+        )
+
+
 class _M4ArtifactPort:
     """Narrow pure adapter accepted by the frozen directory-atomic primitive."""
 
@@ -1583,6 +1620,15 @@ def _compute_actual_campaign(*, plan: object, input_data: object) -> ComputedCam
 
     m4 = _load_m4_api()
     evidence_context = issue_r3_production_evidence_context(plan)
+    market_input_authority = m4.issue_r3_market_input_authority(
+        evidence_context=evidence_context,
+        actual_h4_input_data=input_data,
+    )
+    m4_issuer = _M4CampaignIssuer(
+        api=m4,
+        evidence_context=evidence_context,
+        market_input_authority=market_input_authority,
+    )
     funding_sidecars = tuple(
         sidecar for _symbol, sidecar in input_data.funding_sidecars
     )
@@ -1665,22 +1711,8 @@ def _compute_actual_campaign(*, plan: object, input_data: object) -> ComputedCam
                     }
                 )
                 if phase == "OOS":
-                    snapshots_by_ts = {
-                        snapshot.decision_ts: snapshot
-                        for snapshot in feature_context.snapshots
-                    }
-                    decision_snapshots = tuple(
-                        snapshots_by_ts[candidate.decision_ts]
-                        for candidate in generator_output.accepted
-                    )
-                    receipts = tuple(
-                        m4.issue_r3_fold_scenario_attribution(
-                            path_scenario=scenario,
-                            source=source,
-                            decision_snapshots=decision_snapshots,
-                            funding_sidecars=funding_sidecars,
-                        )
-                        for scenario, source in scenario_sources
+                    receipts = m4_issuer.issue_fold_scenario_attributions(
+                        scenario_sources
                     )
                     oos_fold_inputs[config.config_id].append(
                         m4.R3FoldOOSInput(scenario_attributions=receipts)
@@ -1756,11 +1788,7 @@ def _compute_actual_campaign(*, plan: object, input_data: object) -> ComputedCam
         registered_total=12,
         attempts=attempt_accounting_rows,
     )
-    scorecard_accounting = m4.issue_r3_scorecard_accounting(
-        evidence_context=evidence_context,
-        registered_total=12,
-        attempts=attempt_accounting_rows,
-    )
+    scorecard_accounting = m4_issuer.issue_scorecard_accounting(attempts)
     if scorecard_accounting.report != accounting:
         raise LaunchRefused("M4_ISSUED_ACCOUNTING_REPORT_DRIFT")
     scorecard = m4.build_r3_scorecard(
