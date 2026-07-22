@@ -15,7 +15,7 @@ import rob974_r3_s4_engine as r3_s4_engine
 from rob974_h2_dtos import MinuteBar, S4PairLegClose, S4PairSignalIntent
 from rob974_h2_ingress import build_minute_index
 from rob974_h3_h2_adapter import adapt_s3_candidate
-from rob974_h4_adapter import invoke_actual_s3_engine
+from rob974_h4_adapter import H4ContractDrift, invoke_actual_s3_engine
 from rob974_h4_contracts import exact_h4_folds
 from rob974_h4_h6a_adapter import ENGINE_SOURCE_FILES, build_production_h4_plan
 from rob974_r3_h3_adapter import (
@@ -30,6 +30,7 @@ from rob974_r3_h4_s4_adapter import (
     R3S4ParityDrift,
     assert_r3_s4_frozen_parity,
     invoke_r3_s4_engine,
+    validate_r3_s4_terminal,
 )
 from rob974_r3_manifest import (
     FROZEN_R3_ROSTER,
@@ -42,7 +43,11 @@ from rob974_r3_relaxation_h2_adapter import (
     normalize_r3_s3_trade,
     normalize_r3_s4_trade,
 )
-from rob974_r3_s4_dtos import R3S4EngineResult, R3S4PairSignalIntent
+from rob974_r3_s4_dtos import (
+    R3S4EngineResult,
+    R3S4IncompleteRecord,
+    R3S4PairSignalIntent,
+)
 
 _MINUTE_MS = 60_000
 _PAIR = ("XRPUSDT", "DOGEUSDT")
@@ -371,14 +376,23 @@ def test_adversarial_representable_matrix_is_byte_and_economic_identical(
     assert len(evidence.input_sha256) == len(evidence.output_sha256) == 64
 
 
-@pytest.mark.parametrize("config", FROZEN_R3_S4_CONFIGS, ids=lambda row: row.config_id)
-@pytest.mark.parametrize("magnitude", (1.0, 1.1, 1.9))
+_REPRESENTABLE_MAGNITUDES = tuple(
+    (config, magnitude)
+    for config in FROZEN_R3_S4_CONFIGS
+    for magnitude in (1.0, 1.1, 1.9)
+    if magnitude >= config.z_entry
+)
+
+
+@pytest.mark.parametrize(
+    ("config", "magnitude"),
+    _REPRESENTABLE_MAGNITUDES,
+    ids=lambda value: value.config_id if type(value) is R3S4Config else str(value),
+)
 @pytest.mark.parametrize("sign", (-1, 1))
 def test_parity_covers_every_registered_threshold_class_and_observed_magnitude(
     config: R3S4Config, magnitude: float, sign: int
 ) -> None:
-    if magnitude < config.z_entry:
-        pytest.skip("observed magnitude is invalid for this registered cell")
     candidate = _intent(
         config.config_id,
         sign=sign,
@@ -549,6 +563,63 @@ def test_r3_engine_and_h4_reject_frozen_r2_candidate_type() -> None:
             strategy="S4",
             config_id="S4-R3-00",
             fold_id="fold-00",
+        )
+
+
+def _incomplete_for(candidate: R3S4PairSignalIntent) -> R3S4IncompleteRecord:
+    return R3S4IncompleteRecord(
+        pair=candidate.pair,
+        side_a=candidate.side_a,
+        side_b=candidate.side_b,
+        config_id=candidate.config_id,
+        fold_id=candidate.fold_id,
+        signal_ts=candidate.signal_ts,
+        entry_ts=candidate.signal_ts,
+        entry_price_a=1.0,
+        entry_price_b=1.0,
+        reason="data_gap_in_pair_position",
+    )
+
+
+def test_h4_exact_terminal_rejects_duplicate_multiple_incomplete_and_bad_prefix() -> (
+    None
+):
+    first = _intent("S4-R3-00")
+    second = _intent(
+        "S4-R3-00",
+        signal_ts=_MINUTE_MS,
+        pair=("XRPUSDT", "SOLUSDT"),
+    )
+    with pytest.raises(H4ContractDrift, match="duplicate candidate"):
+        validate_r3_s4_terminal(
+            [first, first],
+            R3S4EngineResult((), (), ()),
+            config_id=first.config_id,
+            fold_id=first.fold_id,
+        )
+    with pytest.raises(H4ContractDrift, match="more than one"):
+        validate_r3_s4_terminal(
+            [first, second],
+            R3S4EngineResult((), (), (_incomplete_for(first), _incomplete_for(second))),
+            config_id=first.config_id,
+            fold_id=first.fold_id,
+        )
+    bad_side = dataclasses.replace(
+        _incomplete_for(first), side_a="long", side_b="short"
+    )
+    with pytest.raises(H4ContractDrift, match="leg directions"):
+        validate_r3_s4_terminal(
+            [first, second],
+            R3S4EngineResult((), (), (bad_side,)),
+            config_id=first.config_id,
+            fold_id=first.fold_id,
+        )
+    with pytest.raises(H4ContractDrift, match="resolved-prefix"):
+        validate_r3_s4_terminal(
+            [first, second],
+            R3S4EngineResult((), (), (_incomplete_for(second),)),
+            config_id=first.config_id,
+            fold_id=first.fold_id,
         )
 
 
