@@ -8,14 +8,24 @@ from rob974_h2_dtos import (
     S3EngineResult,
     S3IncompleteRecord,
     S3NoTradeRecord,
+    S3SignalIntent,
     S3Trade,
     S4PairTrade,
 )
-from rob974_h4_adapter import SealedS3Terminal, seal_s3_engine_output
+from rob974_h3_h2_adapter import adapt_s3_candidate
+from rob974_h3_s3 import S3Candidate
+from rob974_h3_s4 import HISTORICAL_NOTIONAL_ASSUMPTION, S4Candidate
+from rob974_h4_adapter import (
+    SealedS3Terminal,
+    seal_s3_engine_input,
+    seal_s3_engine_output,
+)
 from rob974_h4_contracts import exact_h4_folds
 from rob974_r3_evidence_context import issue_r3_production_evidence_context
+from rob974_r3_h3_adapter import adapt_r3_s4_candidate_for_execution
 from rob974_r3_h4_s4_adapter import (
     SealedR3S4Terminal,
+    seal_r3_s4_engine_input,
     seal_r3_s4_engine_output,
 )
 from rob974_r3_manifest import FROZEN_R3_ROSTER, R3S3Config, R3S4Config
@@ -31,7 +41,11 @@ from rob974_r3_relaxation_h2_adapter import (
     normalize_r3_s3_trade,
     normalize_r3_s4_trade,
 )
-from rob974_r3_s4_dtos import R3S4EngineResult, R3S4PairTrade
+from rob974_r3_s4_dtos import (
+    R3S4EngineResult,
+    R3S4PairSignalIntent,
+    R3S4PairTrade,
+)
 
 
 class _S3TradeSubclass(S3Trade):
@@ -101,12 +115,121 @@ def _s4_trade(
     return R3S4PairTrade(**values)  # type: ignore[arg-type]
 
 
-def _sealed_s3(result: S3EngineResult) -> SealedS3Terminal:
-    return SealedS3Terminal(result, "a" * 64, seal_s3_engine_output(result))
+def _s3_candidate(
+    config: R3S3Config, signal_ts: int, *, symbol: str = "XRPUSDT"
+) -> S3Candidate:
+    return S3Candidate(
+        strategy="S3",
+        config_id=config.config_id,
+        decision_ts=signal_ts,
+        symbol=symbol,
+        side="long",
+        R=0.03,
+        S=1.8,
+        ER=0.5,
+        Q=0.6,
+        A=0.01,
+        atr20=0.01,
+        close=1.0,
+        vwap12=0.99,
+        vwap24=0.98,
+        market_return_24h=0.02,
+        current_market_return_4h=-0.4,
+        volatility_percentile=47.5,
+        volatility_percentile_provenance="h1_percentile_30d",
+        range24=0.10,
+        d_SL=0.01,
+        d_TP=0.015,
+        entry_tick_ts=signal_ts,
+        entry_deadline_ts=signal_ts + 60_000,
+        max_hold_4h_bars=12,
+    )
 
 
-def _sealed_s4(result: R3S4EngineResult) -> SealedR3S4Terminal:
-    return SealedR3S4Terminal(result, "a" * 64, seal_r3_s4_engine_output(result))
+def _s4_candidate(config: R3S4Config, signal_ts: int) -> S4Candidate:
+    return S4Candidate(
+        strategy="S4",
+        config_id=config.config_id,
+        decision_ts=signal_ts,
+        pair="XRP-DOGE",
+        side="short_a_long_b",
+        symbol_a="XRPUSDT",
+        symbol_b="DOGEUSDT",
+        side_a="short",
+        side_b="long",
+        beta_a=1.2,
+        beta_b=0.8,
+        weight_a=0.5,
+        weight_b=0.5,
+        mu=0.01,
+        mad=0.03,
+        effective_mad_scale=0.05,
+        observed_z=config.z_entry,
+        prior_observed_z=2.0 * config.z_entry,
+        D_fraction=0.02,
+        D_bps=200.0,
+        rho=0.72,
+        half_life_4h_bars=4.0,
+        beta_stability=0.10,
+        sigma_pair_risk=0.01,
+        observed_pair_return_fraction=0.02,
+        gross_notional_usd=12.0,
+        notional_a_usd=6.0,
+        notional_b_usd=6.0,
+        d_SL=0.01,
+        d_TP=0.015,
+        historical_notional_assumption=HISTORICAL_NOTIONAL_ASSUMPTION,
+        historical_eligibility=True,
+        historical_eligibility_authority=(
+            "rob974_h1_parent_manifest_selected_universe"
+        ),
+        volatility_percentile=None,
+        volatility_percentile_provenance="not_defined_for_s4",
+        entry_tick_ts=signal_ts,
+        entry_deadline_ts=signal_ts + 60_000,
+        max_hold_4h_bars=9,
+        leg_a_order_id=None,
+        leg_b_order_id=None,
+        leg_a_fill_id=None,
+        leg_b_fill_id=None,
+        pair_executor_provenance="not_evaluated_h3_generator",
+    )
+
+
+def _sealed_s3(
+    result: S3EngineResult,
+    intents: tuple[S3SignalIntent, ...],
+    *,
+    corpus_end_ts: int,
+    horizon_end_ts: int | None,
+) -> SealedS3Terminal:
+    return SealedS3Terminal(
+        result,
+        seal_s3_engine_input(
+            intents,
+            corpus_end_ts=corpus_end_ts,
+            horizon_end_ts=horizon_end_ts,
+        ),
+        seal_s3_engine_output(result),
+    )
+
+
+def _sealed_s4(
+    result: R3S4EngineResult,
+    intents: tuple[R3S4PairSignalIntent, ...],
+    *,
+    corpus_end_ts: int,
+    horizon_end_ts: int | None,
+) -> SealedR3S4Terminal:
+    return SealedR3S4Terminal(
+        result,
+        seal_r3_s4_engine_input(
+            intents,
+            corpus_end_ts=corpus_end_ts,
+            horizon_end_ts=horizon_end_ts,
+        ),
+        seal_r3_s4_engine_output(result),
+    )
 
 
 def _source(
@@ -114,12 +237,43 @@ def _source(
     fold_id: str,
     trades: tuple[S3Trade, ...] | tuple[R3S4PairTrade, ...],
 ) -> R3H2CellFoldInput:
-    terminal = (
-        _sealed_s3(S3EngineResult(trades, (), ()))
-        if type(config) is R3S3Config
-        else _sealed_s4(R3S4EngineResult(trades, (), ()))
+    fold = next(row for row in exact_h4_folds() if row.fold_id == fold_id)
+    signal_ts = trades[0].signal_ts
+    h3_candidates: tuple[S3Candidate, ...] | tuple[S4Candidate, ...]
+    engine_intents: tuple[S3SignalIntent, ...] | tuple[R3S4PairSignalIntent, ...]
+    if type(config) is R3S3Config:
+        candidate = _s3_candidate(config, signal_ts)
+        intent = adapt_s3_candidate(candidate, fold_id=fold_id)
+        h3_candidates = (candidate,)
+        engine_intents = (intent,)
+        result = S3EngineResult(trades, (), ())
+        terminal = _sealed_s3(
+            result,
+            engine_intents,
+            corpus_end_ts=fold.oos_end_ms,
+            horizon_end_ts=fold.oos_end_ms,
+        )
+    else:
+        candidate = _s4_candidate(config, signal_ts)
+        intent = adapt_r3_s4_candidate_for_execution(candidate, fold_id=fold_id)
+        h3_candidates = (candidate,)
+        engine_intents = (intent,)
+        result = R3S4EngineResult(trades, (), ())
+        terminal = _sealed_s4(
+            result,
+            engine_intents,
+            corpus_end_ts=fold.oos_end_ms,
+            horizon_end_ts=fold.oos_end_ms,
+        )
+    return R3H2CellFoldInput(
+        config=config,
+        fold_id=fold_id,
+        h3_candidates=h3_candidates,
+        engine_intents=engine_intents,
+        corpus_end_ts=fold.oos_end_ms,
+        horizon_end_ts=fold.oos_end_ms,
+        terminal=terminal,
     )
-    return R3H2CellFoldInput(config=config, fold_id=fold_id, terminal=terminal)
 
 
 def _oos_sources() -> tuple[R3H2CellFoldInput, ...]:
@@ -136,11 +290,60 @@ def _oos_sources() -> tuple[R3H2CellFoldInput, ...]:
     return tuple(rows)
 
 
+def _multi_s3_source() -> R3H2CellFoldInput:
+    config = FROZEN_R3_ROSTER[0]
+    assert type(config) is R3S3Config
+    fold = exact_h4_folds()[0]
+    candidates = (
+        _s3_candidate(config, fold.oos_start_ms + 60_000, symbol="XRPUSDT"),
+        _s3_candidate(config, fold.oos_start_ms + 120_000, symbol="DOGEUSDT"),
+    )
+    intents = tuple(
+        adapt_s3_candidate(candidate, fold_id=fold.fold_id) for candidate in candidates
+    )
+    result = S3EngineResult(
+        (),
+        tuple(
+            S3NoTradeRecord(
+                symbol=candidate.symbol,
+                side=candidate.side,
+                config_id=config.config_id,
+                fold_id=fold.fold_id,
+                signal_ts=candidate.signal_ts,
+                reason="next_tick_unavailable",
+            )
+            for candidate in candidates
+        ),
+        (),
+    )
+    terminal = _sealed_s3(
+        result,
+        intents,
+        corpus_end_ts=fold.oos_end_ms,
+        horizon_end_ts=fold.oos_end_ms,
+    )
+    return R3H2CellFoldInput(
+        config=config,
+        fold_id=fold.fold_id,
+        h3_candidates=candidates,
+        engine_intents=intents,
+        corpus_end_ts=fold.oos_end_ms,
+        horizon_end_ts=fold.oos_end_ms,
+        terminal=terminal,
+    )
+
+
 def _replace_terminal_result(
     source: R3H2CellFoldInput, result: S3EngineResult | R3S4EngineResult
 ) -> R3H2CellFoldInput:
-    terminal = (
-        _sealed_s3(result) if type(result) is S3EngineResult else _sealed_s4(result)
+    terminal = replace(
+        source.terminal,
+        result=result,
+        output_seal_sha256=(
+            seal_s3_engine_output(result)
+            if type(result) is S3EngineResult
+            else seal_r3_s4_engine_output(result)
+        ),
     )
     return replace(source, terminal=terminal)
 
@@ -248,7 +451,7 @@ def test_adapter_rejects_raw_prefix_wrong_family_lineage_order_and_phase() -> No
     subclass = _S3TradeSubclass(**s3_trade.__dict__)
     bad_result = S3EngineResult((subclass,), (), ())
     with pytest.raises(TypeError, match="exact S3Trade tuple"):
-        replace(s3_source, terminal=_sealed_s3(bad_result))
+        _replace_terminal_result(s3_source, bad_result)
 
 
 def test_trade_phase_exit_horizon_is_inclusive_and_one_ms_over_rejected() -> None:
@@ -334,6 +537,69 @@ def test_sealed_terminal_output_hash_is_recomputed_at_m3_ingress() -> None:
         replace(source, terminal=forged)
 
 
+def test_input_authority_rejects_alternate_valid_seal_before_output_evidence() -> None:
+    source = _oos_sources()[3 * 8]
+    assert type(source.terminal) is SealedR3S4Terminal
+    alternate = "f" * 64
+    assert alternate != source.terminal.input_seal_sha256
+    forged = replace(
+        source.terminal,
+        input_seal_sha256=alternate,
+        output_seal_sha256="0" * 64,
+    )
+    with pytest.raises(RelaxationInputError, match="input hash"):
+        replace(source, terminal=forged)
+
+
+def test_input_authority_rejects_missing_reordered_and_duplicate_h3_candidates() -> (
+    None
+):
+    source = _multi_s3_source()
+    first_candidate, second_candidate = source.h3_candidates
+    first_intent, second_intent = source.engine_intents
+
+    with pytest.raises(RelaxationInputError, match="derived engine intents"):
+        replace(source, h3_candidates=(first_candidate,))
+    with pytest.raises(RelaxationInputError, match="input hash"):
+        replace(
+            source,
+            h3_candidates=(second_candidate, first_candidate),
+            engine_intents=(second_intent, first_intent),
+        )
+    with pytest.raises(RelaxationInputError, match="duplicate H3 candidate"):
+        replace(
+            source,
+            h3_candidates=(first_candidate, first_candidate),
+            engine_intents=(first_intent, first_intent),
+        )
+
+
+def test_input_authority_rejects_changed_config_fold_corpus_and_horizon() -> None:
+    source = _multi_s3_source()
+    other_config = FROZEN_R3_ROSTER[1]
+    assert type(other_config) is R3S3Config
+    other_fold = exact_h4_folds()[1]
+
+    with pytest.raises(RelaxationInputError, match="candidate config_id"):
+        replace(source, config=other_config)
+    with pytest.raises(RelaxationInputError, match="derived engine intents"):
+        replace(source, fold_id=other_fold.fold_id)
+    with pytest.raises(RelaxationInputError, match="input hash"):
+        replace(source, corpus_end_ts=source.corpus_end_ts + 1)
+    assert source.horizon_end_ts is not None
+    with pytest.raises(RelaxationInputError, match="input hash"):
+        replace(source, horizon_end_ts=source.horizon_end_ts + 1)
+
+
+def test_input_authority_rejects_nonexact_intent_type_and_order() -> None:
+    source = _multi_s3_source()
+    first_intent, second_intent = source.engine_intents
+    with pytest.raises(TypeError, match="exact built-in tuple"):
+        replace(source, engine_intents=list(source.engine_intents))
+    with pytest.raises(RelaxationInputError, match="derived engine intents"):
+        replace(source, engine_intents=(second_intent, first_intent))
+
+
 def test_terminal_incomplete_preserves_prefix_but_suppresses_all_phase_statistics() -> (
     None
 ):
@@ -354,8 +620,9 @@ def test_terminal_incomplete_preserves_prefix_but_suppresses_all_phase_statistic
         entry_price=1.0,
         reason="data_gap_in_position",
     )
-    terminal = _sealed_s3(S3EngineResult((prefix_trade,), (), (incomplete,)))
-    incomplete_source = replace(source, terminal=terminal)
+    incomplete_source = _replace_terminal_result(
+        source, S3EngineResult((prefix_trade,), (), (incomplete,))
+    )
     evidence = normalize_r3_phase_ledgers(
         phase="OOS", sources=(incomplete_source, *sources[1:])
     )
