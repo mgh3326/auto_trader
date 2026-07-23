@@ -217,6 +217,7 @@ def test_buy_discovery_have_negative_class_constraint():
         assert "deferred_no_action" in joined
         assert "confidence" in joined
         assert "forecast" in joined
+        assert "outcome_rule_version='window-touch-v1-high-gte-low-lte'" in joined
 
 
 # --- ROB-660: sell lane account routing ---------------------------------------
