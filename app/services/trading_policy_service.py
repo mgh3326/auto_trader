@@ -4,12 +4,17 @@ of trading judgment thresholds (ROB-646). Read-only; operator edits via PR."""
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
-from app.schemas.trading_policy import TradingPolicyDocument
+from app.schemas.trading_policy import (
+    SingleShareExitDecisionRule,
+    TradingPolicyDocument,
+)
 
 _POLICY_PATH: Path = (
     Path(__file__).resolve().parents[2] / "config" / "trading_policy.yaml"
@@ -20,6 +25,19 @@ _cache: dict[str, Any] = {"key": None, "doc": None, "hash": None}
 
 class TradingPolicyKeyError(ValueError):
     """Unknown market or lane requested from the trading policy."""
+
+
+@dataclass(frozen=True, slots=True)
+class SingleShareExitEvaluation:
+    """Pure policy result; it neither persists nor dispatches a proposal."""
+
+    outcome: Literal["PROPOSE", "DEFER", "INELIGIBLE"]
+    reason: str
+    action: Literal["propose_full_exit"] | None = None
+    sizing: Literal["full_position"] | None = None
+    approval: Literal["telegram_manual"] | None = None
+    auto_approve: bool = False
+    execution: Literal["proposal_only"] | None = None
 
 
 def _reset_cache_for_tests() -> None:
@@ -131,6 +149,75 @@ def sector_cluster_for(label: str | None) -> str | None:
             if m and m in needle:
                 return cluster
     return None
+
+
+def evaluate_single_share_exit(
+    *,
+    market: str,
+    broker: str,
+    quantity: int,
+    order_routable: bool,
+    average_cost: int | float,
+    proposed_sell_price: int | float,
+    profit_pct: int | float,
+    resistance_near_pct: int | float | None,
+    unresolved_open_actions: int,
+) -> SingleShareExitEvaluation:
+    """Evaluate the additive one-share full-exit *proposal* path.
+
+    Scope and quantity are checked before the unresolved-action DEFER gate so
+    unrelated positions do not get classified by a rule that does not apply to
+    them. No broker, database, scheduler, or order-proposal mutation occurs.
+    """
+
+    doc = load_trading_policy()
+    rule = doc.decision_rules.get("sell.single_share_exit")
+    if not isinstance(rule, SingleShareExitDecisionRule):
+        return SingleShareExitEvaluation("INELIGIBLE", "policy_rule_unavailable")
+
+    if market not in rule.scope.markets:
+        return SingleShareExitEvaluation("INELIGIBLE", "market_out_of_scope")
+    if broker not in rule.scope.brokers:
+        return SingleShareExitEvaluation("INELIGIBLE", "broker_out_of_scope")
+    if rule.scope.order_routable_required and not order_routable:
+        return SingleShareExitEvaluation("INELIGIBLE", "order_routable_false")
+    if quantity != rule.conditions.quantity_eq:
+        return SingleShareExitEvaluation("INELIGIBLE", "not_single_share_position")
+    if unresolved_open_actions > rule.conditions.unresolved_open_actions_max:
+        return SingleShareExitEvaluation("DEFER", "unresolved_open_action")
+    if rule.conditions.resistance_reference_required and resistance_near_pct is None:
+        return SingleShareExitEvaluation("INELIGIBLE", "no_resistance_reference")
+    if resistance_near_pct is None or not (
+        0 <= resistance_near_pct <= rule.conditions.resistance_near_pct_max
+    ):
+        return SingleShareExitEvaluation("INELIGIBLE", "resistance_not_ultra_near")
+    if profit_pct < rule.conditions.profit_pct_min:
+        return SingleShareExitEvaluation(
+            "INELIGIBLE", "profit_below_provisional_minimum"
+        )
+
+    guard_spec = doc.thresholds.get(rule.conditions.min_sell_price_multiple_policy_key)
+    try:
+        avg = Decimal(str(average_cost))
+        sell_price = Decimal(str(proposed_sell_price))
+        guard_multiple = Decimal(str(guard_spec.value)) if guard_spec else Decimal(0)
+    except (InvalidOperation, ValueError):
+        return SingleShareExitEvaluation("INELIGIBLE", "invalid_price_evidence")
+    if avg <= 0 or sell_price <= 0 or guard_multiple <= 0:
+        return SingleShareExitEvaluation("INELIGIBLE", "invalid_price_evidence")
+    if sell_price < avg * guard_multiple:
+        return SingleShareExitEvaluation("INELIGIBLE", "loss_guard_not_met")
+
+    proposal = rule.proposal
+    return SingleShareExitEvaluation(
+        outcome="PROPOSE",
+        reason="single_share_profit_exit_eligible",
+        action=proposal.action,
+        sizing=proposal.sizing,
+        approval=proposal.approval,
+        auto_approve=proposal.auto_approve,
+        execution=proposal.execution,
+    )
 
 
 _LOSS_CUT_MAX_SLIP_KEY = "sell.loss_cut_max_slip"

@@ -15,7 +15,7 @@ def _raw() -> dict:
 
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-07-22.1"
+    assert doc.version == "2026-07-23.1"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -39,6 +39,43 @@ def test_shipped_config_validates():
         "first_matching_tier_wins"
     )
     assert trim_rule.tie_breaks["sell.upside_place_max_pct"] == "size_limit_only"
+
+
+def test_single_share_exit_rule_is_provisional_manual_proposal_only():
+    rule = TradingPolicyDocument.model_validate(_raw()).decision_rules[
+        "sell.single_share_exit"
+    ]
+
+    assert rule.scope.markets == ["kr"]
+    assert rule.scope.brokers == ["kis", "toss"]
+    assert rule.scope.order_routable_required is True
+    assert rule.conditions.quantity_eq == 1
+    assert rule.conditions.profit_pct_min == 8
+    assert rule.conditions.resistance_reference_required is True
+    assert rule.conditions.resistance_near_pct_max == 2
+    assert (
+        rule.conditions.min_sell_price_multiple_policy_key
+        == "sell.loss_guard_min_multiple"
+    )
+    assert rule.conditions.unresolved_open_actions_max == 0
+    assert rule.conditions.loss_state_uses_existing_path == "loss_cut_only"
+    assert rule.proposal.action == "propose_full_exit"
+    assert rule.proposal.approval == "telegram_manual"
+    assert rule.proposal.auto_approve is False
+    assert rule.proposal.execution == "proposal_only"
+    assert rule.threshold_status == "provisional"
+    assert rule.operator_approval_required is True
+    assert "research must recalibrate this initial threshold" in (
+        rule.recalibration_note
+    )
+
+
+def test_single_share_exit_rule_rejects_automatic_approval():
+    raw = _raw()
+    raw["decision_rules"]["sell.single_share_exit"]["proposal"]["auto_approve"] = True
+
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
 
 
 def test_auto_approve_policy_has_conservative_market_caps():

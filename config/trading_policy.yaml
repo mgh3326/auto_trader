@@ -2,9 +2,9 @@
 # Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
 # (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
 # Repo is public; exposing these values is an accepted decision.
-version: "2026-07-22.1"
-captured_as_of: "2026-07-22"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22"
+version: "2026-07-23.1"
+captured_as_of: "2026-07-23"
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit proposal seed 2026-07-23"
 
 authority:
   scope: judgment_policy_only
@@ -193,6 +193,43 @@ decision_rules:
       - single_share_position
       - no_resistance_reference
       - composite_gates
+  sell.single_share_exit:
+    lanes: [sell]
+    semantics: >-
+      Additive fallback for a profitable KR holding whose one-share quantity
+      makes a partial trim physically impossible. This rule is evaluated
+      separately from sell.trim_preplace and can create a full-exit proposal
+      only; it cannot approve or execute an order. A loss state remains
+      ineligible here and belongs exclusively to the existing loss_cut path.
+    scope:
+      markets: [kr]
+      brokers: [kis, toss]
+      order_routable_required: true
+    conditions:
+      quantity_eq: 1
+      # Provisional: aligned with profit_realization so this fallback closes
+      # only the single-share sizing gap instead of changing profit eligibility.
+      profit_pct_min: 8
+      resistance_reference_required: true
+      # Provisional: full liquidation requires the stronger existing ultra-near
+      # evidence (2%), not the broader sell.resistance_near_pct PLACE band (6%).
+      resistance_near_pct_max: 2
+      min_sell_price_multiple_policy_key: sell.loss_guard_min_multiple
+      unresolved_open_actions_max: 0
+      loss_state_uses_existing_path: loss_cut_only
+    proposal:
+      action: propose_full_exit
+      sizing: full_position
+      approval: telegram_manual
+      auto_approve: false
+      execution: proposal_only
+    threshold_status: provisional
+    operator_approval_required: true
+    recalibration_note: >-
+      Fable governance advisory Q3-#4 Phase 1 seed; follow-up sell-policy
+      research must recalibrate this initial threshold. The single-share
+      profit and resistance thresholds inherit that provisional status and
+      require operator approval before final adoption.
 
 market_rules:
   crypto:

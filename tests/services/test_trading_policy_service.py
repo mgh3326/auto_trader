@@ -5,7 +5,7 @@ from app.services import trading_policy_service as svc
 
 def test_version_stamp_has_version_and_hash():
     stamp = svc.policy_version_stamp()
-    assert stamp["version"] == "2026-07-22.1"
+    assert stamp["version"] == "2026-07-23.1"
     assert len(stamp["content_hash"]) == 12
 
 
@@ -15,7 +15,7 @@ def test_content_hash_stable_across_calls():
 
 def test_get_policy_for_buy_kr_includes_cap_and_version():
     view = svc.get_policy_for("kr", "buy")
-    assert view["version"] == "2026-07-22.1"
+    assert view["version"] == "2026-07-23.1"
     assert view["content_hash"]
     t = view["thresholds"]
     # buy lane references these (playbook lane tags)
@@ -33,7 +33,7 @@ def test_get_policy_for_buy_kr_includes_cap_and_version():
 def test_get_policy_for_crypto_buy_exposes_report_derived_market_rules():
     view = svc.get_policy_for("crypto", "buy")
 
-    assert view["version"] == "2026-07-22.1"
+    assert view["version"] == "2026-07-23.1"
     assert set(view["market_rules"]) == {
         "recovery_gate",
         "support_resistance",
@@ -78,6 +78,144 @@ def test_get_policy_for_sell_lane_has_sell_keys():
     assert rule["tiers"][2]["conditions"]["resistance_near_pct_max"] == 2
     assert rule["tiers"][3]["action"] == "register_watch"
     assert rule["tie_breaks"]["sell.upside_place_max_pct"] == "size_limit_only"
+
+
+def _single_share_candidate(**overrides):
+    candidate = {
+        "market": "kr",
+        "broker": "kis",
+        "quantity": 1,
+        "order_routable": True,
+        "average_cost": 100_000,
+        "proposed_sell_price": 108_000,
+        "profit_pct": 8,
+        "resistance_near_pct": 2,
+        "unresolved_open_actions": 0,
+    }
+    candidate.update(overrides)
+    return candidate
+
+
+@pytest.mark.parametrize("broker", ["kis", "toss"])
+def test_single_share_exit_proposes_manual_full_exit_only(broker):
+    result = svc.evaluate_single_share_exit(**_single_share_candidate(broker=broker))
+
+    assert result.outcome == "PROPOSE"
+    assert result.action == "propose_full_exit"
+    assert result.sizing == "full_position"
+    assert result.approval == "telegram_manual"
+    assert result.auto_approve is False
+    assert result.execution == "proposal_only"
+
+
+def test_single_share_exit_is_ineligible_below_loss_guard():
+    result = svc.evaluate_single_share_exit(
+        **_single_share_candidate(proposed_sell_price=100_999)
+    )
+
+    assert (result.outcome, result.reason) == ("INELIGIBLE", "loss_guard_not_met")
+
+
+def test_single_share_exit_is_ineligible_without_resistance_reference():
+    result = svc.evaluate_single_share_exit(
+        **_single_share_candidate(resistance_near_pct=None)
+    )
+
+    assert (result.outcome, result.reason) == (
+        "INELIGIBLE",
+        "no_resistance_reference",
+    )
+
+
+def test_single_share_exit_defers_for_unresolved_open_action():
+    result = svc.evaluate_single_share_exit(
+        **_single_share_candidate(unresolved_open_actions=1)
+    )
+
+    assert (result.outcome, result.reason) == ("DEFER", "unresolved_open_action")
+
+
+def test_single_share_exit_does_not_apply_to_multi_share_position():
+    result = svc.evaluate_single_share_exit(**_single_share_candidate(quantity=2))
+
+    assert (result.outcome, result.reason) == (
+        "INELIGIBLE",
+        "not_single_share_position",
+    )
+
+
+def test_single_share_exit_excludes_non_routable_account():
+    result = svc.evaluate_single_share_exit(
+        **_single_share_candidate(order_routable=False)
+    )
+
+    assert (result.outcome, result.reason) == (
+        "INELIGIBLE",
+        "order_routable_false",
+    )
+
+
+def test_existing_trim_preplace_rule_is_exactly_unchanged():
+    rule = svc.get_policy_for("kr", "sell")["decision_rules"]["sell.trim_preplace"]
+
+    assert rule == {
+        "semantics": (
+            "Tiers are evaluated in declared priority order and the first match wins. "
+            "profit_realization is resistance-distance-independent; global exclusions "
+            "apply to every tier. When resistance-near favors PLACE but upside-rich "
+            "would otherwise allow WATCH, resistance proximity can pre-place only a "
+            "small trim; upside richness limits size, not eligibility."
+        ),
+        "tiers": [
+            {
+                "id": "profit_realization",
+                "conditions": {"profit_pct_min": 8},
+                "action": "preplace_small_trim_ladder",
+                "sizing": "small_trim_only",
+            },
+            {
+                "id": "rsi_confirmed_resistance",
+                "conditions": {
+                    "rsi_min_policy_key": "sell.rsi_place_min",
+                    "resistance_near_pct_max_policy_key": ("sell.resistance_near_pct"),
+                },
+                "action": "preplace_small_trim_ladder",
+                "sizing": "small_trim_only",
+            },
+            {
+                "id": "ultra_near_resistance",
+                "conditions": {
+                    "rsi_below_policy_key": "sell.rsi_place_min",
+                    "resistance_near_pct_max": 2,
+                },
+                "action": "preplace_small_trim_ladder",
+                "sizing": "small_trim_only",
+            },
+            {
+                "id": "watch_zone",
+                "conditions": {
+                    "rsi_below_policy_key": "sell.rsi_place_min",
+                    "resistance_near_pct_min_exclusive": 2,
+                    "resistance_near_pct_max_policy_key": ("sell.resistance_near_pct"),
+                },
+                "action": "register_watch",
+                "sizing": "no_preplaced_trim",
+            },
+        ],
+        "tie_breaks": {
+            "tier_priority": (
+                "profit_realization > rsi_confirmed_resistance > "
+                "ultra_near_resistance > watch_zone"
+            ),
+            "multiple_tiers_matched": "first_matching_tier_wins",
+            "sell.upside_place_max_pct": "size_limit_only",
+        },
+        "exclusions": [
+            "single_share_position",
+            "no_resistance_reference",
+            "composite_gates",
+        ],
+    }
 
 
 def test_unknown_market_raises():
