@@ -152,7 +152,8 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "portfolio.max_symbols_per_theme per theme; add-not-cut (average down, no stop-loss)",
         "negative class: record each reviewed-but-rejected candidate as a "
         "decision_bucket=deferred_no_action item with confidence + rejection "
-        "reason, and leave a resolvable forecast_save (price_target, e.g. "
+        "reason, and leave a resolvable forecast_save (price_target with required "
+        "outcome_rule_version='window-touch-v1-high-gte-low-lte', e.g. "
         "'no +X% within N days') so calibration isn't censored (ROB-712)",
     ],
     "sell": [
@@ -171,7 +172,8 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "per-symbol sizing: buy.per_symbol_notional_krw_range",
         "negative class: record each reviewed-but-rejected candidate as a "
         "decision_bucket=deferred_no_action item with confidence + rejection "
-        "reason, and leave a resolvable forecast_save (price_target, e.g. "
+        "reason, and leave a resolvable forecast_save (price_target with required "
+        "outcome_rule_version='window-touch-v1-high-gte-low-lte', e.g. "
         "'no +X% within N days') so calibration isn't censored (ROB-712)",
     ],
     "bootstrap": [

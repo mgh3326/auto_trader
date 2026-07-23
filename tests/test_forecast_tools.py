@@ -86,6 +86,10 @@ def test_registration_describes_terminal_close_contract():
     assert "review-date regular-session close" in resolve_description
     assert "high/low" in resolve_description
     assert "quarantined" in resolve_description
+    assert (
+        "versionless price_target cannot be manually overridden" in resolve_description
+    )
+    assert "register a new forecast with a typed target" in resolve_description
 
 
 @pytest.mark.asyncio

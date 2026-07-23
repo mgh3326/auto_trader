@@ -124,7 +124,8 @@ lanes:
 
 7. **Negative-class recording (ROB-712):** every reviewed-but-rejected candidate
    leaves a `decision_bucket=deferred_no_action` item with `confidence` +
-   rejection reason, plus a resolvable `forecast_save(kind="price_target", …)`
+   rejection reason, plus a resolvable `forecast_save(kind="price_target",
+   outcome_rule_version="window-touch-v1-high-gte-low-lte", …)`
    (e.g. "no +X% within N days") so calibration isn't censored. The
    `investment_report_create` response surfaces a `warnings` advisory when an
    item is missing `confidence`.
@@ -241,7 +242,8 @@ recurring new-buy discovery-and-ranking round. It has no code definition yet;
 
 6. **Negative-class recording (ROB-712):** every reviewed-but-rejected candidate
    leaves a `decision_bucket=deferred_no_action` item with `confidence` +
-   rejection reason, plus a resolvable `forecast_save(kind="price_target", …)`
+   rejection reason, plus a resolvable `forecast_save(kind="price_target",
+   outcome_rule_version="window-touch-v1-high-gte-low-lte", …)`
    (e.g. "no +X% within N days") so calibration isn't censored. The
    `investment_report_create` response surfaces a `warnings` advisory when an
    item is missing `confidence`.
