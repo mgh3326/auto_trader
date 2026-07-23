@@ -350,7 +350,7 @@ class Settings(BaseSettings):
     # ROB-1038 — service/user principal bound to the MCP bearer-authenticated
     # forecast evidence write boundary. Empty is fail-closed for corporate-action
     # promotion, legacy attestation, and terminal supersession. Never derive this
-    # identity from forecast JSON or x-paperclip-agent-id.
+    # identity from forecast JSON or a caller-supplied identity header.
     FORECAST_EVIDENCE_AUTHENTICATED_ACTOR_ID: str = ""
 
     # KIS Rate Limiting (HTTP API)
