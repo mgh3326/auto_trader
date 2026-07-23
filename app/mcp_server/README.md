@@ -2387,6 +2387,25 @@ keep `outcome` and `brier_score` null and are excluded from calibration
 aggregates. Other non-price forecast kinds continue to require an explicit
 manual outcome and evidence.
 
+`price_target` keeps its original window-touch contract:
+`at_or_above` uses the window `max(high)` and `at_or_below` uses
+`min(low)`. The additive `terminal_close` kind is different. It accepts
+`direction="up"|"down"` with
+`outcome_rule_version="terminal-close-v1-up-gte-down-lt"` and uses exactly one
+final review-date regular-session `close`: equality is `up`, while `down` is
+strictly below. It never reads window high/low, extended-hours prices, or
+`adj_close`.
+
+Terminal targets may be preregistered with
+`price_adjustment_policy="unverified_fail_closed"`. Deterministic resolution
+requires `price_adjustment_policy="explicit-factor-v1"`, a positive
+`target_to_close_factor`, and review-date `adjustment_provenance`. Missing,
+stale, ambiguous, non-final, untrusted-source, or unverified data leaves the
+forecast open. See
+[`docs/runbooks/forecast-terminal-close.md`](../../docs/runbooks/forecast-terminal-close.md)
+for the source-basis contract, provenance fields, legacy-row safety rule, and
+operator dry-run sequence.
+
 ### Typed KIS order tools
 
 The `default` and `hermes-paper-kis` profiles provide explicitly-named KIS
