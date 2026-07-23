@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete
@@ -56,6 +58,34 @@ def test_register_wires_four_tools():
 
     register_forecast_tools(_FakeMCP())
     assert set(registered) == _EXPECTED_NAMES
+
+
+def test_registration_describes_terminal_close_contract():
+    from app.mcp_server.tooling.forecast_registration import register_forecast_tools
+
+    descriptions: dict[str, str] = {}
+
+    class _FakeMCP:
+        def tool(self, *, name, description):
+            descriptions[name] = description
+
+            def _wrap(fn):
+                return fn
+
+            return _wrap
+
+    register_forecast_tools(_FakeMCP())
+
+    save_description = descriptions["forecast_save"]
+    resolve_description = descriptions["forecast_resolve"]
+    assert "terminal_close" in save_description
+    assert "direction in {up, down}" in save_description
+    assert "terminal-close-v1-up-gte-down-lt" in save_description
+    assert "window-touch-v1-high-gte-low-lte" in save_description
+    assert "ROB-1043" in save_description
+    assert "review-date regular-session close" in resolve_description
+    assert "high/low" in resolve_description
+    assert "quarantined" in resolve_description
 
 
 @pytest.mark.asyncio
@@ -115,6 +145,122 @@ async def test_forecast_resolve_passes_backfill_flag(monkeypatch):
     assert res["success"] is True
     assert seen["backfill_missing"] is False
     assert seen["forecast_id"] == "x"
+
+
+@pytest.mark.asyncio
+async def test_due_batch_forwards_terminal_fail_closed_evidence(monkeypatch):
+    from app.mcp_server.tooling import forecast_tools
+
+    due = SimpleNamespace(forecast_id="terminal-id", symbol="SMCI")
+    evidence = {
+        "target_kind": "terminal_close",
+        "outcome_rule_version": "terminal-close-v1-up-gte-down-lt",
+        "review_date": "2026-08-20",
+    }
+
+    async def fake_due(_db, *, limit):
+        assert limit == 25
+        return [due]
+
+    async def fake_quarantined(_db, *, limit):
+        assert limit == 25
+        return []
+
+    async def fake_resolve(_db, **_kwargs):
+        return {
+            "status": "unresolved_untrusted_source",
+            "changed": False,
+            "reason": "source not trusted",
+            "resolution_evidence": evidence,
+        }
+
+    class _StubSession:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *_a):
+            return False
+
+    class _StubSessionMaker:
+        def __call__(self) -> _StubSession:
+            return _StubSession()
+
+    monkeypatch.setattr(forecast_tools, "list_due_forecasts", fake_due)
+    monkeypatch.setattr(
+        forecast_tools,
+        "list_due_quarantined_forecasts",
+        fake_quarantined,
+    )
+    monkeypatch.setattr(forecast_tools, "resolve_forecast", fake_resolve)
+    monkeypatch.setattr(forecast_tools, "_session_factory", lambda: _StubSessionMaker())
+
+    result = await forecast_resolve(dry_run=True, backfill_missing=False)
+
+    assert result["success"] is True
+    assert result["results"][0]["resolution_evidence"] == evidence
+    assert result["quarantined_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_due_batch_reports_quarantine_without_consuming_due_limit(monkeypatch):
+    from app.mcp_server.tooling import forecast_tools
+
+    legacy = SimpleNamespace(forecast_id="legacy-id", symbol="OLD")
+    eligible = SimpleNamespace(forecast_id="eligible-id", symbol="NEW")
+    calls: list[str] = []
+
+    async def fake_quarantined(_db, *, limit):
+        assert limit == 1
+        return [legacy]
+
+    async def fake_due(_db, *, limit):
+        assert limit == 1
+        return [eligible]
+
+    async def fake_resolve(_db, *, forecast_id, **_kwargs):
+        calls.append(forecast_id)
+        if forecast_id == "legacy-id":
+            return {
+                "status": "quarantined_legacy_price_target",
+                "changed": False,
+                "reason": "missing outcome rule",
+            }
+        return {"status": "requires_manual", "changed": False}
+
+    class _StubSession:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class _StubSessionMaker:
+        def __call__(self) -> _StubSession:
+            return _StubSession()
+
+    monkeypatch.setattr(
+        forecast_tools,
+        "list_due_quarantined_forecasts",
+        fake_quarantined,
+    )
+    monkeypatch.setattr(forecast_tools, "list_due_forecasts", fake_due)
+    monkeypatch.setattr(forecast_tools, "resolve_forecast", fake_resolve)
+    monkeypatch.setattr(forecast_tools, "_session_factory", lambda: _StubSessionMaker())
+
+    result = await forecast_resolve(
+        dry_run=True,
+        backfill_missing=False,
+        limit=1,
+    )
+
+    assert result["success"] is True
+    assert result["due_count"] == 1
+    assert result["quarantined_count"] == 1
+    assert calls == ["legacy-id", "eligible-id"]
+    assert result["by_status"] == {
+        "quarantined_legacy_price_target": 1,
+        "requires_manual": 1,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -223,6 +369,27 @@ async def test_save_validation_error_envelope(_clean):
     )
     assert res["success"] is False
     assert "probability" in res["error"]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_terminal_close_validation_error_envelope(_clean):
+    res = await forecast_save(
+        created_by="claude",
+        symbol="SMCI",
+        instrument_type="equity_us",
+        forecast_target={
+            "kind": "terminal_close",
+            "direction": "at_or_below",
+            "target_price": 30.56,
+            "outcome_rule_version": "terminal-close-v1-up-gte-down-lt",
+        },
+        probability=0.52,
+        review_date="2026-08-20",
+    )
+
+    assert res["success"] is False
+    assert "terminal_close.direction" in res["error"]
 
 
 @pytest.mark.integration

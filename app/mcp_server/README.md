@@ -2387,6 +2387,27 @@ keep `outcome` and `brier_score` null and are excluded from calibration
 aggregates. Other non-price forecast kinds continue to require an explicit
 manual outcome and evidence.
 
+New `price_target` rows must stamp
+`outcome_rule_version="window-touch-v1-high-gte-low-lte"` and keep the original
+window-touch contract: `at_or_above` uses the window `max(high)` and
+`at_or_below` uses `min(low)`. Versionless legacy rows are quarantined before
+candle lookup/backfill and are selected separately so they do not consume the
+normal due limit. The additive `terminal_close` kind is different. It accepts
+`direction="up"|"down"` with
+`outcome_rule_version="terminal-close-v1-up-gte-down-lt"` and uses exactly one
+allowlisted review-date daily `close` after the exchange-calendar final-session
+gate: equality is `up`, while `down` is strictly below. It never reads window
+high/low, extended-hours prices, or `adj_close`. Missing, stale, duplicate,
+non-final-session, untrusted-source, or invalid-close data leaves the forecast
+open with a typed status.
+
+Corporate-action adjustment fields are rejected pending ROB-1043. Legacy rows
+are never automatically reinterpreted or superseded; create a new typed
+terminal forecast ID and retain the old row in quarantine. See
+[`docs/runbooks/forecast-terminal-close.md`](../../docs/runbooks/forecast-terminal-close.md)
+for source-basis limits, the legacy-row procedure, read-only dry-run settings,
+and the ROB-1041/1042/1043 split.
+
 ### Typed KIS order tools
 
 The `default` and `hermes-paper-kis` profiles provide explicitly-named KIS

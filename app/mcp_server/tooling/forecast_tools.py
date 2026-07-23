@@ -13,6 +13,7 @@ from app.services.trade_journal.forecast_service import (
     ForecastValidationError,
     build_forecast_calibration_aggregate,
     list_due_forecasts,
+    list_due_quarantined_forecasts,
     list_forecasts,
     resolve_forecast,
     save_forecast,
@@ -128,10 +129,11 @@ async def forecast_resolve(
                     "success": False,
                     "error": "manual resolution requires an explicit forecast_id",
                 }
+            quarantined = await list_due_quarantined_forecasts(db, limit=limit)
             due = await list_due_forecasts(db, limit=limit)
             results: list[dict[str, Any]] = []
             changed_any = False
-            for row in due:
+            for row in [*quarantined, *due]:
                 r = await resolve_forecast(
                     db,
                     forecast_id=row.forecast_id,
@@ -140,17 +142,18 @@ async def forecast_resolve(
                 )
 
                 changed_any = changed_any or bool(r.get("changed"))
-                results.append(
-                    {
-                        "forecast_id": str(row.forecast_id),
-                        "symbol": row.symbol,
-                        "status": r["status"],
-                        "changed": bool(r.get("changed")),
-                        "auto_close": bool(r.get("auto_close")),
-                        "computed": r.get("computed"),
-                        "reason": r.get("reason"),
-                    }
-                )
+                item: dict[str, Any] = {
+                    "forecast_id": str(row.forecast_id),
+                    "symbol": row.symbol,
+                    "status": r["status"],
+                    "changed": bool(r.get("changed")),
+                    "auto_close": bool(r.get("auto_close")),
+                    "computed": r.get("computed"),
+                    "reason": r.get("reason"),
+                }
+                if r.get("resolution_evidence") is not None:
+                    item["resolution_evidence"] = r["resolution_evidence"]
+                results.append(item)
             if persist and changed_any:
                 await db.commit()
             by_status: dict[str, int] = {}
@@ -161,6 +164,7 @@ async def forecast_resolve(
                 "dry_run": dry_run,
                 "mode": "due_batch",
                 "due_count": len(due),
+                "quarantined_count": len(quarantined),
                 "by_status": by_status,
                 "results": results,
             }

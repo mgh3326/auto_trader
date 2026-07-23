@@ -1325,11 +1325,15 @@ class TradeForecast(Base):
     (LLM boundary); the record/resolve/score logic here is fully deterministic.
 
     ``forecast_id`` is the idempotency key (client-supplied to update while open,
-    or auto-generated). ``forecast_target`` is a structured JSONB claim; the
-    ``price_target`` kind resolves deterministically against loaded daily OHLCV
-    (ROB-639), non-price kinds resolve via an operator-supplied manual outcome
-    (evidence required). ``correlation_id`` aligns with trade_retrospectives
-    (ROB-647) so a postmortem can cite the forecast it graded.
+    or auto-generated). ``forecast_target`` is a structured JSONB claim. The
+    Versioned ``price_target`` claims retain their window high/low touch
+    semantics; versionless legacy rows are quarantined. The additive
+    ``terminal_close`` kind uses exactly the review-date regular-session close
+    under a versioned equality contract. Corporate-action adjustment is
+    intentionally unsupported pending ROB-1043. Other kinds resolve via an
+    operator-supplied manual outcome (evidence required).
+    ``correlation_id`` aligns with trade_retrospectives (ROB-647) so a postmortem
+    can cite the forecast it graded.
     """
 
     __tablename__ = "trade_forecasts"
