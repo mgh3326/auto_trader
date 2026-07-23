@@ -1330,6 +1330,10 @@ class TradeForecast(Base):
     additive ``terminal_close`` kind uses exactly the review-date regular-session
     close under a versioned equality and price-adjustment contract. Other kinds
     resolve via an operator-supplied manual outcome (evidence required).
+    Versionless legacy price targets are quarantined until typed attestation or
+    terminal supersession. Typed claims carry immutable identity/version evidence;
+    terminal corporate-action promotion is the only permitted target mutation and
+    requires an authenticated actor plus compare-and-set target version.
     ``correlation_id`` aligns with trade_retrospectives (ROB-647) so a postmortem
     can cite the forecast it graded.
     """
@@ -1358,11 +1362,45 @@ class TradeForecast(Base):
             "brier_score IS NULL OR (brier_score >= 0 AND brier_score <= 1)",
             name="ck_trade_forecasts_brier_score",
         ),
+        CheckConstraint(
+            "target_version >= 0",
+            name="ck_trade_forecasts_target_version",
+        ),
+        CheckConstraint(
+            "resolution_semantics_status IS NULL OR "
+            "resolution_semantics_status IN ('active','quarantined','superseded')",
+            name="ck_trade_forecasts_resolution_semantics_status",
+        ),
+        CheckConstraint(
+            "(immutable_claim IS NULL) = (immutable_claim_hash IS NULL)",
+            name="ck_trade_forecasts_immutable_claim_pair",
+        ),
+        CheckConstraint(
+            "immutable_claim_hash IS NULL OR immutable_claim_hash ~ '^[0-9a-f]{64}$'",
+            name="ck_trade_forecasts_immutable_claim_hash",
+        ),
+        CheckConstraint(
+            "supersedes_forecast_id IS NULL OR supersedes_forecast_id <> forecast_id",
+            name="ck_trade_forecasts_supersedes_not_self",
+        ),
+        CheckConstraint(
+            "superseded_by_forecast_id IS NULL OR "
+            "superseded_by_forecast_id <> forecast_id",
+            name="ck_trade_forecasts_superseded_by_not_self",
+        ),
         Index("ix_trade_forecasts_status_review_date", "status", "review_date"),
+        Index(
+            "ix_trade_forecasts_semantics_due",
+            "status",
+            "resolution_semantics_status",
+            "review_date",
+        ),
         Index("ix_trade_forecasts_symbol", "symbol"),
         Index("ix_trade_forecasts_created_by", "created_by"),
         Index("ix_trade_forecasts_correlation_id", "correlation_id"),
         Index("ix_trade_forecasts_report_item_uuid", "report_item_uuid"),
+        Index("ix_trade_forecasts_supersedes", "supersedes_forecast_id"),
+        Index("ix_trade_forecasts_superseded_by", "superseded_by_forecast_id"),
         {"schema": "review"},
     )
 
@@ -1395,6 +1433,29 @@ class TradeForecast(Base):
         nullable=False,
     )
     forecast_target: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    immutable_claim: Mapped[dict | None] = mapped_column(JSONB)
+    immutable_claim_hash: Mapped[str | None] = mapped_column(VARCHAR(64))
+    target_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0"), default=0
+    )
+    resolution_semantics_status: Mapped[str | None] = mapped_column(Text)
+    semantics_evidence: Mapped[dict | None] = mapped_column(JSONB)
+    supersedes_forecast_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(
+            "review.trade_forecasts.forecast_id",
+            name="fk_trade_forecasts_supersedes_forecast_id",
+            ondelete="RESTRICT",
+        ),
+    )
+    superseded_by_forecast_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(
+            "review.trade_forecasts.forecast_id",
+            name="fk_trade_forecasts_superseded_by_forecast_id",
+            ondelete="RESTRICT",
+        ),
+    )
     horizon: Mapped[str | None] = mapped_column(Text)
     probability: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False)
     probability_range_low: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))

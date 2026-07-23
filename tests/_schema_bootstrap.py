@@ -57,7 +57,8 @@ from sqlalchemy import text
 # v26 (ROB-954): add the dedicated terminal transition timestamp + scan index.
 # v27 (ROB-1023): widen research.backtest_runs.runner to preserve the exact
 # production execution-lineage label.
-SCHEMA_BOOTSTRAP_VERSION = 27
+# v28 (ROB-1038): immutable forecast semantics and daily-candle provenance.
+SCHEMA_BOOTSTRAP_VERSION = 28
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -522,6 +523,40 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     # ---- market_events / us_symbol_universe ----
     "ALTER TABLE market_events ADD COLUMN IF NOT EXISTS currency TEXT",
     "ALTER TABLE us_symbol_universe ADD COLUMN IF NOT EXISTS is_common_stock BOOLEAN",
+    # ---- ROB-1038 forecast immutable resolution semantics ----
+    "ALTER TABLE review.trade_forecasts ADD COLUMN IF NOT EXISTS immutable_claim JSONB",
+    "ALTER TABLE review.trade_forecasts "
+    "ADD COLUMN IF NOT EXISTS immutable_claim_hash VARCHAR(64)",
+    "ALTER TABLE review.trade_forecasts "
+    "ADD COLUMN IF NOT EXISTS target_version INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE review.trade_forecasts "
+    "ADD COLUMN IF NOT EXISTS resolution_semantics_status TEXT",
+    "ALTER TABLE review.trade_forecasts "
+    "ADD COLUMN IF NOT EXISTS semantics_evidence JSONB",
+    "ALTER TABLE review.trade_forecasts "
+    "ADD COLUMN IF NOT EXISTS supersedes_forecast_id UUID",
+    "ALTER TABLE review.trade_forecasts "
+    "ADD COLUMN IF NOT EXISTS superseded_by_forecast_id UUID",
+    "CREATE INDEX IF NOT EXISTS ix_trade_forecasts_semantics_due "
+    "ON review.trade_forecasts "
+    "(status, resolution_semantics_status, review_date)",
+    "CREATE INDEX IF NOT EXISTS ix_trade_forecasts_supersedes "
+    "ON review.trade_forecasts (supersedes_forecast_id)",
+    "CREATE INDEX IF NOT EXISTS ix_trade_forecasts_superseded_by "
+    "ON review.trade_forecasts (superseded_by_forecast_id)",
+    # ---- ROB-1038 final regular-session daily-candle provenance ----
+    "ALTER TABLE IF EXISTS public.kr_candles_1d "
+    "ADD COLUMN IF NOT EXISTS is_final BOOLEAN, "
+    "ADD COLUMN IF NOT EXISTS session_scope TEXT, "
+    "ADD COLUMN IF NOT EXISTS source_row_id TEXT, "
+    "ADD COLUMN IF NOT EXISTS source_row_version TEXT, "
+    "ADD COLUMN IF NOT EXISTS price_basis TEXT",
+    "ALTER TABLE IF EXISTS public.us_candles_1d "
+    "ADD COLUMN IF NOT EXISTS is_final BOOLEAN, "
+    "ADD COLUMN IF NOT EXISTS session_scope TEXT, "
+    "ADD COLUMN IF NOT EXISTS source_row_id TEXT, "
+    "ADD COLUMN IF NOT EXISTS source_row_version TEXT, "
+    "ADD COLUMN IF NOT EXISTS price_basis TEXT",
     # ---- analysis_artifacts ----
     "ALTER TABLE review.analysis_artifacts ADD COLUMN IF NOT EXISTS correlation_id TEXT",
     "ALTER TABLE review.analysis_artifacts ADD COLUMN IF NOT EXISTS account_scope TEXT",

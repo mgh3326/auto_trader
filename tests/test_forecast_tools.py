@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +25,37 @@ _EXPECTED_NAMES = {
     "get_forecasts",
     "get_forecast_calibration",
 }
+
+
+def _terminal_factor_target(
+    *,
+    actor_principal: str,
+    authentication_method: str,
+) -> dict:
+    return {
+        "kind": "terminal_close",
+        "direction": "up",
+        "target_price": 130.0,
+        "outcome_rule_version": "terminal-close-v1-up-gte-down-lt",
+        "price_adjustment_policy": "explicit-factor-v1",
+        "target_to_close_factor": 1.0,
+        "adjustment_provenance": {
+            "contract_version": "corporate-action-adjustment-v1",
+            "authority_type": "licensed_data_vendor",
+            "authority_id": "KIS",
+            "actor_principal": actor_principal,
+            "authentication_method": authentication_method,
+            "symbol": "SMCI",
+            "action_type": "none",
+            "action_ratio": 1.0,
+            "effective_date": "2026-06-05",
+            "verified_through_date": "2026-06-05",
+            "source": "KIS corporate-action feed",
+            "source_ref": "artifact://corporate-actions/SMCI/2026-06-05",
+            "source_sha256": "a" * 64,
+            "source_price_basis": "provider_adjusted",
+        },
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -80,10 +112,15 @@ def test_registration_describes_terminal_close_contract():
     resolve_description = descriptions["forecast_resolve"]
     assert "terminal_close" in save_description
     assert "direction in {up, down}" in save_description
+    assert "window-touch-v1-high-gte-low-lte" in save_description
     assert "terminal-close-v1-up-gte-down-lt" in save_description
     assert "explicit-factor-v1" in save_description
+    assert "supersession evidence" in save_description
+    assert "FORECAST_EVIDENCE_AUTHENTICATED_ACTOR_ID" in save_description
     assert "review-date regular-session close" in resolve_description
     assert "high/low" in resolve_description
+    assert "genuinely read-only" in resolve_description
+    assert "resolution_fingerprint" in resolve_description
 
 
 @pytest.mark.asyncio
@@ -116,6 +153,11 @@ async def test_forecast_resolve_passes_backfill_flag(monkeypatch):
     async def fake_resolve(db, *, forecast_id, persist, backfill_missing=True, **kw):
         seen["backfill_missing"] = backfill_missing
         seen["forecast_id"] = forecast_id
+        seen["expected_target_version"] = kw.get("expected_target_version")
+        seen["expected_claim_hash"] = kw.get("expected_claim_hash")
+        seen["expected_resolution_fingerprint"] = kw.get(
+            "expected_resolution_fingerprint"
+        )
         return {"status": "unresolved_no_data", "changed": False}
 
     monkeypatch.setattr(forecast_tools, "resolve_forecast", fake_resolve)
@@ -139,10 +181,20 @@ async def test_forecast_resolve_passes_backfill_flag(monkeypatch):
 
     monkeypatch.setattr(forecast_tools, "_session_factory", _factory)
 
-    res = await forecast_resolve(forecast_id="x", dry_run=True, backfill_missing=False)
+    res = await forecast_resolve(
+        forecast_id="x",
+        dry_run=True,
+        backfill_missing=False,
+        expected_target_version=3,
+        expected_claim_hash="a" * 64,
+        expected_resolution_fingerprint="b" * 64,
+    )
     assert res["success"] is True
     assert seen["backfill_missing"] is False
     assert seen["forecast_id"] == "x"
+    assert seen["expected_target_version"] == 3
+    assert seen["expected_claim_hash"] == "a" * 64
+    assert seen["expected_resolution_fingerprint"] == "b" * 64
 
 
 @pytest.mark.asyncio
@@ -159,6 +211,10 @@ async def test_due_batch_forwards_terminal_fail_closed_evidence(monkeypatch):
     async def fake_due(_db, *, limit):
         assert limit == 25
         return [due]
+
+    async def fake_quarantined(_db, *, limit):
+        assert limit == 25
+        return []
 
     async def fake_resolve(_db, **_kwargs):
         return {
@@ -180,6 +236,9 @@ async def test_due_batch_forwards_terminal_fail_closed_evidence(monkeypatch):
             return _StubSession()
 
     monkeypatch.setattr(forecast_tools, "list_due_forecasts", fake_due)
+    monkeypatch.setattr(
+        forecast_tools, "list_due_quarantined_forecasts", fake_quarantined
+    )
     monkeypatch.setattr(forecast_tools, "resolve_forecast", fake_resolve)
     monkeypatch.setattr(forecast_tools, "_session_factory", lambda: _StubSessionMaker())
 
@@ -317,6 +376,104 @@ async def test_terminal_close_validation_error_envelope(_clean):
 
     assert res["success"] is False
     assert "terminal_close.direction" in res["error"]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_explicit_factor_tool_rejects_payload_actor_without_bearer_binding(
+    _clean,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from app.core.config import settings
+
+    monkeypatch.setattr(
+        settings,
+        "FORECAST_EVIDENCE_AUTHENTICATED_ACTOR_ID",
+        "service:forecast-mcp",
+    )
+    monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+
+    res = await forecast_save(
+        created_by="claude",
+        symbol="SMCI",
+        instrument_type="equity_us",
+        forecast_target=_terminal_factor_target(
+            actor_principal="service:forecast-mcp",
+            authentication_method="mcp_bearer",
+        ),
+        probability=0.48,
+        review_date="2026-06-05",
+    )
+
+    assert res["success"] is False
+    assert "authenticated forecast evidence actor" in res["error"]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_explicit_factor_tool_binds_actor_to_active_mcp_bearer(
+    _clean,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from app.core.config import settings
+
+    monkeypatch.setattr(
+        settings,
+        "FORECAST_EVIDENCE_AUTHENTICATED_ACTOR_ID",
+        "service:forecast-mcp",
+    )
+    monkeypatch.setenv("MCP_AUTH_TOKEN", "test-only-token")
+
+    res = await forecast_save(
+        created_by="claude",
+        symbol="SMCI",
+        instrument_type="equity_us",
+        forecast_target=_terminal_factor_target(
+            actor_principal="service:forecast-mcp",
+            authentication_method="mcp_bearer",
+        ),
+        probability=0.48,
+        review_date="2026-06-05",
+    )
+
+    assert res["success"] is True
+    binding = res["data"]["semantics_evidence"]["adjustment_authentication"]
+    assert binding["contract_version"] == "forecast-evidence-authentication-v1"
+    assert binding["actor_principal"] == "service:forecast-mcp"
+    assert binding["authentication_method"] == "mcp_bearer"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_due_batch_reports_legacy_quarantine_without_consuming_due_limit(_clean):
+    legacy = TradeForecast(
+        created_by="legacy-writer",
+        symbol="SMCI",
+        instrument_type="equity_us",
+        forecast_target={
+            "kind": "price_target",
+            "direction": "at_or_above",
+            "target_price": 130.0,
+        },
+        probability=0.6,
+        review_date=date(2020, 1, 1),
+        status="open",
+    )
+    _clean.add(legacy)
+    await _clean.commit()
+    await _clean.refresh(legacy)
+
+    result = await forecast_resolve(
+        dry_run=True,
+        backfill_missing=False,
+        limit=1,
+    )
+
+    assert result["success"] is True
+    assert result["due_count"] == 0
+    assert result["quarantined_count"] == 1
+    assert result["results"][0]["forecast_id"] == str(legacy.forecast_id)
+    assert result["results"][0]["status"] == "quarantined_legacy_price_target"
 
 
 @pytest.mark.integration

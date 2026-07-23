@@ -399,7 +399,11 @@ async def write_back_kr(
 
         frame = drop_forming_daily_rows(frame, market="kr", now=now)
         repo_rows = frame_to_rows(
-            frame, symbol=symbol, partition=partition, source=source
+            frame,
+            symbol=symbol,
+            partition=partition,
+            source=source,
+            final_through_date=last_final_session_kr(now),
         )
         if not repo_rows:
             return 0
@@ -470,7 +474,11 @@ async def write_back_us(
                     partition = "NASD"
 
         repo_rows = frame_to_rows(
-            frame, symbol=symbol, partition=partition, source=source
+            frame,
+            symbol=symbol,
+            partition=partition,
+            source=source,
+            final_through_date=last_final_session_us(now),
         )
         if not repo_rows:
             return 0

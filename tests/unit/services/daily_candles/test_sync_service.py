@@ -53,6 +53,14 @@ class TestSyncOneSymbol:
         repo.upsert_rows.assert_awaited_once()
         upserted_rows = repo.upsert_rows.await_args.kwargs["rows"]
         assert all(r.source == "kis" for r in upserted_rows)
+        assert all(r.is_final is True for r in upserted_rows)
+        assert all(r.session_scope == "regular" for r in upserted_rows)
+        assert all(
+            r.source_row_version == "kis-adjusted-daily-v1"
+            and r.price_basis == "provider_adjusted"
+            and r.source_row_id
+            for r in upserted_rows
+        )
         assert result.rows_upserted == 10
         repo.session.commit.assert_awaited_once()
         repo.session.rollback.assert_not_awaited()
@@ -104,6 +112,13 @@ class TestSyncOneSymbol:
         assert repo.upsert_rows.await_count == 1  # only the yahoo path actually upserts
         upserted_rows = repo.upsert_rows.await_args.kwargs["rows"]
         assert all(r.source == "yahoo_fallback" for r in upserted_rows)
+        assert all(r.is_final is True for r in upserted_rows)
+        assert all(
+            r.source_row_version == "yahoo-raw-daily-v1"
+            and r.price_basis == "raw"
+            and r.source_row_id
+            for r in upserted_rows
+        )
         assert result.rows_upserted == 5
         assert result.fallback_used is True
         repo.session.commit.assert_awaited_once()
@@ -222,6 +237,9 @@ async def test_kr_empty_kis_falls_back_to_toss_daily():
 
     assert result.fallback_used is True
     assert upserted_rows[0].source == "toss"
+    assert upserted_rows[0].source_row_version == "toss-adjusted-daily-v1"
+    assert upserted_rows[0].price_basis == "provider_adjusted"
+    assert upserted_rows[0].source_row_id
 
 
 @pytest.mark.asyncio
@@ -272,6 +290,9 @@ async def test_us_empty_kis_and_yahoo_falls_back_to_toss_daily():
 
     assert result.fallback_used is True
     assert upserted_rows[0].source == "toss_fallback"
+    assert upserted_rows[0].source_row_version == "toss-adjusted-daily-v1"
+    assert upserted_rows[0].price_basis == "provider_adjusted"
+    assert upserted_rows[0].source_row_id
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,11 @@ from typing import Any
 import pandas as pd
 
 from app.services.daily_candles.converters import frame_to_rows
+from app.services.daily_candles.provenance import with_equity_provenance
+from app.services.daily_candles.read_service import (
+    last_final_session_kr,
+    last_final_session_us,
+)
 from app.services.daily_candles.repository import (
     DailyCandleRow,
     DailyCandlesRepository,
@@ -93,10 +98,15 @@ class DailyCandleSyncService:
         fallback_used = False
         rows: list[DailyCandleRow] = []
         kis_errored = False
+        final_through = last_final_session_kr()
         try:
             frame = await self._kis_kr(code=target.symbol, n=horizon_bars)
             rows = frame_to_rows(
-                frame, symbol=target.symbol, partition=target.partition, source="kis"
+                frame,
+                symbol=target.symbol,
+                partition=target.partition,
+                source="kis",
+                final_through_date=final_through,
             )
         except Exception as exc:
             # ROB-706: a KIS exception/timeout is as much a fallback trigger as
@@ -123,6 +133,7 @@ class DailyCandleSyncService:
                 symbol=target.symbol,
                 partition=target.partition,
                 source="toss",
+                final_through_date=final_through,
             )
             fallback_used = True
         upserted = await self._repository.upsert_rows(market=target.market, rows=rows)
@@ -132,11 +143,16 @@ class DailyCandleSyncService:
         )
 
     async def _sync_us(self, target: SyncTarget, horizon_bars: int) -> SyncOneResult:
+        final_through = last_final_session_us()
         frame = await self._kis_us(
             symbol=target.symbol, exchange_code=target.partition, n=horizon_bars
         )
         rows = frame_to_rows(
-            frame, symbol=target.symbol, partition=target.partition, source="kis"
+            frame,
+            symbol=target.symbol,
+            partition=target.partition,
+            source="kis",
+            final_through_date=final_through,
         )
         if rows:
             upserted = await self._repository.upsert_rows(
@@ -166,6 +182,7 @@ class DailyCandleSyncService:
                     symbol=target.symbol,
                     partition=target.partition,
                     source="toss_fallback",
+                    final_through_date=final_through,
                 )
                 if repo_rows:
                     upserted = await self._repository.upsert_rows(
@@ -182,18 +199,21 @@ class DailyCandleSyncService:
                 skipped_reason="both_sources_empty",
             )
         repo_rows = [
-            DailyCandleRow(
-                time_utc=r.time_utc,
-                symbol=r.symbol,
-                partition=target.partition,
-                open=r.open,
-                high=r.high,
-                low=r.low,
-                close=r.close,
-                adj_close=r.adj_close,
-                volume=r.volume,
-                value=r.value,
-                source="yahoo_fallback",
+            with_equity_provenance(
+                DailyCandleRow(
+                    time_utc=r.time_utc,
+                    symbol=r.symbol,
+                    partition=target.partition,
+                    open=r.open,
+                    high=r.high,
+                    low=r.low,
+                    close=r.close,
+                    adj_close=r.adj_close,
+                    volume=r.volume,
+                    value=r.value,
+                    source="yahoo_fallback",
+                ),
+                final_through_date=final_through,
             )
             for r in fallback_rows
         ]

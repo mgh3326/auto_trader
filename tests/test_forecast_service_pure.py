@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, date, datetime
 
 import pytest
 
+from app.services.daily_candles.provenance import with_equity_provenance
 from app.services.daily_candles.repository import DailyCandleRow
 from app.services.trade_journal.forecast_service import (
     ForecastValidationError,
@@ -27,7 +29,7 @@ def _candle(
     source: str = "kis",
     t: datetime | None = None,
 ) -> DailyCandleRow:
-    return DailyCandleRow(
+    row = DailyCandleRow(
         time_utc=t or datetime(2026, 6, 3, tzinfo=UTC),
         symbol="TEST",
         partition="KRX",
@@ -39,6 +41,14 @@ def _candle(
         volume=1000.0,
         value=1000.0,
         source=source,
+    )
+    row = with_equity_provenance(
+        row,
+        final_through_date=date(2026, 6, 5),
+    )
+    return replace(
+        row,
+        ingested_at=datetime(2026, 6, 6, tzinfo=UTC),
     )
 
 

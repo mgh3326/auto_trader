@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, date, datetime
 
 import pytest
 import pytest_asyncio
@@ -11,6 +12,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.review import TradeForecast
+from app.services.daily_candles.provenance import with_equity_provenance
 from app.services.daily_candles.repository import DailyCandleRow
 from app.services.trade_journal import forecast_service as svc
 
@@ -19,11 +21,24 @@ pytestmark = [
     pytest.mark.usefixtures("investment_reports_cleanup_lock"),
 ]
 
+_SERVICE_ACTOR = svc.AuthenticatedForecastActor(
+    principal="service:forecast-test",
+    authentication_method="service_identity",
+)
+_RAW_SAVE_FORECAST = svc.save_forecast
+
 
 @pytest_asyncio.fixture(autouse=True)
 async def _cleanup(
-    db_session: AsyncSession, investment_reports_cleanup_lock: AsyncSession
+    db_session: AsyncSession,
+    investment_reports_cleanup_lock: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
 ):
+    async def authenticated_save(*args, **kwargs):
+        kwargs.setdefault("authenticated_actor", _SERVICE_ACTOR)
+        return await _RAW_SAVE_FORECAST(*args, **kwargs)
+
+    monkeypatch.setattr(svc, "save_forecast", authenticated_save)
     await db_session.execute(delete(TradeForecast))
     await db_session.commit()
 
@@ -33,6 +48,7 @@ def _price_target(direction: str = "at_or_above", target_price: float = 130.0) -
         "kind": "price_target",
         "direction": direction,
         "target_price": target_price,
+        "outcome_rule_version": "window-touch-v1-high-gte-low-lte",
     }
 
 
@@ -55,13 +71,30 @@ def _terminal_close_target(
         "price_adjustment_policy": adjustment_policy,
     }
     if adjustment_policy == "explicit-factor-v1":
+        if factor < 1.0:
+            action_type = "split"
+        elif factor > 1.0:
+            action_type = "reverse_split"
+        else:
+            action_type = "none"
         target.update(
             {
                 "target_to_close_factor": factor,
                 "adjustment_provenance": {
+                    "contract_version": "corporate-action-adjustment-v1",
+                    "authority_type": "licensed_data_vendor",
+                    "authority_id": "KIS",
+                    "actor_principal": "service:forecast-test",
+                    "authentication_method": "service_identity",
+                    "symbol": "SMCI",
+                    "action_type": action_type,
+                    "action_ratio": 1.0 / factor,
+                    "effective_date": review_date,
                     "source": "test corporate-action ledger",
+                    "source_ref": "test://corporate-actions/SMCI/2026-06-05",
+                    "source_sha256": "a" * 64,
+                    "source_price_basis": "provider_adjusted",
                     "verified_through_date": review_date,
-                    "evidence_ref": "test://corporate-actions/SMCI/2026-06-05",
                 },
             }
         )
@@ -96,7 +129,7 @@ def _terminal_candle(
     hour: int = 0,
     source: str = "kis",
 ) -> DailyCandleRow:
-    return DailyCandleRow(
+    row = DailyCandleRow(
         time_utc=datetime(2026, 6, day, hour, tzinfo=UTC),
         symbol="SMCI",
         partition="NASD",
@@ -109,6 +142,23 @@ def _terminal_candle(
         value=close * 1000.0,
         source=source,
     )
+    row = with_equity_provenance(
+        row,
+        final_through_date=date(2026, 6, 5),
+    )
+    return replace(
+        row,
+        ingested_at=datetime(2026, 6, day, 23, tzinfo=UTC),
+    )
+
+
+def _resolution_cas(preview: dict) -> dict:
+    contract = preview["resolution_contract"]
+    return {
+        "expected_target_version": contract["target_version"],
+        "expected_claim_hash": contract["immutable_claim_hash"],
+        "expected_resolution_fingerprint": contract["resolution_fingerprint"],
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -180,9 +230,8 @@ async def test_save_rejects_bad_price_target(db_session: AsyncSession):
             {
                 **_terminal_close_target(),
                 "adjustment_provenance": {
-                    "source": "test corporate-action ledger",
+                    **_terminal_close_target()["adjustment_provenance"],
                     "verified_through_date": "2026-06-04",
-                    "evidence_ref": "test://wrong-date",
                 },
             },
             "verified_through_date",
@@ -300,6 +349,7 @@ async def test_terminal_close_preregistration_can_add_typed_adjustment_evidence(
         forecast_target=_terminal_close_target(),
         probability=0.6,
         review_date="2026-06-05",
+        expected_target_version=preregistered.target_version,
     )
     await db_session.commit()
 
@@ -481,8 +531,18 @@ async def test_resolve_price_target_from_ohlcv(db_session: AsyncSession, monkeyp
         review_date="2026-06-05",
     )
     await db_session.commit()
+    preview = await svc.resolve_forecast(
+        db_session,
+        forecast_id=str(row.forecast_id),
+        persist=False,
+        backfill_missing=False,
+    )
     result = await svc.resolve_forecast(
-        db_session, forecast_id=str(row.forecast_id), persist=True
+        db_session,
+        forecast_id=str(row.forecast_id),
+        persist=True,
+        backfill_missing=False,
+        **_resolution_cas(preview),
     )
     await db_session.commit()
     assert result["status"] == "resolved"
@@ -544,7 +604,7 @@ async def test_resolve_terminal_close_up_ignores_high_and_records_provenance(
     assert detail["price_adjustment_policy"] == "explicit-factor-v1"
     assert detail["target_to_close_factor"] == pytest.approx(1.0)
     assert detail["effective_target_price"] == pytest.approx(130.0)
-    assert detail["adjustment_provenance"]["evidence_ref"].startswith("test://")
+    assert detail["adjustment_provenance"]["source_ref"].startswith("test://")
 
     committed = await svc.resolve_forecast(
         db_session,
@@ -552,6 +612,7 @@ async def test_resolve_terminal_close_up_ignores_high_and_records_provenance(
         persist=True,
         backfill_missing=False,
         now=datetime(2026, 6, 8, 12, tzinfo=UTC),
+        **_resolution_cas(preview),
     )
     await db_session.commit()
 

@@ -35,6 +35,7 @@ async def test_buy_with_target_publishes_at_or_above_forecast(monkeypatch):
         "kind": "price_target",
         "direction": "at_or_above",
         "target_price": 80000.0,
+        "outcome_rule_version": "window-touch-v1-high-gte-low-lte",
     }
     assert captured["probability"] == 0.5
     assert captured["correlation_id"] == "live:kis_live:abc"
