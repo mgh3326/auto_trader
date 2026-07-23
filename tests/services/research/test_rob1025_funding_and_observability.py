@@ -124,18 +124,18 @@ def test_required_pit_funding_cannot_silently_fall_back_to_empty() -> None:
 def test_rob1025_funding_and_composition_pins_rederive_campaign_identity() -> None:
     identity = materializer.build_production_identity_plan()
     assert identity.full_campaign_hash == (
-        "2c47864c7ab661f16be6c414a1140944ec36832bb268e86183555b56c6f85f53"
+        "70f352c3c477e27a36111f1daa584deb4ca570ec57ae9555727d6bc6c68b4248"
     )
     assert identity.full_campaign_hash != _OLD_FULL_CAMPAIGN_HASH
     assert identity.campaign_run_id == (
-        "rob974h6a-CvcCOcAO3hRQDUPzHdVBJFmkXi_dN6NmngCOBLk82lI"
+        "rob974h6a-wbSyHLi2OCMA167TwGlSF70ZIXd98KCRUJ88OaQG-Zo"
     )
     assert identity.source_pins.engine_source_sha256 == (
-        "26daadbb8a614191593d961754d07f2978ad371f6e4edada66a4e96249813957"
+        "33e36cd5a7bdc63729e004dd96f3720ede5c436deca8f46ac214bb53a9b0ac98"
     )
     assert identity.source_pins.engine_source_sha256 != _OLD_ENGINE_SOURCE_SHA256
     assert identity.source_pins.runner_source_sha256 == (
-        "5314d2429801a2df78d7bbac852a3ae1c19567bf9be22c74704b907eaf818c55"
+        "7cfe205dcc05face7df95165e71e7002255895365deaa9c0b4f0a8026821c8b5"
     )
     assert identity.exact_48_mapping_hash == (
         "9ec3fdac35c3a98ed0f17bb5f10ab75fb1d68abf89a964e471c3182f53a11bf0"

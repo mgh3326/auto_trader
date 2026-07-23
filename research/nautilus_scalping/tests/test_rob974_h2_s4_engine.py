@@ -259,9 +259,17 @@ class TestBoundaryExits:
         assert trade.exit_ts == deadline_offset
 
 
-class TestHorizonExactEquality:
-    """verify-R1 finding 1: D1 approves signal_ts+strategy_max_hold==phase_end
-    as READABLE; only strictly overrunning phase_end is a horizon violation."""
+class TestHorizonExclusiveEnd:
+    """ROB-974 R3 boundary fix -- ``horizon_end_ts`` is an EXCLUSIVE end.
+
+    Mirrors ``test_rob974_h2_s3_engine.TestHorizonExclusiveEnd``.  This class
+    previously asserted the opposite (``horizon_end_ts == deadline`` still
+    resolves a TIMEOUT) on the R2 "D1 approved an INCLUSIVE fold boundary"
+    reading, which is incompatible with the phase contract the engine runs
+    under: the ``phase_end`` bar is never in the phase's minute index
+    (``rob974_h4_runner.build_actual_h1_phase_context`` raises on
+    ``row.ts >= phase.end_ms``), so reading it is a real violation.
+    """
 
     @staticmethod
     def _no_convergence_fixture():
@@ -277,13 +285,22 @@ class TestHorizonExactEquality:
         cand = _intent(signal_ts=0, mu=0.0, sigma=0.05, z_entry=1.9)
         return deadline_offset, bars_a + bars_b, pair_closes, cand
 
-    def test_horizon_exact_equal_to_deadline_still_resolves_timeout(self):
+    def test_horizon_one_minute_past_deadline_resolves_timeout(self):
         deadline_offset, bars, pair_closes, cand = self._no_convergence_fixture()
-        result = _run([cand], bars, pair_closes, horizon_end_ts=deadline_offset)
+        result = _run(
+            [cand], bars, pair_closes, horizon_end_ts=deadline_offset + _MIN_MS
+        )
         assert len(result.trades) == 1
         assert result.trades[0].exit_reason == "TIMEOUT"
         assert result.trades[0].exit_ts == deadline_offset
         assert result.incompletes == ()
+
+    def test_horizon_exact_equal_to_deadline_is_rejected(self):
+        deadline_offset, bars, pair_closes, cand = self._no_convergence_fixture()
+        result = _run([cand], bars, pair_closes, horizon_end_ts=deadline_offset)
+        assert result.trades == ()
+        assert len(result.incompletes) == 1
+        assert result.incompletes[0].reason == "fold_horizon_rejected"
 
     def test_horizon_one_ms_past_deadline_is_rejected(self):
         deadline_offset, bars, pair_closes, cand = self._no_convergence_fixture()
@@ -432,3 +449,67 @@ class TestMfeMaeCapping:
         trade = result.trades[0]
         assert trade.exit_reason == "SL"
         assert trade.mfe_bps < 50.0
+
+
+class TestProductionPhaseBoundaryShape:
+    """ROB-974 R3 boundary fix -- the PRODUCTION shape, not a synthetic one.
+
+    ``TestOneLegGap`` above punches an artificial hole in one leg's bars and
+    ``TestHorizonExclusiveEnd`` sets an arbitrary horizon offset; neither
+    reproduces the production fact that the index cut-off and the horizon are
+    the SAME VALUE (``rob974_h6b_materializer._actual_execution_surface``
+    builds the index from ``row.ts < phase.end_ms`` and then passes
+    ``horizon_end_ts=phase.end_ms``).  Under the pre-fix ``>`` these produced
+    ``data_gap_in_pair_position`` -- 342 of them across R3, over a corpus
+    with zero missing minutes -- while ``fold_horizon_rejected`` was dead.
+    """
+
+    _PHASE_END = 5 * _MIN_MS
+
+    def _phase_bars(self):
+        """Exactly the materializer's cut: every minute with ts < phase_end."""
+        n = self._PHASE_END // _MIN_MS
+        return _bars("XRPUSDT", 0, n, price=1.0) + _bars("DOGEUSDT", 0, n, price=1.0)
+
+    def test_position_surviving_to_phase_end_is_horizon_rejected_not_data_gap(self):
+        bars = self._phase_bars()
+        assert max(b.open_time for b in bars) == self._PHASE_END - _MIN_MS
+        result = _run([_intent(signal_ts=0)], bars, [], horizon_end_ts=self._PHASE_END)
+        assert result.trades == ()
+        assert len(result.incompletes) == 1
+        assert result.incompletes[0].reason == "fold_horizon_rejected"
+
+    def test_real_mid_index_hole_is_still_a_pair_data_gap(self):
+        """Opposite-direction guard: the fix must not relabel true gaps."""
+        bars = [
+            b for b in _bars("XRPUSDT", 0, 8, price=1.0) if b.open_time != 2 * _MIN_MS
+        ] + _bars("DOGEUSDT", 0, 8, price=1.0)
+        result = _run([_intent(signal_ts=0)], bars, [], horizon_end_ts=100 * _MIN_MS)
+        assert result.trades == ()
+        assert len(result.incompletes) == 1
+        assert result.incompletes[0].reason == "data_gap_in_pair_position"
+
+    def test_horizon_equal_to_corpus_end_reports_horizon_not_eof(self):
+        """``rob974_h4_pbo`` full-window shape: horizon == corpus_end.
+
+        Both guards now use ``>=`` and collide when a caller passes the same
+        value for both (``WINDOW_END_MS``).  The horizon guard is evaluated
+        first and wins; pinned so the precedence is reviewed, not accidental.
+        """
+        bars = self._phase_bars()
+        result = _run(
+            [_intent(signal_ts=0)],
+            bars,
+            [],
+            corpus_end_ts=self._PHASE_END,
+            horizon_end_ts=self._PHASE_END,
+        )
+        assert len(result.incompletes) == 1
+        assert result.incompletes[0].reason == "fold_horizon_rejected"
+
+    def test_horizon_absent_still_reports_early_eof_at_corpus_end(self):
+        """No horizon supplied -> corpus exhaustion keeps its own reason."""
+        bars = self._phase_bars()
+        result = _run([_intent(signal_ts=0)], bars, [], corpus_end_ts=self._PHASE_END)
+        assert len(result.incompletes) == 1
+        assert result.incompletes[0].reason == "early_eof"

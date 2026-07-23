@@ -52,11 +52,11 @@ changes -- see ``/tmp/strategy-worker-rob979-sonnet-checkpoints.md`` CP2 entry):
     D-1).
   * EOF/gap/horizon 4-way split (AC9 vs AC12), implemented inline in
     ``_walk_s3_position``'s per-minute advance step: reaching a required
-    minute STRICTLY PAST ``horizon_end_ts`` (if supplied -- an H4-owned
-    walk-forward PIT/phase boundary; D1's approved value: exact equality
-    ``signal_ts + strategy_max_hold == phase_end`` is READABLE/evaluable,
-    only overrunning it is a violation, so the check is ``next_ts >
-    horizon_end_ts``, never ``>=``) is ``fold_horizon_rejected``; reaching
+    minute AT/after ``horizon_end_ts`` (if supplied -- an H4-owned
+    walk-forward PIT/phase boundary, which is EXCLUSIVE: callers pass
+    ``phase.end_ms``, and the phase context that builds the minute index
+    admits only ``row.ts < phase.end_ms`` -- see ROB-974 boundary fix below)
+    is ``fold_horizon_rejected``; reaching
     one AT/after ``corpus_end_ts`` (the caller-declared end of available
     minute data -- a plain data-availability boundary, not a PIT/phase
     boundary, so it deliberately keeps the exclusive ``>=`` convention) is
@@ -259,17 +259,32 @@ def _walk_s3_position(
         tracker.observe_full_bar(cur)
 
         next_ts = cur.open_time + _MIN_MS
-        # R2 fix (verify-R1 finding 1): D1's approved fold boundary is
-        # INCLUSIVE -- `signal_ts + strategy_max_hold == phase_end` must be
-        # readable/evaluable (so an exact-equality TIMEOUT at the boundary
-        # resolves normally); only reading STRICTLY PAST phase_end is a
-        # horizon violation. `>=` here previously rejected the exact-equal
-        # case a beat too early, before the deadline bar itself was ever
-        # read. `corpus_end_ts` (data-availability, not a PIT/phase
-        # boundary) intentionally keeps its own `>=` exclusive-end
-        # convention below -- D1's inclusive-equality approval applies only
-        # to `horizon_end_ts`.
-        if horizon_end_ts is not None and next_ts > horizon_end_ts:
+        # ROB-974 R3 boundary fix: `horizon_end_ts` is EXCLUSIVE, so the
+        # check is `>=`.  The earlier R2 comment here claimed D1 approved an
+        # INCLUSIVE fold boundary ("only reading STRICTLY PAST phase_end is a
+        # violation") and used `>`.  That contradicts the phase contract this
+        # pipeline actually runs under: every caller passes
+        # `horizon_end_ts=phase.end_ms`, and the phase context that builds
+        # `minute_index` admits only `row.ts < phase.end_ms`
+        # (`rob974_h6b_materializer._actual_execution_surface`), a cut
+        # `rob974_h4_runner.build_actual_h1_phase_context` actively ENFORCES
+        # (`raise ValueError` on `row.ts >= phase.end_ms`, and
+        # `H4Phase.contains` = `start <= ts < end`).  The `phase_end` bar
+        # belongs to the NEXT phase and is never in the index, so under `>`
+        # a position that survived to the boundary fell through to the
+        # `minute_index.get() is None` branch and was misreported as a data
+        # gap -- making `fold_horizon_rejected` an unreachable dead branch
+        # (R3 empirics: 342x `data_gap_in_pair_position`, 0x
+        # `fold_horizon_rejected`, 0x `early_eof`) while the corpus itself
+        # had zero missing minutes.  `corpus_end_ts` (data-availability, not
+        # a PIT/phase boundary) keeps its own `>=` exclusive-end convention
+        # below; the two now share a form but not a meaning.  They can only
+        # collide when a caller passes both as the same value (the
+        # `rob974_h4_pbo` full-window path, `horizon_end_ts == corpus_end_ts
+        # == WINDOW_END_MS`), where the horizon check wins and reports
+        # `fold_horizon_rejected` rather than `early_eof` -- pinned by test
+        # so the precedence is reviewed, not accidental.
+        if horizon_end_ts is not None and next_ts >= horizon_end_ts:
             return _S3Incomplete("fold_horizon_rejected", entry_ts, entry_bar.open)
         if next_ts >= corpus_end_ts:
             return _S3Incomplete("early_eof", entry_ts, entry_bar.open)
