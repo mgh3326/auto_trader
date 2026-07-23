@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import math
 import uuid
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -80,6 +81,25 @@ _VALID_INSTRUMENTS = {t.value for t in InstrumentType}
 # Instrument types with a loaded daily-candle store → deterministic auto-resolve.
 _AUTO_RESOLVABLE_INSTRUMENTS = {"equity_kr", "equity_us", "crypto"}
 _PRICE_DIRECTIONS = {"at_or_above", "at_or_below"}
+_TERMINAL_CLOSE_KIND = "terminal_close"
+_TERMINAL_CLOSE_DIRECTIONS = {"up", "down"}
+_TERMINAL_CLOSE_INSTRUMENTS = {"equity_kr", "equity_us"}
+_TERMINAL_CLOSE_RULE_VERSION = "terminal-close-v1-up-gte-down-lt"
+_TERMINAL_CLOSE_ADJUSTMENT_POLICIES = {
+    "explicit-factor-v1",
+    "unverified_fail_closed",
+}
+# These source labels are written only by closed daily-candle paths. KIS/Toss
+# request provider-adjusted prices; Yahoo requests auto_adjust=False. The
+# terminal resolver records this distinction and always reads ``close`` (never
+# high/low or the incompletely-populated US adj_close column).
+_REGULAR_SESSION_CLOSE_SOURCE_BASIS = {
+    "kis": "provider_adjusted",
+    "toss": "provider_adjusted",
+    "toss_fallback": "provider_adjusted",
+    "yahoo": "raw",
+    "yahoo_fallback": "raw",
+}
 _GROUP_BY_FIELDS = {"created_by", "session_label", "model_label", "day"}
 _NO_RESOLVABLE_FORECAST_KIND = "no_resolvable_forecast"
 _CLOSED_NO_CLAIM_STATUS = "closed_no_claim"
@@ -87,6 +107,21 @@ _CLOSED_NO_CLAIM_STATUS = "closed_no_claim"
 
 class ForecastValidationError(ValueError):
     """Raised when a forecast payload violates a typed constraint."""
+
+
+class TerminalCloseDataError(ForecastValidationError):
+    """Typed fail-closed condition for terminal-close source data."""
+
+    def __init__(
+        self,
+        status: str,
+        message: str,
+        *,
+        evidence: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.evidence = evidence or {}
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +160,73 @@ def classify_price_target_outcome(
         extreme = min(c.low for c in candles)
         return extreme <= target_price, extreme
     raise ForecastValidationError(f"invalid price-target direction: {direction!r}")
+
+
+def classify_terminal_close_outcome(
+    candles: list[DailyCandleRow],
+    *,
+    review_date: date,
+    direction: str,
+    target_price: float,
+) -> tuple[bool, float, DailyCandleRow]:
+    """Resolve one review-session terminal close against a typed threshold.
+
+    Exactly one trusted regular-session daily candle dated ``review_date`` is
+    required. Only its ``close`` is observed. V1 defines complementary events:
+    ``up`` is ``close >= target`` and ``down`` is ``close < target``.
+    """
+    if direction not in _TERMINAL_CLOSE_DIRECTIONS:
+        raise ForecastValidationError(
+            f"invalid terminal-close direction: {direction!r}"
+        )
+
+    matching = [candle for candle in candles if _row_date(candle) == review_date]
+    if not matching:
+        candidate_dates = sorted({_row_date(candle).isoformat() for candle in candles})
+        status = (
+            "unresolved_stale_data"
+            if candidate_dates
+            else "unresolved_no_review_candle"
+        )
+        reason = (
+            f"no candle dated review_date={review_date.isoformat()}; "
+            f"candidate_dates={candidate_dates}"
+        )
+        raise TerminalCloseDataError(
+            status,
+            reason,
+            evidence={"candidate_source_dates": candidate_dates},
+        )
+    if len(matching) != 1:
+        raise TerminalCloseDataError(
+            "unresolved_ambiguous_review_candle",
+            (
+                f"expected exactly one review-date candle, found {len(matching)} "
+                f"for {review_date.isoformat()}"
+            ),
+            evidence={"review_date_candle_count": len(matching)},
+        )
+
+    selected = matching[0]
+    source = str(selected.source or "")
+    source_basis = _REGULAR_SESSION_CLOSE_SOURCE_BASIS.get(source)
+    if source_basis is None:
+        raise TerminalCloseDataError(
+            "unresolved_untrusted_source",
+            f"daily candle source={source!r} is not a trusted regular-session source",
+            evidence={"source": source},
+        )
+
+    close = float(selected.close)
+    if not math.isfinite(close) or close <= 0:
+        raise TerminalCloseDataError(
+            "unresolved_invalid_close",
+            f"review-date close must be positive and finite: {selected.close!r}",
+            evidence={"source": source, "source_price": selected.close},
+        )
+
+    outcome = close >= target_price if direction == "up" else close < target_price
+    return outcome, close, selected
 
 
 def _to_decimal(x: float | None) -> Decimal | None:
@@ -166,7 +268,12 @@ def _parse_date(value: str | date, field: str) -> date:
         raise ForecastValidationError(f"{field} must be YYYY-MM-DD: {value!r}") from exc
 
 
-def _validate_forecast_target(target: Any) -> None:
+def _validate_forecast_target(
+    target: Any,
+    *,
+    instrument_type: str,
+    review_date: date,
+) -> None:
     if not isinstance(target, dict):
         raise ForecastValidationError("forecast_target must be an object")
     kind = target.get("kind")
@@ -187,6 +294,82 @@ def _validate_forecast_target(target: Any) -> None:
             ) from exc
         if price_f <= 0:
             raise ForecastValidationError("price_target.target_price must be > 0")
+        return
+    if kind != _TERMINAL_CLOSE_KIND:
+        return
+
+    if instrument_type not in _TERMINAL_CLOSE_INSTRUMENTS:
+        raise ForecastValidationError(
+            "terminal_close requires instrument_type equity_kr or equity_us"
+        )
+    direction = target.get("direction")
+    if direction not in _TERMINAL_CLOSE_DIRECTIONS:
+        raise ForecastValidationError(
+            "terminal_close.direction must be one of "
+            f"{sorted(_TERMINAL_CLOSE_DIRECTIONS)}"
+        )
+    try:
+        target_price = float(target.get("target_price"))
+    except (TypeError, ValueError) as exc:
+        raise ForecastValidationError(
+            "terminal_close.target_price must be a number"
+        ) from exc
+    if not math.isfinite(target_price) or target_price <= 0:
+        raise ForecastValidationError(
+            "terminal_close.target_price must be positive and finite"
+        )
+
+    rule_version = target.get("outcome_rule_version")
+    if rule_version != _TERMINAL_CLOSE_RULE_VERSION:
+        raise ForecastValidationError(
+            "terminal_close.outcome_rule_version must be "
+            f"{_TERMINAL_CLOSE_RULE_VERSION!r}"
+        )
+
+    adjustment_policy = target.get("price_adjustment_policy")
+    if adjustment_policy not in _TERMINAL_CLOSE_ADJUSTMENT_POLICIES:
+        raise ForecastValidationError(
+            "terminal_close.price_adjustment_policy must be one of "
+            f"{sorted(_TERMINAL_CLOSE_ADJUSTMENT_POLICIES)}"
+        )
+    if adjustment_policy == "unverified_fail_closed":
+        return
+
+    try:
+        factor = float(target.get("target_to_close_factor"))
+    except (TypeError, ValueError) as exc:
+        raise ForecastValidationError(
+            "terminal_close.target_to_close_factor must be a number"
+        ) from exc
+    if not math.isfinite(factor) or factor <= 0:
+        raise ForecastValidationError(
+            "terminal_close.target_to_close_factor must be positive and finite"
+        )
+    if not math.isfinite(target_price * factor):
+        raise ForecastValidationError(
+            "terminal_close effective target must be positive and finite"
+        )
+
+    provenance = target.get("adjustment_provenance")
+    if not isinstance(provenance, dict):
+        raise ForecastValidationError(
+            "terminal_close.adjustment_provenance must be an object"
+        )
+    for field in ("source", "evidence_ref"):
+        value = provenance.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ForecastValidationError(
+                f"terminal_close.adjustment_provenance.{field} is required"
+            )
+    verified_through = _parse_date(
+        provenance.get("verified_through_date"),
+        "terminal_close.adjustment_provenance.verified_through_date",
+    )
+    if verified_through != review_date:
+        raise ForecastValidationError(
+            "terminal_close.adjustment_provenance.verified_through_date "
+            "must equal review_date"
+        )
 
 
 def serialize_forecast(r: TradeForecast) -> dict[str, Any]:
@@ -342,9 +525,12 @@ async def save_forecast(
                 "probability must fall within probability_range"
             )
 
-    _validate_forecast_target(forecast_target)
-
     review = _parse_date(review_date, "review_date")
+    _validate_forecast_target(
+        forecast_target,
+        instrument_type=instrument_type,
+        review_date=review,
+    )
     start = (
         _parse_date(forecast_start_date, "forecast_start_date")
         if forecast_start_date is not None
@@ -634,6 +820,63 @@ async def _read_window_candles(
     return [r for r in rows if start_date <= _row_date(r) <= review_date]
 
 
+def _terminal_close_session_failure(
+    *,
+    instrument_type: str,
+    review_date: date,
+    now: datetime,
+) -> str | None:
+    """Return a fail-closed reason unless the review session is final."""
+    from app.services.daily_candles.read_service import (
+        get_calendar,
+        last_final_session_kr,
+        last_final_session_us,
+    )
+
+    calendar_name = "XKRX" if instrument_type == "equity_kr" else "XNYS"
+    try:
+        if not bool(get_calendar(calendar_name).is_session(review_date.isoformat())):
+            return (
+                f"review_date={review_date.isoformat()} is not a "
+                f"{calendar_name} regular session"
+            )
+    except Exception as exc:
+        return f"could not verify {calendar_name} review session: {exc}"
+
+    last_final = (
+        last_final_session_kr(now)
+        if instrument_type == "equity_kr"
+        else last_final_session_us(now)
+    )
+    if last_final is None:
+        return f"could not determine the latest final {calendar_name} session"
+    if review_date > last_final:
+        return (
+            f"review session {review_date.isoformat()} is not final; "
+            f"latest_final_session={last_final.isoformat()}"
+        )
+    return None
+
+
+def _terminal_resolution_evidence(
+    row: TradeForecast,
+    target: dict[str, Any],
+) -> dict[str, Any]:
+    evidence: dict[str, Any] = {
+        "target_kind": _TERMINAL_CLOSE_KIND,
+        "outcome_rule_version": target.get("outcome_rule_version"),
+        "direction": target.get("direction"),
+        "target_price": float(target.get("target_price")),
+        "review_date": row.review_date.isoformat(),
+        "price_adjustment_policy": target.get("price_adjustment_policy"),
+    }
+    if target.get("target_to_close_factor") is not None:
+        evidence["target_to_close_factor"] = float(target.get("target_to_close_factor"))
+    if target.get("adjustment_provenance") is not None:
+        evidence["adjustment_provenance"] = target.get("adjustment_provenance")
+    return evidence
+
+
 async def resolve_forecast(
     db: AsyncSession,
     *,
@@ -649,7 +892,9 @@ async def resolve_forecast(
 
     ``persist=False`` computes the outcome/Brier and returns a preview without
     mutating the row (the dry-run default at the tool boundary). Price-target
-    forecasts resolve against loaded daily OHLCV; other kinds require
+    forecasts retain their window-touch OHLCV semantics. Terminal-close
+    forecasts use exactly one final review-date regular-session ``close`` under
+    their typed outcome/adjustment contract. Other kinds require
     ``manual_outcome`` + ``manual_evidence``.
     """
     repo = ForecastRepository(db)
@@ -701,6 +946,12 @@ async def resolve_forecast(
             "reason": reason,
             "forecast": serialize_forecast(row),
         }
+
+    if kind == _TERMINAL_CLOSE_KIND and manual_outcome is not None:
+        raise ForecastValidationError(
+            "terminal_close does not accept a free-form manual outcome; "
+            "update its typed price-adjustment evidence and resolve deterministically"
+        )
 
     if manual_outcome is not None:
         if not manual_evidence:
@@ -775,6 +1026,114 @@ async def resolve_forecast(
             "direction": direction,
             "target_price": target_price,
             "observed_extreme": observed,
+        }
+    elif kind == _TERMINAL_CLOSE_KIND:
+        terminal_evidence = _terminal_resolution_evidence(row, target)
+        if instrument not in _TERMINAL_CLOSE_INSTRUMENTS:
+            return {
+                "status": "requires_manual",
+                "changed": False,
+                "reason": (
+                    f"instrument_type={instrument} has no regular-session "
+                    "terminal-close contract"
+                ),
+                "resolution_evidence": terminal_evidence,
+                "forecast": serialize_forecast(row),
+            }
+
+        adjustment_policy = target.get("price_adjustment_policy")
+        if adjustment_policy != "explicit-factor-v1":
+            return {
+                "status": "requires_adjustment_evidence",
+                "changed": False,
+                "reason": (
+                    "terminal_close is fail-closed until an explicit target-to-close "
+                    "factor and review-date corporate-action provenance are stored"
+                ),
+                "resolution_evidence": terminal_evidence,
+                "forecast": serialize_forecast(row),
+            }
+
+        session_failure = _terminal_close_session_failure(
+            instrument_type=instrument,
+            review_date=row.review_date,
+            now=resolved_now,
+        )
+        if session_failure is not None:
+            return {
+                "status": "unresolved_session_not_final",
+                "changed": False,
+                "reason": session_failure,
+                "resolution_evidence": terminal_evidence,
+                "forecast": serialize_forecast(row),
+            }
+
+        candles = await _read_window_candles(
+            db,
+            symbol=row.symbol,
+            instrument_type=instrument,
+            start_date=row.review_date,
+            review_date=row.review_date,
+        )
+        if not candles and backfill_missing:
+            resolved = await _resolve_candle_partition(
+                db, symbol=row.symbol, instrument_type=instrument
+            )
+            if resolved is not None:
+                market, partition = resolved
+                await _backfill_daily_candles(
+                    symbol=row.symbol, market=market, partition=partition
+                )
+                # Daily-candle batch upserts may report rowcount=0 even after a
+                # successful write, so always re-read once after the attempt.
+                candles = await _read_window_candles(
+                    db,
+                    symbol=row.symbol,
+                    instrument_type=instrument,
+                    start_date=row.review_date,
+                    review_date=row.review_date,
+                )
+
+        original_target = float(target.get("target_price"))
+        adjustment_factor = float(target.get("target_to_close_factor"))
+        effective_target = original_target * adjustment_factor
+        try:
+            outcome, observed, selected = classify_terminal_close_outcome(
+                candles or [],
+                review_date=row.review_date,
+                direction=str(target.get("direction")),
+                target_price=effective_target,
+            )
+        except TerminalCloseDataError as exc:
+            return {
+                "status": exc.status,
+                "changed": False,
+                "reason": str(exc),
+                "resolution_evidence": {
+                    **terminal_evidence,
+                    **exc.evidence,
+                },
+                "forecast": serialize_forecast(row),
+            }
+
+        direction = str(target.get("direction"))
+        source = str(selected.source)
+        resolution_source = "ohlcv_day_terminal_close"
+        detail = {
+            **terminal_evidence,
+            "comparison_operator": ">=" if direction == "up" else "<",
+            "original_target_price": original_target,
+            "target_to_close_factor": adjustment_factor,
+            "effective_target_price": effective_target,
+            "source_date": _row_date(selected).isoformat(),
+            "source_timestamp": selected.time_utc.isoformat(),
+            "source": source,
+            "source_partition": selected.partition,
+            "source_price": observed,
+            "source_price_field": "close",
+            "source_price_basis": _REGULAR_SESSION_CLOSE_SOURCE_BASIS[source],
+            "regular_session_only": True,
+            "adj_close_used": False,
         }
     else:
         return {

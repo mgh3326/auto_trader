@@ -140,17 +140,18 @@ async def forecast_resolve(
                 )
 
                 changed_any = changed_any or bool(r.get("changed"))
-                results.append(
-                    {
-                        "forecast_id": str(row.forecast_id),
-                        "symbol": row.symbol,
-                        "status": r["status"],
-                        "changed": bool(r.get("changed")),
-                        "auto_close": bool(r.get("auto_close")),
-                        "computed": r.get("computed"),
-                        "reason": r.get("reason"),
-                    }
-                )
+                item: dict[str, Any] = {
+                    "forecast_id": str(row.forecast_id),
+                    "symbol": row.symbol,
+                    "status": r["status"],
+                    "changed": bool(r.get("changed")),
+                    "auto_close": bool(r.get("auto_close")),
+                    "computed": r.get("computed"),
+                    "reason": r.get("reason"),
+                }
+                if r.get("resolution_evidence") is not None:
+                    item["resolution_evidence"] = r["resolution_evidence"]
+                results.append(item)
             if persist and changed_any:
                 await db.commit()
             by_status: dict[str, int] = {}
