@@ -8,11 +8,10 @@ external APIs.
 
 from __future__ import annotations
 
-from datetime import UTC, date
+from datetime import UTC
 
 import pandas as pd
 
-from app.services.daily_candles.provenance import with_equity_provenance
 from app.services.daily_candles.repository import DailyCandleRow
 
 
@@ -22,7 +21,6 @@ def frame_to_rows(
     symbol: str,
     partition: str,
     source: str,
-    final_through_date: date | None = None,
 ) -> list[DailyCandleRow]:
     """Convert a pandas DataFrame with date/OHLCV columns to ``DailyCandleRow``s.
 
@@ -63,18 +61,19 @@ def frame_to_rows(
             float(adj_close_raw) if adj_close_raw is not None else None
         )
 
-        row = DailyCandleRow(
-            time_utc=ts.to_pydatetime(),
-            symbol=symbol,
-            partition=partition,
-            open=open_value,
-            high=high_value,
-            low=low_value,
-            close=close,
-            adj_close=adj_close,
-            volume=volume,
-            value=computed_value,
-            source=source,
+        out.append(
+            DailyCandleRow(
+                time_utc=ts.to_pydatetime(),
+                symbol=symbol,
+                partition=partition,
+                open=open_value,
+                high=high_value,
+                low=low_value,
+                close=close,
+                adj_close=adj_close,
+                volume=volume,
+                value=computed_value,
+                source=source,
+            )
         )
-        out.append(with_equity_provenance(row, final_through_date=final_through_date))
     return out

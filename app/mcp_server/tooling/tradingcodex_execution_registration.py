@@ -250,10 +250,6 @@ def _register_learning_write_tools(mcp: FastMCP) -> None:
         report_uuid: str | None = None,
         report_item_uuid: str | None = None,
         correlation_id: str | None = None,
-        expected_target_version: int | None = None,
-        semantics_attestation: dict[str, Any] | None = None,
-        supersedes_forecast_id: str | None = None,
-        supersession_evidence: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         label = _clean_label(created_by)
         if label is None:
@@ -281,10 +277,6 @@ def _register_learning_write_tools(mcp: FastMCP) -> None:
             report_uuid=report_uuid,
             report_item_uuid=report_item_uuid,
             correlation_id=correlation_id,
-            expected_target_version=expected_target_version,
-            semantics_attestation=semantics_attestation,
-            supersedes_forecast_id=supersedes_forecast_id,
-            supersession_evidence=supersession_evidence,
         )
 
     @mcp.tool(

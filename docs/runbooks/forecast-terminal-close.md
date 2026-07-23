@@ -1,257 +1,132 @@
 # Terminal-close forecast runbook (ROB-1038)
 
-Use this runbook only when the event is the official regular-session close on
-the review date. Resolution semantics are explicit and never inferred from
-prose, a symbol, or a forecast ID.
+ROB-1038 prevents a closing-price claim from being scored as a window touch.
+It adds no database migration: the contract lives in the existing
+`forecast_target` JSONB and successful evidence lives in `resolution_detail`.
 
-## Event contracts
+## Versioned target contracts
 
-- `price_target` is a window touch. Every new row must carry
-  `outcome_rule_version="window-touch-v1-high-gte-low-lte"`.
-  `at_or_above` uses `max(high) >= target`; `at_or_below` uses
-  `min(low) <= target`.
-- `terminal_close` uses exactly one final review-date regular-session `close`
-  under `outcome_rule_version="terminal-close-v1-up-gte-down-lt"`.
-  `up` is `close >= target`; its non-overlapping `down` complement is
-  `close < target`.
-
-Terminal resolution never uses a window extreme, `adj_close`, or an
-extended-hours price. Free-form manual resolution is forbidden for any row
-whose immutable original kind is `terminal_close`.
-
-## Legacy `price_target` quarantine
-
-A versionless legacy `price_target` contains too little information to
-distinguish touch intent from a terminal-close forecast saved under the wrong
-kind. It is quarantined before candle lookup in both single-ID and due-batch
-resolution. Quarantined rows use a separate diagnostic selector and do not
-consume the eligible due limit.
-
-Start with a genuinely read-only inspection:
-
-```text
-forecast_resolve(
-  forecast_id="<legacy-id>",
-  dry_run=true,
-  backfill_missing=false
-)
-```
-
-The result is `quarantined_legacy_price_target` and includes the canonical
-`target_hash`. Do not update the row based on prose or a heuristic. Choose one
-of the following evidence-backed paths.
-
-### Attest genuine window-touch intent
-
-Replay the exact stored claim, add the touch rule version, require
-`expected_target_version=0`, and provide:
+New window-touch forecasts must use:
 
 ```json
 {
-  "contract_version": "forecast-semantics-attestation-v1",
-  "authority_type": "service",
-  "actor_principal": "service:forecast-evidence-operator",
-  "authentication_method": "mcp_bearer",
-  "source_target_sha256": "<target_hash from quarantine preview>",
-  "evidence_sha256": "<sha256 of retained review artifact>",
-  "evidence_ref": "artifact://forecast-semantics/<artifact-id>",
-  "reason": "operator verified the original event was a window touch",
-  "attested_at": "2026-07-23T15:30:00+09:00"
+  "kind": "price_target",
+  "direction": "at_or_above",
+  "target_price": 130.0,
+  "outcome_rule_version": "window-touch-v1-high-gte-low-lte"
 }
 ```
 
-The write creates an immutable claim/hash, sets target version 1, and stores
-the attestation. It cannot change the threshold, direction, probability,
-dates, attribution, or origin/evidence cutoff.
+The behavior is unchanged: `at_or_above` is `max(high) >= target`, and
+`at_or_below` is `min(low) <= target`.
 
-### Supersede terminal intent
-
-Create a new ID with a typed `terminal_close` target and
-`supersedes_forecast_id="<legacy-id>"`. Preserve the legacy claim fields and map
-`at_or_above -> up` or `at_or_below -> down` without changing the threshold.
-Provide the same evidence shape with
-`contract_version="forecast-semantics-supersession-v1"`.
-
-The transaction locks both rows and stores:
-
-- new row `supersedes_forecast_id`;
-- legacy row `superseded_by_forecast_id`;
-- matching from/to IDs, source target hash, actor, time, reason, and semantics
-  versions on both rows.
-
-The legacy row becomes durably `superseded` and cannot resolve. Never create a
-replacement terminal row without this link.
-
-## Authenticated evidence boundary
-
-Corporate-action promotion, legacy touch attestation, and terminal
-supersession require an application-authenticated actor. For MCP writes:
-
-```text
-MCP_AUTH_TOKEN=<non-empty bearer token>
-FORECAST_EVIDENCE_AUTHENTICATED_ACTOR_ID=service:forecast-evidence-operator
-```
-
-The payload's `actor_principal` must equal the configured principal and its
-`authentication_method` must be `mcp_bearer`. Caller headers and forecast JSON
-never establish identity. Without both the active bearer and configured
-principal, evidence-bearing writes fail closed. Trusted in-process callers
-must pass an `AuthenticatedForecastActor` with `service_identity`; they may
-not reuse payload self-attestation.
-
-## Immutable terminal claim and factor promotion
-
-Preregister the claim before resolution when factor evidence is not ready:
+A terminal-close claim must use a new forecast ID and this target shape:
 
 ```json
 {
   "kind": "terminal_close",
   "direction": "up",
-  "target_price": 30.56,
-  "outcome_rule_version": "terminal-close-v1-up-gte-down-lt",
-  "price_adjustment_policy": "unverified_fail_closed"
+  "target_price": 130.0,
+  "outcome_rule_version": "terminal-close-v1-up-gte-down-lt"
 }
 ```
 
-This row remains quarantined with `requires_adjustment_evidence`. Its kind,
-instrument, symbol, direction, original target, probability/range,
-start/review dates, horizon, creator/model/policy attribution, and
-origin/evidence cutoff are immutable. An exact replay is idempotent. The only
-target mutation is a compare-and-set transition from
-`unverified_fail_closed` to `explicit-factor-v1`, using the currently stored
-`expected_target_version`.
-
-Corporate-action provenance must use this complete contract:
-
-```json
-{
-  "kind": "terminal_close",
-  "direction": "up",
-  "target_price": 30.56,
-  "outcome_rule_version": "terminal-close-v1-up-gte-down-lt",
-  "price_adjustment_policy": "explicit-factor-v1",
-  "target_to_close_factor": 1.0,
-  "adjustment_provenance": {
-    "contract_version": "corporate-action-adjustment-v1",
-    "authority_type": "licensed_data_vendor",
-    "authority_id": "KIS",
-    "actor_principal": "service:forecast-evidence-operator",
-    "authentication_method": "mcp_bearer",
-    "symbol": "SMCI",
-    "action_type": "none",
-    "action_ratio": 1.0,
-    "effective_date": "YYYY-MM-DD",
-    "verified_through_date": "YYYY-MM-DD",
-    "source": "KIS corporate-action feed",
-    "source_ref": "artifact://corporate-actions/SMCI/YYYY-MM-DD",
-    "source_sha256": "<64 lowercase hex>",
-    "source_price_basis": "provider_adjusted"
-  }
-}
-```
-
-Allowed authorities are typed exchange, regulator, issuer filing, and
-licensed-data-vendor IDs maintained in code. Symbol, effective/review dates,
-source reference/hash, and price basis are validated. Factor 1 is not a
-shortcut: `action_type="none"` still requires authoritative evidence with
-ratio 1 and factor 1.
-
-`action_ratio` means new units per old unit and:
+The V1 terminal events are complementary:
 
 ```text
-target_to_close_factor = 1 / action_ratio
-effective_target = original_target * target_to_close_factor
+up   = review-date close >= target
+down = review-date close <  target
 ```
 
-Thus a 2-for-1 split uses ratio 2/factor 0.5, while a 1-for-10 reverse split
-uses ratio 0.1/factor 10. If the conversion cannot be proved, leave the row
-`unverified_fail_closed`.
+Equality belongs only to `up`. Terminal resolution reads only `close`; it never
+uses `high`, `low`, `adj_close`, or an extended-hours source.
 
-## Daily close provenance
+## Legacy quarantine
 
-Only newly written KR/US daily rows with all of the following can resolve a
-terminal claim:
+A versionless `price_target` does not say whether its author intended a window
+touch or a terminal close. The resolver therefore leaves it open and returns
+`quarantined_legacy_price_target` before any candle lookup or backfill.
 
-- `is_final=true` and `session_scope="regular"`;
-- actual `ingested_at` after the market final gate;
-- content-addressed `source_row_id` and exact `source_row_version`;
-- source-specific `price_basis`;
-- positive finite `close`.
+The due batch obtains quarantined rows separately, so they remain visible but
+do not consume the normal due limit. Unknown typed rule versions return
+`quarantined_invalid_target` and also remain open.
 
-Existing rows with null provenance fail closed. The resolver also checks the
-exchange calendar and wall clock. KR uses the 15:35 KST cutoff. US uses the
-XNYS session schedule, including holidays, early closes, and DST, and requires
-ingestion after the scheduled close.
+Do not edit or reinterpret a legacy row. If its original event was a terminal
+close, preregister a new typed `terminal_close` forecast with a new
+`forecast_id`; retain the legacy row in quarantine. ROB-1038 does not provide
+touch attestation, automatic supersession, or durable cross-row links. Those
+invariants belong to ROB-1041.
 
-Source contracts are:
+## Candle acceptance boundary
 
-| Stored source | Row version | `close` basis |
-|---|---|---|
-| `kis` | `kis-adjusted-daily-v1` | `provider_adjusted` |
-| `toss`, `toss_fallback` | `toss-adjusted-daily-v1` | `provider_adjusted` |
-| `yahoo`, `yahoo_fallback` | `yahoo-raw-daily-v1` | `raw` |
+The resolver first requires the review date to be a regular exchange session
+and requires the exchange-calendar final-session gate to have passed. It then
+requires exactly one review-date daily row with a positive finite `close`.
 
-The corporate evidence basis must equal the selected candle basis. Provider
-corrections change the content-addressed row identity and therefore invalidate
-an earlier preview.
+The reduced ROB-1038 source allowlist is:
 
-## Preview and persist
+| Source label | Recorded close basis |
+|---|---|
+| `kis` | provider-adjusted |
+| `toss`, `toss_fallback` | provider-adjusted |
+| `yahoo`, `yahoo_fallback` | raw |
 
-`dry_run=true` preserves the historical default. With the also-default
-`backfill_missing=true`, it may fetch and commit shared daily-candle rows in a
-separate transaction. For a truly read-only operator review always use:
+Missing, stale-only, duplicate, untrusted/extended, invalid-close, holiday, or
+not-yet-final-session data leaves the forecast open. The result status is,
+respectively, `unresolved_no_review_candle`, `unresolved_stale_data`,
+`unresolved_ambiguous_review_candle`, `unresolved_untrusted_source`,
+`unresolved_invalid_close`, or `unresolved_session_not_final`. Successful
+`resolution_detail` records the target kind, rule version, direction, target,
+comparison operator, review/source date, source timestamp, source
+label/partition, source price, `source_price_field="close"`, and the
+source-basis label.
+
+This PR deliberately does not add row-level upstream finality, source identity,
+ingestion-version, or actor-bound provenance. The allowlisted source label plus
+calendar gate is the ROB-1038 boundary; ROB-1043 owns stronger upstream
+finality and evidence binding.
+
+## Corporate actions are unsupported
+
+ROB-1038 does not apply split, reverse-split, or price-basis conversion factors.
+`price_adjustment_policy`, `target_to_close_factor`, and
+`adjustment_provenance` are rejected at save time. Existing stored terminal
+targets carrying those fields fail closed during resolution.
+
+Do not register or resolve a terminal target that needs corporate-action or
+price-basis adjustment. ROB-1043 will add the authoritative corporate-action
+evidence ledger and actor binding.
+
+## Review and persist
+
+For a genuinely read-only preview:
 
 ```text
 forecast_resolve(
-  forecast_id="<terminal-id>",
+  forecast_id="...",
   dry_run=true,
   backfill_missing=false
 )
 ```
 
-A successful typed preview returns a `resolution_contract` containing
-`target_kind`, `outcome_rule_version`, `target_version`,
-`immutable_claim_hash`, `target_hash`, `evidence_fingerprint`, and
-`resolution_fingerprint`. Verify the comparison, original/effective target,
-factor, selected source date/price/basis, final/session fields, ingestion time,
-source row identity/version, and adjustment provenance.
+`dry_run=true` prevents a forecast outcome write. The default
+`backfill_missing=true` may still fetch and persist daily candles, so it is not
+a fully read-only inspection mode.
 
-Persist exactly that reviewed snapshot:
+After reviewing the target contract and selected close evidence, use
+`dry_run=false` to persist. ROB-1038 does not provide preview/persist
+fingerprint CAS, row locks, or stale-batch protection; ROB-1042 owns those
+concurrency guarantees.
 
-```text
-forecast_resolve(
-  forecast_id="<terminal-id>",
-  dry_run=false,
-  backfill_missing=false,
-  expected_target_version=<preview target_version>,
-  expected_claim_hash="<preview immutable_claim_hash>",
-  expected_resolution_fingerprint="<preview resolution_fingerprint>"
-)
-```
+Forecast resolution does not mutate broker orders, watches, proposals, or
+order intents.
 
-The persist path re-locks the forecast and candle rows and recomputes the
-fingerprint. Any target, evidence, candle, source, or ingestion change returns
-`resolution_cas_mismatch` and leaves the row open. Batch persist uses the same
-three values under `expected_resolutions[forecast_id]`.
+## Deployment and follow-up
 
-## Deployment and rollback
+There is no schema migration and no deployment ordering beyond deploying the
+application code. Rollback is an application rollback; no database downgrade
+is needed.
 
-1. Stop forecast resolution writers.
-2. Apply the additive ROB-1038 migration.
-3. Deploy the matching daily writers and resolver.
-4. Let trusted writers populate new provenance; legacy candles are not
-   backfilled by inference.
-5. Review quarantine rows and explicitly attest or supersede each one.
-6. Use read-only preview and CAS-bound persist.
-
-The migration's DB trigger blocks legacy touch resolution, terminal identity
-mutation, manual terminal resolution, and unbound adjustment evidence during
-mixed deployment. Application rollback requires stopping the new resolver
-first. Database downgrade deliberately refuses while typed forecast evidence
-or candle provenance exists, because dropping it would destroy the safety
-record.
-
-No step in this runbook creates or mutates broker orders, watches, proposals,
-or order intents. A future issue may replace operator-attested factors with a
-first-class corporate-action ledger; until then, unverifiable conversion stays
-fail-closed.
+- ROB-1041: claim immutability, DB transitions, and supersession invariants.
+- ROB-1042: resolver concurrency, stale batch identity, and lock predicates.
+- ROB-1043: upstream finality, corporate-action evidence, and actor binding.

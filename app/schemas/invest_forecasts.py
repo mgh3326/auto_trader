@@ -57,13 +57,6 @@ class ForecastRow(BaseModel):
     symbol: str
     instrument_type: str | None = None
     forecast_target: dict[str, Any] | None = None
-    immutable_claim: dict[str, Any] | None = None
-    immutable_claim_hash: str | None = None
-    target_version: int = Field(default=0, ge=0)
-    resolution_semantics_status: str | None = None
-    semantics_evidence: dict[str, Any] | None = None
-    supersedes_forecast_id: str | None = None
-    superseded_by_forecast_id: str | None = None
     horizon: str | None = None
     probability: float | None = None
     probability_range_low: float | None = None
@@ -75,7 +68,6 @@ class ForecastRow(BaseModel):
     observed_value: float | None = None
     resolved_at: str | None = None
     brier_score: float | None = None
-    resolution_detail: dict[str, Any] | None = None
     created_at: str | None = None
 
 

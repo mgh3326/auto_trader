@@ -347,11 +347,6 @@ class Settings(BaseSettings):
     # Bound to the authenticated PAPER_EXECUTION bearer token at the process
     # composition boundary. Never derive this principal from a caller header.
     PAPER_VALIDATION_AUTHENTICATED_ACTOR_ID: str = ""
-    # ROB-1038 — service/user principal bound to the MCP bearer-authenticated
-    # forecast evidence write boundary. Empty is fail-closed for corporate-action
-    # promotion, legacy attestation, and terminal supersession. Never derive this
-    # identity from forecast JSON or a caller-supplied identity header.
-    FORECAST_EVIDENCE_AUTHENTICATED_ACTOR_ID: str = ""
 
     # KIS Rate Limiting (HTTP API)
     kis_rate_limit_rate: int = 19  # 초당 최대 요청 수 (안전 마진으로 20-1)

@@ -50,12 +50,6 @@ class DailyCandleRow:
     volume: float
     value: float
     source: str
-    is_final: bool | None = None
-    session_scope: str | None = None
-    source_row_id: str | None = None
-    source_row_version: str | None = None
-    price_basis: str | None = None
-    ingested_at: datetime | None = None
 
 
 class _RowcountResult:
@@ -86,9 +80,7 @@ def _crypto_venue_for_partition(partition: str) -> str:
 def _build_kr_us_recent_sql(partition_col: str, adj_close_select: str) -> str:
     return f"""
         SELECT time, symbol, {partition_col} AS partition,
-               open, high, low, close, {adj_close_select}volume, value, source,
-               is_final, session_scope, source_row_id, source_row_version,
-               price_basis, ingested_at
+               open, high, low, close, {adj_close_select}volume, value, source
         FROM public.{{table_name}}
         WHERE symbol = :symbol AND {partition_col} = :partition
           AND time >= :time_floor
@@ -101,10 +93,7 @@ _CRYPTO_RECENT_SQL = """
     SELECT time, :symbol AS symbol, :partition AS partition,
            open, high, low, close,
            NULL::numeric AS adj_close,
-           base_volume AS volume, quote_volume AS value, source,
-           is_closed AS is_final, NULL::text AS session_scope,
-           NULL::text AS source_row_id, NULL::text AS source_row_version,
-           NULL::text AS price_basis, ingested_at
+           base_volume AS volume, quote_volume AS value, source
     FROM public.crypto_candles_1d
     WHERE instrument_id = :iid
       AND time >= :time_floor
@@ -176,11 +165,6 @@ class DailyCandlesRepository:
                 "volume": row.volume,
                 "value": row.value,
                 "source": row.source,
-                "is_final": row.is_final,
-                "session_scope": row.session_scope,
-                "source_row_id": row.source_row_id,
-                "source_row_version": row.source_row_version,
-                "price_basis": row.price_basis,
             }
             if self._supports_adj_close(market):
                 entry["adj_close"] = row.adj_close
@@ -270,12 +254,6 @@ class DailyCandlesRepository:
                     volume=(float(row["volume"]) if row["volume"] is not None else 0.0),
                     value=float(row["value"]) if row["value"] is not None else 0.0,
                     source=row["source"],
-                    is_final=row["is_final"],
-                    session_scope=row["session_scope"],
-                    source_row_id=row["source_row_id"],
-                    source_row_version=row["source_row_version"],
-                    price_basis=row["price_basis"],
-                    ingested_at=row["ingested_at"],
                 )
             )
         return list(reversed(out))
@@ -378,11 +356,6 @@ class DailyCandlesRepository:
             "volume",
             "value",
             "source",
-            "is_final",
-            "session_scope",
-            "source_row_id",
-            "source_row_version",
-            "price_basis",
         ]
         if with_adj_close:
             cols.insert(7, "adj_close")
@@ -451,7 +424,6 @@ class DailyCandlesRepository:
         partition: str,
         start: datetime,
         end: datetime,
-        for_share: bool = False,
     ) -> list[DailyCandleRow]:
         """Fetch daily candles with ``start <= time <= end`` (ascending).
 
@@ -473,16 +445,11 @@ class DailyCandlesRepository:
                 SELECT time, :symbol AS symbol, :partition AS partition,
                        open, high, low, close,
                        NULL::numeric AS adj_close,
-                       base_volume AS volume, quote_volume AS value, source,
-                       is_closed AS is_final, NULL::text AS session_scope,
-                       NULL::text AS source_row_id,
-                       NULL::text AS source_row_version,
-                       NULL::text AS price_basis, ingested_at
+                       base_volume AS volume, quote_volume AS value, source
                 FROM public.crypto_candles_1d
                 WHERE instrument_id = :iid AND time >= :start AND time <= :end
                 ORDER BY time ASC
-                {lock_clause}
-                """.format(lock_clause="FOR SHARE" if for_share else "")
+                """
             )
             result = await self._session.execute(
                 sql,
@@ -511,12 +478,6 @@ class DailyCandlesRepository:
                         else 0.0,
                         value=float(row["value"]) if row["value"] is not None else 0.0,
                         source=row["source"],
-                        is_final=row["is_final"],
-                        session_scope=row["session_scope"],
-                        source_row_id=row["source_row_id"],
-                        source_row_version=row["source_row_version"],
-                        price_basis=row["price_basis"],
-                        ingested_at=row["ingested_at"],
                     )
                 )
             return out
@@ -528,14 +489,11 @@ class DailyCandlesRepository:
         sql = text(
             f"""
             SELECT time, symbol, {cfg.partition_col} AS partition,
-                   open, high, low, close, {adj_close_select}volume, value, source,
-                   is_final, session_scope, source_row_id, source_row_version,
-                   price_basis, ingested_at
+                   open, high, low, close, {adj_close_select}volume, value, source
             FROM public.{cfg.table_name}
             WHERE symbol = :symbol AND {cfg.partition_col} = :partition
               AND time >= :start AND time <= :end
             ORDER BY time ASC
-            {"FOR SHARE" if for_share else ""}
             """
         )
         result = await self._session.execute(
@@ -561,12 +519,6 @@ class DailyCandlesRepository:
                     volume=float(row["volume"]),
                     value=float(row["value"]),
                     source=row["source"],
-                    is_final=row["is_final"],
-                    session_scope=row["session_scope"],
-                    source_row_id=row["source_row_id"],
-                    source_row_version=row["source_row_version"],
-                    price_basis=row["price_basis"],
-                    ingested_at=row["ingested_at"],
                 )
             )
         return out
@@ -611,12 +563,6 @@ class DailyCandlesRepository:
                         else 0.0,
                         value=float(row["value"]) if row["value"] is not None else 0.0,
                         source=row["source"],
-                        is_final=row["is_final"],
-                        session_scope=row["session_scope"],
-                        source_row_id=row["source_row_id"],
-                        source_row_version=row["source_row_version"],
-                        price_basis=row["price_basis"],
-                        ingested_at=row["ingested_at"],
                     )
                 )
             return list(reversed(out))
@@ -658,12 +604,6 @@ class DailyCandlesRepository:
                     volume=float(row["volume"]),
                     value=float(row["value"]),
                     source=row["source"],
-                    is_final=row["is_final"],
-                    session_scope=row["session_scope"],
-                    source_row_id=row["source_row_id"],
-                    source_row_version=row["source_row_version"],
-                    price_basis=row["price_basis"],
-                    ingested_at=row["ingested_at"],
                 )
             )
         return list(reversed(out))  # ascending order for consumers

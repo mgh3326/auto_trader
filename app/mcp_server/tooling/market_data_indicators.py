@@ -179,14 +179,9 @@ async def _cache_first_kr(*, symbol: str, count: int) -> pd.DataFrame:
             return _rows_to_frame(cached)
 
         from app.services.daily_candles.converters import frame_to_rows
-        from app.services.daily_candles.read_service import last_final_session_kr
 
         repo_rows = frame_to_rows(
-            frame,
-            symbol=symbol,
-            partition=partition,
-            source="kis",
-            final_through_date=last_final_session_kr(),
+            frame, symbol=symbol, partition=partition, source="kis"
         )
         if repo_rows:
             await repo.upsert_rows(market=MarketKey.KR, rows=repo_rows)
@@ -239,14 +234,9 @@ async def _cache_first_us(*, symbol: str, count: int) -> pd.DataFrame:
             return _rows_to_frame(cached)
 
         from app.services.daily_candles.converters import frame_to_rows
-        from app.services.daily_candles.read_service import last_final_session_us
 
         repo_rows = frame_to_rows(
-            frame,
-            symbol=symbol,
-            partition=partition,
-            source="kis",
-            final_through_date=last_final_session_us(),
+            frame, symbol=symbol, partition=partition, source="kis"
         )
 
         if not repo_rows:
@@ -259,27 +249,21 @@ async def _cache_first_us(*, symbol: str, count: int) -> pd.DataFrame:
                 yahoo_rows = []
 
             if yahoo_rows:
-                from app.services.daily_candles.provenance import (
-                    with_equity_provenance,
-                )
                 from app.services.daily_candles.repository import DailyCandleRow
 
                 repo_rows = [
-                    with_equity_provenance(
-                        DailyCandleRow(
-                            time_utc=r.time_utc,
-                            symbol=r.symbol,
-                            partition=partition,
-                            open=r.open,
-                            high=r.high,
-                            low=r.low,
-                            close=r.close,
-                            adj_close=r.adj_close,
-                            volume=r.volume,
-                            value=r.value,
-                            source="yahoo_fallback",
-                        ),
-                        final_through_date=last_final_session_us(),
+                    DailyCandleRow(
+                        time_utc=r.time_utc,
+                        symbol=r.symbol,
+                        partition=partition,
+                        open=r.open,
+                        high=r.high,
+                        low=r.low,
+                        close=r.close,
+                        adj_close=r.adj_close,
+                        volume=r.volume,
+                        value=r.value,
+                        source="yahoo_fallback",
                     )
                     for r in yahoo_rows
                 ]

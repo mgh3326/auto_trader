@@ -56,7 +56,7 @@ async def publish_place_time_forecast(
                     "kind": "price_target",
                     "direction": "at_or_above",
                     "target_price": float(Decimal(str(target_price))),
-                    "outcome_rule_version": ("window-touch-v1-high-gte-low-lte"),
+                    "outcome_rule_version": "window-touch-v1-high-gte-low-lte",
                 },
                 probability=0.5,
                 review_date=review_date,

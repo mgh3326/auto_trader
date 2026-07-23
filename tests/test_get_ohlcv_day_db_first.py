@@ -817,10 +817,6 @@ async def test_write_back_kr_drops_forming_bar_intraday():
     upsert_mock.assert_awaited_once()
     persisted = upsert_mock.call_args.kwargs["rows"]
     assert [r.time_utc.date() for r in persisted] == [prev]
-    assert persisted[0].is_final is True
-    assert persisted[0].session_scope == "regular"
-    assert persisted[0].source_row_version == "kis-adjusted-daily-v1"
-    assert persisted[0].price_basis == "provider_adjusted"
 
 
 @pytest.mark.asyncio
@@ -897,8 +893,6 @@ async def test_write_back_kr_after_cutoff_keeps_todays_bar():
     assert upserted == 2
     persisted = upsert_mock.call_args.kwargs["rows"]
     assert sorted(r.time_utc.date() for r in persisted) == sorted([prev, latest])
-    assert all(r.is_final is True for r in persisted)
-    assert all(r.source_row_id for r in persisted)
 
 
 @pytest.mark.asyncio
@@ -951,9 +945,6 @@ async def test_write_back_us_drops_forming_bar_and_preserves_adj_close():
     upsert_mock.assert_awaited_once()
     kwargs = upsert_mock.call_args.kwargs
     assert [r.time_utc.date() for r in kwargs["rows"]] == [prev]
-    assert kwargs["rows"][0].is_final is True
-    assert kwargs["rows"][0].source_row_version == "yahoo-raw-daily-v1"
-    assert kwargs["rows"][0].price_basis == "raw"
     assert kwargs["update_adj_close"] is False
 
 

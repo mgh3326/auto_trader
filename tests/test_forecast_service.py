@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import UTC, date, datetime
 
 import pytest
@@ -12,7 +11,6 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.review import TradeForecast
-from app.services.daily_candles.provenance import with_equity_provenance
 from app.services.daily_candles.repository import DailyCandleRow
 from app.services.trade_journal import forecast_service as svc
 
@@ -21,26 +19,17 @@ pytestmark = [
     pytest.mark.usefixtures("investment_reports_cleanup_lock"),
 ]
 
-_SERVICE_ACTOR = svc.AuthenticatedForecastActor(
-    principal="service:forecast-test",
-    authentication_method="service_identity",
-)
-_RAW_SAVE_FORECAST = svc.save_forecast
-
 
 @pytest_asyncio.fixture(autouse=True)
 async def _cleanup(
-    db_session: AsyncSession,
-    investment_reports_cleanup_lock: AsyncSession,
-    monkeypatch: pytest.MonkeyPatch,
+    db_session: AsyncSession, investment_reports_cleanup_lock: AsyncSession
 ):
-    async def authenticated_save(*args, **kwargs):
-        kwargs.setdefault("authenticated_actor", _SERVICE_ACTOR)
-        return await _RAW_SAVE_FORECAST(*args, **kwargs)
-
-    monkeypatch.setattr(svc, "save_forecast", authenticated_save)
     await db_session.execute(delete(TradeForecast))
     await db_session.commit()
+
+
+_TOUCH_RULE_VERSION = "window-touch-v1-high-gte-low-lte"
+_TERMINAL_RULE_VERSION = "terminal-close-v1-up-gte-down-lt"
 
 
 def _price_target(direction: str = "at_or_above", target_price: float = 130.0) -> dict:
@@ -48,57 +37,20 @@ def _price_target(direction: str = "at_or_above", target_price: float = 130.0) -
         "kind": "price_target",
         "direction": direction,
         "target_price": target_price,
-        "outcome_rule_version": "window-touch-v1-high-gte-low-lte",
+        "outcome_rule_version": _TOUCH_RULE_VERSION,
     }
-
-
-_TERMINAL_RULE_VERSION = "terminal-close-v1-up-gte-down-lt"
 
 
 def _terminal_close_target(
     direction: str = "up",
     target_price: float = 130.0,
-    *,
-    review_date: str = "2026-06-05",
-    adjustment_policy: str = "explicit-factor-v1",
-    factor: float = 1.0,
 ) -> dict:
-    target = {
+    return {
         "kind": "terminal_close",
         "direction": direction,
         "target_price": target_price,
         "outcome_rule_version": _TERMINAL_RULE_VERSION,
-        "price_adjustment_policy": adjustment_policy,
     }
-    if adjustment_policy == "explicit-factor-v1":
-        if factor < 1.0:
-            action_type = "split"
-        elif factor > 1.0:
-            action_type = "reverse_split"
-        else:
-            action_type = "none"
-        target.update(
-            {
-                "target_to_close_factor": factor,
-                "adjustment_provenance": {
-                    "contract_version": "corporate-action-adjustment-v1",
-                    "authority_type": "licensed_data_vendor",
-                    "authority_id": "KIS",
-                    "actor_principal": "service:forecast-test",
-                    "authentication_method": "service_identity",
-                    "symbol": "SMCI",
-                    "action_type": action_type,
-                    "action_ratio": 1.0 / factor,
-                    "effective_date": review_date,
-                    "source": "test corporate-action ledger",
-                    "source_ref": "test://corporate-actions/SMCI/2026-06-05",
-                    "source_sha256": "a" * 64,
-                    "source_price_basis": "provider_adjusted",
-                    "verified_through_date": review_date,
-                },
-            }
-        )
-    return target
 
 
 def _candles(highs: list[float]) -> list[DailyCandleRow]:
@@ -129,7 +81,7 @@ def _terminal_candle(
     hour: int = 0,
     source: str = "kis",
 ) -> DailyCandleRow:
-    row = DailyCandleRow(
+    return DailyCandleRow(
         time_utc=datetime(2026, 6, day, hour, tzinfo=UTC),
         symbol="SMCI",
         partition="NASD",
@@ -142,23 +94,6 @@ def _terminal_candle(
         value=close * 1000.0,
         source=source,
     )
-    row = with_equity_provenance(
-        row,
-        final_through_date=date(2026, 6, 5),
-    )
-    return replace(
-        row,
-        ingested_at=datetime(2026, 6, day, 23, tzinfo=UTC),
-    )
-
-
-def _resolution_cas(preview: dict) -> dict:
-    contract = preview["resolution_contract"]
-    return {
-        "expected_target_version": contract["target_version"],
-        "expected_claim_hash": contract["immutable_claim_hash"],
-        "expected_resolution_fingerprint": contract["resolution_fingerprint"],
-    }
 
 
 # --------------------------------------------------------------------------- #
@@ -209,6 +144,23 @@ async def test_save_rejects_bad_price_target(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_save_requires_touch_rule_version(db_session: AsyncSession):
+    target = _price_target()
+    target.pop("outcome_rule_version")
+
+    with pytest.raises(svc.ForecastValidationError, match="outcome_rule_version"):
+        await svc.save_forecast(
+            db_session,
+            created_by="claude",
+            symbol="005930",
+            instrument_type="equity_kr",
+            forecast_target=target,
+            probability=0.6,
+            review_date="2026-07-15",
+        )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("target", "error_fragment"),
     [
@@ -229,12 +181,9 @@ async def test_save_rejects_bad_price_target(db_session: AsyncSession):
         (
             {
                 **_terminal_close_target(),
-                "adjustment_provenance": {
-                    **_terminal_close_target()["adjustment_provenance"],
-                    "verified_through_date": "2026-06-04",
-                },
+                "target_to_close_factor": 1.0,
             },
-            "verified_through_date",
+            "ROB-1043",
         ),
     ],
 )
@@ -321,42 +270,6 @@ async def test_save_idempotent_by_forecast_id_while_open(db_session: AsyncSessio
     rows = (await db_session.execute(select(TradeForecast))).scalars().all()
     assert len(rows) == 1
     assert rows[0].contrary_evidence == "v2"
-
-
-@pytest.mark.asyncio
-async def test_terminal_close_preregistration_can_add_typed_adjustment_evidence(
-    db_session: AsyncSession,
-):
-    first_action, preregistered = await svc.save_forecast(
-        db_session,
-        created_by="claude",
-        symbol="SMCI",
-        instrument_type="equity_us",
-        forecast_target=_terminal_close_target(
-            adjustment_policy="unverified_fail_closed"
-        ),
-        probability=0.6,
-        review_date="2026-06-05",
-    )
-    await db_session.commit()
-
-    second_action, updated = await svc.save_forecast(
-        db_session,
-        forecast_id=str(preregistered.forecast_id),
-        created_by="claude",
-        symbol="SMCI",
-        instrument_type="equity_us",
-        forecast_target=_terminal_close_target(),
-        probability=0.6,
-        review_date="2026-06-05",
-        expected_target_version=preregistered.target_version,
-    )
-    await db_session.commit()
-
-    assert (first_action, second_action) == ("created", "updated")
-    assert updated.forecast_id == preregistered.forecast_id
-    assert updated.forecast_target["price_adjustment_policy"] == "explicit-factor-v1"
-    assert updated.forecast_target["target_to_close_factor"] == pytest.approx(1.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -511,6 +424,190 @@ async def test_save_cannot_modify_closed(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_legacy_touch_single_id_quarantines_before_candle_or_manual_resolution(
+    db_session: AsyncSession, monkeypatch
+):
+    legacy = TradeForecast(
+        created_by="legacy-writer",
+        symbol="SMCI",
+        instrument_type="equity_us",
+        forecast_target={
+            "kind": "price_target",
+            "direction": "at_or_above",
+            "target_price": 130.0,
+        },
+        probability=0.6,
+        review_date=date(2020, 1, 1),
+        status="open",
+    )
+    db_session.add(legacy)
+    await db_session.commit()
+    await db_session.refresh(legacy)
+
+    async def _forbidden(*_args, **_kwargs):
+        raise AssertionError("legacy quarantine must precede candle access")
+
+    monkeypatch.setattr(svc, "_read_window_candles", _forbidden)
+    monkeypatch.setattr(svc, "_backfill_daily_candles", _forbidden)
+
+    result = await svc.resolve_forecast(
+        db_session,
+        forecast_id=legacy.forecast_id,
+        persist=True,
+        manual_outcome=True,
+        manual_evidence=["must not bypass quarantine"],
+    )
+
+    assert result["status"] == "quarantined_legacy_price_target"
+    assert result["changed"] is False
+    assert result["resolution_evidence"] == {
+        "target_kind": "price_target",
+        "outcome_rule_version": None,
+        "review_date": "2020-01-01",
+        "quarantine_reason_code": "missing_outcome_rule_version",
+    }
+    await db_session.refresh(legacy)
+    assert legacy.status == "open"
+    assert legacy.outcome is None
+
+
+@pytest.mark.asyncio
+async def test_legacy_quarantine_does_not_consume_due_limit(
+    db_session: AsyncSession,
+):
+    malformed = TradeForecast(
+        created_by="malformed-writer",
+        symbol="MSFT",
+        instrument_type="equity_us",
+        forecast_target={
+            "kind": "price_target",
+            "direction": "sideways",
+            "target_price": 130.0,
+            "outcome_rule_version": _TOUCH_RULE_VERSION,
+        },
+        probability=0.6,
+        review_date=date(2019, 1, 1),
+        status="open",
+    )
+    legacy = TradeForecast(
+        created_by="legacy-writer",
+        symbol="SMCI",
+        instrument_type="equity_us",
+        forecast_target={
+            "kind": "price_target",
+            "direction": "at_or_above",
+            "target_price": 130.0,
+        },
+        probability=0.6,
+        review_date=date(2020, 1, 1),
+        status="open",
+    )
+    db_session.add_all([malformed, legacy])
+    await db_session.commit()
+    await db_session.refresh(malformed)
+    await db_session.refresh(legacy)
+
+    _, eligible = await svc.save_forecast(
+        db_session,
+        created_by="typed-writer",
+        symbol="AAPL",
+        instrument_type="equity_us",
+        forecast_target=_price_target(),
+        probability=0.6,
+        review_date="2020-01-02",
+    )
+    await db_session.commit()
+
+    now = datetime(2026, 6, 8, tzinfo=UTC)
+    due = await svc.list_due_forecasts(db_session, now=now, limit=1)
+    quarantined = await svc.list_due_quarantined_forecasts(db_session, now=now, limit=2)
+
+    assert [row.forecast_id for row in due] == [eligible.forecast_id]
+    assert [row.forecast_id for row in quarantined] == [
+        malformed.forecast_id,
+        legacy.forecast_id,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resolve_side_unknown_terminal_rule_is_row_local_fail_closed(
+    db_session: AsyncSession, monkeypatch
+):
+    _, row = await svc.save_forecast(
+        db_session,
+        created_by="claude",
+        symbol="SMCI",
+        instrument_type="equity_us",
+        forecast_target=_terminal_close_target(),
+        probability=0.6,
+        review_date="2026-06-05",
+    )
+    await db_session.commit()
+    row.forecast_target = {
+        **row.forecast_target,
+        "outcome_rule_version": "terminal-close-unknown",
+    }
+    await db_session.commit()
+
+    async def _forbidden(*_args, **_kwargs):
+        raise AssertionError("stored contract validation must precede candle access")
+
+    monkeypatch.setattr(svc, "_read_window_candles", _forbidden)
+    result = await svc.resolve_forecast(
+        db_session,
+        forecast_id=row.forecast_id,
+        persist=False,
+        backfill_missing=False,
+    )
+
+    assert result["status"] == "quarantined_invalid_target"
+    assert result["changed"] is False
+    assert result["resolution_evidence"]["outcome_rule_version"] == (
+        "terminal-close-unknown"
+    )
+    await db_session.refresh(row)
+    assert row.status == "open"
+
+
+@pytest.mark.asyncio
+async def test_stored_terminal_adjustment_fields_are_quarantined_before_candles(
+    db_session: AsyncSession, monkeypatch
+):
+    row = TradeForecast(
+        created_by="legacy-writer",
+        symbol="SMCI",
+        instrument_type="equity_us",
+        forecast_target={
+            **_terminal_close_target(),
+            "target_to_close_factor": 1.0,
+        },
+        probability=0.6,
+        review_date=date(2020, 1, 2),
+        status="open",
+    )
+    db_session.add(row)
+    await db_session.commit()
+    await db_session.refresh(row)
+
+    async def _forbidden(*_args, **_kwargs):
+        raise AssertionError("unsupported adjustment must precede candle access")
+
+    monkeypatch.setattr(svc, "_read_window_candles", _forbidden)
+    result = await svc.resolve_forecast(
+        db_session,
+        forecast_id=row.forecast_id,
+        persist=False,
+        backfill_missing=False,
+    )
+
+    assert result["status"] == "quarantined_invalid_target"
+    assert "ROB-1043" in result["reason"]
+    assert await svc.list_due_forecasts(db_session, limit=1) == []
+    quarantined = await svc.list_due_quarantined_forecasts(db_session, limit=1)
+    assert [item.forecast_id for item in quarantined] == [row.forecast_id]
+
+
+@pytest.mark.asyncio
 async def test_resolve_price_target_from_ohlcv(db_session: AsyncSession, monkeypatch):
     # The daily-candle store (kr_candles_1d) has no ORM model and is absent from
     # the create_all test DB, so patch the deterministic reader with canned bars
@@ -531,22 +628,16 @@ async def test_resolve_price_target_from_ohlcv(db_session: AsyncSession, monkeyp
         review_date="2026-06-05",
     )
     await db_session.commit()
-    preview = await svc.resolve_forecast(
-        db_session,
-        forecast_id=str(row.forecast_id),
-        persist=False,
-        backfill_missing=False,
-    )
     result = await svc.resolve_forecast(
-        db_session,
-        forecast_id=str(row.forecast_id),
-        persist=True,
-        backfill_missing=False,
-        **_resolution_cas(preview),
+        db_session, forecast_id=str(row.forecast_id), persist=True
     )
     await db_session.commit()
     assert result["status"] == "resolved"
     assert result["computed"]["resolution_source"] == "ohlcv_day"
+    assert result["computed"]["resolution_detail"]["target_kind"] == "price_target"
+    assert result["computed"]["resolution_detail"]["outcome_rule_version"] == (
+        _TOUCH_RULE_VERSION
+    )
     await db_session.refresh(row)
     assert row.status == "closed"
     assert row.outcome is True
@@ -599,12 +690,10 @@ async def test_resolve_terminal_close_up_ignores_high_and_records_provenance(
     assert detail["source_price"] == pytest.approx(129.0)
     assert detail["source_price_field"] == "close"
     assert detail["source_price_basis"] == "provider_adjusted"
-    assert detail["regular_session_only"] is True
+    assert detail["source_label"] == "kis"
+    assert detail["session_scope_contract"] == "regular-session-daily-close"
+    assert detail["session_finality_gate"] == "exchange-calendar"
     assert detail["adj_close_used"] is False
-    assert detail["price_adjustment_policy"] == "explicit-factor-v1"
-    assert detail["target_to_close_factor"] == pytest.approx(1.0)
-    assert detail["effective_target_price"] == pytest.approx(130.0)
-    assert detail["adjustment_provenance"]["source_ref"].startswith("test://")
 
     committed = await svc.resolve_forecast(
         db_session,
@@ -612,7 +701,6 @@ async def test_resolve_terminal_close_up_ignores_high_and_records_provenance(
         persist=True,
         backfill_missing=False,
         now=datetime(2026, 6, 8, 12, tzinfo=UTC),
-        **_resolution_cas(preview),
     )
     await db_session.commit()
 
@@ -693,45 +781,6 @@ async def test_resolve_terminal_close_equality_is_up_only(
 
 
 @pytest.mark.asyncio
-async def test_resolve_terminal_close_applies_explicit_adjustment_factor(
-    db_session: AsyncSession, monkeypatch
-):
-    async def _fake_read(*_a, **_k):
-        return [_terminal_candle(5, high=105.0, low=95.0, close=100.0)]
-
-    monkeypatch.setattr(svc, "_read_window_candles", _fake_read)
-
-    _, row = await svc.save_forecast(
-        db_session,
-        created_by="claude",
-        symbol="SMCI",
-        instrument_type="equity_us",
-        forecast_target=_terminal_close_target(
-            direction="up",
-            target_price=200.0,
-            factor=0.5,
-        ),
-        probability=0.5,
-        review_date="2026-06-05",
-    )
-    await db_session.commit()
-
-    result = await svc.resolve_forecast(
-        db_session,
-        forecast_id=str(row.forecast_id),
-        persist=False,
-        backfill_missing=False,
-        now=datetime(2026, 6, 8, 12, tzinfo=UTC),
-    )
-
-    detail = result["computed"]["resolution_detail"]
-    assert result["computed"]["outcome"] is True
-    assert detail["original_target_price"] == pytest.approx(200.0)
-    assert detail["target_to_close_factor"] == pytest.approx(0.5)
-    assert detail["effective_target_price"] == pytest.approx(100.0)
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("candles", "expected_status"),
     [
@@ -758,6 +807,17 @@ async def test_resolve_terminal_close_applies_explicit_adjustment_factor(
                 )
             ],
             "unresolved_untrusted_source",
+        ),
+        (
+            [
+                _terminal_candle(
+                    5,
+                    high=101.0,
+                    low=99.0,
+                    close=float("nan"),
+                )
+            ],
+            "unresolved_invalid_close",
         ),
     ],
 )
@@ -801,45 +861,6 @@ async def test_resolve_terminal_close_bad_data_fails_closed(
     assert row.status == "open"
     assert row.outcome is None
     assert row.resolution_detail is None
-
-
-@pytest.mark.asyncio
-async def test_resolve_terminal_close_unverified_adjustment_fails_closed(
-    db_session: AsyncSession, monkeypatch
-):
-    async def _unexpected_read(*_a, **_k):
-        raise AssertionError("unverified terminal target must not read candles")
-
-    monkeypatch.setattr(svc, "_read_window_candles", _unexpected_read)
-
-    _, row = await svc.save_forecast(
-        db_session,
-        created_by="claude",
-        symbol="SMCI",
-        instrument_type="equity_us",
-        forecast_target=_terminal_close_target(
-            adjustment_policy="unverified_fail_closed"
-        ),
-        probability=0.6,
-        review_date="2026-06-05",
-    )
-    await db_session.commit()
-
-    result = await svc.resolve_forecast(
-        db_session,
-        forecast_id=str(row.forecast_id),
-        persist=True,
-        backfill_missing=False,
-        now=datetime(2026, 6, 8, 12, tzinfo=UTC),
-    )
-
-    assert result["status"] == "requires_adjustment_evidence"
-    assert result["changed"] is False
-    assert result["resolution_evidence"]["price_adjustment_policy"] == (
-        "unverified_fail_closed"
-    )
-    await db_session.refresh(row)
-    assert row.status == "open"
 
 
 @pytest.mark.asyncio

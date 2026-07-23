@@ -371,11 +371,6 @@ CREATE TABLE IF NOT EXISTS public.us_candles_1d (
     value NUMERIC NOT NULL,
     source TEXT NOT NULL,
     ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    is_final BOOLEAN,
-    session_scope TEXT,
-    source_row_id TEXT,
-    source_row_version TEXT,
-    price_basis TEXT,
     CONSTRAINT ck_us_candles_1d_exchange CHECK (exchange IN ('NASD', 'NYSE', 'AMEX')),
     CONSTRAINT uq_us_candles_1d_time_symbol_exchange UNIQUE (time, symbol, exchange)
 )

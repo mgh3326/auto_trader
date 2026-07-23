@@ -8,11 +8,8 @@ from typing import Any, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.config import settings
 from app.core.db import AsyncSessionLocal
-from app.mcp_server.env_utils import _env
 from app.services.trade_journal.forecast_service import (
-    AuthenticatedForecastActor,
     ForecastValidationError,
     build_forecast_calibration_aggregate,
     list_due_forecasts,
@@ -28,17 +25,6 @@ logger = logging.getLogger(__name__)
 
 def _session_factory() -> async_sessionmaker[AsyncSession]:
     return cast(async_sessionmaker[AsyncSession], cast(object, AsyncSessionLocal))
-
-
-def _authenticated_evidence_actor() -> AuthenticatedForecastActor | None:
-    """Return only the principal bound to this process's active bearer boundary."""
-    actor_id = settings.FORECAST_EVIDENCE_AUTHENTICATED_ACTOR_ID.strip()
-    if not actor_id or not (_env("MCP_AUTH_TOKEN") or "").strip():
-        return None
-    return AuthenticatedForecastActor(
-        principal=actor_id,
-        authentication_method="mcp_bearer",
-    )
 
 
 async def forecast_save(
@@ -64,10 +50,6 @@ async def forecast_save(
     report_uuid: str | None = None,
     report_item_uuid: str | None = None,
     correlation_id: str | None = None,
-    expected_target_version: int | None = None,
-    semantics_attestation: dict[str, Any] | None = None,
-    supersedes_forecast_id: str | None = None,
-    supersession_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     symbol = (symbol or "").strip()
     if not symbol:
@@ -98,11 +80,6 @@ async def forecast_save(
                 report_uuid=report_uuid,
                 report_item_uuid=report_item_uuid,
                 correlation_id=correlation_id,
-                expected_target_version=expected_target_version,
-                semantics_attestation=semantics_attestation,
-                supersedes_forecast_id=supersedes_forecast_id,
-                supersession_evidence=supersession_evidence,
-                authenticated_actor=_authenticated_evidence_actor(),
             )
             await db.commit()
             await db.refresh(row)
@@ -126,10 +103,6 @@ async def forecast_resolve(
     manual_evidence: Any | None = None,
     limit: int = 25,
     backfill_missing: bool = True,
-    expected_target_version: int | None = None,
-    expected_claim_hash: str | None = None,
-    expected_resolution_fingerprint: str | None = None,
-    expected_resolutions: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
 
     persist = not dry_run
@@ -144,9 +117,6 @@ async def forecast_resolve(
                     manual_observed_value=manual_observed_value,
                     manual_evidence=manual_evidence,
                     backfill_missing=backfill_missing,
-                    expected_target_version=expected_target_version,
-                    expected_claim_hash=expected_claim_hash,
-                    expected_resolution_fingerprint=expected_resolution_fingerprint,
                 )
 
                 if persist and result.get("changed"):
@@ -164,21 +134,11 @@ async def forecast_resolve(
             results: list[dict[str, Any]] = []
             changed_any = False
             for row in [*quarantined, *due]:
-                expected = (
-                    expected_resolutions.get(str(row.forecast_id), {})
-                    if isinstance(expected_resolutions, dict)
-                    else {}
-                )
                 r = await resolve_forecast(
                     db,
                     forecast_id=row.forecast_id,
                     persist=persist,
                     backfill_missing=backfill_missing,
-                    expected_target_version=expected.get("target_version"),
-                    expected_claim_hash=expected.get("immutable_claim_hash"),
-                    expected_resolution_fingerprint=expected.get(
-                        "resolution_fingerprint"
-                    ),
                 )
 
                 changed_any = changed_any or bool(r.get("changed"))
@@ -193,8 +153,6 @@ async def forecast_resolve(
                 }
                 if r.get("resolution_evidence") is not None:
                     item["resolution_evidence"] = r["resolution_evidence"]
-                if r.get("resolution_contract") is not None:
-                    item["resolution_contract"] = r["resolution_contract"]
                 results.append(item)
             if persist and changed_any:
                 await db.commit()
