@@ -1012,8 +1012,13 @@ def test_expire_sweep_registered_in_tool_names():
 
 # -- ROB-929: order_proposal_list_expired_defensive MCP tool ----------------
 
-_HANDOFF_NOW = datetime(2026, 7, 22, 1, 0, tzinfo=UTC)
-_HANDOFF_RECENT = datetime(2026, 7, 22, 0, 30, tzinfo=UTC)
+
+def _handoff_recent() -> datetime:
+    """A timestamp inside the tool's 24h handoff window.
+
+    The MCP tool stamps `now` from the real clock, so a fixed calendar date
+    silently drifts out of the window once that day passes."""
+    return datetime.now(UTC) - timedelta(minutes=30)
 
 
 def test_list_expired_defensive_registered_in_tool_names():
@@ -1027,11 +1032,13 @@ async def test_list_expired_defensive_returns_expired_loss_cut_proposal(
     # exit_intent="defensive_trim" is rejected at create time (ROB-929 code
     # review: no execution-path support yet) -- loss_cut is the only
     # defensive exit_intent actually creatable today.
+    recent = _handoff_recent()
+
     async def fake_lookup(session, retrospective_id):
         return SimpleNamespace(
             symbol="MCPHANDOFF1",
             trigger_type="stop_loss",
-            created_at=_HANDOFF_RECENT,
+            created_at=recent,
         )
 
     monkeypatch.setattr(
@@ -1061,10 +1068,10 @@ async def test_list_expired_defensive_returns_expired_loss_cut_proposal(
     async with AsyncSessionLocal() as session:
         service = OrderProposalsService(session)
         group, _ = await service.get_proposal(proposal_id)
-        group.valid_until = datetime(2026, 7, 21, 0, 0, tzinfo=UTC)
+        group.valid_until = recent - timedelta(days=1)
         await session.commit()
-        assert await service.expire_if_needed(proposal_id, now=_HANDOFF_RECENT)
-        group.updated_at = _HANDOFF_RECENT
+        assert await service.expire_if_needed(proposal_id, now=recent)
+        group.updated_at = recent
         await session.commit()
 
     result = await opt.order_proposal_list_expired_defensive(hours=24)
@@ -1081,15 +1088,16 @@ async def test_list_expired_defensive_returns_expired_loss_cut_proposal(
 
 @pytest.mark.asyncio
 async def test_list_expired_defensive_excludes_non_defensive_proposal():
+    recent = _handoff_recent()
     created = await opt.order_proposal_create(**_create_kwargs(symbol="MCPHANDOFF2"))
     proposal_id = uuid.UUID(created["proposal_id"])
     async with AsyncSessionLocal() as session:
         service = OrderProposalsService(session)
         group, _ = await service.get_proposal(proposal_id)
-        group.valid_until = datetime(2026, 7, 21, 0, 0, tzinfo=UTC)
+        group.valid_until = recent - timedelta(days=1)
         await session.commit()
-        assert await service.expire_if_needed(proposal_id, now=_HANDOFF_RECENT)
-        group.updated_at = _HANDOFF_RECENT
+        assert await service.expire_if_needed(proposal_id, now=recent)
+        group.updated_at = recent
         await session.commit()
 
     result = await opt.order_proposal_list_expired_defensive(hours=24)
@@ -1100,11 +1108,13 @@ async def test_list_expired_defensive_excludes_non_defensive_proposal():
 
 @pytest.mark.asyncio
 async def test_list_expired_defensive_filters_by_market(monkeypatch):
+    recent = _handoff_recent()
+
     async def fake_lookup(session, retrospective_id):
         return SimpleNamespace(
             symbol="MCPHANDOFF3",
             trigger_type="stop_loss",
-            created_at=_HANDOFF_RECENT,
+            created_at=recent,
         )
 
     monkeypatch.setattr(
@@ -1134,10 +1144,10 @@ async def test_list_expired_defensive_filters_by_market(monkeypatch):
     async with AsyncSessionLocal() as session:
         service = OrderProposalsService(session)
         group, _ = await service.get_proposal(proposal_id)
-        group.valid_until = datetime(2026, 7, 21, 0, 0, tzinfo=UTC)
+        group.valid_until = recent - timedelta(days=1)
         await session.commit()
-        assert await service.expire_if_needed(proposal_id, now=_HANDOFF_RECENT)
-        group.updated_at = _HANDOFF_RECENT
+        assert await service.expire_if_needed(proposal_id, now=recent)
+        group.updated_at = recent
         await session.commit()
 
     result = await opt.order_proposal_list_expired_defensive(
