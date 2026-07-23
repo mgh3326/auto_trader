@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
@@ -180,6 +181,136 @@ async def test_confirm_required_for_real_order() -> None:
         )
     assert result["status"] == "planned"
     assert result["dry_run"] is True
+
+
+def _confirmed_result():
+    return type(
+        "R",
+        (),
+        {
+            "status": "reconciled",
+            "open_client_order_id": "rob937-x",
+            "close_client_order_id": "rob937-y",
+            "exit_reason": "take_profit",
+            "to_evidence_dict": lambda self: {"status": "reconciled"},
+        },
+    )()
+
+
+_GATE_ENV = "BINANCE_DEMO_SCALPING_VALIDATED_GATE_PATH"
+
+
+@pytest.mark.asyncio
+async def test_confirm_response_carries_gate_audit_and_authorization_mode(
+    monkeypatch,
+) -> None:
+    # ROB-937: the interactive LLM confirm path is INTENTIONALLY exempt from the
+    # ROB-905 validated-signal gate. It must still surface the gate verdict
+    # (audit only) plus an explicit authorization marker — the exemption is
+    # documented, not silent. Default env => gate is unset => allowed=False.
+    monkeypatch.delenv(_GATE_ENV, raising=False)
+    captured: dict = {}
+
+    async def fake_run(**kwargs):
+        captured.update(kwargs)
+        return _confirmed_result()
+
+    with patch.object(
+        mod, "_execute_confirmed_round_trip", AsyncMock(side_effect=fake_run)
+    ):
+        result = await mod.binance_demo_scalping_submit_decision(
+            symbol="SOLUSDT",
+            side="SELL",
+            rationale="OI surge fade",
+            dry_run=False,
+            confirm=True,
+        )
+    # Execution is UNCHANGED: the round-trip still ran despite the gate denying.
+    assert captured, "execute_confirmed_round_trip must run regardless of gate"
+    assert result["status"] == "reconciled"
+    assert result["authorization_mode"] == "operator_interactive_exception"
+    assert result["validated_signal_gate"]["allowed"] is False
+    assert result["validated_signal_gate"]["reason"] == "gate_path_unset"
+
+
+@pytest.mark.asyncio
+async def test_confirm_executes_even_when_gate_denies(monkeypatch) -> None:
+    # Core execution-invariance proof: gate denied (unset path) must NOT block or
+    # downgrade the real Demo round-trip on this human-authorized path.
+    monkeypatch.delenv(_GATE_ENV, raising=False)
+    captured: dict = {}
+
+    async def fake_run(**kwargs):
+        captured.update(kwargs)
+        return _confirmed_result()
+
+    with patch.object(
+        mod, "_execute_confirmed_round_trip", AsyncMock(side_effect=fake_run)
+    ):
+        result = await mod.binance_demo_scalping_submit_decision(
+            symbol="XRPUSDT",
+            side="BUY",
+            rationale="funding flip",
+            dry_run=False,
+            confirm=True,
+        )
+    assert captured["symbol"] == "XRPUSDT"
+    assert captured["session_tag"] == "llm"
+    assert result["dry_run"] is False
+    assert result["status"] == "reconciled"
+    assert result["validated_signal_gate"]["allowed"] is False
+
+
+@pytest.mark.asyncio
+async def test_confirm_gate_allowed_reflected_with_valid_artifact(
+    monkeypatch, tmp_path
+) -> None:
+    gate_file = tmp_path / "gate.json"
+    gate_file.write_text(
+        json.dumps({"schema": "validated_signal_gate.v1", "verdict": "validated"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(_GATE_ENV, str(gate_file))
+    captured: dict = {}
+
+    async def fake_run(**kwargs):
+        captured.update(kwargs)
+        return _confirmed_result()
+
+    with patch.object(
+        mod, "_execute_confirmed_round_trip", AsyncMock(side_effect=fake_run)
+    ):
+        result = await mod.binance_demo_scalping_submit_decision(
+            symbol="DOGEUSDT",
+            side="BUY",
+            rationale="breakout",
+            dry_run=False,
+            confirm=True,
+        )
+    # Same execution path; only the audit verdict flips to allowed=True.
+    assert captured, "round-trip still runs"
+    assert result["authorization_mode"] == "operator_interactive_exception"
+    assert result["validated_signal_gate"]["allowed"] is True
+    assert result["validated_signal_gate"]["reason"] == "validated"
+
+
+@pytest.mark.asyncio
+async def test_dry_run_response_carries_gate_audit_field(monkeypatch) -> None:
+    monkeypatch.delenv(_GATE_ENV, raising=False)
+    allowed = _preflight_result(
+        "dry_run", sized_qty=Decimal("7.3"), sized_notional=Decimal("10")
+    )
+    with patch.object(
+        mod, "_dry_run_preflight", AsyncMock(return_value=(_FRESH, allowed))
+    ):
+        result = await mod.binance_demo_scalping_submit_decision(
+            symbol="XRPUSDT", side="BUY", rationale="funding flip", dry_run=True
+        )
+    assert result["status"] == "planned"
+    assert result["validated_signal_gate"]["allowed"] is False
+    assert result["validated_signal_gate"]["reason"] == "gate_path_unset"
+    # dry-run must be visibly distinct from the real-order authorization marker.
+    assert result["authorization_mode"] != "operator_interactive_exception"
 
 
 def test_public_contract_has_no_caller_controlled_market_fields() -> None:
