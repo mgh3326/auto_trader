@@ -65,6 +65,56 @@ class PolicyDecisionRule(BaseModel):
     exclusions: list[str] = Field(default_factory=list)
 
 
+class SingleShareExitScope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    markets: list[Literal["kr"]]
+    brokers: list[Literal["kis", "toss"]]
+    order_routable_required: Literal[True]
+
+
+class SingleShareExitConditions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    quantity_eq: Literal[1]
+    profit_pct_min: float = Field(ge=0)
+    resistance_reference_required: Literal[True]
+    resistance_near_pct_max: float = Field(ge=0, le=100)
+    min_sell_price_multiple_policy_key: Literal["sell.loss_guard_min_multiple"]
+    unresolved_open_actions_max: Literal[0]
+    loss_state_uses_existing_path: Literal["loss_cut_only"]
+
+
+class SingleShareExitProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["propose_full_exit"]
+    sizing: Literal["full_position"]
+    approval: Literal["telegram_manual"]
+    auto_approve: Literal[False]
+    execution: Literal["proposal_only"]
+
+
+class SingleShareExitDecisionRule(BaseModel):
+    """Additive KR one-share profit-exit proposal policy.
+
+    This rule intentionally has a distinct shape from the tiered trim rule:
+    ``sell.trim_preplace`` excludes one-share positions globally, while this
+    path can only produce a manually approved proposal and never an order.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    lanes: list[Literal["sell"]]
+    semantics: str
+    scope: SingleShareExitScope
+    conditions: SingleShareExitConditions
+    proposal: SingleShareExitProposal
+    threshold_status: Literal["provisional"]
+    operator_approval_required: Literal[True]
+    recalibration_note: str
+
+
 class PolicyRecoveryCondition(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -235,7 +285,9 @@ class TradingPolicyDocument(BaseModel):
     order_proposals: OrderProposalsPolicy
     sector_clusters: dict[str, list[str]]
     thresholds: dict[str, PolicyThreshold]
-    decision_rules: dict[str, PolicyDecisionRule] = Field(default_factory=dict)
+    decision_rules: dict[str, PolicyDecisionRule | SingleShareExitDecisionRule] = Field(
+        default_factory=dict
+    )
     market_rules: dict[Literal["crypto"], CryptoMarketRules]
     market_overrides: dict[Market, dict[str, ThresholdValue]]
     crash_day: CrashDayPolicy
