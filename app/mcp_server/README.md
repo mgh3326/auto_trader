@@ -2387,24 +2387,49 @@ keep `outcome` and `brier_score` null and are excluded from calibration
 aggregates. Other non-price forecast kinds continue to require an explicit
 manual outcome and evidence.
 
-`price_target` keeps its original window-touch contract:
+`price_target` keeps its original window-touch outcome:
 `at_or_above` uses the window `max(high)` and `at_or_below` uses
-`min(low)`. The additive `terminal_close` kind is different. It accepts
+`min(low)`. New touch rows must declare
+`outcome_rule_version="window-touch-v1-high-gte-low-lte"`. Existing
+versionless rows have ambiguous touch-vs-terminal intent and are quarantined
+before candle lookup until an authenticated touch attestation or durable
+terminal supersession is stored; they do not consume the eligible due limit.
+
+The additive `terminal_close` kind is different. It accepts
 `direction="up"|"down"` with
 `outcome_rule_version="terminal-close-v1-up-gte-down-lt"` and uses exactly one
 final review-date regular-session `close`: equality is `up`, while `down` is
 strictly below. It never reads window high/low, extended-hours prices, or
-`adj_close`.
+`adj_close`. The terminal identity and original attribution/evidence cutoff are
+immutable. Exact replay is idempotent, and the only update is a target-version
+CAS promotion from `unverified_fail_closed` to `explicit-factor-v1`. Manual
+outcomes are forbidden based on that immutable original kind.
 
 Terminal targets may be preregistered with
 `price_adjustment_policy="unverified_fail_closed"`. Deterministic resolution
 requires `price_adjustment_policy="explicit-factor-v1"`, a positive
-`target_to_close_factor`, and review-date `adjustment_provenance`. Missing,
-stale, ambiguous, non-final, untrusted-source, or unverified data leaves the
-forecast open. See
+`target_to_close_factor`, and typed review-date `adjustment_provenance` bound
+to an application-authenticated actor, authority, symbol, action ratio,
+effective date, source reference/hash, and source price basis. MCP evidence
+writes require both a non-empty `MCP_AUTH_TOKEN` and
+`FORECAST_EVIDENCE_AUTHENTICATED_ACTOR_ID`; payload and caller-header identity
+alone are never trusted.
+
+Selected daily rows must prove `is_final=true`, regular-session scope, actual
+post-close ingestion time, content-addressed source row identity/version, and
+the exact source price basis. Existing rows without this provenance fail
+closed. Missing, stale, ambiguous, forming, untrusted-source, invalid-close,
+unverified-adjustment, or basis-mismatched data leaves the forecast open.
+
+A dry run returns the immutable target version/hash plus selected-evidence and
+resolution fingerprints. Typed persistence requires those reviewed CAS values
+and fails closed if the target or candle changed. `dry_run=true` does not write
+the forecast, but the historical default `backfill_missing=true` may still
+write shared daily-candle state; use `backfill_missing=false` for a genuinely
+read-only review. See
 [`docs/runbooks/forecast-terminal-close.md`](../../docs/runbooks/forecast-terminal-close.md)
-for the source-basis contract, provenance fields, legacy-row safety rule, and
-operator dry-run sequence.
+for exact evidence schemas, source-basis contracts, quarantine lifecycle,
+preview/persist sequence, and migration deployment order.
 
 ### Typed KIS order tools
 
