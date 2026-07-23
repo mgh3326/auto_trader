@@ -8,10 +8,18 @@ fails loudly instead of silently dropping a key.
 
 from __future__ import annotations
 
-from datetime import date
-from typing import Literal
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 Lane = Literal["buy", "sell", "discovery"]
 Market = Literal["kr", "us", "crypto"]
@@ -19,6 +27,9 @@ Market = Literal["kr", "us", "crypto"]
 ThresholdValue = int | float | str | list[int | float]
 RuleConditionValue = int | float | str | bool | list[int | float | str | bool]
 PolicyComparison = Literal["gt", "gte", "lt", "lte", "eq"]
+KrBroker = Literal["kis", "toss"]
+KrSymbol = Annotated[str, StringConstraints(pattern=r"^\d{6}$")]
+ResistanceStrength = Literal["weak", "moderate", "strong"]
 
 
 class OneShareExceptionPolicy(BaseModel):
@@ -69,27 +80,65 @@ class SingleShareExitScope(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     markets: list[Literal["kr"]]
-    brokers: list[Literal["kis", "toss"]]
+    brokers: list[KrBroker]
+    required_broker_inventory: list[KrBroker]
     order_routable_required: Literal[True]
+
+    @model_validator(mode="after")
+    def validate_kis_toss_scope(self) -> SingleShareExitScope:
+        required = {"kis", "toss"}
+        if set(self.brokers) != required or len(self.brokers) != len(required):
+            raise ValueError("brokers must contain exactly kis and toss")
+        if set(self.required_broker_inventory) != required or len(
+            self.required_broker_inventory
+        ) != len(required):
+            raise ValueError(
+                "required_broker_inventory must contain exactly kis and toss"
+            )
+        return self
+
+
+class SingleShareResistanceSourceFamilies(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    volume_profile_exact: list[str]
+    fibonacci_prefixes: list[str]
+    bollinger_prefixes: list[str]
 
 
 class SingleShareExitConditions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    quantity_eq: Literal[1]
+    symbol_routable_sellable_quantity_eq: Literal[1]
     profit_pct_min: float = Field(ge=0)
     resistance_reference_required: Literal[True]
-    resistance_near_pct_max: float = Field(ge=0, le=100)
+    resistance_distance_pct_min_exclusive: float = Field(ge=0, le=100)
+    resistance_distance_pct_max: float = Field(ge=0, le=100)
+    resistance_source_family_min: int = Field(ge=2)
+    resistance_source_families: SingleShareResistanceSourceFamilies
+    quote_max_age_seconds: int = Field(gt=0)
+    snapshot_max_skew_seconds: int = Field(gt=0)
+    required_completed_bar_market: Literal["XKRX"]
     min_sell_price_multiple_policy_key: Literal["sell.loss_guard_min_multiple"]
+    same_symbol_open_orders_max: Literal[0]
     unresolved_open_actions_max: Literal[0]
     loss_state_uses_existing_path: Literal["loss_cut_only"]
+
+    @model_validator(mode="after")
+    def validate_resistance_band(self) -> SingleShareExitConditions:
+        if (
+            self.resistance_distance_pct_max
+            <= self.resistance_distance_pct_min_exclusive
+        ):
+            raise ValueError("resistance distance max must exceed exclusive min")
+        return self
 
 
 class SingleShareExitProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    action: Literal["propose_full_exit"]
-    sizing: Literal["full_position"]
+    action: Literal["propose_full_account_lot_exit"]
+    sizing: Literal["full_account_lot_exit"]
     approval: Literal["telegram_manual"]
     auto_approve: Literal[False]
     execution: Literal["proposal_only"]
@@ -107,12 +156,106 @@ class SingleShareExitDecisionRule(BaseModel):
 
     lanes: list[Literal["sell"]]
     semantics: str
+    activation_state: Literal["shadow"]
+    proposal_enabled: Literal[False]
     scope: SingleShareExitScope
     conditions: SingleShareExitConditions
     proposal: SingleShareExitProposal
     threshold_status: Literal["provisional"]
     operator_approval_required: Literal[True]
     recalibration_note: str
+
+
+class SingleShareExitTargetIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: KrSymbol
+    broker: KrBroker
+    broker_account_id: str = Field(min_length=1)
+    lot_id: str = Field(min_length=1)
+
+
+class SingleShareExitAccountLot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: KrSymbol
+    lot_id: str = Field(min_length=1)
+    order_routable: bool
+    sellable_quantity: Decimal = Field(ge=0)
+    average_cost: Decimal = Field(gt=0)
+
+
+class SingleShareExitOpenOrder(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    order_id: str = Field(min_length=1)
+    symbol: KrSymbol
+    side: Literal["buy", "sell"]
+
+
+class SingleShareExitBrokerAccountSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    snapshot_id: str = Field(min_length=1)
+    broker: KrBroker
+    broker_account_id: str = Field(min_length=1)
+    observed_at: datetime
+    holdings_complete: Literal[True]
+    lots: list[SingleShareExitAccountLot]
+    open_orders_checked_at: datetime
+    open_orders_complete: Literal[True]
+    open_orders: list[SingleShareExitOpenOrder]
+
+
+class SingleShareExitQuoteEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    snapshot_id: str = Field(min_length=1)
+    symbol: KrSymbol
+    price: Decimal = Field(gt=0)
+    observed_at: datetime
+    source: str = Field(min_length=1)
+
+
+class SingleShareExitResistanceEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    snapshot_id: str = Field(min_length=1)
+    symbol: KrSymbol
+    price: Decimal = Field(gt=0)
+    sources: list[str] = Field(min_length=1)
+    strength: ResistanceStrength
+    computed_at: datetime
+    ohlcv_through_date: date
+
+
+class SingleShareExitOpenAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action_id: str = Field(min_length=1)
+    symbol: KrSymbol
+    side: Literal["buy", "sell"]
+    broker_account_id: str = Field(min_length=1)
+    status: Literal["open", "in_progress"]
+
+
+class SingleShareExitEvidenceSnapshot(BaseModel):
+    """Read-only evidence contract for shadow single-account-lot exit review."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    snapshot_id: str = Field(min_length=1)
+    market: Literal["kr"]
+    captured_at: datetime
+    target: SingleShareExitTargetIdentity
+    broker_account_scope_complete: Literal[True]
+    accounts: list[SingleShareExitBrokerAccountSnapshot] = Field(min_length=2)
+    quote: SingleShareExitQuoteEvidence
+    resistance: SingleShareExitResistanceEvidence
+    open_actions_snapshot_id: str = Field(min_length=1)
+    open_actions_checked_at: datetime
+    open_actions_complete: Literal[True]
+    open_actions: list[SingleShareExitOpenAction]
 
 
 class PolicyRecoveryCondition(BaseModel):
