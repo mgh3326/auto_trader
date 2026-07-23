@@ -145,11 +145,13 @@ class SingleShareExitProposal(BaseModel):
 
 
 class SingleShareExitDecisionRule(BaseModel):
-    """Additive KR one-share profit-exit proposal policy.
+    """Additive KR one-share profit-exit shadow policy.
 
     This rule intentionally has a distinct shape from the tiered trim rule:
     ``sell.trim_preplace`` excludes one-share positions globally, while this
-    path can only produce a manually approved proposal and never an order.
+    path can only classify shadow eligibility while ``proposal_enabled`` is
+    false. Its candidate metadata is manual-approval-only for a separately
+    authorized future activation; this schema never enables an order.
     """
 
     model_config = ConfigDict(extra="forbid")
