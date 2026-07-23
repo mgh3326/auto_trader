@@ -3,6 +3,7 @@ of trading judgment thresholds (ROB-646). Read-only; operator edits via PR."""
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -13,6 +14,7 @@ import yaml
 
 from app.schemas.trading_policy import (
     SingleShareExitDecisionRule,
+    SingleShareExitEvidenceSnapshot,
     TradingPolicyDocument,
 )
 
@@ -29,15 +31,37 @@ class TradingPolicyKeyError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class SingleShareExitEvaluation:
-    """Pure policy result; it neither persists nor dispatches a proposal."""
+    """Pure shadow-policy result; it neither persists nor proposes an order."""
 
-    outcome: Literal["PROPOSE", "DEFER", "INELIGIBLE"]
+    outcome: Literal["SHADOW_ELIGIBLE", "DEFER", "INELIGIBLE"]
     reason: str
-    action: Literal["propose_full_exit"] | None = None
-    sizing: Literal["full_position"] | None = None
+    snapshot_id: str
+    symbol: str
+    broker: Literal["kis", "toss"]
+    broker_account_id: str
+    lot_id: str
+    activation_state: Literal["shadow"] = "shadow"
+    proposal_enabled: Literal[False] = False
+    candidate_action: Literal["propose_full_account_lot_exit"] | None = None
+    sizing: Literal["full_account_lot_exit"] | None = None
     approval: Literal["telegram_manual"] | None = None
-    auto_approve: bool = False
+    auto_approve: Literal[False] = False
     execution: Literal["proposal_only"] | None = None
+    average_cost: Decimal | None = None
+    symbol_routable_sellable_quantity: Decimal | None = None
+    current_quote: Decimal | None = None
+    quote_source: str | None = None
+    quote_age_seconds: Decimal | None = None
+    resistance_price: Decimal | None = None
+    profit_pct: Decimal | None = None
+    resistance_distance_pct: Decimal | None = None
+    normalized_source_families: tuple[str, ...] = ()
+    resistance_sources: tuple[str, ...] = ()
+    resistance_strength: str | None = None
+    quote_observed_at: dt.datetime | None = None
+    resistance_computed_at: dt.datetime | None = None
+    ohlcv_through_date: dt.date | None = None
+    expected_completed_krx_bar_date: dt.date | None = None
 
 
 def _reset_cache_for_tests() -> None:
@@ -151,72 +175,405 @@ def sector_cluster_for(label: str | None) -> str | None:
     return None
 
 
-def evaluate_single_share_exit(
+def _single_share_result(
+    evidence: SingleShareExitEvidenceSnapshot,
     *,
-    market: str,
-    broker: str,
-    quantity: int,
-    order_routable: bool,
-    average_cost: int | float,
-    proposed_sell_price: int | float,
-    profit_pct: int | float,
-    resistance_near_pct: int | float | None,
-    unresolved_open_actions: int,
+    outcome: Literal["SHADOW_ELIGIBLE", "DEFER", "INELIGIBLE"],
+    reason: str,
+    rule: SingleShareExitDecisionRule | None = None,
+    average_cost: Decimal | None = None,
+    profit_pct: Decimal | None = None,
+    resistance_distance_pct: Decimal | None = None,
+    normalized_source_families: tuple[str, ...] = (),
+    expected_completed_krx_bar_date: dt.date | None = None,
+    symbol_routable_sellable_quantity: Decimal | None = None,
+    quote_age_seconds: Decimal | None = None,
 ) -> SingleShareExitEvaluation:
-    """Evaluate the additive one-share full-exit *proposal* path.
+    proposal = rule.proposal if outcome == "SHADOW_ELIGIBLE" and rule else None
+    return SingleShareExitEvaluation(
+        outcome=outcome,
+        reason=reason,
+        snapshot_id=evidence.snapshot_id,
+        symbol=evidence.target.symbol,
+        broker=evidence.target.broker,
+        broker_account_id=evidence.target.broker_account_id,
+        lot_id=evidence.target.lot_id,
+        candidate_action=proposal.action if proposal else None,
+        sizing=proposal.sizing if proposal else None,
+        approval=proposal.approval if proposal else None,
+        auto_approve=proposal.auto_approve if proposal else False,
+        execution=proposal.execution if proposal else None,
+        average_cost=average_cost,
+        symbol_routable_sellable_quantity=symbol_routable_sellable_quantity,
+        current_quote=evidence.quote.price,
+        quote_source=evidence.quote.source,
+        quote_age_seconds=quote_age_seconds,
+        resistance_price=evidence.resistance.price,
+        profit_pct=profit_pct,
+        resistance_distance_pct=resistance_distance_pct,
+        normalized_source_families=normalized_source_families,
+        resistance_sources=tuple(evidence.resistance.sources),
+        resistance_strength=evidence.resistance.strength,
+        quote_observed_at=evidence.quote.observed_at,
+        resistance_computed_at=evidence.resistance.computed_at,
+        ohlcv_through_date=evidence.resistance.ohlcv_through_date,
+        expected_completed_krx_bar_date=expected_completed_krx_bar_date,
+    )
 
-    Scope and quantity are checked before the unresolved-action DEFER gate so
-    unrelated positions do not get classified by a rule that does not apply to
-    them. No broker, database, scheduler, or order-proposal mutation occurs.
+
+def _as_aware_utc(value: dt.datetime) -> dt.datetime | None:
+    if value.tzinfo is None or value.utcoffset() is None:
+        return None
+    return value.astimezone(dt.UTC)
+
+
+def _normalized_resistance_families(
+    sources: list[str], rule: SingleShareExitDecisionRule
+) -> tuple[str, ...]:
+    normalization = rule.conditions.resistance_source_families
+    volume_exact = {source.casefold() for source in normalization.volume_profile_exact}
+    fib_prefixes = tuple(
+        prefix.casefold() for prefix in normalization.fibonacci_prefixes
+    )
+    bollinger_prefixes = tuple(
+        prefix.casefold() for prefix in normalization.bollinger_prefixes
+    )
+    families: set[str] = set()
+    for raw_source in sources:
+        source = raw_source.strip().casefold()
+        if source in volume_exact:
+            families.add("VOLUME_PROFILE")
+        elif source.startswith(fib_prefixes):
+            families.add("FIBONACCI")
+        elif source.startswith(bollinger_prefixes):
+            families.add("BOLLINGER")
+    return tuple(sorted(families))
+
+
+def _expected_completed_krx_bar(now: dt.datetime) -> dt.date | None:
+    """Resolve the authoritative finalized KRX session without import side effects."""
+    from app.services.daily_candles.read_service import last_final_session_kr
+
+    return last_final_session_kr(now)
+
+
+def evaluate_single_share_exit(
+    evidence: SingleShareExitEvidenceSnapshot,
+    *,
+    evaluated_at: dt.datetime | None = None,
+) -> SingleShareExitEvaluation:
+    """Evaluate one bounded evidence snapshot in shadow mode only.
+
+    Profit and resistance distance are recomputed from Decimal prices in the
+    snapshot. KIS/Toss inventory and open-order evidence are caller-supplied
+    read models, but completeness, identity, scope, timestamps, and aggregate
+    quantities are checked here. This function has no broker, DB, scheduler,
+    Telegram, proposal, or order side effects.
     """
 
     doc = load_trading_policy()
     rule = doc.decision_rules.get("sell.single_share_exit")
     if not isinstance(rule, SingleShareExitDecisionRule):
-        return SingleShareExitEvaluation("INELIGIBLE", "policy_rule_unavailable")
-
-    if market not in rule.scope.markets:
-        return SingleShareExitEvaluation("INELIGIBLE", "market_out_of_scope")
-    if broker not in rule.scope.brokers:
-        return SingleShareExitEvaluation("INELIGIBLE", "broker_out_of_scope")
-    if rule.scope.order_routable_required and not order_routable:
-        return SingleShareExitEvaluation("INELIGIBLE", "order_routable_false")
-    if quantity != rule.conditions.quantity_eq:
-        return SingleShareExitEvaluation("INELIGIBLE", "not_single_share_position")
-    if unresolved_open_actions > rule.conditions.unresolved_open_actions_max:
-        return SingleShareExitEvaluation("DEFER", "unresolved_open_action")
-    if rule.conditions.resistance_reference_required and resistance_near_pct is None:
-        return SingleShareExitEvaluation("INELIGIBLE", "no_resistance_reference")
-    if resistance_near_pct is None or not (
-        0 <= resistance_near_pct <= rule.conditions.resistance_near_pct_max
-    ):
-        return SingleShareExitEvaluation("INELIGIBLE", "resistance_not_ultra_near")
-    if profit_pct < rule.conditions.profit_pct_min:
-        return SingleShareExitEvaluation(
-            "INELIGIBLE", "profit_below_provisional_minimum"
+        return _single_share_result(
+            evidence, outcome="INELIGIBLE", reason="policy_rule_unavailable"
+        )
+    if rule.activation_state != "shadow" or rule.proposal_enabled:
+        return _single_share_result(
+            evidence,
+            outcome="INELIGIBLE",
+            reason="policy_not_shadow_off",
+            rule=rule,
+        )
+    if evidence.market not in rule.scope.markets:
+        return _single_share_result(
+            evidence, outcome="INELIGIBLE", reason="market_out_of_scope", rule=rule
+        )
+    if evidence.target.broker not in rule.scope.brokers:
+        return _single_share_result(
+            evidence, outcome="INELIGIBLE", reason="broker_out_of_scope", rule=rule
         )
 
+    now = _as_aware_utc(evaluated_at or dt.datetime.now(dt.UTC))
+    captured_at = _as_aware_utc(evidence.captured_at)
+    if now is None or captured_at is None:
+        return _single_share_result(
+            evidence, outcome="INELIGIBLE", reason="naive_evidence_timestamp", rule=rule
+        )
+
+    nested_snapshot_ids = {
+        evidence.quote.snapshot_id,
+        evidence.resistance.snapshot_id,
+        evidence.open_actions_snapshot_id,
+        *(account.snapshot_id for account in evidence.accounts),
+    }
+    if nested_snapshot_ids != {evidence.snapshot_id}:
+        return _single_share_result(
+            evidence,
+            outcome="INELIGIBLE",
+            reason="inconsistent_snapshot_id",
+            rule=rule,
+        )
+    if (
+        evidence.quote.symbol != evidence.target.symbol
+        or evidence.resistance.symbol != evidence.target.symbol
+    ):
+        return _single_share_result(
+            evidence,
+            outcome="INELIGIBLE",
+            reason="inconsistent_snapshot_symbol",
+            rule=rule,
+        )
+
+    required_brokers = set(rule.scope.required_broker_inventory)
+    observed_brokers = {account.broker for account in evidence.accounts}
+    if not required_brokers.issubset(observed_brokers):
+        return _single_share_result(
+            evidence,
+            outcome="INELIGIBLE",
+            reason="incomplete_kis_toss_inventory",
+            rule=rule,
+        )
+    account_identities = [
+        (account.broker, account.broker_account_id) for account in evidence.accounts
+    ]
+    if len(set(account_identities)) != len(account_identities):
+        return _single_share_result(
+            evidence,
+            outcome="INELIGIBLE",
+            reason="duplicate_broker_account_snapshot",
+            rule=rule,
+        )
+
+    timestamp_values = [
+        evidence.quote.observed_at,
+        evidence.resistance.computed_at,
+        evidence.open_actions_checked_at,
+        *(
+            timestamp
+            for account in evidence.accounts
+            for timestamp in (account.observed_at, account.open_orders_checked_at)
+        ),
+    ]
+    timestamp_values_utc = [_as_aware_utc(value) for value in timestamp_values]
+    if any(value is None for value in timestamp_values_utc):
+        return _single_share_result(
+            evidence, outcome="INELIGIBLE", reason="naive_evidence_timestamp", rule=rule
+        )
+    max_skew = dt.timedelta(seconds=rule.conditions.snapshot_max_skew_seconds)
+    if captured_at > now or any(
+        value is None or value > now or abs(value - captured_at) > max_skew
+        for value in timestamp_values_utc
+    ):
+        return _single_share_result(
+            evidence,
+            outcome="INELIGIBLE",
+            reason="stale_or_inconsistent_evidence",
+            rule=rule,
+        )
+    quote_observed_at = _as_aware_utc(evidence.quote.observed_at)
+    quote_age_seconds = (
+        Decimal(str((now - quote_observed_at).total_seconds()))
+        if quote_observed_at is not None
+        else None
+    )
+    if quote_observed_at is None or now - quote_observed_at > dt.timedelta(
+        seconds=rule.conditions.quote_max_age_seconds
+    ):
+        return _single_share_result(
+            evidence,
+            outcome="INELIGIBLE",
+            reason="stale_quote",
+            rule=rule,
+            quote_age_seconds=quote_age_seconds,
+        )
+
+    expected_bar_date = _expected_completed_krx_bar(now)
+    if expected_bar_date is None:
+        return _single_share_result(
+            evidence,
+            outcome="INELIGIBLE",
+            reason="expected_completed_krx_bar_unavailable",
+            rule=rule,
+        )
+    if evidence.resistance.ohlcv_through_date != expected_bar_date:
+        return _single_share_result(
+            evidence,
+            outcome="INELIGIBLE",
+            reason="ohlcv_not_through_expected_completed_krx_bar",
+            rule=rule,
+            expected_completed_krx_bar_date=expected_bar_date,
+        )
+
+    target_matches = [
+        lot
+        for account in evidence.accounts
+        if account.broker == evidence.target.broker
+        and account.broker_account_id == evidence.target.broker_account_id
+        for lot in account.lots
+        if lot.symbol == evidence.target.symbol and lot.lot_id == evidence.target.lot_id
+    ]
+    if len(target_matches) != 1:
+        return _single_share_result(
+            evidence,
+            outcome="INELIGIBLE",
+            reason="target_lot_identity_not_unique",
+            rule=rule,
+            expected_completed_krx_bar_date=expected_bar_date,
+        )
+    target_lot = target_matches[0]
+    required_quantity = Decimal(rule.conditions.symbol_routable_sellable_quantity_eq)
+    target_is_routable = (
+        not rule.scope.order_routable_required or target_lot.order_routable
+    )
+    target_is_single_sellable = target_lot.sellable_quantity == required_quantity
+    if not target_is_routable or not target_is_single_sellable:
+        return _single_share_result(
+            evidence,
+            outcome="INELIGIBLE",
+            reason="target_account_lot_not_single_routable_sellable",
+            rule=rule,
+            average_cost=target_lot.average_cost,
+            expected_completed_krx_bar_date=expected_bar_date,
+        )
+    symbol_routable_sellable_quantity = sum(
+        (
+            lot.sellable_quantity
+            for account in evidence.accounts
+            for lot in account.lots
+            if lot.symbol == evidence.target.symbol and lot.order_routable
+        ),
+        start=Decimal(0),
+    )
+    if symbol_routable_sellable_quantity != required_quantity:
+        return _single_share_result(
+            evidence,
+            outcome="INELIGIBLE",
+            reason="symbol_routable_sellable_quantity_not_one",
+            rule=rule,
+            average_cost=target_lot.average_cost,
+            symbol_routable_sellable_quantity=symbol_routable_sellable_quantity,
+            quote_age_seconds=quote_age_seconds,
+            expected_completed_krx_bar_date=expected_bar_date,
+        )
+
+    same_symbol_open_orders = [
+        order
+        for account in evidence.accounts
+        for order in account.open_orders
+        if order.symbol == evidence.target.symbol
+    ]
+    if len(same_symbol_open_orders) > rule.conditions.same_symbol_open_orders_max:
+        return _single_share_result(
+            evidence,
+            outcome="DEFER",
+            reason="same_symbol_broker_open_order",
+            rule=rule,
+            average_cost=target_lot.average_cost,
+            symbol_routable_sellable_quantity=symbol_routable_sellable_quantity,
+            quote_age_seconds=quote_age_seconds,
+            expected_completed_krx_bar_date=expected_bar_date,
+        )
+
+    scoped_open_actions = [
+        action
+        for action in evidence.open_actions
+        if action.symbol == evidence.target.symbol
+        and action.side == "sell"
+        and action.broker_account_id == evidence.target.broker_account_id
+    ]
+    if len(scoped_open_actions) > rule.conditions.unresolved_open_actions_max:
+        return _single_share_result(
+            evidence,
+            outcome="DEFER",
+            reason="unresolved_scoped_open_action",
+            rule=rule,
+            average_cost=target_lot.average_cost,
+            symbol_routable_sellable_quantity=symbol_routable_sellable_quantity,
+            quote_age_seconds=quote_age_seconds,
+            expected_completed_krx_bar_date=expected_bar_date,
+        )
+
+    average_cost = target_lot.average_cost
+    quote = evidence.quote.price
+    resistance = evidence.resistance.price
     guard_spec = doc.thresholds.get(rule.conditions.min_sell_price_multiple_policy_key)
     try:
-        avg = Decimal(str(average_cost))
-        sell_price = Decimal(str(proposed_sell_price))
         guard_multiple = Decimal(str(guard_spec.value)) if guard_spec else Decimal(0)
     except (InvalidOperation, ValueError):
-        return SingleShareExitEvaluation("INELIGIBLE", "invalid_price_evidence")
-    if avg <= 0 or sell_price <= 0 or guard_multiple <= 0:
-        return SingleShareExitEvaluation("INELIGIBLE", "invalid_price_evidence")
-    if sell_price < avg * guard_multiple:
-        return SingleShareExitEvaluation("INELIGIBLE", "loss_guard_not_met")
+        guard_multiple = Decimal(0)
+    if guard_multiple <= 0:
+        return _single_share_result(
+            evidence,
+            outcome="INELIGIBLE",
+            reason="invalid_loss_guard_policy",
+            rule=rule,
+            average_cost=average_cost,
+            symbol_routable_sellable_quantity=symbol_routable_sellable_quantity,
+            quote_age_seconds=quote_age_seconds,
+            expected_completed_krx_bar_date=expected_bar_date,
+        )
+    if quote < average_cost * guard_multiple:
+        return _single_share_result(
+            evidence,
+            outcome="INELIGIBLE",
+            reason="loss_guard_not_met",
+            rule=rule,
+            average_cost=average_cost,
+            symbol_routable_sellable_quantity=symbol_routable_sellable_quantity,
+            quote_age_seconds=quote_age_seconds,
+            expected_completed_krx_bar_date=expected_bar_date,
+        )
 
-    proposal = rule.proposal
-    return SingleShareExitEvaluation(
-        outcome="PROPOSE",
-        reason="single_share_profit_exit_eligible",
-        action=proposal.action,
-        sizing=proposal.sizing,
-        approval=proposal.approval,
-        auto_approve=proposal.auto_approve,
-        execution=proposal.execution,
+    hundred = Decimal(100)
+    raw_profit_pct = (quote - average_cost) / average_cost * hundred
+    raw_resistance_distance_pct = (resistance - quote) / quote * hundred
+    profit_pct = raw_profit_pct.quantize(Decimal("0.0001"))
+    resistance_distance_pct = raw_resistance_distance_pct.quantize(Decimal("0.0001"))
+    normalized_families = _normalized_resistance_families(
+        evidence.resistance.sources, rule
+    )
+    result_kwargs: dict[str, Any] = {
+        "rule": rule,
+        "average_cost": average_cost,
+        "profit_pct": profit_pct,
+        "resistance_distance_pct": resistance_distance_pct,
+        "normalized_source_families": normalized_families,
+        "symbol_routable_sellable_quantity": symbol_routable_sellable_quantity,
+        "quote_age_seconds": quote_age_seconds,
+        "expected_completed_krx_bar_date": expected_bar_date,
+    }
+    if raw_profit_pct < Decimal(str(rule.conditions.profit_pct_min)):
+        return _single_share_result(
+            evidence,
+            outcome="INELIGIBLE",
+            reason="profit_below_provisional_minimum",
+            **result_kwargs,
+        )
+    if not (
+        raw_resistance_distance_pct
+        > Decimal(str(rule.conditions.resistance_distance_pct_min_exclusive))
+        and raw_resistance_distance_pct
+        <= Decimal(str(rule.conditions.resistance_distance_pct_max))
+    ):
+        return _single_share_result(
+            evidence,
+            outcome="INELIGIBLE",
+            reason="resistance_outside_far_band",
+            **result_kwargs,
+        )
+    if len(normalized_families) < rule.conditions.resistance_source_family_min:
+        return _single_share_result(
+            evidence,
+            outcome="INELIGIBLE",
+            reason="insufficient_independent_resistance_families",
+            **result_kwargs,
+        )
+
+    return _single_share_result(
+        evidence,
+        outcome="SHADOW_ELIGIBLE",
+        reason="proposal_disabled_shadow_candidate",
+        **result_kwargs,
     )
 
 

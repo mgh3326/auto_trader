@@ -2,9 +2,9 @@
 # Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
 # (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
 # Repo is public; exposing these values is an accepted decision.
-version: "2026-07-23.1"
+version: "2026-07-23.2"
 captured_as_of: "2026-07-23"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit proposal seed 2026-07-23"
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23"
 
 authority:
   scope: judgment_policy_only
@@ -196,30 +196,46 @@ decision_rules:
   sell.single_share_exit:
     lanes: [sell]
     semantics: >-
-      Additive fallback for a profitable KR holding whose one-share quantity
-      makes a partial trim physically impossible. This rule is evaluated
-      separately from sell.trim_preplace and can create a full-exit proposal
-      only; it cannot approve or execute an order. A loss state remains
-      ineligible here and belongs exclusively to the existing loss_cut path.
+      Additive shadow-only fallback review for a profitable KR account lot when
+      complete KIS+Toss evidence proves the symbol-wide routable sellable
+      quantity is exactly one. This rule is evaluated separately from
+      sell.trim_preplace. It cannot create, approve, or execute a proposal while
+      proposal_enabled is false. A loss state remains ineligible here and
+      belongs exclusively to the existing loss_cut path.
+    activation_state: shadow
+    proposal_enabled: false
     scope:
       markets: [kr]
       brokers: [kis, toss]
+      required_broker_inventory: [kis, toss]
       order_routable_required: true
     conditions:
-      quantity_eq: 1
+      symbol_routable_sellable_quantity_eq: 1
       # Provisional: aligned with profit_realization so this fallback closes
       # only the single-share sizing gap instead of changing profit eligibility.
       profit_pct_min: 8
       resistance_reference_required: true
-      # Provisional: full liquidation requires the stronger existing ultra-near
-      # evidence (2%), not the broader sell.resistance_near_pct PLACE band (6%).
-      resistance_near_pct_max: 2
+      # Provisional ROB-1037-aligned far lane. The 6% boundary is exclusive;
+      # a resistance exactly at +6% remains outside this path.
+      resistance_distance_pct_min_exclusive: 6
+      resistance_distance_pct_max: 15
+      resistance_source_family_min: 2
+      resistance_source_families:
+        volume_profile_exact: [poc, vah, val, volume_poc, volume_value_area_high, volume_value_area_low]
+        fibonacci_prefixes: [fib]
+        bollinger_prefixes: [bb_, bollinger]
+      # Reuses the server-side submit-ready quote snapshot freshness contract
+      # (age <= 300 seconds); all evidence must also belong to one bounded snapshot.
+      quote_max_age_seconds: 300
+      snapshot_max_skew_seconds: 300
+      required_completed_bar_market: XKRX
       min_sell_price_multiple_policy_key: sell.loss_guard_min_multiple
+      same_symbol_open_orders_max: 0
       unresolved_open_actions_max: 0
       loss_state_uses_existing_path: loss_cut_only
     proposal:
-      action: propose_full_exit
-      sizing: full_position
+      action: propose_full_account_lot_exit
+      sizing: full_account_lot_exit
       approval: telegram_manual
       auto_approve: false
       execution: proposal_only
@@ -228,8 +244,9 @@ decision_rules:
     recalibration_note: >-
       Fable governance advisory Q3-#4 Phase 1 seed; follow-up sell-policy
       research must recalibrate this initial threshold. The single-share
-      profit and resistance thresholds inherit that provisional status and
-      require operator approval before final adoption.
+      profit and far-resistance thresholds inherit that provisional status.
+      Shadow evidence must be adversarially validated before proposal_enabled
+      can be considered separately by the operator.
 
 market_rules:
   crypto:

@@ -1,10 +1,15 @@
 from pathlib import Path
+from typing import Literal
 
 import pytest
 import yaml
 from pydantic import ValidationError
 
-from app.schemas.trading_policy import TradingPolicyDocument
+from app.schemas.trading_policy import (
+    SingleShareExitEvidenceSnapshot,
+    SingleShareExitTargetIdentity,
+    TradingPolicyDocument,
+)
 
 _CONFIG = Path(__file__).resolve().parents[2] / "config" / "trading_policy.yaml"
 
@@ -15,7 +20,7 @@ def _raw() -> dict:
 
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-07-23.1"
+    assert doc.version == "2026-07-23.2"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -41,25 +46,35 @@ def test_shipped_config_validates():
     assert trim_rule.tie_breaks["sell.upside_place_max_pct"] == "size_limit_only"
 
 
-def test_single_share_exit_rule_is_provisional_manual_proposal_only():
+def test_single_share_exit_rule_is_provisional_shadow_only():
     rule = TradingPolicyDocument.model_validate(_raw()).decision_rules[
         "sell.single_share_exit"
     ]
 
+    assert rule.activation_state == "shadow"
+    assert rule.proposal_enabled is False
     assert rule.scope.markets == ["kr"]
     assert rule.scope.brokers == ["kis", "toss"]
+    assert rule.scope.required_broker_inventory == ["kis", "toss"]
     assert rule.scope.order_routable_required is True
-    assert rule.conditions.quantity_eq == 1
+    assert rule.conditions.symbol_routable_sellable_quantity_eq == 1
     assert rule.conditions.profit_pct_min == 8
     assert rule.conditions.resistance_reference_required is True
-    assert rule.conditions.resistance_near_pct_max == 2
+    assert rule.conditions.resistance_distance_pct_min_exclusive == 6
+    assert rule.conditions.resistance_distance_pct_max == 15
+    assert rule.conditions.resistance_source_family_min == 2
+    assert rule.conditions.quote_max_age_seconds == 300
+    assert rule.conditions.snapshot_max_skew_seconds == 300
+    assert rule.conditions.required_completed_bar_market == "XKRX"
     assert (
         rule.conditions.min_sell_price_multiple_policy_key
         == "sell.loss_guard_min_multiple"
     )
+    assert rule.conditions.same_symbol_open_orders_max == 0
     assert rule.conditions.unresolved_open_actions_max == 0
     assert rule.conditions.loss_state_uses_existing_path == "loss_cut_only"
-    assert rule.proposal.action == "propose_full_exit"
+    assert rule.proposal.action == "propose_full_account_lot_exit"
+    assert rule.proposal.sizing == "full_account_lot_exit"
     assert rule.proposal.approval == "telegram_manual"
     assert rule.proposal.auto_approve is False
     assert rule.proposal.execution == "proposal_only"
@@ -76,6 +91,52 @@ def test_single_share_exit_rule_rejects_automatic_approval():
 
     with pytest.raises(ValidationError):
         TradingPolicyDocument.model_validate(raw)
+
+
+def test_single_share_exit_rule_rejects_live_activation_or_enabled_proposal():
+    activation = _raw()
+    activation["decision_rules"]["sell.single_share_exit"]["activation_state"] = "live"
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(activation)
+
+    enabled = _raw()
+    enabled["decision_rules"]["sell.single_share_exit"]["proposal_enabled"] = True
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(enabled)
+
+
+def test_single_share_exit_rule_requires_both_kis_and_toss_inventory():
+    raw = _raw()
+    raw["decision_rules"]["sell.single_share_exit"]["scope"][
+        "required_broker_inventory"
+    ] = ["kis"]
+
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_single_share_exit_input_contract_requires_target_and_complete_account_scope():
+    identity_fields = SingleShareExitTargetIdentity.model_fields
+    assert set(identity_fields) == {
+        "symbol",
+        "broker",
+        "broker_account_id",
+        "lot_id",
+    }
+    assert all(field.is_required() for field in identity_fields.values())
+    assert (
+        SingleShareExitEvidenceSnapshot.model_fields[
+            "broker_account_scope_complete"
+        ].annotation
+        == Literal[True]
+    )
+    with pytest.raises(ValidationError):
+        SingleShareExitTargetIdentity(
+            symbol="NAVER",
+            broker="toss",
+            broker_account_id="toss-main",
+            lot_id="lot-1",
+        )
 
 
 def test_auto_approve_policy_has_conservative_market_caps():
