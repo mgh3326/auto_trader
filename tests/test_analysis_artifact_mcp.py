@@ -237,13 +237,13 @@ async def test_save_unchanged_on_identical_payload(db_session: AsyncSession) -> 
     assert first["artifact"]["version"] == 1
     assert first["artifact"]["content_hash"]
 
-    # Same payload re-saved (later as_of) → unchanged + version preserved.
+    # Exact retry → unchanged + version preserved.
     again = await analysis_artifact_save(
         market="kr",
         kind="profit_taking_verdicts",
-        title="v1-again",
+        title="v1",
         payload={"rev": 1},
-        as_of="2026-07-02T05:00:00+00:00",
+        as_of="2026-07-02T02:00:00+00:00",
         correlation_id=correlation_id,
     )
     assert again["action"] == "unchanged"
@@ -251,7 +251,36 @@ async def test_save_unchanged_on_identical_payload(db_session: AsyncSession) -> 
     assert again["artifact"]["version"] == 1
     assert again["artifact"]["content_hash"] == first["artifact"]["content_hash"]
 
-    # Changed payload → updated + version bump.
+    # Omitted as_of on an idempotent retry reuses the stored evidence time; it
+    # must not freshness-launder the row to request-time now.
+    omitted_as_of = await analysis_artifact_save(
+        market="kr",
+        kind="profit_taking_verdicts",
+        title="v1",
+        payload={"rev": 1},
+        correlation_id=correlation_id,
+    )
+    assert omitted_as_of["action"] == "unchanged"
+    assert omitted_as_of["artifact"]["version"] == 1
+    assert omitted_as_of["artifact"]["as_of"] == first["artifact"]["as_of"]
+
+    # Same payload, renewed freshness/readiness metadata → update + bump.
+    renewed = await analysis_artifact_save(
+        market="kr",
+        kind="profit_taking_verdicts",
+        title="v1-renewed",
+        payload={"rev": 1},
+        as_of="2026-07-02T05:00:00+00:00",
+        correlation_id=correlation_id,
+        readiness_label="ready_for_order_review",
+    )
+    assert renewed["action"] == "updated"
+    assert renewed["artifact"]["version"] == 2
+    assert renewed["artifact"]["content_hash"] == first["artifact"]["content_hash"]
+    assert renewed["artifact"]["as_of"] == "2026-07-02T05:00:00Z"
+    assert renewed["artifact"]["readiness_label"] == "ready_for_order_review"
+
+    # Changed payload → updated + another version bump.
     changed = await analysis_artifact_save(
         market="kr",
         kind="profit_taking_verdicts",
@@ -261,7 +290,7 @@ async def test_save_unchanged_on_identical_payload(db_session: AsyncSession) -> 
         correlation_id=correlation_id,
     )
     assert changed["action"] == "updated"
-    assert changed["artifact"]["version"] == 2
+    assert changed["artifact"]["version"] == 3
 
 
 @pytest.mark.integration

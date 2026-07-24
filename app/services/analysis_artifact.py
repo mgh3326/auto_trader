@@ -36,14 +36,26 @@ _DEFAULT_TTL_DAYS_BY_KIND: dict[str, int] = {
     "briefing": 1,
 }
 _DEFAULT_TTL_DAYS_FALLBACK = 0
+_RENEWAL_METADATA_FIELDS: tuple[str, ...] = (
+    "market",
+    "kind",
+    "title",
+    "symbols",
+    "as_of",
+    "valid_until",
+    "created_by",
+    "session_label",
+    "account_scope",
+    "readiness_label",
+)
 
 
 def compute_content_hash(payload: dict[str, Any] | None) -> str:
     """Canonical sha256 over the payload JSON.
 
     Sorted keys + ``ensure_ascii=False`` make the digest stable across
-    re-serialization, so an identical payload hashes equal and drives the
-    ``action='unchanged'`` no-op (ROB-648; mirrors
+    re-serialization. The digest identifies content; ``action='unchanged'``
+    additionally requires identical renewal metadata (ROB-1048; mirrors
     ``symbol_report_ingest.content_hash``).
     """
     blob = json.dumps(payload or {}, sort_keys=True, ensure_ascii=False, default=str)
@@ -63,6 +75,22 @@ def default_valid_until(kind: str, as_of: datetime) -> datetime:
     return datetime(day.year, day.month, day.day, 23, 59, 59, tzinfo=KST)
 
 
+def _metadata_matches(
+    existing: AnalysisArtifact,
+    values: dict[str, Any],
+) -> bool:
+    """Whether a correlation retry is identical beyond payload content.
+
+    Freshness/readiness metadata is part of the persisted artifact version.
+    Comparing it explicitly prevents an equal payload hash from suppressing a
+    legitimate ``as_of`` / expiry / readiness renewal (ROB-1048).
+    """
+    return all(
+        getattr(existing, field_name) == values[field_name]
+        for field_name in _RENEWAL_METADATA_FIELDS
+    )
+
+
 class AnalysisArtifactService:
     """Writer and filtered reader for persisted analysis artifacts."""
 
@@ -77,12 +105,14 @@ class AnalysisArtifactService:
         trade_retrospectives pattern): the server hashes the canonical payload
         and compares to the stored row —
 
-        * identical payload → no write, ``version`` preserved (``unchanged``);
-        * changed payload → in-place update with ``version`` bumped (``updated``);
+        * identical payload + metadata → no write, ``version`` preserved
+          (``unchanged``);
+        * changed payload or metadata → in-place update with ``version`` bumped
+          (``updated``);
         * no prior row → insert at ``version`` 1 (``created``).
 
-        ``valid_until`` defaults to a per-kind TTL when omitted so no artifact is
-        ever never-stale, and ``content_hash`` is always server-computed (ROB-648).
+        ``valid_until`` defaults to a concrete per-kind expiry when omitted, and
+        ``content_hash`` is always server-computed (ROB-648).
         """
         content_hash = compute_content_hash(entry.payload)
         valid_until = (
@@ -118,13 +148,17 @@ class AnalysisArtifactService:
                 AnalysisArtifact.correlation_id == entry.correlation_id
             )
         )
-        if existing is not None and existing.content_hash == content_hash:
-            # Identical canonical payload → no-op. version and content stay put
-            # (dedup: same content = reuse, not churn).
+        if (
+            existing is not None
+            and existing.content_hash == content_hash
+            and _metadata_matches(existing, values)
+        ):
+            # Exact idempotent retry only. A freshness/readiness renewal must
+            # proceed even when canonical payload content is unchanged.
             return existing, "unchanged"
 
-        # Changed content bumps in place; a legacy row with NULL content_hash
-        # (pre-migration) also lands here and gets its hash backfilled.
+        # Changed content or renewal metadata bumps in place. Legacy rows with
+        # NULL content_hash or NULL valid_until also land here and are healed.
         values["version"] = (existing.version + 1) if existing is not None else 1
         stmt = (
             pg_insert(AnalysisArtifact)
@@ -201,8 +235,8 @@ class AnalysisArtifactService:
         if not include_stale:
             now = now_kst()
             stmt = stmt.where(
-                (AnalysisArtifact.valid_until.is_(None))
-                | (AnalysisArtifact.valid_until >= now)
+                AnalysisArtifact.valid_until.is_not(None),
+                AnalysisArtifact.valid_until >= now,
             )
         result = await self._session.scalars(stmt.limit(capped_limit))
         return list(result.all())
@@ -237,8 +271,8 @@ class AnalysisArtifactService:
                         sa.bindparam("fresh_symbols", value=normalized),
                     )
                 ),
-                (AnalysisArtifact.valid_until.is_(None))
-                | (AnalysisArtifact.valid_until >= now),
+                AnalysisArtifact.valid_until.is_not(None),
+                AnalysisArtifact.valid_until >= now,
             )
             .order_by(AnalysisArtifact.as_of.desc(), AnalysisArtifact.id.desc())
         )
@@ -272,6 +306,17 @@ class AnalysisArtifactService:
             stmt = sa.select(AnalysisArtifact).where(AnalysisArtifact.id == artifact_id)
         result = await self._session.scalars(stmt)
         return result.first()
+
+    async def get_by_correlation_id(
+        self,
+        correlation_id: str,
+    ) -> AnalysisArtifact | None:
+        """Return the idempotency row for save-default resolution, if any."""
+        return await self._session.scalar(
+            sa.select(AnalysisArtifact).where(
+                AnalysisArtifact.correlation_id == correlation_id
+            )
+        )
 
 
 # Re-exported for callers that want a stable UTC "now" for as_of defaults.

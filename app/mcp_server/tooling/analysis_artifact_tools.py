@@ -58,28 +58,34 @@ async def analysis_artifact_save(
             "size_bytes": size_bytes,
             "cap_bytes": PAYLOAD_CAP_BYTES,
         }
-    try:
-        entry = AnalysisArtifactSave.model_validate(
-            {
-                "market": market,
-                "kind": kind,
-                "title": title,
-                "symbols": symbols or [],
-                "payload": payload or {},
-                "as_of": as_of or datetime.now(tz=UTC).isoformat(),
-                "valid_until": valid_until,
-                "created_by": created_by,
-                "session_label": session_label,
-                "correlation_id": correlation_id,
-                "account_scope": account_scope,
-                "readiness_label": readiness_label,
-            }
-        )
-    except ValidationError as exc:
-        return _validation_error(exc)
-
     async with AsyncSessionLocal() as db:
         service = AnalysisArtifactService(db)
+        resolved_as_of = as_of
+        if resolved_as_of is None and correlation_id is not None:
+            existing = await service.get_by_correlation_id(correlation_id)
+            if existing is not None:
+                # An omitted timestamp on an idempotent retry means "reuse the
+                # stored evidence time", never "renew to request now".
+                resolved_as_of = existing.as_of.isoformat()
+        try:
+            entry = AnalysisArtifactSave.model_validate(
+                {
+                    "market": market,
+                    "kind": kind,
+                    "title": title,
+                    "symbols": symbols or [],
+                    "payload": payload or {},
+                    "as_of": resolved_as_of or datetime.now(tz=UTC).isoformat(),
+                    "valid_until": valid_until,
+                    "created_by": created_by,
+                    "session_label": session_label,
+                    "correlation_id": correlation_id,
+                    "account_scope": account_scope,
+                    "readiness_label": readiness_label,
+                }
+            )
+        except ValidationError as exc:
+            return _validation_error(exc)
         row, action = await service.save(entry)
         await db.commit()
         response = AnalysisArtifactSaveResponse(

@@ -108,8 +108,9 @@ class AnalysisArtifact(Base):
     account_scope: Mapped[str | None] = mapped_column(Text)
     # ROB-648 lifecycle fields. content_hash is server-computed over the
     # canonical payload JSON (nullable + lazy backfill on next save). version is
-    # bumped in place on a correlation_id re-save whose payload content changed.
-    # readiness_label is a caller-declared advisory (reduced enum, see CHECK).
+    # bumped in place when a correlation_id re-save changes payload or freshness-
+    # relevant metadata. readiness_label is a caller-declared advisory (reduced
+    # enum, see CHECK).
     content_hash: Mapped[str | None] = mapped_column(Text)
     version: Mapped[int] = mapped_column(
         Integer,
@@ -133,7 +134,9 @@ class AnalysisArtifact(Base):
     @property
     def is_stale(self) -> bool:
         if self.valid_until is None:
-            return False
+            # Legacy/unknown expiry is fail-closed. Freshness-filtered readers
+            # also exclude NULL; include_stale/get may still expose the row.
+            return True
         from app.core.timezone import now_kst
 
         return self.valid_until < now_kst()

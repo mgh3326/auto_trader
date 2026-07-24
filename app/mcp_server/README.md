@@ -31,6 +31,20 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - KR/US/crypto: fetched articles are persisted (`news_articles` + `symbol_news_relevance`) and the response is served from DB state. Each item carries a `relevance` block (`status`: `pending`/`confirmed`, judged fields, non-authoritative `hints`). `excluded` articles (judged unrelated/low by the external judgment job) are omitted; `excluded_count` reports how many. No deterministic blacklist — auto_trader never excludes on its own.
   - When `NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED=true`, visible `pending` rows in the canonical DB response enqueue `news_relevance.judge_pending`, including rows created during an earlier worker/webhook outage. Duplicate enqueue is acceptable because the worker re-queries pending rows.
   - `degraded: true` + `fetch_error` appear when provider fetch failed and the response was served from DB cache only.
+  - ROB-1048 freshness/provenance fields are always present:
+    `data_state` (`fresh|stale|degraded|missing`), `derived_as_of`,
+    `fetched_at`, `data_age_seconds`, `cache_hit`, `fallback_source`, and
+    `provider_provenance`. Nullable timestamps/age/fallback remain explicit
+    `null`; error responses use `data_state="missing"` and never synthesize a
+    timestamp.
+  - `fetched_at` is the original upstream acquisition time. DB-only fallback
+    rows preserve `news_articles.scraped_at`; a failed retry is never stamped
+    as newly fetched. Aggregate timestamp/age uses the oldest returned evidence
+    and the existing 180-minute news-readiness budget.
+  - DB fallback sets `cache_hit=true`,
+    `fallback_source="news_articles"`, and provenance keeps the failed primary
+    provider while using `served_by="news_articles"` / `mode="fallback"`.
+    Expired fallback reports `stale` rather than `degraded`.
   - `pending` means "not yet judged" — treat as unverified recall, not confirmed evidence.
   - Returns: `symbol`, `market`, `source`, `count`, `excluded_count`, `news`
 
@@ -212,6 +226,17 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
     for symbols outside the snapshot result path.
   - Default `quick=True` returns compact summary with: symbol, current_price,
     rsi_14, consensus, recommendation, supports (top 3), resistances (top 3).
+  - Every full and compact result carries the ROB-1048 freshness/provenance
+    envelope: `data_state` (`fresh|stale|degraded|missing`),
+    `derived_as_of`, `fetched_at`, `data_age_seconds`, `cache_hit`,
+    `fallback_source`, and `provider_provenance`. Aggregate timestamps use the
+    oldest included provider evidence. A swallowed provider exception produces
+    `degraded` (or `missing` when no usable evidence remains) with null
+    timestamps; response-time `now` is never substituted.
+  - A valid provider-cache hit may remain `fresh` and sets
+    `fallback_source="analyze_fetch_cache"`. Compact rows that also carry
+    quote-session freshness retain that quote classification as
+    `price_data_state` when aggregate evidence `data_state` is applied.
   - When a non-stale `analysis_artifact` already covers a symbol, that symbol's
     compact summary also carries a `fresh_artifact_exists` hint
     (`{artifact_uuid, as_of, kind}`) so you can choose to reuse the persisted
@@ -385,12 +410,16 @@ Each artifact accepts:
 - `title` required short title.
 - `symbols` optional string list; defaults to empty.
 - `payload` optional JSON object; defaults to empty.
-- `as_of` optional ISO datetime; defaults to now (UTC).
+- `as_of` optional ISO datetime; defaults to now (UTC) for a new row. On a
+  `correlation_id` retry, omission reuses the stored `as_of`, so an exact retry
+  cannot renew freshness to request-time now. Supply an explicit new `as_of`
+  to renew the artifact.
 - `valid_until` optional ISO datetime; when in the past the artifact is stale
   and excluded from `analysis_artifact_list` unless `include_stale=true`. **When
   omitted, the server assigns a per-kind default TTL** (price/screen kinds expire
   at the end of the `as_of` KST day; `session_summary`/`briefing` at the end of
-  the next KST day) so an artifact is never never-stale.
+  the next KST day), so every new artifact has a concrete expiry. Legacy
+  `valid_until=null` means unknown expiry and is stale, not permanently fresh.
 - `created_by` optional: `claude`, `operator`, `system`; defaults to `claude`.
 - `session_label` optional grouping label.
 - `correlation_id` optional idempotency key. Re-saving the same `correlation_id`
@@ -400,16 +429,19 @@ Each artifact accepts:
   `screen_grade`, `not_decision_ready`, `ready_for_order_review`, `blocked`.
 
 The response includes `action` and the saved artifact. `action` is `created`
-(new row), `updated` (correlation_id re-save whose payload changed — `version` is
-bumped in place), or `unchanged` (correlation_id re-save whose canonical payload
-hashed identical — no write, `version` preserved). Each artifact carries a
-server-computed `content_hash` (over the canonical payload JSON) and an integer
-`version`.
+(new row), `updated` (correlation_id re-save whose payload or persisted metadata
+changed — `version` is bumped in place), or `unchanged` (an exact retry whose
+canonical payload and normalized persisted metadata are identical — no write,
+`version` preserved). Renewal-sensitive metadata includes `as_of`, resolved
+`valid_until`, and `readiness_label`; changing any of them updates the row even
+when `content_hash` remains the same. Each artifact carries a server-computed
+`content_hash` (over the canonical payload JSON) and an integer `version`.
 
 `analysis_artifact_list(market?, kind?, symbol?, since?, include_stale?, limit, correlation_id?, account_scope?)`
 returns matching artifacts newest `as_of` first. `symbol` does a containment
 match on the `symbols` array. `limit` is clamped to 1..100 and defaults to 20.
-Stale rows (`valid_until` in the past) are excluded unless `include_stale=true`.
+Stale rows (`valid_until` in the past or null) are excluded unless
+`include_stale=true`.
 `correlation_id` and `account_scope` are optional exact-match filters (the same
 labels set on `analysis_artifact_save`).
 
@@ -1085,6 +1117,10 @@ Parameters:
 Response notes:
 - Equity responses (KR/US markets) include `recommendation.rsi14` when RSI(14) is available from the indicator payload
 - This field provides a convenient summary; callers should continue to use `get_indicators` when they need the full indicator set rather than the summarized recommendation field
+- Responses include the same ROB-1048 seven-field freshness/provenance envelope
+  documented under `analyze_stock_batch`. `derived_as_of`/`fetched_at` are null
+  when provider evidence failed or has no trustworthy acquisition timestamp;
+  response construction time is never substituted.
 
 ### `get_correlation` spec
 Parameters:

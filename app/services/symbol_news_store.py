@@ -46,6 +46,10 @@ class StoredSymbolNews:
     published_at: datetime | None
     relevance: dict[str, Any]
     summary: str | None = None
+    # Original upstream acquisition time. ``news_articles.scraped_at`` is
+    # insert-only for the URL-conflict path, so it preserves the first
+    # trustworthy fetch instant instead of the time of a later failed retry.
+    fetched_at: datetime | None = None
 
 
 def _utcnow() -> datetime:
@@ -324,6 +328,7 @@ async def load_symbol_news(
             published_at=article.article_published_at,
             relevance=_relevance_block(link),
             summary=article.summary,
+            fetched_at=article.scraped_at,
         )
         for article, link in rows.all()
     ]
