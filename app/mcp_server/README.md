@@ -21,6 +21,25 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Sensitive values (`token`, `secret`, `password`, `authorization`, `cookie`) are masked to `[Filtered]`
   - Large arguments are truncated (strings: 1024 chars, lists/dicts: 25 items) with a visible `[truncated]` marker
   - The middleware never calls `capture_exception` directly; exception capture is handled by Sentry's `MCPIntegration`
+- Semantic/operator observations are attached to the active `mcp.server` span and the `mcp_tool_observability` context:
+  - `mcp.semantic_success=false` and span status `failed_precondition` are used for controlled failure envelopes (`success=false`) and stale/degraded/missing evidence. Raised exceptions retain an exception-specific non-success span status.
+  - `mcp.error_code` prefers the stable envelope `error_code`, a machine-readable `error`, or a provider-provenance error code; free-form exception/error text is never promoted to a tag.
+  - Caller and lineage tags are `mcp.consumer`, `mcp.operator_session`, `mcp.analysis_run_id`, `mcp.correlation_id`, `mcp.lane`, `mcp.verdict`, `mcp.report_uuid`, `mcp.artifact_uuid`, and `mcp.proposal_uuid` when present. Current UUID-valued `artifact_id` and `proposal_id` surfaces are consumed as their observability `*_uuid` compatibility values.
+  - Operator session resolution prefers an explicit `operator_session`, then `session_label`, then the transport MCP session id. `mcp.operator_session.source` records which source won.
+- Freshness/provenance fields are read-only observations of the ROB-1048 CP0 contract. ROB-1048 owns `data_state`, `derived_as_of`, `fetched_at`, `data_age_seconds`, `cache_hit`, `fallback_source`, and `provider_provenance`; this middleware does not define or mutate them.
+  - Complete, type-valid fields are copied to matching `mcp.*` span data. Query tags include `mcp.data_state`, `mcp.cache_hit`, `mcp.fallback_source`, `mcp.freshness.contract`, and the bounded `mcp.data_age.bucket`.
+  - An absent/invalid `data_state` is observed as `mcp.data_state=unknown`, never `fresh`; absent `cache_hit` is `unknown`, never `false`. The `unknown` value is an observability sentinel, not an extension of the ROB-1048 envelope enum.
+- Raw symbols are never Sentry span tags. Sentry SDK request/result span attributes have symbol-bearing values replaced with a fixed marker; queryable attributes are limited to `mcp.symbol.mode`, exact `mcp.symbol.count`, and bounded `mcp.symbol.count_bucket`. The sanitized, size-bounded `mcp_tool_call` debug context retains the original argument value.
+- Funnel spans use the bounded `mcp.funnel.stage` tag:
+  - `bootstrap`: `get_operating_briefing`
+  - `lane`: `route_request`, `get_trading_policy`
+  - `evidence`: the registered quote/news/screen/analyze/bundle evidence tools
+  - `verdict`: investment-report create/decide/status tools
+  - `artifact`: analysis/stage artifact persistence
+  - `proposal`: `order_proposal_create`
+  - `fill`: reconcile/fill-evidence tools
+  - `retrospective`: `save_trade_retrospective`
+  - Other calls use `other`; join stages with caller/session/run/correlation and report/artifact/proposal identifiers rather than raw symbols.
 
 ## Tools
 

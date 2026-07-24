@@ -487,6 +487,80 @@ def test_before_send_transaction_renames_mcp_tool_call():
 
 
 @pytest.mark.unit
+def test_before_send_transaction_redacts_raw_symbols_from_mcp_span_attributes():
+    event: Event = {
+        "transaction": "POST http://127.0.0.1:8765/mcp",
+        "spans": [
+            {
+                "op": "mcp.server",
+                "data": {
+                    "mcp.tool.name": "get_news",
+                    "mcp.method.name": "tools/call",
+                    "mcp.request.argument.symbol": "AAPL",
+                    "mcp.request.argument.payload": (
+                        '{"symbol":"MSFT","nested":{"symbols":["AAPL","MSFT"]}}'
+                    ),
+                    "mcp.tool.result.content": (
+                        '{"success":true,"symbol":"AAPL",'
+                        '"items":[{"stock_symbol":"MSFT"}]}'
+                    ),
+                    "mcp.symbol.mode": "single",
+                    "mcp.symbol.count": 1,
+                },
+            }
+        ],
+    }
+
+    kept = sentry_module._before_send_transaction(event, {})
+
+    assert kept is not None
+    span = kept["spans"][0]
+    span_data = span["data"]
+    assert span_data["mcp.request.argument.symbol"] == (
+        "[Filtered: high-cardinality symbol]"
+    )
+    assert "AAPL" not in span_data["mcp.request.argument.payload"]
+    assert "MSFT" not in span_data["mcp.request.argument.payload"]
+    assert "AAPL" not in span_data["mcp.tool.result.content"]
+    assert "MSFT" not in span_data["mcp.tool.result.content"]
+    assert span_data["mcp.symbol.mode"] == "single"
+    assert span_data["mcp.symbol.count"] == 1
+
+
+@pytest.mark.unit
+def test_before_send_transaction_scrubs_every_mcp_span_in_a_batch():
+    event: Event = {
+        "transaction": "POST http://127.0.0.1:8765/mcp",
+        "spans": [
+            {
+                "op": "mcp.server",
+                "data": {
+                    "mcp.tool.name": "get_news",
+                    "mcp.request.argument.market_symbol": "005930",
+                },
+            },
+            {
+                "op": "mcp.server",
+                "data": {
+                    "mcp.tool.name": "analyze_stock",
+                    "mcp.request.argument.instrument_id": "AAPL",
+                },
+            },
+        ],
+    }
+
+    kept = sentry_module._before_send_transaction(event, {})
+
+    assert kept is not None
+    assert kept["spans"][0]["data"]["mcp.request.argument.market_symbol"] == (
+        "[Filtered: high-cardinality symbol]"
+    )
+    assert kept["spans"][1]["data"]["mcp.request.argument.instrument_id"] == (
+        "[Filtered: high-cardinality symbol]"
+    )
+
+
+@pytest.mark.unit
 def test_before_send_transaction_drops_protocol_noise_without_mcp_span():
     event: Event = {
         "transaction": "POST http://127.0.0.1:8765/mcp",
