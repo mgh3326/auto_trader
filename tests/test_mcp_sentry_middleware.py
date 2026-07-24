@@ -20,6 +20,7 @@ from app.mcp_server import caller_identity_middleware
 from app.mcp_server.caller_identity_middleware import CallerIdentityMiddleware
 from app.mcp_server.sentry_middleware import McpToolCallSentryMiddleware
 from app.monitoring.sentry import (
+    _data_age_bucket,
     _truncate_for_sentry,
     build_mcp_tool_call_context,
     build_mcp_tool_observation,
@@ -175,6 +176,7 @@ class TestBuildMcpToolObservation:
             result=result,
             caller_agent_id="scout",
             caller_source="http_header",
+            transport_session_id="mcp-session-42",
         )
 
         assert envelope is not None
@@ -182,8 +184,8 @@ class TestBuildMcpToolObservation:
         assert observation["semantic_success"] is True
         assert observation["span_status"] == SPANSTATUS.OK
         assert observation["consumer"] == "scout"
-        assert observation["operator_session"] == "kr-open-2026-07-24"
-        assert observation["operator_session_source"] == "session_label"
+        assert observation["operator_session"] == "mcp-session-42"
+        assert observation["operator_session_source"] == "mcp_session"
         assert observation["correlation_id"] == "run-42"
         assert observation["artifact_uuid"] == artifact_uuid
         assert observation["funnel_stage"] == "artifact"
@@ -206,7 +208,9 @@ class TestBuildMcpToolObservation:
             result=ToolResult(structured_content={"success": True}),
         )
 
-        assert observation["semantic_success"] is True
+        assert observation["semantic_success"] is False
+        assert observation["span_status"] == SPANSTATUS.FAILED_PRECONDITION
+        assert observation["error_code"] == "semantic_failure"
         assert observation["freshness"]["contract_status"] == "absent"
         assert observation["freshness"]["data_state"] == "unknown"
         assert observation["freshness"]["cache_hit"] is None
@@ -288,6 +292,9 @@ class TestBuildMcpToolObservation:
         assert freshness["data_state"] == "unknown"
         assert freshness["cache_hit"] is None
         assert freshness["derived_as_of"] is None
+        assert observation["semantic_success"] is False
+        assert observation["span_status"] == SPANSTATUS.FAILED_PRECONDITION
+        assert observation["error_code"] == "semantic_failure"
 
     def test_malformed_cp0_collections_fail_closed_without_breaking_telemetry(self):
         observation = build_mcp_tool_observation(
@@ -313,6 +320,30 @@ class TestBuildMcpToolObservation:
         assert freshness["data_state"] == "unknown"
         assert freshness["data_age_seconds"] is None
         assert freshness["provider_provenance"] is None
+        assert observation["semantic_success"] is False
+        assert observation["span_status"] == SPANSTATUS.FAILED_PRECONDITION
+
+    def test_invalid_cp0_contract_overrides_fresh_success(self):
+        observation = build_mcp_tool_observation(
+            "get_news",
+            {},
+            result=_fresh_cp0_envelope(cache_hit="false"),
+        )
+
+        assert observation["freshness"]["data_state"] == "fresh"
+        assert observation["freshness"]["contract_status"] == "invalid"
+        assert observation["semantic_success"] is False
+        assert observation["span_status"] == SPANSTATUS.FAILED_PRECONDITION
+
+    def test_session_label_is_not_reused_as_operator_session(self):
+        observation = build_mcp_tool_observation(
+            "analysis_artifact_save",
+            {"session_label": "artifact-renewal-label"},
+            result=_fresh_cp0_envelope(),
+        )
+
+        assert observation["operator_session"] is None
+        assert observation["operator_session_source"] == "none"
 
     def test_cp0_machine_readable_strings_are_consumed_without_local_charset_enum(self):
         observation = build_mcp_tool_observation(
@@ -384,6 +415,30 @@ class TestBuildMcpToolObservation:
         assert resolve_mcp_funnel_stage("toss_reconcile_orders") == "fill"
         assert resolve_mcp_funnel_stage("save_trade_retrospective") == "retrospective"
         assert resolve_mcp_funnel_stage("list_tools") == "other"
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (None, "unknown"),
+            (True, "unknown"),
+            (0.9, "<1s"),
+            (1, "1-59s"),
+            (59, "1-59s"),
+            (60, "1-4m"),
+            (299, "1-4m"),
+            (300, "5-14m"),
+            (899, "5-14m"),
+            (900, "15-59m"),
+            (3599, "15-59m"),
+            (3600, "1-5h"),
+            (21599, "1-5h"),
+            (21600, "6-23h"),
+            (86399, "6-23h"),
+            (86400, "24h+"),
+        ],
+    )
+    def test_data_age_bucket_boundaries(self, value: Any, expected: str):
+        assert _data_age_bucket(value) == expected
 
 
 def _make_tool_context(tool_name: str, arguments: dict[str, Any] | None = None) -> Mock:

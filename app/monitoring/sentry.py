@@ -769,12 +769,6 @@ def _extract_lineage_identifiers(
     )
     operator_session_source = "operator_session"
     if operator_session is None:
-        operator_session = _first_unique_scalar(
-            (arguments, envelope),
-            ("session_label",),
-        )
-        operator_session_source = "session_label"
-    if operator_session is None:
         operator_session = _clean_observability_value(transport_session_id)
         operator_session_source = (
             "mcp_session" if operator_session is not None else "none"
@@ -1168,7 +1162,14 @@ def _semantic_success(
     explicit_success = envelope.get("success") if envelope is not None else None
     if explicit_success is False:
         return False
-    if freshness.get("data_state") in {"stale", "degraded", "missing"}:
+    # ROB-1048 owns the CP0 values. As a consumer, fail closed when its
+    # classification is absent/outside the contract or any supplied CP0 field
+    # makes the observed contract invalid; only an observed "fresh" state can
+    # be semantically successful.
+    if (
+        freshness.get("contract_status") == "invalid"
+        or freshness.get("data_state") != "fresh"
+    ):
         return False
     if _has_true_flag(envelope, frozenset({"stale", "is_stale", "degraded"})):
         return False
