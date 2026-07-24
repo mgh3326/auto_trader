@@ -156,7 +156,7 @@ async def test_symbol_normalization(db_session: AsyncSession) -> None:
     )
     assert save_response["success"] is True
     saved = save_response["artifact"]
-    assert saved["symbols"] == ["BRK.B", "BRK.A", "AAPL"]
+    assert saved["symbols"] == ["AAPL", "BRK.A", "BRK.B"]
 
     # Dash input saved as dot-format must be findable by dot-format lookup.
     list_response = await analysis_artifact_list(
@@ -291,6 +291,102 @@ async def test_save_unchanged_on_identical_payload(db_session: AsyncSession) -> 
     )
     assert changed["action"] == "updated"
     assert changed["artifact"]["version"] == 3
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_mcp_partial_retry_preserves_omitted_fields_and_null_clears(
+    db_session: AsyncSession,
+) -> None:
+    from app.mcp_server.caller_identity import caller_argument_names_var
+
+    correlation_id = f"mcp-partial-{uuid4().hex[:12]}"
+    first = await analysis_artifact_save(
+        market="us",
+        kind="candidate_pool",
+        title="MCP partial retry",
+        symbols=["MSFT", "AAPL", "MSFT"],
+        payload={"ranked": ["MSFT", "AAPL"]},
+        as_of="2026-07-02T02:00:00+00:00",
+        valid_until="2026-07-10T09:00:00+09:00",
+        created_by="operator",
+        session_label="us-close",
+        correlation_id=correlation_id,
+        account_scope="kis_mock",
+        readiness_label="ready_for_order_review",
+    )
+    assert first["action"] == "created"
+
+    token = caller_argument_names_var.set(
+        frozenset({"market", "kind", "title", "correlation_id"})
+    )
+    try:
+        retry = await analysis_artifact_save(
+            market="us",
+            kind="candidate_pool",
+            title="MCP partial retry",
+            correlation_id=correlation_id,
+        )
+    finally:
+        caller_argument_names_var.reset(token)
+
+    assert retry["action"] == "unchanged"
+    assert retry["artifact"]["version"] == 1
+    for field_name in (
+        "as_of",
+        "valid_until",
+        "readiness_label",
+        "session_label",
+        "account_scope",
+        "created_by",
+        "symbols",
+        "payload",
+    ):
+        assert retry["artifact"][field_name] == first["artifact"][field_name]
+
+    token = caller_argument_names_var.set(
+        frozenset(
+            {
+                "market",
+                "kind",
+                "title",
+                "symbols",
+                "payload",
+                "valid_until",
+                "session_label",
+                "correlation_id",
+                "account_scope",
+                "readiness_label",
+            }
+        )
+    )
+    try:
+        cleared = await analysis_artifact_save(
+            market="us",
+            kind="candidate_pool",
+            title="MCP partial retry",
+            symbols=None,
+            payload=None,
+            valid_until=None,
+            session_label=None,
+            correlation_id=correlation_id,
+            account_scope=None,
+            readiness_label=None,
+        )
+    finally:
+        caller_argument_names_var.reset(token)
+
+    assert cleared["action"] == "updated"
+    assert cleared["artifact"]["version"] == 2
+    assert cleared["artifact"]["as_of"] == first["artifact"]["as_of"]
+    assert cleared["artifact"]["valid_until"] is None
+    assert cleared["artifact"]["is_stale"] is True
+    assert cleared["artifact"]["readiness_label"] is None
+    assert cleared["artifact"]["session_label"] is None
+    assert cleared["artifact"]["account_scope"] is None
+    assert cleared["artifact"]["created_by"] == "operator"
+    assert cleared["artifact"]["symbols"] == []
+    assert cleared["artifact"]["payload"] == {}
 
 
 @pytest.mark.integration

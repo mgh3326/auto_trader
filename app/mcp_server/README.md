@@ -381,7 +381,8 @@ Each entry accepts:
 - `body` required markdown body.
 - `refs` optional object: `report_uuid`, `item_uuid`, `alert_uuid`, `order_id`,
   `journal_id`, `symbols`.
-- `created_by` optional: `claude`, `operator`, `system`; defaults to `claude`.
+- `created_by` optional: `claude`, `operator`, `system`, `codex`; defaults to
+  `claude`.
 - `session_label` optional grouping label.
 
 `session_context_get_recent(market?, account_scope?, kst_date_from?, entry_type?, limit)`
@@ -408,18 +409,21 @@ Each artifact accepts:
   `support_resistance_map`, `flow_assessment`, `candidate_pool`,
   `session_summary`, `briefing`.
 - `title` required short title.
-- `symbols` optional string list; defaults to empty.
-- `payload` optional JSON object; defaults to empty.
+- `symbols` optional string list; defaults to empty on create and is normalized
+  by sorting and deduplication.
+- `payload` optional JSON object; defaults to empty on create.
 - `as_of` optional ISO datetime; defaults to now (UTC) for a new row. On a
   `correlation_id` retry, omission reuses the stored `as_of`, so an exact retry
   cannot renew freshness to request-time now. Supply an explicit new `as_of`
   to renew the artifact.
 - `valid_until` optional ISO datetime; when in the past the artifact is stale
   and excluded from `analysis_artifact_list` unless `include_stale=true`. **When
-  omitted, the server assigns a per-kind default TTL** (price/screen kinds expire
-  at the end of the `as_of` KST day; `session_summary`/`briefing` at the end of
-  the next KST day), so every new artifact has a concrete expiry. Legacy
-  `valid_until=null` means unknown expiry and is stale, not permanently fresh.
+  omitted on create or an evidence-time renewal, the server assigns a per-kind
+  default TTL** (price/screen kinds expire at the end of the `as_of` KST day;
+  `session_summary`/`briefing` at the end of the next KST day), so every new
+  artifact has a concrete expiry. An exact/partial retry preserves the stored
+  expiry. Explicit `valid_until=null` means unknown expiry and is stale, not
+  permanently fresh. An omitted legacy null is healed on the next save.
 - `created_by` optional: `claude`, `operator`, `system`; defaults to `claude`.
 - `session_label` optional grouping label.
 - `correlation_id` optional idempotency key. Re-saving the same `correlation_id`
@@ -427,6 +431,13 @@ Each artifact accepts:
 - `account_scope` optional grouping/filter label.
 - `readiness_label` optional advisory (caller-declared, not a gate):
   `screen_grade`, `not_decision_ready`, `ready_for_order_review`, `blocked`.
+
+On a `correlation_id` retry, omitted optional fields preserve their stored
+values. This includes `symbols`, `payload`, `valid_until`, `created_by`,
+`session_label`, `account_scope`, and `readiness_label`; omission is not a
+metadata change. Explicit null clears nullable fields and resets `symbols` /
+`payload` to their empty representations. (`as_of` is required evidence time:
+omission preserves it on retry, while explicit null is invalid.)
 
 The response includes `action` and the saved artifact. `action` is `created`
 (new row), `updated` (correlation_id re-save whose payload or persisted metadata

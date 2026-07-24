@@ -48,6 +48,14 @@ _RENEWAL_METADATA_FIELDS: tuple[str, ...] = (
     "account_scope",
     "readiness_label",
 )
+_PRESERVE_WHEN_OMITTED_FIELDS: tuple[str, ...] = (
+    "symbols",
+    "payload",
+    "created_by",
+    "session_label",
+    "account_scope",
+    "readiness_label",
+)
 
 
 def compute_content_hash(payload: dict[str, Any] | None) -> str:
@@ -85,10 +93,28 @@ def _metadata_matches(
     Comparing it explicitly prevents an equal payload hash from suppressing a
     legitimate ``as_of`` / expiry / readiness renewal (ROB-1048).
     """
-    return all(
-        getattr(existing, field_name) == values[field_name]
-        for field_name in _RENEWAL_METADATA_FIELDS
-    )
+    for field_name in _RENEWAL_METADATA_FIELDS:
+        existing_value = getattr(existing, field_name)
+        candidate_value = values[field_name]
+        if field_name == "symbols":
+            # Older rows may predate canonical sort/dedup. Treat symbols as a
+            # set so order-only retries do not manufacture a renewal.
+            existing_value = sorted(set(existing_value or []))
+            candidate_value = sorted(set(candidate_value or []))
+        if existing_value != candidate_value:
+            return False
+    return True
+
+
+def _retry_value(
+    entry: AnalysisArtifactSave,
+    existing: AnalysisArtifact | None,
+    field_name: str,
+) -> Any:
+    """Resolve a partial retry field without conflating omission and null."""
+    if existing is not None and field_name not in entry.model_fields_set:
+        return getattr(existing, field_name)
+    return getattr(entry, field_name)
 
 
 class AnalysisArtifactService:
@@ -111,28 +137,56 @@ class AnalysisArtifactService:
           (``updated``);
         * no prior row → insert at ``version`` 1 (``created``).
 
-        ``valid_until`` defaults to a concrete per-kind expiry when omitted, and
-        ``content_hash`` is always server-computed (ROB-648).
+        On a correlation retry, omitted optional fields retain their persisted
+        values; an explicitly supplied null clears a nullable field (or resets
+        collection fields to empty). ``valid_until`` defaults to a concrete
+        per-kind expiry for new rows and freshness renewals, while an exact
+        retry preserves its stored expiry. ``content_hash`` is always
+        server-computed (ROB-648).
         """
-        content_hash = compute_content_hash(entry.payload)
-        valid_until = (
-            entry.valid_until
-            if entry.valid_until is not None
-            else default_valid_until(entry.kind, entry.as_of)
-        )
+        existing: AnalysisArtifact | None = None
+        if entry.correlation_id is not None:
+            existing = await self._session.scalar(
+                sa.select(AnalysisArtifact).where(
+                    AnalysisArtifact.correlation_id == entry.correlation_id
+                )
+            )
+
+        resolved = {
+            field_name: _retry_value(entry, existing, field_name)
+            for field_name in _PRESERVE_WHEN_OMITTED_FIELDS
+        }
+        payload = resolved["payload"]
+        content_hash = compute_content_hash(payload)
+
+        if "valid_until" in entry.model_fields_set:
+            # Explicit null is intentional unknown expiry and therefore stale.
+            valid_until = entry.valid_until
+        elif (
+            existing is not None
+            and existing.valid_until is not None
+            and existing.kind == entry.kind
+            and existing.as_of == entry.as_of
+        ):
+            # Exact/partial retry: do not move a custom or default expiry.
+            valid_until = existing.valid_until
+        else:
+            # New row, evidence-time renewal, or legacy NULL expiry healing.
+            valid_until = default_valid_until(entry.kind, entry.as_of)
+
         values: dict[str, Any] = {
             "market": entry.market,
             "kind": entry.kind,
             "title": entry.title,
-            "symbols": entry.symbols,
-            "payload": entry.payload,
+            "symbols": resolved["symbols"],
+            "payload": payload,
             "as_of": entry.as_of,
             "valid_until": valid_until,
-            "created_by": entry.created_by,
-            "session_label": entry.session_label,
+            "created_by": resolved["created_by"],
+            "session_label": resolved["session_label"],
             "correlation_id": entry.correlation_id,
-            "account_scope": entry.account_scope,
-            "readiness_label": entry.readiness_label,
+            "account_scope": resolved["account_scope"],
+            "readiness_label": resolved["readiness_label"],
             "content_hash": content_hash,
             "version": 1,
         }
@@ -143,11 +197,6 @@ class AnalysisArtifactService:
             await self._session.refresh(row)
             return row, "created"
 
-        existing = await self._session.scalar(
-            sa.select(AnalysisArtifact).where(
-                AnalysisArtifact.correlation_id == entry.correlation_id
-            )
-        )
         if (
             existing is not None
             and existing.content_hash == content_hash

@@ -284,6 +284,126 @@ async def test_correlation_save_unchanged_then_bumped(
     assert changed.version == 3
     assert changed.payload == {"a": 2}
     assert changed.content_hash == compute_content_hash({"a": 2})
+    assert changed.readiness_label == "ready_for_order_review"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_partial_retry_preserves_omitted_fields_and_null_clears(
+    db_session: AsyncSession,
+) -> None:
+    service = AnalysisArtifactService(db_session)
+    correlation_id = f"partial-{uuid4().hex[:12]}"
+    as_of = "2026-07-02T02:00:00+00:00"
+    valid_until = "2026-07-10T09:00:00+09:00"
+    original_payload = {"ranked": ["MSFT", "AAPL"]}
+
+    first, first_action = await service.save(
+        AnalysisArtifactSave.model_validate(
+            {
+                "market": "us",
+                "kind": "candidate_pool",
+                "title": "partial retry",
+                "symbols": ["MSFT", "AAPL", "MSFT"],
+                "payload": original_payload,
+                "as_of": as_of,
+                "valid_until": valid_until,
+                "created_by": "operator",
+                "session_label": "us-close",
+                "correlation_id": correlation_id,
+                "account_scope": "kis_mock",
+                "readiness_label": "ready_for_order_review",
+            }
+        )
+    )
+    assert first_action == "created"
+    assert first.symbols == ["AAPL", "MSFT"]
+    original_as_of = first.as_of
+    original_valid_until = first.valid_until
+
+    # CP0 §4.3-7: omitting partial-retry fields is not a metadata change and
+    # cannot erase freshness/readiness or manufacture a new version.
+    retry_entry = AnalysisArtifactSave.model_validate(
+        {
+            "market": "us",
+            "kind": "candidate_pool",
+            "title": "partial retry",
+            "as_of": as_of,
+            "correlation_id": correlation_id,
+        }
+    )
+    assert {
+        "symbols",
+        "payload",
+        "valid_until",
+        "created_by",
+        "session_label",
+        "account_scope",
+        "readiness_label",
+    }.isdisjoint(retry_entry.model_fields_set)
+
+    same, retry_action = await service.save(retry_entry)
+    assert retry_action == "unchanged"
+    assert same.version == 1
+    assert same.as_of == original_as_of
+    assert same.valid_until == original_valid_until
+    assert same.readiness_label == "ready_for_order_review"
+    assert same.session_label == "us-close"
+    assert same.account_scope == "kis_mock"
+    assert same.created_by == "operator"
+    assert same.symbols == ["AAPL", "MSFT"]
+    assert same.payload == original_payload
+
+    # Simulate a pre-fix row whose symbol array retained order and duplicates.
+    # Equivalent new input must still compare as the same metadata set.
+    same.symbols = ["MSFT", "AAPL", "MSFT"]
+    await db_session.flush()
+    reordered, reordered_action = await service.save(
+        AnalysisArtifactSave.model_validate(
+            {
+                "market": "us",
+                "kind": "candidate_pool",
+                "title": "partial retry",
+                "symbols": ["MSFT", "AAPL", "AAPL"],
+                "as_of": as_of,
+                "correlation_id": correlation_id,
+            }
+        )
+    )
+    assert reordered_action == "unchanged"
+    assert reordered.version == 1
+    assert reordered.symbols == ["MSFT", "AAPL", "MSFT"]
+
+    # Explicit null is distinct from omission: nullable values are cleared and
+    # non-null collections reset to empty, producing one intentional update.
+    cleared, clear_action = await service.save(
+        AnalysisArtifactSave.model_validate(
+            {
+                "market": "us",
+                "kind": "candidate_pool",
+                "title": "partial retry",
+                "symbols": None,
+                "payload": None,
+                "as_of": as_of,
+                "valid_until": None,
+                "session_label": None,
+                "correlation_id": correlation_id,
+                "account_scope": None,
+                "readiness_label": None,
+            }
+        )
+    )
+    assert clear_action == "updated"
+    assert cleared.version == 2
+    assert cleared.as_of == original_as_of
+    assert cleared.valid_until is None
+    assert cleared.is_stale is True
+    assert cleared.readiness_label is None
+    assert cleared.session_label is None
+    assert cleared.account_scope is None
+    assert cleared.created_by == "operator"
+    assert cleared.symbols == []
+    assert cleared.payload == {}
 
 
 @pytest.mark.integration
