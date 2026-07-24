@@ -507,7 +507,7 @@ async def test_4444_thesis_context_failure_withholds_button_and_retry_mints_new_
     monkeypatch.setattr(
         settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", chat_id
     )
-    nonces = iter(("first-dispatch-nonce", "second-dispatch-nonce"))
+    nonces = iter(("firstnonce1", "secondnonce"))
     monkeypatch.setattr(dispatch_module, "_generate_nonce", lambda: next(nonces))
     group = await _seed_proposal(
         db_session,
@@ -534,7 +534,10 @@ async def test_4444_thesis_context_failure_withholds_button_and_retry_mints_new_
     service = OrderProposalsService(db_session)
     after_failure, _ = await service.get_proposal(group.proposal_id)
     failed_attempt_id = after_failure.approval_dispatch_attempt_id
-    assert after_failure.approval_dispatch_state == "failed"
+    assert (
+        after_failure.approval_dispatch_state
+        == ApprovalDispatchState.PARTIAL_FAILED.value
+    )
     assert after_failure.approval_nonce is None
 
     successful_notifier = _FakeNotifier(message_id=9100)
@@ -558,7 +561,7 @@ async def test_4444_thesis_context_failure_withholds_button_and_retry_mints_new_
         after_retry.approval_dispatch_state == ApprovalDispatchState.SENT_CURRENT.value
     )
     assert after_retry.approval_dispatch_attempt_id != failed_attempt_id
-    assert after_retry.approval_nonce == "second-dispatch-nonce"
+    assert after_retry.approval_nonce == "secondnonce"
     assert after_retry.source_asof["approval_message_id"] == 9102
 
 

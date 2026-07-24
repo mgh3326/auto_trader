@@ -264,6 +264,16 @@ def proposal_approval_block_reason(group: OrderProposal) -> str | None:
     return None
 
 
+def _proposal_callback_block_reason(group: OrderProposal, *, nonce: str) -> str | None:
+    """Apply snapshot-independent callback blocks in stable precedence order."""
+    block_reason = proposal_approval_block_reason(group)
+    if block_reason is not None and block_reason.startswith("proposal_superseded_by:"):
+        return block_reason
+    if group.approval_nonce == nonce and group.approval_nonce_used_at is not None:
+        return "nonce_replay"
+    return block_reason
+
+
 def batch_member_block_reason(
     group: OrderProposal,
     rungs: list[OrderProposalRung],
@@ -1032,6 +1042,9 @@ class OrderProposalsService:
         group = await self._repo.get_group_by_proposal_id(proposal_id)
         if group is None:
             raise OrderProposalNotFound(str(proposal_id))
+        block_reason = _proposal_callback_block_reason(group, nonce=nonce)
+        if block_reason is not None:
+            raise OrderProposalError(block_reason)
         callback = self._current_callback_envelope(group, action="op", nonce=nonce)
         return await self.consume_published_proposal_callback(
             proposal_id, callback=callback, now=now
@@ -1044,6 +1057,9 @@ class OrderProposalsService:
         group = await self._repo.get_group_by_proposal_id(proposal_id)
         if group is None:
             raise OrderProposalNotFound(str(proposal_id))
+        block_reason = _proposal_callback_block_reason(group, nonce=nonce)
+        if block_reason is not None:
+            raise OrderProposalError(block_reason)
         callback = self._current_callback_envelope(group, action="vc", nonce=nonce)
         return await self.consume_published_proposal_callback(
             proposal_id, callback=callback, now=now
@@ -1078,7 +1094,7 @@ class OrderProposalsService:
         membership change while external preview work is in flight fails
         closed before a nonce or proposal mutation is written.
         """
-        block_reason = proposal_approval_block_reason(group)
+        block_reason = _proposal_callback_block_reason(group, nonce=callback.nonce)
         if block_reason is not None:
             raise OrderProposalError(block_reason)
         try:
@@ -1226,6 +1242,9 @@ class OrderProposalsService:
         group = await self._repo.get_group_by_proposal_id(proposal_id)
         if group is None:
             raise OrderProposalNotFound(str(proposal_id))
+        block_reason = _proposal_callback_block_reason(group, nonce=nonce)
+        if block_reason is not None:
+            raise OrderProposalError(block_reason)
         callback = self._current_callback_envelope(group, action="lc", nonce=nonce)
         return await self.consume_published_proposal_callback(
             proposal_id,
@@ -1540,6 +1559,7 @@ class OrderProposalsService:
         now: datetime,
         window_seconds: int = 600,
         ttl_seconds: int = 600,
+        summary_member_threshold: int = 2,
     ) -> BatchRegistration | None:
         """Stage a member, freezing the batch before its first publication.
 
@@ -1547,6 +1567,8 @@ class OrderProposalsService:
         a new staged batch, so membership displayed with a button is immutable.
         """
         self._require_timezone_aware(now)
+        if summary_member_threshold < 2:
+            raise ValueError("summary_member_threshold must be at least 2")
         await self._repo.acquire_approval_batch_chat_lock(chat_id)
         group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
         if group is None:
@@ -1642,7 +1664,7 @@ class OrderProposalsService:
         member_count = len(live_members)
         summary_action: Literal["none", "send"] = "none"
         binding: DispatchBinding | None = None
-        if member_count >= 2:
+        if member_count >= summary_member_threshold:
             revision = batch.membership_revision or 1
             attempt_id = uuid.uuid4()
             digest_members = [
@@ -1744,7 +1766,12 @@ class OrderProposalsService:
                 callback=callback,
             )
         except ValueError as exc:
-            raise OrderProposalError(str(exc)) from exc
+            reason = str(exc)
+            if reason == "nonce_mismatch":
+                reason = "approval_batch_nonce_mismatch"
+            elif reason == "nonce_replay":
+                reason = "approval_batch_nonce_replay"
+            raise OrderProposalError(reason) from exc
 
     async def preflight_published_batch_callback(
         self,

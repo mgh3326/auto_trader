@@ -344,6 +344,7 @@ async def _seed_approval_batch(db_session, monkeypatch, *, member_count=2, rungs
             chat_id=str(chat_id),
             approval_message_id=7100 + index,
             now=now + timedelta(seconds=index),
+            summary_member_threshold=member_count,
         )
     await db_session.commit()
     assert registration is not None
@@ -2351,11 +2352,12 @@ async def test_reconfirm_resend_refreshes_approval_message_id(monkeypatch, db_se
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-msgid1")
     seed_service = OrderProposalsService(db_session)
-    await seed_service.record_approval_dispatch(
-        group.proposal_id,
+    await _publish_fixture_card(
+        seed_service,
+        group,
+        nonce="nonce-msgid1",
+        card_kind=ApprovalCardKind.MANUAL,
         message_id=111,
-        chat_id=str(CHAT_ID),
-        now=datetime.now(UTC),
     )
     await db_session.commit()
 
