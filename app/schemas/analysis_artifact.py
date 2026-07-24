@@ -190,8 +190,8 @@ class AnalysisArtifactRead(AnalysisArtifactMeta):
 
 class AnalysisArtifactSaveResponse(BaseModel):
     success: Literal[True] = True
-    # 'unchanged' (ROB-648): a correlation_id re-save whose payload hashed
-    # identical to the stored row — no write, version preserved.
+    # 'unchanged': an exact correlation_id retry whose payload and persisted
+    # metadata are identical — no write, version preserved (ROB-1048).
     action: Literal["created", "updated", "unchanged"] = "created"
     artifact: AnalysisArtifactRead
 

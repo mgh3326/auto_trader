@@ -41,7 +41,7 @@ class SymbolNewsArticle:
     canonical_url: str
     summary: str | None
     published_at: datetime | None
-    fetched_at: datetime
+    fetched_at: datetime | None
     related_symbols: list[str] = field(default_factory=list)
     provider_metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -59,10 +59,67 @@ class SymbolNewsFetchResult:
     excluded_count: int = 0
     degraded: bool = False
     fetch_error: str | None = None
+    fetched_at: datetime | None = None
+    cache_hit: bool = False
+    fallback_source: str | None = None
+    provider_provenance: list[dict[str, str | None]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _PersistedNewsLoad:
+    articles: list[SymbolNewsArticle]
+    excluded_count: int
+    cache_contributed: bool
+
+
+@dataclass(frozen=True)
+class _ProviderNewsFetch:
+    articles: list[SymbolNewsArticle]
+    fetched_at: datetime
 
 
 def _utcnow() -> datetime:
     return datetime.now(tz=UTC)
+
+
+def _aware_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _oldest_fetched_at(
+    articles: list[SymbolNewsArticle],
+    *,
+    empty_default: datetime | None = None,
+) -> datetime | None:
+    values = [
+        aware
+        for article in articles
+        if (aware := _aware_utc(article.fetched_at)) is not None
+    ]
+    return min(values) if values else _aware_utc(empty_default)
+
+
+def _provenance(
+    provider: str,
+    *,
+    served_by: str | None,
+    mode: str,
+    status: str,
+    error_code: str | None = None,
+) -> list[dict[str, str | None]]:
+    return [
+        {
+            "provider": provider,
+            "served_by": served_by,
+            "mode": mode,
+            "status": status,
+            "error_code": error_code,
+        }
+    ]
 
 
 def _parse_dt(value: Any) -> datetime | None:
@@ -121,11 +178,11 @@ def symbol_news_store_hints(symbol: str, title: str) -> dict[str, Any] | None:
     return _store_hints(symbol, "kr", title)
 
 
-async def _fetch_naver(
-    symbol: str, limit: int, fetched_at: datetime
-) -> list[SymbolNewsArticle]:
+async def _fetch_naver(symbol: str, limit: int) -> _ProviderNewsFetch:
     """Pure normalize: URL dedupe only — no filtering, no relevance verdicts."""
     items = await naver_finance.fetch_news(symbol, limit=limit)
+    # Acquisition time exists only after the provider successfully returned.
+    fetched_at = _utcnow()
     out: list[SymbolNewsArticle] = []
     seen_urls: set[str] = set()
     for raw in items:
@@ -152,7 +209,7 @@ async def _fetch_naver(
                 provider_metadata={"source_item": raw},
             )
         )
-    return out
+    return _ProviderNewsFetch(out, fetched_at)
 
 
 def _stored_to_article(
@@ -161,7 +218,7 @@ def _stored_to_article(
     provider: str,
     market: str,
     symbol: str,
-    fetched_at: datetime,
+    fetched_at: datetime | None,
     raw_by_url: dict[str, Any],
 ) -> SymbolNewsArticle:
     source_item = raw_by_url.get(row.url) or {
@@ -180,6 +237,13 @@ def _stored_to_article(
         related = [s for s in str(related_raw).split(",") if s]
     sentiment = source_item.get("sentiment") if source_item else None
 
+    # A row present in this provider response was acquired again now. A row
+    # reconstructed only from the canonical DB must retain its original
+    # acquisition time; using the current retry time would freshness-launder a
+    # cache fallback (ROB-1048).
+    article_fetched_at = (
+        fetched_at if row.url in raw_by_url else _aware_utc(row.fetched_at)
+    )
     return SymbolNewsArticle(
         provider=provider,
         market=market,
@@ -190,7 +254,7 @@ def _stored_to_article(
         canonical_url=row.url,
         summary=row.summary if provider == "finnhub" else None,
         published_at=row.published_at,
-        fetched_at=fetched_at,
+        fetched_at=article_fetched_at,
         related_symbols=related,
         provider_metadata={
             "source_item": source_item,
@@ -240,8 +304,8 @@ async def _persist_and_load(
     feed_source: str,
     fetched: list[SymbolNewsArticle],
     limit: int,
-    fetched_at: datetime,
-) -> tuple[list[SymbolNewsArticle], int] | None:
+    fetched_at: datetime | None,
+) -> _PersistedNewsLoad | None:
     """Persist this window then serve canonical DB state. None → DB unavailable."""
     inserted: Any = 0
     try:
@@ -292,13 +356,17 @@ async def _persist_and_load(
         )
         for row in stored
     ]
-    return articles, excluded_count
+    return _PersistedNewsLoad(
+        articles=articles,
+        excluded_count=excluded_count,
+        cache_contributed=any(row.url not in raw_by_url for row in stored),
+    )
 
 
-async def _fetch_finnhub(
-    symbol: str, market: str, limit: int, fetched_at: datetime
-) -> list[SymbolNewsArticle]:
+async def _fetch_finnhub(symbol: str, market: str, limit: int) -> _ProviderNewsFetch:
     payload = await fetch_news_finnhub(symbol, market, limit)
+    # Finnhub owns its retry loop; stamp only after its successful final return.
+    fetched_at = _utcnow()
     out: list[SymbolNewsArticle] = []
     for raw in payload.get("news") or []:
         url = (raw.get("url") or "").strip()
@@ -327,7 +395,7 @@ async def _fetch_finnhub(
                 },
             )
         )
-    return out
+    return _ProviderNewsFetch(out, fetched_at)
 
 
 async def fetch_symbol_news(
@@ -341,15 +409,17 @@ async def fetch_symbol_news(
     """On-demand normalized news for one symbol. Fail-soft (never raises)."""
     market = (market or "").lower()
     provider = "naver" if market == "kr" else "finnhub"
-    fetched_at = _utcnow()
 
     if market == "kr":
         fetched: list[SymbolNewsArticle] | None
+        fetched_at: datetime | None = None
         fetch_error: str | None = None
         try:
-            fetched = await asyncio.wait_for(
-                _fetch_naver(symbol, limit, fetched_at), timeout=timeout_s
+            provider_fetch = await asyncio.wait_for(
+                _fetch_naver(symbol, limit), timeout=timeout_s
             )
+            fetched = provider_fetch.articles
+            fetched_at = provider_fetch.fetched_at
         except Exception as exc:  # noqa: BLE001 — fall back to DB cache
             logger.warning(
                 "symbol_news_service: naver fetch failed: symbol=%s err=%s",
@@ -369,7 +439,8 @@ async def fetch_symbol_news(
             fetched_at,
         )
         if persisted is not None:
-            articles, excluded_count = persisted
+            articles = persisted.articles
+            excluded_count = persisted.excluded_count
             if fetched is None and not articles:
                 return SymbolNewsFetchResult(
                     symbol,
@@ -380,8 +451,33 @@ async def fetch_symbol_news(
                     0,
                     [],
                     fetch_error or "naver_fetch_failed",
+                    fetched_at=None,
+                    provider_provenance=_provenance(
+                        provider,
+                        served_by=None,
+                        mode="none",
+                        status="error",
+                        error_code=fetch_error or "naver_fetch_failed",
+                    ),
                 )
             status = "ok" if articles else "empty"
+            if fetched is None:
+                mode = "fallback"
+                provenance_status = "error"
+                served_by = "news_articles"
+            elif persisted.cache_contributed:
+                live_urls = {article.canonical_url for article in fetched}
+                mode = (
+                    "mixed"
+                    if any(article.canonical_url in live_urls for article in articles)
+                    else "cache"
+                )
+                provenance_status = "ok" if fetched else "empty"
+                served_by = "news_articles"
+            else:
+                mode = "live"
+                provenance_status = "ok" if fetched else "empty"
+                served_by = provider
             return SymbolNewsFetchResult(
                 symbol,
                 market,
@@ -394,6 +490,23 @@ async def fetch_symbol_news(
                 excluded_count=excluded_count,
                 degraded=fetched is None,
                 fetch_error=fetch_error,
+                fetched_at=_oldest_fetched_at(
+                    articles,
+                    empty_default=fetched_at if fetched is not None else None,
+                ),
+                cache_hit=fetched is None or persisted.cache_contributed,
+                fallback_source=(
+                    "news_articles"
+                    if fetched is None or persisted.cache_contributed
+                    else None
+                ),
+                provider_provenance=_provenance(
+                    provider,
+                    served_by=served_by,
+                    mode=mode,
+                    status=provenance_status,
+                    error_code=fetch_error,
+                ),
             )
         # DB 불가 — 기존 on-demand 동작으로 degrade (전부 pending 표시)
         if fetched is None:
@@ -406,6 +519,14 @@ async def fetch_symbol_news(
                 0,
                 [],
                 fetch_error or "naver_fetch_failed",
+                fetched_at=None,
+                provider_provenance=_provenance(
+                    provider,
+                    served_by=None,
+                    mode="none",
+                    status="error",
+                    error_code=fetch_error or "naver_fetch_failed",
+                ),
             )
         articles = [
             replace(
@@ -422,7 +543,21 @@ async def fetch_symbol_news(
         ]
         status = "ok" if articles else "empty"
         return SymbolNewsFetchResult(
-            symbol, market, provider, status, limit, len(articles), articles, None
+            symbol,
+            market,
+            provider,
+            status,
+            limit,
+            len(articles),
+            articles,
+            None,
+            fetched_at=_oldest_fetched_at(articles, empty_default=fetched_at),
+            provider_provenance=_provenance(
+                provider,
+                served_by=provider,
+                mode="live",
+                status=status,
+            ),
         )
 
     if market not in ("us", "crypto"):
@@ -435,14 +570,25 @@ async def fetch_symbol_news(
             0,
             [],
             "unsupported_market",
+            fetched_at=None,
+            provider_provenance=_provenance(
+                provider,
+                served_by=None,
+                mode="none",
+                status="unavailable",
+                error_code="unsupported_market",
+            ),
         )
 
     finnhub_fetched: list[SymbolNewsArticle] | None
+    fetched_at = None
     finnhub_error: str | None = None
     try:
         # ROB-510: 재시도/시도당 타임아웃은 fetch_news_finnhub가 소유 —
         # 외곽 wait_for를 두면 재시도가 무력화된다.
-        finnhub_fetched = await _fetch_finnhub(symbol, market, limit, fetched_at)
+        provider_fetch = await _fetch_finnhub(symbol, market, limit)
+        finnhub_fetched = provider_fetch.articles
+        fetched_at = provider_fetch.fetched_at
     except Exception as exc:  # noqa: BLE001 — fall back to DB cache
         logger.warning(
             "symbol_news_service: finnhub fetch failed: symbol=%s market=%s err=%s",
@@ -468,7 +614,8 @@ async def fetch_symbol_news(
         fetched_at,
     )
     if persisted is not None:
-        articles, excluded_count = persisted
+        articles = persisted.articles
+        excluded_count = persisted.excluded_count
         if finnhub_fetched is None and not articles:
             return SymbolNewsFetchResult(
                 symbol,
@@ -479,8 +626,33 @@ async def fetch_symbol_news(
                 0,
                 [],
                 finnhub_error or "finnhub_fetch_failed",
+                fetched_at=None,
+                provider_provenance=_provenance(
+                    provider,
+                    served_by=None,
+                    mode="none",
+                    status="error",
+                    error_code=finnhub_error or "finnhub_fetch_failed",
+                ),
             )
         status = "ok" if articles else "empty"
+        if finnhub_fetched is None:
+            mode = "fallback"
+            provenance_status = "error"
+            served_by = "news_articles"
+        elif persisted.cache_contributed:
+            live_urls = {article.canonical_url for article in finnhub_fetched}
+            mode = (
+                "mixed"
+                if any(article.canonical_url in live_urls for article in articles)
+                else "cache"
+            )
+            provenance_status = "ok" if finnhub_fetched else "empty"
+            served_by = "news_articles"
+        else:
+            mode = "live"
+            provenance_status = "ok" if finnhub_fetched else "empty"
+            served_by = provider
         return SymbolNewsFetchResult(
             symbol,
             market,
@@ -493,6 +665,23 @@ async def fetch_symbol_news(
             excluded_count=excluded_count,
             degraded=finnhub_fetched is None,
             fetch_error=finnhub_error,
+            fetched_at=_oldest_fetched_at(
+                articles,
+                empty_default=fetched_at if finnhub_fetched is not None else None,
+            ),
+            cache_hit=finnhub_fetched is None or persisted.cache_contributed,
+            fallback_source=(
+                "news_articles"
+                if finnhub_fetched is None or persisted.cache_contributed
+                else None
+            ),
+            provider_provenance=_provenance(
+                provider,
+                served_by=served_by,
+                mode=mode,
+                status=provenance_status,
+                error_code=finnhub_error,
+            ),
         )
     # DB 불가 — 기존 on-demand 동작으로 degrade (전부 pending 표시)
     if finnhub_fetched is None:
@@ -505,6 +694,14 @@ async def fetch_symbol_news(
             0,
             [],
             finnhub_error or "finnhub_fetch_failed",
+            fetched_at=None,
+            provider_provenance=_provenance(
+                provider,
+                served_by=None,
+                mode="none",
+                status="error",
+                error_code=finnhub_error or "finnhub_fetch_failed",
+            ),
         )
     articles = [
         replace(
@@ -521,5 +718,19 @@ async def fetch_symbol_news(
     ]
     status = "ok" if articles else "empty"
     return SymbolNewsFetchResult(
-        symbol, market, provider, status, limit, len(articles), articles, None
+        symbol,
+        market,
+        provider,
+        status,
+        limit,
+        len(articles),
+        articles,
+        None,
+        fetched_at=_oldest_fetched_at(articles, empty_default=fetched_at),
+        provider_provenance=_provenance(
+            provider,
+            served_by=provider,
+            mode="live",
+            status=status,
+        ),
     )

@@ -247,26 +247,84 @@ async def test_correlation_save_unchanged_then_bumped(
     assert action1 == "created"
     assert first.version == 1
 
-    # Same payload (different title) → unchanged, version preserved, no write.
-    same, action2 = await service.save(
-        AnalysisArtifactSave.model_validate({**base, "title": "v1-retry"})
-    )
+    # Exact retry → unchanged, version preserved, no write.
+    same, action2 = await service.save(AnalysisArtifactSave.model_validate(base))
     assert action2 == "unchanged"
     assert same.id == first.id
     assert same.version == 1
-    assert same.title == "v1"  # no-op: stored title untouched
+    assert same.title == "v1"
 
-    # Changed payload → updated + version bump.
-    changed, action3 = await service.save(
+    # Same payload with freshness/readiness metadata renewal → update + bump.
+    renewed, action3 = await service.save(
+        AnalysisArtifactSave.model_validate(
+            {
+                **base,
+                "title": "v1-renewed",
+                "as_of": "2026-07-02T05:00:00+00:00",
+                "readiness_label": "ready_for_order_review",
+            }
+        )
+    )
+    assert action3 == "updated"
+    assert renewed.id == first.id
+    assert renewed.version == 2
+    assert renewed.payload == {"a": 1}
+    assert renewed.content_hash == first.content_hash
+    assert renewed.title == "v1-renewed"
+    assert renewed.readiness_label == "ready_for_order_review"
+
+    # Changed payload → another update + version bump.
+    changed, action4 = await service.save(
         AnalysisArtifactSave.model_validate(
             {**base, "title": "v2", "payload": {"a": 2}}
         )
     )
-    assert action3 == "updated"
+    assert action4 == "updated"
     assert changed.id == first.id
-    assert changed.version == 2
+    assert changed.version == 3
     assert changed.payload == {"a": 2}
     assert changed.content_hash == compute_content_hash({"a": 2})
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_legacy_null_expiry_is_stale_and_healed_on_save(
+    db_session: AsyncSession,
+) -> None:
+    service = AnalysisArtifactService(db_session)
+    symbol = f"TEST_{uuid4().hex[:8]}"
+    correlation_id = f"corr-{uuid4().hex[:12]}"
+    entry = AnalysisArtifactSave.model_validate(
+        {
+            "market": "kr",
+            "kind": "candidate_pool",
+            "title": "legacy expiry",
+            "symbols": [symbol],
+            "payload": {"rank": 1},
+            "as_of": now_kst().isoformat(),
+            "correlation_id": correlation_id,
+        }
+    )
+    saved, _ = await service.save(entry)
+    saved.valid_until = None
+    await db_session.flush()
+
+    assert saved.is_stale is True
+    fresh_list = await service.list_artifacts(correlation_id=correlation_id)
+    assert fresh_list == []
+    assert await service.fresh_artifacts_for_symbols(symbols=[symbol]) == []
+    stale_list = await service.list_artifacts(
+        correlation_id=correlation_id,
+        include_stale=True,
+    )
+    assert [row.id for row in stale_list] == [saved.id]
+
+    renewed, action = await service.save(entry)
+    assert action == "updated"
+    assert renewed.version == 2
+    assert renewed.content_hash == saved.content_hash
+    assert renewed.valid_until == default_valid_until(entry.kind, entry.as_of)
+    assert renewed.is_stale is False
 
 
 @pytest.mark.integration

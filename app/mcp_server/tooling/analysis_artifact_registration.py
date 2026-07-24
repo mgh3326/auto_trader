@@ -33,11 +33,14 @@ def register_analysis_artifact_tools(mcp: FastMCP) -> None:
             "of, the ROB-638 fetch-layer cache (which dedupes provider fetches "
             "within a run). Idempotent per correlation_id: re-saving the same "
             "correlation_id updates the row in place and bumps version "
-            "(action='updated'); an identical payload is a no-op "
-            "(action='unchanged', version preserved); omit correlation_id to "
+            "(action='updated'); only an identical payload AND persisted "
+            "metadata is a no-op (action='unchanged', version preserved). "
+            "Changes to as_of, resolved valid_until, or readiness_label renew "
+            "the row and bump version; omit correlation_id to "
             "append. content_hash is server-computed over the payload. When "
             "valid_until is omitted a per-kind default TTL is assigned so no "
-            "artifact is never-stale. Optional readiness_label is advisory "
+            "artifact is never-stale; legacy NULL expiry is treated stale. "
+            "Optional readiness_label is advisory "
             "(screen_grade / not_decision_ready / ready_for_order_review / "
             "blocked). Payload capped at 100KB (payload_too_large above that). "
             "Recent valid artifacts are surfaced metadata-only in "
@@ -51,8 +54,8 @@ def register_analysis_artifact_tools(mcp: FastMCP) -> None:
             "metadata only, no payload. Optional filters: market, kind, "
             "symbol (containment match on the symbols array), since, "
             "correlation_id, account_scope, include_stale, limit clamped to "
-            "1..100. Stale rows (valid_until in the past) are excluded unless "
-            "include_stale=true; each row carries is_stale."
+            "1..100. Stale rows (valid_until in the past or NULL) are excluded "
+            "unless include_stale=true; each row carries is_stale."
         ),
     )(analysis_artifact_list)
     _ = mcp.tool(

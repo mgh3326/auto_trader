@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -270,9 +270,19 @@ def _collect_yfinance_snapshot(yf_ticker: Any) -> _YFinanceSnapshot:
     )
 
 
-# Task names whose results carry the fetch-cache envelope
-# ({"payload": ..., "cache_hit": bool, "fetched_at": iso}) — ROB-638.
-_FETCH_CACHE_TASK_NAMES = ("kr_snapshot", "us_yf_bundle", "profile")
+_PROVIDER_TASKS_BY_MARKET: dict[str, tuple[tuple[str, str], ...]] = {
+    "equity_kr": (("kr_snapshot", "naver"),),
+    "equity_us": (
+        ("news", "finnhub"),
+        ("profile", "finnhub_profile"),
+        ("us_yf_bundle", "yfinance"),
+    ),
+    "crypto": (("news", "finnhub"),),
+}
+# Provider caches expire within their provider-local trading day. This
+# additional response-side ceiling catches malformed/fixture cache entries
+# whose timestamp survived without the real Redis TTL.
+_ANALYSIS_MAX_DATA_AGE_SECONDS = 24 * 60 * 60
 
 
 def _fetch_cache_envelope(
@@ -280,8 +290,43 @@ def _fetch_cache_envelope(
     *,
     cache_hit: bool,
     fetched_at: str | None,
+    status: str = "ok",
+    error_code: str | None = None,
+    evidence_present: bool | None = None,
 ) -> dict[str, Any]:
-    return {"payload": payload, "cache_hit": cache_hit, "fetched_at": fetched_at}
+    return {
+        "payload": payload,
+        "cache_hit": cache_hit,
+        "fetched_at": fetched_at,
+        "status": status,
+        "error_code": error_code,
+        "evidence_present": (
+            bool(payload) or status == "empty"
+            if evidence_present is None
+            else evidence_present
+        ),
+    }
+
+
+async def _fetch_news_enveloped(
+    normalized_symbol: str,
+    market: str,
+) -> dict[str, Any]:
+    """Fetch Finnhub news with a real acquisition timestamp.
+
+    The timestamp is created only after the provider call returns. Exceptions
+    propagate to the gather failure map, so a failed provider can never be
+    mislabeled with response-construction ``now`` (ROB-1048).
+    """
+    payload = await _fetch_news_finnhub(normalized_symbol, market, 5)
+    fetched_at = now_kst().isoformat()
+    status = "ok" if payload.get("news") else "empty"
+    return _fetch_cache_envelope(
+        payload,
+        cache_hit=False,
+        fetched_at=fetched_at,
+        status=status,
+    )
 
 
 async def _fetch_kr_snapshot_cached(
@@ -313,7 +358,35 @@ async def _fetch_kr_snapshot_cached(
             snapshot,
             fetched_at=fetched_at,
         )
-    return _fetch_cache_envelope(snapshot, cache_hit=False, fetched_at=fetched_at)
+    return _fetch_cache_envelope(
+        snapshot,
+        cache_hit=False,
+        fetched_at=fetched_at,
+        status="ok" if snapshot else "empty",
+    )
+
+
+def _yfinance_bundle_has_evidence(bundle: dict[str, Any]) -> bool:
+    """Whether a degraded YF bundle contains values beyond response scaffolding."""
+    valuation = bundle.get("valuation")
+    if isinstance(valuation, dict):
+        static_keys = {"instrument_type", "source", "symbol"}
+        if any(
+            value not in (None, "", [], {})
+            for key, value in valuation.items()
+            if key not in static_keys
+        ):
+            return True
+
+    opinions = bundle.get("opinions")
+    if not isinstance(opinions, dict):
+        return False
+    if opinions.get("opinions"):
+        return True
+    consensus = opinions.get("consensus")
+    return isinstance(consensus, dict) and any(
+        value is not None for value in consensus.values()
+    )
 
 
 async def _fetch_us_yf_bundle(
@@ -348,13 +421,19 @@ async def _fetch_us_yf_bundle(
     except Exception:
         part_errors += 1
 
-    fetched_at = now_kst().isoformat()
     snapshot_degraded = (
         yf_snapshot.info is None
         and yf_snapshot.analyst_price_targets is None
         and yf_snapshot.recommendations is None
         and yf_snapshot.upgrades_downgrades is None
     )
+    # A wrapper whose raw snapshot and normalized values are all absent is still
+    # a failed provider, not evidence acquired "now". Partial bundles may retain
+    # their acquisition time because their surviving payload contributes.
+    has_provider_evidence = not snapshot_degraded or _yfinance_bundle_has_evidence(
+        bundle
+    )
+    fetched_at = now_kst().isoformat() if has_provider_evidence else None
     if not snapshot_degraded and part_errors == 0:
         await analyze_cache.set_cached_fetch_payload(
             redis_client,
@@ -363,7 +442,23 @@ async def _fetch_us_yf_bundle(
             bundle,
             fetched_at=fetched_at,
         )
-    return _fetch_cache_envelope(bundle, cache_hit=False, fetched_at=fetched_at)
+    if snapshot_degraded:
+        status = "error"
+        error_code = "yfinance_snapshot_unavailable"
+    elif part_errors:
+        status = "error"
+        error_code = "partial_provider_failure"
+    else:
+        status = "ok" if bundle else "empty"
+        error_code = None
+    return _fetch_cache_envelope(
+        bundle,
+        cache_hit=False,
+        fetched_at=fetched_at,
+        status=status,
+        error_code=error_code,
+        evidence_present=has_provider_evidence,
+    )
 
 
 async def _fetch_us_profile_cached(
@@ -418,9 +513,7 @@ async def _append_market_specific_tasks(
         named_tasks.append(
             (
                 "news",
-                asyncio.create_task(
-                    _fetch_news_finnhub(normalized_symbol, "crypto", 5)
-                ),
+                asyncio.create_task(_fetch_news_enveloped(normalized_symbol, "crypto")),
             )
         )
         return None
@@ -469,7 +562,7 @@ async def _append_market_specific_tasks(
             ),
             (
                 "news",
-                asyncio.create_task(_fetch_news_finnhub(normalized_symbol, "us", 5)),
+                asyncio.create_task(_fetch_news_enveloped(normalized_symbol, "us")),
             ),
         ]
     )
@@ -495,16 +588,23 @@ def _append_sector_peers_task(
 
 async def _gather_task_results(
     named_tasks: list[tuple[str, asyncio.Task[Any]]],
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, str]]:
     results = await asyncio.gather(
         *(task for _, task in named_tasks),
         return_exceptions=True,
     )
-    return {
-        name: result
-        for (name, _), result in zip(named_tasks, results, strict=True)
-        if not isinstance(result, Exception)
-    }
+    values: dict[str, Any] = {}
+    failures: dict[str, str] = {}
+    for (name, _), result in zip(named_tasks, results, strict=True):
+        if isinstance(result, asyncio.CancelledError):
+            raise result
+        if isinstance(result, Exception):
+            failures[name] = type(result).__name__
+        elif isinstance(result, BaseException):
+            raise result
+        else:
+            values[name] = result
+    return values, failures
 
 
 def _apply_common_results(
@@ -610,8 +710,9 @@ def _apply_us_results(analysis: dict[str, Any], task_results: dict[str, Any]) ->
     profile = _envelope_payload(task_results, "profile")
     if profile:
         analysis["profile"] = profile
-    if "news" in task_results:
-        analysis["news"] = task_results["news"]
+    news = _envelope_payload(task_results, "news")
+    if news is not None:
+        analysis["news"] = news
 
 
 def _apply_market_specific_results(
@@ -625,32 +726,160 @@ def _apply_market_specific_results(
     if market_type == "equity_us":
         _apply_us_results(analysis, task_results)
         return
-    if "news" in task_results:
-        analysis["news"] = task_results["news"]
+    news = _envelope_payload(task_results, "news")
+    if news is not None:
+        analysis["news"] = news
 
 
 def _apply_fetch_cache_metadata(
-    analysis: dict[str, Any], task_results: dict[str, Any]
+    analysis: dict[str, Any],
+    task_results: dict[str, Any],
+    task_failures: dict[str, str],
+    market_type: str,
 ) -> None:
-    """Attach the ROB-638 fetch-cache response contract keys.
+    """Attach the authoritative ROB-1048 freshness/provenance envelope.
 
-    ``cache_hit`` — True when the fetch-layer cache served ANY provider payload
-    for this symbol. ``derived_as_of`` — ISO-KST timestamp of when the (cached
-    or fresh) provider data was fetched; with multiple providers the OLDEST
-    fetch time is reported (most conservative freshness statement). Crypto and
-    fully-fresh runs report the current fetch time.
+    A provider task exception is retained by ``_gather_task_results``. Only
+    timestamps attached to provider evidence that actually returned may
+    contribute to ``derived_as_of``; there is deliberately no ``now`` fallback.
     """
-    envelopes = [
-        envelope
-        for name in _FETCH_CACHE_TASK_NAMES
-        if isinstance((envelope := task_results.get(name)), dict)
-        and "payload" in envelope
-    ]
-    analysis["cache_hit"] = any(env.get("cache_hit") for env in envelopes)
-    fetched_ats = sorted(
-        str(env["fetched_at"]) for env in envelopes if env.get("fetched_at")
+
+    def parse_timestamp(value: Any) -> datetime | None:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+
+    timestamp_candidates: list[datetime] = []
+    provenance: list[dict[str, str | None]] = []
+    cache_hit = False
+    provider_degraded = False
+
+    for task_name, provider in _PROVIDER_TASKS_BY_MARKET.get(market_type, ()):
+        failure_code = task_failures.get(task_name)
+        if failure_code is not None:
+            provenance.append(
+                {
+                    "provider": provider,
+                    "served_by": None,
+                    "mode": "none",
+                    "status": "error",
+                    "error_code": failure_code,
+                }
+            )
+            provider_degraded = True
+            continue
+
+        envelope = task_results.get(task_name)
+        if not isinstance(envelope, dict) or not isinstance(
+            envelope.get("payload"), dict
+        ):
+            provenance.append(
+                {
+                    "provider": provider,
+                    "served_by": None,
+                    "mode": "none",
+                    "status": "unavailable",
+                    "error_code": "provider_envelope_missing",
+                }
+            )
+            provider_degraded = True
+            continue
+
+        payload = envelope["payload"]
+        evidence_present = bool(envelope.get("evidence_present"))
+        hit = bool(envelope.get("cache_hit"))
+        cache_hit = cache_hit or (hit and evidence_present)
+        status = str(envelope.get("status") or ("ok" if payload else "empty"))
+        error_code = envelope.get("error_code")
+        provenance.append(
+            {
+                "provider": provider,
+                "served_by": (
+                    ("analyze_fetch_cache" if hit else provider)
+                    if evidence_present
+                    else None
+                ),
+                "mode": ("cache" if hit else "live") if evidence_present else "none",
+                "status": status,
+                "error_code": str(error_code) if error_code else None,
+            }
+        )
+        # An authoritative empty news window is a valid observation, not a
+        # failure of the broader analysis. Empty valuation/profile snapshots
+        # are required-evidence gaps and therefore degrade.
+        if (
+            not evidence_present
+            or status in {"error", "unavailable"}
+            or (status == "empty" and task_name != "news")
+        ):
+            provider_degraded = True
+
+        # An authoritative empty response has a real observation time. A
+        # failed empty provider does not: its attempt timestamp cannot become
+        # derived_as_of. Partial error payloads retain the time of the evidence
+        # that did contribute.
+        timestamp = parse_timestamp(envelope.get("fetched_at"))
+        if timestamp is not None and evidence_present:
+            timestamp_candidates.append(timestamp)
+        elif evidence_present:
+            provider_degraded = True
+
+    oldest_timestamp: datetime | None = None
+    oldest_timestamp_text: str | None = None
+    if timestamp_candidates:
+        oldest_timestamp = min(timestamp_candidates)
+        # Cached legacy values can be naive. Expose a normalized, timezone-aware
+        # timestamp even though calculations already normalized every instant.
+        oldest_timestamp_text = oldest_timestamp.isoformat()
+
+    observed_at = datetime.now(tz=UTC)
+    data_age_seconds = (
+        max(0.0, (observed_at - oldest_timestamp).total_seconds())
+        if oldest_timestamp is not None
+        else None
     )
-    analysis["derived_as_of"] = fetched_ats[0] if fetched_ats else now_kst().isoformat()
+    usable_evidence = any(
+        bool(analysis.get(key))
+        for key in (
+            "quote",
+            "indicators",
+            "support_resistance",
+            "valuation",
+            "opinions",
+            "profile",
+            "news",
+        )
+    )
+    if not usable_evidence:
+        data_state = "missing"
+    elif data_age_seconds is not None and (
+        data_age_seconds > _ANALYSIS_MAX_DATA_AGE_SECONDS
+    ):
+        data_state = "stale"
+    elif provider_degraded or oldest_timestamp is None:
+        data_state = "degraded"
+    else:
+        data_state = "fresh"
+
+    analysis.update(
+        {
+            "data_state": data_state,
+            "derived_as_of": oldest_timestamp_text,
+            "fetched_at": oldest_timestamp_text,
+            "data_age_seconds": data_age_seconds,
+            "cache_hit": cache_hit,
+            "fallback_source": "analyze_fetch_cache" if cache_hit else None,
+            "provider_provenance": sorted(
+                provenance, key=lambda item: str(item["provider"])
+            ),
+        }
+    )
 
 
 def _apply_sector_peers_result(
@@ -778,7 +1007,7 @@ async def analyze_stock_impl(
             op="analyze_stock.gather_tasks",
             name=f"gather tasks {market_type} {normalized_symbol}",
         ):
-            task_results = await _gather_task_results(named_tasks)
+            task_results, task_failures = await _gather_task_results(named_tasks)
     finally:
         if yfinance_session_to_close is not None:
             close_yfinance_session(yfinance_session_to_close)
@@ -793,7 +1022,12 @@ async def analyze_stock_impl(
         _apply_market_specific_results(analysis, task_results, market_type)
         _apply_sector_peers_result(analysis, task_results, market_type, include_peers)
         # ROB-638 — fetch-cache response contract (cache_hit / derived_as_of).
-        _apply_fetch_cache_metadata(analysis, task_results)
+        _apply_fetch_cache_metadata(
+            analysis,
+            task_results,
+            task_failures,
+            market_type,
+        )
         analysis["errors"] = []
         _apply_recommendation(analysis, market_type)
 

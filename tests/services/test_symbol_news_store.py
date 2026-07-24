@@ -305,6 +305,8 @@ async def test_upsert_feed_articles_us_market_and_summary(db_session) -> None:
     assert article.market == "us"
     assert article.summary == "Apple Q2 revenue beat."
     assert article.feed_source == "finnhub_company_news"
+    first_fetched_at = article.scraped_at
+    assert first_fetched_at is not None
 
     link = (
         await db_session.execute(
@@ -328,9 +330,11 @@ async def test_upsert_feed_articles_us_market_and_summary(db_session) -> None:
     )
     assert again == 0
 
-    # load가 summary를 복원
+    # URL conflict no-op은 원천 획득 시각을 덮어쓰지 않고, canonical loader가
+    # production NewsArticle column에서 그 시각을 그대로 복원한다.
     stored, _ = await symbol_news_store.load_symbol_news(db_session, symbol, "us", 10)
     assert stored[0].summary == "Apple Q2 revenue beat."
+    assert stored[0].fetched_at == first_fetched_at
 
 
 @pytest.mark.integration
