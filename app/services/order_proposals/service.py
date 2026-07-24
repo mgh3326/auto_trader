@@ -24,6 +24,7 @@ from app.models.order_proposals import (
     OrderProposal,
     OrderProposalApprovalBatch,
     OrderProposalApprovalBatchMember,
+    OrderProposalApprovalDispatchAttempt,
     OrderProposalRung,
 )
 from app.models.review import TossLiveOrderLedger
@@ -32,6 +33,17 @@ from app.services.order_proposals.broker_gateway import SUPPORTED_TARGET_ACTIONS
 from app.services.order_proposals.defensive_ttl import (
     DEFENSIVE_EXIT_INTENTS,
     resolve_defensive_valid_until,
+)
+from app.services.order_proposals.dispatch_contract import (
+    ApprovalCardKind,
+    ApprovalDispatchState,
+    ApprovalPublication,
+    CallbackEnvelope,
+    CallbackGateSnapshot,
+    DispatchBinding,
+    TelegramDispatchResult,
+    assert_callback_gate,
+    build_membership_digest,
 )
 from app.services.order_proposals.errors import (
     OrderProposalError,
@@ -54,6 +66,27 @@ from app.services.trade_journal.trade_retrospective_service import (
 logger = logging.getLogger(__name__)
 
 
+def _log_dispatch_outcome(result: TelegramDispatchResult, *, surface: str) -> None:
+    logger.log(
+        logging.INFO if result.ok else logging.ERROR,
+        "order_proposals.approval_dispatch.finalized",
+        extra={
+            "approval_surface": surface,
+            "approval_dispatch_state": result.state.value,
+            "approval_dispatch_ok": result.ok,
+            "http_status": result.status_code,
+            "telegram_error_code": result.error_code,
+            "telegram_error_classification": (
+                result.error_classification.value
+                if result.error_classification is not None
+                else None
+            ),
+            "payload_chars": result.payload_chars,
+            "failure_code": result.failure_code,
+        },
+    )
+
+
 @dataclass
 class RungInput:
     rung_index: int
@@ -69,13 +102,15 @@ class BatchMemberSnapshot:
     proposal_id: uuid.UUID
     approval_nonce: str
     approval_message_id: int
+    dispatch_binding: DispatchBinding
 
 
 @dataclass(frozen=True)
 class BatchRegistration:
     batch: OrderProposalApprovalBatch
     member_count: int
-    summary_action: Literal["none", "send", "edit"]
+    summary_action: Literal["none", "send"]
+    binding: DispatchBinding | None = None
 
 
 @dataclass(frozen=True)
@@ -229,6 +264,16 @@ def proposal_approval_block_reason(group: OrderProposal) -> str | None:
     return None
 
 
+def _proposal_callback_block_reason(group: OrderProposal, *, nonce: str) -> str | None:
+    """Apply snapshot-independent callback blocks in stable precedence order."""
+    block_reason = proposal_approval_block_reason(group)
+    if block_reason is not None and block_reason.startswith("proposal_superseded_by:"):
+        return block_reason
+    if group.approval_nonce == nonce and group.approval_nonce_used_at is not None:
+        return "nonce_replay"
+    return block_reason
+
+
 def batch_member_block_reason(
     group: OrderProposal,
     rungs: list[OrderProposalRung],
@@ -243,6 +288,13 @@ def batch_member_block_reason(
         return "loss_cut_excluded"
     if isinstance((group.source_asof or {}).get("auto_approved"), dict):
         return "auto_approved_excluded"
+    if group.approval_dispatch_state != ApprovalDispatchState.SENT_CURRENT.value:
+        return "approval_dispatch_not_current"
+    if group.approval_dispatch_card_kind not in {
+        ApprovalCardKind.MANUAL.value,
+        ApprovalCardKind.RECONFIRM.value,
+    }:
+        return "approval_card_kind_not_batchable"
     if group.valid_until is not None and now >= group.valid_until:
         return "proposal_expired"
     if not group.approval_nonce:
@@ -961,6 +1013,13 @@ class OrderProposalsService:
 
     # -- PR-2 helpers -------------------------------------------------------
     async def set_approval_nonce(self, proposal_id: uuid.UUID, nonce: str) -> None:
+        """Stage a nonce while fail-closing any previously published card.
+
+        Production dispatch calls this immediately before
+        ``start_approval_dispatch`` in the same transaction. Keeping the
+        intermediate state non-approvable also makes direct/legacy callers
+        unable to pair a fresh nonce with an older published binding.
+        """
         group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
         if group is None:
             raise OrderProposalNotFound(str(proposal_id))
@@ -968,48 +1027,154 @@ class OrderProposalsService:
         if block_reason is not None:
             raise OrderProposalError(block_reason)
         await self._repo.update_group(
-            group, approval_nonce=nonce, approval_nonce_used_at=None
+            group,
+            approval_nonce=nonce,
+            approval_nonce_used_at=None,
+            approval_dispatch_state=ApprovalDispatchState.FAILED.value,
+            approval_dispatch_published_at=None,
+            approval_dispatch_failure_code="approval_dispatch_snapshot_missing",
         )
 
     async def consume_approval_nonce(
         self, proposal_id: uuid.UUID, nonce: str, *, now: datetime
     ) -> OrderProposal:
-        self._require_timezone_aware(now)
-        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        """Compatibility wrapper; every consume still crosses the common gate."""
+        group = await self._repo.get_group_by_proposal_id(proposal_id)
         if group is None:
             raise OrderProposalNotFound(str(proposal_id))
-        block_reason = proposal_approval_block_reason(group)
+        block_reason = _proposal_callback_block_reason(group, nonce=nonce)
         if block_reason is not None:
             raise OrderProposalError(block_reason)
-        if isinstance((group.source_asof or {}).get("auto_approved"), dict):
-            raise OrderProposalError("auto_veto_nonce_requires_vc")
-        if group.approval_nonce != nonce:
-            raise OrderProposalError("nonce_mismatch")
-        if group.approval_nonce_used_at is not None:
-            raise OrderProposalError("nonce_replay")
-        return await self._repo.update_group(group, approval_nonce_used_at=now)
+        callback = self._current_callback_envelope(group, action="op", nonce=nonce)
+        return await self.consume_published_proposal_callback(
+            proposal_id, callback=callback, now=now
+        )
 
     async def consume_auto_veto_nonce(
         self, proposal_id: uuid.UUID, nonce: str, *, now: datetime
     ) -> OrderProposal:
-        """Consume an auto-submit veto nonce, including after a broker fill."""
+        """Compatibility wrapper for the same authoritative callback gate."""
+        group = await self._repo.get_group_by_proposal_id(proposal_id)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        block_reason = _proposal_callback_block_reason(group, nonce=nonce)
+        if block_reason is not None:
+            raise OrderProposalError(block_reason)
+        callback = self._current_callback_envelope(group, action="vc", nonce=nonce)
+        return await self.consume_published_proposal_callback(
+            proposal_id, callback=callback, now=now
+        )
+
+    @staticmethod
+    def _current_callback_envelope(
+        group: OrderProposal, *, action: str, nonce: str
+    ) -> CallbackEnvelope:
+        attempt_id = group.approval_dispatch_attempt_id
+        revision = group.approval_dispatch_membership_revision
+        digest = group.approval_dispatch_membership_digest
+        if attempt_id is None or revision is None or digest is None:
+            raise OrderProposalError("approval_dispatch_snapshot_missing")
+        return CallbackEnvelope(
+            action=action,
+            subject_short=str(group.proposal_id)[:8],
+            attempt_id=attempt_id,
+            membership_revision=revision,
+            membership_digest=digest,
+            nonce=nonce,
+        )
+
+    @staticmethod
+    def _assert_published_proposal_binding(
+        group: OrderProposal, *, callback: CallbackEnvelope
+    ) -> ApprovalCardKind:
+        """Validate one proposal callback without consuming its nonce.
+
+        Both the read-only preflight and the row-locked consuming gate call this
+        exact function.  The second call is intentional: any owner/nonce/
+        membership change while external preview work is in flight fails
+        closed before a nonce or proposal mutation is written.
+        """
+        block_reason = _proposal_callback_block_reason(group, nonce=callback.nonce)
+        if block_reason is not None:
+            raise OrderProposalError(block_reason)
+        try:
+            state = ApprovalDispatchState(str(group.approval_dispatch_state))
+        except ValueError as exc:
+            raise OrderProposalError("approval_dispatch_state_invalid") from exc
+        try:
+            card_kind = (
+                ApprovalCardKind(str(group.approval_dispatch_card_kind))
+                if group.approval_dispatch_card_kind is not None
+                else None
+            )
+        except ValueError as exc:
+            raise OrderProposalError("approval_dispatch_card_kind_invalid") from exc
+        try:
+            assert_callback_gate(
+                snapshot=CallbackGateSnapshot(
+                    subject_short=str(group.proposal_id)[:8],
+                    state=state,
+                    attempt_id=group.approval_dispatch_attempt_id,
+                    card_kind=card_kind,
+                    membership_revision=(group.approval_dispatch_membership_revision),
+                    membership_digest=group.approval_dispatch_membership_digest,
+                    nonce=group.approval_nonce,
+                    nonce_used=group.approval_nonce_used_at is not None,
+                ),
+                callback=callback,
+            )
+        except ValueError as exc:
+            raise OrderProposalError(str(exc)) from exc
+        if card_kind is None:  # Kept explicit for the narrowed return type.
+            raise OrderProposalError("approval_dispatch_card_kind_invalid")
+
+        auto_approved = isinstance(
+            ((group.source_asof or {}).get("auto_approved")), dict
+        )
+        if card_kind is ApprovalCardKind.AUTO_VETO:
+            if not auto_approved:
+                raise OrderProposalError("auto_veto_not_available")
+        elif auto_approved:
+            raise OrderProposalError("auto_veto_nonce_requires_vc")
+        return card_kind
+
+    async def preflight_published_proposal_callback(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        callback: CallbackEnvelope,
+    ) -> OrderProposal:
+        """Read-only binding gate that must precede callback-side external I/O."""
+        group = await self._repo.get_group_by_proposal_id(proposal_id)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        self._assert_published_proposal_binding(group, callback=callback)
+        return group
+
+    async def consume_published_proposal_callback(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        callback: CallbackEnvelope,
+        now: datetime,
+        telegram_user_id: str | None = None,
+    ) -> OrderProposal:
+        """The single nonce-consumption gate for every proposal card kind."""
         self._require_timezone_aware(now)
         group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
         if group is None:
             raise OrderProposalNotFound(str(proposal_id))
-        if group.superseded_by_proposal_id is not None:
-            raise OrderProposalError(
-                f"proposal_superseded_by:{group.superseded_by_proposal_id}"
+        self._assert_published_proposal_binding(group, callback=callback)
+
+        fields: dict[str, Any] = {"approval_nonce_used_at": now}
+        if callback.action == "lc":
+            fields["source_asof"] = await self._validated_loss_cut_confirmation_source(
+                group,
+                nonce=callback.nonce,
+                telegram_user_id=telegram_user_id or "",
+                now=now,
             )
-        if group.lifecycle_state == "superseded":
-            raise OrderProposalError("proposal_superseded_by:unknown")
-        if not isinstance((group.source_asof or {}).get("auto_approved"), dict):
-            raise OrderProposalError("auto_veto_not_available")
-        if group.approval_nonce != nonce:
-            raise OrderProposalError("nonce_mismatch")
-        if group.approval_nonce_used_at is not None:
-            raise OrderProposalError("nonce_replay")
-        return await self._repo.update_group(group, approval_nonce_used_at=now)
+        return await self._repo.update_group(group, **fields)
 
     async def issue_loss_cut_confirmation(
         self,
@@ -1073,18 +1238,29 @@ class OrderProposalsService:
         telegram_user_id: str,
         now: datetime,
     ) -> OrderProposal:
-        """Atomically validate, audit, and consume a loss-cut second-step nonce."""
-        self._require_timezone_aware(now)
-        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        """Compatibility wrapper for the common published-callback gate."""
+        group = await self._repo.get_group_by_proposal_id(proposal_id)
         if group is None:
             raise OrderProposalNotFound(str(proposal_id))
-        block_reason = proposal_approval_block_reason(group)
+        block_reason = _proposal_callback_block_reason(group, nonce=nonce)
         if block_reason is not None:
             raise OrderProposalError(block_reason)
-        if group.approval_nonce != nonce:
-            raise OrderProposalError("nonce_mismatch")
-        if group.approval_nonce_used_at is not None:
-            raise OrderProposalError("nonce_replay")
+        callback = self._current_callback_envelope(group, action="lc", nonce=nonce)
+        return await self.consume_published_proposal_callback(
+            proposal_id,
+            callback=callback,
+            telegram_user_id=telegram_user_id,
+            now=now,
+        )
+
+    async def _validated_loss_cut_confirmation_source(
+        self,
+        group: OrderProposal,
+        *,
+        nonce: str,
+        telegram_user_id: str,
+        now: datetime,
+    ) -> dict[str, Any]:
         envelope = (group.source_asof or {}).get(_LOSS_CUT_CONFIRMATION_KEY)
         if not isinstance(envelope, dict):
             raise OrderProposalError("loss_cut_confirmation_missing")
@@ -1105,7 +1281,7 @@ class OrderProposalsService:
             if rung.state in _LOSS_CUT_CONFIRMABLE_RUNG_STATES
         ]
         if (
-            envelope.get("proposal_id") != str(proposal_id)
+            envelope.get("proposal_id") != str(group.proposal_id)
             or envelope.get("nonce") != nonce
             or envelope.get("rungs") != current_binding
         ):
@@ -1122,11 +1298,7 @@ class OrderProposalsService:
             **(group.source_asof or {}),
             _LOSS_CUT_CONFIRMATION_KEY: updated_envelope,
         }
-        return await self._repo.update_group(
-            group,
-            source_asof=source_asof,
-            approval_nonce_used_at=now,
-        )
+        return source_asof
 
     async def record_approval(
         self,
@@ -1151,15 +1323,12 @@ class OrderProposalsService:
         chat_id: str,
         now: datetime,
     ) -> OrderProposal:
-        """Record where the initial Telegram approval message was sent.
+        """Record legacy message location without creating an approvable card.
 
-        No new column exists for this (see ``dispatch.py``'s module docstring)
-        -- ``message_id``/``chat_id``/``sent_at`` are merged into the existing
-        ``source_asof`` JSONB column so a later Telegram ``edit_message`` call
-        can find them. This merges on top of whatever keys are already there
-        (e.g. ``resting_deadline``, read by
-        ``approval_message.py::_build_time_lines``) rather than overwriting
-        the column outright.
+        ``message_id``/``chat_id``/``sent_at`` stay in ``source_asof`` so later
+        Telegram edits can find them. A caller without an attempt-bound,
+        immutable snapshot cannot manufacture ``SENT_CURRENT`` through this
+        compatibility helper.
         """
         self._require_timezone_aware(now)
         group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
@@ -1172,7 +1341,214 @@ class OrderProposalsService:
             "approval_chat_id": chat_id,
             "approval_sent_at": now.isoformat(),
         }
-        return await self._repo.update_group(group, source_asof=merged)
+        return await self._repo.update_group(
+            group,
+            source_asof=merged,
+            approval_dispatch_state=ApprovalDispatchState.FAILED.value,
+            approval_dispatch_attempted_at=(
+                group.approval_dispatch_attempted_at or now
+            ),
+            approval_dispatch_published_at=None,
+            approval_dispatch_failure_code="approval_dispatch_snapshot_missing",
+            approval_nonce=None,
+            approval_nonce_used_at=None,
+        )
+
+    async def start_approval_dispatch(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        attempt_id: uuid.UUID,
+        binding: DispatchBinding,
+        now: datetime,
+        payload_chars: int,
+        context_message_count: int,
+    ) -> OrderProposalApprovalDispatchAttempt:
+        """Commit a pending attempt before any Telegram I/O begins."""
+        self._require_timezone_aware(now)
+        if payload_chars < 0:
+            raise ValueError("payload_chars must be non-negative")
+        if context_message_count < 0:
+            raise ValueError("context_message_count must be non-negative")
+        if binding.attempt_id != attempt_id:
+            raise ValueError("dispatch binding attempt_id mismatch")
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        expected_revision = (group.approval_dispatch_membership_revision or 0) + 1
+        if binding.membership_revision != expected_revision:
+            raise OrderProposalError("approval_membership_revision_not_next")
+        if binding.card_kind is ApprovalCardKind.BATCH:
+            raise OrderProposalError("proposal_dispatch_card_kind_invalid")
+        expected_digest = build_membership_digest(
+            card_kind=binding.card_kind,
+            membership_revision=binding.membership_revision,
+            members=[
+                {
+                    "proposal_id": str(group.proposal_id),
+                    "approval_nonce": group.approval_nonce,
+                }
+            ],
+        )
+        if binding.membership_digest != expected_digest:
+            raise OrderProposalError("approval_membership_digest_invalid")
+
+        previous_attempt_id = group.approval_dispatch_attempt_id
+        if previous_attempt_id is not None and previous_attempt_id != attempt_id:
+            previous = await self._repo.get_approval_dispatch_attempt(
+                previous_attempt_id, for_update=True
+            )
+            if (
+                previous is not None
+                and previous.state == ApprovalDispatchState.SENT_CURRENT.value
+            ):
+                await self._repo.update_approval_dispatch_attempt(
+                    previous,
+                    state=ApprovalDispatchState.SENT_SUPERSEDED.value,
+                    failure_code="approval_dispatch_superseded",
+                )
+        attempt = await self._repo.insert_approval_dispatch_attempt(
+            attempt_id=attempt_id,
+            proposal_pk=group.id,
+            state=ApprovalDispatchState.PENDING.value,
+            attempted_at=now,
+            payload_chars=payload_chars,
+            context_message_count=context_message_count,
+            card_kind=binding.card_kind.value,
+            membership_revision=binding.membership_revision,
+            membership_digest=binding.membership_digest,
+        )
+        await self._repo.update_group(
+            group,
+            approval_dispatch_state=ApprovalDispatchState.PENDING.value,
+            approval_dispatch_attempt_id=attempt_id,
+            approval_dispatch_attempted_at=now,
+            approval_dispatch_published_at=None,
+            approval_dispatch_failure_code=None,
+            approval_dispatch_payload_chars=payload_chars,
+            approval_dispatch_card_kind=binding.card_kind.value,
+            approval_dispatch_membership_revision=binding.membership_revision,
+            approval_dispatch_membership_digest=binding.membership_digest,
+        )
+        return attempt
+
+    async def finish_approval_dispatch(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        attempt_id: uuid.UUID,
+        publication: ApprovalPublication,
+        chat_id: str | None,
+        now: datetime,
+    ) -> TelegramDispatchResult:
+        """Resolve physical publication through the current-owner fence."""
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        attempt = await self._repo.get_approval_dispatch_attempt(
+            attempt_id, for_update=True
+        )
+        if attempt is None or attempt.proposal_pk != group.id:
+            raise OrderProposalError("approval_dispatch_attempt_not_found")
+        if attempt.state != ApprovalDispatchState.PENDING.value:
+            raise OrderProposalError("approval_dispatch_attempt_already_finished")
+        if publication.card_published and (
+            publication.message_id is None or chat_id is None
+        ):
+            raise OrderProposalError(
+                "successful dispatch requires message_id and chat_id"
+            )
+
+        try:
+            attempt_card_kind = ApprovalCardKind(str(attempt.card_kind))
+        except ValueError as exc:
+            raise OrderProposalError("approval_dispatch_card_kind_invalid") from exc
+        expected_digest = build_membership_digest(
+            card_kind=attempt_card_kind,
+            membership_revision=attempt.membership_revision,
+            members=[
+                {
+                    "proposal_id": str(group.proposal_id),
+                    "approval_nonce": group.approval_nonce,
+                }
+            ],
+        )
+        is_current_owner = (
+            group.approval_dispatch_state == ApprovalDispatchState.PENDING.value
+            and group.approval_dispatch_attempt_id == attempt_id
+            and group.approval_dispatch_card_kind == attempt.card_kind
+            and group.approval_dispatch_membership_revision
+            == attempt.membership_revision
+            and group.approval_dispatch_membership_digest == attempt.membership_digest
+            and expected_digest == attempt.membership_digest
+        )
+        snapshot_missing = publication.card_published and not group.approval_nonce
+        if not is_current_owner:
+            state = (
+                ApprovalDispatchState.SENT_SUPERSEDED
+                if publication.card_published
+                else ApprovalDispatchState.FAILED_SUPERSEDED
+            )
+            failure_code = "approval_dispatch_superseded"
+        elif snapshot_missing:
+            state = ApprovalDispatchState.FAILED
+            failure_code = "approval_dispatch_snapshot_missing"
+        elif publication.card_published:
+            state = ApprovalDispatchState.SENT_CURRENT
+            failure_code = None
+        elif publication.partial:
+            state = ApprovalDispatchState.PARTIAL_FAILED
+            failure_code = publication.failure_code or "telegram_dispatch_failed"
+        else:
+            state = ApprovalDispatchState.FAILED
+            failure_code = publication.failure_code or "telegram_dispatch_failed"
+
+        await self._repo.update_approval_dispatch_attempt(
+            attempt,
+            state=state.value,
+            completed_at=now,
+            message_id=publication.message_id,
+            status_code=publication.status_code,
+            telegram_error_code=publication.error_code,
+            error_classification=(
+                publication.error_classification.value
+                if publication.error_classification is not None
+                else None
+            ),
+            failure_code=failure_code,
+        )
+
+        result = TelegramDispatchResult.from_publication(
+            publication, state=state, failure_code=failure_code
+        )
+        if not is_current_owner:
+            _log_dispatch_outcome(result, surface="proposal")
+            return result
+
+        fields: dict[str, Any] = {
+            "approval_dispatch_state": state.value,
+            "approval_dispatch_failure_code": failure_code,
+            "approval_dispatch_payload_chars": publication.payload_chars,
+        }
+        if state is ApprovalDispatchState.SENT_CURRENT:
+            existing = group.source_asof or {}
+            fields["source_asof"] = {
+                **existing,
+                "approval_message_id": publication.message_id,
+                "approval_chat_id": chat_id,
+                "approval_sent_at": now.isoformat(),
+            }
+            fields["approval_dispatch_published_at"] = now
+        else:
+            # Fail closed if Telegram accepted a message but its response was
+            # lost: an unconfirmed button cannot consume this attempt's nonce.
+            fields["approval_nonce"] = None
+            fields["approval_nonce_used_at"] = None
+            fields["approval_dispatch_published_at"] = None
+        await self._repo.update_group(group, **fields)
+        _log_dispatch_outcome(result, surface="proposal")
+        return result
 
     async def register_approval_batch_member(
         self,
@@ -1183,9 +1559,16 @@ class OrderProposalsService:
         now: datetime,
         window_seconds: int = 600,
         ttl_seconds: int = 600,
+        summary_member_threshold: int = 2,
     ) -> BatchRegistration | None:
-        """Register one still-manual proposal in the chat's open batch."""
+        """Stage a member, freezing the batch before its first publication.
+
+        A frozen batch is never reopened or edited.  The next proposal starts
+        a new staged batch, so membership displayed with a button is immutable.
+        """
         self._require_timezone_aware(now)
+        if summary_member_threshold < 2:
+            raise ValueError("summary_member_threshold must be at least 2")
         await self._repo.acquire_approval_batch_chat_lock(chat_id)
         group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
         if group is None:
@@ -1213,8 +1596,10 @@ class OrderProposalsService:
                     ttl_seconds=ttl_seconds,
                     validity_deadlines=[group.valid_until],
                 ),
-                approval_nonce=secrets.token_urlsafe(12),
+                approval_nonce=secrets.token_urlsafe(8),
                 summary_dispatch_state="idle",
+                approval_dispatch_state=ApprovalDispatchState.PENDING.value,
+                membership_revision=1,
             )
 
         existing_members = await self._repo.list_approval_batch_members(batch.id)
@@ -1227,6 +1612,14 @@ class OrderProposalsService:
             approval_nonce_snapshot=str(group.approval_nonce),
             approval_message_id=approval_message_id,
             added_at=now,
+            approval_dispatch_attempt_id_snapshot=(group.approval_dispatch_attempt_id),
+            approval_membership_revision_snapshot=(
+                group.approval_dispatch_membership_revision
+            ),
+            approval_membership_digest_snapshot=(
+                group.approval_dispatch_membership_digest
+            ),
+            approval_card_kind_snapshot=group.approval_dispatch_card_kind,
         )
         members = await self._repo.list_approval_batch_members(batch.id)
         validity_deadlines: list[datetime | None] = []
@@ -1235,15 +1628,30 @@ class OrderProposalsService:
         # registers into the same window as the proposal it just invalidated;
         # counting that dead member would announce an "전체 승인" batch whose
         # live membership is a single proposal.
-        live_member_count = 0
+        live_members: list[tuple[OrderProposalApprovalBatchMember, OrderProposal]] = []
         for member in members:
             member_group = await self._repo.get_group_by_pk(member.proposal_pk)
             if member_group is None:
                 continue
             validity_deadlines.append(member_group.valid_until)
             member_rungs = await self._repo.list_rungs(member_group.id)
-            if batch_member_block_reason(member_group, member_rungs, now=now) is None:
-                live_member_count += 1
+            snapshot_is_current = (
+                member_group.approval_nonce == member.approval_nonce_snapshot
+                and member_group.approval_dispatch_attempt_id
+                == member.approval_dispatch_attempt_id_snapshot
+                and member_group.approval_dispatch_membership_revision
+                == member.approval_membership_revision_snapshot
+                and member_group.approval_dispatch_membership_digest
+                == member.approval_membership_digest_snapshot
+                and member_group.approval_dispatch_card_kind
+                == member.approval_card_kind_snapshot
+            )
+            if (
+                snapshot_is_current
+                and batch_member_block_reason(member_group, member_rungs, now=now)
+                is None
+            ):
+                live_members.append((member, member_group))
         await self._repo.update_approval_batch(
             batch,
             expires_at=self._bounded_batch_expiry(
@@ -1253,26 +1661,62 @@ class OrderProposalsService:
             ),
         )
 
-        member_count = live_member_count
-        summary_action: Literal["none", "send", "edit"] = "none"
-        if member_count >= 2:
-            if batch.summary_message_id is not None:
-                summary_action = "edit"
-            elif batch.summary_dispatch_state == "idle" or (
-                batch.summary_dispatch_state == "sending"
-                and batch.summary_dispatch_lease_until is not None
-                and batch.summary_dispatch_lease_until <= now
-            ):
-                await self._repo.update_approval_batch(
-                    batch,
-                    summary_dispatch_state="sending",
-                    summary_dispatch_lease_until=now + timedelta(seconds=30),
+        member_count = len(live_members)
+        summary_action: Literal["none", "send"] = "none"
+        binding: DispatchBinding | None = None
+        if member_count >= summary_member_threshold:
+            revision = batch.membership_revision or 1
+            attempt_id = uuid.uuid4()
+            digest_members = [
+                {
+                    "proposal_id": str(member_group.proposal_id),
+                    "approval_nonce": member.approval_nonce_snapshot,
+                    "approval_message_id": member.approval_message_id,
+                    "approval_dispatch_attempt_id": str(
+                        member.approval_dispatch_attempt_id_snapshot
+                    ),
+                    "approval_membership_revision": (
+                        member.approval_membership_revision_snapshot
+                    ),
+                    "approval_membership_digest": (
+                        member.approval_membership_digest_snapshot
+                    ),
+                }
+                for member, member_group in live_members
+            ]
+            digest = build_membership_digest(
+                card_kind=ApprovalCardKind.BATCH,
+                membership_revision=revision,
+                members=digest_members,
+            )
+            for member, _member_group in live_members:
+                await self._repo.update_approval_batch_member(
+                    member, membership_revision=revision
                 )
-                summary_action = "send"
+            await self._repo.update_approval_batch(
+                batch,
+                approval_dispatch_state=ApprovalDispatchState.PENDING.value,
+                approval_dispatch_attempt_id=attempt_id,
+                approval_dispatch_attempted_at=now,
+                approval_dispatch_failure_code=None,
+                membership_revision=revision,
+                membership_digest=digest,
+                membership_frozen_at=now,
+                summary_dispatch_state="sending",
+                summary_dispatch_lease_until=None,
+            )
+            binding = DispatchBinding(
+                attempt_id=attempt_id,
+                card_kind=ApprovalCardKind.BATCH,
+                membership_revision=revision,
+                membership_digest=digest,
+            )
+            summary_action = "send"
         return BatchRegistration(
             batch=batch,
             member_count=member_count,
             summary_action=summary_action,
+            binding=binding,
         )
 
     @staticmethod
@@ -1291,31 +1735,145 @@ class OrderProposalsService:
     ) -> uuid.UUID | None:
         return await self._repo.resolve_approval_batch_id_prefix(batch_short)
 
+    @staticmethod
+    def _assert_published_batch_binding(
+        batch: OrderProposalApprovalBatch,
+        *,
+        callback: CallbackEnvelope,
+        chat_id: str,
+        now: datetime,
+    ) -> None:
+        if batch.chat_id != chat_id:
+            raise OrderProposalError("approval_batch_chat_mismatch")
+        if now >= batch.expires_at:
+            raise OrderProposalError("approval_batch_expired")
+        try:
+            state = ApprovalDispatchState(str(batch.approval_dispatch_state))
+        except ValueError as exc:
+            raise OrderProposalError("approval_dispatch_state_invalid") from exc
+        try:
+            assert_callback_gate(
+                snapshot=CallbackGateSnapshot(
+                    subject_short=str(batch.batch_id)[:8],
+                    state=state,
+                    attempt_id=batch.approval_dispatch_attempt_id,
+                    card_kind=ApprovalCardKind.BATCH,
+                    membership_revision=batch.membership_revision,
+                    membership_digest=batch.membership_digest,
+                    nonce=batch.approval_nonce,
+                    nonce_used=batch.approval_nonce_used_at is not None,
+                ),
+                callback=callback,
+            )
+        except ValueError as exc:
+            reason = str(exc)
+            if reason == "nonce_mismatch":
+                reason = "approval_batch_nonce_mismatch"
+            elif reason == "nonce_replay":
+                reason = "approval_batch_nonce_replay"
+            raise OrderProposalError(reason) from exc
+
+    async def preflight_published_batch_callback(
+        self,
+        batch_id: uuid.UUID,
+        *,
+        callback: CallbackEnvelope,
+        chat_id: str,
+        now: datetime,
+    ) -> OrderProposalApprovalBatch:
+        """Read-only batch binding gate; consuming gate rechecks under lock."""
+        self._require_timezone_aware(now)
+        batch = await self._repo.get_approval_batch_by_id(batch_id)
+        if batch is None:
+            raise OrderProposalError("approval_batch_not_found")
+        self._assert_published_batch_binding(
+            batch, callback=callback, chat_id=chat_id, now=now
+        )
+        return batch
+
     async def consume_approval_batch_nonce(
         self,
         batch_id: uuid.UUID,
-        nonce: str,
         *,
+        callback: CallbackEnvelope,
         chat_id: str,
         telegram_user_id: str,
         now: datetime,
     ) -> tuple[OrderProposalApprovalBatch, list[BatchMemberSnapshot]]:
-        """Atomically consume a batch trigger and freeze its ordered members."""
+        """Consume exactly the immutable membership snapshot shown on the card."""
         self._require_timezone_aware(now)
         batch = await self._repo.get_approval_batch_by_id(batch_id, for_update=True)
         if batch is None:
             raise OrderProposalError("approval_batch_not_found")
-        if batch.chat_id != chat_id:
-            raise OrderProposalError("approval_batch_chat_mismatch")
-        if batch.approval_nonce != nonce:
-            raise OrderProposalError("approval_batch_nonce_mismatch")
-        if batch.approval_nonce_used_at is not None:
-            raise OrderProposalError("approval_batch_nonce_replay")
-        if now >= batch.expires_at:
-            raise OrderProposalError("approval_batch_expired")
-        members = await self._repo.list_approval_batch_members(batch.id)
+        self._assert_published_batch_binding(
+            batch, callback=callback, chat_id=chat_id, now=now
+        )
+
+        members = [
+            member
+            for member in await self._repo.list_approval_batch_members(batch.id)
+            if member.membership_revision == callback.membership_revision
+        ]
         if len(members) < 2:
             raise OrderProposalError("approval_batch_too_small")
+
+        snapshots: list[BatchMemberSnapshot] = []
+        digest_members: list[dict[str, Any]] = []
+        for member in members:
+            group = await self._repo.get_group_by_pk(member.proposal_pk)
+            if group is None:
+                raise OrderProposalError("approval_batch_member_snapshot_invalid")
+            try:
+                card_kind = ApprovalCardKind(str(member.approval_card_kind_snapshot))
+            except ValueError as exc:
+                raise OrderProposalError(
+                    "approval_batch_member_snapshot_invalid"
+                ) from exc
+            if (
+                member.approval_dispatch_attempt_id_snapshot is None
+                or member.approval_membership_revision_snapshot is None
+                or member.approval_membership_digest_snapshot is None
+            ):
+                raise OrderProposalError("approval_batch_member_snapshot_invalid")
+            digest_members.append(
+                {
+                    "proposal_id": str(group.proposal_id),
+                    "approval_nonce": member.approval_nonce_snapshot,
+                    "approval_message_id": member.approval_message_id,
+                    "approval_dispatch_attempt_id": str(
+                        member.approval_dispatch_attempt_id_snapshot
+                    ),
+                    "approval_membership_revision": (
+                        member.approval_membership_revision_snapshot
+                    ),
+                    "approval_membership_digest": (
+                        member.approval_membership_digest_snapshot
+                    ),
+                }
+            )
+            snapshots.append(
+                BatchMemberSnapshot(
+                    member_id=member.id,
+                    proposal_id=group.proposal_id,
+                    approval_nonce=member.approval_nonce_snapshot,
+                    approval_message_id=member.approval_message_id,
+                    dispatch_binding=DispatchBinding(
+                        attempt_id=member.approval_dispatch_attempt_id_snapshot,
+                        card_kind=card_kind,
+                        membership_revision=(
+                            member.approval_membership_revision_snapshot
+                        ),
+                        membership_digest=(member.approval_membership_digest_snapshot),
+                    ),
+                )
+            )
+        actual_digest = build_membership_digest(
+            card_kind=ApprovalCardKind.BATCH,
+            membership_revision=callback.membership_revision,
+            members=digest_members,
+        )
+        if actual_digest != batch.membership_digest:
+            raise OrderProposalError("approval_batch_membership_digest_mismatch")
 
         await self._repo.update_approval_batch(
             batch,
@@ -1323,20 +1881,100 @@ class OrderProposalsService:
             approved_by_telegram_user_id=telegram_user_id,
             approved_at=now,
         )
-        snapshots: list[BatchMemberSnapshot] = []
-        for member in members:
-            group = await self._repo.get_group_by_pk(member.proposal_pk)
-            if group is None:
-                continue
-            snapshots.append(
-                BatchMemberSnapshot(
-                    member_id=member.id,
-                    proposal_id=group.proposal_id,
-                    approval_nonce=member.approval_nonce_snapshot,
-                    approval_message_id=member.approval_message_id,
-                )
-            )
         return batch, snapshots
+
+    async def record_approval_batch_payload(
+        self,
+        batch_id: uuid.UUID,
+        *,
+        attempt_id: uuid.UUID,
+        payload_chars: int,
+    ) -> OrderProposalApprovalBatch:
+        batch = await self._repo.get_approval_batch_by_id(batch_id, for_update=True)
+        if batch is None:
+            raise OrderProposalError("approval_batch_not_found")
+        if (
+            batch.approval_dispatch_attempt_id != attempt_id
+            or batch.approval_dispatch_state != ApprovalDispatchState.PENDING.value
+        ):
+            raise OrderProposalError("approval_batch_dispatch_owner_mismatch")
+        return await self._repo.update_approval_batch(
+            batch, approval_dispatch_payload_chars=payload_chars
+        )
+
+    async def finish_approval_batch_dispatch(
+        self,
+        batch_id: uuid.UUID,
+        *,
+        attempt_id: uuid.UUID,
+        publication: ApprovalPublication,
+        now: datetime,
+    ) -> TelegramDispatchResult:
+        """Finalize one immutable batch publication through its owner fence."""
+        self._require_timezone_aware(now)
+        batch = await self._repo.get_approval_batch_by_id(batch_id, for_update=True)
+        if batch is None:
+            raise OrderProposalError("approval_batch_not_found")
+        is_current_owner = (
+            batch.approval_dispatch_state == ApprovalDispatchState.PENDING.value
+            and batch.approval_dispatch_attempt_id == attempt_id
+            and batch.membership_revision is not None
+            and batch.membership_digest is not None
+            and batch.membership_frozen_at is not None
+        )
+        if not is_current_owner:
+            state = (
+                ApprovalDispatchState.SENT_SUPERSEDED
+                if publication.card_published
+                else ApprovalDispatchState.FAILED_SUPERSEDED
+            )
+            result = TelegramDispatchResult.from_publication(
+                publication,
+                state=state,
+                failure_code="approval_dispatch_superseded",
+            )
+            _log_dispatch_outcome(result, surface="batch")
+            return result
+        if publication.card_published:
+            state = ApprovalDispatchState.SENT_CURRENT
+            failure_code = None
+        elif publication.partial:
+            state = ApprovalDispatchState.PARTIAL_FAILED
+            failure_code = publication.failure_code or "telegram_dispatch_failed"
+        else:
+            state = ApprovalDispatchState.FAILED
+            failure_code = publication.failure_code or "telegram_dispatch_failed"
+        await self._repo.update_approval_batch(
+            batch,
+            approval_dispatch_state=state.value,
+            approval_dispatch_published_at=(
+                now if state is ApprovalDispatchState.SENT_CURRENT else None
+            ),
+            approval_dispatch_failure_code=failure_code,
+            approval_dispatch_payload_chars=publication.payload_chars,
+            telegram_status_code=publication.status_code,
+            telegram_error_code=publication.error_code,
+            error_classification=(
+                publication.error_classification.value
+                if publication.error_classification is not None
+                else None
+            ),
+            summary_message_id=(
+                publication.message_id
+                if state is ApprovalDispatchState.SENT_CURRENT
+                else None
+            ),
+            summary_dispatch_state=(
+                "sent" if state is ApprovalDispatchState.SENT_CURRENT else "idle"
+            ),
+            summary_dispatch_lease_until=None,
+            updated_at=now,
+        )
+        result = TelegramDispatchResult.from_publication(
+            publication, state=state, failure_code=failure_code
+        )
+        _log_dispatch_outcome(result, surface="batch")
+        return result
 
     async def record_approval_batch_summary(
         self,
@@ -1345,17 +1983,14 @@ class OrderProposalsService:
         message_id: int,
         now: datetime,
     ) -> OrderProposalApprovalBatch:
+        """Reject the legacy ownerless success transition.
+
+        Batch publication must be finalized with
+        ``finish_approval_batch_dispatch`` and its exact attempt ID.
+        """
         self._require_timezone_aware(now)
-        batch = await self._repo.get_approval_batch_by_id(batch_id, for_update=True)
-        if batch is None:
-            raise OrderProposalError("approval_batch_not_found")
-        return await self._repo.update_approval_batch(
-            batch,
-            summary_message_id=message_id,
-            summary_dispatch_state="sent",
-            summary_dispatch_lease_until=None,
-            updated_at=now,
-        )
+        del batch_id, message_id
+        raise OrderProposalError("approval_batch_ownerless_finalize_forbidden")
 
     async def release_approval_batch_summary_claim(
         self, batch_id: uuid.UUID, *, now: datetime
@@ -1367,6 +2002,8 @@ class OrderProposalsService:
         return await self._repo.update_approval_batch(
             batch,
             summary_dispatch_state="idle",
+            approval_dispatch_state=ApprovalDispatchState.FAILED.value,
+            approval_dispatch_failure_code="approval_batch_dispatch_failed",
             summary_dispatch_lease_until=None,
             updated_at=now,
         )
@@ -1382,6 +2019,11 @@ class OrderProposalsService:
             raise OrderProposalError("approval_batch_not_found")
         proposals: list[tuple[OrderProposal, list[OrderProposalRung]]] = []
         for member in await self._repo.list_approval_batch_members(batch.id):
+            if (
+                batch.membership_frozen_at is not None
+                and member.membership_revision != batch.membership_revision
+            ):
+                continue
             group = await self._repo.get_group_by_pk(member.proposal_pk)
             if group is None:
                 continue

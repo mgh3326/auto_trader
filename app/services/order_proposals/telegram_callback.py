@@ -27,14 +27,15 @@ Every broker/Telegram/DB dependency is injectable (``notifier``,
 ``revalidate_fn``, ``service_factory``) so tests can supply fakes; real
 broker/Telegram/httpx calls are never exercised by this module's test suite.
 
-Principle #5 (nonce replay prevention is load-bearing): ``consume_approval_nonce``
-is always called -- and its exceptions handled -- before any other mutation in
-both the approve and deny branches.
+Nonce replay prevention is load-bearing: every manual, batch, auto-veto, and
+loss-cut action crosses the shared published-snapshot gate before it can consume
+a nonce or reach submit/cancel.
 
 ``handle_callback_update`` never raises: Telegram's webhook contract expects a
-response for every update, so any unexpected exception is caught, logged, and
-turned into a failure result dict. Callback queries are answered best-effort as
-soon as their metadata is available, before validation or order processing.
+bounded result for every update, so any unexpected exception is caught, logged,
+and turned into a failure result dict. Callback queries are answered
+best-effort only after the non-consuming published-binding preflight succeeds;
+an invalid callback causes no external Telegram/provider/broker side effect.
 """
 
 from __future__ import annotations
@@ -53,7 +54,7 @@ from app.core.db import AsyncSessionLocal
 from app.mcp_server.caller_identity import caller_agent_id_var
 from app.services.order_proposals.approval_message import (
     _escape_markdown,
-    build_approval_message,
+    build_approval_dispatch_messages,
     build_batch_result_message,
     build_buying_power_shortfall_text,
     build_loss_cut_confirmation_message,
@@ -69,6 +70,13 @@ from app.services.order_proposals.broker_gateway import (
     cancel_target_order,
     fetch_target_order,
 )
+from app.services.order_proposals.dispatch import publish_approval_messages
+from app.services.order_proposals.dispatch_contract import (
+    ApprovalCardKind,
+    ApprovalPublication,
+    CallbackEnvelope,
+    build_proposal_dispatch_binding,
+)
 from app.services.order_proposals.errors import OrderProposalError
 from app.services.order_proposals.revalidation import (
     RungOutcome,
@@ -77,6 +85,11 @@ from app.services.order_proposals.revalidation import (
 from app.services.order_proposals.service import (
     OrderProposalsService,
     batch_member_block_reason,
+)
+from app.telegram_contract import (
+    TelegramErrorClassification,
+    TelegramMethodResult,
+    telegram_text_length,
 )
 
 logger = logging.getLogger(__name__)
@@ -142,7 +155,7 @@ def _outcome_error_summary(outcome: RungOutcome, *, limit: int = 240) -> str | N
 
 
 def _generate_nonce() -> str:
-    return secrets.token_urlsafe(12)
+    return secrets.token_urlsafe(8)
 
 
 async def _safe_answer(
@@ -150,16 +163,18 @@ async def _safe_answer(
 ) -> None:
     """Best-effort ``answer_callback`` that never raises.
 
-    Used both on the happy/known-failure paths and from the top-level
-    exception handler, where a second failure (e.g. the notifier itself
-    raising) must not crash the handler.
+    Called only after the published-binding preflight succeeds. A notifier
+    failure must not crash the handler.
     """
     if not callback_query_id:
         return
     try:
         await notifier.answer_callback(callback_query_id, text)
-    except Exception:  # noqa: BLE001 - best-effort, never propagate
-        logger.exception("order_proposals telegram answer_callback failed")
+    except Exception as exc:  # noqa: BLE001 - best-effort, never propagate
+        logger.error(
+            "order_proposals.telegram.answer_callback_failed",
+            extra={"exception_type": type(exc).__name__},
+        )
 
 
 async def _safe_edit_message(
@@ -168,7 +183,7 @@ async def _safe_edit_message(
     message_id: int,
     text: str,
     reply_markup: dict | None = None,
-) -> None:
+) -> TelegramMethodResult:
     """Best-effort ``edit_message`` that never raises.
 
     Belt-and-suspenders alongside the commit-before-notify ordering in
@@ -179,25 +194,18 @@ async def _safe_edit_message(
     action as ``"internal_error"``).
     """
     try:
-        await notifier.edit_message(
+        return await notifier.edit_message(
             chat_id, message_id, text, reply_markup=reply_markup
         )
     except Exception:  # noqa: BLE001 - best-effort, never propagate
-        logger.exception("order_proposals telegram edit_message failed")
-
-
-async def _safe_send_approval_message(
-    notifier: Any, text: str, keyboard: dict, *, chat_id: str
-) -> int | None:
-    """Best-effort ``send_approval_message`` that never raises.
-
-    See ``_safe_edit_message`` docstring for why this must never propagate.
-    """
-    try:
-        return await notifier.send_approval_message(text, keyboard, chat_id=chat_id)
-    except Exception:  # noqa: BLE001 - best-effort, never propagate
-        logger.exception("order_proposals telegram send_approval_message failed")
-        return None
+        logger.error(
+            "order_proposals.telegram.edit_message_failed",
+        )
+        return TelegramMethodResult.failed(
+            payload_chars=telegram_text_length(text),
+            failure_code="telegram_transport_error",
+            error_classification=TelegramErrorClassification.TRANSPORT_ERROR,
+        )
 
 
 async def _resolve_proposal_id(service: Any, proposal_short: str) -> uuid.UUID | None:
@@ -210,6 +218,30 @@ async def _resolve_proposal_id(service: Any, proposal_short: str) -> uuid.UUID |
     rather than guess.
     """
     return await service.resolve_proposal_id_prefix(proposal_short)
+
+
+async def _preflight_proposal_callback(
+    *,
+    session: AsyncSession,
+    service: OrderProposalsService,
+    proposal_id: uuid.UUID,
+    callback: CallbackEnvelope,
+    notifier: Any,
+    callback_query_id: str | None,
+) -> dict[str, Any] | None:
+    """Run the shared non-consuming gate before any callback-side external I/O."""
+    try:
+        await service.preflight_published_proposal_callback(
+            proposal_id, callback=callback
+        )
+    except OrderProposalError as exc:
+        # End the read transaction without writing. Invalid bindings must not
+        # trigger even a Telegram callback answer, preview, provider fetch, or
+        # dry-run broker path.
+        await session.commit()
+        return {"handled": False, "reason": str(exc), "proposal_id": str(proposal_id)}
+    await _safe_answer(notifier, callback_query_id, "처리 중")
+    return None
 
 
 def _build_result_summary(outcomes: list[RungOutcome]) -> str:
@@ -283,19 +315,31 @@ async def _handle_deny(
     session: AsyncSession,
     service: OrderProposalsService,
     proposal_id: uuid.UUID,
-    nonce: str,
+    callback: CallbackEnvelope,
     now: datetime,
     notifier: Any,
     chat_id: Any,
     message_id: int | None,
     callback_query_id: str | None,
 ) -> dict[str, Any]:
+    preflight_failure = await _preflight_proposal_callback(
+        session=session,
+        service=service,
+        proposal_id=proposal_id,
+        callback=callback,
+        notifier=notifier,
+        callback_query_id=callback_query_id,
+    )
+    if preflight_failure is not None:
+        return preflight_failure
     try:
-        await service.consume_approval_nonce(proposal_id, nonce, now=now)
+        await service.consume_published_proposal_callback(
+            proposal_id, callback=callback, now=now
+        )
     except OrderProposalError as exc:
         # No mutation happened above (mismatch/replay both raise before any
         # flush) -- commit anyway to release the row lock taken by
-        # `consume_approval_nonce`'s `for_update=True` SELECT.
+        # the common callback gate's `for_update=True` SELECT.
         await session.commit()
         return {"handled": False, "reason": str(exc), "proposal_id": str(proposal_id)}
 
@@ -327,22 +371,35 @@ async def _handle_auto_veto(
     session: AsyncSession,
     service: OrderProposalsService,
     proposal_id: uuid.UUID,
-    nonce: str,
+    callback: CallbackEnvelope,
     now: datetime,
     notifier: Any,
     chat_id: Any,
     message_id: int | None,
+    callback_query_id: str | None = None,
     telegram_user_id: str,
     cancel_fn: TargetCancelFn,
     fetch_fn: TargetFetchFn,
 ) -> dict[str, Any]:
     """Cancel every still-open auto-submitted rung and converge evidence."""
+    preflight_failure = await _preflight_proposal_callback(
+        session=session,
+        service=service,
+        proposal_id=proposal_id,
+        callback=callback,
+        notifier=notifier,
+        callback_query_id=callback_query_id,
+    )
+    if preflight_failure is not None:
+        return preflight_failure
     group, rungs = await service.get_proposal(proposal_id)
     # Match replace/cancel lock ordering: broker target advisory locks before
     # the proposal-row nonce lock, with stable ordering for multi-rung groups.
     await acquire_auto_veto_locks(service=service, group=group, rungs=rungs)
     try:
-        await service.consume_auto_veto_nonce(proposal_id, nonce, now=now)
+        await service.consume_published_proposal_callback(
+            proposal_id, callback=callback, now=now
+        )
     except OrderProposalError as exc:
         await session.commit()
         return {"handled": False, "reason": str(exc), "proposal_id": str(proposal_id)}
@@ -400,7 +457,7 @@ async def _handle_approve(
     session: AsyncSession,
     service: OrderProposalsService,
     proposal_id: uuid.UUID,
-    nonce: str,
+    callback: CallbackEnvelope,
     now: datetime,
     notifier: Any,
     chat_id: Any,
@@ -410,12 +467,44 @@ async def _handle_approve(
     revalidate_fn: RevalidateFn,
     loss_cut_confirmation: bool = False,
 ) -> dict[str, Any]:
+    preflight_failure = await _preflight_proposal_callback(
+        session=session,
+        service=service,
+        proposal_id=proposal_id,
+        callback=callback,
+        notifier=notifier,
+        callback_query_id=callback_query_id,
+    )
+    if preflight_failure is not None:
+        return preflight_failure
     # Lock the broker target before taking any proposal row lock. Independently
     # created proposals may point at the same manual/session order, so the
     # proposal-scoped commit lease alone cannot prevent a double mutation.
     target_group, _ = await service.get_proposal(proposal_id)
     await service.acquire_target_mutation_lock(target_group)
 
+    try:
+        if loss_cut_confirmation:
+            await service.consume_published_proposal_callback(
+                proposal_id,
+                callback=callback,
+                telegram_user_id=telegram_user_id,
+                now=now,
+            )
+        else:
+            await service.consume_published_proposal_callback(
+                proposal_id, callback=callback, now=now
+            )
+    except OrderProposalError as exc:
+        # See `_handle_deny`'s matching comment: no mutation happened above,
+        # but commit anyway to release the row lock.
+        await session.commit()
+        return {"handled": False, "reason": str(exc), "proposal_id": str(proposal_id)}
+
+    # A pending/failed/superseded visible card must cross the authoritative
+    # publication gate before even a local expiry transition is allowed.
+    # For a valid SENT_CURRENT card, consuming the one-shot nonce and expiring
+    # the proposal happen in this same caller-owned transaction.
     if await service.expire_if_needed(proposal_id, now=now):
         await session.commit()
         if message_id is not None:
@@ -426,22 +515,6 @@ async def _handle_approve(
             "reason": "proposal_expired",
             "proposal_id": str(proposal_id),
         }
-
-    try:
-        if loss_cut_confirmation:
-            await service.consume_loss_cut_confirmation(
-                proposal_id,
-                nonce,
-                telegram_user_id=telegram_user_id,
-                now=now,
-            )
-        else:
-            await service.consume_approval_nonce(proposal_id, nonce, now=now)
-    except OrderProposalError as exc:
-        # See `_handle_deny`'s matching comment: no mutation happened above,
-        # but commit anyway to release the row lock.
-        await session.commit()
-        return {"handled": False, "reason": str(exc), "proposal_id": str(proposal_id)}
 
     acquired = await service.acquire_commit_lease(proposal_id, now=now)
     if not acquired:
@@ -487,15 +560,21 @@ async def _handle_approve(
         fresh_nonce = _generate_nonce()
         await service.set_approval_nonce(proposal_id, fresh_nonce)
         group, rungs = await service.get_proposal(proposal_id)
-        text, keyboard = build_approval_message(
-            group=group, rungs=rungs, diff=reconfirm_outcomes[0].detail
+        dispatch_attempt_id = uuid.uuid4()
+        binding = build_proposal_dispatch_binding(
+            proposal_id=group.proposal_id,
+            nonce=fresh_nonce,
+            attempt_id=dispatch_attempt_id,
+            card_kind=ApprovalCardKind.RECONFIRM,
+            current_membership_revision=(group.approval_dispatch_membership_revision),
         )
+        suffix_blocks: list[str] = []
         # `build_approval_message` only renders an explicit diff for the
         # first reconfirming rung -- surface every other reconfirming rung's
         # before/after here so a multi-rung reconfirm batch never silently
         # drops a rung's change (Finding 2, gap #1).
         if len(reconfirm_outcomes) > 1:
-            text = f"{text}\n\n{_build_extra_reconfirm_block(reconfirm_outcomes[1:])}"
+            suffix_blocks.append(_build_extra_reconfirm_block(reconfirm_outcomes[1:]))
         # Rungs in the same batch that did NOT come back `needs_reconfirm`
         # (e.g. one rung submitted while another needs reconfirmation) would
         # otherwise never be reported anywhere, since this branch
@@ -503,7 +582,22 @@ async def _handle_approve(
         # 2, gap #2).
         other_outcomes = [o for o in outcomes if o.result != "needs_reconfirm"]
         if other_outcomes:
-            text = f"{text}\n\n{_build_result_summary(other_outcomes)}"
+            suffix_blocks.append(_build_result_summary(other_outcomes))
+        messages = build_approval_dispatch_messages(
+            group=group,
+            rungs=rungs,
+            diff=reconfirm_outcomes[0].detail,
+            suffix_blocks=suffix_blocks,
+            binding=binding,
+        )
+        await service.start_approval_dispatch(
+            proposal_id,
+            attempt_id=dispatch_attempt_id,
+            binding=binding,
+            now=now,
+            payload_chars=messages.payload_chars,
+            context_message_count=len(messages.context_messages),
+        )
 
         # Commit the fresh nonce + record_approval + revalidate_and_submit's
         # rung-state transitions before any Telegram call -- a notify
@@ -524,29 +618,26 @@ async def _handle_approve(
                     else "⚠️ 재확인 필요 — 아래 새 메시지를 확인해 주세요."
                 ),
             )
-        new_message_id = await _safe_send_approval_message(
-            notifier, text, keyboard, chat_id=str(chat_id)
+        publication = await publish_approval_messages(
+            notifier=notifier,
+            messages=messages,
+            chat_id=str(chat_id),
         )
-        if new_message_id is not None:
-            # Mirror dispatch.py's send_proposal_for_approval: keep
-            # source_asof.approval_message_id pointing at the NEWEST
-            # outstanding Telegram message, not the original one from
-            # dispatch.py -- otherwise a later reader of source_asof would
-            # see a stale/superseded message_id for this reconfirm cycle
-            # (ROB-816 final-review Finding 4). A failed send
-            # (new_message_id is None) has nothing to persist.
-            await service.record_approval_dispatch(
-                proposal_id,
-                message_id=new_message_id,
-                chat_id=str(chat_id),
-                now=now,
-            )
-            await session.commit()
+        dispatch_result = await service.finish_approval_dispatch(
+            proposal_id,
+            attempt_id=dispatch_attempt_id,
+            publication=publication,
+            chat_id=str(chat_id),
+            now=now,
+        )
+        await session.commit()
+        new_message_id = dispatch_result.message_id if dispatch_result.ok else None
         return {
             "handled": True,
             "reason": "needs_reconfirm",
             "proposal_id": str(proposal_id),
             "new_message_id": new_message_id,
+            "approval_dispatch": dispatch_result.as_dict(),
             "results": [outcome.result for outcome in outcomes],
             "rung_results": _serialize_rung_outcomes(outcomes),
         }
@@ -573,11 +664,12 @@ async def _handle_batch_approve(
     *,
     service_factory: ServiceFactory,
     batch_short: str,
-    nonce: str,
+    callback: CallbackEnvelope,
     now: datetime,
     notifier: Any,
     chat_id: Any,
     message_id: int | None,
+    callback_query_id: str | None = None,
     telegram_user_id: str,
     revalidate_fn: RevalidateFn,
 ) -> dict[str, Any]:
@@ -589,9 +681,20 @@ async def _handle_batch_approve(
             await session.commit()
             return {"handled": False, "reason": "approval_batch_not_found"}
         try:
+            await service.preflight_published_batch_callback(
+                batch_id,
+                callback=callback,
+                chat_id=str(chat_id),
+                now=now,
+            )
+        except OrderProposalError as exc:
+            await session.commit()
+            return {"handled": False, "reason": str(exc)}
+        await _safe_answer(notifier, callback_query_id, "처리 중")
+        try:
             _batch, members = await service.consume_approval_batch_nonce(
                 batch_id,
-                nonce,
+                callback=callback,
                 chat_id=str(chat_id),
                 telegram_user_id=telegram_user_id,
                 now=now,
@@ -634,7 +737,18 @@ async def _handle_batch_approve(
                         session=member_session,
                         service=member_service,
                         proposal_id=member.proposal_id,
-                        nonce=member.approval_nonce,
+                        callback=CallbackEnvelope(
+                            action="op",
+                            subject_short=str(member.proposal_id)[:8],
+                            attempt_id=member.dispatch_binding.attempt_id,
+                            membership_revision=(
+                                member.dispatch_binding.membership_revision
+                            ),
+                            membership_digest=(
+                                member.dispatch_binding.membership_digest
+                            ),
+                            nonce=member.approval_nonce,
+                        ),
                         now=now,
                         notifier=notifier,
                         chat_id=chat_id,
@@ -663,10 +777,13 @@ async def _handle_batch_approve(
                         member_message = (
                             f"⚠️ 일괄 승인 제외 — {_escape_markdown(reason)}"
                         )
-            except Exception:  # noqa: BLE001 - isolate each batch member
-                logger.exception(
-                    "order_proposals batch member approval failed",
-                    extra={"proposal_id": str(member.proposal_id)},
+            except Exception as exc:  # noqa: BLE001 - isolate each batch member
+                logger.error(
+                    "order_proposals.batch_member.approval_failed",
+                    extra={
+                        "proposal_id": str(member.proposal_id),
+                        "exception_type": type(exc).__name__,
+                    },
                 )
                 await member_session.rollback()
                 member_result.update(status="failed", reason="internal_error")
@@ -691,10 +808,13 @@ async def _handle_batch_approve(
                     now=now,
                 )
                 await member_session.commit()
-            except Exception:  # noqa: BLE001 - observation must not stop the batch
-                logger.exception(
-                    "order_proposals batch member result audit failed",
-                    extra={"proposal_id": str(member.proposal_id)},
+            except Exception as exc:  # noqa: BLE001 - observation must not stop the batch
+                logger.error(
+                    "order_proposals.batch_member.result_record_failed",
+                    extra={
+                        "proposal_id": str(member.proposal_id),
+                        "exception_type": type(exc).__name__,
+                    },
                 )
                 await member_session.rollback()
 
@@ -733,15 +853,26 @@ async def _handle_loss_cut_first_click(
     session: AsyncSession,
     service: OrderProposalsService,
     proposal_id: uuid.UUID,
-    nonce: str,
+    callback: CallbackEnvelope,
     now: datetime,
     notifier: Any,
     chat_id: Any,
     message_id: int | None,
+    callback_query_id: str | None = None,
     telegram_user_id: str,
     loss_cut_preview_fn: RevalidateFn,
 ) -> dict[str, Any]:
     """Consume step one and edit the message into a bound confirmation."""
+    preflight_failure = await _preflight_proposal_callback(
+        session=session,
+        service=service,
+        proposal_id=proposal_id,
+        callback=callback,
+        notifier=notifier,
+        callback_query_id=callback_query_id,
+    )
+    if preflight_failure is not None:
+        return preflight_failure
     submit_agent_id = settings.ORDER_PROPOSALS_SUBMIT_AGENT_ID.strip() or None
     caller_agent_id_token = caller_agent_id_var.set(submit_agent_id)
     try:
@@ -751,7 +882,9 @@ async def _handle_loss_cut_first_click(
     finally:
         caller_agent_id_var.reset(caller_agent_id_token)
     try:
-        await service.consume_approval_nonce(proposal_id, nonce, now=now)
+        await service.consume_published_proposal_callback(
+            proposal_id, callback=callback, now=now
+        )
     except OrderProposalError as exc:
         await session.commit()
         return {"handled": False, "reason": str(exc), "proposal_id": str(proposal_id)}
@@ -759,28 +892,74 @@ async def _handle_loss_cut_first_click(
     confirmation_nonce = _generate_nonce()
     await service.issue_loss_cut_confirmation(
         proposal_id,
-        first_nonce=nonce,
+        first_nonce=callback.nonce,
         confirmation_nonce=confirmation_nonce,
         telegram_user_id=telegram_user_id,
         now=now,
     )
     group, rungs = await service.get_proposal(proposal_id)
+    dispatch_attempt_id = uuid.uuid4()
+    binding = build_proposal_dispatch_binding(
+        proposal_id=group.proposal_id,
+        nonce=confirmation_nonce,
+        attempt_id=dispatch_attempt_id,
+        card_kind=ApprovalCardKind.LOSS_CUT_CONFIRMATION,
+        current_membership_revision=group.approval_dispatch_membership_revision,
+    )
     text, keyboard = build_loss_cut_confirmation_message(
-        group=group, rungs=rungs, evidence=evidence
+        group=group, rungs=rungs, evidence=evidence, binding=binding
+    )
+    await service.start_approval_dispatch(
+        proposal_id,
+        attempt_id=dispatch_attempt_id,
+        binding=binding,
+        now=now,
+        payload_chars=telegram_text_length(text),
+        context_message_count=0,
     )
     await session.commit()
-    if message_id is not None:
-        await _safe_edit_message(
+    if message_id is None:
+        publication = ApprovalPublication.failed(
+            payload_chars=telegram_text_length(text),
+            failure_code="approval_edit_message_missing",
+        )
+    else:
+        method_result = await _safe_edit_message(
             notifier,
             chat_id,
             message_id,
             text,
             reply_markup=keyboard,
         )
+        publication = (
+            ApprovalPublication.published(
+                payload_chars=telegram_text_length(text),
+                method_result=method_result,
+            )
+            if method_result.ok
+            else ApprovalPublication.failed(
+                payload_chars=telegram_text_length(text),
+                failure_code="approval_card_edit_failed",
+                method_result=method_result,
+            )
+        )
+    dispatch_result = await service.finish_approval_dispatch(
+        proposal_id,
+        attempt_id=dispatch_attempt_id,
+        publication=publication,
+        chat_id=str(chat_id),
+        now=now,
+    )
+    await session.commit()
     return {
-        "handled": True,
-        "reason": "loss_cut_confirmation_required",
+        "handled": dispatch_result.ok,
+        "reason": (
+            "loss_cut_confirmation_required"
+            if dispatch_result.ok
+            else "loss_cut_confirmation_dispatch_failed"
+        ),
         "proposal_id": str(proposal_id),
+        "approval_dispatch": dispatch_result.as_dict(),
     }
 
 
@@ -817,25 +996,24 @@ async def handle_callback_update(
         telegram_user_id = from_user.get("id")
         data = callback_query.get("data")
 
-        await _safe_answer(active_notifier, callback_query_id, "처리 중")
-
         if str(chat_id) not in settings.order_proposals_telegram_chat_allowlist:
             return {"handled": False, "reason": "chat_not_allowed"}
 
         try:
-            action, subject_short, nonce = parse_callback_data(data)
+            callback = parse_callback_data(data)
         except ValueError:
             return {"handled": False, "reason": "malformed_callback_data"}
 
-        if action == "ba":
+        if callback.action == "ba":
             return await _handle_batch_approve(
                 service_factory=service_factory,
-                batch_short=subject_short,
-                nonce=nonce,
+                batch_short=callback.subject_short,
+                callback=callback,
                 now=now,
                 notifier=active_notifier,
                 chat_id=chat_id,
                 message_id=message_id,
+                callback_query_id=callback_query_id,
                 telegram_user_id=(
                     str(telegram_user_id) if telegram_user_id is not None else ""
                 ),
@@ -844,40 +1022,41 @@ async def handle_callback_update(
 
         async with service_factory() as session:
             service = OrderProposalsService(session)
-            proposal_id = await _resolve_proposal_id(service, subject_short)
+            proposal_id = await _resolve_proposal_id(service, callback.subject_short)
             if proposal_id is None:
                 await session.commit()
                 return {"handled": False, "reason": "proposal_not_found"}
 
-            if action == "vc":
+            if callback.action == "vc":
                 result = await _handle_auto_veto(
                     session=session,
                     service=service,
                     proposal_id=proposal_id,
-                    nonce=nonce,
+                    callback=callback,
                     now=now,
                     notifier=active_notifier,
                     chat_id=chat_id,
                     message_id=message_id,
+                    callback_query_id=callback_query_id,
                     telegram_user_id=(
                         str(telegram_user_id) if telegram_user_id is not None else ""
                     ),
                     cancel_fn=veto_cancel_fn,
                     fetch_fn=veto_fetch_fn,
                 )
-            elif action == "dn":
+            elif callback.action == "dn":
                 result = await _handle_deny(
                     session=session,
                     service=service,
                     proposal_id=proposal_id,
-                    nonce=nonce,
+                    callback=callback,
                     now=now,
                     notifier=active_notifier,
                     chat_id=chat_id,
                     message_id=message_id,
                     callback_query_id=callback_query_id,
                 )
-            elif action == "op":
+            elif callback.action == "op":
                 group, _rungs = await service.get_proposal(proposal_id)
                 if group.exit_intent == "loss_cut":
                     if loss_cut_preview_fn is None:
@@ -890,11 +1069,12 @@ async def handle_callback_update(
                         session=session,
                         service=service,
                         proposal_id=proposal_id,
-                        nonce=nonce,
+                        callback=callback,
                         now=now,
                         notifier=active_notifier,
                         chat_id=chat_id,
                         message_id=message_id,
+                        callback_query_id=callback_query_id,
                         telegram_user_id=(
                             str(telegram_user_id)
                             if telegram_user_id is not None
@@ -907,7 +1087,7 @@ async def handle_callback_update(
                     session=session,
                     service=service,
                     proposal_id=proposal_id,
-                    nonce=nonce,
+                    callback=callback,
                     now=now,
                     notifier=active_notifier,
                     chat_id=chat_id,
@@ -923,7 +1103,7 @@ async def handle_callback_update(
                     session=session,
                     service=service,
                     proposal_id=proposal_id,
-                    nonce=nonce,
+                    callback=callback,
                     now=now,
                     notifier=active_notifier,
                     chat_id=chat_id,
@@ -940,6 +1120,9 @@ async def handle_callback_update(
             # call (see module docstring: commit-before-notify ordering) --
             # no end-of-function commit here.
             return result
-    except Exception:  # noqa: BLE001 - fail-closed webhook contract
-        logger.exception("order_proposals telegram callback handling failed")
+    except Exception as exc:  # noqa: BLE001 - fail-closed webhook contract
+        logger.error(
+            "order_proposals.telegram.callback_handling_failed",
+            extra={"exception_type": type(exc).__name__},
+        )
         return {"handled": False, "reason": "internal_error"}

@@ -12,6 +12,7 @@ from app.mcp_server.tooling import order_proposal_tools as opt
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.errors import OrderProposalError
 from app.services.order_proposals.target_order import TargetOrderSnapshot
+from app.telegram_contract import TelegramMethodResult, telegram_text_length
 
 
 def _unique_chat() -> str:
@@ -26,17 +27,42 @@ class _FakeNotifier:
         self.edited: list[tuple[str, int, str, object]] = []
         self._message_id = message_id
 
-    async def send_approval_message(self, text, inline_keyboard, *, chat_id):
+    async def send_approval_message(
+        self, text, inline_keyboard, *, chat_id, parse_mode="Markdown"
+    ):
         self.calls.append((text, inline_keyboard, chat_id))
-        return self._message_id
+        if self._message_id is None:
+            return TelegramMethodResult.failed(
+                payload_chars=telegram_text_length(text),
+                failure_code="telegram_error_400",
+                status_code=400,
+                error_code=400,
+            )
+        return TelegramMethodResult(
+            ok=True,
+            message_id=self._message_id,
+            status_code=200,
+            error_code=None,
+            error_classification=None,
+            payload_chars=telegram_text_length(text),
+        )
 
     async def edit_message(self, chat_id, message_id, text, reply_markup=None):
         self.edited.append((chat_id, message_id, text, reply_markup))
-        return True
+        return TelegramMethodResult(
+            ok=True,
+            message_id=message_id,
+            status_code=200,
+            error_code=None,
+            error_classification=None,
+            payload_chars=telegram_text_length(text),
+        )
 
 
 class _RaisingNotifier:
-    async def send_approval_message(self, text, inline_keyboard, *, chat_id):
+    async def send_approval_message(
+        self, text, inline_keyboard, *, chat_id, parse_mode="Markdown"
+    ):
         raise RuntimeError("telegram down")
 
 
@@ -573,9 +599,36 @@ async def test_create_dispatches_telegram_when_enabled_and_allowlisted(monkeypat
     created = await opt.order_proposal_create(**_create_kwargs())
 
     assert created["success"] is True
+    assert created["approval_dispatch"]["ok"] is True
+    assert created["approval_dispatch"]["state"] == "sent"
+    assert created["approval_dispatch"]["message_id"] == 9999
     assert len(fake_notifier.calls) == 1
     _, _, chat_id = fake_notifier.calls[0]
     assert chat_id == chat
+
+
+@pytest.mark.asyncio
+async def test_create_4444_thesis_returns_visible_split_dispatch_result(monkeypatch):
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
+    chat = _unique_chat()
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", chat)
+    fake_notifier = _FakeNotifier(message_id=10001)
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.notifier.get_trade_notifier",
+        lambda: fake_notifier,
+    )
+
+    created = await opt.order_proposal_create(
+        **_create_kwargs(thesis="가" * 4444, strategy="분할 매도")
+    )
+
+    assert created["success"] is True
+    assert created["approval_dispatch"]["ok"] is True
+    assert created["approval_dispatch"]["state"] == "sent"
+    assert created["approval_dispatch"]["payload_chars"] > 4096
+    assert len(fake_notifier.calls) == 3
+    assert all(keyboard is None for _, keyboard, _ in fake_notifier.calls[:-1])
+    assert fake_notifier.calls[-1][1]["inline_keyboard"]
 
 
 @pytest.mark.asyncio
@@ -657,6 +710,12 @@ async def test_create_does_not_dispatch_when_telegram_disabled(monkeypatch):
 
     assert created["success"] is True
     assert fake_notifier.calls == []
+    assert created["approval_dispatch"]["ok"] is False
+    assert created["approval_dispatch"]["state"] == "failed"
+    assert created["approval_dispatch"]["failure_code"] == "telegram_disabled"
+    got = await opt.order_proposal_get(created["proposal_id"])
+    assert got["proposal"]["approval_dispatch_state"] == "failed"
+    assert got["proposal"]["approval_dispatch_failure_code"] == "telegram_disabled"
 
 
 @pytest.mark.asyncio
@@ -673,6 +732,9 @@ async def test_create_does_not_dispatch_when_allowlist_empty(monkeypatch):
 
     assert created["success"] is True
     assert fake_notifier.calls == []
+    assert created["approval_dispatch"]["ok"] is False
+    assert created["approval_dispatch"]["state"] == "failed"
+    assert created["approval_dispatch"]["failure_code"] == "telegram_allowlist_empty"
 
 
 @pytest.mark.asyncio
@@ -689,6 +751,10 @@ async def test_create_succeeds_even_when_notifier_raises(monkeypatch):
 
     assert created["success"] is True
     assert "proposal_id" in created
+    assert created["approval_dispatch"]["ok"] is False
+    assert (
+        created["approval_dispatch"]["failure_code"] == "approval_card_dispatch_failed"
+    )
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,11 @@ import httpx
 
 from app.core.timezone import format_datetime
 from app.services.fill_notification import FillEnrichment, FillOrder
+from app.telegram_contract import (
+    TelegramErrorClassification,
+    TelegramMethodResult,
+    telegram_text_length,
+)
 
 from . import formatters_discord as fmt_discord
 from . import formatters_telegram as fmt_telegram
@@ -173,18 +178,24 @@ class TradeNotifier:
     async def send_approval_message(
         self,
         text: str,
-        inline_keyboard: dict[str, Any],
+        inline_keyboard: dict[str, Any] | None,
         *,
         chat_id: str,
-    ) -> int | None:
+        parse_mode: str | None = "Markdown",
+    ) -> TelegramMethodResult:
         """Send a Telegram approval message using the singleton HTTP client."""
         if not self._http_client or not self._bot_token:
-            return None
+            return TelegramMethodResult.failed(
+                payload_chars=telegram_text_length(text),
+                failure_code="telegram_notifier_unconfigured",
+                error_classification=TelegramErrorClassification.NOT_CONFIGURED,
+            )
         return await send_telegram_message(
             http_client=self._http_client,
             bot_token=self._bot_token,
             chat_id=chat_id,
             text=text,
+            parse_mode=parse_mode,
             reply_markup=inline_keyboard,
         )
 
@@ -207,10 +218,14 @@ class TradeNotifier:
         message_id: int,
         text: str,
         reply_markup: dict[str, Any] | None = None,
-    ) -> bool:
+    ) -> TelegramMethodResult:
         """Edit a Telegram message using the singleton HTTP client."""
         if not self._http_client or not self._bot_token:
-            return False
+            return TelegramMethodResult.failed(
+                payload_chars=telegram_text_length(text),
+                failure_code="telegram_notifier_unconfigured",
+                error_classification=TelegramErrorClassification.NOT_CONFIGURED,
+            )
         return await edit_message_text(
             http_client=self._http_client,
             bot_token=self._bot_token,
