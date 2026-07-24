@@ -239,16 +239,15 @@ def _load_main_module(
 
 @pytest.mark.unit
 class TestMcpServerMain:
-    def test_registers_caller_identity_middleware_after_sentry(
+    def test_registers_caller_identity_middleware_before_sentry(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _, mcp, _, _, _ = _load_main_module(monkeypatch)
 
         calls = [call.args[0] for call in mcp.add_middleware.call_args_list]
-        # Sentry (outermost) then CallerIdentity, then ROB-469 PR2's
-        # ToolTimeoutMiddleware added LAST so it is innermost (wraps the tool) while
-        # Sentry stays outermost and captures the timeout ToolError.
-        assert calls[:2] == ["middleware", "caller-identity-middleware"]
+        # Caller identity is outermost so Sentry sees its request context; the
+        # ToolTimeoutMiddleware remains innermost and Sentry still wraps it.
+        assert calls[:2] == ["caller-identity-middleware", "middleware"]
         assert type(calls[2]).__name__ == "ToolTimeoutMiddleware"
         assert len(calls) == 3
 
