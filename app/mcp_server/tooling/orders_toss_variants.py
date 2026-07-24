@@ -8,6 +8,7 @@ Every tool is hard-pinned to ``account_mode="toss_live"``. They:
 
 from __future__ import annotations
 
+import inspect
 import logging
 import re
 import uuid
@@ -83,6 +84,19 @@ def _bind_toss_pre_send_hook(hook: PreSendHook | None):
         yield
     finally:
         _toss_pre_send_hook.reset(token)
+
+
+def _accepts_pre_send_hook(method: Callable[..., Awaitable[Any]]) -> bool:
+    """Whether an injected Toss client exposes the current mutation protocol."""
+    try:
+        parameters = inspect.signature(method).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    return any(
+        parameter.name == "pre_send_hook"
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
 
 
 TOSS_LIVE_ORDER_TOOL_NAMES: set[str] = {
@@ -1405,6 +1419,13 @@ async def _toss_place_order_impl(
         res = None
         try:
             if pre_send_hook is None:
+                res = await client.place_order(payload)
+            elif not _accepts_pre_send_hook(client.place_order):
+                # Keep compatibility with injected clients implementing the
+                # original one-argument protocol. The hook still runs
+                # immediately before their mutation; the first-party client
+                # accepts the hook and rechecks it inside every HTTP attempt.
+                await pre_send_hook()
                 res = await client.place_order(payload)
             else:
                 res = await client.place_order(

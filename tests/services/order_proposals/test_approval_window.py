@@ -21,6 +21,7 @@ from app.services.order_proposals.approval_window import (
     ApprovalWindowCode,
     SubmissionSessionEvidence,
     evaluate_approval_window,
+    evaluate_approval_window_boundary,
 )
 from app.services.order_proposals.dispatch_contract import (
     ApprovalCardKind,
@@ -42,6 +43,8 @@ def _group(
     account_mode: str = "kis_live",
     symbol: str = "VOO",
     valid_until: object,
+    exit_intent: str | None = None,
+    exit_reason: str | None = None,
 ):
     return SimpleNamespace(
         market=market,
@@ -50,6 +53,8 @@ def _group(
         valid_until=valid_until,
         action="place",
         order_type="limit",
+        exit_intent=exit_intent,
+        exit_reason=exit_reason,
     )
 
 
@@ -756,6 +761,73 @@ async def test_unknown_calendar_and_no_executable_next_window_are_distinct():
         {"approval_window": no_window.to_dict()},
     )
     assert next_allowed_at in callback_module._window_outcome_text(outcome)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exit_intent", ["loss_cut", "defensive_trim"])
+async def test_exit_intent_bypasses_unknown_toss_calendar_at_common_boundary(
+    monkeypatch, exit_intent
+):
+    now = datetime(2026, 7, 23, 8, 50, tzinfo=policy._KST)
+    calendar_calls = 0
+
+    async def unavailable_calendar(market, query_date):
+        nonlocal calendar_calls
+        calendar_calls += 1
+        return None
+
+    monkeypatch.setattr(policy, "get_toss_market_calendar", unavailable_calendar)
+    group = _group(
+        account_mode="toss_live",
+        valid_until=now + timedelta(days=1),
+        exit_intent=exit_intent,
+        exit_reason="stop_loss",
+    )
+
+    direct_decision = await evaluate_approval_window(group, now=now)
+    decision = await evaluate_approval_window_boundary(
+        group,
+        window_evaluator=evaluate_approval_window,
+        now_fn=lambda: now,
+        expected_policy_stamp="stale-window-policy-stamp",
+    )
+
+    assert direct_decision.code is ApprovalWindowCode.ALLOW
+    assert decision.code is ApprovalWindowCode.ALLOW
+    assert decision.detail == "exit_intent_session_calendar_exempt"
+    assert decision.evidence is not None
+    assert decision.evidence.source == "proposal_exit_intent"
+    assert calendar_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_non_exit_intent_still_fails_closed_when_toss_calendar_unknown(
+    monkeypatch,
+):
+    now = datetime(2026, 7, 23, 8, 50, tzinfo=policy._KST)
+    calendar_calls = 0
+
+    async def unavailable_calendar(market, query_date):
+        nonlocal calendar_calls
+        calendar_calls += 1
+        return None
+
+    monkeypatch.setattr(policy, "get_toss_market_calendar", unavailable_calendar)
+    group = _group(
+        account_mode="toss_live",
+        valid_until=now + timedelta(days=1),
+        exit_reason="stop_loss",
+    )
+
+    decision = await evaluate_approval_window_boundary(
+        group,
+        window_evaluator=evaluate_approval_window,
+        now_fn=lambda: now,
+        require_policy_stamp=False,
+    )
+
+    assert decision.code is ApprovalWindowCode.CALENDAR_UNKNOWN
+    assert calendar_calls == 1
 
 
 class _FakeRevalidationService:
@@ -1689,45 +1761,20 @@ async def test_batch_rechecks_frozen_members_before_global_nonce(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_loss_cut_first_click_session_block_precedes_external_preview():
+async def test_loss_cut_first_click_expiry_precedes_external_preview():
     now = datetime(2026, 7, 23, 8, 50, tzinfo=policy._KST)
-    item = _FakeRevalidationService(valid_until=now + timedelta(days=1))
+    item = _FakeRevalidationService(valid_until=now)
+    item.group.exit_intent = "loss_cut"
 
-    async def evaluator(group, *, now):
-        async def resolver(group, *, now):
-            return SubmissionSessionEvidence(
-                known=True,
-                source="test:us-calendar",
-                current_session="closed",
-                allowed_sessions=("regular",),
-                allowed_now=False,
-                next_allowed_at=now + timedelta(hours=12),
-            )
+    async def evaluator_must_not_run(group, *, now):
+        raise AssertionError("exit-intent validity must resolve before session I/O")
 
-        return await evaluate_approval_window(group, now=now, session_resolver=resolver)
-
-    # Bind the card to the same stable capability contract while it was open.
-    async def dispatch_resolver(group, *, now):
-        return SubmissionSessionEvidence(
-            known=True,
-            source="test:us-calendar",
-            current_session="regular",
-            allowed_sessions=("regular",),
-            allowed_now=True,
-        )
-
-    dispatched = await evaluate_approval_window(
-        item.group,
-        now=now - timedelta(hours=1),
-        session_resolver=dispatch_resolver,
-    )
-    item.group.source_asof = {"approval_window_policy_stamp": dispatched.policy_stamp}
     preview_calls = 0
 
     async def preview_must_not_run(**kwargs):
         nonlocal preview_calls
         preview_calls += 1
-        raise AssertionError("closed session must block before loss-cut preview")
+        raise AssertionError("expired loss cut must block before preview")
 
     class FakeSession:
         async def commit(self):
@@ -1744,13 +1791,13 @@ async def test_loss_cut_first_click_session_block_precedes_external_preview():
         message_id=None,
         telegram_user_id="777",
         loss_cut_preview_fn=preview_must_not_run,
-        window_evaluator=evaluator,
+        window_evaluator=evaluator_must_not_run,
         now_fn=lambda: now,
     )
 
-    assert result["reason"] == "DEFER_SESSION_CLOSED"
+    assert result["reason"] == "EXPIRED"
     assert preview_calls == 0
-    assert item.expire_calls == 0
+    assert item.expire_calls == 1
 
 
 _JULY_23_INCIDENT = (

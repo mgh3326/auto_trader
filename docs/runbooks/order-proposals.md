@@ -99,7 +99,14 @@ See the full design in
   unknown/stale calendar or venue evidence fail closed. US DAY proposals use
   authoritative regular-session calendars (holiday, half-day, and DST aware);
   KR preserves KRX regular and fresh, positively confirmed NXT carry; Upbit
-  crypto is 24/7.
+  crypto is 24/7. Protective exits are deliberately validity-only at this
+  boundary: a non-null `exit_intent` (including `loss_cut` and the
+  forward-compatible `defensive_trim`) bypasses session/calendar resolution
+  and approval-window policy-stamp binding at the common evaluator entry
+  point. This keeps the confirmation and fresh broker guards reachable even
+  when calendar evidence is unavailable. Expired, missing, malformed, or
+  timezone-naive `valid_until` still fails closed, and `exit_reason` without
+  `exit_intent` does not qualify.
 - **Batch nonce is not proposal authorization.** ROB-870 atomically consumes a
   separate batch nonce only after every locked member passes the approval-
   window preflight and the exact ordered `(proposal_id, nonce snapshot)`

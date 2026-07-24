@@ -773,7 +773,12 @@ order mutation.
     US DAY proposals are regular-session only and use the existing XNYS or
     Toss broker calendar; KR keeps KRX regular plus positively confirmed,
     fresh NXT eligibility; Upbit crypto remains 24/7. Unknown calendar or
-    capability evidence also fails closed.
+    capability evidence also fails closed. A proposal with a non-null
+    `exit_intent` is a protective exit and bypasses only session/calendar
+    resolution and approval-window policy-stamp binding, so calendar
+    uncertainty cannot preempt its confirmation flow. Its `valid_until`
+    remains mandatory and fail-closed; `exit_reason` alone grants no
+    exemption.
   - A dispatch block does not fail proposal persistence. The create response
     adds `approval_dispatch={status:"blocked", code, ...}` with typed
     `EXPIRED`, `INVALID_VALID_UNTIL`, `DEFER_SESSION_CLOSED`,

@@ -10,6 +10,10 @@ That ordering is load-bearing. An already-expired proposal never needs a
 calendar lookup and can never degrade into a session defer. The returned
 decision is typed and side-effect free; top-level callers own expiry
 convergence and transaction boundaries.
+
+Protective exits are the deliberate exception to the second layer:
+``exit_intent`` proposals retain the validity check but bypass session,
+calendar, and approval-window policy-stamp interpretation.
 """
 
 from __future__ import annotations
@@ -155,6 +159,59 @@ def _policy_stamp(group: Any, evidence: SubmissionSessionEvidence | None = None)
     )
     digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
     return f"{POLICY_VERSION}:{digest}"
+
+
+def _exit_intent_window_exemption(
+    group: Any,
+    *,
+    now: datetime,
+) -> ApprovalWindowDecision | None:
+    """Return the validity-only decision for a protective exit proposal.
+
+    ``exit_intent`` is the discriminator. Supporting metadata such as
+    ``exit_reason`` must never grant this exemption by itself.
+    """
+    if not getattr(group, "exit_intent", None):
+        return None
+
+    market, account_mode, action, order_type = _contract_fields(group)
+    raw_valid_until = getattr(group, "valid_until", None)
+    valid_until = raw_valid_until if isinstance(raw_valid_until, datetime) else None
+    common = {
+        "observed_at": now,
+        "valid_until": valid_until,
+        "market": market,
+        "account_mode": account_mode,
+        "action": action,
+        "order_type": order_type,
+    }
+    validity_block = valid_until_block(raw_valid_until, now=now)
+    if validity_block is not None:
+        code, detail = validity_block
+        return ApprovalWindowDecision(
+            code=code,
+            policy_stamp=_policy_stamp(group),
+            detail=detail,
+            **common,
+        )
+
+    assert isinstance(raw_valid_until, datetime)
+    evidence = SubmissionSessionEvidence(
+        known=True,
+        source="proposal_exit_intent",
+        current_session="exempt",
+        allowed_sessions=("exit_intent_exempt",),
+        allowed_now=True,
+        allowed_until=raw_valid_until,
+        detail="protective_exit_session_calendar_exempt",
+    )
+    return ApprovalWindowDecision(
+        code=ApprovalWindowCode.ALLOW,
+        policy_stamp=_policy_stamp(group, evidence),
+        evidence=evidence,
+        detail="exit_intent_session_calendar_exempt",
+        **common,
+    )
 
 
 def _containing_window(
@@ -460,10 +517,14 @@ async def evaluate_approval_window(
     session_resolver: SessionResolver = resolve_submission_session,
 ) -> ApprovalWindowDecision:
     """Return the fail-closed decision for dispatch/callback/submit."""
-    market, account_mode, action, order_type = _contract_fields(group)
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("approval-window now must be timezone-aware")
 
+    exit_exemption = _exit_intent_window_exemption(group, now=now)
+    if exit_exemption is not None:
+        return exit_exemption
+
+    market, account_mode, action, order_type = _contract_fields(group)
     raw_valid_until = getattr(group, "valid_until", None)
     valid_until = raw_valid_until if isinstance(raw_valid_until, datetime) else None
     common = {
@@ -656,8 +717,23 @@ async def evaluate_approval_window_boundary(
     expected_policy_stamp: str | None = None,
     require_policy_stamp: bool = True,
 ) -> ApprovalWindowDecision:
-    """Evaluate and then re-sample at the exact caller boundary."""
-    decision = await window_evaluator(group, now=now_fn())
+    """Evaluate and then re-sample at the exact caller boundary.
+
+    This is the common production entry point for dispatch, callback, and
+    revalidation. It applies the exit-intent exemption before invoking even an
+    injected evaluator, so protective exits cannot touch calendar/session I/O
+    or degrade into ``CALENDAR_UNKNOWN`` through policy-stamp binding.
+    """
+    evaluation_now = now_fn()
+    exit_exemption = _exit_intent_window_exemption(group, now=evaluation_now)
+    if exit_exemption is not None:
+        return recheck_approval_window_decision(
+            group,
+            exit_exemption,
+            now=now_fn(),
+        )
+
+    decision = await window_evaluator(group, now=evaluation_now)
     if require_policy_stamp:
         decision = bind_approval_window_policy(decision, expected_policy_stamp)
     return recheck_approval_window_decision(group, decision, now=now_fn())
