@@ -1200,7 +1200,12 @@ class TestPlaceOrderHighAmount:
         assert result["dry_run"] is False
         assert result["preview"]["quantity"] == pytest.approx(0.1, rel=1e-6)
         mock.place_buy_order.assert_awaited_once_with(
-            "KRW-BTC", 50000000.0, "0.10000000", "limit", identifier=ANY
+            "KRW-BTC",
+            50000000.0,
+            "0.10000000",
+            "limit",
+            identifier=ANY,
+            pre_send_hook=None,
         )
 
     @pytest.mark.asyncio
@@ -1282,7 +1287,12 @@ class TestPlaceOrderHighAmount:
         assert "Daily order limit" not in str(result.get("error", ""))
         assert "Daily order limit" not in str(result.get("message", ""))
         mock.place_buy_order.assert_awaited_once_with(
-            "KRW-BTC", 50000000.0, "0.10000000", "limit", identifier=ANY
+            "KRW-BTC",
+            50000000.0,
+            "0.10000000",
+            "limit",
+            identifier=ANY,
+            pre_send_hook=None,
         )
 
 
@@ -1899,7 +1909,16 @@ async def test_place_order_crypto_sell_records_stop_loss_cooldown(monkeypatch):
         def adjust_price_to_upbit_unit(self, price):
             return price
 
-        async def place_sell_order(self, symbol, volume, price, identifier=None):
+        async def place_sell_order(
+            self,
+            symbol,
+            volume,
+            price,
+            identifier=None,
+            pre_send_hook=None,
+        ):
+            if pre_send_hook is not None:
+                await pre_send_hook()
             return {
                 "uuid": _unique_order_id("cd-sell-loss"),
                 "side": "ask",
@@ -2003,7 +2022,16 @@ async def test_place_order_crypto_profitable_sell_does_not_record_cooldown(monke
         def adjust_price_to_upbit_unit(self, price):
             return price
 
-        async def place_sell_order(self, symbol, volume, price, identifier=None):
+        async def place_sell_order(
+            self,
+            symbol,
+            volume,
+            price,
+            identifier=None,
+            pre_send_hook=None,
+        ):
+            if pre_send_hook is not None:
+                await pre_send_hook()
             return {
                 "uuid": _unique_order_id("cd-sell-profit"),
                 "side": "ask",
