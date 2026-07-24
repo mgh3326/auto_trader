@@ -29,7 +29,10 @@ broker/Telegram/httpx calls are never exercised by this module's test suite.
 
 Nonce replay prevention is load-bearing: every manual, batch, auto-veto, and
 loss-cut action crosses the shared published-snapshot gate before it can consume
-a nonce or reach submit/cancel.
+a nonce or reach submit/cancel. After that non-consuming snapshot gate,
+approval-window checks run before nonce consumption. An expired proposal
+converges through the authoritative expiry transition while leaving the nonce
+unconsumed. Deny retains its existing consume-before-reject ordering.
 
 ``handle_callback_update`` never raises: Telegram's webhook contract expects a
 bounded result for every update, so any unexpected exception is caught, logged,
@@ -59,6 +62,17 @@ from app.services.order_proposals.approval_message import (
     build_buying_power_shortfall_text,
     build_loss_cut_confirmation_message,
     parse_callback_data,
+)
+from app.services.order_proposals.approval_window import (
+    ApprovalWindowCode,
+    ApprovalWindowDecision,
+    WindowEvaluator,
+    approval_window_operator_text,
+    approval_window_rung_result,
+    evaluate_approval_window,
+    evaluate_approval_window_boundary,
+    recheck_approval_window_decision,
+    valid_until_block,
 )
 from app.services.order_proposals.auto_veto import (
     TargetCancelFn,
@@ -96,6 +110,7 @@ logger = logging.getLogger(__name__)
 
 ServiceFactory = Callable[[], Any]
 RevalidateFn = Callable[..., Any]
+Clock = Callable[[], datetime]
 
 # Rung states from which a direct transition to "rejected" is legal (see
 # app/services/order_proposals/state_machine.py). A Telegram deny only ever
@@ -114,12 +129,83 @@ _RESULT_LABELS: dict[str, str] = {
     "error": "오류",
     "needs_reconfirm": "재확인 필요",
     "cancelled": "취소 확인",
+    "expired": "제안 만료",
+    "invalid_valid_until": "유효기간 오류",
+    "defer_session_closed": "주문 가능 세션 아님",
+    "calendar_unknown": "시장 세션 확인 불가",
+    "no_executable_window": "다음 가능 세션 전 만료",
 }
 
 _BATCH_SUCCESS_RESULTS = frozenset(
     {"submitted_acked", "submitted_resting", "cancelled"}
 )
 _BATCH_SKIP_RESULTS = frozenset({"guard_blocked", "approval_required"})
+_WINDOW_BLOCK_RESULTS = frozenset(
+    {
+        "expired",
+        "invalid_valid_until",
+        "defer_session_closed",
+        "calendar_unknown",
+        "no_executable_window",
+    }
+)
+_BATCH_SKIP_RESULTS = _BATCH_SKIP_RESULTS | _WINDOW_BLOCK_RESULTS
+
+
+async def _evaluate_bound_window(
+    group: Any,
+    *,
+    window_evaluator: WindowEvaluator,
+    now_fn: Clock | None = None,
+    now: datetime | None = None,
+) -> ApprovalWindowDecision:
+    if now_fn is None:
+        if now is None:
+            raise ValueError("approval-window boundary requires a clock")
+
+        def now_fn() -> datetime:
+            return now
+
+    expected = (group.source_asof or {}).get("approval_window_policy_stamp")
+    return await evaluate_approval_window_boundary(
+        group,
+        window_evaluator=window_evaluator,
+        now_fn=now_fn,
+        expected_policy_stamp=str(expected) if expected is not None else None,
+    )
+
+
+async def _reject_window_callback(
+    *,
+    session: AsyncSession,
+    service: OrderProposalsService,
+    proposal_id: uuid.UUID,
+    decision: ApprovalWindowDecision,
+    now: datetime,
+    notifier: Any,
+    chat_id: Any,
+    message_id: int | None,
+    callback_query_id: str | None,
+) -> dict[str, Any]:
+    if decision.code is ApprovalWindowCode.EXPIRED:
+        await service.expire_mutable_rungs_if_needed(proposal_id, now=now)
+    await session.commit()
+    text = approval_window_operator_text(decision)
+    if message_id is not None:
+        await _safe_edit_message(
+            notifier,
+            chat_id,
+            message_id,
+            text,
+            reply_markup={"inline_keyboard": []},
+        )
+    await _safe_answer(notifier, callback_query_id, text)
+    return {
+        "handled": False,
+        "reason": decision.code.value,
+        "proposal_id": str(proposal_id),
+        "approval_window": decision.to_dict(),
+    }
 
 
 def _serialize_rung_outcomes(outcomes: list[RungOutcome]) -> list[dict[str, Any]]:
@@ -152,6 +238,34 @@ def _outcome_error_summary(outcome: RungOutcome, *, limit: int = 240) -> str | N
     if len(compact) > limit:
         compact = compact[: limit - 1] + "…"
     return _escape_markdown(compact)
+
+
+def _window_outcome_text(outcome: RungOutcome) -> str | None:
+    payload = (outcome.detail or {}).get("approval_window")
+    if not isinstance(payload, Mapping):
+        return None
+    code = str(payload.get("code") or "")
+    if code == ApprovalWindowCode.EXPIRED.value:
+        return "제안 만료"
+    if code == ApprovalWindowCode.INVALID_VALID_UNTIL.value:
+        return "제안 유효기간 오류"
+    if code == ApprovalWindowCode.CALENDAR_UNKNOWN.value:
+        return "시장 세션 확인 불가"
+    if code in {
+        ApprovalWindowCode.NO_EXECUTABLE_WINDOW.value,
+        ApprovalWindowCode.DEFER_SESSION_CLOSED.value,
+    }:
+        evidence = payload.get("session_evidence")
+        next_at = (
+            evidence.get("next_allowed_at") if isinstance(evidence, Mapping) else None
+        )
+        prefix = (
+            "다음 주문 가능 세션 전에 만료"
+            if code == ApprovalWindowCode.NO_EXECUTABLE_WINDOW.value
+            else "주문 가능 세션 아님"
+        )
+        return f"{prefix} — 다음 허용 세션: {next_at or '확인 불가'}"
+    return None
 
 
 def _generate_nonce() -> str:
@@ -250,13 +364,25 @@ def _build_result_summary(outcomes: list[RungOutcome]) -> str:
     lines = ["*처리 결과*"]
     for outcome in outcomes:
         label = _RESULT_LABELS.get(outcome.result, outcome.result)
+        window_text = _window_outcome_text(outcome)
+        if window_text is not None:
+            label = window_text
         # Merged with main's parallel fix: PR-3a's summarizer (compacted,
         # length-capped, markdown-escaped) + main's "submit_rejected"
         # fallback for error outcomes whose detail carries no error text.
         reason = _outcome_error_summary(outcome)
         if outcome.result == "error" and not reason:
             reason = "submit\\_rejected"
-        if reason and outcome.result in {"guard_blocked", "error"}:
+        if (
+            reason
+            and window_text is None
+            and outcome.result
+            in {
+                "guard_blocked",
+                "error",
+                *_WINDOW_BLOCK_RESULTS,
+            }
+        ):
             label = f"{label} — {reason}"
         lines.append(f"- #{outcome.rung_index + 1}: {label}")
     return "\n".join(lines)
@@ -465,8 +591,12 @@ async def _handle_approve(
     callback_query_id: str | None,
     telegram_user_id: str,
     revalidate_fn: RevalidateFn,
+    window_evaluator: WindowEvaluator | None = None,
+    now_fn: Clock | None = None,
     loss_cut_confirmation: bool = False,
 ) -> dict[str, Any]:
+    window_evaluator = window_evaluator or evaluate_approval_window
+    now_fn = now_fn or (lambda: now)
     preflight_failure = await _preflight_proposal_callback(
         session=session,
         service=service,
@@ -483,17 +613,56 @@ async def _handle_approve(
     target_group, _ = await service.get_proposal(proposal_id)
     await service.acquire_target_mutation_lock(target_group)
 
+    window = await _evaluate_bound_window(
+        target_group, window_evaluator=window_evaluator, now_fn=now_fn
+    )
+    approval_now = window.observed_at
+    if not window.allowed:
+        return await _reject_window_callback(
+            session=session,
+            service=service,
+            proposal_id=proposal_id,
+            decision=window,
+            now=approval_now,
+            notifier=notifier,
+            chat_id=chat_id,
+            message_id=message_id,
+            callback_query_id=callback_query_id,
+        )
+
+    # Session resolution may await broker/calendar I/O. Re-sample and
+    # re-evaluate at the nonce boundary so an edge crossed during that lookup
+    # cannot consume the single-use approval token.
+    window = await _evaluate_bound_window(
+        target_group, window_evaluator=window_evaluator, now_fn=now_fn
+    )
+    approval_now = window.observed_at
+    if not window.allowed:
+        return await _reject_window_callback(
+            session=session,
+            service=service,
+            proposal_id=proposal_id,
+            decision=window,
+            now=approval_now,
+            notifier=notifier,
+            chat_id=chat_id,
+            message_id=message_id,
+            callback_query_id=callback_query_id,
+        )
+
     try:
         if loss_cut_confirmation:
             await service.consume_published_proposal_callback(
                 proposal_id,
                 callback=callback,
                 telegram_user_id=telegram_user_id,
-                now=now,
+                now=approval_now,
             )
         else:
             await service.consume_published_proposal_callback(
-                proposal_id, callback=callback, now=now
+                proposal_id,
+                callback=callback,
+                now=approval_now,
             )
     except OrderProposalError as exc:
         # See `_handle_deny`'s matching comment: no mutation happened above,
@@ -501,22 +670,7 @@ async def _handle_approve(
         await session.commit()
         return {"handled": False, "reason": str(exc), "proposal_id": str(proposal_id)}
 
-    # A pending/failed/superseded visible card must cross the authoritative
-    # publication gate before even a local expiry transition is allowed.
-    # For a valid SENT_CURRENT card, consuming the one-shot nonce and expiring
-    # the proposal happen in this same caller-owned transaction.
-    if await service.expire_if_needed(proposal_id, now=now):
-        await session.commit()
-        if message_id is not None:
-            await _safe_edit_message(notifier, chat_id, message_id, "⌛ 제안 만료")
-        await _safe_answer(notifier, callback_query_id, "제안이 만료되었습니다")
-        return {
-            "handled": False,
-            "reason": "proposal_expired",
-            "proposal_id": str(proposal_id),
-        }
-
-    acquired = await service.acquire_commit_lease(proposal_id, now=now)
+    acquired = await service.acquire_commit_lease(proposal_id, now=approval_now)
     if not acquired:
         # Same rationale -- release the `for_update=True` lock before return.
         await session.commit()
@@ -527,7 +681,7 @@ async def _handle_approve(
         }
 
     await service.record_approval(
-        proposal_id, telegram_user_id=telegram_user_id, now=now
+        proposal_id, telegram_user_id=telegram_user_id, now=approval_now
     )
 
     # A rung that came back `needs_reconfirm` on a previous approve click is
@@ -549,14 +703,111 @@ async def _handle_approve(
     submit_agent_id = settings.ORDER_PROPOSALS_SUBMIT_AGENT_ID.strip() or None
     caller_agent_id_token = caller_agent_id_var.set(submit_agent_id)
     try:
-        outcomes: list[RungOutcome] = await revalidate_fn(
-            service=service, proposal_id=proposal_id, now=now
-        )
+        revalidate_kwargs: dict[str, Any] = {
+            "service": service,
+            "proposal_id": proposal_id,
+            "now": approval_now,
+        }
+        if revalidate_fn is revalidate_and_submit:
+            revalidate_kwargs.update(
+                window_evaluator=window_evaluator,
+                expected_policy_stamp=window.policy_stamp,
+                now_fn=now_fn,
+            )
+        outcomes: list[RungOutcome] = await revalidate_fn(**revalidate_kwargs)
     finally:
         caller_agent_id_var.reset(caller_agent_id_token)
 
+    window_blocked = [
+        outcome for outcome in outcomes if outcome.result in _WINDOW_BLOCK_RESULTS
+    ]
+    all_window_blocked = bool(outcomes) and len(window_blocked) == len(outcomes)
+    target_was_cancelled = any(
+        bool((outcome.detail or {}).get("target_cancelled"))
+        for outcome in window_blocked
+    )
+    zero_send_results = _WINDOW_BLOCK_RESULTS | {
+        "needs_reconfirm",
+        "guard_blocked",
+        "approval_required",
+    }
+    zero_send_window_block = bool(window_blocked) and all(
+        outcome.result in zero_send_results for outcome in outcomes
+    )
+    if zero_send_window_block and not target_was_cancelled:
+        expired = any(outcome.result == "expired" for outcome in window_blocked)
+        if expired:
+            await service.expire_mutable_rungs_if_needed(
+                proposal_id,
+                now=now_fn(),
+            )
+        await service.restore_approval_after_window_block(
+            proposal_id,
+            nonce=callback.nonce,
+            expired=expired,
+        )
+        summary = _build_result_summary(outcomes)
+        await session.commit()
+        if message_id is not None:
+            await _safe_edit_message(
+                notifier,
+                chat_id,
+                message_id,
+                summary,
+                reply_markup={"inline_keyboard": []},
+            )
+        first_window = window_blocked[0]
+        operator_reason = _window_outcome_text(first_window)
+        return {
+            "handled": False,
+            "reason": str(
+                (first_window.detail or {}).get("error") or "approval_window_blocked"
+            ),
+            "operator_reason": operator_reason,
+            "proposal_id": str(proposal_id),
+            "results": [outcome.result for outcome in outcomes],
+            "rung_results": _serialize_rung_outcomes(outcomes),
+        }
+
     reconfirm_outcomes = [o for o in outcomes if o.result == "needs_reconfirm"]
     if reconfirm_outcomes:
+        reconfirm_group, _ = await service.get_proposal(proposal_id)
+        reconfirm_window = await _evaluate_bound_window(
+            reconfirm_group,
+            window_evaluator=window_evaluator,
+            now_fn=now_fn,
+        )
+        reconfirm_now = reconfirm_window.observed_at
+        if not reconfirm_window.allowed:
+            return await _reject_window_callback(
+                session=session,
+                service=service,
+                proposal_id=proposal_id,
+                decision=reconfirm_window,
+                now=reconfirm_now,
+                notifier=notifier,
+                chat_id=chat_id,
+                message_id=message_id,
+                callback_query_id=callback_query_id,
+            )
+        reconfirm_window = await _evaluate_bound_window(
+            reconfirm_group,
+            window_evaluator=window_evaluator,
+            now_fn=now_fn,
+        )
+        reconfirm_now = reconfirm_window.observed_at
+        if not reconfirm_window.allowed:
+            return await _reject_window_callback(
+                session=session,
+                service=service,
+                proposal_id=proposal_id,
+                decision=reconfirm_window,
+                now=reconfirm_now,
+                notifier=notifier,
+                chat_id=chat_id,
+                message_id=message_id,
+                callback_query_id=callback_query_id,
+            )
         fresh_nonce = _generate_nonce()
         await service.set_approval_nonce(proposal_id, fresh_nonce)
         group, rungs = await service.get_proposal(proposal_id)
@@ -590,11 +841,50 @@ async def _handle_approve(
             suffix_blocks=suffix_blocks,
             binding=binding,
         )
+        send_window = await _evaluate_bound_window(
+            group,
+            window_evaluator=window_evaluator,
+            now_fn=now_fn,
+        )
+        if not send_window.allowed:
+            if send_window.code is ApprovalWindowCode.EXPIRED:
+                await service.expire_mutable_rungs_if_needed(
+                    proposal_id,
+                    now=send_window.observed_at,
+                )
+            await service.restore_approval_after_window_block(
+                proposal_id,
+                nonce=fresh_nonce,
+                expired=send_window.code is ApprovalWindowCode.EXPIRED,
+            )
+            if send_window.code is not ApprovalWindowCode.EXPIRED:
+                await service.clear_approval_nonce(
+                    proposal_id,
+                    expected_nonce=fresh_nonce,
+                )
+            await session.commit()
+            rejection_text = approval_window_operator_text(send_window)
+            if message_id is not None:
+                await _safe_edit_message(
+                    notifier,
+                    chat_id,
+                    message_id,
+                    rejection_text,
+                    reply_markup={"inline_keyboard": []},
+                )
+            return {
+                "handled": False,
+                "reason": send_window.code.value,
+                "proposal_id": str(proposal_id),
+                "approval_window": send_window.to_dict(),
+                "results": [outcome.result for outcome in outcomes],
+                "rung_results": _serialize_rung_outcomes(outcomes),
+            }
         await service.start_approval_dispatch(
             proposal_id,
             attempt_id=dispatch_attempt_id,
             binding=binding,
-            now=now,
+            now=send_window.observed_at,
             payload_chars=messages.payload_chars,
             context_message_count=len(messages.context_messages),
         )
@@ -628,7 +918,8 @@ async def _handle_approve(
             attempt_id=dispatch_attempt_id,
             publication=publication,
             chat_id=str(chat_id),
-            now=now,
+            now=send_window.observed_at,
+            approval_window_policy_stamp=send_window.policy_stamp,
         )
         await session.commit()
         new_message_id = dispatch_result.message_id if dispatch_result.ok else None
@@ -652,8 +943,17 @@ async def _handle_approve(
     if message_id is not None:
         await _safe_edit_message(notifier, chat_id, message_id, summary)
     return {
-        "handled": True,
-        "reason": "approved",
+        "handled": not all_window_blocked,
+        "reason": (
+            str(
+                (window_blocked[0].detail or {}).get("error")
+                or "approval_window_blocked"
+            )
+            if all_window_blocked
+            else "approved_with_window_block"
+            if window_blocked
+            else "approved"
+        ),
         "proposal_id": str(proposal_id),
         "results": [outcome.result for outcome in outcomes],
         "rung_results": _serialize_rung_outcomes(outcomes),
@@ -672,32 +972,181 @@ async def _handle_batch_approve(
     callback_query_id: str | None = None,
     telegram_user_id: str,
     revalidate_fn: RevalidateFn,
+    window_evaluator: WindowEvaluator,
+    now_fn: Clock,
 ) -> dict[str, Any]:
     """Consume one batch trigger and process every frozen member independently."""
     async with service_factory() as session:
         service = OrderProposalsService(session)
+        await service.acquire_approval_batch_chat_lock(str(chat_id))
         batch_id = await service.resolve_approval_batch_id_prefix(batch_short)
         if batch_id is None:
             await session.commit()
             return {"handled": False, "reason": "approval_batch_not_found"}
+
+        gate_now = now_fn()
         try:
+            # Validate the #1646 publication owner/membership/nonce snapshot
+            # before any calendar lookup or Telegram callback answer. An
+            # expired batch may proceed only far enough to converge an expired
+            # member; the consuming gate below still rejects the batch TTL.
             await service.preflight_published_batch_callback(
                 batch_id,
                 callback=callback,
                 chat_id=str(chat_id),
-                now=now,
+                now=gate_now,
+                allow_expired=True,
             )
         except OrderProposalError as exc:
             await session.commit()
             return {"handled": False, "reason": str(exc)}
+
+        batch, proposals = await service.get_approval_batch_display(
+            batch_id,
+            for_update=True,
+        )
+        gate_now = now_fn()
+        batch_expired = gate_now >= batch.expires_at
+        if len(proposals) < 2:
+            await session.commit()
+            return {"handled": False, "reason": "approval_batch_too_small"}
+        member_expired = False
+        for group, _rungs in proposals:
+            validity_block = valid_until_block(group.valid_until, now=gate_now)
+            if (
+                validity_block is not None
+                and validity_block[0] is ApprovalWindowCode.EXPIRED
+            ):
+                member_expired = True
+                break
+        if batch_expired and not member_expired:
+            # A stale batch TTL must not produce Telegram/provider side
+            # effects. Continue only when the batch deadline was bounded by a
+            # member's valid_until so that member can durably converge to
+            # expired without consuming either nonce.
+            await session.commit()
+            return {"handled": False, "reason": "approval_batch_expired"}
         await _safe_answer(notifier, callback_query_id, "처리 중")
+
+        preflight: list[tuple[Any, list[Any], str | None, ApprovalWindowDecision]] = []
+        batch_window_blocked = False
+        for group, rungs in proposals:
+            block_reason = batch_member_block_reason(group, rungs, now=gate_now)
+            decision = await _evaluate_bound_window(
+                group, window_evaluator=window_evaluator, now_fn=now_fn
+            )
+            gate_now = decision.observed_at
+            if block_reason is not None or not decision.allowed:
+                batch_window_blocked = True
+            preflight.append((group, rungs, block_reason, decision))
+
+        if not batch_window_blocked:
+            # The calendar lookups above are awaited member-by-member. Repeat
+            # the exact frozen set at the nonce boundary so an open/expiry
+            # boundary crossed while evaluating a large batch cannot consume
+            # the batch trigger on stale evidence.
+            gate_now = now_fn()
+            preflight = []
+            for group, rungs in proposals:
+                block_reason = batch_member_block_reason(
+                    group,
+                    rungs,
+                    now=gate_now,
+                )
+                decision = await _evaluate_bound_window(
+                    group, window_evaluator=window_evaluator, now_fn=now_fn
+                )
+                gate_now = decision.observed_at
+                if block_reason is not None or not decision.allowed:
+                    batch_window_blocked = True
+                preflight.append((group, rungs, block_reason, decision))
+
+        gate_now = now_fn()
+        preflight = [
+            (
+                group,
+                rungs,
+                batch_member_block_reason(group, rungs, now=gate_now),
+                recheck_approval_window_decision(group, decision, now=gate_now),
+            )
+            for group, rungs, _block_reason, decision in preflight
+        ]
+        batch_window_blocked = any(
+            block_reason is not None or not decision.allowed
+            for _group, _rungs, block_reason, decision in preflight
+        )
+
+        if batch_window_blocked:
+            blocked_results: list[dict[str, Any]] = []
+            for group, rungs, block_reason, decision in preflight:
+                if decision.code is ApprovalWindowCode.EXPIRED:
+                    await service.expire_mutable_rungs_if_needed(
+                        group.proposal_id,
+                        now=gate_now,
+                    )
+                if block_reason is not None:
+                    reason = block_reason
+                    rung_results: list[dict[str, Any]] = []
+                elif not decision.allowed:
+                    reason = approval_window_operator_text(decision)
+                    rung_result = approval_window_rung_result(decision)
+                    rung_results = [
+                        {"rung_index": rung.rung_index, "result": rung_result}
+                        for rung in rungs
+                        if rung.state in {"pending_approval", "needs_reconfirm"}
+                    ]
+                else:
+                    reason = "batch_atomic_window_block"
+                    rung_results = []
+                blocked_results.append(
+                    {
+                        "proposal_id": str(group.proposal_id),
+                        "status": "skipped",
+                        "reason": reason,
+                        "rung_results": rung_results,
+                    }
+                )
+            await session.commit()
+            if message_id is not None:
+                await _safe_edit_message(
+                    notifier,
+                    chat_id,
+                    message_id,
+                    build_batch_result_message(
+                        proposals=proposals, results=blocked_results
+                    ),
+                    reply_markup={"inline_keyboard": []},
+                )
+            return {
+                "handled": False,
+                "reason": "BATCH_WINDOW_BLOCKED",
+                "batch_id": str(batch_id),
+                "results": blocked_results,
+            }
+
+        if batch_expired:
+            await session.commit()
+            if message_id is not None:
+                await _safe_edit_message(
+                    notifier,
+                    chat_id,
+                    message_id,
+                    "⌛ 일괄 승인 만료",
+                    reply_markup={"inline_keyboard": []},
+                )
+            return {"handled": False, "reason": "approval_batch_expired"}
+
         try:
             _batch, members = await service.consume_approval_batch_nonce(
                 batch_id,
                 callback=callback,
                 chat_id=str(chat_id),
                 telegram_user_id=telegram_user_id,
-                now=now,
+                now=gate_now,
+                expected_members=tuple(
+                    (group.proposal_id, str(group.approval_nonce or ""))
+                    for group, _rungs in proposals
+                ),
             )
         except OrderProposalError as exc:
             await session.commit()
@@ -715,6 +1164,7 @@ async def _handle_batch_approve(
         # crash or Telegram retry can then never execute the frozen set twice.
         await session.commit()
 
+    now = gate_now
     results: list[dict[str, Any]] = []
     for member in members:
         member_result: dict[str, Any] = {
@@ -756,6 +1206,8 @@ async def _handle_batch_approve(
                         callback_query_id=None,
                         telegram_user_id=telegram_user_id,
                         revalidate_fn=revalidate_fn,
+                        window_evaluator=window_evaluator,
+                        now_fn=now_fn,
                     )
                     rung_results = approval_result.get("rung_results")
                     if isinstance(rung_results, list):
@@ -771,6 +1223,9 @@ async def _handle_batch_approve(
                         ]
                     status, reason = _classify_batch_approval_result(approval_result)
                     member_result["status"] = status
+                    operator_reason = approval_result.get("operator_reason")
+                    if operator_reason:
+                        reason = str(operator_reason)
                     if reason is not None:
                         member_result["reason"] = reason
                     if not approval_result.get("handled"):
@@ -861,8 +1316,12 @@ async def _handle_loss_cut_first_click(
     callback_query_id: str | None = None,
     telegram_user_id: str,
     loss_cut_preview_fn: RevalidateFn,
+    window_evaluator: WindowEvaluator | None = None,
+    now_fn: Clock | None = None,
 ) -> dict[str, Any]:
     """Consume step one and edit the message into a bound confirmation."""
+    window_evaluator = window_evaluator or evaluate_approval_window
+    now_fn = now_fn or (lambda: now)
     preflight_failure = await _preflight_proposal_callback(
         session=session,
         service=service,
@@ -873,17 +1332,105 @@ async def _handle_loss_cut_first_click(
     )
     if preflight_failure is not None:
         return preflight_failure
+
+    group = await service.preflight_published_proposal_callback(
+        proposal_id,
+        callback=callback,
+    )
+    window = await _evaluate_bound_window(
+        group, window_evaluator=window_evaluator, now_fn=now_fn
+    )
+    click_now = window.observed_at
+    if not window.allowed:
+        return await _reject_window_callback(
+            session=session,
+            service=service,
+            proposal_id=proposal_id,
+            decision=window,
+            now=click_now,
+            notifier=notifier,
+            chat_id=chat_id,
+            message_id=message_id,
+            callback_query_id=None,
+        )
+
+    # Repeat immediately before the external preview. The first calendar
+    # resolution itself may have crossed a validity/session boundary.
+    window = await _evaluate_bound_window(
+        group, window_evaluator=window_evaluator, now_fn=now_fn
+    )
+    click_now = window.observed_at
+    if not window.allowed:
+        return await _reject_window_callback(
+            session=session,
+            service=service,
+            proposal_id=proposal_id,
+            decision=window,
+            now=click_now,
+            notifier=notifier,
+            chat_id=chat_id,
+            message_id=message_id,
+            callback_query_id=None,
+        )
+
     submit_agent_id = settings.ORDER_PROPOSALS_SUBMIT_AGENT_ID.strip() or None
     caller_agent_id_token = caller_agent_id_var.set(submit_agent_id)
     try:
         evidence = await loss_cut_preview_fn(
-            service=service, proposal_id=proposal_id, now=now
+            service=service, proposal_id=proposal_id, now=click_now
         )
     finally:
         caller_agent_id_var.reset(caller_agent_id_token)
     try:
+        group = await service.preflight_published_proposal_callback(
+            proposal_id,
+            callback=callback,
+        )
+    except OrderProposalError as exc:
+        await session.commit()
+        return {"handled": False, "reason": str(exc), "proposal_id": str(proposal_id)}
+    post_preview_window = await _evaluate_bound_window(
+        group,
+        window_evaluator=window_evaluator,
+        now_fn=now_fn,
+    )
+    post_preview_now = post_preview_window.observed_at
+    if not post_preview_window.allowed:
+        return await _reject_window_callback(
+            session=session,
+            service=service,
+            proposal_id=proposal_id,
+            decision=post_preview_window,
+            now=post_preview_now,
+            notifier=notifier,
+            chat_id=chat_id,
+            message_id=message_id,
+            callback_query_id=None,
+        )
+
+    post_preview_window = await _evaluate_bound_window(
+        group,
+        window_evaluator=window_evaluator,
+        now_fn=now_fn,
+    )
+    post_preview_now = post_preview_window.observed_at
+    if not post_preview_window.allowed:
+        return await _reject_window_callback(
+            session=session,
+            service=service,
+            proposal_id=proposal_id,
+            decision=post_preview_window,
+            now=post_preview_now,
+            notifier=notifier,
+            chat_id=chat_id,
+            message_id=message_id,
+            callback_query_id=None,
+        )
+    try:
         await service.consume_published_proposal_callback(
-            proposal_id, callback=callback, now=now
+            proposal_id,
+            callback=callback,
+            now=post_preview_now,
         )
     except OrderProposalError as exc:
         await session.commit()
@@ -895,7 +1442,7 @@ async def _handle_loss_cut_first_click(
         first_nonce=callback.nonce,
         confirmation_nonce=confirmation_nonce,
         telegram_user_id=telegram_user_id,
-        now=now,
+        now=post_preview_now,
     )
     group, rungs = await service.get_proposal(proposal_id)
     dispatch_attempt_id = uuid.uuid4()
@@ -909,15 +1456,54 @@ async def _handle_loss_cut_first_click(
     text, keyboard = build_loss_cut_confirmation_message(
         group=group, rungs=rungs, evidence=evidence, binding=binding
     )
+    publish_window = await _evaluate_bound_window(
+        group,
+        window_evaluator=window_evaluator,
+        now_fn=now_fn,
+    )
+    if not publish_window.allowed:
+        if publish_window.code is ApprovalWindowCode.EXPIRED:
+            await service.expire_mutable_rungs_if_needed(
+                proposal_id,
+                now=publish_window.observed_at,
+            )
+        await service.restore_approval_after_window_block(
+            proposal_id,
+            nonce=confirmation_nonce,
+            expired=publish_window.code is ApprovalWindowCode.EXPIRED,
+        )
+        if publish_window.code is not ApprovalWindowCode.EXPIRED:
+            await service.clear_approval_nonce(
+                proposal_id,
+                expected_nonce=confirmation_nonce,
+            )
+        await session.commit()
+        rejection_text = approval_window_operator_text(publish_window)
+        if message_id is not None:
+            await _safe_edit_message(
+                notifier,
+                chat_id,
+                message_id,
+                rejection_text,
+                reply_markup={"inline_keyboard": []},
+            )
+        return {
+            "handled": False,
+            "reason": publish_window.code.value,
+            "proposal_id": str(proposal_id),
+            "approval_window": publish_window.to_dict(),
+        }
+
     await service.start_approval_dispatch(
         proposal_id,
         attempt_id=dispatch_attempt_id,
         binding=binding,
-        now=now,
+        now=publish_window.observed_at,
         payload_chars=telegram_text_length(text),
         context_message_count=0,
     )
     await session.commit()
+
     if message_id is None:
         publication = ApprovalPublication.failed(
             payload_chars=telegram_text_length(text),
@@ -948,7 +1534,8 @@ async def _handle_loss_cut_first_click(
         attempt_id=dispatch_attempt_id,
         publication=publication,
         chat_id=str(chat_id),
-        now=now,
+        now=publish_window.observed_at,
+        approval_window_policy_stamp=publish_window.policy_stamp,
     )
     await session.commit()
     return {
@@ -973,10 +1560,14 @@ async def handle_callback_update(
     loss_cut_preview_fn: RevalidateFn | None = None,
     veto_cancel_fn: TargetCancelFn = cancel_target_order,
     veto_fetch_fn: TargetFetchFn = fetch_target_order,
+    window_evaluator: WindowEvaluator | None = None,
+    now_fn: Clock | None = None,
 ) -> dict[str, Any]:
     """Handle one Telegram webhook update. Never raises (fail-closed)."""
     callback_query_id: str | None = None
     active_notifier = notifier
+    evaluate_window = window_evaluator or evaluate_approval_window
+    clock = now_fn or (lambda: now)
     try:
         if active_notifier is None:
             from app.monitoring.trade_notifier.notifier import get_trade_notifier
@@ -1018,6 +1609,8 @@ async def handle_callback_update(
                     str(telegram_user_id) if telegram_user_id is not None else ""
                 ),
                 revalidate_fn=revalidate_fn,
+                window_evaluator=evaluate_window,
+                now_fn=clock,
             )
 
         async with service_factory() as session:
@@ -1081,6 +1674,8 @@ async def handle_callback_update(
                             else ""
                         ),
                         loss_cut_preview_fn=loss_cut_preview_fn,
+                        window_evaluator=evaluate_window,
+                        now_fn=clock,
                     )
                     return result
                 result = await _handle_approve(
@@ -1097,6 +1692,8 @@ async def handle_callback_update(
                         str(telegram_user_id) if telegram_user_id is not None else ""
                     ),
                     revalidate_fn=revalidate_fn,
+                    window_evaluator=evaluate_window,
+                    now_fn=clock,
                 )
             else:
                 result = await _handle_approve(
@@ -1113,6 +1710,8 @@ async def handle_callback_update(
                         str(telegram_user_id) if telegram_user_id is not None else ""
                     ),
                     revalidate_fn=revalidate_fn,
+                    window_evaluator=evaluate_window,
+                    now_fn=clock,
                     loss_cut_confirmation=True,
                 )
             # `_handle_deny`/`_handle_approve` each commit their own

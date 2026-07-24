@@ -551,6 +551,7 @@ class OverseasOrderClient:
         quantity: int,
         is_mock: bool = False,
         *,
+        pre_send_hook: PreSendHook | None = None,
         _token_retry_depth: int = 0,
     ) -> dict:
         """
@@ -627,6 +628,7 @@ class OverseasOrderClient:
             # ROB-645: keep the no-double-submit policy uniform across mutations.
             retry_request_errors=False,
             max_retries_override=0,
+            pre_send_hook=pre_send_hook,
         )
 
         if js.get("rt_cd") != "0":
@@ -662,6 +664,7 @@ class OverseasOrderClient:
                     exchange_code,
                     quantity,
                     is_mock,
+                    pre_send_hook=pre_send_hook,
                     _token_retry_depth=_token_retry_depth + 1,
                 )
 

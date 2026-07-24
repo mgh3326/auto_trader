@@ -68,5 +68,5 @@ async def telegram_callback(body: dict[str, Any]) -> dict[str, Any]:
     internal result — Telegram only inspects the HTTP status.
     """
     _require_enabled()
-    await handle_callback_update(body, now=now_kst())
+    await handle_callback_update(body, now=now_kst(), now_fn=now_kst)
     return {"ok": True}

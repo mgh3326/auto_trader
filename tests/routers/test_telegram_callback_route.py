@@ -109,6 +109,7 @@ async def test_gate_on_valid_token_invokes_handler_and_returns_ok(
     now_arg = call_kwargs["now"]
     assert isinstance(now_arg, datetime)
     assert now_arg.tzinfo is not None  # must be timezone-aware, per Task 14
+    assert callable(call_kwargs["now_fn"])
 
 
 @pytest.mark.unit

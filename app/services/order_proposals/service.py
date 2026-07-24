@@ -29,6 +29,7 @@ from app.models.order_proposals import (
 )
 from app.models.review import TossLiveOrderLedger
 from app.services.order_proposals import state_machine as sm
+from app.services.order_proposals.approval_window_contract import valid_until_block
 from app.services.order_proposals.broker_gateway import SUPPORTED_TARGET_ACTIONS
 from app.services.order_proposals.defensive_ttl import (
     DEFENSIVE_EXIT_INTENTS,
@@ -295,8 +296,10 @@ def batch_member_block_reason(
         ApprovalCardKind.RECONFIRM.value,
     }:
         return "approval_card_kind_not_batchable"
-    if group.valid_until is not None and now >= group.valid_until:
-        return "proposal_expired"
+    validity_block = valid_until_block(group.valid_until, now=now)
+    if validity_block is not None:
+        code, detail = validity_block
+        return f"approval_window:{code.value}:{detail}"
     if not group.approval_nonce:
         return "approval_nonce_missing"
     if group.approval_nonce_used_at is not None:
@@ -825,6 +828,82 @@ class OrderProposalsService:
         )
         return True
 
+    async def expire_rung_if_needed(
+        self,
+        proposal_id: uuid.UUID,
+        rung_index: int,
+        *,
+        now: datetime,
+    ) -> bool:
+        """Expire one still-local rung without erasing submitted siblings.
+
+        A ladder can cross ``valid_until`` after an earlier rung already
+        reached the broker. Whole-group expiry correctly refuses that mixed
+        state; this narrower transition preserves the authoritative broker
+        evidence while closing only the remaining mutable rung.
+        """
+        self._require_timezone_aware(now)
+        group, rung = await self._get_locked_rung(proposal_id, rung_index)
+        validity_block = valid_until_block(group.valid_until, now=now)
+        if validity_block is None or validity_block[0].value != "EXPIRED":
+            return False
+        if rung.state == "expired":
+            return True
+        if rung.state not in _VOIDABLE_RUNG_STATES:
+            raise OrderProposalError(
+                f"cannot expire proposal rung {rung_index} in state {rung.state!r}"
+            )
+        sm.assert_rung_transition(rung.state, "expired")
+        expired = await self._repo.update_rung(
+            rung,
+            state="expired",
+            updated_at=now,
+        )
+        rungs = await self._repo.list_rungs(group.id)
+        materialized = [
+            expired if item.rung_index == rung_index else item for item in rungs
+        ]
+        all_local_terminal = all(
+            item.state
+            in {
+                "expired",
+                "rejected",
+                "voided",
+                "voided_local_stale",
+                "superseded",
+            }
+            for item in materialized
+        )
+        await self._repo.update_group(
+            group,
+            lifecycle_state=self._recompute_group_state(materialized),
+            **({"approval_nonce": None} if all_local_terminal else {}),
+        )
+        return True
+
+    async def expire_mutable_rungs_if_needed(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        now: datetime,
+    ) -> int:
+        """Expire every local rung while preserving any broker-backed rung."""
+        self._require_timezone_aware(now)
+        group, rungs = await self.get_proposal(proposal_id)
+        if valid_until_block(group.valid_until, now=now) is None:
+            return 0
+        expired = 0
+        for rung in rungs:
+            if rung.state not in _VOIDABLE_RUNG_STATES:
+                continue
+            if await self.expire_rung_if_needed(
+                proposal_id,
+                rung.rung_index,
+                now=now,
+            ):
+                expired += 1
+        return expired
+
     async def void_proposal(
         self,
         proposal_id: uuid.UUID,
@@ -1035,16 +1114,99 @@ class OrderProposalsService:
             approval_dispatch_failure_code="approval_dispatch_snapshot_missing",
         )
 
+    async def clear_approval_nonce(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        expected_nonce: str | None = None,
+    ) -> OrderProposal:
+        """Remove an unpublished approval surface under the proposal lock."""
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        if expected_nonce is not None and group.approval_nonce != expected_nonce:
+            raise OrderProposalError("nonce_mismatch")
+        return await self._repo.update_group(
+            group,
+            approval_nonce=None,
+            approval_nonce_used_at=None,
+        )
+
+    async def restore_approval_after_window_block(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        nonce: str,
+        expired: bool,
+    ) -> OrderProposal:
+        """Undo click bookkeeping when a proven pre-send gate blocks.
+
+        This is legal only when the transport hook established that no broker
+        mutation crossed the wire. Rung state restoration is handled
+        separately at the exact blocked rung.
+        """
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        if group.approval_nonce not in {None, nonce}:
+            raise OrderProposalError("nonce_mismatch")
+        source_asof = dict(group.source_asof or {})
+        envelope = source_asof.get(_LOSS_CUT_CONFIRMATION_KEY)
+        if isinstance(envelope, dict) and envelope.get("nonce") == nonce:
+            source_asof[_LOSS_CUT_CONFIRMATION_KEY] = {
+                **envelope,
+                "second_click": None,
+            }
+        return await self._repo.update_group(
+            group,
+            source_asof=source_asof or None,
+            approval_nonce=None if expired else nonce,
+            approval_nonce_used_at=None,
+            approved_by_telegram_user_id=None,
+            approved_at=None,
+            commit_lease_until=None,
+        )
+
+    async def restore_rung_after_pre_send_block(
+        self,
+        proposal_id: uuid.UUID,
+        rung_index: int,
+        *,
+        now: datetime,
+        expired: bool,
+    ) -> OrderProposalRung:
+        """Restore a rung after a hook aborted before any HTTP mutation."""
+        self._require_timezone_aware(now)
+        group, rung = await self._get_locked_rung(proposal_id, rung_index)
+        if rung.state in {"revalidating", "approved", "submitting"}:
+            rung = await self._transition_locked_rung(
+                group,
+                rung,
+                new_state="pending_approval",
+                updated_at=now,
+            )
+        if expired:
+            await self.expire_rung_if_needed(proposal_id, rung_index, now=now)
+            _group, rung = await self._get_locked_rung(proposal_id, rung_index)
+        return rung
+
     async def consume_approval_nonce(
         self, proposal_id: uuid.UUID, nonce: str, *, now: datetime
     ) -> OrderProposal:
         """Compatibility wrapper; every consume still crosses the common gate."""
-        group = await self._repo.get_group_by_proposal_id(proposal_id)
+        group = await self._repo.get_group_by_proposal_id(
+            proposal_id,
+            for_update=True,
+        )
         if group is None:
             raise OrderProposalNotFound(str(proposal_id))
         block_reason = _proposal_callback_block_reason(group, nonce=nonce)
         if block_reason is not None:
             raise OrderProposalError(block_reason)
+        validity_block = valid_until_block(group.valid_until, now=now)
+        if validity_block is not None:
+            code, detail = validity_block
+            raise OrderProposalError(f"approval_window:{code.value}:{detail}")
         callback = self._current_callback_envelope(group, action="op", nonce=nonce)
         return await self.consume_published_proposal_callback(
             proposal_id, callback=callback, now=now
@@ -1165,6 +1327,10 @@ class OrderProposalsService:
         if group is None:
             raise OrderProposalNotFound(str(proposal_id))
         self._assert_published_proposal_binding(group, callback=callback)
+        validity_block = valid_until_block(group.valid_until, now=now)
+        if validity_block is not None:
+            code, detail = validity_block
+            raise OrderProposalError(f"approval_window:{code.value}:{detail}")
 
         fields: dict[str, Any] = {"approval_nonce_used_at": now}
         if callback.action == "lc":
@@ -1269,7 +1435,7 @@ class OrderProposalsService:
         except (KeyError, TypeError, ValueError) as exc:
             raise OrderProposalError("loss_cut_confirmation_invalid") from exc
         self._require_timezone_aware(expires_at)
-        if now > expires_at:
+        if now >= expires_at:
             raise OrderProposalError("loss_cut_confirmation_expired")
         rungs = await self._repo.list_rungs(group.id)
         current_binding = [
@@ -1322,6 +1488,7 @@ class OrderProposalsService:
         message_id: int,
         chat_id: str,
         now: datetime,
+        approval_window_policy_stamp: str | None = None,
     ) -> OrderProposal:
         """Record legacy message location without creating an approvable card.
 
@@ -1340,6 +1507,11 @@ class OrderProposalsService:
             "approval_message_id": message_id,
             "approval_chat_id": chat_id,
             "approval_sent_at": now.isoformat(),
+            **(
+                {"approval_window_policy_stamp": approval_window_policy_stamp}
+                if approval_window_policy_stamp is not None
+                else {}
+            ),
         }
         return await self._repo.update_group(
             group,
@@ -1440,6 +1612,7 @@ class OrderProposalsService:
         publication: ApprovalPublication,
         chat_id: str | None,
         now: datetime,
+        approval_window_policy_stamp: str | None = None,
     ) -> TelegramDispatchResult:
         """Resolve physical publication through the current-owner fence."""
         self._require_timezone_aware(now)
@@ -1538,6 +1711,11 @@ class OrderProposalsService:
                 "approval_message_id": publication.message_id,
                 "approval_chat_id": chat_id,
                 "approval_sent_at": now.isoformat(),
+                **(
+                    {"approval_window_policy_stamp": approval_window_policy_stamp}
+                    if approval_window_policy_stamp is not None
+                    else {}
+                ),
             }
             fields["approval_dispatch_published_at"] = now
         else:
@@ -1742,11 +1920,10 @@ class OrderProposalsService:
         callback: CallbackEnvelope,
         chat_id: str,
         now: datetime,
+        allow_expired: bool = False,
     ) -> None:
         if batch.chat_id != chat_id:
             raise OrderProposalError("approval_batch_chat_mismatch")
-        if now >= batch.expires_at:
-            raise OrderProposalError("approval_batch_expired")
         try:
             state = ApprovalDispatchState(str(batch.approval_dispatch_state))
         except ValueError as exc:
@@ -1772,6 +1949,8 @@ class OrderProposalsService:
             elif reason == "nonce_replay":
                 reason = "approval_batch_nonce_replay"
             raise OrderProposalError(reason) from exc
+        if not allow_expired and now >= batch.expires_at:
+            raise OrderProposalError("approval_batch_expired")
 
     async def preflight_published_batch_callback(
         self,
@@ -1780,6 +1959,7 @@ class OrderProposalsService:
         callback: CallbackEnvelope,
         chat_id: str,
         now: datetime,
+        allow_expired: bool = False,
     ) -> OrderProposalApprovalBatch:
         """Read-only batch binding gate; consuming gate rechecks under lock."""
         self._require_timezone_aware(now)
@@ -1787,9 +1967,17 @@ class OrderProposalsService:
         if batch is None:
             raise OrderProposalError("approval_batch_not_found")
         self._assert_published_batch_binding(
-            batch, callback=callback, chat_id=chat_id, now=now
+            batch,
+            callback=callback,
+            chat_id=chat_id,
+            now=now,
+            allow_expired=allow_expired,
         )
         return batch
+
+    async def acquire_approval_batch_chat_lock(self, chat_id: str) -> None:
+        """Serialize batch registration and exact-membership consumption."""
+        await self._repo.acquire_approval_batch_chat_lock(chat_id)
 
     async def consume_approval_batch_nonce(
         self,
@@ -1799,8 +1987,9 @@ class OrderProposalsService:
         chat_id: str,
         telegram_user_id: str,
         now: datetime,
+        expected_members: tuple[tuple[uuid.UUID, str], ...] | None = None,
     ) -> tuple[OrderProposalApprovalBatch, list[BatchMemberSnapshot]]:
-        """Consume exactly the immutable membership snapshot shown on the card."""
+        """Atomically consume the exact immutable membership shown on the card."""
         self._require_timezone_aware(now)
         batch = await self._repo.get_approval_batch_by_id(batch_id, for_update=True)
         if batch is None:
@@ -1819,10 +2008,20 @@ class OrderProposalsService:
 
         snapshots: list[BatchMemberSnapshot] = []
         digest_members: list[dict[str, Any]] = []
+        actual_members: list[tuple[uuid.UUID, str]] = []
         for member in members:
-            group = await self._repo.get_group_by_pk(member.proposal_pk)
+            group = await self._repo.get_group_by_pk(
+                member.proposal_pk,
+                for_update=True,
+            )
             if group is None:
                 raise OrderProposalError("approval_batch_member_snapshot_invalid")
+            rungs = await self._repo.list_rungs(group.id)
+            block_reason = batch_member_block_reason(group, rungs, now=now)
+            if block_reason is not None:
+                raise OrderProposalError(
+                    f"approval_batch_member_stale:{group.proposal_id}:{block_reason}"
+                )
             try:
                 card_kind = ApprovalCardKind(str(member.approval_card_kind_snapshot))
             except ValueError as exc:
@@ -1835,6 +2034,18 @@ class OrderProposalsService:
                 or member.approval_membership_digest_snapshot is None
             ):
                 raise OrderProposalError("approval_batch_member_snapshot_invalid")
+            if (
+                group.approval_nonce != member.approval_nonce_snapshot
+                or group.approval_dispatch_attempt_id
+                != member.approval_dispatch_attempt_id_snapshot
+                or group.approval_dispatch_membership_revision
+                != member.approval_membership_revision_snapshot
+                or group.approval_dispatch_membership_digest
+                != member.approval_membership_digest_snapshot
+                or group.approval_dispatch_card_kind
+                != member.approval_card_kind_snapshot
+            ):
+                raise OrderProposalError("approval_batch_membership_changed")
             digest_members.append(
                 {
                     "proposal_id": str(group.proposal_id),
@@ -1851,6 +2062,7 @@ class OrderProposalsService:
                     ),
                 }
             )
+            actual_members.append((group.proposal_id, member.approval_nonce_snapshot))
             snapshots.append(
                 BatchMemberSnapshot(
                     member_id=member.id,
@@ -1874,6 +2086,8 @@ class OrderProposalsService:
         )
         if actual_digest != batch.membership_digest:
             raise OrderProposalError("approval_batch_membership_digest_mismatch")
+        if expected_members is not None and tuple(actual_members) != expected_members:
+            raise OrderProposalError("approval_batch_membership_changed")
 
         await self._repo.update_approval_batch(
             batch,
@@ -2009,12 +2223,18 @@ class OrderProposalsService:
         )
 
     async def get_approval_batch_display(
-        self, batch_id: uuid.UUID
+        self,
+        batch_id: uuid.UUID,
+        *,
+        for_update: bool = False,
     ) -> tuple[
         OrderProposalApprovalBatch,
         list[tuple[OrderProposal, list[OrderProposalRung]]],
     ]:
-        batch = await self._repo.get_approval_batch_by_id(batch_id)
+        batch = await self._repo.get_approval_batch_by_id(
+            batch_id,
+            for_update=for_update,
+        )
         if batch is None:
             raise OrderProposalError("approval_batch_not_found")
         proposals: list[tuple[OrderProposal, list[OrderProposalRung]]] = []
@@ -2024,9 +2244,12 @@ class OrderProposalsService:
                 and member.membership_revision != batch.membership_revision
             ):
                 continue
-            group = await self._repo.get_group_by_pk(member.proposal_pk)
+            group = await self._repo.get_group_by_pk(
+                member.proposal_pk,
+                for_update=for_update,
+            )
             if group is None:
-                continue
+                raise OrderProposalError("approval_batch_membership_changed")
             proposals.append((group, await self._repo.list_rungs(group.id)))
         return batch, proposals
 

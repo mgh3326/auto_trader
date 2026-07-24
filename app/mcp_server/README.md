@@ -767,6 +767,18 @@ order mutation.
   - Target-action tuples are supported only for
     `kis_live/equity_kr`, `kis_live/equity_us`, and `upbit/crypto`.
   - When `valid_until` is omitted, it defaults to the next `00:00 KST`.
+  - Before an approval card/nonce is published, dispatch enforces
+    timezone-aware `valid_until` and the proposal's broker/market submission
+    session. Missing, naive, malformed, or expired validity fails closed.
+    US DAY proposals are regular-session only and use the existing XNYS or
+    Toss broker calendar; KR keeps KRX regular plus positively confirmed,
+    fresh NXT eligibility; Upbit crypto remains 24/7. Unknown calendar or
+    capability evidence also fails closed.
+  - A dispatch block does not fail proposal persistence. The create response
+    adds `approval_dispatch={status:"blocked", code, ...}` with typed
+    `EXPIRED`, `INVALID_VALID_UNTIL`, `DEFER_SESSION_CLOSED`,
+    `CALENDAR_UNKNOWN`, or `NO_EXECUTABLE_WINDOW` evidence. No Telegram card
+    or approval nonce is published for that dispatch attempt.
   - When `supersedes_proposal_id` is present, the old group's
     `pending_approval`/`needs_reconfirm` rungs become `superseded`, its
     approval nonce is consumed, and its recorded Telegram message is edited
@@ -853,9 +865,26 @@ order mutation.
   - After a successful void, the recorded Telegram approval message is edited
     without an inline keyboard so stale approval buttons no longer remain live.
 
-Telegram approval runs fresh broker-specific checks at the submit-capable
-click. KIS/Upbit rerun their applicable ROB-800 checks through
-`_place_order_impl`.
+Telegram approval rechecks the persisted dispatch policy stamp, proposal
+validity, and authoritative market session before consuming a nonce, then
+repeats the same window policy inside revalidation and through a pre-send hook
+at the final KIS, Toss, or Upbit HTTP boundary for submit and cancel. The
+session evidence includes the allowed interval end, so a close crossed while
+an awaited check is running is rejected at the transport boundary. A missing
+or mismatched policy stamp and unknown/stale evidence fail closed. An expired
+proposal converges through the existing proposal/rung expiry transitions
+without rolling back a sibling that already has broker evidence. A still-valid
+closed-session proposal returns
+`DEFER_SESSION_CLOSED` with the next confirmed session; it is never scheduled
+or automatically resubmitted. An initial late pre-send block proves provider
+HTTP=0; a retry-time block may follow one explicit 429/auth rejection but never
+an accepted or ambiguous mutation. With that proof and no sibling mutation,
+the callback restores the rung, lease, and durable proposal nonce instead of
+stranding a consumed approval.
+Batch approval locks and verifies the exact ordered proposal/nonce-snapshot
+membership before consuming its own nonce; one missing, changed, expired, or
+closed member blocks the whole displayed batch. KIS/Upbit then rerun their
+applicable ROB-800 checks through `_place_order_impl`.
 Successful automatic submissions retain `approved_by_telegram_user_id=NULL`
 and write policy/version/eligibility evidence under
 `source_asof.auto_approved`. Their Telegram summary carries a single-use

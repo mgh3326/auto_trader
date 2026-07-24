@@ -22,6 +22,7 @@ from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 from app.services.order_proposals import OrderProposalsService
+from app.services.order_proposals.approval_window import ApprovalWindowDecision
 from app.services.order_proposals.broker_gateway import (
     fetch_operator_void_evidence,
     fetch_target_order,
@@ -179,7 +180,7 @@ async def _record_post_commit_dispatch_failure(
 
 async def _dispatch_after_proposal_commit(
     proposal_id: uuid.UUID,
-) -> TelegramDispatchResult:
+) -> TelegramDispatchResult | ApprovalWindowDecision:
     """Run dispatch/attempt-ledger work behind a closed post-commit boundary."""
     try:
         dispatch_now = now_kst()
@@ -196,8 +197,11 @@ async def _dispatch_after_proposal_commit(
                     proposal_id,
                     notifier=get_trade_notifier(),
                     now=dispatch_now,
+                    now_fn=now_kst,
                 )
-                if not isinstance(result, TelegramDispatchResult):
+                if not isinstance(
+                    result, (TelegramDispatchResult, ApprovalWindowDecision)
+                ):
                     raise TypeError("unexpected approval dispatch result")
                 return result
             except Exception as exc:  # noqa: BLE001 - proposal is already durable
@@ -292,7 +296,13 @@ async def _complete_committed_proposal_create(
                 )
 
         dispatch_result = await _dispatch_after_proposal_commit(proposal_id)
-        result["approval_dispatch"] = dispatch_result.as_dict()
+        if isinstance(dispatch_result, ApprovalWindowDecision):
+            result["approval_dispatch"] = {
+                "status": "blocked",
+                **dispatch_result.to_dict(),
+            }
+        else:
+            result["approval_dispatch"] = dispatch_result.as_dict()
         return result
     except Exception as exc:  # noqa: BLE001 - committed create result is immutable
         logger.error(

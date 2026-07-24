@@ -69,7 +69,7 @@ class OrderProposalRepository:
     ) -> OrderProposal | None:
         stmt = select(OrderProposal).where(OrderProposal.proposal_id == proposal_id)
         if for_update:
-            stmt = stmt.with_for_update()
+            stmt = stmt.with_for_update().execution_options(populate_existing=True)
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
     async def list_groups_by_proposal_prefix(
@@ -88,6 +88,7 @@ class OrderProposalRepository:
             select(OrderProposalRung)
             .where(OrderProposalRung.proposal_pk == proposal_pk)
             .order_by(OrderProposalRung.rung_index)
+            .execution_options(populate_existing=True)
         )
         return list((await self._session.execute(stmt)).scalars().all())
 
@@ -335,7 +336,7 @@ class OrderProposalRepository:
             .limit(1)
         )
         if for_update:
-            stmt = stmt.with_for_update()
+            stmt = stmt.with_for_update().execution_options(populate_existing=True)
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
     async def insert_approval_batch(self, **cols: Any) -> OrderProposalApprovalBatch:
@@ -370,7 +371,7 @@ class OrderProposalRepository:
             OrderProposalApprovalBatchMember.id == member_id
         )
         if for_update:
-            stmt = stmt.with_for_update()
+            stmt = stmt.with_for_update().execution_options(populate_existing=True)
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
     async def list_approval_batch_members(
@@ -383,11 +384,19 @@ class OrderProposalRepository:
                 OrderProposalApprovalBatchMember.added_at,
                 OrderProposalApprovalBatchMember.id,
             )
+            .execution_options(populate_existing=True)
         )
         return list((await self._session.execute(stmt)).scalars().all())
 
-    async def get_group_by_pk(self, proposal_pk: int) -> OrderProposal | None:
+    async def get_group_by_pk(
+        self,
+        proposal_pk: int,
+        *,
+        for_update: bool = False,
+    ) -> OrderProposal | None:
         stmt = select(OrderProposal).where(OrderProposal.id == proposal_pk)
+        if for_update:
+            stmt = stmt.with_for_update().execution_options(populate_existing=True)
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
     async def get_approval_batch_by_id(
@@ -397,7 +406,7 @@ class OrderProposalRepository:
             OrderProposalApprovalBatch.batch_id == batch_id
         )
         if for_update:
-            stmt = stmt.with_for_update()
+            stmt = stmt.with_for_update().execution_options(populate_existing=True)
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
     async def resolve_approval_batch_id_prefix(

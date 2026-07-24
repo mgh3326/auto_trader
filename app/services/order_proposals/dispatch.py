@@ -34,6 +34,14 @@ from app.services.order_proposals.approval_message import (
     build_approval_dispatch_messages,
     build_batch_approval_message,
 )
+from app.services.order_proposals.approval_window import (
+    ApprovalWindowCode,
+    ApprovalWindowDecision,
+    WindowEvaluator,
+    evaluate_approval_window,
+    evaluate_approval_window_boundary,
+    recheck_approval_window_decision,
+)
 from app.services.order_proposals.auto_approve import (
     build_auto_approved_message,
     evaluate_auto_approve_eligibility,
@@ -73,6 +81,7 @@ logger = logging.getLogger(__name__)
 
 ServiceFactory = Callable[[], Any]
 RevalidateFn = Callable[..., Any]
+Clock = Callable[[], datetime]
 
 
 def _generate_nonce() -> str:
@@ -107,6 +116,8 @@ async def _register_and_publish_batch_summary(
     chat_id: str,
     now: datetime,
     notifier: Any,
+    window_evaluator: WindowEvaluator,
+    now_fn: Clock,
 ) -> None:
     """Publish a new immutable batch card after freezing its exact members."""
     registration = await service.register_approval_batch_member(
@@ -121,9 +132,56 @@ async def _register_and_publish_batch_summary(
         or registration.binding is None
     ):
         return
+    # Make the frozen membership and summary-delivery claim visible before
+    # publishing a button that depends on both rows.
+    await session.commit()
     batch, proposals = await service.get_approval_batch_display(
-        registration.batch.batch_id
+        registration.batch.batch_id,
+        for_update=True,
     )
+    decisions: list[tuple[Any, ApprovalWindowDecision]] = []
+    for group, _rungs in proposals:
+        expected = (group.source_asof or {}).get("approval_window_policy_stamp")
+        decision = await evaluate_approval_window_boundary(
+            group,
+            window_evaluator=window_evaluator,
+            now_fn=now_fn,
+            expected_policy_stamp=str(expected) if expected is not None else None,
+        )
+        if not decision.allowed:
+            if decision.code is ApprovalWindowCode.EXPIRED:
+                await service.expire_mutable_rungs_if_needed(
+                    group.proposal_id,
+                    now=decision.observed_at,
+                )
+            await service.release_approval_batch_summary_claim(
+                batch.batch_id,
+                now=decision.observed_at,
+            )
+            await session.commit()
+            return
+        decisions.append((group, decision))
+
+    final_now = now_fn()
+    for group, decision in decisions:
+        final_decision = recheck_approval_window_decision(
+            group,
+            decision,
+            now=final_now,
+        )
+        if not final_decision.allowed:
+            if final_decision.code is ApprovalWindowCode.EXPIRED:
+                await service.expire_mutable_rungs_if_needed(
+                    group.proposal_id,
+                    now=final_decision.observed_at,
+                )
+            await service.release_approval_batch_summary_claim(
+                batch.batch_id,
+                now=final_decision.observed_at,
+            )
+            await session.commit()
+            return
+
     text, keyboard = build_batch_approval_message(
         batch=batch,
         proposals=proposals,
@@ -140,8 +198,30 @@ async def _register_and_publish_batch_summary(
         attempt_id=registration.binding.attempt_id,
         payload_chars=messages.payload_chars,
     )
-    # Freeze + pending owner must be durable before the external publication.
+    # The immutable member set, pending owner, and exact payload are durable
+    # before publication, matching the individual dispatch attempt contract.
     await session.commit()
+
+    publish_now = now_fn()
+    for group, decision in decisions:
+        final_decision = recheck_approval_window_decision(
+            group,
+            decision,
+            now=publish_now,
+        )
+        if not final_decision.allowed:
+            if final_decision.code is ApprovalWindowCode.EXPIRED:
+                await service.expire_mutable_rungs_if_needed(
+                    group.proposal_id,
+                    now=final_decision.observed_at,
+                )
+            await service.release_approval_batch_summary_claim(
+                batch.batch_id,
+                now=final_decision.observed_at,
+            )
+            await session.commit()
+            return
+
     publication = await publish_approval_messages(
         notifier=notifier,
         messages=messages,
@@ -151,7 +231,7 @@ async def _register_and_publish_batch_summary(
         batch.batch_id,
         attempt_id=registration.binding.attempt_id,
         publication=publication,
-        now=now,
+        now=publish_now,
     )
 
 
@@ -161,13 +241,16 @@ async def send_proposal_for_approval(
     notifier: Any,
     now: datetime,
     service_factory: ServiceFactory = AsyncSessionLocal,
-) -> TelegramDispatchResult:
+    window_evaluator: WindowEvaluator | None = None,
+    now_fn: Clock | None = None,
+) -> TelegramDispatchResult | ApprovalWindowDecision:
     """Mint a fresh approval nonce, render the message, and send it.
 
     Sends to the FIRST entry in
-    ``settings.order_proposals_telegram_chat_allowlist`` -- the return type
-    is a single workflow result. An empty allowlist is recorded as a durable
-    local failure without minting a nonce.
+    ``settings.order_proposals_telegram_chat_allowlist``. A fail-closed
+    approval-window preflight returns its typed decision without minting a
+    nonce or publishing a card. An empty allowlist is recorded as a durable
+    typed dispatch failure without minting a nonce.
     """
     allowlist = settings.order_proposals_telegram_chat_allowlist
     if not allowlist:
@@ -186,6 +269,42 @@ async def send_proposal_for_approval(
 
     async with service_factory() as session:
         service = OrderProposalsService(session)
+        group, _rungs = await service.get_proposal(proposal_id)
+        evaluate_window = window_evaluator or evaluate_approval_window
+        clock = now_fn or (lambda: now)
+        window = await evaluate_approval_window_boundary(
+            group,
+            window_evaluator=evaluate_window,
+            now_fn=clock,
+            require_policy_stamp=False,
+        )
+        observed_now = window.observed_at
+        if not window.allowed:
+            if window.code is ApprovalWindowCode.EXPIRED:
+                await service.expire_mutable_rungs_if_needed(
+                    proposal_id, now=observed_now
+                )
+            await session.commit()
+            return window
+
+        # Calendar resolution above may await broker/exchange evidence. Sample
+        # the clock and policy again at the actual nonce/card boundary so a
+        # validity or session edge crossed during that I/O cannot mint a
+        # nonce or publish an already-stale button.
+        window = await evaluate_approval_window_boundary(
+            group,
+            window_evaluator=evaluate_window,
+            now_fn=clock,
+            require_policy_stamp=False,
+        )
+        publish_now = window.observed_at
+        if not window.allowed:
+            if window.code is ApprovalWindowCode.EXPIRED:
+                await service.expire_mutable_rungs_if_needed(
+                    proposal_id, now=publish_now
+                )
+            await session.commit()
+            return window
 
         fresh_nonce = _generate_nonce()
         await service.set_approval_nonce(proposal_id, fresh_nonce)
@@ -198,13 +317,36 @@ async def send_proposal_for_approval(
             card_kind=ApprovalCardKind.MANUAL,
         )
         messages = build_approval_dispatch_messages(
-            group=group, rungs=rungs, binding=binding
+            group=group,
+            rungs=rungs,
+            binding=binding,
         )
+
+        send_window = await evaluate_approval_window_boundary(
+            group,
+            window_evaluator=evaluate_window,
+            now_fn=clock,
+            expected_policy_stamp=window.policy_stamp,
+        )
+        if not send_window.allowed:
+            if send_window.code is ApprovalWindowCode.EXPIRED:
+                await service.expire_mutable_rungs_if_needed(
+                    proposal_id,
+                    now=send_window.observed_at,
+                )
+            else:
+                await service.clear_approval_nonce(
+                    proposal_id,
+                    expected_nonce=fresh_nonce,
+                )
+            await session.commit()
+            return send_window
+
         await service.start_approval_dispatch(
             proposal_id,
             attempt_id=attempt_id,
             binding=binding,
-            now=now,
+            now=send_window.observed_at,
             payload_chars=messages.payload_chars,
             context_message_count=len(messages.context_messages),
         )
@@ -224,7 +366,8 @@ async def send_proposal_for_approval(
             attempt_id=attempt_id,
             publication=publication,
             chat_id=chat_id,
-            now=now,
+            now=send_window.observed_at,
+            approval_window_policy_stamp=send_window.policy_stamp,
         )
         await session.commit()
         if result.approvable and result.message_id is not None:
@@ -234,8 +377,10 @@ async def send_proposal_for_approval(
                 proposal_id=proposal_id,
                 message_id=result.message_id,
                 chat_id=chat_id,
-                now=now,
+                now=send_window.observed_at,
                 notifier=notifier,
+                window_evaluator=evaluate_window,
+                now_fn=clock,
             )
             await session.commit()
     return result
@@ -355,7 +500,9 @@ async def dispatch_proposal(
     revalidate_fn: RevalidateFn = revalidate_and_submit,
     cancel_target_fn: TargetCancelFn = cancel_target_order,
     fetch_target_fn: TargetFetchFn = fetch_target_order,
-) -> TelegramDispatchResult:
+    window_evaluator: WindowEvaluator | None = None,
+    now_fn: Clock | None = None,
+) -> TelegramDispatchResult | ApprovalWindowDecision:
     """Auto-submit an eligible resting proposal, otherwise send for approval."""
     if not settings.ORDER_PROPOSALS_AUTO_APPROVE:
         return await send_proposal_for_approval(
@@ -363,8 +510,11 @@ async def dispatch_proposal(
             notifier=notifier,
             now=now,
             service_factory=service_factory,
+            window_evaluator=window_evaluator,
+            now_fn=now_fn,
         )
 
+    clock = now_fn or (lambda: now)
     auto_submitted = False
     messages: ApprovalDispatchMessages | None = None
     attempt_id: uuid.UUID | None = None
@@ -372,6 +522,19 @@ async def dispatch_proposal(
         service = OrderProposalsService(session)
         await service.acquire_auto_dispatch_lock(proposal_id)
         group, initial_rungs = await service.get_proposal(proposal_id)
+        evaluate_window = window_evaluator or evaluate_approval_window
+        window = await evaluate_approval_window_boundary(
+            group,
+            window_evaluator=evaluate_window,
+            now_fn=clock,
+            require_policy_stamp=False,
+        )
+        gate_now = window.observed_at
+        if not window.allowed:
+            if window.code is ApprovalWindowCode.EXPIRED:
+                await service.expire_mutable_rungs_if_needed(proposal_id, now=gate_now)
+            await session.commit()
+            return window
         pending_count = sum(rung.state == "pending_approval" for rung in initial_rungs)
         if pending_count == 0:
             await session.commit()
@@ -410,12 +573,19 @@ async def dispatch_proposal(
                     daily_notional = Decimal(decision.details["daily_notional_after"])
                 return decision
 
-            outcomes: list[RungOutcome] = await revalidate_fn(
-                service=service,
-                proposal_id=proposal_id,
-                now=now,
-                eligibility_gate=eligibility_gate,
-            )
+            revalidate_kwargs: dict[str, Any] = {
+                "service": service,
+                "proposal_id": proposal_id,
+                "now": gate_now,
+                "eligibility_gate": eligibility_gate,
+            }
+            if revalidate_fn is revalidate_and_submit:
+                revalidate_kwargs.update(
+                    window_evaluator=evaluate_window,
+                    expected_policy_stamp=window.policy_stamp,
+                    now_fn=clock,
+                )
+            outcomes: list[RungOutcome] = await revalidate_fn(**revalidate_kwargs)
             submitted_results = {"submitted_acked", "submitted_resting"}
             auto_submitted = (
                 bool(outcomes)
@@ -470,6 +640,8 @@ async def dispatch_proposal(
             notifier=notifier,
             now=now,
             service_factory=service_factory,
+            window_evaluator=window_evaluator,
+            now_fn=clock,
         )
 
     allowlist = settings.order_proposals_telegram_chat_allowlist
