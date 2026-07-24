@@ -20,9 +20,11 @@ from app.models.order_proposals import (
     OrderProposal,
     OrderProposalApprovalBatch,
     OrderProposalApprovalBatchMember,
+    OrderProposalApprovalDispatchAttempt,
     OrderProposalRung,
 )
 from app.services.order_proposals.defensive_ttl import DEFENSIVE_EXIT_INTENTS
+from app.services.order_proposals.dispatch_contract import ApprovalDispatchState
 
 
 class OrderProposalRepository:
@@ -42,6 +44,25 @@ class OrderProposalRepository:
         await self._session.flush()
         await self._session.refresh(row)
         return row
+
+    async def insert_approval_dispatch_attempt(
+        self, **cols: Any
+    ) -> OrderProposalApprovalDispatchAttempt:
+        row = OrderProposalApprovalDispatchAttempt(**cols)
+        self._session.add(row)
+        await self._session.flush()
+        await self._session.refresh(row)
+        return row
+
+    async def get_approval_dispatch_attempt(
+        self, attempt_id: uuid.UUID, *, for_update: bool = False
+    ) -> OrderProposalApprovalDispatchAttempt | None:
+        stmt = select(OrderProposalApprovalDispatchAttempt).where(
+            OrderProposalApprovalDispatchAttempt.attempt_id == attempt_id
+        )
+        if for_update:
+            stmt = stmt.with_for_update()
+        return (await self._session.execute(stmt)).scalar_one_or_none()
 
     async def get_group_by_proposal_id(
         self, proposal_id: uuid.UUID, *, for_update: bool = False
@@ -273,6 +294,14 @@ class OrderProposalRepository:
         await self._session.flush()
         return rung
 
+    async def update_approval_dispatch_attempt(
+        self, attempt: OrderProposalApprovalDispatchAttempt, **fields: Any
+    ) -> OrderProposalApprovalDispatchAttempt:
+        for key, value in fields.items():
+            setattr(attempt, key, value)
+        await self._session.flush()
+        return attempt
+
     async def acquire_approval_batch_chat_lock(self, chat_id: str) -> None:
         await self._session.execute(
             select(
@@ -292,6 +321,13 @@ class OrderProposalRepository:
             .where(
                 OrderProposalApprovalBatch.chat_id == chat_id,
                 OrderProposalApprovalBatch.approval_nonce_used_at.is_(None),
+                OrderProposalApprovalBatch.membership_frozen_at.is_(None),
+                OrderProposalApprovalBatch.approval_dispatch_state
+                == ApprovalDispatchState.PENDING.value,
+                OrderProposalApprovalBatch.summary_dispatch_state == "idle",
+                OrderProposalApprovalBatch.summary_message_id.is_(None),
+                OrderProposalApprovalBatch.approval_dispatch_attempt_id.is_(None),
+                OrderProposalApprovalBatch.membership_digest.is_(None),
                 OrderProposalApprovalBatch.window_closes_at > now,
                 OrderProposalApprovalBatch.expires_at > now,
             )

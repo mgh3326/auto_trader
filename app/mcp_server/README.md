@@ -734,6 +734,39 @@ order mutation.
     Telegram approval message without being discarded. Account/market pairs
     without the existing cancel adapter and multi-rung ladders also remain
     human-gated so veto and all-or-human fallback are enforceable.
+  - The response always includes `approval_dispatch`. Proposal persistence can
+    still succeed while Telegram fails, but those outcomes are distinct:
+    `approval_dispatch.ok`, `state`, `message_id`, HTTP `status_code`, Telegram
+    numeric `error_code`, allowlisted `error_classification`, `failure_code`,
+    and conservative `payload_chars` are returned to the caller. Telegram's
+    remote `description` is discarded at the HTTP boundary and is never
+    returned, logged, or persisted; a present description that is not an exact
+    allowlisted constant is reduced to `unknown_telegram_error`.
+  - Every dispatch attempt is committed as `pending` before Telegram I/O and
+    finalized into the closed
+    `sent_current`/`sent_superseded`/`failed`/`partial_failed` state set only
+    after the current-owner fence. Caller `ok=true` is derived only from
+    `sent_current`; a physically sent stale attempt returns
+    `state="superseded"` and `failure_code="approval_dispatch_superseded"`.
+    Proposal summary fields
+    (`approval_dispatch_state`, `approval_dispatch_attempted_at`,
+    `approval_dispatch_failure_code`, `approval_dispatch_payload_chars`) and
+    the per-attempt ledger row remain durable. A failed attempt invalidates
+    its nonce; a retry mints a new nonce.
+  - Telegram `sendMessage` payloads are checked against a conservative 4,096
+    UTF-16-unit ceiling. When the full rendered card is too long, the complete
+    thesis/strategy is split losslessly into plain-text context messages. The
+    short inline-button card is sent only after every context message succeeds;
+    a context failure publishes no approval button.
+  - Callback data binds the current attempt ID, card kind, membership revision,
+    membership digest, and nonce. Manual approval/deny, batch approval,
+    auto-veto, and loss-cut confirmation all cross the same fail-closed gate;
+    only `sent_current` may consume a nonce or reach broker submit/cancel.
+  - Batch cards are immutable published snapshots. The second eligible member
+    freezes a staged batch before publication; later proposals create a new
+    batch instead of editing the published card. Batch callbacks recompute and
+    verify the exact ordered membership digest, so a row not shown on the card
+    cannot be approved.
 - `order_proposal_void(proposal_id, reason)`
   - Requires a non-blank operator reason.
   - Pre-submit rungs retain the existing local `voided` path. An `unverified`

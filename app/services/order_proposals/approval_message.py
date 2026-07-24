@@ -2,19 +2,32 @@
 
 from __future__ import annotations
 
+import base64
 import re
 import uuid
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from typing import Any
 
 from app.core.timezone import KST
+from app.services.order_proposals.dispatch_contract import (
+    ApprovalCardKind,
+    CallbackEnvelope,
+    DispatchBinding,
+)
+from app.telegram_contract import (
+    TELEGRAM_SEND_MESSAGE_TEXT_LIMIT,
+    split_telegram_text,
+    telegram_text_length,
+)
 
 _ALLOWED_ACTIONS = frozenset({"op", "dn", "lc", "vc", "ba"})
 _CALLBACK_PATTERN = re.compile(
     r"^(?P<action>op|dn|lc|vc|ba):(?P<proposal_short>[0-9a-f]{8}):"
-    r"(?P<nonce>[A-Za-z0-9_-]+)$"
+    r"(?P<attempt>[A-Za-z0-9_-]{22}):(?P<revision>[0-9a-z]{1,3}):"
+    r"(?P<digest>[A-Za-z0-9_-]{12}):(?P<nonce>[A-Za-z0-9_-]+)$"
 )
 _MAX_CALLBACK_BYTES = 64
 _CASH_LABELS = (
@@ -33,6 +46,17 @@ _BATCH_RUNG_RESULT_LABELS = {
     "needs_reconfirm": "재확인 필요",
     "cancelled": "취소 확인",
 }
+_CONTEXT_HEADER_RESERVED_UNITS = 64
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalDispatchMessages:
+    """Preflighted shape for context-first approval publication."""
+
+    context_messages: tuple[str, ...]
+    approval_text: str
+    inline_keyboard: dict
+    payload_chars: int
 
 
 def build_callback_data(
@@ -40,38 +64,93 @@ def build_callback_data(
     action: str,
     proposal_id: uuid.UUID,
     nonce: str,
+    binding: DispatchBinding,
 ) -> str:
-    """Build compact Telegram callback data for an approval action."""
+    """Build callback data bound to one exact published snapshot."""
     if action not in _ALLOWED_ACTIONS:
         raise ValueError("action must be one of: op, dn, lc, vc, ba")
     if not isinstance(proposal_id, uuid.UUID):
         raise ValueError("proposal_id must be a UUID")
     if not isinstance(nonce, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", nonce):
         raise ValueError("nonce must be a non-empty URL-safe token")
+    if binding.membership_revision <= 0:
+        raise ValueError("membership_revision must be positive")
+    revision = _base36_encode(binding.membership_revision)
+    if len(revision) > 3:
+        raise ValueError("membership_revision exceeds callback capacity")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{12}", binding.membership_digest):
+        raise ValueError("membership_digest must be a 12-character URL-safe token")
 
-    data = f"{action}:{str(proposal_id)[:8]}:{nonce}"
+    data = (
+        f"{action}:{str(proposal_id)[:8]}:"
+        f"{_encode_uuid(binding.attempt_id)}:{revision}:"
+        f"{binding.membership_digest}:{nonce}"
+    )
     if len(data.encode("utf-8")) > _MAX_CALLBACK_BYTES:
         raise ValueError("callback data must not exceed 64 bytes")
     return data
 
 
-def build_batch_callback_data(*, batch_id: uuid.UUID, nonce: str) -> str:
+def build_batch_callback_data(
+    *, batch_id: uuid.UUID, nonce: str, binding: DispatchBinding
+) -> str:
     """Build compact callback data for a batch-only approval trigger."""
-    return build_callback_data(action="ba", proposal_id=batch_id, nonce=nonce)
+    if binding.card_kind is not ApprovalCardKind.BATCH:
+        raise ValueError("batch callback requires a batch card binding")
+    return build_callback_data(
+        action="ba", proposal_id=batch_id, nonce=nonce, binding=binding
+    )
 
 
-def parse_callback_data(data: str) -> tuple[str, str, str]:
+def parse_callback_data(data: str) -> CallbackEnvelope:
     """Parse and validate compact Telegram approval callback data."""
     if not isinstance(data, str) or len(data.encode("utf-8")) > _MAX_CALLBACK_BYTES:
         raise ValueError("malformed callback data")
     match = _CALLBACK_PATTERN.fullmatch(data)
     if match is None:
         raise ValueError("malformed callback data")
-    return (
-        match.group("action"),
-        match.group("proposal_short"),
-        match.group("nonce"),
+    try:
+        attempt_id = _decode_uuid(match.group("attempt"))
+        revision = _base36_decode(match.group("revision"))
+    except ValueError as exc:
+        raise ValueError("malformed callback data") from exc
+    return CallbackEnvelope(
+        action=match.group("action"),
+        subject_short=match.group("proposal_short"),
+        attempt_id=attempt_id,
+        membership_revision=revision,
+        membership_digest=match.group("digest"),
+        nonce=match.group("nonce"),
     )
+
+
+def _encode_uuid(value: uuid.UUID) -> str:
+    return base64.urlsafe_b64encode(value.bytes).decode().rstrip("=")
+
+
+def _decode_uuid(value: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(bytes=base64.urlsafe_b64decode(value + "=="))
+    except (ValueError, TypeError) as exc:
+        raise ValueError("invalid compact UUID") from exc
+
+
+def _base36_encode(value: int) -> str:
+    alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
+    if value <= 0:
+        raise ValueError("base36 value must be positive")
+    encoded = ""
+    while value:
+        value, remainder = divmod(value, 36)
+        encoded = alphabet[remainder] + encoded
+    return encoded
+
+
+def _base36_decode(value: str) -> int:
+    decoded = int(value, 36)
+    if decoded <= 0:
+        raise ValueError("base36 value must be positive")
+    return decoded
 
 
 def build_action_diff(*, group: Any, rungs: Sequence[Any]) -> dict | None:
@@ -133,6 +212,7 @@ def build_batch_approval_message(
     *,
     batch: Any,
     proposals: Sequence[tuple[Any, Sequence[Any]]],
+    binding: DispatchBinding,
 ) -> tuple[str, dict]:
     """Render a pending manual-approval batch without exposing raw nonces."""
     if len(proposals) < 2:
@@ -215,7 +295,7 @@ def build_batch_approval_message(
                 {
                     "text": "전체 승인",
                     "callback_data": build_batch_callback_data(
-                        batch_id=batch_id, nonce=str(nonce)
+                        batch_id=batch_id, nonce=str(nonce), binding=binding
                     ),
                 }
             ]
@@ -289,8 +369,15 @@ def build_approval_message(
     rungs: Sequence[Any],
     cash_stress: dict | None = None,
     diff: dict | None = None,
+    evidence_reference: str | None = None,
+    binding: DispatchBinding,
 ) -> tuple[str, dict]:
     """Render a proposal and its Telegram inline keyboard without raw digests."""
+    if binding.card_kind not in {
+        ApprovalCardKind.MANUAL,
+        ApprovalCardKind.RECONFIRM,
+    }:
+        raise ValueError("approval message requires a manual or reconfirm binding")
     nonce = getattr(group, "approval_nonce", None)
     if not nonce:
         raise ValueError("group.approval_nonce is required")
@@ -300,11 +387,13 @@ def build_approval_message(
         action="op",
         proposal_id=proposal_id,
         nonce=nonce,
+        binding=binding,
     )
     deny_data = build_callback_data(
         action="dn",
         proposal_id=proposal_id,
         nonce=nonce,
+        binding=binding,
     )
 
     market = str(getattr(group, "market", "") or "미기재")
@@ -361,16 +450,16 @@ def build_approval_message(
     else:
         lines.append("- 없음")
 
-    thesis = getattr(group, "thesis", None) or "미기재"
-    strategy = getattr(group, "strategy", None) or "미기재"
-    lines.extend(
-        [
-            "",
-            "*근거*",
+    if evidence_reference is None:
+        thesis = getattr(group, "thesis", None) or "미기재"
+        strategy = getattr(group, "strategy", None) or "미기재"
+        evidence_lines = [
             f"- 투자 논지: {_escape_markdown(thesis)}",
             f"- 전략: {_escape_markdown(strategy)}",
         ]
-    )
+    else:
+        evidence_lines = [f"- 원문: {_escape_markdown(evidence_reference)}"]
+    lines.extend(["", "*근거*", *evidence_lines])
 
     if getattr(group, "exit_intent", None) == "loss_cut":
         lines.extend(
@@ -436,13 +525,80 @@ def build_approval_message(
     return text, inline_keyboard
 
 
+def build_approval_dispatch_messages(
+    *,
+    group: Any,
+    rungs: Sequence[Any],
+    cash_stress: dict | None = None,
+    diff: dict | None = None,
+    suffix_blocks: Sequence[str] = (),
+    binding: DispatchBinding,
+) -> ApprovalDispatchMessages:
+    """Keep short cards intact; split oversized evidence before the button card."""
+    full_text, keyboard = build_approval_message(
+        group=group,
+        rungs=rungs,
+        cash_stress=cash_stress,
+        diff=diff,
+        binding=binding,
+    )
+    if suffix_blocks:
+        full_text = f"{full_text}\n\n" + "\n\n".join(suffix_blocks)
+    payload_chars = telegram_text_length(full_text)
+    if payload_chars <= TELEGRAM_SEND_MESSAGE_TEXT_LIMIT:
+        return ApprovalDispatchMessages((), full_text, keyboard, payload_chars)
+
+    thesis = str(getattr(group, "thesis", None) or "미기재")
+    strategy = str(getattr(group, "strategy", None) or "미기재")
+    evidence_body = f"투자 논지:\n{thesis}\n\n전략:\n{strategy}"
+    body_chunks = split_telegram_text(
+        evidence_body,
+        max_units=(TELEGRAM_SEND_MESSAGE_TEXT_LIMIT - _CONTEXT_HEADER_RESERVED_UNITS),
+    )
+    total = len(body_chunks)
+    proposal_short = str(getattr(group, "proposal_id", ""))[:8] or "unknown"
+    context_messages = tuple(
+        f"주문 제안 {proposal_short} 근거 원문 ({index}/{total})\n\n{chunk}"
+        for index, chunk in enumerate(body_chunks, start=1)
+    )
+    if any(
+        telegram_text_length(message) > TELEGRAM_SEND_MESSAGE_TEXT_LIMIT
+        for message in context_messages
+    ):
+        raise ValueError("approval context header exceeded reserved Telegram space")
+
+    evidence_reference = (
+        f"제안 {proposal_short}의 위 근거 메시지 {total}건 · "
+        f"투자 논지 {len(thesis)}자 / 전략 {len(strategy)}자"
+    )
+    approval_text, keyboard = build_approval_message(
+        group=group,
+        rungs=rungs,
+        cash_stress=cash_stress,
+        diff=diff,
+        evidence_reference=evidence_reference,
+        binding=binding,
+    )
+    if suffix_blocks:
+        approval_text = f"{approval_text}\n\n" + "\n\n".join(suffix_blocks)
+    return ApprovalDispatchMessages(
+        context_messages,
+        approval_text,
+        keyboard,
+        payload_chars,
+    )
+
+
 def build_loss_cut_confirmation_message(
     *,
     group: Any,
     rungs: Sequence[Any],
     evidence: Mapping[str, Any],
+    binding: DispatchBinding,
 ) -> tuple[str, dict]:
     """Render the explicit second-step loss-cut confirmation prompt."""
+    if binding.card_kind is not ApprovalCardKind.LOSS_CUT_CONFIRMATION:
+        raise ValueError("loss-cut confirmation requires its card binding")
     nonce = getattr(group, "approval_nonce", None)
     if not nonce:
         raise ValueError("group.approval_nonce is required")
@@ -508,13 +664,19 @@ def build_loss_cut_confirmation_message(
                 {
                     "text": "⚠️ 손절 확인",
                     "callback_data": build_callback_data(
-                        action="lc", proposal_id=proposal_id, nonce=nonce
+                        action="lc",
+                        proposal_id=proposal_id,
+                        nonce=nonce,
+                        binding=binding,
                     ),
                 },
                 {
                     "text": "❌ 거부",
                     "callback_data": build_callback_data(
-                        action="dn", proposal_id=proposal_id, nonce=nonce
+                        action="dn",
+                        proposal_id=proposal_id,
+                        nonce=nonce,
+                        binding=binding,
                     ),
                 },
             ]

@@ -12,8 +12,10 @@ from __future__ import annotations
 import logging
 import re
 import uuid
+from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from app.core.config import settings
@@ -29,7 +31,15 @@ from app.services.order_proposals.buying_power import (
     currency_for_market,
     default_buying_power_reader,
 )
-from app.services.order_proposals.dispatch import dispatch_proposal
+from app.services.order_proposals.dispatch import (
+    dispatch_proposal,
+    record_approval_dispatch_failure,
+)
+from app.services.order_proposals.dispatch_contract import (
+    ApprovalDispatchState,
+    ApprovalPublication,
+    TelegramDispatchResult,
+)
 from app.services.order_proposals.errors import (
     OrderProposalError,
     OrderProposalNotFound,
@@ -95,6 +105,14 @@ def _group_dict(g: Any) -> dict[str, Any]:
             str(g.superseded_by_proposal_id) if g.superseded_by_proposal_id else None
         ),
         "valid_until": g.valid_until.isoformat() if g.valid_until else None,
+        "approval_dispatch_state": g.approval_dispatch_state,
+        "approval_dispatch_attempted_at": (
+            g.approval_dispatch_attempted_at.isoformat()
+            if g.approval_dispatch_attempted_at
+            else None
+        ),
+        "approval_dispatch_failure_code": g.approval_dispatch_failure_code,
+        "approval_dispatch_payload_chars": g.approval_dispatch_payload_chars,
         "created_at": g.created_at.isoformat() if g.created_at else None,
     }
 
@@ -116,6 +134,177 @@ def _get_trade_notifier() -> Any:
     from app.monitoring.trade_notifier.notifier import get_trade_notifier
 
     return get_trade_notifier()
+
+
+def _approval_dispatch_ledger_error_result() -> TelegramDispatchResult:
+    """Return the fixed, non-sensitive fallback for post-commit ledger loss."""
+    return TelegramDispatchResult(
+        state=ApprovalDispatchState.FAILED,
+        message_id=None,
+        status_code=None,
+        error_code=None,
+        error_classification=None,
+        payload_chars=0,
+        failure_code="approval_dispatch_ledger_error",
+    )
+
+
+async def _record_post_commit_dispatch_failure(
+    proposal_id: uuid.UUID,
+    *,
+    publication: ApprovalPublication,
+    now: datetime,
+) -> TelegramDispatchResult:
+    """Record a failed dispatch without ever invalidating create success."""
+    try:
+        result = await record_approval_dispatch_failure(
+            proposal_id,
+            publication=publication,
+            now=now,
+        )
+        if not isinstance(result, TelegramDispatchResult):
+            raise TypeError("unexpected approval dispatch result")
+        return result
+    except Exception as exc:  # noqa: BLE001 - proposal commit is irreversible here
+        logger.error(
+            "order_proposal_create.approval_dispatch_ledger_failed",
+            extra={
+                "proposal_id": str(proposal_id),
+                "failure_code": "approval_dispatch_ledger_error",
+                "exception_type": type(exc).__name__,
+            },
+        )
+        return _approval_dispatch_ledger_error_result()
+
+
+async def _dispatch_after_proposal_commit(
+    proposal_id: uuid.UUID,
+) -> TelegramDispatchResult:
+    """Run dispatch/attempt-ledger work behind a closed post-commit boundary."""
+    try:
+        dispatch_now = now_kst()
+        if (
+            settings.ORDER_PROPOSALS_TELEGRAM_ENABLED
+            and settings.order_proposals_telegram_chat_allowlist
+        ):
+            try:
+                from app.monitoring.trade_notifier.notifier import (
+                    get_trade_notifier,
+                )
+
+                result = await dispatch_proposal(
+                    proposal_id,
+                    notifier=get_trade_notifier(),
+                    now=dispatch_now,
+                )
+                if not isinstance(result, TelegramDispatchResult):
+                    raise TypeError("unexpected approval dispatch result")
+                return result
+            except Exception as exc:  # noqa: BLE001 - proposal is already durable
+                logger.error(
+                    "order_proposal_create.approval_dispatch_failed",
+                    extra={
+                        "proposal_id": str(proposal_id),
+                        "failure_code": "approval_dispatch_internal_error",
+                        "exception_type": type(exc).__name__,
+                    },
+                )
+                publication = ApprovalPublication.failed(
+                    payload_chars=0,
+                    failure_code="approval_dispatch_internal_error",
+                )
+                return await _record_post_commit_dispatch_failure(
+                    proposal_id,
+                    publication=publication,
+                    now=dispatch_now,
+                )
+
+        failure_code = (
+            "telegram_disabled"
+            if not settings.ORDER_PROPOSALS_TELEGRAM_ENABLED
+            else "telegram_allowlist_empty"
+        )
+        return await _record_post_commit_dispatch_failure(
+            proposal_id,
+            publication=ApprovalPublication.failed(
+                payload_chars=0,
+                failure_code=failure_code,
+            ),
+            now=dispatch_now,
+        )
+    except Exception as exc:  # noqa: BLE001 - final post-commit containment
+        logger.error(
+            "order_proposal_create.approval_dispatch_boundary_failed",
+            extra={
+                "proposal_id": str(proposal_id),
+                "failure_code": "approval_dispatch_ledger_error",
+                "exception_type": type(exc).__name__,
+            },
+        )
+        return _approval_dispatch_ledger_error_result()
+
+
+async def _complete_committed_proposal_create(
+    committed_result: Mapping[str, Any],
+    *,
+    proposal_id: uuid.UUID,
+    superseded_message: tuple[Any, Any] | None,
+    normalized_action: str,
+    account_mode: str,
+    side: str,
+    broker_account_id: str | None,
+    market: str,
+) -> dict[str, Any]:
+    """Attach optional post-commit work while preserving durable create success."""
+    result = dict(committed_result)
+    try:
+        if superseded_message is not None:
+            await _edit_superseded_approval_message(
+                chat_id=superseded_message[0],
+                message_id=superseded_message[1],
+                replacement_proposal_id=proposal_id,
+            )
+
+        if (
+            normalized_action == "place"
+            and account_mode == "toss_live"
+            and side == "buy"
+        ):
+            try:
+                async with AsyncSessionLocal() as advisory_session:
+                    advisory = await build_create_advisory(
+                        advisory_session,
+                        account_mode=account_mode,
+                        broker_account_id=broker_account_id,
+                        currency=currency_for_market(market),
+                        now=now_kst(),
+                        buying_power_reader=default_buying_power_reader,
+                    )
+                result["buying_power_advisory"] = [advisory]
+                warning = advisory.get("warning")
+                if warning:
+                    result["warnings"] = [warning]
+            except Exception:  # noqa: BLE001 - advisory never blocks create
+                logger.exception(
+                    "order_proposal_create: buying-power advisory failed for "
+                    "proposal_id=%s",
+                    proposal_id,
+                )
+
+        dispatch_result = await _dispatch_after_proposal_commit(proposal_id)
+        result["approval_dispatch"] = dispatch_result.as_dict()
+        return result
+    except Exception as exc:  # noqa: BLE001 - committed create result is immutable
+        logger.error(
+            "order_proposal_create.post_commit_boundary_failed",
+            extra={
+                "proposal_id": str(proposal_id),
+                "failure_code": "approval_dispatch_ledger_error",
+                "exception_type": type(exc).__name__,
+            },
+        )
+        result["approval_dispatch"] = _approval_dispatch_ledger_error_result().as_dict()
+        return result
 
 
 def _escape_telegram_markdown(value: str) -> str:
@@ -146,7 +335,7 @@ async def _edit_voided_approval_message(
             f"🗑️ 제안 무효화됨\n사유: {_escape_telegram_markdown(void_reason)}",
             reply_markup={"inline_keyboard": []},
         )
-        if edited is False:
+        if not edited.ok:
             logger.error(
                 "order_proposal_void: telegram message edit returned false "
                 "for message_id=%s",
@@ -177,7 +366,7 @@ async def _edit_expired_approval_message(
             f"⏰ 제안 만료됨\n종목: {_escape_telegram_markdown(symbol)}",
             reply_markup={"inline_keyboard": []},
         )
-        if edited is False:
+        if not edited.ok:
             logger.error(
                 "order_proposal_expire_sweep: telegram message edit returned "
                 "false for message_id=%s",
@@ -329,79 +518,36 @@ async def order_proposal_create(
                 )
             await session.commit()
             proposal_id = group.proposal_id
-            result = {
-                "success": True,
-                "proposal_id": str(proposal_id),
-                "lifecycle_state": group.lifecycle_state,
-                "action": group.action or "place",
-                "target_broker_order_id": group.target_broker_order_id,
-                "valid_until": group.valid_until.isoformat()
-                if group.valid_until
-                else None,
-                "rungs": [_rung_dict(r) for r in saved_rungs],
-            }
-
-        if superseded_message is not None:
-            await _edit_superseded_approval_message(
-                chat_id=superseded_message[0],
-                message_id=superseded_message[1],
-                replacement_proposal_id=proposal_id,
+            # Freeze the caller-visible create success at the commit boundary.
+            # Every later activity is optional post-commit work and may only
+            # attach nested status; it cannot replace this durable success.
+            committed_result = MappingProxyType(
+                {
+                    "success": True,
+                    "proposal_id": str(proposal_id),
+                    "lifecycle_state": group.lifecycle_state,
+                    "action": group.action or "place",
+                    "target_broker_order_id": group.target_broker_order_id,
+                    "valid_until": (
+                        group.valid_until.isoformat() if group.valid_until else None
+                    ),
+                    "rungs": [_rung_dict(r) for r in saved_rungs],
+                }
             )
 
-        if (
-            normalized_action == "place"
-            and account_mode == "toss_live"
-            and side == "buy"
-        ):
-            try:
-                async with AsyncSessionLocal() as advisory_session:
-                    advisory = await build_create_advisory(
-                        advisory_session,
-                        account_mode=account_mode,
-                        broker_account_id=broker_account_id,
-                        currency=currency_for_market(market),
-                        now=now_kst(),
-                        buying_power_reader=default_buying_power_reader,
-                    )
-                result["buying_power_advisory"] = [advisory]
-                warning = advisory.get("warning")
-                if warning:
-                    result["warnings"] = [warning]
-            except Exception:  # noqa: BLE001 - advisory never blocks create
-                logger.exception(
-                    "order_proposal_create: buying-power advisory failed for "
-                    "proposal_id=%s",
-                    proposal_id,
-                )
-
-        # Best-effort Telegram dispatch (ROB-816 PR 2). The proposal's own
-        # session above is already closed/committed by this point --
-        # `dispatch_proposal` opens a genuinely separate session, so
-        # this is intentional, not a nested-session bug. A dispatch failure
-        # (Telegram down, notifier misconfigured, etc.) must never fail this
-        # tool's contract -- the proposal has already persisted successfully.
-        if (
-            settings.ORDER_PROPOSALS_TELEGRAM_ENABLED
-            and settings.order_proposals_telegram_chat_allowlist
-        ):
-            try:
-                from app.monitoring.trade_notifier.notifier import (
-                    get_trade_notifier,
-                )
-
-                await dispatch_proposal(
-                    proposal_id,
-                    notifier=get_trade_notifier(),
-                    now=now_kst(),
-                )
-            except Exception:  # noqa: BLE001 - best-effort, never fail create
-                logger.exception(
-                    "order_proposal_create: telegram approval dispatch failed "
-                    "for proposal_id=%s",
-                    proposal_id,
-                )
-
-        return result
+        # Telegram dispatch and every secondary ledger path live behind a
+        # separate never-raise boundary. The proposal transaction above is
+        # already closed and its immutable success snapshot is authoritative.
+        return await _complete_committed_proposal_create(
+            committed_result,
+            proposal_id=proposal_id,
+            superseded_message=superseded_message,
+            normalized_action=normalized_action,
+            account_mode=account_mode,
+            side=side,
+            broker_account_id=broker_account_id,
+            market=market,
+        )
     except OrderProposalUnsupportedTargetAction as exc:
         return {
             "success": False,

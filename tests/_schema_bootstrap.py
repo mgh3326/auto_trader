@@ -10,6 +10,7 @@ a concurrent xdist worker's test body.
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Iterable
 
 from sqlalchemy import text
@@ -57,7 +58,10 @@ from sqlalchemy import text
 # v26 (ROB-954): add the dedicated terminal transition timestamp + scan index.
 # v27 (ROB-1023): widen research.backtest_runs.runner to preserve the exact
 # production execution-lineage label.
-SCHEMA_BOOTSTRAP_VERSION = 27
+# v28: durable Telegram approval-dispatch summary columns + attempt ledger.
+# v29: immutable approval publication bindings and frozen batch snapshots.
+# v30: persistent-schema typed dispatch/card constraints and attempt nullability.
+SCHEMA_BOOTSTRAP_VERSION = 30
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -106,6 +110,104 @@ def _quote_ident(identifier: str) -> str:
 def _check_constraint_sql(column_name: str, values: tuple[str, ...]) -> str:
     values_sql = ",".join(f"'{value}'" for value in values)
     return f"CHECK ({column_name} IN ({values_sql}))"
+
+
+_APPROVAL_DISPATCH_STATES = (
+    "pending",
+    "sent_current",
+    "sent_superseded",
+    "failed",
+    "partial_failed",
+    "failed_superseded",
+)
+_APPROVAL_PROPOSAL_CARD_KINDS = (
+    "manual",
+    "reconfirm",
+    "auto_veto",
+    "loss_cut_confirmation",
+)
+_APPROVAL_ATTEMPT_NOT_NULL_COLUMNS = frozenset(
+    {
+        "attempt_id",
+        "proposal_pk",
+        "state",
+        "attempted_at",
+        "payload_chars",
+        "context_message_count",
+        "card_kind",
+        "membership_revision",
+        "membership_digest",
+        "created_at",
+        "updated_at",
+    }
+)
+_APPROVAL_REQUIRED_CHECKS = {
+    (
+        "order_proposals",
+        "order_proposals_approval_dispatch_state",
+    ): ("approval_dispatch_state", frozenset(_APPROVAL_DISPATCH_STATES), True),
+    (
+        "order_proposals",
+        "order_proposals_approval_dispatch_card_kind",
+    ): (
+        "approval_dispatch_card_kind",
+        frozenset(_APPROVAL_PROPOSAL_CARD_KINDS),
+        True,
+    ),
+    (
+        "order_proposal_approval_dispatch_attempts",
+        "order_proposal_approval_dispatch_attempt_state",
+    ): ("state", frozenset(_APPROVAL_DISPATCH_STATES), False),
+    (
+        "order_proposal_approval_dispatch_attempts",
+        "order_proposal_approval_dispatch_attempt_card_kind",
+    ): ("card_kind", frozenset(_APPROVAL_PROPOSAL_CARD_KINDS), False),
+    (
+        "order_proposal_approval_batches",
+        "order_proposal_approval_batches_dispatch_state",
+    ): ("approval_dispatch_state", frozenset(_APPROVAL_DISPATCH_STATES), True),
+}
+
+
+def _approval_dispatch_catalog_errors(
+    *,
+    columns: Iterable[tuple[str, str, str]],
+    constraints: Iterable[tuple[str, str, str]],
+) -> list[str]:
+    """Return persistent-schema drift from the final typed dispatch contract."""
+    column_nullability = {
+        (table_name, column_name): is_nullable.upper()
+        for table_name, column_name, is_nullable in columns
+    }
+    errors = [
+        f"nullable_attempt_binding:{column}"
+        for column in sorted(_APPROVAL_ATTEMPT_NOT_NULL_COLUMNS)
+        if column_nullability.get(("order_proposal_approval_dispatch_attempts", column))
+        != "NO"
+    ]
+
+    definitions = {
+        (table_name, constraint_name): definition
+        for table_name, constraint_name, definition in constraints
+    }
+    for key, (
+        column,
+        allowed_values,
+        nullable_allowed,
+    ) in _APPROVAL_REQUIRED_CHECKS.items():
+        definition = definitions.get(key)
+        if definition is None:
+            errors.append(f"missing_check:{key[0]}.{key[1]}")
+            continue
+        normalized = " ".join(definition.lower().split())
+        actual_values = frozenset(re.findall(r"'([^']+)'", normalized))
+        if column not in normalized or actual_values != allowed_values:
+            errors.append(f"invalid_check:{key[0]}.{key[1]}")
+            continue
+        has_null_allowance = f"{column} is null" in normalized
+        if has_null_allowance is not nullable_allowed:
+            errors.append(f"invalid_null_contract:{key[0]}.{key[1]}")
+    return errors
 
 
 def _constraint_definitions_need_refresh(
@@ -852,6 +954,148 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ADD CONSTRAINT order_proposals_action "
     "CHECK (action IS NULL OR action IN ('place','replace','cancel')); "
     "END IF; END $$",
+    # ---- durable Telegram approval dispatch attempts ----
+    "ALTER TABLE review.order_proposals "
+    "ADD COLUMN IF NOT EXISTS approval_dispatch_state TEXT",
+    "ALTER TABLE review.order_proposals "
+    "ADD COLUMN IF NOT EXISTS approval_dispatch_attempt_id UUID",
+    "ALTER TABLE review.order_proposals "
+    "ADD COLUMN IF NOT EXISTS approval_dispatch_attempted_at TIMESTAMPTZ",
+    "ALTER TABLE review.order_proposals "
+    "ADD COLUMN IF NOT EXISTS approval_dispatch_failure_code TEXT",
+    "ALTER TABLE review.order_proposals "
+    "ADD COLUMN IF NOT EXISTS approval_dispatch_payload_chars BIGINT",
+    "ALTER TABLE review.order_proposals "
+    "ADD COLUMN IF NOT EXISTS approval_dispatch_card_kind TEXT",
+    "ALTER TABLE review.order_proposals "
+    "ADD COLUMN IF NOT EXISTS approval_dispatch_membership_revision INTEGER",
+    "ALTER TABLE review.order_proposals "
+    "ADD COLUMN IF NOT EXISTS approval_dispatch_membership_digest TEXT",
+    "ALTER TABLE review.order_proposals "
+    "ADD COLUMN IF NOT EXISTS approval_dispatch_published_at TIMESTAMPTZ",
+    "ALTER TABLE review.order_proposal_approval_dispatch_attempts "
+    "ADD COLUMN IF NOT EXISTS error_classification TEXT",
+    "ALTER TABLE review.order_proposal_approval_dispatch_attempts "
+    "ADD COLUMN IF NOT EXISTS card_kind TEXT",
+    "ALTER TABLE review.order_proposal_approval_dispatch_attempts "
+    "ADD COLUMN IF NOT EXISTS membership_revision INTEGER",
+    "ALTER TABLE review.order_proposal_approval_dispatch_attempts "
+    "ADD COLUMN IF NOT EXISTS membership_digest TEXT",
+    # Intermediate R1/R2 test schemas may contain attempts without the final
+    # immutable binding columns. Those rows cannot truthfully be repaired, so
+    # discard only invalid rows in the disposable test ledger before applying
+    # production-equivalent NOT NULL/CHECK constraints.
+    "DELETE FROM review.order_proposal_approval_dispatch_attempts "
+    "WHERE attempt_id IS NULL OR proposal_pk IS NULL OR state IS NULL "
+    "OR state NOT IN "
+    "('pending','sent_current','sent_superseded','failed',"
+    "'partial_failed','failed_superseded') "
+    "OR attempted_at IS NULL OR payload_chars IS NULL "
+    "OR context_message_count IS NULL OR card_kind IS NULL "
+    "OR card_kind NOT IN "
+    "('manual','reconfirm','auto_veto','loss_cut_confirmation') "
+    "OR membership_revision IS NULL OR membership_digest IS NULL "
+    "OR created_at IS NULL OR updated_at IS NULL",
+    *(
+        "ALTER TABLE review.order_proposal_approval_dispatch_attempts "
+        f"ALTER COLUMN {column} SET NOT NULL"
+        for column in (
+            "attempt_id",
+            "proposal_pk",
+            "state",
+            "attempted_at",
+            "payload_chars",
+            "context_message_count",
+            "card_kind",
+            "membership_revision",
+            "membership_digest",
+            "created_at",
+            "updated_at",
+        )
+    ),
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conname = 'order_proposals_approval_dispatch_state' "
+    "AND conrelid = 'review.order_proposals'::regclass) THEN "
+    "ALTER TABLE review.order_proposals "
+    "ADD CONSTRAINT order_proposals_approval_dispatch_state "
+    "CHECK (approval_dispatch_state IS NULL OR "
+    "approval_dispatch_state IN "
+    "('pending','sent_current','sent_superseded','failed',"
+    "'partial_failed','failed_superseded')); "
+    "END IF; END $$",
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conname = 'order_proposals_approval_dispatch_card_kind' "
+    "AND conrelid = 'review.order_proposals'::regclass) THEN "
+    "ALTER TABLE review.order_proposals "
+    "ADD CONSTRAINT order_proposals_approval_dispatch_card_kind "
+    "CHECK (approval_dispatch_card_kind IS NULL OR "
+    "approval_dispatch_card_kind IN "
+    "('manual','reconfirm','auto_veto','loss_cut_confirmation')); "
+    "END IF; END $$",
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conname = 'order_proposal_approval_dispatch_attempt_state' "
+    "AND conrelid = "
+    "'review.order_proposal_approval_dispatch_attempts'::regclass) THEN "
+    "ALTER TABLE review.order_proposal_approval_dispatch_attempts "
+    "ADD CONSTRAINT order_proposal_approval_dispatch_attempt_state "
+    "CHECK (state IN "
+    "('pending','sent_current','sent_superseded','failed',"
+    "'partial_failed','failed_superseded')); "
+    "END IF; END $$",
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conname = 'order_proposal_approval_dispatch_attempt_card_kind' "
+    "AND conrelid = "
+    "'review.order_proposal_approval_dispatch_attempts'::regclass) THEN "
+    "ALTER TABLE review.order_proposal_approval_dispatch_attempts "
+    "ADD CONSTRAINT order_proposal_approval_dispatch_attempt_card_kind "
+    "CHECK (card_kind IN "
+    "('manual','reconfirm','auto_veto','loss_cut_confirmation')); "
+    "END IF; END $$",
+    "ALTER TABLE review.order_proposal_approval_batches "
+    "ADD COLUMN IF NOT EXISTS approval_dispatch_state TEXT",
+    "ALTER TABLE review.order_proposal_approval_batches "
+    "ADD COLUMN IF NOT EXISTS approval_dispatch_attempt_id UUID",
+    "ALTER TABLE review.order_proposal_approval_batches "
+    "ADD COLUMN IF NOT EXISTS approval_dispatch_attempted_at TIMESTAMPTZ",
+    "ALTER TABLE review.order_proposal_approval_batches "
+    "ADD COLUMN IF NOT EXISTS approval_dispatch_published_at TIMESTAMPTZ",
+    "ALTER TABLE review.order_proposal_approval_batches "
+    "ADD COLUMN IF NOT EXISTS approval_dispatch_failure_code TEXT",
+    "ALTER TABLE review.order_proposal_approval_batches "
+    "ADD COLUMN IF NOT EXISTS approval_dispatch_payload_chars BIGINT",
+    "ALTER TABLE review.order_proposal_approval_batches "
+    "ADD COLUMN IF NOT EXISTS telegram_status_code INTEGER",
+    "ALTER TABLE review.order_proposal_approval_batches "
+    "ADD COLUMN IF NOT EXISTS telegram_error_code INTEGER",
+    "ALTER TABLE review.order_proposal_approval_batches "
+    "ADD COLUMN IF NOT EXISTS error_classification TEXT",
+    "ALTER TABLE review.order_proposal_approval_batches "
+    "ADD COLUMN IF NOT EXISTS membership_revision INTEGER",
+    "ALTER TABLE review.order_proposal_approval_batches "
+    "ADD COLUMN IF NOT EXISTS membership_digest TEXT",
+    "ALTER TABLE review.order_proposal_approval_batches "
+    "ADD COLUMN IF NOT EXISTS membership_frozen_at TIMESTAMPTZ",
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conname = 'order_proposal_approval_batches_dispatch_state' "
+    "AND conrelid = "
+    "'review.order_proposal_approval_batches'::regclass) THEN "
+    "ALTER TABLE review.order_proposal_approval_batches "
+    "ADD CONSTRAINT order_proposal_approval_batches_dispatch_state "
+    "CHECK (approval_dispatch_state IS NULL OR "
+    "approval_dispatch_state IN "
+    "('pending','sent_current','sent_superseded','failed',"
+    "'partial_failed','failed_superseded')); "
+    "END IF; END $$",
+    "ALTER TABLE review.order_proposal_approval_batch_members "
+    "ADD COLUMN IF NOT EXISTS membership_revision INTEGER",
+    "ALTER TABLE review.order_proposal_approval_batch_members "
+    "ADD COLUMN IF NOT EXISTS approval_dispatch_attempt_id_snapshot UUID",
+    "ALTER TABLE review.order_proposal_approval_batch_members "
+    "ADD COLUMN IF NOT EXISTS approval_membership_revision_snapshot INTEGER",
+    "ALTER TABLE review.order_proposal_approval_batch_members "
+    "ADD COLUMN IF NOT EXISTS approval_membership_digest_snapshot TEXT",
+    "ALTER TABLE review.order_proposal_approval_batch_members "
+    "ADD COLUMN IF NOT EXISTS approval_card_kind_snapshot TEXT",
     # ---- ROB-846: append-only trial-child columns on research.backtest_runs +
     # run/config/data hash linkage on research.promotion_candidates. create_all
     # skips existing tables, so a persistent test DB needs these ALTERs (they
@@ -1407,6 +1651,55 @@ async def _ensure_alpaca_paper_ledger_lifecycle_state_constraint(conn) -> None:
     )
 
 
+async def _assert_approval_dispatch_schema_contract(conn) -> None:
+    """Fail bootstrap if a persistent table remains weaker than production."""
+    column_result = await conn.execute(
+        text(
+            "SELECT table_name, column_name, is_nullable "
+            "FROM information_schema.columns "
+            "WHERE table_schema = 'review' "
+            "AND table_name = 'order_proposal_approval_dispatch_attempts'"
+        )
+    )
+    constraint_result = await conn.execute(
+        text(
+            "SELECT cls.relname AS table_name, con.conname, "
+            "pg_get_constraintdef(con.oid) AS definition "
+            "FROM pg_constraint AS con "
+            "JOIN pg_class AS cls ON cls.oid = con.conrelid "
+            "JOIN pg_namespace AS ns ON ns.oid = cls.relnamespace "
+            "WHERE ns.nspname = 'review' "
+            "AND cls.relname IN ("
+            "'order_proposals',"
+            "'order_proposal_approval_dispatch_attempts',"
+            "'order_proposal_approval_batches'"
+            ")"
+        )
+    )
+    errors = _approval_dispatch_catalog_errors(
+        columns=[
+            (
+                str(row._mapping["table_name"]),
+                str(row._mapping["column_name"]),
+                str(row._mapping["is_nullable"]),
+            )
+            for row in column_result
+        ],
+        constraints=[
+            (
+                str(row._mapping["table_name"]),
+                str(row._mapping["conname"]),
+                str(row._mapping["definition"]),
+            )
+            for row in constraint_result
+        ],
+    )
+    if errors:
+        raise RuntimeError(
+            "approval dispatch test-schema contract mismatch: " + ",".join(errors)
+        )
+
+
 def schema_content_hash() -> str:
     """SHA256 hex of the bootstrap version + the DDL tuple.
 
@@ -1514,3 +1807,4 @@ async def apply_test_schema(conn) -> None:
 
     for stmt in _DDL_STATEMENTS:
         await conn.execute(text(stmt))
+    await _assert_approval_dispatch_schema_contract(conn)

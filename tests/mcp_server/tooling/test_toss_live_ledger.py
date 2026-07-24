@@ -762,8 +762,49 @@ async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
         approval_issue_id=None,
         now=now,
     )
-    nonce = f"nonce-{unique}"
+    nonce = unique[:11]
     await service.set_approval_nonce(group.proposal_id, nonce)
+    from app.services.order_proposals.approval_message import build_callback_data
+    from app.services.order_proposals.dispatch_contract import (
+        ApprovalCardKind,
+        ApprovalPublication,
+        build_proposal_dispatch_binding,
+    )
+    from app.telegram_contract import TelegramMethodResult, telegram_text_length
+
+    dispatch_attempt_id = uuid4()
+    dispatch_binding = build_proposal_dispatch_binding(
+        proposal_id=group.proposal_id,
+        nonce=nonce,
+        attempt_id=dispatch_attempt_id,
+        card_kind=ApprovalCardKind.MANUAL,
+        current_membership_revision=group.approval_dispatch_membership_revision,
+    )
+    await service.start_approval_dispatch(
+        group.proposal_id,
+        attempt_id=dispatch_attempt_id,
+        binding=dispatch_binding,
+        now=now,
+        payload_chars=100,
+        context_message_count=0,
+    )
+    await service.finish_approval_dispatch(
+        group.proposal_id,
+        attempt_id=dispatch_attempt_id,
+        publication=ApprovalPublication.published(
+            payload_chars=100,
+            method_result=TelegramMethodResult(
+                ok=True,
+                message_id=555,
+                status_code=200,
+                error_code=None,
+                error_classification=None,
+                payload_chars=100,
+            ),
+        ),
+        chat_id="42",
+        now=now,
+    )
     await db_session.commit()
 
     class _Client:
@@ -819,7 +860,14 @@ async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
 
         async def edit_message(self, chat_id, message_id, text, reply_markup=None):
             self.edited.append((chat_id, message_id, text, reply_markup))
-            return True
+            return TelegramMethodResult(
+                ok=True,
+                message_id=message_id,
+                status_code=200,
+                error_code=None,
+                error_classification=None,
+                payload_chars=telegram_text_length(text),
+            )
 
     @contextlib.asynccontextmanager
     async def service_factory():
@@ -892,7 +940,12 @@ async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
                 "id": f"callback-{unique}",
                 "from": {"id": 777},
                 "message": {"chat": {"id": 42}, "message_id": 555},
-                "data": f"op:{str(group.proposal_id)[:8]}:{nonce}",
+                "data": build_callback_data(
+                    action="op",
+                    proposal_id=group.proposal_id,
+                    nonce=nonce,
+                    binding=dispatch_binding,
+                ),
             }
         },
         now=now,

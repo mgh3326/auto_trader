@@ -10,12 +10,61 @@ import pytest
 from app.services.order_proposals import approval_message as approval_messages
 from app.services.order_proposals.approval_message import (
     build_action_diff,
-    build_approval_message,
     build_buying_power_shortfall_text,
-    build_callback_data,
-    build_loss_cut_confirmation_message,
     parse_callback_data,
 )
+from app.services.order_proposals.approval_message import (
+    build_approval_dispatch_messages as _build_approval_dispatch_messages,
+)
+from app.services.order_proposals.approval_message import (
+    build_approval_message as _build_approval_message,
+)
+from app.services.order_proposals.approval_message import (
+    build_callback_data as _build_callback_data,
+)
+from app.services.order_proposals.approval_message import (
+    build_loss_cut_confirmation_message as _build_loss_cut_confirmation_message,
+)
+from app.services.order_proposals.dispatch_contract import (
+    ApprovalCardKind,
+    DispatchBinding,
+)
+from app.telegram_contract import (
+    TELEGRAM_SEND_MESSAGE_TEXT_LIMIT,
+    telegram_text_length,
+)
+
+_ATTEMPT_ID = uuid.UUID("99999999-9999-4999-8999-999999999999")
+
+
+def _binding(
+    card_kind: ApprovalCardKind = ApprovalCardKind.MANUAL,
+) -> DispatchBinding:
+    return DispatchBinding(
+        attempt_id=_ATTEMPT_ID,
+        card_kind=card_kind,
+        membership_revision=1,
+        membership_digest="AbCdEf0123_-",
+    )
+
+
+def build_callback_data(**kwargs):
+    return _build_callback_data(binding=_binding(), **kwargs)
+
+
+def build_approval_message(**kwargs):
+    return _build_approval_message(binding=_binding(), **kwargs)
+
+
+def build_approval_dispatch_messages(**kwargs):
+    return _build_approval_dispatch_messages(binding=_binding(), **kwargs)
+
+
+def build_loss_cut_confirmation_message(**kwargs):
+    return _build_loss_cut_confirmation_message(
+        binding=_binding(ApprovalCardKind.LOSS_CUT_CONFIRMATION),
+        **kwargs,
+    )
 
 
 def _group(**overrides):
@@ -32,7 +81,7 @@ def _group(**overrides):
         "commit_lease_until": None,
         "source_asof": None,
         "payload_hash": None,
-        "approval_nonce": "abc123def4560000",
+        "approval_nonce": "abc123def45",
         "exit_intent": None,
         "exit_reason": None,
         "retrospective_id": None,
@@ -78,10 +127,19 @@ def test_batch_callback_round_trip_and_telegram_limit():
     batch_id = uuid.UUID("aaaaaaaa-1111-4111-8111-111111111111")
 
     data = approval_messages.build_batch_callback_data(
-        batch_id=batch_id, nonce="batch_nonce-1"
+        batch_id=batch_id,
+        nonce="batch_nonce",
+        binding=_binding(ApprovalCardKind.BATCH),
     )
 
-    assert parse_callback_data(data) == ("ba", "aaaaaaaa", "batch_nonce-1")
+    parsed = parse_callback_data(data)
+    assert (parsed.action, parsed.subject_short, parsed.nonce) == (
+        "ba",
+        "aaaaaaaa",
+        "batch_nonce",
+    )
+    assert parsed.attempt_id == _ATTEMPT_ID
+    assert parsed.membership_digest == "AbCdEf0123_-"
     assert len(data.encode()) <= 64
 
 
@@ -115,7 +173,9 @@ def test_batch_summary_lists_notional_and_account_subtotals():
     ]
 
     text, keyboard = approval_messages.build_batch_approval_message(
-        batch=batch, proposals=proposals
+        batch=batch,
+        proposals=proposals,
+        binding=_binding(ApprovalCardKind.BATCH),
     )
 
     assert "AAPL" in text and "MSFT" in text
@@ -153,7 +213,9 @@ def test_batch_summary_omits_market_order_notional_from_totals():
     ]
 
     text, _keyboard = approval_messages.build_batch_approval_message(
-        batch=batch, proposals=proposals
+        batch=batch,
+        proposals=proposals,
+        binding=_binding(ApprovalCardKind.BATCH),
     )
 
     assert "합계: $100" in text
@@ -219,6 +281,35 @@ def test_loss_cut_approval_message_shows_reason_and_retrospective():
 
 
 @pytest.mark.unit
+def test_4444_character_thesis_is_split_losslessly_before_short_button_card():
+    thesis = "가" * 4444
+    strategy = "분할 매도"
+    group = _group(thesis=thesis, strategy=strategy)
+    proposal_short = str(group.proposal_id)[:8]
+
+    messages = build_approval_dispatch_messages(
+        group=group,
+        rungs=[_rung()],
+    )
+
+    assert messages.payload_chars > TELEGRAM_SEND_MESSAGE_TEXT_LIMIT
+    assert len(messages.context_messages) == 2
+    assert all(
+        telegram_text_length(text) <= TELEGRAM_SEND_MESSAGE_TEXT_LIMIT
+        for text in (*messages.context_messages, messages.approval_text)
+    )
+    reconstructed = "".join(
+        message.split("\n\n", 1)[1] for message in messages.context_messages
+    )
+    assert reconstructed == f"투자 논지:\n{thesis}\n\n전략:\n{strategy}"
+    assert thesis not in messages.approval_text
+    assert "투자 논지 4444자" in messages.approval_text
+    assert all(proposal_short in message for message in messages.context_messages)
+    assert proposal_short in messages.approval_text
+    assert messages.inline_keyboard["inline_keyboard"]
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("detail", "expected"),
     [
@@ -281,14 +372,15 @@ def test_callback_data_roundtrip_and_length():
     data = build_callback_data(
         action="op",
         proposal_id=proposal_id,
-        nonce="abc123def4560000",
+        nonce="abc123def45",
     )
 
     assert len(data.encode("utf-8")) <= 64
-    action, proposal_short, nonce = parse_callback_data(data)
-    assert action == "op"
-    assert proposal_short == str(proposal_id)[:8]
-    assert nonce == "abc123def4560000"
+    parsed = parse_callback_data(data)
+    assert parsed.action == "op"
+    assert parsed.subject_short == str(proposal_id)[:8]
+    assert parsed.nonce == "abc123def45"
+    assert parsed.attempt_id == _ATTEMPT_ID
 
 
 @pytest.mark.unit
@@ -298,7 +390,7 @@ def test_loss_cut_confirmation_callback_and_summary():
         exit_reason="stop_loss",
         retrospective_id=42,
         approval_issue_id="operator note: desk A",
-        approval_nonce="second-step-nonce",
+        approval_nonce="secondnonce",
     )
     text, keyboard = build_loss_cut_confirmation_message(
         group=group,
@@ -330,11 +422,11 @@ def test_loss_cut_confirmation_callback_and_summary():
     assert "98" in text
     button = keyboard["inline_keyboard"][0][0]
     assert button["text"] == "⚠️ 손절 확인"
-    action, proposal_short, nonce = parse_callback_data(button["callback_data"])
-    assert (action, proposal_short, nonce) == (
+    parsed = parse_callback_data(button["callback_data"])
+    assert (parsed.action, parsed.subject_short, parsed.nonce) == (
         "lc",
         str(group.proposal_id)[:8],
-        "second-step-nonce",
+        "secondnonce",
     )
 
 
@@ -346,7 +438,7 @@ def test_callback_builder_rejects_invalid_action_and_oversized_data():
         build_callback_data(
             action="approve",
             proposal_id=proposal_id,
-            nonce="abc123def4560000",
+            nonce="abc123def45",
         )
     with pytest.raises(ValueError, match="64 bytes"):
         build_callback_data(
@@ -381,7 +473,7 @@ def test_message_includes_times_cash_and_reconfirm_diff_without_secrets():
     proposal_id = uuid.UUID("12345678-1234-5678-9abc-123456789abc")
     payload_hash = "payload-secret-digest-0123456789"
     approval_hash = "approval-secret-digest-9876543210"
-    nonce = "abc123def4560000"
+    nonce = "abc123def45"
     group = SimpleNamespace(
         proposal_id=proposal_id,
         symbol="000660",
@@ -461,20 +553,14 @@ def test_message_includes_times_cash_and_reconfirm_diff_without_secrets():
     assert "approval_hash" not in text
     assert "nonce" not in text
     assert "digest" not in text
-    assert inline_keyboard == {
-        "inline_keyboard": [
-            [
-                {
-                    "text": "✅ 승인",
-                    "callback_data": "op:12345678:abc123def4560000",
-                },
-                {
-                    "text": "❌ 거부",
-                    "callback_data": "dn:12345678:abc123def4560000",
-                },
-            ]
-        ]
-    }
+    approve, deny = inline_keyboard["inline_keyboard"][0]
+    assert (approve["text"], deny["text"]) == ("✅ 승인", "❌ 거부")
+    approve_callback = parse_callback_data(approve["callback_data"])
+    deny_callback = parse_callback_data(deny["callback_data"])
+    assert approve_callback.action == "op"
+    assert deny_callback.action == "dn"
+    assert approve_callback.attempt_id == deny_callback.attempt_id == _ATTEMPT_ID
+    assert approve_callback.nonce == deny_callback.nonce == nonce
 
 
 @pytest.mark.unit
@@ -580,7 +666,7 @@ def test_message_omits_nested_and_non_numeric_sensitive_values():
         commit_lease_until=None,
         source_asof=None,
         payload_hash=None,
-        approval_nonce="abc123def4560000",
+        approval_nonce="abc123def45",
     )
     rung = SimpleNamespace(
         rung_index=0,
@@ -648,7 +734,7 @@ def test_message_formats_optional_market_order_fields_stably():
         commit_lease_until=None,
         source_asof=None,
         payload_hash=None,
-        approval_nonce="abc123def4560000",
+        approval_nonce="abc123def45",
     )
     rung = SimpleNamespace(
         rung_index=0,
@@ -682,7 +768,7 @@ def test_message_escapes_inline_code_delimiters():
         commit_lease_until=None,
         source_asof=None,
         payload_hash=None,
-        approval_nonce="abc123def4560000",
+        approval_nonce="abc123def45",
     )
 
     text, _ = build_approval_message(group=group, rungs=[])
