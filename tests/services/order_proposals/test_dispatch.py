@@ -9,39 +9,101 @@ from decimal import Decimal
 import pytest
 
 from app.core.db import AsyncSessionLocal
+from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.services.order_proposals import OrderProposalsService
-from app.services.order_proposals.approval_message import parse_callback_data
+from app.services.order_proposals.approval_message import (
+    build_approval_dispatch_messages,
+    parse_callback_data,
+)
 from app.services.order_proposals.dispatch import (
     dispatch_proposal,
+    publish_approval_messages,
     send_proposal_for_approval,
+)
+from app.services.order_proposals.dispatch_contract import (
+    ApprovalCardKind,
+    ApprovalDispatchState,
+    build_proposal_dispatch_binding,
 )
 from app.services.order_proposals.revalidation import RungOutcome, revalidate_and_submit
 from app.services.order_proposals.service import RungInput
+from app.telegram_contract import TelegramMethodResult, telegram_text_length
 
 CHAT_ID = "chat-99"
 
 
 class _FakeNotifier:
     def __init__(self, *, message_id: int | None = 5001) -> None:
-        self.sent_messages: list[tuple[str, dict, str]] = []
+        self.sent_messages: list[tuple[str, dict | None, str]] = []
+        self.parse_modes: list[str | None] = []
         self.edited_messages: list[tuple[str, int, str, dict | None]] = []
         self._message_id = message_id
 
-    async def send_approval_message(self, text, inline_keyboard, *, chat_id):
+    async def send_approval_message(
+        self, text, inline_keyboard, *, chat_id, parse_mode="Markdown"
+    ):
         self.sent_messages.append((text, inline_keyboard, chat_id))
+        self.parse_modes.append(parse_mode)
         message_id = self._message_id
         if self._message_id is not None:
             self._message_id += 1
-        return message_id
+            return TelegramMethodResult(
+                ok=True,
+                message_id=message_id,
+                status_code=200,
+                error_code=None,
+                error_classification=None,
+                payload_chars=telegram_text_length(text),
+            )
+        return TelegramMethodResult.failed(
+            payload_chars=telegram_text_length(text),
+            failure_code="telegram_error_400",
+            status_code=400,
+            error_code=400,
+        )
 
     async def edit_message(self, chat_id, message_id, text, reply_markup=None):
         self.edited_messages.append((chat_id, message_id, text, reply_markup))
-        return True
+        return TelegramMethodResult(
+            ok=True,
+            message_id=message_id,
+            status_code=200,
+            error_code=None,
+            error_classification=None,
+            payload_chars=telegram_text_length(text),
+        )
 
 
 class _RaisingNotifier:
-    async def send_approval_message(self, text, inline_keyboard, *, chat_id):
+    async def send_approval_message(
+        self, text, inline_keyboard, *, chat_id, parse_mode="Markdown"
+    ):
         raise RuntimeError("telegram down")
+
+
+class _FailAtNotifier(_FakeNotifier):
+    def __init__(self, *, fail_at: int, message_id: int = 9000) -> None:
+        super().__init__(message_id=message_id)
+        self._fail_at = fail_at
+
+    async def send_approval_message(
+        self, text, inline_keyboard, *, chat_id, parse_mode="Markdown"
+    ):
+        if len(self.sent_messages) + 1 == self._fail_at:
+            self.sent_messages.append((text, inline_keyboard, chat_id))
+            self.parse_modes.append(parse_mode)
+            return TelegramMethodResult.failed(
+                payload_chars=telegram_text_length(text),
+                failure_code="telegram_error_400",
+                status_code=400,
+                error_code=400,
+            )
+        return await super().send_approval_message(
+            text,
+            inline_keyboard,
+            chat_id=chat_id,
+            parse_mode=parse_mode,
+        )
 
 
 class _CommittedBatchNotifier(_FakeNotifier):
@@ -49,19 +111,84 @@ class _CommittedBatchNotifier(_FakeNotifier):
         super().__init__(message_id=6500)
         self.visible_member_counts: list[int] = []
 
-    async def send_approval_message(self, text, inline_keyboard, *, chat_id):
+    async def send_approval_message(
+        self, text, inline_keyboard, *, chat_id, parse_mode="Markdown"
+    ):
         button = inline_keyboard["inline_keyboard"][0][0]
         if button["text"] == "전체 승인":
-            _action, batch_short, _nonce = parse_callback_data(button["callback_data"])
+            parsed = parse_callback_data(button["callback_data"])
             async with AsyncSessionLocal() as session:
                 service = OrderProposalsService(session)
-                batch_id = await service.resolve_approval_batch_id_prefix(batch_short)
+                batch_id = await service.resolve_approval_batch_id_prefix(
+                    parsed.subject_short
+                )
                 assert batch_id is not None
                 _batch, proposals = await service.get_approval_batch_display(batch_id)
                 self.visible_member_counts.append(len(proposals))
         return await super().send_approval_message(
-            text, inline_keyboard, chat_id=chat_id
+            text, inline_keyboard, chat_id=chat_id, parse_mode=parse_mode
         )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_publish_4444_thesis_requires_every_context_before_button() -> None:
+    group = OrderProposal(
+        proposal_id=uuid.uuid4(),
+        approval_nonce="unit-nonce1",
+        market="equity_kr",
+        symbol="259960",
+        side="buy",
+        order_type="limit",
+        action="place",
+        thesis="가" * 4444,
+        strategy="분할 매도",
+    )
+    rung = OrderProposalRung(
+        rung_index=0,
+        side="buy",
+        quantity=Decimal("1"),
+        limit_price=Decimal("100000"),
+    )
+    binding = build_proposal_dispatch_binding(
+        proposal_id=group.proposal_id,
+        nonce=group.approval_nonce,
+        attempt_id=uuid.uuid4(),
+        card_kind=ApprovalCardKind.MANUAL,
+        current_membership_revision=None,
+    )
+    messages = build_approval_dispatch_messages(
+        group=group, rungs=[rung], binding=binding
+    )
+    assert len(messages.context_messages) == 2
+
+    failed_notifier = _FailAtNotifier(fail_at=2)
+    failed = await publish_approval_messages(
+        notifier=failed_notifier,
+        messages=messages,
+        chat_id=CHAT_ID,
+    )
+
+    assert failed.card_published is False
+    assert failed.partial is True
+    assert failed.failure_code == "approval_context_dispatch_failed"
+    assert len(failed_notifier.sent_messages) == 2
+    assert all(keyboard is None for _, keyboard, _ in failed_notifier.sent_messages)
+
+    successful_notifier = _FakeNotifier(message_id=9200)
+    sent = await publish_approval_messages(
+        notifier=successful_notifier,
+        messages=messages,
+        chat_id=CHAT_ID,
+    )
+
+    assert sent.card_published is True
+    assert sent.message_id == 9202
+    assert len(successful_notifier.sent_messages) == 3
+    assert all(
+        keyboard is None for _, keyboard, _ in successful_notifier.sent_messages[:-1]
+    )
+    assert successful_notifier.sent_messages[-1][1]["inline_keyboard"]
 
 
 def _session_factory(db_session):
@@ -81,6 +208,8 @@ async def _seed_proposal(
     target_order_snapshot=None,
     rungs=None,
     broker_account_id=None,
+    thesis=None,
+    strategy=None,
 ):
     service = OrderProposalsService(db_session)
     group = await service.create_proposal(
@@ -90,6 +219,8 @@ async def _seed_proposal(
         side="buy",
         order_type="limit",
         proposer="p",
+        thesis=thesis,
+        strategy=strategy,
         rungs=rungs or [RungInput(0, "buy", Decimal("10"), Decimal("100"), None)],
         source_asof=source_asof,
         action=action,
@@ -114,14 +245,15 @@ async def test_send_proposal_for_approval_mints_nonce_and_sends(
     notifier = _FakeNotifier(message_id=5001)
     now = datetime(2026, 7, 10, 9, 20, tzinfo=UTC)
 
-    message_id = await send_proposal_for_approval(
+    dispatch = await send_proposal_for_approval(
         group.proposal_id,
         notifier=notifier,
         now=now,
         service_factory=_session_factory(db_session),
     )
 
-    assert message_id == 5001
+    assert dispatch.ok is True
+    assert dispatch.message_id == 5001
     assert len(notifier.sent_messages) == 1
     text, keyboard, chat_id = notifier.sent_messages[0]
     assert chat_id == CHAT_ID
@@ -137,7 +269,7 @@ async def test_send_proposal_for_approval_mints_nonce_and_sends(
 
 
 @pytest.mark.asyncio
-async def test_manual_dispatch_sends_and_updates_same_chat_batch_summary(
+async def test_manual_dispatch_freezes_published_batch_and_starts_next_card(
     monkeypatch, db_session
 ):
     from app.core.config import settings
@@ -149,41 +281,58 @@ async def test_manual_dispatch_sends_and_updates_same_chat_batch_summary(
     first = await _seed_proposal(db_session)
     second = await _seed_proposal(db_session)
     third = await _seed_proposal(db_session)
+    fourth = await _seed_proposal(db_session)
     notifier = _FakeNotifier(message_id=6000)
     now = datetime(2026, 7, 14, 1, 0, tzinfo=UTC)
 
-    first_id = await send_proposal_for_approval(
+    first_result = await send_proposal_for_approval(
         first.proposal_id,
         notifier=notifier,
         now=now,
         service_factory=_session_factory(db_session),
     )
-    assert first_id == 6000
+    assert first_result.message_id == 6000
     assert len(notifier.sent_messages) == 1
 
-    second_id = await send_proposal_for_approval(
+    second_result = await send_proposal_for_approval(
         second.proposal_id,
         notifier=notifier,
         now=now.replace(minute=1),
         service_factory=_session_factory(db_session),
     )
-    assert second_id == 6001
+    assert second_result.message_id == 6001
     assert len(notifier.sent_messages) == 3
     summary_text, summary_keyboard, summary_chat = notifier.sent_messages[-1]
     assert summary_chat == batch_chat_id
     assert "제안: 2건" in summary_text
     assert summary_keyboard["inline_keyboard"][0][0]["text"] == "전체 승인"
 
-    third_id = await send_proposal_for_approval(
+    third_result = await send_proposal_for_approval(
         third.proposal_id,
         notifier=notifier,
         now=now.replace(minute=2),
         service_factory=_session_factory(db_session),
     )
-    assert third_id == 6003
-    assert notifier.edited_messages
-    assert notifier.edited_messages[-1][1] == 6002
-    assert "제안: 3건" in notifier.edited_messages[-1][2]
+    assert third_result.message_id == 6003
+    assert len(notifier.sent_messages) == 4
+    assert notifier.edited_messages == []
+
+    fourth_result = await send_proposal_for_approval(
+        fourth.proposal_id,
+        notifier=notifier,
+        now=now.replace(minute=3),
+        service_factory=_session_factory(db_session),
+    )
+    assert fourth_result.message_id == 6004
+    assert len(notifier.sent_messages) == 6
+    next_summary_text, next_summary_keyboard, next_summary_chat = (
+        notifier.sent_messages[-1]
+    )
+    assert next_summary_chat == batch_chat_id
+    assert "제안: 2건" in next_summary_text
+    assert next_summary_keyboard["inline_keyboard"][0][0]["text"] == "전체 승인"
+    assert next_summary_text != summary_text
+    assert notifier.edited_messages == []
 
 
 @pytest.mark.asyncio
@@ -298,23 +447,25 @@ async def test_send_proposal_for_approval_empty_allowlist_is_noop(
     notifier = _FakeNotifier()
     now = datetime(2026, 7, 10, 9, 22, tzinfo=UTC)
 
-    message_id = await send_proposal_for_approval(
+    dispatch = await send_proposal_for_approval(
         group.proposal_id,
         notifier=notifier,
         now=now,
         service_factory=_session_factory(db_session),
     )
 
-    assert message_id is None
+    assert dispatch.ok is False
+    assert dispatch.failure_code == "telegram_allowlist_empty"
     assert notifier.sent_messages == []
 
     service = OrderProposalsService(db_session)
     refreshed, _ = await service.get_proposal(group.proposal_id)
     assert refreshed.approval_nonce is None
+    assert refreshed.approval_dispatch_state == "failed"
 
 
 @pytest.mark.asyncio
-async def test_send_proposal_for_approval_send_failure_returns_none_but_nonce_committed(
+async def test_send_proposal_for_approval_send_failure_is_durable_and_invalidates_nonce(
     monkeypatch, db_session
 ):
     from app.core.config import settings
@@ -326,19 +477,89 @@ async def test_send_proposal_for_approval_send_failure_returns_none_but_nonce_co
     notifier = _FakeNotifier(message_id=None)
     now = datetime(2026, 7, 10, 9, 23, tzinfo=UTC)
 
-    message_id = await send_proposal_for_approval(
+    dispatch = await send_proposal_for_approval(
         group.proposal_id,
         notifier=notifier,
         now=now,
         service_factory=_session_factory(db_session),
     )
 
-    assert message_id is None
+    assert dispatch.ok is False
+    assert dispatch.failure_code == "approval_card_dispatch_failed"
 
     service = OrderProposalsService(db_session)
     refreshed, _ = await service.get_proposal(group.proposal_id)
-    assert refreshed.approval_nonce is not None
+    assert refreshed.approval_nonce is None
+    assert refreshed.approval_dispatch_state == "failed"
+    assert refreshed.approval_dispatch_failure_code == "approval_card_dispatch_failed"
+    assert refreshed.approval_dispatch_payload_chars == dispatch.payload_chars
     assert refreshed.source_asof is None
+
+
+@pytest.mark.asyncio
+async def test_4444_thesis_context_failure_withholds_button_and_retry_mints_new_nonce(
+    monkeypatch, db_session
+):
+    from app.core.config import settings
+    from app.services.order_proposals import dispatch as dispatch_module
+
+    chat_id = f"long-thesis-{uuid.uuid4().hex}"
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", chat_id
+    )
+    nonces = iter(("first-dispatch-nonce", "second-dispatch-nonce"))
+    monkeypatch.setattr(dispatch_module, "_generate_nonce", lambda: next(nonces))
+    group = await _seed_proposal(
+        db_session,
+        thesis="가" * 4444,
+        strategy="분할 매도",
+    )
+    now = datetime(2026, 7, 23, 2, 17, 50, tzinfo=UTC)
+
+    failed_notifier = _FailAtNotifier(fail_at=2)
+    failed = await send_proposal_for_approval(
+        group.proposal_id,
+        notifier=failed_notifier,
+        now=now,
+        service_factory=_session_factory(db_session),
+    )
+
+    assert failed.ok is False
+    assert failed.failure_code == "approval_context_dispatch_failed"
+    assert failed.payload_chars > 4096
+    assert len(failed_notifier.sent_messages) == 2
+    assert all(keyboard is None for _, keyboard, _ in failed_notifier.sent_messages)
+    assert failed_notifier.parse_modes == [None, None]
+
+    service = OrderProposalsService(db_session)
+    after_failure, _ = await service.get_proposal(group.proposal_id)
+    failed_attempt_id = after_failure.approval_dispatch_attempt_id
+    assert after_failure.approval_dispatch_state == "failed"
+    assert after_failure.approval_nonce is None
+
+    successful_notifier = _FakeNotifier(message_id=9100)
+    sent = await send_proposal_for_approval(
+        group.proposal_id,
+        notifier=successful_notifier,
+        now=now.replace(second=51),
+        service_factory=_session_factory(db_session),
+    )
+
+    assert sent.ok is True
+    assert sent.message_id == 9102
+    assert len(successful_notifier.sent_messages) == 3
+    assert all(
+        keyboard is None for _, keyboard, _ in successful_notifier.sent_messages[:-1]
+    )
+    assert successful_notifier.sent_messages[-1][1]["inline_keyboard"]
+    assert successful_notifier.parse_modes == [None, None, "Markdown"]
+    after_retry, _ = await service.get_proposal(group.proposal_id)
+    assert (
+        after_retry.approval_dispatch_state == ApprovalDispatchState.SENT_CURRENT.value
+    )
+    assert after_retry.approval_dispatch_attempt_id != failed_attempt_id
+    assert after_retry.approval_nonce == "second-dispatch-nonce"
+    assert after_retry.source_asof["approval_message_id"] == 9102
 
 
 @pytest.mark.asyncio
@@ -455,7 +676,8 @@ async def test_dispatch_auto_eligible_buy_or_sell_rests_without_approval(
         service_factory=_session_factory(db_session),
         revalidate_fn=duplicate_must_not_revalidate,
     )
-    assert duplicate is None
+    assert duplicate.ok is False
+    assert duplicate.failure_code == "proposal_not_pending_approval"
     assert len(notifier.sent_messages) == 1
 
 
@@ -629,7 +851,7 @@ async def test_dispatch_auto_approve_cancel_replace_never_mutates_before_gate(
     )
 
     assert cancel_calls == []
-    assert result is not None  # nonce minted + ordinary approval message sent
+    assert result.ok is True  # nonce minted + ordinary approval message sent
     # Falls back to the ordinary human-approval message ("주문 제안 승인"),
     # never the auto-approved "자동 접수됨" veto message -- TELEGRAM_APPROVAL_SEND
     # for the human-click flow, not a post-hoc veto button on an already-sent order.
@@ -765,7 +987,7 @@ async def test_auto_notify_failure_compensates_by_cancelling_live_order(
         fetch_target_fn=fetch_fn,
     )
 
-    assert result is None
+    assert result.ok is False
     assert cancel_calls[0]["order_id"] == "broker-notify-failure"
     refreshed, rungs = await service.get_proposal(group.proposal_id)
     assert rungs[0].state == "cancelled"

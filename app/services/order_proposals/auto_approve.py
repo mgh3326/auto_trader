@@ -16,6 +16,10 @@ from app.services.order_proposals.approval_message import (
     _escape_markdown,
     build_callback_data,
 )
+from app.services.order_proposals.dispatch_contract import (
+    ApprovalCardKind,
+    DispatchBinding,
+)
 from app.services.trading_policy_service import load_trading_policy
 
 _POLICY_MARKET = {
@@ -183,11 +187,21 @@ def evaluate_auto_approve_eligibility(
 
 
 def build_auto_approved_message(
-    *, group: Any, rungs: list[Any], nonce: str, policy_version: str
+    *,
+    group: Any,
+    rungs: list[Any],
+    nonce: str,
+    policy_version: str,
+    binding: DispatchBinding,
 ) -> tuple[str, dict[str, Any]]:
     """Render a compact post-submit summary with a single-use veto button."""
+    if binding.card_kind is not ApprovalCardKind.AUTO_VETO:
+        raise ValueError("auto-veto message requires an auto-veto binding")
     callback = build_callback_data(
-        action="vc", proposal_id=group.proposal_id, nonce=nonce
+        action="vc",
+        proposal_id=group.proposal_id,
+        nonce=nonce,
+        binding=binding,
     )
     lines = [
         "✅ *자동 접수됨*",

@@ -69,7 +69,7 @@ def test_runner_width_contract_and_alembic_head_are_pinned() -> None:
     config = Config(str(_REPO / "alembic.ini"))
     config.set_main_option("script_location", str(_REPO / "alembic"))
     assert ScriptDirectory.from_config(config).get_heads() == [
-        "20260722_rob1023_widen_runner"
+        "20260723_approval_dispatch"
     ]
 
 
