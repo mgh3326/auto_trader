@@ -115,14 +115,20 @@ lanes:
    area low; place a deep limit `buy.deep_limit_pct_range` below the current
    price (pull-back catch, never chase). On crash days add a deeper rung (e.g.
    fib-50).
-5. Execute: `toss_place_order(confirm=true)` (fee-free, preferred) or
-   `kis_live_place_order(thesis + strategy, dry_run preview → live)` to spend
-   down KIS deposit. `kis_live_place_order(dry_run=true)` is the preview; there
-   is no separate KIS preview tool.
-6. Foreign-cascade names (e.g. semis): no market order until **price band
+5. Create the order intent with `order_proposal_create(action="place")`.
+   The `proposal-led-v1` route contract requires a **human Telegram approval
+   click**. The operator must not call a broker preview or place tool directly:
+   fresh preview/revalidation and broker submit belong to the proposal approval
+   subsystem. `route_request` is advisory, so it cannot override a deployment's
+   auto-approval configuration; the create response's `approval_dispatch` is
+   the runtime truth.
+6. Broker acceptance/resting is not a fill. Converge fill/cancel state through
+   the registered broker/account reconcile helper and broker evidence; the
+   route has no `account_mode`, so it does not choose one reconcile tool.
+7. Foreign-cascade names (e.g. semis): no market order until **price band
    reached AND foreign selling stops** — until both, only a small deep rung.
 
-7. **Negative-class recording (ROB-712):** every reviewed-but-rejected candidate
+8. **Negative-class recording (ROB-712):** every reviewed-but-rejected candidate
    leaves a `decision_bucket=deferred_no_action` item with `confidence` +
    rejection reason, plus a resolvable `forecast_save(kind="price_target",
    outcome_rule_version="window-touch-v1-high-gte-low-lte", …)`
@@ -143,10 +149,11 @@ lanes:
         args: {mode: quick, include_position: true, max_symbols: 10}
       - tool: get_intraday_investor_flow
         gate: recovery_gate
-      - tool: toss_place_order        # account routing: Toss preferred
-        confirm: true
-      - tool: kis_live_place_order    # KIS deposit spend-down; dry_run preview -> live
-        confirm: true
+      - tool: order_proposal_create
+        action: place
+        approval: telegram_human_click_required
+        preview_owner: proposal_revalidation
+        reconcile_requirement: broker_evidence
     gates:
       - recovery_gate     # deploy reserve only when >= recovery_gate.min_conditions_met
       - loss_guard        # sell price >= avg * sell.loss_guard_min_multiple (sell-side)
@@ -178,15 +185,23 @@ lanes:
      RSI-neutral 2-6% resistance becomes a system watch. In this conflict,
      `sell.upside_place_max_pct` limits trim size rather than blocking
      pre-placement eligibility.
-4. Execute from the **holding account**: Toss holdings via `toss_place_order`, KIS
-   holdings via `kis_live_place_order` (`dry_run` preview → live). Sell-into-strength
-   **split ladder** just under resistance;
-   [ROB-477](https://linear.app/mgh3326/issue/ROB-477) requires a bottom-anchor rung
-   (`sell_ladder_fill_preview` checks fill-safety), preserve the core lot. Trim
-   over-concentrated sectors first when in the money. If the name has a **pending buy
-   limit on Toss**, `toss_cancel_order` **first** — no two-sided (buy+sell) resting
-   orders on one symbol.
-5. WATCH items are recorded as conditional trigger text (e.g. "when in-the-money
+4. Build the sell-into-strength **split ladder** just under resistance.
+   [ROB-477](https://linear.app/mgh3326/issue/ROB-477) requires a bottom-anchor
+   rung; run the pure `sell_ladder_fill_preview` fill-safety check **before**
+   creating a proposal, preserve the core lot, and trim over-concentrated
+   sectors first when in the money.
+5. Create place/cancel/replace intent only through
+   `order_proposal_create`. The `proposal-led-v1` route contract requires a
+   **human Telegram approval click**. If the symbol has a pending buy, first
+   create a separate cancel proposal and wait for confirmed cancellation
+   evidence before creating the sell proposal; never call a direct cancel or
+   place tool from this lane.
+6. Fresh broker preview/revalidation and submit belong to the proposal approval
+   subsystem. `route_request` is advisory and cannot override auto-approval
+   configuration; `approval_dispatch` in the create response is the runtime
+   truth. Broker acceptance/resting is not a fill, so converge the result with
+   the registered broker/account reconcile helper and broker evidence.
+7. WATCH items are recorded as conditional trigger text (e.g. "when in-the-money
    AND resistance reached, place at <price>"). Today this depends on session
    memory / journal — [ROB-637](https://linear.app/mgh3326/issue/ROB-637)
    (analysis artifacts) is the durable target.
@@ -199,11 +214,12 @@ lanes:
     steps:
       - tool: toss_get_positions
       - tool: analyze_stock_batch
-      - tool: toss_cancel_order       # clear same-symbol buy pending (two-sided) before sell
-      - tool: toss_place_order        # sell-into-strength split ladder (Toss holdings)
-        confirm: true
-      - tool: kis_live_place_order    # sell KIS holdings from holding account; dry_run preview -> live
       - tool: sell_ladder_fill_preview  # ROB-477 bottom-anchor rung, fill-safety
+      - tool: order_proposal_create
+        actions: [place, cancel, replace]
+        approval: telegram_human_click_required
+        preview_owner: proposal_revalidation
+        reconcile_requirement: broker_evidence
     verdicts: [PLACE, WATCH, HOLD]
     gates:
       - loss_guard        # sell price >= avg * sell.loss_guard_min_multiple

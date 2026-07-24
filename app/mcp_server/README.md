@@ -1933,23 +1933,48 @@ injects lane guidance via a hook and maps lane→role→tool indirectly. auto_tr
 exposes a **direct lane→tool advisory** tool with **no enforcement**. Blocking
 middleware (mutation tools only, reads unrestricted, caller-header-keyed because
 MCP session state resets on reconnect — ROB-469) is a separate follow-up issue.
+In particular, the contract below cannot physically prevent an enabled
+auto-approval path.
 
 Lane definitions come from the machine-readable `lanes:` blocks in
 `docs/playbooks/trading-decision-playbook.md`; `route_request_lanes.LANE_SEQUENCES`
-is kept in sync by `tests/test_route_request_registry_diff.py`. Every DEFAULT
-tool must be classified into `READ_ONLY_ADVISORY_TOOLS` or a mutation set or CI
-fails (silent-drift guard).
+is kept in exact order by `tests/test_route_request_registry_diff.py`. Every
+proposal-enabled DEFAULT tool must be classified into the read/advisory or
+explicit mutation taxonomy or CI fails.
 
-**Market-aware execution mapping (ROB-658):** the playbook lane sequences are
-KR-centric — their place steps hard-code `toss_place_order`/`kis_live_place_order`.
-On crypto/US profiles those tools are unregistered, so `route_request` substitutes
-the market's generic execution surface via `MARKET_EXECUTION_TOOLS`
-(`crypto`/`us` → `place_order`; `kr` → empty, already in the sequence). When a
-lane places orders but none of its KR place tools survive the profile
-intersection, the generic `place_order` is injected as the execution step and
-counted as the lane's own mutation — so it appears in `standard_tool_sequence` +
-`allowed_tools` instead of being misclassified into `blocked_actions`. KR output
-is unchanged.
+**Buy/sell proposal contract (ROB-1045):**
+
+- `order_proposal_create` is the only order-intent surface in buy/sell
+  `standard_tool_sequence`. Registered direct broker place/cancel/modify tools
+  are excluded from `allowed_tools` and included in `blocked_actions`.
+- The route contract requires a human Telegram approval click. Fresh broker
+  preview/revalidation and submit are owned by the proposal approval subsystem;
+  accepted/resting is not a fill, and broker-evidence reconciliation remains
+  required. Registered reconcile tools are conditional helpers rather than an
+  ordered step because `route_request` has no broker/account-mode input.
+- `route_contract` is machine-readable and carries
+  `version="proposal-led-v1"`, `state`, `execution_mode`, `execution_ready`,
+  `proposal_tool`, `approval_channel`, `human_approval_required`,
+  `preview_owner`, `reconcile_requirement`, `required_tools`, and
+  `missing_required_tools`.
+- `execution_ready=true` means only that the required route tool is present in
+  the live MCP registry. It does not assert Telegram publication, configuration,
+  or approval-window readiness. The actual `order_proposal_create`
+  `approval_dispatch` result remains authoritative; see
+  [Order proposal approval tools](#order-proposal-approval-tools-rob-816).
+- If the live registry is valid but `order_proposal_create` is absent, buy/sell
+  return `success=false`, `error="required_route_tool_unavailable"`, and
+  `execution_ready=false`, with no direct-place fallback.
+- If registry introspection is missing, raises, is malformed, or is empty, the
+  route returns `success=false`, `error="registry_introspection_unavailable"`,
+  empty sequence/allowed lists, and the static direct-mutation deny list with
+  `blocked_actions_basis="static_fail_closed"`. It never substitutes
+  `ALL_KNOWN_TOOLS`.
+
+**Discovery non-regression:** discovery is outside ROB-1045 and retains its
+existing `toss_place_order` step and ROB-658 crypto/US generic `place_order`
+injection. Aligning discovery with proposal-led approval requires a separate
+issue. Bootstrap remains read-only.
 
 
 ### User Settings Tools

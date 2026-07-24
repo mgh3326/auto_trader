@@ -19,6 +19,7 @@ from typing import Any, cast
 
 import yaml
 
+from app.core.config import settings
 from app.mcp_server.profiles import McpProfile
 from app.mcp_server.tooling.registry import register_all_tools
 from tests._mcp_tooling_support import DummyMCP
@@ -77,7 +78,10 @@ def test_playbook_yaml_blocks_are_parseable_and_nonempty() -> None:
     )
 
 
-def test_playbook_tools_exist_in_default_profile() -> None:
+def test_playbook_tools_exist_in_proposal_enabled_default_profile(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_ENABLED", True)
     registry = _default_profile_tools()
     refs = set(_playbook_tool_refs())
     missing = sorted(refs - registry)
@@ -85,6 +89,20 @@ def test_playbook_tools_exist_in_default_profile() -> None:
         "playbook references tools absent from the DEFAULT MCP profile "
         f"(rename/removal drift): {missing}"
     )
+
+
+def test_buy_sell_have_one_canonical_proposal_step() -> None:
+    text = _PLAYBOOK_PATH.read_text(encoding="utf-8")
+    per_lane: dict[str, list[str]] = {}
+    for block in _YAML_BLOCK_RE.findall(text):
+        parsed = yaml.safe_load(block)
+        if isinstance(parsed, dict) and isinstance(parsed.get("lanes"), dict):
+            for lane, body in parsed["lanes"].items():
+                per_lane.setdefault(lane, []).extend(_collect_tool_refs(body))
+
+    for lane in ("buy", "sell"):
+        assert per_lane[lane].count("order_proposal_create") == 1
+        assert per_lane[lane][-1] == "order_proposal_create"
 
 
 def test_playbook_covers_core_lanes() -> None:
