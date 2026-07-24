@@ -160,17 +160,24 @@ async def send_telegram(
 
     Returns True if at least one chat received the message.
     """
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     any_success = False
     for chat_id in chat_ids:
-        result = await send_telegram_message(
-            http_client=http_client,
-            bot_token=bot_token,
-            chat_id=chat_id,
-            text=text,
-            parse_mode=parse_mode,
-            reply_markup=reply_markup,
-        )
-        any_success = any_success or result.ok
+        try:
+            payload: dict[str, Any] = {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": parse_mode,
+                "disable_web_page_preview": True,
+            }
+            if reply_markup is not None:
+                payload["reply_markup"] = reply_markup
+            response = await http_client.post(url, json=payload)
+            response.raise_for_status()
+            any_success = True
+            logger.info("Telegram message sent")
+        except Exception:
+            logger.error("Failed to send Telegram message")
     return any_success
 
 
