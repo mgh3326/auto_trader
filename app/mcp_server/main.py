@@ -139,12 +139,14 @@ mcp = FastMCP(
     lifespan=build_server_lifespan(),
 )
 
-mcp.add_middleware(McpToolCallSentryMiddleware())
+# Caller identity is outermost so the Sentry middleware can attach the resolved
+# consumer before the request-scoped contextvars are reset.
 mcp.add_middleware(CallerIdentityMiddleware())
+mcp.add_middleware(McpToolCallSentryMiddleware())
 # ROB-469 PR2: per-tool timeout — added LAST so it is the INNERMOST middleware
-# (wraps the tool) while Sentry stays outermost and captures the ToolError with the
-# tool-call context. Bounds the single event loop so one slow tool can't take all
-# 128 tools down (the ROB-469 SPOF).
+# (wraps the tool) while Sentry still wraps timeout execution and captures the
+# ToolError with caller/tool context. Bounds the single event loop so one slow
+# tool can't take all 128 tools down (the ROB-469 SPOF).
 mcp.add_middleware(
     ToolTimeoutMiddleware(
         default_timeout_s=get_mcp_tool_timeout_default(),

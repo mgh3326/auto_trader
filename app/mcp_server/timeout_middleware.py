@@ -76,10 +76,10 @@ ELEVATED_TOOL_TIMEOUTS_S: dict[str, float] = {
 class ToolTimeoutMiddleware(Middleware):
     """Bound each ``tools/call`` with a per-tool time budget.
 
-    Registered LAST in main.py so it is the innermost middleware (wraps the tool)
-    while the Sentry middleware stays outermost and captures the raised ``ToolError``
-    with the tool-call context (fastmcp 3.2.0 reverses the middleware list, so
-    first-added = outermost).
+    Registered LAST in main.py so it is the innermost middleware (wraps the tool).
+    Caller identity is outermost and Sentry sits immediately inside it, so timeout
+    ``ToolError`` exceptions retain both caller and tool-call context (fastmcp 3.2.0
+    reverses the middleware list, so first-added = outermost).
     """
 
     def __init__(
