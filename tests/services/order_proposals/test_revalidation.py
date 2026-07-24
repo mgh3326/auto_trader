@@ -9,14 +9,37 @@ import httpx
 import pytest
 
 from app.services.order_proposals import OrderProposalsService
+from app.services.order_proposals import revalidation as revalidation_module
 from app.services.order_proposals.broker_gateway import SubmitEvidence
 from app.services.order_proposals.revalidation import (
     _adapt_live_submit_response,
     preview_loss_cut_confirmation,
-    revalidate_and_submit,
+)
+from app.services.order_proposals.revalidation import (
+    revalidate_and_submit as _production_revalidate_and_submit,
 )
 from app.services.order_proposals.service import RungInput
 from app.services.order_proposals.target_order import TargetOrderSnapshot
+from tests.services.order_proposals.window_fakes import allow_known_session
+
+
+@pytest.fixture(autouse=True)
+def _known_market_session(monkeypatch):
+    monkeypatch.setattr(
+        revalidation_module, "evaluate_approval_window", allow_known_session
+    )
+
+
+async def revalidate_and_submit(**kwargs):
+    """Bind legacy unit calls to the same policy a card/auto path persisted."""
+    if kwargs.get("expected_policy_stamp") is None:
+        group, _rungs = await kwargs["service"].get_proposal(kwargs["proposal_id"])
+        observed_at = kwargs["now"]
+        decision = await allow_known_session(group, now=observed_at)
+        kwargs["expected_policy_stamp"] = decision.policy_stamp
+        kwargs.setdefault("window_evaluator", allow_known_session)
+        kwargs.setdefault("now_fn", lambda: observed_at)
+    return await _production_revalidate_and_submit(**kwargs)
 
 
 def _bound_toss_context():

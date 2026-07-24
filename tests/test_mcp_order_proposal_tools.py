@@ -10,9 +10,22 @@ from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling import order_proposal_tools as opt
 from app.services.order_proposals import OrderProposalsService
+from app.services.order_proposals import dispatch as dispatch_module
+from app.services.order_proposals.approval_window import (
+    ApprovalWindowCode,
+    ApprovalWindowDecision,
+)
 from app.services.order_proposals.errors import OrderProposalError
 from app.services.order_proposals.target_order import TargetOrderSnapshot
 from app.telegram_contract import TelegramMethodResult, telegram_text_length
+from tests.services.order_proposals.window_fakes import allow_known_session
+
+
+@pytest.fixture(autouse=True)
+def _known_market_session(monkeypatch):
+    monkeypatch.setattr(
+        dispatch_module, "evaluate_approval_window", allow_known_session
+    )
 
 
 def _unique_chat() -> str:
@@ -124,6 +137,42 @@ def _target_create_kwargs(**overrides):
         ],
         **overrides,
     )
+
+
+@pytest.mark.asyncio
+async def test_create_surfaces_typed_approval_dispatch_block(monkeypatch):
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", _unique_chat()
+    )
+    observed_at = datetime.now(UTC)
+    deadline = observed_at - timedelta(microseconds=1)
+
+    async def blocked_dispatch(*args, **kwargs):
+        return ApprovalWindowDecision(
+            code=ApprovalWindowCode.EXPIRED,
+            observed_at=observed_at,
+            valid_until=deadline,
+            policy_stamp="order-proposal-approval-window-v1:test",
+            market="equity_kr",
+            account_mode="kis_live",
+            action="place",
+            order_type="limit",
+            detail="now_at_or_after_valid_until",
+        )
+
+    monkeypatch.setattr(opt, "dispatch_proposal", blocked_dispatch)
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.notifier.get_trade_notifier",
+        lambda: _FakeNotifier(),
+    )
+
+    result = await opt.order_proposal_create(**_create_kwargs())
+
+    assert result["success"] is True
+    assert result["approval_dispatch"]["status"] == "blocked"
+    assert result["approval_dispatch"]["code"] == "EXPIRED"
+    assert result["approval_dispatch"]["detail"] == "now_at_or_after_valid_until"
 
 
 @pytest.mark.asyncio

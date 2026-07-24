@@ -2654,6 +2654,7 @@ async def test_approval_batch_nonce_rejects_wrong_chat_nonce_and_too_small(
                 chat_id=supplied_chat,
                 telegram_user_id="777",
                 now=now + timedelta(minutes=1),
+                expected_members=(),
             )
         await db_session.rollback()
 
@@ -2724,6 +2725,10 @@ async def test_approval_batch_nonce_is_single_use_and_bound_to_chat(db_session):
         chat_id=chat_id,
         telegram_user_id="777",
         now=now + timedelta(minutes=2),
+        expected_members=(
+            (first.proposal_id, "consume-member-1"),
+            (second.proposal_id, "consume-member-2"),
+        ),
     )
     await db_session.commit()
     assert batch.approval_nonce_used_at == now + timedelta(minutes=2)
@@ -2739,6 +2744,10 @@ async def test_approval_batch_nonce_is_single_use_and_bound_to_chat(db_session):
             chat_id=chat_id,
             telegram_user_id="777",
             now=now + timedelta(minutes=3),
+            expected_members=(
+                (first.proposal_id, "consume-member-1"),
+                (second.proposal_id, "consume-member-2"),
+            ),
         )
     await db_session.rollback()
 
@@ -2784,6 +2793,10 @@ async def test_approval_batch_nonce_expires_without_consuming_members(db_session
             chat_id=chat_id,
             telegram_user_id="777",
             now=registration.batch.expires_at,
+            expected_members=(
+                (first.proposal_id, "expiry-member-1"),
+                (second.proposal_id, "expiry-member-2"),
+            ),
         )
     await db_session.rollback()
     first_after, _ = await service.get_proposal(first_id)

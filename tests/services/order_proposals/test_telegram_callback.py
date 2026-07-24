@@ -15,7 +15,14 @@ from app.core.db import AsyncSessionLocal
 from app.mcp_server.caller_identity import caller_agent_id_var, get_caller_agent_id
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals import approval_message as approval_messages
+from app.services.order_proposals import revalidation as revalidation_module
+from app.services.order_proposals import telegram_callback as callback_module
 from app.services.order_proposals.approval_message import parse_callback_data
+from app.services.order_proposals.approval_window import (
+    ApprovalWindowCode,
+    SubmissionSessionEvidence,
+    evaluate_approval_window,
+)
 from app.services.order_proposals.dispatch_contract import (
     ApprovalCardKind,
     ApprovalPublication,
@@ -31,9 +38,20 @@ from app.services.order_proposals.telegram_callback import (
     handle_callback_update,
 )
 from app.telegram_contract import TelegramMethodResult, telegram_text_length
+from tests.services.order_proposals.window_fakes import allow_known_session
 
 CHAT_ID = 42
 USER_ID = 777
+
+
+@pytest.fixture(autouse=True)
+def _known_market_session(monkeypatch):
+    monkeypatch.setattr(
+        callback_module, "evaluate_approval_window", allow_known_session
+    )
+    monkeypatch.setattr(
+        revalidation_module, "evaluate_approval_window", allow_known_session
+    )
 
 
 class _FakeNotifier:
@@ -140,7 +158,11 @@ async def _publish_fixture_card(
     if group.approval_nonce != nonce:
         await service.set_approval_nonce(group.proposal_id, nonce)
     attempt_id = uuid.uuid4()
-    now = datetime.now(UTC)
+    now = min(
+        datetime.now(UTC),
+        group.valid_until - timedelta(microseconds=1),
+    )
+    window = await allow_known_session(group, now=now)
     binding = build_proposal_dispatch_binding(
         proposal_id=group.proposal_id,
         nonce=nonce,
@@ -162,6 +184,7 @@ async def _publish_fixture_card(
         publication=_successful_publication(message_id),
         chat_id=str(CHAT_ID),
         now=now,
+        approval_window_policy_stamp=window.policy_stamp,
     )
     assert result.ok
     return binding
@@ -194,6 +217,15 @@ async def _seed_proposal(db_session, *, nonce="nonce-abc123", symbol="A", rungs=
         order_type="limit",
         proposer="p",
         rungs=rung_inputs,
+    )
+    dispatched_at = datetime.now(UTC)
+    window = await allow_known_session(group, now=dispatched_at)
+    await service.record_approval_dispatch(
+        group.proposal_id,
+        message_id=555,
+        chat_id=str(CHAT_ID),
+        now=dispatched_at,
+        approval_window_policy_stamp=window.policy_stamp,
     )
     await service.set_approval_nonce(group.proposal_id, nonce)
     await _publish_fixture_card(
@@ -286,6 +318,15 @@ async def _seed_loss_cut_proposal(
         exit_intent="loss_cut",
         exit_reason="stop_loss",
         retrospective_id=42,
+    )
+    dispatched_at = datetime.now(UTC)
+    window = await allow_known_session(group, now=dispatched_at)
+    await service.record_approval_dispatch(
+        group.proposal_id,
+        message_id=555,
+        chat_id=str(CHAT_ID),
+        now=dispatched_at,
+        approval_window_policy_stamp=window.policy_stamp,
     )
     await service.set_approval_nonce(group.proposal_id, nonce)
     await _publish_fixture_card(
@@ -514,10 +555,10 @@ async def test_batch_approve_continues_after_member_result_audit_failure(
 
 
 @pytest.mark.asyncio
-async def test_batch_click_rechecks_loss_terminal_auto_superseded_and_used_nonce(
+async def test_batch_click_atomically_rejects_changed_frozen_membership(
     monkeypatch, db_session
 ):
-    chat_id, now, groups, _batch, data = await _seed_approval_batch(
+    chat_id, now, groups, batch, data = await _seed_approval_batch(
         db_session, monkeypatch, member_count=6
     )
     groups[0].exit_intent = "loss_cut"
@@ -544,14 +585,33 @@ async def test_batch_click_rechecks_loss_terminal_auto_superseded_and_used_nonce
         revalidate_fn=fake_revalidate,
     )
 
-    assert calls == [groups[5].proposal_id]
+    assert calls == []
+    assert result["handled"] is False
+    assert result["reason"] == "BATCH_WINDOW_BLOCKED"
     assert [item["status"] for item in result["results"]] == [
         "skipped",
         "skipped",
         "skipped",
         "skipped",
         "skipped",
-        "approved",
+        "skipped",
+    ]
+    assert [item["reason"] for item in result["results"]] == [
+        "loss_cut_excluded",
+        "proposal_terminal:terminal",
+        "auto_approved_excluded",
+        "proposal_superseded_by:unknown",
+        "approval_nonce_used",
+        "batch_atomic_window_block",
+    ]
+    assert batch.approval_nonce_used_at is None
+    assert [group.approval_nonce_used_at for group in groups] == [
+        None,
+        None,
+        None,
+        None,
+        now,
+        None,
     ]
 
 
@@ -818,10 +878,77 @@ async def test_expired_approve_never_revalidates(monkeypatch, db_session):
         notifier=notifier,
         revalidate_fn=must_not_revalidate,
     )
-    assert result["reason"] == "proposal_expired"
+    assert result["reason"] == "EXPIRED"
     assert called is False
-    assert notifier.answered[-1] == ("cbq-1", "제안이 만료되었습니다")
+    assert notifier.answered[-1] == ("cbq-1", "⌛ 제안 만료")
     assert "만료" in notifier.edited[-1][2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("known", "expected"),
+    [
+        (True, ApprovalWindowCode.DEFER_SESSION_CLOSED),
+        (False, ApprovalWindowCode.CALENDAR_UNKNOWN),
+    ],
+)
+async def test_callback_closed_or_unknown_session_consumes_no_nonce_or_broker_path(
+    monkeypatch, db_session, known, expected
+):
+    _allow_chat(monkeypatch)
+    group = await _seed_proposal(db_session, nonce="window-blocked")
+    now = datetime(2026, 7, 23, 8, 50, tzinfo=UTC)
+    group.valid_until = now + timedelta(days=2)
+    await db_session.commit()
+    revalidate_calls = 0
+
+    async def must_not_revalidate(**kwargs):
+        nonlocal revalidate_calls
+        revalidate_calls += 1
+        raise AssertionError("window-blocked callback must not preview or submit")
+
+    async def evaluator(group, *, now):
+        async def resolver(group, *, now):
+            return SubmissionSessionEvidence(
+                known=known,
+                source="test",
+                current_session="closed" if known else "unknown",
+                allowed_sessions=("regular",),
+                allowed_now=False,
+                next_allowed_at=now + timedelta(hours=12) if known else None,
+            )
+
+        return await evaluate_approval_window(group, now=now, session_resolver=resolver)
+
+    notifier = _FakeNotifier()
+    result = await handle_callback_update(
+        _make_update(
+            data=_proposal_callback_data(
+                group,
+                action="op",
+                nonce="window-blocked",
+            )
+        ),
+        now=now,
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=must_not_revalidate,
+        window_evaluator=evaluator,
+    )
+
+    assert result["handled"] is False
+    assert result["reason"] == expected.value
+    assert revalidate_calls == 0
+    assert notifier.sent_messages == []
+    assert notifier.edited[-1][3] == {"inline_keyboard": []}
+    if known:
+        assert "다음 허용 세션" in notifier.edited[-1][2]
+    refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert refreshed.approval_nonce_used_at is None
+    assert refreshed.approved_at is None
+    assert [rung.state for rung in rungs] == ["pending_approval"]
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -662,38 +662,49 @@ async def cancel_target_order(
     account_mode: str,
     cancel_fn: Callable[..., Any] | None = None,
     toss_cancel_fn: Callable[..., Any] | None = None,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     if (account_mode, market) not in SUPPORTED_TARGET_ACTIONS:
         raise OrderProposalError(f"cancel unsupported for {account_mode}/{market}")
     if account_mode == "toss_live":
         if toss_cancel_fn is None:
-            from app.mcp_server.tooling.orders_toss_variants import toss_cancel_order
+            from app.mcp_server.tooling.orders_toss_variants import (
+                _bind_toss_pre_send_hook,
+                toss_cancel_order,
+            )
 
             toss_cancel_fn = toss_cancel_order
+        else:
+            from app.mcp_server.tooling.orders_toss_variants import (
+                _bind_toss_pre_send_hook,
+            )
         # toss_cancel_order is the production tool: it still enforces
         # TOSS_LIVE_ORDER_MUTATIONS_ENABLED and records the accepted-only
         # ledger row itself. This call site is only ever reached post-Telegram
         # approval (revalidate_and_submit's cancel/replace execution branch),
         # so dry_run=False/confirm=True mirrors cancel_order_impl's KIS/Upbit
         # path below, which has no dry_run/preview concept at all.
-        return await _maybe_await(
-            toss_cancel_fn(
-                order_id=order_id,
-                dry_run=False,
-                confirm=True,
-                account_mode=account_mode,
+        with _bind_toss_pre_send_hook(pre_send_hook):
+            return await _maybe_await(
+                toss_cancel_fn(
+                    order_id=order_id,
+                    dry_run=False,
+                    confirm=True,
+                    account_mode=account_mode,
+                )
             )
-        )
     if cancel_fn is None:
         from app.mcp_server.tooling.orders_modify_cancel import cancel_order_impl
 
         cancel_fn = cancel_order_impl
 
+    hook_kw = {"pre_send_hook": pre_send_hook} if pre_send_hook is not None else {}
     return await _maybe_await(
         cancel_fn(
             order_id=order_id,
             symbol=symbol,
             market=market,
             is_mock=False,
+            **hook_kw,
         )
     )

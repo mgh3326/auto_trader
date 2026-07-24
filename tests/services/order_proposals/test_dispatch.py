@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -11,9 +11,17 @@ import pytest
 from app.core.db import AsyncSessionLocal
 from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.services.order_proposals import OrderProposalsService
+from app.services.order_proposals import dispatch as dispatch_module
+from app.services.order_proposals import revalidation as revalidation_module
 from app.services.order_proposals.approval_message import (
     build_approval_dispatch_messages,
     parse_callback_data,
+)
+from app.services.order_proposals.approval_window import (
+    ApprovalWindowCode,
+    ApprovalWindowDecision,
+    SubmissionSessionEvidence,
+    evaluate_approval_window,
 )
 from app.services.order_proposals.dispatch import (
     dispatch_proposal,
@@ -28,8 +36,19 @@ from app.services.order_proposals.dispatch_contract import (
 from app.services.order_proposals.revalidation import RungOutcome, revalidate_and_submit
 from app.services.order_proposals.service import RungInput
 from app.telegram_contract import TelegramMethodResult, telegram_text_length
+from tests.services.order_proposals.window_fakes import allow_known_session
 
 CHAT_ID = "chat-99"
+
+
+@pytest.fixture(autouse=True)
+def _known_market_session(monkeypatch):
+    monkeypatch.setattr(
+        dispatch_module, "evaluate_approval_window", allow_known_session
+    )
+    monkeypatch.setattr(
+        revalidation_module, "evaluate_approval_window", allow_known_session
+    )
 
 
 class _FakeNotifier:
@@ -238,8 +257,11 @@ async def test_send_proposal_for_approval_mints_nonce_and_sends(
 ):
     from app.core.config import settings
 
+    isolated_chat_id = f"chat-{uuid.uuid4().hex}"
     monkeypatch.setattr(
-        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR",
+        isolated_chat_id,
     )
     group = await _seed_proposal(db_session)
     notifier = _FakeNotifier(message_id=5001)
@@ -256,7 +278,7 @@ async def test_send_proposal_for_approval_mints_nonce_and_sends(
     assert dispatch.message_id == 5001
     assert len(notifier.sent_messages) == 1
     text, keyboard, chat_id = notifier.sent_messages[0]
-    assert chat_id == CHAT_ID
+    assert chat_id == isolated_chat_id
     assert "승인" in text
     assert keyboard["inline_keyboard"]
 
@@ -264,8 +286,96 @@ async def test_send_proposal_for_approval_mints_nonce_and_sends(
     refreshed, _ = await service.get_proposal(group.proposal_id)
     assert refreshed.approval_nonce is not None
     assert refreshed.source_asof["approval_message_id"] == 5001
-    assert refreshed.source_asof["approval_chat_id"] == CHAT_ID
+    assert refreshed.source_asof["approval_chat_id"] == isolated_chat_id
     assert refreshed.source_asof["approval_sent_at"] == now.isoformat()
+    assert refreshed.source_asof["approval_window_policy_stamp"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_expired_returns_typed_result_without_nonce_or_telegram(
+    monkeypatch, db_session
+):
+    from app.core.config import settings
+
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+    )
+    group = await _seed_proposal(db_session)
+    deadline = datetime(2026, 7, 23, 4, 55, tzinfo=UTC)
+    group.valid_until = deadline
+    await db_session.commit()
+    notifier = _FakeNotifier()
+
+    result = await send_proposal_for_approval(
+        group.proposal_id,
+        notifier=notifier,
+        now=deadline,
+        service_factory=_session_factory(db_session),
+    )
+
+    assert isinstance(result, ApprovalWindowDecision)
+    assert result.code is ApprovalWindowCode.EXPIRED
+    assert notifier.sent_messages == []
+    refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert refreshed.approval_nonce is None
+    assert refreshed.lifecycle_state == "expired"
+    assert [rung.state for rung in rungs] == ["expired"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("known", "expected"),
+    [
+        (True, ApprovalWindowCode.DEFER_SESSION_CLOSED),
+        (False, ApprovalWindowCode.CALENDAR_UNKNOWN),
+    ],
+)
+async def test_dispatch_closed_or_unknown_session_has_zero_visible_side_effects(
+    monkeypatch, db_session, known, expected
+):
+    from app.core.config import settings
+
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+    )
+    group = await _seed_proposal(db_session)
+    now = datetime(2026, 7, 23, 8, 50, tzinfo=UTC)
+    group.valid_until = now + timedelta(days=2)
+    await db_session.commit()
+    notifier = _FakeNotifier()
+
+    async def evaluator(group, *, now):
+        async def resolver(group, *, now):
+            return SubmissionSessionEvidence(
+                known=known,
+                source="test",
+                current_session="closed" if known else "unknown",
+                allowed_sessions=("regular",),
+                allowed_now=False,
+                next_allowed_at=now + timedelta(hours=12) if known else None,
+            )
+
+        return await evaluate_approval_window(group, now=now, session_resolver=resolver)
+
+    result = await send_proposal_for_approval(
+        group.proposal_id,
+        notifier=notifier,
+        now=now,
+        service_factory=_session_factory(db_session),
+        window_evaluator=evaluator,
+    )
+
+    assert isinstance(result, ApprovalWindowDecision)
+    assert result.code is expected
+    assert notifier.sent_messages == []
+    refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert refreshed.approval_nonce is None
+    assert refreshed.approval_nonce_used_at is None
+    assert [rung.state for rung in rungs] == ["pending_approval"]
 
 
 @pytest.mark.asyncio

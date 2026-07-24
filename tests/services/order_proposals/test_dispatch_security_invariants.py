@@ -51,6 +51,7 @@ from app.telegram_contract import (
     TelegramMethodResult,
     telegram_text_length,
 )
+from tests.services.order_proposals.window_fakes import allow_known_session
 
 NOW = datetime(2026, 7, 23, 9, 0, tzinfo=UTC)
 PROPOSAL_ID = uuid.UUID("11111111-1111-4111-8111-111111111111")
@@ -611,6 +612,7 @@ async def test_invalid_loss_cut_binding_has_zero_pre_gate_external_calls(
         proposer="probe",
         lifecycle_state="proposed",
         exit_intent="loss_cut",
+        valid_until=NOW + timedelta(minutes=5),
         approval_nonce=nonce,
         approval_dispatch_state=state.value,
         approval_dispatch_attempt_id=attempt_id,
@@ -618,6 +620,10 @@ async def test_invalid_loss_cut_binding_has_zero_pre_gate_external_calls(
         approval_dispatch_membership_revision=1,
         approval_dispatch_membership_digest=digest,
     )
+    dispatched = await allow_known_session(group, now=NOW)
+    group.source_asof = {
+        "approval_window_policy_stamp": dispatched.policy_stamp,
+    }
 
     class Repo:
         updates = 0
@@ -658,6 +664,8 @@ async def test_invalid_loss_cut_binding_has_zero_pre_gate_external_calls(
         callback_query_id="callback-query",
         telegram_user_id="operator",
         loss_cut_preview_fn=preview_mock,
+        window_evaluator=allow_known_session,
+        now_fn=lambda: NOW,
     )
 
     assert result["handled"] is False
@@ -702,6 +710,7 @@ async def test_loss_cut_preview_to_consume_toctou_fails_closed(
         proposer="probe",
         lifecycle_state="proposed",
         exit_intent="loss_cut",
+        valid_until=NOW + timedelta(minutes=5),
         approval_nonce=nonce,
         approval_dispatch_state=ApprovalDispatchState.SENT_CURRENT.value,
         approval_dispatch_attempt_id=ATTEMPT_ID,
@@ -709,6 +718,10 @@ async def test_loss_cut_preview_to_consume_toctou_fails_closed(
         approval_dispatch_membership_revision=1,
         approval_dispatch_membership_digest=digest,
     )
+    dispatched = await allow_known_session(group, now=NOW)
+    group.source_asof = {
+        "approval_window_policy_stamp": dispatched.policy_stamp,
+    }
 
     class Repo:
         updates = 0
@@ -744,6 +757,8 @@ async def test_loss_cut_preview_to_consume_toctou_fails_closed(
         message_id=7,
         telegram_user_id="operator",
         loss_cut_preview_fn=preview_mock,
+        window_evaluator=allow_known_session,
+        now_fn=lambda: NOW,
     )
 
     assert result["handled"] is False
@@ -778,7 +793,22 @@ def _batch_fixture(*, state: ApprovalDispatchState, extra_member_revision: int =
     for index in range(1, 38):
         revision = 1 if index <= 36 else extra_member_revision
         proposal_id = uuid.UUID(int=index)
-        groups[index] = SimpleNamespace(proposal_id=proposal_id)
+        groups[index] = SimpleNamespace(
+            id=index,
+            proposal_id=proposal_id,
+            superseded_by_proposal_id=None,
+            lifecycle_state="proposed",
+            exit_intent=None,
+            source_asof={},
+            valid_until=NOW + timedelta(minutes=5),
+            approval_nonce=f"member-{index}",
+            approval_nonce_used_at=None,
+            approval_dispatch_state=ApprovalDispatchState.SENT_CURRENT.value,
+            approval_dispatch_attempt_id=uuid.UUID(int=100 + index),
+            approval_dispatch_membership_revision=1,
+            approval_dispatch_membership_digest=DIGEST,
+            approval_dispatch_card_kind=ApprovalCardKind.MANUAL.value,
+        )
         members.append(
             SimpleNamespace(
                 id=index,
@@ -823,8 +853,11 @@ def _batch_fixture(*, state: ApprovalDispatchState, extra_member_revision: int =
                 setattr(target, key, value)
             return target
 
-        async def get_group_by_pk(self, proposal_pk):
+        async def get_group_by_pk(self, proposal_pk, *, for_update=False):
             return groups[proposal_pk]
+
+        async def list_rungs(self, proposal_pk):
+            return [SimpleNamespace(state="pending_approval")]
 
     return batch_id, batch, groups, _service_with_repo(Repo())
 
@@ -1410,6 +1443,11 @@ async def test_send_orchestration_registers_batch_only_for_current_result(
 ) -> None:
     group = SimpleNamespace(
         proposal_id=PROPOSAL_ID,
+        market="equity_kr",
+        account_mode="kis_live",
+        action="place",
+        order_type="limit",
+        valid_until=NOW + timedelta(minutes=5),
         approval_dispatch_membership_revision=None,
     )
     first_service = SimpleNamespace(
@@ -1474,6 +1512,8 @@ async def test_send_orchestration_registers_batch_only_for_current_result(
         notifier=SimpleNamespace(),
         now=NOW,
         service_factory=service_factory,
+        window_evaluator=allow_known_session,
+        now_fn=lambda: NOW,
     )
 
     assert returned is result
@@ -1499,6 +1539,10 @@ async def test_auto_dispatch_compensates_only_current_failed_result(
     group = SimpleNamespace(
         proposal_id=PROPOSAL_ID,
         market="equity_kr",
+        account_mode="kis_live",
+        action="place",
+        order_type="limit",
+        valid_until=NOW + timedelta(minutes=5),
         approval_dispatch_membership_revision=None,
     )
     rung = SimpleNamespace(state="pending_approval")
@@ -1584,6 +1628,8 @@ async def test_auto_dispatch_compensates_only_current_failed_result(
         now=NOW,
         service_factory=service_factory,
         revalidate_fn=revalidate,
+        window_evaluator=allow_known_session,
+        now_fn=lambda: NOW,
     )
 
     assert returned is result

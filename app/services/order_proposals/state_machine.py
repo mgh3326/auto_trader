@@ -35,9 +35,18 @@ _ALLOWED: dict[str, frozenset[str]] = {
     "needs_reconfirm": frozenset(
         {"pending_approval", "rejected", "superseded", "expired", "voided"}
     ),
-    "approved": frozenset({"submitting", "superseded", "expired", "voided"}),
+    "approved": frozenset(
+        {"submitting", "pending_approval", "superseded", "expired", "voided"}
+    ),
     "submitting": frozenset(
-        {"acked", "resting", "rejected", "unverified", "cancelled"}
+        {
+            "pending_approval",
+            "acked",
+            "resting",
+            "rejected",
+            "unverified",
+            "cancelled",
+        }
     ),
     "acked": frozenset({"filled", "partially_filled", "cancelled", "unverified"}),
     "resting": frozenset(

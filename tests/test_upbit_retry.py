@@ -196,3 +196,117 @@ async def test_get_request_keeps_request_error_retry(monkeypatch):
     await client._request_with_auth("GET", f"{client.UPBIT_REST}/accounts")
 
     assert captured.get("retry_request_errors", True) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/orders"),
+        ("DELETE", "/order"),
+    ],
+)
+async def test_order_mutation_hook_runs_after_limiter_before_http(
+    monkeypatch, method, path
+):
+    """A window crossed during limiter wait blocks with mutation HTTP=0."""
+    from app.services.brokers.kis.pre_send import PreSendFreshnessError
+    from app.services.brokers.upbit import client
+
+    admitted = False
+    http_clients = 0
+
+    async def acquire(**kwargs):
+        nonlocal admitted
+        admitted = True
+
+    limiter = MagicMock()
+    limiter.acquire = AsyncMock(side_effect=acquire)
+
+    class ForbiddenClient:
+        def __init__(self, *args, **kwargs):
+            nonlocal http_clients
+            http_clients += 1
+            raise AssertionError("blocked hook must precede HTTP client creation")
+
+    async def block():
+        assert admitted is True
+        raise PreSendFreshnessError(("approval_window:EXPIRED",))
+
+    monkeypatch.setattr(client, "get_limiter", AsyncMock(return_value=limiter))
+    monkeypatch.setattr(client.jwt, "encode", lambda *a, **k: "tok")
+    monkeypatch.setattr(client.httpx, "AsyncClient", ForbiddenClient)
+
+    kwargs = (
+        {"body_params": {"market": "KRW-BTC"}}
+        if method == "POST"
+        else {"query_params": {"uuid": "broker-order-id"}}
+    )
+    with pytest.raises(PreSendFreshnessError):
+        await client._request_with_auth(
+            method,
+            f"{client.UPBIT_REST}{path}",
+            pre_send_hook=block,
+            **kwargs,
+        )
+
+    assert limiter.acquire.await_count == 1
+    assert http_clients == 0
+
+
+@pytest.mark.asyncio
+async def test_retry_rechecks_hook_after_each_limiter_admission():
+    """A retry gets a fresh boundary check and cannot issue a second send."""
+    from app.services.brokers.kis.pre_send import PreSendFreshnessError
+    from app.services.brokers.upbit.client import _retry_with_backoff
+
+    limiter = _make_limiter()
+    response = _make_response(429, retry_after=0)
+    send = AsyncMock(return_value=response)
+    hook_calls = 0
+
+    async def allow_then_block():
+        nonlocal hook_calls
+        hook_calls += 1
+        if hook_calls == 2:
+            raise PreSendFreshnessError(("approval_window:DEFER_SESSION_CLOSED",))
+
+    with pytest.raises(PreSendFreshnessError):
+        await _retry_with_backoff(
+            limiter,
+            send,
+            url="https://test/read-retry",
+            max_retries=1,
+            base_delay=0,
+            pre_send_hook=allow_then_block,
+        )
+
+    assert limiter.acquire.await_count == 2
+    assert hook_calls == 2
+    assert send.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_order_cancel_delete_uses_one_shot_transport(monkeypatch):
+    """Ambiguous DELETE outcomes are never retried across a window boundary."""
+    from app.services.brokers.upbit import client
+
+    captured: dict = {}
+
+    async def fake_retry(limiter, send_fn, *, url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return {"uuid": "x"}
+
+    monkeypatch.setattr(client, "_retry_with_backoff", fake_retry)
+    monkeypatch.setattr(client, "get_limiter", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr(client.jwt, "encode", lambda *a, **k: "tok")
+
+    await client._request_with_auth(
+        "DELETE",
+        f"{client.UPBIT_REST}/order",
+        query_params={"uuid": "broker-order-id"},
+    )
+
+    assert captured["retry_request_errors"] is False
+    assert captured["max_retries"] == 0

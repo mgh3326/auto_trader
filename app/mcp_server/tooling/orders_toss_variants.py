@@ -8,10 +8,11 @@ Every tool is hard-pinned to ``account_mode="toss_live"``. They:
 
 from __future__ import annotations
 
+import inspect
 import logging
 import re
 import uuid
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -46,6 +47,7 @@ from app.mcp_server.tooling.toss_live_ledger import (
     record_toss_replacement_order,
 )
 from app.services.account_routing import build_cost_profiles
+from app.services.brokers.kis.pre_send import PreSendFreshnessError
 from app.services.brokers.toss import TossReadClient
 from app.services.brokers.toss.dto import TossWarningInfo
 from app.services.brokers.toss.errors import TossApiResponseError
@@ -66,6 +68,36 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
+
+PreSendHook = Callable[[], Awaitable[None]]
+_toss_pre_send_hook: ContextVar[PreSendHook | None] = ContextVar(
+    "toss_pre_send_hook",
+    default=None,
+)
+
+
+@contextmanager
+def _bind_toss_pre_send_hook(hook: PreSendHook | None):
+    """Bind an internal transport guard without changing the MCP schema."""
+    token = _toss_pre_send_hook.set(hook)
+    try:
+        yield
+    finally:
+        _toss_pre_send_hook.reset(token)
+
+
+def _accepts_pre_send_hook(method: Callable[..., Awaitable[Any]]) -> bool:
+    """Whether an injected Toss client exposes the current mutation protocol."""
+    try:
+        parameters = inspect.signature(method).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    return any(
+        parameter.name == "pre_send_hook"
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
 
 TOSS_LIVE_ORDER_TOOL_NAMES: set[str] = {
     "toss_preview_order",
@@ -1382,9 +1414,24 @@ async def _toss_place_order_impl(
                     verdict.reason,
                 )
 
+        pre_send_hook = _toss_pre_send_hook.get()
+
         res = None
         try:
-            res = await client.place_order(payload)
+            if pre_send_hook is None:
+                res = await client.place_order(payload)
+            elif not _accepts_pre_send_hook(client.place_order):
+                # Keep compatibility with injected clients implementing the
+                # original one-argument protocol. The hook still runs
+                # immediately before their mutation; the first-party client
+                # accepts the hook and rechecks it inside every HTTP attempt.
+                await pre_send_hook()
+                res = await client.place_order(payload)
+            else:
+                res = await client.place_order(
+                    payload,
+                    pre_send_hook=pre_send_hook,
+                )
             if side == "sell":
                 await _invalidate_sellable_after_sell_mutation(symbol)
             raw_response = {
@@ -1441,6 +1488,8 @@ async def _toss_place_order_impl(
                     "run toss_reconcile_orders to book confirmed fills."
                 ),
             }
+        except PreSendFreshnessError:
+            raise
         except Exception as exc:
             err = _toss_error_response(exc, {**base_response, "mutation_sent": True})
             # ROB-545 Major/B2 — if the POST already reached Toss (res set) the
@@ -1755,7 +1804,14 @@ async def toss_cancel_order(
                     exc, {**base_response, "original_order_id": order_id}
                 )
             mkt = _infer_market(orig_order.symbol, None)
-            res = await client.cancel_order(order_id)
+            pre_send_hook = _toss_pre_send_hook.get()
+            if pre_send_hook is None:
+                res = await client.cancel_order(order_id)
+            else:
+                res = await client.cancel_order(
+                    order_id,
+                    pre_send_hook=pre_send_hook,
+                )
             if str(orig_order.side).lower() == "sell":
                 await _invalidate_sellable_after_sell_mutation(orig_order.symbol)
             ledger = await record_toss_replacement_order(
@@ -1786,6 +1842,8 @@ async def toss_cancel_order(
                 **ledger,
                 "operation_semantics": "Toss cancel returns a newly issued orderId; it is not the original order id.",
             }
+    except PreSendFreshnessError:
+        raise
     except Exception as exc:
         err = _toss_error_response(exc, {**base_response, "mutation_sent": True})
         # ROB-545 Major — keep the order ids on the error path so the live order

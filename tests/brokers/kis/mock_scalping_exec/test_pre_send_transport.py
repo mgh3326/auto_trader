@@ -18,6 +18,7 @@ import app.services.brokers.kis.circuit_breaker as cb
 from app.services.brokers.kis.base import BaseKISClient
 from app.services.brokers.kis.domestic_orders import DomesticOrderClient
 from app.services.brokers.kis.mock_scalping.contract import ReasonCode
+from app.services.brokers.kis.overseas_orders import OverseasOrderClient
 from app.services.brokers.kis.pre_send import PreSendFreshnessError
 
 _NXT = "app.services.brokers.kis.domestic_orders.is_nxt_eligible"
@@ -145,4 +146,90 @@ async def test_hook_rechecked_on_token_refresh_resend(monkeypatch) -> None:
             "005930", "buy", 1, 70000, is_mock=True, pre_send_hook=_fresh_then_stale
         )
     assert execute.await_count == 1  # first POST only; the re-send was blocked
+    assert client._parent._token_manager.clear_token.await_count == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("market", ["kr", "us"])
+async def test_cancel_hook_runs_after_limiter_before_real_post(
+    monkeypatch, market
+) -> None:
+    execute = AsyncMock(return_value=_http_response({"rt_cd": "0"}))
+    domestic = _make(execute)
+    limiter = domestic._parent._get_limiter.return_value
+    admitted = False
+
+    async def acquire(**kwargs) -> None:
+        nonlocal admitted
+        admitted = True
+
+    limiter.acquire = AsyncMock(side_effect=acquire)
+
+    async def block_after_admission() -> None:
+        assert admitted is True
+        raise PreSendFreshnessError(("approval_window:EXPIRED",))
+
+    monkeypatch.setattr(_NXT, AsyncMock(return_value=False))
+    if market == "kr":
+        call = domestic.cancel_korea_order(
+            "broker-order-id",
+            "005930",
+            1,
+            70000,
+            "buy",
+            is_mock=True,
+            krx_fwdg_ord_orgno="06010",
+            pre_send_hook=block_after_admission,
+        )
+    else:
+        overseas = OverseasOrderClient(domestic._parent)
+        call = overseas.cancel_overseas_order(
+            "broker-order-id",
+            "VOO",
+            "NYSE",
+            1,
+            is_mock=True,
+            pre_send_hook=block_after_admission,
+        )
+
+    with pytest.raises(PreSendFreshnessError):
+        await call
+
+    assert limiter.acquire.await_count == 1
+    assert execute.await_count == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancel_token_refresh_resend_rechecks_transport_hook(monkeypatch) -> None:
+    execute = AsyncMock(
+        return_value=_http_response(
+            {"rt_cd": "1", "msg_cd": "EGW00123", "msg1": "token expired"}
+        )
+    )
+    client = _make(execute)
+    monkeypatch.setattr(_NXT, AsyncMock(return_value=False))
+    hook_calls = 0
+
+    async def allow_then_block() -> None:
+        nonlocal hook_calls
+        hook_calls += 1
+        if hook_calls == 2:
+            raise PreSendFreshnessError(("approval_window:DEFER_SESSION_CLOSED",))
+
+    with pytest.raises(PreSendFreshnessError):
+        await client.cancel_korea_order(
+            "broker-order-id",
+            "005930",
+            1,
+            70000,
+            "buy",
+            is_mock=True,
+            krx_fwdg_ord_orgno="06010",
+            pre_send_hook=allow_then_block,
+        )
+
+    assert hook_calls == 2
+    assert execute.await_count == 1
     assert client._parent._token_manager.clear_token.await_count == 1
