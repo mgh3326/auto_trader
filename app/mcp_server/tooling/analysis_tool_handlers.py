@@ -713,8 +713,13 @@ async def _run_batch_analysis(
                 return {
                     "symbol": sym,
                     "error": str(exc),
+                    "data_state": "missing",
                     "cache_hit": False,
                     "derived_as_of": None,
+                    "fetched_at": None,
+                    "data_age_seconds": None,
+                    "fallback_source": None,
+                    "provider_provenance": [],
                 }
 
     analyze_results = await asyncio.gather(
@@ -728,11 +733,23 @@ async def _run_batch_analysis(
             formatted_result = formatter(sym, result, position_index=position_index)
         else:
             formatted_result = formatter(sym, result)
-        # ROB-638 additive contract: cache_hit = whether the fetch-layer cache
-        # served the provider data; derived_as_of = ISO-KST timestamp of when
-        # that provider data was fetched (populated by analysis_analyze).
-        formatted_result["cache_hit"] = result.get("cache_hit", False)
-        formatted_result["derived_as_of"] = result.get("derived_as_of")
+        # ROB-1048 authoritative evidence freshness/provenance envelope. Compact
+        # summaries historically surfaced quote.data_state at the same level;
+        # retain it under price_data_state before applying aggregate evidence
+        # semantics.
+        if "data_state" in formatted_result:
+            formatted_result["price_data_state"] = formatted_result["data_state"]
+        formatted_result.update(
+            {
+                "data_state": result.get("data_state") or "degraded",
+                "derived_as_of": result.get("derived_as_of"),
+                "fetched_at": result.get("fetched_at"),
+                "data_age_seconds": result.get("data_age_seconds"),
+                "cache_hit": bool(result.get("cache_hit")),
+                "fallback_source": result.get("fallback_source"),
+                "provider_provenance": result.get("provider_provenance") or [],
+            }
+        )
         results[sym] = formatted_result
         if "error" not in result:
             success_count += 1

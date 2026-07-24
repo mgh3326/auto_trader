@@ -1,5 +1,5 @@
 # tests/mcp_server/tooling/test_get_news_envelope.py
-"""get_news envelope byte-compat regression after seam rewire (ROB-423)."""
+"""get_news payload compatibility plus ROB-1048 freshness/provenance metadata."""
 
 from __future__ import annotations
 
@@ -71,7 +71,9 @@ def _finnhub_article() -> SymbolNewsArticle:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_get_news_kr_envelope_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_get_news_kr_envelope_adds_freshness_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     art = _naver_article()
     monkeypatch.setattr(
         symbol_news_service,
@@ -85,7 +87,7 @@ async def test_get_news_kr_envelope_unchanged(monkeypatch: pytest.MonkeyPatch) -
 
     out = await _news.handle_get_news("005930", market="kr", limit=10)
 
-    assert out == {
+    expected_payload = {
         "symbol": "005930",
         "market": "kr",
         "source": "naver",
@@ -93,6 +95,31 @@ async def test_get_news_kr_envelope_unchanged(monkeypatch: pytest.MonkeyPatch) -
         "excluded_count": 0,
         "news": [art.provider_metadata["source_item"]],
     }
+    assert {key: out[key] for key in expected_payload} == expected_payload
+    assert set(out) == {
+        *expected_payload,
+        "data_state",
+        "derived_as_of",
+        "fetched_at",
+        "data_age_seconds",
+        "cache_hit",
+        "fallback_source",
+        "provider_provenance",
+    }
+    assert out["data_state"] == "stale"
+    assert out["derived_as_of"] == out["fetched_at"] == art.fetched_at.isoformat()
+    assert out["data_age_seconds"] > _news.NEWS_FRESHNESS_MAX_AGE_SECONDS
+    assert out["cache_hit"] is False
+    assert out["fallback_source"] is None
+    assert out["provider_provenance"] == [
+        {
+            "provider": "naver",
+            "served_by": "naver",
+            "mode": "live",
+            "status": "ok",
+            "error_code": None,
+        }
+    ]
 
 
 @pytest.mark.unit
@@ -141,6 +168,7 @@ async def test_get_news_kr_exposes_relevance_block_and_meta(
 async def test_get_news_kr_degraded_meta_surfaced(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    article = replace(_naver_article(), fetched_at=datetime.now(tz=UTC))
     monkeypatch.setattr(
         symbol_news_service,
         "fetch_symbol_news",
@@ -152,7 +180,7 @@ async def test_get_news_kr_degraded_meta_surfaced(
                 "ok",
                 10,
                 1,
-                [_naver_article()],
+                [article],
                 degraded=True,
                 fetch_error="RuntimeError",
             )
@@ -161,6 +189,50 @@ async def test_get_news_kr_degraded_meta_surfaced(
     out = await _news.handle_get_news("005930", market="kr", limit=10)
     assert out["degraded"] is True
     assert out["fetch_error"] == "RuntimeError"
+    assert out["data_state"] == "degraded"
+    assert out["cache_hit"] is True
+    assert out["fallback_source"] == "news_articles"
+    assert out["provider_provenance"] == [
+        {
+            "provider": "naver",
+            "served_by": "news_articles",
+            "mode": "fallback",
+            "status": "error",
+            "error_code": "RuntimeError",
+        }
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_news_expired_fallback_is_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    article = _naver_article()
+    monkeypatch.setattr(
+        symbol_news_service,
+        "fetch_symbol_news",
+        AsyncMock(
+            return_value=SymbolNewsFetchResult(
+                "005930",
+                "kr",
+                "naver",
+                "ok",
+                10,
+                1,
+                [article],
+                degraded=True,
+                fetch_error="TimeoutError",
+            )
+        ),
+    )
+
+    out = await _news.handle_get_news("005930", market="kr", limit=10)
+
+    assert out["data_state"] == "stale"
+    assert out["cache_hit"] is True
+    assert out["fallback_source"] == "news_articles"
+    assert out["provider_provenance"][0]["status"] == "error"
 
 
 @pytest.mark.unit
@@ -215,6 +287,45 @@ async def test_get_news_error_status_returns_error_payload(
 
     assert out.get("error") or out.get("source") == "finnhub"
     assert "news" not in out or out.get("count", 0) == 0
+    assert out["data_state"] == "missing"
+    assert out["derived_as_of"] is None
+    assert out["fetched_at"] is None
+    assert out["data_age_seconds"] is None
+    assert out["cache_hit"] is False
+    assert out["fallback_source"] is None
+    assert out["provider_provenance"][0]["mode"] == "none"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_news_authoritative_empty_is_fresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetched_at = datetime.now(tz=UTC)
+    monkeypatch.setattr(
+        symbol_news_service,
+        "fetch_symbol_news",
+        AsyncMock(
+            return_value=SymbolNewsFetchResult(
+                "AAPL",
+                "us",
+                "finnhub",
+                "empty",
+                10,
+                0,
+                [],
+                fetched_at=fetched_at,
+            )
+        ),
+    )
+
+    out = await _news.handle_get_news("AAPL", market="us", limit=10)
+
+    assert out["count"] == 0
+    assert out["news"] == []
+    assert out["data_state"] == "fresh"
+    assert out["derived_as_of"] == fetched_at.isoformat()
+    assert out["provider_provenance"][0]["status"] == "empty"
 
 
 @pytest.mark.unit

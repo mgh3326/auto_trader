@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.core.db import AsyncSessionLocal
+from app.mcp_server.caller_identity import get_caller_argument_names
 from app.schemas.analysis_artifact import (
     AnalysisArtifactGetResponse,
     AnalysisArtifactListRequest,
@@ -23,6 +24,16 @@ from app.services.analysis_artifact import AnalysisArtifactService
 # Save-side payload cap (ROB-628 size discipline). Measured on real UTF-8
 # bytes (ensure_ascii=False) so Korean payloads are not ~6x over-counted.
 PAYLOAD_CAP_BYTES = 100 * 1024
+
+
+def _mcp_argument_was_provided(name: str, value: Any) -> bool:
+    """Preserve omitted-vs-explicit-null at the FastMCP function boundary."""
+    argument_names = get_caller_argument_names()
+    if argument_names is None:
+        # Direct Python callers have no middleware context; None remains the
+        # established omitted marker for those callers.
+        return value is not None
+    return name in argument_names
 
 
 def _validation_error(exc: ValidationError) -> dict[str, Any]:
@@ -41,13 +52,13 @@ async def analysis_artifact_save(
     payload: dict[str, Any] | None = None,
     as_of: str | None = None,
     valid_until: str | None = None,
-    created_by: str = "claude",
+    created_by: str | None = None,
     session_label: str | None = None,
     correlation_id: str | None = None,
     account_scope: str | None = None,
     readiness_label: str | None = None,
 ) -> dict[str, Any]:
-    """Persist a single analysis artifact for cross-session reuse."""
+    """Persist an artifact; omitted retry fields preserve stored values."""
     size_bytes = len(
         json.dumps(payload or {}, ensure_ascii=False, default=str).encode("utf-8")
     )
@@ -58,28 +69,44 @@ async def analysis_artifact_save(
             "size_bytes": size_bytes,
             "cap_bytes": PAYLOAD_CAP_BYTES,
         }
-    try:
-        entry = AnalysisArtifactSave.model_validate(
-            {
-                "market": market,
-                "kind": kind,
-                "title": title,
-                "symbols": symbols or [],
-                "payload": payload or {},
-                "as_of": as_of or datetime.now(tz=UTC).isoformat(),
-                "valid_until": valid_until,
-                "created_by": created_by,
-                "session_label": session_label,
-                "correlation_id": correlation_id,
-                "account_scope": account_scope,
-                "readiness_label": readiness_label,
-            }
-        )
-    except ValidationError as exc:
-        return _validation_error(exc)
-
     async with AsyncSessionLocal() as db:
         service = AnalysisArtifactService(db)
+        resolved_as_of = as_of
+        if resolved_as_of is None and correlation_id is not None:
+            existing = await service.get_by_correlation_id(correlation_id)
+            if existing is not None:
+                # An omitted timestamp on an idempotent retry means "reuse the
+                # stored evidence time", never "renew to request now".
+                resolved_as_of = existing.as_of.isoformat()
+        request_data: dict[str, Any] = {
+            "market": market,
+            "kind": kind,
+            "title": title,
+            "correlation_id": correlation_id,
+        }
+        optional_values = {
+            "symbols": symbols,
+            "payload": payload,
+            "valid_until": valid_until,
+            "created_by": created_by,
+            "session_label": session_label,
+            "account_scope": account_scope,
+            "readiness_label": readiness_label,
+        }
+        for field_name, value in optional_values.items():
+            if _mcp_argument_was_provided(field_name, value):
+                request_data[field_name] = value
+
+        if _mcp_argument_was_provided("as_of", as_of):
+            # Explicit null is invalid for required evidence time; omission is
+            # resolved from the stored row (or request time for a new row).
+            request_data["as_of"] = as_of
+        else:
+            request_data["as_of"] = resolved_as_of or datetime.now(tz=UTC).isoformat()
+        try:
+            entry = AnalysisArtifactSave.model_validate(request_data)
+        except ValidationError as exc:
+            return _validation_error(exc)
         row, action = await service.save(entry)
         await db.commit()
         response = AnalysisArtifactSaveResponse(
