@@ -1162,13 +1162,13 @@ def _semantic_success(
     explicit_success = envelope.get("success") if envelope is not None else None
     if explicit_success is False:
         return False
-    # ROB-1048 owns the CP0 values. As a consumer, fail closed when its
-    # classification is absent/outside the contract or any supplied CP0 field
-    # makes the observed contract invalid; only an observed "fresh" state can
-    # be semantically successful.
-    if (
-        freshness.get("contract_status") == "invalid"
-        or freshness.get("data_state") != "fresh"
+    # ROB-1048 owns the CP0 values. As a consumer, fail closed when any supplied
+    # CP0 field makes the observed contract invalid, or when a supplied
+    # classification is not fresh. Unrelated tools outside the CP0 scope keep
+    # the legacy explicit-success/error fallback when every CP0 field is absent.
+    cp0_fields_present = bool(freshness.get("present_fields"))
+    if freshness.get("contract_status") == "invalid" or (
+        cp0_fields_present and freshness.get("data_state") != "fresh"
     ):
         return False
     if _has_true_flag(envelope, frozenset({"stale", "is_stale", "degraded"})):

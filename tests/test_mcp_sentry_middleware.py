@@ -208,13 +208,34 @@ class TestBuildMcpToolObservation:
             result=ToolResult(structured_content={"success": True}),
         )
 
-        assert observation["semantic_success"] is False
-        assert observation["span_status"] == SPANSTATUS.FAILED_PRECONDITION
-        assert observation["error_code"] == "semantic_failure"
+        assert observation["semantic_success"] is True
+        assert observation["span_status"] == SPANSTATUS.OK
+        assert observation["error_code"] is None
         assert observation["freshness"]["contract_status"] == "absent"
         assert observation["freshness"]["data_state"] == "unknown"
         assert observation["freshness"]["cache_hit"] is None
         assert observation["freshness"]["data_state"] != "fresh"
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        ["order_proposal_create", "analysis_artifact_get"],
+    )
+    def test_successful_non_cp0_tools_remain_semantic_successes(
+        self,
+        tool_name: str,
+    ):
+        observation = build_mcp_tool_observation(
+            tool_name,
+            {},
+            result=ToolResult(structured_content={"success": True}),
+        )
+
+        assert observation["freshness"]["present_fields"] == []
+        assert observation["freshness"]["contract_status"] == "absent"
+        assert observation["freshness"]["data_state"] == "unknown"
+        assert observation["semantic_success"] is True
+        assert observation["span_status"] == SPANSTATUS.OK
+        assert observation["error_code"] is None
 
     @pytest.mark.parametrize("data_state", ["stale", "degraded", "missing"])
     def test_safety_dominant_data_states_are_semantic_failures(self, data_state: str):
@@ -391,6 +412,8 @@ class TestBuildMcpToolObservation:
         assert observation["operator_session"] == "mcp-session-1"
         assert observation["operator_session_source"] == "mcp_session"
         assert observation["funnel_stage"] == "proposal"
+        assert observation["semantic_success"] is True
+        assert observation["span_status"] == SPANSTATUS.OK
 
     def test_artifact_id_uuid_compatibility_argument_is_recorded(self):
         artifact_id = str(uuid4())
