@@ -38,10 +38,10 @@ jobs:
       run: uv sync --group dev
 
     - name: Run Ruff linter
-      run: uv run ruff check app/ tests/
+      run: uv run ruff check app/ tests/ research/ scripts/
 
     - name: Run Ruff formatter check
-      run: uv run ruff format --check app/ tests/
+      run: uv run ruff format --check app/ tests/ research/ scripts/
 
     - name: Run ty
       run: uv run ty check app/ --error-on-warning
