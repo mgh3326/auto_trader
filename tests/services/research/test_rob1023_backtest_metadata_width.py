@@ -68,6 +68,7 @@ def test_runner_width_contract_and_alembic_head_are_pinned() -> None:
 
     config = Config(str(_REPO / "alembic.ini"))
     config.set_main_option("script_location", str(_REPO / "alembic"))
+    # Note: Enforce single-head linear Alembic migration history.
     assert ScriptDirectory.from_config(config).get_heads() == [
         "20260725_rob1010_crypto_venue"
     ]
