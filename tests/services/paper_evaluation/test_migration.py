@@ -151,7 +151,7 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             assert completed.returncode == 0, completed.stdout + completed.stderr
         current = await asyncio.to_thread(alembic, "current")
         assert current.returncode == 0, current.stdout + current.stderr
-        assert "20260723_approval_dispatch (head)" in current.stdout
+        assert "20260725_rob1010_crypto_venue (head)" in current.stdout
 
         async with engine.connect() as connection:
             triggers = await connection.scalar(
