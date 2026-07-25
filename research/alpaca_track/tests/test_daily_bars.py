@@ -95,6 +95,25 @@ def test_three_minute_gap_is_never_imputed_and_day_is_invalid():
     assert bar.is_valid is False
 
 
+def test_first_minute_of_day_missing_imputes_open_from_prior_close():
+    # minute 0 (day_start_ms itself) is the ONE missing minute -- the very
+    # first loop iteration in the `is_valid` aggregation path takes the
+    # "imputed" branch, not the "real row" branch. `bar.open` must reflect
+    # the imputed `prior_close` value, not the default-row close (100.0)
+    # that the first *present* minute would carry. This guards the
+    # `first_open` derivation: a regression that re-introduces a
+    # `float | None` sentinel incorrectly initialized/skipped (e.g. `0.0`
+    # or the first *present* row's open instead of the true first minute)
+    # would silently return 100.0-ish here instead of 99.0.
+    skip = {0}
+    rows = _full_day_rows(skip=skip)
+    bar = db.build_utc_day(DAY0, rows, prior_close=99.0, is_segment_start=True)
+    assert bar.minute_count_observed == 1439
+    assert bar.max_gap_minutes == 1
+    assert bar.is_valid is True
+    assert bar.open == 99.0
+
+
 # --------------------------------------------------------------------------- #
 # gap inside the 60 minutes preceding the decision (end of day) -> invalid
 # regardless of gap width or overall minute_count

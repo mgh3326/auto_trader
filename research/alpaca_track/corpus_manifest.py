@@ -22,6 +22,7 @@ import canonical_hash
 
 SCHEMA_VERSION = "rob1059_corpus_manifest.v1"
 GENERATOR_VERSION = "rob1059_h1_corpus_builder.v1"
+_MINUTE_MS = 60_000
 
 SourceLiteral = Literal["archive_monthly", "archive_daily", "backfill_rest"]
 _VALID_SOURCES = ("archive_monthly", "archive_daily", "backfill_rest")
@@ -121,6 +122,25 @@ class SymbolCorpusManifest:
             raise ValueError("row_count/expected_count must be non-negative")
         for t in self.missing_open_times_ms:
             _int(t, "missing_open_times_ms element")
+        # Adversarial-review remediation (same class as the `S1/AC7`
+        # `usdcusdt_basis_drift_flags` discipline just below): invariant D
+        # (`row_count + len(missing_open_times_ms) == expected_count`) is
+        # defeatable by a `missing_open_times_ms` list that is unordered,
+        # duplicated, or negative -- e.g. `(1000, 1000)` satisfies the count
+        # arithmetic while silently double-counting ONE real gap as two, or
+        # `(999999999, -5)` satisfies it while carrying a nonsense timestamp.
+        # A hand-crafted/corrupted manifest built from those must never
+        # construct silently, exactly like a corrupted `usdcusdt_basis_drift_flags`
+        # must not.
+        if any(t < 0 for t in self.missing_open_times_ms):
+            raise ValueError("missing_open_times_ms element must be non-negative")
+        if len(self.missing_open_times_ms) != len(
+            set(self.missing_open_times_ms)
+        ) or list(self.missing_open_times_ms) != sorted(self.missing_open_times_ms):
+            raise ValueError(
+                "missing_open_times_ms must be strictly ascending with no "
+                "duplicate timestamps"
+            )
         # CodeRabbit fix: this manifest is the canonical, hashed identity
         # `persistence.load_symbol_shard`'s `expected_row_count` relies on --
         # a hand-crafted/corrupted manifest with an inconsistent row
@@ -196,6 +216,25 @@ class CorpusManifest:
                 f"per_symbol coverage {list(manifest_symbols)} != declared symbols "
                 f"{list(self.symbols)} (exact canonical-order match required)"
             )
+        # Adversarial-review remediation: `SymbolCorpusManifest` itself has no
+        # window bounds to check against (only the enclosing `CorpusManifest`
+        # does), so a `missing_open_times_ms` entry outside
+        # `[window_start_ms, window_end_ms)` -- or not minute-aligned to
+        # `window_start_ms` -- must be caught HERE, at construction of the
+        # manifest that actually owns the window.
+        for sm in self.per_symbol:
+            for t in sm.missing_open_times_ms:
+                if not (self.window_start_ms <= t < self.window_end_ms):
+                    raise ValueError(
+                        f"{sm.symbol}: missing_open_times_ms element {t} outside "
+                        f"manifest window [{self.window_start_ms}, "
+                        f"{self.window_end_ms})"
+                    )
+                if (t - self.window_start_ms) % _MINUTE_MS != 0:
+                    raise ValueError(
+                        f"{sm.symbol}: missing_open_times_ms element {t} is not "
+                        "minute-aligned to window_start_ms"
+                    )
 
     def to_dict(self) -> dict:
         return {

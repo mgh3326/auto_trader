@@ -102,46 +102,70 @@ def test_row_count_mismatch_raises(tmp_path):
 # `pq.read_table(path)` re-open+re-read the SAME path a second time. If the
 # on-disk file changed between those two independent reads, bytes that never
 # matched `expected_file_sha256` could still be parsed and returned.
+#
+# Adversarial-review finding: the previous version of this test monkeypatched
+# `rp.sha256_file` specifically and then asserted `calls["n"] == 0` -- i.e. it
+# asserted an IMPLEMENTATION DETAIL (that helper is never called), not the
+# actual guaranteed EFFECT. Because the fixed code happens not to call that
+# helper, the injected swap never fires and `assert loaded == rows` was
+# trivially true regardless of whether the swap logic even worked. A
+# reimplementation that reintroduces the exact TOCTOU by using
+# `path.read_bytes()` to hash and a SEPARATE `pq.read_table(path)` disk read
+# to parse would still pass that old test unchanged.
+#
+# This version hooks the actual I/O primitive (`pathlib.Path.read_bytes`) any
+# correct OR TOCTOU-vulnerable implementation must use for its first read, and
+# simulates a real concurrent overwrite landing immediately after that read
+# returns. It then asserts the EFFECT, independent of implementation: the
+# loader must either (a) return the original, hash-verified rows -- proving
+# whatever it parsed was the SAME snapshot it hashed -- or (b) fail closed via
+# one of this module's own declared `ShardLoadError` subclasses. Any OTHER
+# exception (e.g. a raw `pyarrow.lib.ArrowInvalid`/`OSError` leaking out
+# because a second, independent disk read hit the now-corrupted file) is a
+# genuine regression and must fail this test.
 # --------------------------------------------------------------------------- #
 def test_load_returns_hash_verified_bytes_even_if_the_file_is_swapped_mid_load(
     tmp_path, monkeypatch
 ):
+    import pathlib
+
     rows = _rows("RACEUSDC")
     rel_path, file_sha256 = p.write_symbol_shard(tmp_path, "RACEUSDC", rows)
     content_sha256 = canonical_hash.canonical_sha256([r.__dict__ for r in rows])
-
-    other_rel_path, _ = p.write_symbol_shard(
-        tmp_path, "OTHERUSDC", _rows("OTHERUSDC", n=1)
-    )
-    swapped_bytes = (tmp_path / other_rel_path).read_bytes()
     shard_path = (tmp_path / rel_path).resolve()
 
-    real_sha256_file = p.rp.sha256_file
-    calls = {"n": 0}
+    real_read_bytes = pathlib.Path.read_bytes
+    state = {"swapped": False}
 
-    def racing_sha256_file(path):
-        # Compute the hash over the file's CURRENT (pre-swap) content, exactly
-        # like the pre-fix code did, then simulate a concurrent overwrite that
-        # lands in the window between the hash check and the (old code's)
-        # SECOND, independent `pq.read_table(path)` disk read.
-        digest = real_sha256_file(path)
-        calls["n"] += 1
-        if path == shard_path:
-            path.write_bytes(swapped_bytes)
-        return digest
+    def racing_read_bytes(self):
+        # Always return whatever is ACTUALLY on disk right now (never
+        # fabricate a value) -- this hooks the real I/O path rather than an
+        # internal helper, so it fires for ANY implementation that reads the
+        # shard via `Path.read_bytes()` at least once, correct or not.
+        data = real_read_bytes(self)
+        if self.resolve() == shard_path and not state["swapped"]:
+            state["swapped"] = True
+            # Simulate a concurrent writer completing its overwrite in the
+            # instant right after this read call returned its snapshot --
+            # any LATER, independent read of this same path (whether via
+            # `Path.read_bytes()` again or PyArrow opening the file itself)
+            # must see this corrupted content, never the original.
+            self.write_bytes(b"corrupted-bytes-mid-load")
+        return data
 
-    monkeypatch.setattr(p.rp, "sha256_file", racing_sha256_file)
+    monkeypatch.setattr(pathlib.Path, "read_bytes", racing_read_bytes)
 
-    loaded = p.load_symbol_shard(
-        tmp_path,
-        rel_path,
-        expected_file_sha256=file_sha256,
-        expected_content_sha256=content_sha256,
-        expected_row_count=len(rows),
-    )
-    # The fixed code never calls `rp.sha256_file` at all (it hashes its own
-    # single `path.read_bytes()` read), so the race window above is never
-    # entered and the swap has zero effect -- the ORIGINAL, hash-verified
-    # rows must come back, never the swapped-in `OTHERUSDC` content.
+    try:
+        loaded = p.load_symbol_shard(
+            tmp_path,
+            rel_path,
+            expected_file_sha256=file_sha256,
+            expected_content_sha256=content_sha256,
+            expected_row_count=len(rows),
+        )
+    except p.ShardLoadError:
+        # Failing closed via this module's own declared error taxonomy is an
+        # acceptable outcome of the race -- anything else (an uncaught
+        # pyarrow/OS exception) is not, and propagates out of this test.
+        return
     assert loaded == rows
-    assert calls["n"] == 0

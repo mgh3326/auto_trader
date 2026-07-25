@@ -144,6 +144,19 @@ def test_synth_usdc_price_rejects_non_finite_inputs():
         qm.synth_usdc_price(100.0, math.inf)
 
 
+def test_synth_usdc_price_first_arg_error_names_value_not_price():
+    # N4 adversarial-review finding: `synth_usdc_price`'s first argument is
+    # NOT price-only -- `quote_mode_pipeline` calls this same function with
+    # `quote_volume`/`taker_buy_quote_volume` (USDT-denominated notionals),
+    # not just OHLC prices. The raised message previously said "usdt_price"
+    # unconditionally, which is simply wrong on a volume call and would
+    # mislead anyone debugging a corrupted-archive-volume rejection.
+    with pytest.raises(TypeError, match="usdt_value"):
+        qm.synth_usdc_price(math.nan, 1.0)
+    with pytest.raises(TypeError, match="usdt_value"):
+        qm.synth_usdc_price(math.inf, 1.0)
+
+
 def test_synth_usdc_price_rejects_non_positive_usdcusdt():
     with pytest.raises(ValueError):
         qm.synth_usdc_price(100.0, 0.0)

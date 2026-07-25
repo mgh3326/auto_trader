@@ -5,6 +5,7 @@ again. Network-0 throughout (fixture archive/REST openers only).
 
 import hashlib
 import io
+import math
 import zipfile
 from datetime import date
 
@@ -63,9 +64,7 @@ def _monthly_archive_entry_custom_ohlc(
     # like _monthly_archive_entry, but lets a single minute's open/high/low/
     # close diverge from each other (needed to reproduce a defect where ONLY
     # one non-close leg's basis division overflows to non-finite).
-    line = (
-        f"{ts},{o},{h},{low},{c},10.0,{ts + 59_999},1000.0,5,4.0,400.0,0\n"
-    )
+    line = f"{ts},{o},{h},{low},{c},10.0,{ts + 59_999},1000.0,5,4.0,400.0,0\n"
     text = HEADER + line
     name = f"{symbol}-1m-{year:04d}-{month:02d}.csv"
     zb, chk = _zip_and_checksum(name, text)
@@ -295,6 +294,42 @@ def test_synth_usdc_drops_the_whole_minute_when_only_a_non_close_leg_overflows()
     assert manifest.row_count == 0
     assert manifest.expected_count == 1
     assert manifest.missing_open_times_ms == (window_start,)
+
+
+def test_synth_usdc_leg_or_none_drops_non_finite_raw_input_never_raises():
+    # N4 adversarial-review finding: a corrupted/overflowed archive
+    # `quote_volume` (or any other of the six SYNTH_USDC legs) of `inf` slips
+    # past `parse_kline_row`'s `< 0` check unchanged (`inf < 0` is False), so
+    # a `NormalizedKline` CAN legitimately carry a non-finite `quote_volume`/
+    # `taker_buy_quote_volume`/OHLC leg. Calling `qm.synth_usdc_price`
+    # directly on that value raises `TypeError` (by design -- see
+    # `test_quote_mode.py`'s own `synth_usdc_price` contract tests) and would
+    # crash the WHOLE SYNTH_USDC build instead of dropping just this one
+    # unusable minute -- inconsistent with AC6's own "drop, never
+    # forward-fill" discipline for a non-finite COMPUTED quotient (see
+    # `test_synth_usdc_drops_the_whole_minute_when_only_a_non_close_leg_overflows`
+    # just above, for the analogous non-finite-computed-quotient case).
+    #
+    # `_synth_usdc_leg_or_none` is the pipeline's ONE call site into
+    # `qm.synth_usdc_price` for every SYNTH_USDC leg; testing it directly
+    # (rather than round-tripping through `build_quote_mode_aware_corpus` ->
+    # `build_symbol_corpus`) is deliberate: a genuinely non-finite RAW archive
+    # value ALSO trips an unrelated, already-fail-closed, pre-existing
+    # invariant several layers upstream (`canonical_hash.canonical_sha256`
+    # rejects any non-finite float when `build_symbol_corpus` hashes the raw
+    # fetched rows for ITS OWN manifest, since non-finite values are not
+    # JSONB-safe) -- that earlier gate is a separate concern from this fix
+    # and would mask exactly the code path this test needs to exercise.
+    assert qmp._synth_usdc_leg_or_none(math.inf, 1.0002) is None
+    assert qmp._synth_usdc_leg_or_none(-math.inf, 1.0002) is None
+    assert qmp._synth_usdc_leg_or_none(math.nan, 1.0002) is None
+    # a finite input still delegates to (and matches) `qm.synth_usdc_price`.
+    assert qmp._synth_usdc_leg_or_none(100.0, 1.0002) == qm.synth_usdc_price(
+        100.0, 1.0002
+    )
+    # a missing basis (None) still propagates to None regardless of the raw
+    # leg's own finiteness.
+    assert qmp._synth_usdc_leg_or_none(100.0, None) is None
 
 
 def test_synth_usdc_converts_quote_denominated_volumes_by_the_same_basis():

@@ -100,21 +100,31 @@ def resolve_quote_mode(
     return "NO_MAPPING"
 
 
-def synth_usdc_price(usdt_price: float, usdcusdt_price: float | None) -> float | None:
-    """``P = P_USDT / P_USDCUSDT`` on same-minute alignment.
+def synth_usdc_price(usdt_value: float, usdcusdt_price: float | None) -> float | None:
+    """``V_USDC = V_USDT / P_USDCUSDT`` on same-minute alignment.
+
+    Despite the historical name, ``usdt_value`` is not price-only: the caller
+    (``quote_mode_pipeline``) applies this SAME division to both the four
+    OHLC price legs AND the two USDT-denominated notional legs
+    (``quote_volume``/``taker_buy_quote_volume``) of a ``{base}USDT`` row —
+    dividing a quote-denominated notional by the same per-minute basis rate
+    is dimensionally identical to dividing a price by it. The parameter/error
+    naming previously said ``usdt_price`` unconditionally, which was simply
+    wrong (and misleading in a raised exception's message) on every volume
+    call.
 
     ``None`` (a missing USDCUSDT minute) propagates to ``None`` — the caller
     must treat that as a missing minute for this symbol, never forward-fill.
     """
-    if type(usdt_price) is not float or not math.isfinite(usdt_price):
-        raise TypeError("usdt_price must be a finite built-in float")
+    if type(usdt_value) is not float or not math.isfinite(usdt_value):
+        raise TypeError("usdt_value must be a finite built-in float")
     if usdcusdt_price is None:
         return None
     if type(usdcusdt_price) is not float or not math.isfinite(usdcusdt_price):
         raise TypeError("usdcusdt_price must be a finite built-in float or None")
     if usdcusdt_price <= 0:
         raise ValueError("usdcusdt_price must be positive")
-    result = usdt_price / usdcusdt_price
+    result = usdt_value / usdcusdt_price
     if not math.isfinite(result):
         return None
     return result

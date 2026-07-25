@@ -32,6 +32,7 @@ package: only ``quote_mode``/``corpus_builder``/``corpus_manifest`` (local),
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
@@ -62,6 +63,36 @@ class QuoteModePipelineError(ValueError):
 
 def _ms_to_utc_date(ms: int) -> date:
     return datetime.fromtimestamp(ms / 1000, tz=UTC).date()
+
+
+def _synth_usdc_leg_or_none(
+    usdt_value: float, basis_close: float | None
+) -> float | None:
+    """Wraps ``qm.synth_usdc_price`` with ONE consistent AC6 discipline for a
+    non-finite raw leg value: drop (return ``None``), never raise.
+
+    ``quote_mode.synth_usdc_price`` itself is (correctly, and by design --
+    see its own unit tests) a strict low-level validator that RAISES
+    ``TypeError`` on a non-finite first argument; that contract must not be
+    weakened. But ``parse_kline_row``/``NormalizedKline`` (``rob941_kline_schema``,
+    not owned by this package) reject non-positive/``nan`` OHLC via a bare
+    ``> 0`` comparison and never check ``math.isfinite`` at all -- `inf` (from
+    a corrupted/overflowed archive field, e.g. a truncated exponent) silently
+    satisfies `inf > 0` and can reach ANY of the six legs this pipeline feeds
+    into ``synth_usdc_price`` (four OHLC prices AND the two USDT-denominated
+    notionals, ``quote_volume``/``taker_buy_quote_volume``).
+
+    Letting that raise uncaught here would crash the whole SYNTH_USDC build
+    for one corrupted archive minute. AC6 already establishes the discipline
+    for this exact situation for the OTHER way a leg can be unusable (a
+    missing/non-finite basis quotient): drop the minute, never forward-fill.
+    A non-finite RAW input leg is just as unusable as a non-finite computed
+    quotient, so the same discipline applies here, uniformly, rather than
+    raising for one and dropping for the other.
+    """
+    if not math.isfinite(usdt_value):
+        return None
+    return qm.synth_usdc_price(usdt_value, basis_close)
 
 
 def resolve_and_validate_candidate_quote_mode(
@@ -226,12 +257,12 @@ def build_quote_mode_aware_corpus(
             # division to the quote-denominated notionals is the same
             # approximation, not a new one -- `base_volume`/`taker_buy_volume`
             # are base-denominated and stay untouched.
-            open_ = qm.synth_usdc_price(row.open, basis_close)
-            high = qm.synth_usdc_price(row.high, basis_close)
-            low = qm.synth_usdc_price(row.low, basis_close)
-            close = qm.synth_usdc_price(row.close, basis_close)
-            quote_volume = qm.synth_usdc_price(row.quote_volume, basis_close)
-            taker_buy_quote_volume = qm.synth_usdc_price(
+            open_ = _synth_usdc_leg_or_none(row.open, basis_close)
+            high = _synth_usdc_leg_or_none(row.high, basis_close)
+            low = _synth_usdc_leg_or_none(row.low, basis_close)
+            close = _synth_usdc_leg_or_none(row.close, basis_close)
+            quote_volume = _synth_usdc_leg_or_none(row.quote_volume, basis_close)
+            taker_buy_quote_volume = _synth_usdc_leg_or_none(
                 row.taker_buy_quote_volume, basis_close
             )
             if (
@@ -242,8 +273,9 @@ def build_quote_mode_aware_corpus(
                 or quote_volume is None
                 or taker_buy_quote_volume is None
             ):
-                # missing USDCUSDT minute (or a non-finite per-leg quotient)
-                # -> this minute is missing in the synthesized series, never
+                # missing USDCUSDT minute, a non-finite per-leg quotient, OR a
+                # non-finite raw input leg (`_synth_usdc_leg_or_none`) -> this
+                # minute is missing in the synthesized series, never
                 # forward-filled (AC6).
                 continue
             synth_rows.append(

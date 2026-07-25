@@ -374,17 +374,17 @@ def test_matic_and_pol_are_independent_symbols_never_stitched():
     ],
 )
 def test_symbol_candidate_rejects_non_bool_string_false_for_bool_fields(field):
-    kwargs = dict(
-        symbol="AAA/USD",
-        base="AAA",
-        alpaca_active=True,
-        alpaca_tradable=True,
-        is_usd_pair=True,
-        binance_quote_mode="USDC",
-        alpaca_first_daily_ms=0,
-        all_valid_daily_bars_in_lookback=True,
-        no_gap_in_last_60min=True,
-    )
+    kwargs = {
+        "symbol": "AAA/USD",
+        "base": "AAA",
+        "alpaca_active": True,
+        "alpaca_tradable": True,
+        "is_usd_pair": True,
+        "binance_quote_mode": "USDC",
+        "alpaca_first_daily_ms": 0,
+        "all_valid_daily_bars_in_lookback": True,
+        "no_gap_in_last_60min": True,
+    }
     kwargs[field] = "false"  # truthy in Python -- must NOT silently pass
     with pytest.raises(TypeError, match=f"{field} must be built-in bool"):
         pu.SymbolCandidate(**kwargs)

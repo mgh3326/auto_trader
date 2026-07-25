@@ -261,7 +261,6 @@ def build_utc_day(
     closes: list[float] = []
     volumes: list[float] = []
     rolling_close = prior_close
-    first_open: float | None = None
     t = day_start_ms
     while t < day_end_ms:
         row = by_ts.get(t)
@@ -282,9 +281,17 @@ def build_utc_day(
             lows.append(rolling_close)
             closes.append(rolling_close)
             volumes.append(0.0)
-        if first_open is None:
-            first_open = opens[-1]
         t += MINUTE_MS
+
+    # `day_end_ms == day_start_ms + DAY_MS > day_start_ms` always holds (see
+    # the `_int`/window checks above), so the `while` loop above always runs
+    # >=1 iteration and `opens` is always non-empty here -- this makes that
+    # invariant explicit and gives `DailyBar` a plain `float`, never a
+    # `float | None` sentinel that a caller could forget to narrow (the same
+    # `float | None`-reaches-a-`float`-parameter defect class CodeRabbit
+    # caught in `quote_mode_pipeline.py`).
+    assert opens, "day_start_ms < day_end_ms guarantees >=1 loop iteration"
+    first_open = opens[0]
 
     return DailyBar(
         day_start_ms,

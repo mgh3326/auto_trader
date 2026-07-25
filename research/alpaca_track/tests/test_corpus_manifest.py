@@ -2,6 +2,8 @@
 symbol order, content_hash determinism, and ULP-sensitivity.
 """
 
+import typing
+
 import corpus_manifest as cm
 import pytest
 
@@ -203,9 +205,7 @@ def test_symbol_corpus_manifest_rejects_inconsistent_row_and_missing_counts():
     # `persistence.load_symbol_shard`'s `expected_row_count` relies on -- a
     # hand-crafted/corrupted manifest whose `row_count` + missing-minute count
     # doesn't add up to `expected_count` must never construct silently.
-    with pytest.raises(
-        ValueError, match=r"row_count \+ len\(missing_open_times_ms\)"
-    ):
+    with pytest.raises(ValueError, match=r"row_count \+ len\(missing_open_times_ms\)"):
         cm.SymbolCorpusManifest(
             symbol="BTCUSDC",
             quote_mode="USDC",
@@ -214,6 +214,94 @@ def test_symbol_corpus_manifest_rejects_inconsistent_row_and_missing_counts():
             expected_count=10,
             missing_open_times_ms=(),  # should carry 2 entries, has 0
             normalized_content_sha256="a" * 64,
+        )
+
+
+def test_symbol_corpus_manifest_rejects_duplicate_missing_open_times():
+    # Adversarial-review finding: invariant D
+    # (`row_count + len(missing_open_times_ms) == expected_count`) is
+    # satisfied by `row_count=8, missing=(1000, 1000), expected_count=10`
+    # even though the SAME real gap is double-counted -- this must be
+    # rejected regardless of the count arithmetic checking out.
+    with pytest.raises(ValueError, match="strictly ascending"):
+        cm.SymbolCorpusManifest(
+            symbol="BTCUSDC",
+            quote_mode="USDC",
+            sources=(),
+            row_count=8,
+            expected_count=10,
+            missing_open_times_ms=(1000, 1000),
+            normalized_content_sha256="a" * 64,
+        )
+
+
+def test_symbol_corpus_manifest_rejects_unsorted_missing_open_times():
+    with pytest.raises(ValueError, match="strictly ascending"):
+        cm.SymbolCorpusManifest(
+            symbol="BTCUSDC",
+            quote_mode="USDC",
+            sources=(),
+            row_count=8,
+            expected_count=10,
+            missing_open_times_ms=(999_999_999, 1_000_000),  # descending
+            normalized_content_sha256="a" * 64,
+        )
+
+
+def test_symbol_corpus_manifest_rejects_negative_missing_open_time():
+    # Adversarial-review finding: `missing=(999999999, -5)` -- unsorted AND
+    # negative -- must be rejected; check the negative-value guard fires even
+    # in isolation (a single negative element, otherwise valid ordering).
+    with pytest.raises(ValueError, match="non-negative"):
+        cm.SymbolCorpusManifest(
+            symbol="BTCUSDC",
+            quote_mode="USDC",
+            sources=(),
+            row_count=9,
+            expected_count=10,
+            missing_open_times_ms=(-5,),
+            normalized_content_sha256="a" * 64,
+        )
+
+
+def test_corpus_manifest_rejects_missing_open_time_outside_window():
+    # `SymbolCorpusManifest` alone has no window bounds to check against --
+    # this must be caught at `CorpusManifest` construction, which owns
+    # `window_start_ms`/`window_end_ms`.
+    bad_symbol = cm.SymbolCorpusManifest(
+        symbol="BTCUSDC",
+        quote_mode="USDC",
+        sources=(),
+        row_count=9,
+        expected_count=10,
+        missing_open_times_ms=(700_000,),  # window is [0, 600_000)
+        normalized_content_sha256="a" * 64,
+    )
+    with pytest.raises(ValueError, match="outside manifest window"):
+        cm.CorpusManifest(
+            window_start_ms=0,
+            window_end_ms=600_000,
+            symbols=("BTCUSDC",),
+            per_symbol=(bad_symbol,),
+        )
+
+
+def test_corpus_manifest_rejects_missing_open_time_not_minute_aligned():
+    bad_symbol = cm.SymbolCorpusManifest(
+        symbol="BTCUSDC",
+        quote_mode="USDC",
+        sources=(),
+        row_count=9,
+        expected_count=10,
+        missing_open_times_ms=(500,),  # not a multiple of 60_000
+        normalized_content_sha256="a" * 64,
+    )
+    with pytest.raises(ValueError, match="not minute-aligned"):
+        cm.CorpusManifest(
+            window_start_ms=0,
+            window_end_ms=600_000,
+            symbols=("BTCUSDC",),
+            per_symbol=(bad_symbol,),
         )
 
 
@@ -382,3 +470,19 @@ def test_symbol_order_change_changes_manifest_bytes_and_hash():
         ),
     )
     assert a.content_hash() != b.content_hash()
+
+
+def test_valid_sources_tuple_stays_in_sync_with_source_literal():
+    # `SourceLiteral` (the static type ``ShardSource.source`` is annotated
+    # with) and `_VALID_SOURCES` (the runtime tuple `ShardSource.__post_init__`
+    # actually validates against) are two independent, hand-written literals
+    # of the SAME set with nothing enforcing they stay identical -- a future
+    # edit to one (e.g. adding a new source kind) that forgets the other
+    # would silently desync the static type from the runtime-enforced set
+    # (either accepting a value the type checker would flag, or rejecting one
+    # the type checker would allow) with no test ever catching it.
+    assert set(typing.get_args(cm.SourceLiteral)) == set(cm._VALID_SOURCES)
+    # also pin exact tuple equality (order-sensitive) as belt-and-suspenders,
+    # since `_VALID_SOURCES` is iterated/displayed in error messages in a
+    # fixed order.
+    assert typing.get_args(cm.SourceLiteral) == cm._VALID_SOURCES
