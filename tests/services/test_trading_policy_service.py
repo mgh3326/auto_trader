@@ -16,11 +16,20 @@ def test_version_stamp_has_version_and_hash():
 def test_get_policy_for_buy_kr_includes_cap_and_version():
     view = svc.get_policy_for("kr", "buy")
     assert view["version"] == "2026-07-23.3"
+    assert view["version"] == svc.policy_version_stamp()["version"]
+    assert view["content_hash"] == svc.policy_content_hash()
     assert view["thresholds"]["portfolio.sector_cluster_cap_pct"]["value"] == 10
     assert view["thresholds"]["portfolio.max_symbols_per_theme"]["value"] == 2
     assert view["thresholds"]["sell.loss_guard_min_multiple"]["value"] == 1.01
     assert "sell.rsi_place_min" not in view["thresholds"]
     assert view["decision_rules"] == {}
+
+
+def test_get_policy_for_sell_lane_filters_thresholds():
+    thresholds = svc.get_policy_for("kr", "sell")["thresholds"]
+
+    assert thresholds["sell.rsi_place_min"]["value"] == 58
+    assert "screen.rsi_max" not in thresholds
 
 
 def test_get_policy_for_filters_crypto_market_rules_by_lane():
@@ -138,6 +147,14 @@ def test_global_advisories_remain_market_lane_independent(market, lane):
     )
 
 
+def test_global_advisories_are_identical_across_market_and_lane():
+    us_sell = svc.get_policy_for("us", "sell")
+    crypto_discovery = svc.get_policy_for("crypto", "discovery")
+
+    assert us_sell["crash_day"] == crypto_discovery["crash_day"]
+    assert us_sell["user_stances"] == crypto_discovery["user_stances"]
+
+
 @pytest.mark.parametrize("market", ["jp", "KR"])
 def test_unknown_market_raises(market):
     with pytest.raises(svc.TradingPolicyKeyError):
@@ -157,7 +174,9 @@ def test_unknown_lane_raises():
         ("Financial Services", "financials"),
         ("Drug Manufacturers—General", "bio"),
         ("의료정밀", None),
+        ("Healthcare", None),
         ("Healthcare Plans", None),
+        ("정체불명업종", None),
         (None, None),
     ],
 )

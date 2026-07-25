@@ -87,16 +87,24 @@ def test_buy_analysis_echoes_policy_and_proposal_contract():
     assert _steps(out)[-1] == "order_proposal_create"
 
 
-@pytest.mark.parametrize(
-    ("market", "expected"),
-    [("kr", True), ("us", False), ("crypto", False)],
-)
-def test_profit_taking_policy_surface_is_market_scoped(market, expected):
+@pytest.mark.parametrize("market", ["us", "crypto"])
+def test_profit_taking_hides_kr_shadow_rule_from_other_markets(market):
     route = _route_tool()
     out = asyncio.run(route(intent="profit_taking", market=market))
     assert out["success"] is True
     rules = out["verdict_thresholds"]["decision_rules"]
-    assert ("sell.single_share_exit" in rules) is expected
+    assert "sell.single_share_exit" not in rules
+
+
+def test_profit_taking_labels_kr_single_share_rule_as_shadow_only():
+    out = asyncio.run(_route_tool()(intent="profit_taking", market="kr"))
+    rule = out["verdict_thresholds"]["decision_rules"]["sell.single_share_exit"]
+
+    assert rule["activation_state"] == "shadow"
+    assert rule["proposal_enabled"] is False
+    assert rule["operator_approval_required"] is True
+    assert rule["proposal"]["execution"] == "proposal_only"
+    assert rule["proposal"]["auto_approve"] is False
 
 
 def test_market_brief_has_version_but_empty_thresholds():

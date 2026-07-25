@@ -21,6 +21,7 @@ from app.services.single_share_exit_snapshot_service import (
     PRODUCER_IDENTITY,
     ROSTER_CAPABILITY,
     ContextMode,
+    ResistanceStrength,
     ValidatedSingleShareExitContext,
     executable_quote_price,
     is_validated_context,
@@ -51,7 +52,7 @@ class SingleShareExitEvaluation:
     lot_id: str
     activation_state: Literal["shadow"] = "shadow"
     proposal_enabled: Literal[False] = False
-    candidate_action: Literal["propose_full_account_lot_exit"] | None = None
+    candidate_action: Literal["full_exit_at_far_resistance"] | None = None
     sizing: Literal["full_account_lot_exit"] | None = None
     approval: Literal["telegram_manual"] | None = None
     auto_approve: Literal[False] = False
@@ -284,11 +285,11 @@ def _invalid_context_result(reason: str) -> SingleShareExitEvaluation:
     return SingleShareExitEvaluation(
         outcome="INELIGIBLE",
         reason=reason,
-        snapshot_id="invalid",
-        symbol="000000",
+        snapshot_id="<invalid>",
+        symbol="<invalid>",
         broker="kis",
-        broker_account_id="invalid",
-        lot_id="invalid",
+        broker_account_id="<invalid>",
+        lot_id="<invalid>",
     )
 
 
@@ -405,6 +406,14 @@ def _evaluate_single_share_exit(
             context,
             outcome="INELIGIBLE",
             reason="no_resistance_reference",
+            rule=rule,
+        )
+    required_strength = ResistanceStrength(rule.conditions.resistance_strength_min)
+    if context.resistance.strength is not required_strength:
+        return _single_share_result(
+            context,
+            outcome="INELIGIBLE",
+            reason="resistance_strength_below_required",
             rule=rule,
         )
     if (

@@ -108,6 +108,7 @@ class SingleShareExitConditions(BaseModel):
     symbol_routable_sellable_quantity_eq: Literal[1]
     profit_pct_min: float = Field(ge=0)
     resistance_reference_required: Literal[True]
+    resistance_strength_min: Literal["strong"]
     resistance_distance_pct_min_exclusive: float = Field(ge=0, le=100)
     resistance_distance_pct_max: float = Field(ge=0, le=100)
     resistance_source_family_min: int = Field(ge=2)
@@ -138,7 +139,7 @@ class SingleShareExitConditions(BaseModel):
 class SingleShareExitProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    action: Literal["propose_full_account_lot_exit"]
+    action: Literal["full_exit_at_far_resistance"]
     sizing: Literal["full_account_lot_exit"]
     approval: Literal["telegram_manual"]
     auto_approve: Literal[False]

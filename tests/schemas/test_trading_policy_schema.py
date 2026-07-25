@@ -56,6 +56,7 @@ def test_single_share_exit_rule_is_provisional_shadow_only():
     assert rule.conditions.symbol_routable_sellable_quantity_eq == 1
     assert rule.conditions.profit_pct_min == 8
     assert rule.conditions.resistance_reference_required is True
+    assert rule.conditions.resistance_strength_min == "strong"
     assert rule.conditions.resistance_distance_pct_min_exclusive == 6
     assert rule.conditions.resistance_distance_pct_max == 15
     assert rule.conditions.resistance_source_family_min == 2
@@ -74,7 +75,7 @@ def test_single_share_exit_rule_is_provisional_shadow_only():
     assert rule.conditions.same_symbol_open_orders_max == 0
     assert rule.conditions.unresolved_open_actions_max == 0
     assert rule.conditions.loss_state_uses_existing_path == "loss_cut_only"
-    assert rule.proposal.action == "propose_full_account_lot_exit"
+    assert rule.proposal.action == "full_exit_at_far_resistance"
     assert rule.proposal.sizing == "full_account_lot_exit"
     assert rule.proposal.approval == "telegram_manual"
     assert rule.proposal.auto_approve is False
@@ -111,6 +112,16 @@ def test_single_share_exit_rule_requires_both_kis_and_toss_inventory():
     raw["decision_rules"]["sell.single_share_exit"]["scope"][
         "required_broker_inventory"
     ] = ["kis"]
+
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_single_share_exit_rule_requires_strong_resistance():
+    raw = _raw()
+    raw["decision_rules"]["sell.single_share_exit"]["conditions"][
+        "resistance_strength_min"
+    ] = "moderate"
 
     with pytest.raises(ValidationError):
         TradingPolicyDocument.model_validate(raw)

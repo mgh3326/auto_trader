@@ -215,6 +215,7 @@ decision_rules:
       # only the single-share sizing gap instead of changing profit eligibility.
       profit_pct_min: 8
       resistance_reference_required: true
+      resistance_strength_min: strong
       # Provisional ROB-1037-aligned far lane. The 6% boundary is exclusive;
       # a resistance exactly at +6% remains outside this path.
       resistance_distance_pct_min_exclusive: 6
@@ -239,7 +240,7 @@ decision_rules:
       unresolved_open_actions_max: 0
       loss_state_uses_existing_path: loss_cut_only
     proposal:
-      action: propose_full_account_lot_exit
+      action: full_exit_at_far_resistance
       sizing: full_account_lot_exit
       approval: telegram_manual
       auto_approve: false

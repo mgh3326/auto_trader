@@ -1,19 +1,20 @@
-"""Authoritative, read-only evidence assembly for the KR single-share exit lane.
+"""Read-only evidence assembly for the KR single-share exit shadow lane.
 
-Raw account rows and caller-supplied completeness booleans are deliberately not
-an evaluator input.  A producer enumerates the configured account roster first,
-asks each read port for evidence over that exact roster, and issues a sealed
-context.  The trading-policy evaluator accepts only that context.
+Raw account rows and caller-supplied completeness booleans are not evaluator
+inputs. A producer enumerates the configured account roster, asks each read port
+for evidence over that roster, derives the roster hash, and returns a private
+concrete context type that the evaluator recognizes with ``isinstance``.
 
-The ports are read-only capability boundaries.  Live broker adapters are not
-constructed here; offline tests use fakes, and any future live composition must
-provide all four authoritative capabilities explicitly.
+This type check is an API boundary, not an evidence-authenticity or security
+boundary. Capability values are descriptive labels, and callers supply the read
+ports; future live composition must therefore pin trusted adapter provenance
+outside this module. In-process Python code must not treat this module as
+protection from forged or mutated evidence.
 """
 
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import datetime as dt
 import hashlib
 import json
@@ -330,7 +331,7 @@ class ReplayClock(Protocol):
 
 
 class ValidatedSingleShareExitContext(Protocol):
-    """Read-only interface implemented only by an identity-registered context."""
+    """Read-only interface returned by the producer API."""
 
     snapshot_id: str
     market: str
@@ -361,8 +362,8 @@ class ValidatedSingleShareExitContext(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
-class _ContextState:
-    """Producer-collected data, never itself accepted by the evaluator."""
+class _ValidatedSingleShareExitContext:
+    """Private concrete context produced after roster-first evidence reads."""
 
     snapshot_id: str
     market: str
@@ -388,9 +389,9 @@ class _ContextState:
     reader_identities: tuple[str, ...]
     reader_capabilities: tuple[str, ...]
 
-
-class ProducerContextIntegrityError(RuntimeError):
-    """The object is not the exact context issued by its producer authority."""
+    @property
+    def roster_is_exact(self) -> bool:
+        return self.expected_account_identities == self.observed_account_identities
 
 
 def compute_account_roster_hash(
@@ -480,7 +481,7 @@ class _Producer:
         target: SingleShareExitTarget,
         mode: ContextMode,
         clock: ReplayClock,
-    ) -> _ContextState:
+    ) -> _ValidatedSingleShareExitContext:
         roster = await self._roster_reader.read_configured_kr_accounts()
         accounts, open_actions, market = await asyncio.gather(
             self._broker_reader.read_accounts(
@@ -545,7 +546,7 @@ class _Producer:
             self._open_action_reader.capability,
             self._market_reader.capability,
         )
-        return _ContextState(
+        return _ValidatedSingleShareExitContext(
             snapshot_id=snapshot_id,
             market="kr",
             captured_at=captured_at,
@@ -572,180 +573,57 @@ class _Producer:
         )
 
 
-def _build_context_authority():
-    """Build the only issuance authority without exporting issuance material."""
+class SingleShareExitSnapshotProducer(_Producer):
+    """Live producer. Its clock is internal and cannot be caller-supplied."""
 
-    issued_records: tuple[tuple[_Producer, object, _ContextState, bytes], ...] = ()
-    state_field_names = frozenset(
-        item.name for item in dataclasses.fields(_ContextState)
-    )
-
-    def canonical(value: object) -> object:
-        if dataclasses.is_dataclass(value):
-            return {
-                item.name: canonical(getattr(value, item.name))
-                for item in dataclasses.fields(value)
-            }
-        if isinstance(value, StrEnum):
-            return value.value
-        if isinstance(value, dt.datetime):
-            return value.astimezone(dt.UTC).isoformat()
-        if isinstance(value, dt.date):
-            return value.isoformat()
-        if isinstance(value, Decimal):
-            return str(value)
-        if isinstance(value, tuple):
-            return [canonical(item) for item in value]
-        return value
-
-    def state_snapshot(state: _ContextState) -> bytes:
-        return json.dumps(
-            canonical(state),
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-
-    def registered_state(candidate: object) -> _ContextState:
-        for _issuer, issued_context, state, issued_snapshot in issued_records:
-            if candidate is issued_context:
-                if state_snapshot(state) != issued_snapshot:
-                    raise ProducerContextIntegrityError(
-                        "producer-issued context state changed after issuance"
-                    )
-                return state
-        raise ProducerContextIntegrityError(
-            "context was not issued by the producer authority"
+    async def produce(
+        self,
+        *,
+        target: SingleShareExitTarget,
+    ) -> ValidatedSingleShareExitContext:
+        return await self._collect_state(
+            target=target,
+            mode=ContextMode.LIVE,
+            clock=_SystemClock(),
         )
 
-    def issue(
-        issuer: _Producer,
-        state: _ContextState,
+
+class SingleShareExitReplayProducer(_Producer):
+    """Replay-only producer; its contexts can never be live-eligible."""
+
+    def __init__(
+        self,
+        *,
+        roster_reader: ConfiguredAccountRosterReadModel,
+        broker_reader: BrokerAccountEvidenceReadModel,
+        open_action_reader: ScopedOpenActionReadModel,
+        market_reader: TypedMarketEvidenceReadModel,
+        replay_clock: ReplayClock,
+    ) -> None:
+        super().__init__(
+            roster_reader=roster_reader,
+            broker_reader=broker_reader,
+            open_action_reader=open_action_reader,
+            market_reader=market_reader,
+        )
+        self._replay_clock = replay_clock
+
+    async def produce(
+        self,
+        *,
+        target: SingleShareExitTarget,
     ) -> ValidatedSingleShareExitContext:
-        nonlocal issued_records
-        constructor_capability = object()
-
-        class _IssuedContext:
-            __slots__ = ()
-
-            def __init__(self, capability: object) -> None:
-                if capability is not constructor_capability:
-                    raise ProducerContextIntegrityError(
-                        "context construction is producer-only"
-                    )
-
-            def __getattribute__(self, name: str) -> object:
-                current_state = registered_state(self)
-                if name in state_field_names:
-                    return getattr(current_state, name)
-                if name == "roster_is_exact":
-                    return (
-                        current_state.expected_account_identities
-                        == current_state.observed_account_identities
-                    )
-                return object.__getattribute__(self, name)
-
-            def __repr__(self) -> str:
-                current_state = registered_state(self)
-                return (
-                    "<ValidatedSingleShareExitContext "
-                    f"snapshot_id={current_state.snapshot_id!r}>"
-                )
-
-            def __eq__(self, other: object) -> bool:
-                registered_state(self)
-                return self is other
-
-            def __hash__(self) -> int:
-                registered_state(self)
-                return object.__hash__(self)
-
-            def __copy__(self):
-                registered_state(self)
-                raise TypeError("producer-issued contexts cannot be copied")
-
-            def __deepcopy__(self, _memo):
-                registered_state(self)
-                raise TypeError("producer-issued contexts cannot be deep-copied")
-
-            def __reduce__(self):
-                registered_state(self)
-                raise TypeError("producer-issued contexts cannot be pickled")
-
-            def __reduce_ex__(self, _protocol):
-                registered_state(self)
-                raise TypeError("producer-issued contexts cannot be pickled")
-
-            @classmethod
-            def __init_subclass__(cls, **_kwargs) -> None:
-                raise TypeError("producer-issued context types cannot be subclassed")
-
-        context = _IssuedContext(constructor_capability)
-        issued_records += ((issuer, context, state, state_snapshot(state)),)
-        return context
-
-    def validate(candidate: object) -> bool:
-        try:
-            registered_state(candidate)
-        except ProducerContextIntegrityError:
-            return False
-        return True
-
-    class SnapshotProducer(_Producer):
-        """Live producer. Its clock is internal and cannot be caller-supplied."""
-
-        async def produce(
-            self,
-            *,
-            target: SingleShareExitTarget,
-        ) -> ValidatedSingleShareExitContext:
-            state = await self._collect_state(
-                target=target,
-                mode=ContextMode.LIVE,
-                clock=_SystemClock(),
-            )
-            return issue(self, state)
-
-    class ReplayProducer(_Producer):
-        """Replay-only producer; its contexts can never be live-eligible."""
-
-        def __init__(
-            self,
-            *,
-            roster_reader: ConfiguredAccountRosterReadModel,
-            broker_reader: BrokerAccountEvidenceReadModel,
-            open_action_reader: ScopedOpenActionReadModel,
-            market_reader: TypedMarketEvidenceReadModel,
-            replay_clock: ReplayClock,
-        ) -> None:
-            super().__init__(
-                roster_reader=roster_reader,
-                broker_reader=broker_reader,
-                open_action_reader=open_action_reader,
-                market_reader=market_reader,
-            )
-            self._replay_clock = replay_clock
-
-        async def produce(
-            self,
-            *,
-            target: SingleShareExitTarget,
-        ) -> ValidatedSingleShareExitContext:
-            state = await self._collect_state(
-                target=target,
-                mode=ContextMode.REPLAY,
-                clock=self._replay_clock,
-            )
-            return issue(self, state)
-
-    return SnapshotProducer, ReplayProducer, validate
+        return await self._collect_state(
+            target=target,
+            mode=ContextMode.REPLAY,
+            clock=self._replay_clock,
+        )
 
 
-(
-    SingleShareExitSnapshotProducer,
-    SingleShareExitReplayProducer,
-    is_validated_context,
-) = _build_context_authority()
-del _build_context_authority
+def is_validated_context(candidate: object) -> bool:
+    """Return whether the producer API's private concrete type was supplied."""
+
+    return isinstance(candidate, _ValidatedSingleShareExitContext)
 
 
 def required_reader_capabilities() -> tuple[str, ...]:

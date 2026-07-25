@@ -49,11 +49,12 @@ async def test_get_trading_policy_returns_sell_trim_preplace_rule():
     assert single_share["activation_state"] == "shadow"
     assert single_share["proposal_enabled"] is False
     assert single_share["conditions"]["profit_pct_min"] == 8
+    assert single_share["conditions"]["resistance_strength_min"] == "strong"
     assert single_share["conditions"]["resistance_distance_pct_min_exclusive"] == 6
     assert single_share["conditions"]["resistance_distance_pct_max"] == 15
     assert single_share["conditions"]["resistance_source_family_min"] == 2
     assert single_share["proposal"] == {
-        "action": "propose_full_account_lot_exit",
+        "action": "full_exit_at_far_resistance",
         "sizing": "full_account_lot_exit",
         "approval": "telegram_manual",
         "auto_approve": False,

@@ -1,12 +1,11 @@
 from __future__ import annotations
 
+import ast
 import asyncio
-import copy
-import dataclasses
 import inspect
-import pickle
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -29,7 +28,6 @@ from app.services.single_share_exit_snapshot_service import (
     KrBroker,
     MarketEvidence,
     OpenActionEvidence,
-    ProducerContextIntegrityError,
     QuoteKind,
     QuoteProvenance,
     QuoteSource,
@@ -211,13 +209,14 @@ def _resistance(
     symbol: str = "257720",
     price: str = "39946.31",
     sources: tuple[str, ...] = ("bb_upper", "fib_50"),
+    strength: ResistanceStrength = ResistanceStrength.STRONG,
     computed_at: datetime = _EVIDENCE_AT,
 ) -> ResistanceEvidence:
     return ResistanceEvidence(
         symbol=symbol,
         price=Decimal(price),
         sources=sources,
-        strength=ResistanceStrength.WEAK,
+        strength=strength,
         computed_at=computed_at,
         ohlcv_through_date=_EXPECTED_KRX_BAR,
     )
@@ -399,24 +398,14 @@ def test_omitted_account_cannot_claim_complete():
     assert result.observed_account_identities == ("kis:kis-main", "toss:toss-main")
 
 
-def test_model_copy_or_dataclass_replace_cannot_forge_roster():
+def test_context_uses_private_concrete_type_and_isinstance_boundary():
     context = _make_context()
+    assert type(context).__name__ == "_ValidatedSingleShareExitContext"
+    assert snapshot_service.is_validated_context(context) is True
     assert not hasattr(context, "model_copy")
-    with pytest.raises(TypeError, match="dataclass instances"):
-        dataclasses.replace(
-            context,
-            expected_account_identities=context.expected_account_identities[:-1],
-        )
 
 
-def test_claude_public_seal_recalculation_poc_has_no_issuance_material():
-    for removed_name in (
-        "_CONTEXT_CAPABILITY",
-        "_CONTEXT_SEAL_KEY",
-        "_context_seal",
-    ):
-        assert not hasattr(snapshot_service, removed_name)
-
+def test_raw_context_shaped_object_is_rejected():
     configured_accounts = _default_roster()
     identities = tuple(account.identity for account in configured_accounts)
     roster_hash = compute_account_roster_hash(
@@ -463,13 +452,8 @@ def test_claude_public_seal_recalculation_poc_has_no_issuance_material():
         ),
     }
 
-    with pytest.raises(TypeError, match="Protocols cannot be instantiated"):
-        ValidatedSingleShareExitContext(
-            **public_values,
-            _issuer_capability=object(),
-            _seal="caller-self-computed",
-        )
     forged_namespace = SimpleNamespace(**public_values)
+    assert snapshot_service.is_validated_context(forged_namespace) is False
     result = policy.evaluate_single_share_exit_replay(forged_namespace)
     assert (result.outcome, result.reason) == (
         "INELIGIBLE",
@@ -477,49 +461,21 @@ def test_claude_public_seal_recalculation_poc_has_no_issuance_material():
     )
 
 
-def test_only_exact_producer_issued_object_identity_is_accepted():
-    context = _make_context()
-    context_type = type(context)
+def test_snapshot_service_has_no_app_or_broker_import_reachability():
+    source = Path(snapshot_service.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imported_modules = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    } | {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    }
 
-    with pytest.raises(ProducerContextIntegrityError, match="producer-only"):
-        context_type(object())
-
-    forged_by_object_new = object.__new__(context_type)
-    result = policy.evaluate_single_share_exit_replay(forged_by_object_new)
-    assert (result.outcome, result.reason) == (
-        "INELIGIBLE",
-        "unvalidated_producer_context",
-    )
-
-    with pytest.raises(TypeError, match="cannot be subclassed"):
-
-        class _ForgedSubclass(context_type):
-            pass
-
-    with pytest.raises(TypeError, match="cannot be copied"):
-        copy.copy(context)
-    with pytest.raises(TypeError, match="cannot be deep-copied"):
-        copy.deepcopy(context)
-    with pytest.raises(TypeError, match="cannot be pickled"):
-        pickle.dumps(context)
-
-
-def test_every_exposed_context_property_revalidates_issued_state():
-    public_properties = (
-        *ValidatedSingleShareExitContext.__annotations__,
-        "roster_is_exact",
-    )
-    for property_name in public_properties:
-        context = _make_context()
-        issued_target = context.target
-        object.__setattr__(issued_target, "symbol", "000000")
-
-        with pytest.raises(
-            ProducerContextIntegrityError,
-            match="state changed after issuance",
-        ):
-            getattr(context, property_name)
-        assert snapshot_service.is_validated_context(context) is False
+    assert not {module for module in imported_modules if module.startswith("app")}
 
 
 def test_declared_roster_hash_forgery_is_rejected():
@@ -730,12 +686,25 @@ def test_no_resistance_reference_is_ineligible():
     )
 
 
+@pytest.mark.parametrize(
+    "strength",
+    [ResistanceStrength.WEAK, ResistanceStrength.MODERATE],
+)
+def test_resistance_must_be_strong(strength):
+    result = _replay_result(resistance=_resistance(strength=strength))
+    assert (result.outcome, result.reason) == (
+        "INELIGIBLE",
+        "resistance_strength_below_required",
+    )
+    assert result.resistance_strength == strength.value
+
+
 def test_resistance_must_cover_expected_completed_krx_bar():
     resistance = ResistanceEvidence(
         symbol="257720",
         price=Decimal("39946.31"),
         sources=("bb_upper", "fib_50"),
-        strength=ResistanceStrength.WEAK,
+        strength=ResistanceStrength.STRONG,
         computed_at=_EVIDENCE_AT,
         ohlcv_through_date=date(2026, 7, 22),
     )
@@ -1225,11 +1194,19 @@ def test_far_band_exact_boundaries(resistance_price, expected):
     assert result.outcome == expected
 
 
-def test_activation_and_proposal_off_are_rechecked(monkeypatch):
+@pytest.mark.parametrize(
+    "gate_mutation",
+    [
+        {"activation_state": "live"},
+        {"proposal_enabled": True},
+    ],
+    ids=["activation-live", "proposal-enabled"],
+)
+def test_activation_and_proposal_off_are_rechecked(monkeypatch, gate_mutation):
     context = _make_context()
     doc = policy.load_trading_policy()
     rule = doc.decision_rules["sell.single_share_exit"]
-    bypassed = rule.model_copy(update={"proposal_enabled": True})
+    bypassed = rule.model_copy(update=gate_mutation)
     monkeypatch.setattr(
         policy,
         "load_trading_policy",
@@ -1278,7 +1255,7 @@ def test_live_producer_uses_internal_clock_and_remains_shadow_off(monkeypatch):
             symbol="257720",
             price=Decimal("39946.31"),
             sources=("bb_upper", "fib_50"),
-            strength=ResistanceStrength.WEAK,
+            strength=ResistanceStrength.STRONG,
             computed_at=now,
             ohlcv_through_date=expected_date,
         ),
@@ -1289,7 +1266,7 @@ def test_live_producer_uses_internal_clock_and_remains_shadow_off(monkeypatch):
     assert result.outcome == "SHADOW_ELIGIBLE"
     assert result.outcome != "PROPOSE"
     assert result.proposal_enabled is False
-    assert result.candidate_action == "propose_full_account_lot_exit"
+    assert result.candidate_action == "full_exit_at_far_resistance"
     assert result.sizing == "full_account_lot_exit"
     assert result.approval == "telegram_manual"
     assert result.auto_approve is False
