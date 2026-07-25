@@ -67,13 +67,41 @@ def test_dict_insertion_order_does_not_affect_canonical_hash():
 
 
 def test_candidate_input_order_does_not_affect_universe_snapshot_hash():
+    # Vacuous-test remediation: comparing hash(A) == hash(B) where BOTH sides
+    # are produced via the SAME `.to_dict()` code path is vacuous against a
+    # dict-key/tag rename -- both sides would rename identically and the
+    # equality would still hold. Fixed by (1) asserting the LITERAL dict
+    # content for one side (not derived from any constant/helper under test),
+    # and (2) pinning the actual expected digest, so a rename/content change
+    # is caught even though the A==B comparison alone could not catch it.
     forward = _snapshot(1_000, ["AAA", "BBB", "CCC"])
     reversed_input = _snapshot(1_000, ["CCC", "BBB", "AAA"])
     assert forward.eligible_symbols == reversed_input.eligible_symbols
-    assert canonical_hash.canonical_sha256(
-        [e.to_dict() for e in forward.per_symbol]
-    ) == canonical_hash.canonical_sha256(
+
+    expected_dicts = [
+        {
+            "symbol": sym,
+            "eligible": True,
+            "fail_reason": None,
+            "pit_history_days": 400,
+            "listing_proxy_source": "alpaca_first_daily_proxy",
+        }
+        for sym in ("AAA", "BBB", "CCC")
+    ]
+    forward_dicts = [e.to_dict() for e in forward.per_symbol]
+    assert forward_dicts == expected_dicts
+
+    forward_hash = canonical_hash.canonical_sha256(forward_dicts)
+    reversed_hash = canonical_hash.canonical_sha256(
         [e.to_dict() for e in reversed_input.per_symbol]
+    )
+    assert forward_hash == reversed_hash
+    # pinned digest: a genuine content/key-rename in to_dict()/canonical
+    # hashing changes this value even though the A==B comparison above (both
+    # sides sharing the same code path) cannot detect such a rename.
+    assert (
+        forward_hash
+        == "74cf578689ceae78d2760ea1f4ae1c109731e437eed54c8eecf514d55180dae9"
     )
 
 
@@ -150,6 +178,28 @@ def test_daily_bar_volume_is_exact_float_never_int_zero():
     )
     assert type(bar.volume) is float
     assert bar.volume == 0.0
-    assert (
-        bar.volume is not False
-    )  # int/bool 0 would be falsy-equal to 0.0 but wrong type
+    # Vacuous-test remediation: `bar.volume is not False` can NEVER fail for
+    # any float value (an `is` identity check against the singleton `False`
+    # is never true for a float object regardless of type discipline) -- it
+    # asserted nothing beyond the `type(...) is float` check just above.
+    # Replaced with a construction-level proof that bool/int-zero is actually
+    # REJECTED, not merely that a *correctly built* bar happens to carry a
+    # float: constructing a DailyBar with volume=False (or int 0) must raise.
+    kwargs = {
+        "day_start_ms": bar.day_start_ms,
+        "day_end_ms": bar.day_end_ms,
+        "open": bar.open,
+        "high": bar.high,
+        "low": bar.low,
+        "close": bar.close,
+        "minute_count_observed": bar.minute_count_observed,
+        "imputed_minutes": bar.imputed_minutes,
+        "max_gap_minutes": bar.max_gap_minutes,
+        "gap_in_last_60min": bar.gap_in_last_60min,
+        "is_valid": bar.is_valid,
+        "is_segment_start": bar.is_segment_start,
+    }
+    with pytest.raises(TypeError):
+        db.DailyBar(volume=False, **kwargs)
+    with pytest.raises(TypeError):
+        db.DailyBar(volume=0, **kwargs)

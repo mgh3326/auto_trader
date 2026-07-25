@@ -8,6 +8,7 @@ mutation; exact int/float-zero types.
 """
 
 import math
+import unittest.mock
 
 import daily_bars as db
 import pytest
@@ -152,6 +153,22 @@ def test_ascending_rows_pass_through_unchanged():
 # --------------------------------------------------------------------------- #
 # leading-gap-with-no-baseline: fail closed to invalid, not a crash
 # --------------------------------------------------------------------------- #
+def test_row_exactly_at_day_end_ms_is_rejected_half_open_exclusive():
+    # AC13 remediation: build_utc_day's window check is
+    # `day_start_ms <= open_time_ms < day_end_ms` -- a row exactly AT
+    # day_end_ms belongs to the NEXT day and must be rejected (half-open
+    # exclusive upper bound). A mutation of `<` to `<=` would silently admit
+    # it. This isolates EXACTLY one extra row at the boundary (no other
+    # out-of-range rows) so a `<=` mutation is NOT masked by some other row
+    # still tripping the check for an unrelated reason.
+    day0_rows = _full_day_rows(DAY0)
+    boundary_row = _row(DAY0 + DAY_MS)  # exactly day_end_ms
+    with pytest.raises(ValueError, match="outside declared UTC day window"):
+        db.build_utc_day(
+            DAY0, day0_rows + [boundary_row], prior_close=99.0, is_segment_start=True
+        )
+
+
 def test_leading_gap_with_no_prior_close_is_invalid_not_a_crash():
     skip = {0}
     rows = _full_day_rows(skip=skip)
@@ -169,16 +186,99 @@ def test_ohlcv_aggregation_uses_first_open_max_high_min_low_last_close_fsum_volu
         db.SpotMinute(DAY0 + 2 * MIN_MS, 14.0, 14.5, 8.0, 9.0, 3.0),
     ]
     # pad the rest of the day so the day is valid (skip everything else -> way
-    # too many gaps) -- use a flat-close full day (well below the injected
-    # high=15.0/low=8.0) and only replace the first 3 rows.
-    full = _full_day_rows(close_fn=lambda m: 11.0)
+    # too many gaps) -- use a VARYING-close full day and only replace the
+    # first 3 rows. A constant close_fn (e.g. lambda m: 11.0) would make
+    # `bar.close == full[-1].close` vacuously true regardless of whether the
+    # aggregation actually picks the LAST close vs. any other row's close --
+    # every row would share the same value. Varying closes make "last close"
+    # a genuine, falsifiable claim.
+    full = _full_day_rows(close_fn=lambda m: 12.0 + m * 0.0001)  # stays inside (8, 15)
     full[0:3] = rows
     bar = db.build_utc_day(DAY0, full, prior_close=9.5, is_segment_start=True)
     assert bar.open == 10.0
     assert bar.high == 15.0
     assert bar.low == 8.0
     assert bar.close == full[-1].close
+    assert bar.close == pytest.approx(12.0 + 1439 * 0.0001)  # explicit expected value
     assert bar.is_valid is True
+    # non-zero, non-trivial total volume: rows[0:3] contribute 1.0+2.0+3.0=6.0,
+    # the remaining 1437 padding rows each contribute 1.0 (see `_row`'s
+    # default v=1.0) -- a "volume always constant 0.0" mutation would be
+    # caught here (this assertion was previously absent from this test).
+    assert bar.volume == pytest.approx(6.0 + 1437 * 1.0)
+
+
+def test_volume_aggregation_actually_calls_math_fsum():
+    # AC11 remediation: on this Python version (3.12+), CPython's builtin
+    # sum() is ITSELF precision-compensated for float sequences, so a
+    # `math.fsum(...) -> sum(...)` mutation is no longer reliably detectable
+    # via numeric precision differences alone (a classic large/small-value
+    # cancellation input that distinguished the two on older Pythons produces
+    # an IDENTICAL result here). Assert the WIRING directly instead: spy on
+    # daily_bars.math.fsum (wrapping the real implementation, so behavior is
+    # unchanged) and confirm it is actually invoked -- a mutation swapping in
+    # `sum()` would never touch this patched name, so `spy.called` would be
+    # False.
+    rows = _full_day_rows(close_fn=lambda m: 100.0)
+    with unittest.mock.patch("daily_bars.math.fsum", wraps=math.fsum) as fsum_spy:
+        bar = db.build_utc_day(DAY0, rows, prior_close=99.0, is_segment_start=True)
+    assert fsum_spy.called
+    assert bar.volume == pytest.approx(1440.0)
+
+
+# --------------------------------------------------------------------------- #
+# S6 remediation: DailyBar economics (OHLC invariant, non-negative volume) --
+# type/finiteness checks alone previously let DailyBar(high=1.0, low=99.0,
+# volume=-5.0) construct fine.
+# --------------------------------------------------------------------------- #
+def _valid_daily_bar_kwargs() -> dict:
+    bar = db.build_utc_day(
+        DAY0, _full_day_rows(), prior_close=99.0, is_segment_start=True
+    )
+    return {
+        "day_start_ms": bar.day_start_ms,
+        "day_end_ms": bar.day_end_ms,
+        "open": bar.open,
+        "high": bar.high,
+        "low": bar.low,
+        "close": bar.close,
+        "volume": bar.volume,
+        "minute_count_observed": bar.minute_count_observed,
+        "imputed_minutes": bar.imputed_minutes,
+        "max_gap_minutes": bar.max_gap_minutes,
+        "gap_in_last_60min": bar.gap_in_last_60min,
+        "is_valid": bar.is_valid,
+        "is_segment_start": bar.is_segment_start,
+    }
+
+
+def test_daily_bar_rejects_negative_volume():
+    kwargs = _valid_daily_bar_kwargs()
+    kwargs["volume"] = -5.0
+    with pytest.raises(ValueError):
+        db.DailyBar(**kwargs)
+
+
+def test_daily_bar_rejects_non_positive_ohlc():
+    kwargs = _valid_daily_bar_kwargs()
+    kwargs["low"] = -1.0
+    with pytest.raises(ValueError):
+        db.DailyBar(**kwargs)
+
+
+def test_daily_bar_rejects_high_below_low():
+    kwargs = _valid_daily_bar_kwargs()
+    kwargs["high"] = 1.0
+    kwargs["low"] = 99.0
+    with pytest.raises(ValueError):
+        db.DailyBar(**kwargs)
+
+
+def test_daily_bar_rejects_high_below_open_or_close():
+    kwargs = _valid_daily_bar_kwargs()
+    kwargs["open"] = 1000.0  # higher than `high`
+    with pytest.raises(ValueError):
+        db.DailyBar(**kwargs)
 
 
 # --------------------------------------------------------------------------- #
@@ -214,6 +314,75 @@ def test_full_two_day_window_emits_two_bars_with_segment_continuity():
     assert series[1].is_segment_start is False  # contiguous valid predecessor
 
 
+def test_build_daily_series_rejects_reversed_rows_terminal_not_silently_sorted():
+    # S3 remediation: build_daily_series used to call ``day_rows.sort(...)``
+    # per day AFTER splitting by day, which silently repaired a reversed
+    # input instead of raising -- exactly what ingest_minute_sequence's
+    # ReversedRowError exists to make terminal (AC2). Feeding a fully
+    # descending sequence must raise, never quietly produce a valid series.
+    day0_rows = _full_day_rows(DAY0)
+    reversed_rows = list(reversed(day0_rows))
+    with pytest.raises(db.ReversedRowError):
+        db.build_daily_series(
+            reversed_rows, window_start_ms=DAY0, window_end_ms=DAY0 + DAY_MS
+        )
+
+
+def test_build_daily_series_rejects_duplicate_open_time_terminal():
+    day0_rows = _full_day_rows(DAY0)
+    # duplicate the LAST row (adjacent-equal, not reversed) so the duplicate
+    # check -- not the reversed-row check -- is the one that fires.
+    duped_rows = day0_rows + [day0_rows[-1]]
+    with pytest.raises(db.DuplicateOpenTimeError):
+        db.build_daily_series(
+            duped_rows, window_start_ms=DAY0, window_end_ms=DAY0 + DAY_MS
+        )
+
+
+def test_absent_day_resets_prior_close_not_leaked_two_days_stale():
+    # S7 remediation: an entirely absent day must reset prior_close to None,
+    # not just prior_day_present. Otherwise the NEXT present day's leading
+    # gap gets imputed from a close that is two (or more) full UTC days stale.
+    day0_rows = _full_day_rows(DAY0, close_fn=lambda m: 100.0)
+    # day1 entirely absent (no rows at all)
+    day2_rows = _full_day_rows(
+        DAY0 + 2 * DAY_MS, skip={0}, close_fn=lambda m: 300.0 + m * 0.001
+    )
+    series = db.build_daily_series(
+        day0_rows + day2_rows,
+        window_start_ms=DAY0,
+        window_end_ms=DAY0 + 3 * DAY_MS,
+    )
+    assert [bar.day_start_ms for bar in series] == [DAY0, DAY0 + 2 * DAY_MS]
+    day0_bar, day2_bar = series
+    assert day0_bar.is_valid is True
+    # day2's leading minute is missing and day1 (its would-be baseline) was
+    # entirely absent -- prior_close must NOT have leaked across the absent
+    # day from day0's close two days earlier; day2 must fail closed instead.
+    assert day2_bar.is_valid is False
+
+
+def test_invalid_predecessor_day_does_not_leak_its_close_as_next_days_baseline():
+    # S7 remediation: an INVALID day's aggregated close (partial-coverage
+    # aggregate) must also not be forward-filled into the next day's leading
+    # gap imputation.
+    skip = {500, 501, 502}  # 3-minute gap, not touching the final 60 minutes
+    day0_rows = _full_day_rows(DAY0, skip=skip, close_fn=lambda m: 100.0 + m * 0.001)
+    day1_rows = _full_day_rows(
+        DAY0 + DAY_MS, skip={0}, close_fn=lambda m: 200.0 + m * 0.001
+    )
+    series = db.build_daily_series(
+        day0_rows + day1_rows,
+        window_start_ms=DAY0,
+        window_end_ms=DAY0 + 2 * DAY_MS,
+    )
+    day0_bar, day1_bar = series
+    assert day0_bar.is_valid is False
+    # day1's leading gap has no trustworthy baseline (day0 was invalid) --
+    # must fail closed, not silently impute from day0's aggregate close.
+    assert day1_bar.is_valid is False
+
+
 def test_missing_day_starts_a_new_segment():
     day0_rows = _full_day_rows(DAY0)
     # day1 entirely missing (no rows at all); day2 present.
@@ -246,11 +415,16 @@ def test_snapshot_at_t_is_unaffected_by_mutating_rows_at_or_after_t():
     # for day0 -- prove it structurally: build_utc_day only ever consumes rows
     # inside [DAY0, DAY0+DAY_MS), so passing the mutated future rows in addition
     # would raise (out-of-window), never silently blend into day0's bar.
-    with pytest.raises(ValueError):
+    # match= narrows this to the SPECIFIC window-check failure -- the future
+    # rows are otherwise well-ordered/non-duplicate, so a bare
+    # `pytest.raises(ValueError)` could also silently accept a totally
+    # different bug that happened to raise DuplicateOpenTimeError/
+    # ReversedRowError (both ValueError subclasses) instead.
+    with pytest.raises(ValueError, match="outside declared UTC day window"):
         db.build_utc_day(
             DAY0, day0_rows + future_rows_v1, prior_close=None, is_segment_start=True
         )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="outside declared UTC day window"):
         db.build_utc_day(
             DAY0, day0_rows + future_rows_v2, prior_close=None, is_segment_start=True
         )

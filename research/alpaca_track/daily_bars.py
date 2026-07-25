@@ -155,6 +155,18 @@ class DailyBar:
                 raise TypeError(f"{name} must be bool")
         for name in ("open", "high", "low", "close", "volume"):
             _float(getattr(self, name), name)
+        # S6 remediation: DailyBar previously validated types/finiteness only,
+        # never the OHLC/volume ECONOMICS -- DailyBar(high=1.0, low=99.0,
+        # volume=-5.0) constructed fine. SpotMinute already enforces this same
+        # discipline (see above); the emitted daily product must too.
+        if self.volume < 0:
+            raise ValueError("negative volume")
+        if min(self.open, self.high, self.low, self.close) <= 0:
+            raise ValueError("non-positive OHLC")
+        if self.high < max(self.open, self.close) or self.low > min(
+            self.open, self.close
+        ):
+            raise ValueError("invalid OHLC invariant")
 
 
 def build_utc_day(
@@ -312,14 +324,22 @@ def build_daily_series(
     if window_end_ms <= window_start_ms:
         raise ValueError("window_end_ms must be after window_start_ms")
 
+    # S3 remediation: validate the FULL input as globally ascending BEFORE
+    # splitting by day. A duplicate/reversed row is terminal (AC2) -- this
+    # must never be silently repaired. The old code split first, then called
+    # ``day_rows.sort(...)`` per day, which LAUNDERED a reversed (or
+    # duplicate-then-reversed) input past the AC2 terminal guard: a fully
+    # descending ``rows`` sequence produced a normal-looking, valid daily
+    # series instead of raising ``ReversedRowError``.
+    ingest_minute_sequence(rows)
+
     by_day: dict[int, list[SpotMinute]] = {}
     for row in rows:
-        if type(row) is not SpotMinute:
-            raise TypeError("rows must contain SpotMinute")
         day = (row.open_time_ms // DAY_MS) * DAY_MS
         by_day.setdefault(day, []).append(row)
-    for day_rows in by_day.values():
-        day_rows.sort(key=lambda r: r.open_time_ms)
+    # No re-sort here: ``rows`` is already validated strictly ascending above,
+    # so appending in iteration order preserves ascending order within each
+    # day bucket without ever reordering/repairing the caller's input.
 
     result: list[DailyBar] = []
     prior_close = prior_close_seed
@@ -328,6 +348,12 @@ def build_daily_series(
     while day + DAY_MS <= window_end_ms:
         day_rows = by_day.get(day)
         if day_rows is None:
+            # S7 remediation: an entirely absent day must reset prior_close to
+            # None, not merely prior_day_present. Leaving prior_close set let
+            # the NEXT present day impute its leading gap from a close that is
+            # two (or more) UTC days stale -- a forward-fill across an absent
+            # day, which this module's docstring explicitly forbids.
+            prior_close = None
             prior_day_present = False
             day += DAY_MS
             continue
@@ -338,7 +364,12 @@ def build_daily_series(
             is_segment_start=not prior_day_present,
         )
         result.append(bar)
-        prior_close = bar.close
+        # S7 remediation: only a VALID day's close is a trustworthy baseline
+        # for the next day's leading-gap imputation. An invalid day's
+        # aggregated "close" (partial-coverage aggregate, or a placeholder
+        # when zero rows were observed) must not be forward-filled into the
+        # next day either.
+        prior_close = bar.close if bar.is_valid else None
         prior_day_present = bar.is_valid
         day += DAY_MS
     return tuple(result)
