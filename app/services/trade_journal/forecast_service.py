@@ -84,7 +84,7 @@ _PRICE_DIRECTIONS = {"at_or_above", "at_or_below"}
 _PRICE_TOUCH_RULE_VERSION = "window-touch-v1-high-gte-low-lte"
 _TERMINAL_CLOSE_KIND = "terminal_close"
 _TERMINAL_CLOSE_DIRECTIONS = {"up", "down"}
-_TERMINAL_CLOSE_INSTRUMENTS = {"equity_kr", "equity_us"}
+_TERMINAL_CLOSE_INSTRUMENTS = {"equity_kr", "equity_us", "crypto"}
 _TERMINAL_CLOSE_RULE_VERSION = "terminal-close-v1-up-gte-down-lt"
 _TERMINAL_CLOSE_STALE_LOOKBACK_DAYS = 7
 _TERMINAL_CLOSE_UNSUPPORTED_ADJUSTMENT_FIELDS = {
@@ -336,7 +336,7 @@ def _validate_forecast_target(
 
     if instrument_type not in _TERMINAL_CLOSE_INSTRUMENTS:
         raise ForecastValidationError(
-            "terminal_close requires instrument_type equity_kr or equity_us"
+            "terminal_close requires instrument_type equity_kr, equity_us, or crypto"
         )
     direction = target.get("direction")
     if direction not in _TERMINAL_CLOSE_DIRECTIONS:
@@ -918,7 +918,26 @@ def _terminal_close_session_failure(
     review_date: date,
     now: datetime,
 ) -> str | None:
-    """Return a fail-closed reason unless the review session is final."""
+    """Return a fail-closed reason unless the review session is final.
+
+    Equities (equity_kr, equity_us) check exchange session finality (XKRX/XNYS).
+    Crypto (24/7 market) daily candles close at UTC 00:00 (KST 09:00).
+    For review_date D, the candle covers D 00:00:00 UTC to D 23:59:59 UTC,
+    so session finality is reached at (review_date + 1 day) 00:00:00 UTC.
+    """
+    if instrument_type == "crypto":
+        review_date_utc_end = datetime.combine(
+            review_date + timedelta(days=1), dt.time(0, 0), tzinfo=dt.UTC
+        )
+        now_utc = now if now.tzinfo is not None else now.replace(tzinfo=dt.UTC)
+        now_utc = now_utc.astimezone(dt.UTC)
+        if now_utc < review_date_utc_end:
+            return (
+                f"crypto review session {review_date.isoformat()} is not final; "
+                f"finalizes at {review_date_utc_end.isoformat()}"
+            )
+        return None
+
     from app.services.daily_candles.read_service import (
         get_calendar,
         last_final_session_kr,

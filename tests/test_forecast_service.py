@@ -206,12 +206,14 @@ async def test_save_rejects_bad_terminal_close_target(
 async def test_save_rejects_terminal_close_for_non_session_instrument(
     db_session: AsyncSession,
 ):
-    with pytest.raises(svc.ForecastValidationError, match="equity_kr or equity_us"):
+    with pytest.raises(
+        svc.ForecastValidationError, match="equity_kr, equity_us, or crypto"
+    ):
         await svc.save_forecast(
             db_session,
             created_by="claude",
-            symbol="BTC",
-            instrument_type="crypto",
+            symbol="EURUSD",
+            instrument_type="forex",
             forecast_target=_terminal_close_target(),
             probability=0.6,
             review_date="2026-06-05",
