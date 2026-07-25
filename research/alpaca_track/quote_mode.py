@@ -68,20 +68,16 @@ def resolve_quote_mode(
     """
     if base_usdc_first_1m is not None and base_usdc_first_1m <= required_backtest_start:
         return "USDC"
-    # SPEC NOTE (§14.2 rule (b) text vs. sealed universe_map.json, resolved
-    # using the sealed data as the disambiguating authority the prereg itself
-    # names for this exact purpose -- "매핑·최초 1분봉 날짜는 universe_map으로
-    # 봉인"): the prose reads "BASEUSDT and USDCUSDT both exist" -> SYNTH_USDC,
-    # which taken completely literally would fire for EVERY BASEUSDT symbol
-    # (USDCUSDT has existed globally since 2018-12-15, so it "exists" for
-    # every date in scope) and USDT_PROXY would never occur. The sealed map
-    # falsifies that literal reading: BAT/YFI (binance_usdc_first_1m=null,
-    # i.e. no native BASEUSDC pair ever listed) are USDT_PROXY, while
-    # AAVE/GRT/ONDO/SUSHI/TRUMP/XTZ/SKY/POL/RENDER (a native BASEUSDC pair
-    # DOES exist, just too late for required_backtest_start) are all
-    # SYNTH_USDC. The operative rule the seal actually encodes is: a native
-    # BASEUSDC pair existing AT ALL (even insufficient) selects SYNTH_USDC
-    # over USDT_PROXY; only a base with NO BASEUSDC pair ever falls to (c).
+    # SPEC NOTE (§14.2 rule ③'s Korean wording is "BASEUSDT만" = "BASEUSDT
+    # ONLY", and Linear AC#7 explicitly names BAT/YFI -- the only sealed bases
+    # with NO native BASEUSDC pair at all -- as the USDT_PROXY set): rule ③
+    # ("BASEUSDT only") therefore reads as "no BASEUSDC pair exists at any
+    # date", not merely "insufficient". A native BASEUSDC pair existing AT ALL
+    # (even too late for required_backtest_start, e.g. AAVE/GRT/ONDO/SUSHI/
+    # TRUMP/XTZ/SKY/POL/RENDER) selects SYNTH_USDC over USDT_PROXY; only a base
+    # with NO BASEUSDC pair ever (BAT/YFI) falls to (c)/USDT_PROXY. This is the
+    # exact partition AC#7 names, so it is applied directly rather than as an
+    # inference from the sealed data.
     if (
         base_usdc_first_1m is not None
         and base_usdt_first_1m is not None
@@ -90,6 +86,17 @@ def resolve_quote_mode(
         return "SYNTH_USDC"
     if base_usdt_first_1m is not None:
         return "USDT_PROXY"
+    if base_usdc_first_1m is not None:
+        # A late (insufficient) native BASEUSDC pair with NO BASEUSDT pair
+        # ever having existed: neither SYNTH_USDC nor USDT_PROXY is
+        # reconstructible (both require a BASEUSDT leg to divide/proxy from).
+        # Per rule ④, NO_MAPPING is reserved for "no direct stable pair AT
+        # ALL" -- a (late) native BASEUSDC pair IS a direct stable pair, so
+        # this base must not be permanently excluded; fall back to USDC,
+        # starting from whatever date it actually began. (No sealed base hits
+        # this branch today -- every sealed base with a BASEUSDC pair also has
+        # a BASEUSDT pair -- but a future universe refresh could.)
+        return "USDC"
     return "NO_MAPPING"
 
 

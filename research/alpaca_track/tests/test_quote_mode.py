@@ -79,6 +79,32 @@ def test_priority_d_no_direct_stable_pair_is_no_mapping():
     assert mode == "NO_MAPPING"
 
 
+def test_late_usdc_only_no_usdt_pair_ever_is_usdc_not_no_mapping():
+    # A hypothetical base with a (late, insufficient) native BASEUSDC pair but
+    # NO BASEUSDT pair ever listed. Neither SYNTH_USDC nor USDT_PROXY is
+    # reconstructible (both need a USDT leg), but a BASEUSDC pair IS a direct
+    # stable pair -- rule (d)/NO_MAPPING is reserved for "no direct stable
+    # pair at all", so this must fall back to USDC, not be excluded. No sealed
+    # base hits this branch today; this guards a future universe refresh.
+    mode = qm.resolve_quote_mode(
+        base_usdc_first_1m=date(2025, 1, 1),
+        base_usdt_first_1m=None,
+        usdc_usdt_available=True,
+        required_backtest_start=REQUIRED_BACKTEST_START,
+    )
+    assert mode == "USDC"
+
+    # usdc_usdt_available is irrelevant to this branch (there is no USDT leg
+    # to combine it with either way).
+    mode_no_basis = qm.resolve_quote_mode(
+        base_usdc_first_1m=date(2025, 1, 1),
+        base_usdt_first_1m=None,
+        usdc_usdt_available=False,
+        required_backtest_start=REQUIRED_BACKTEST_START,
+    )
+    assert mode_no_basis == "USDC"
+
+
 def test_usdc_sufficiency_boundary_exact_required_start_is_sufficient():
     mode = qm.resolve_quote_mode(
         base_usdc_first_1m=REQUIRED_BACKTEST_START,

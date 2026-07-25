@@ -59,9 +59,19 @@ def test_rule1_non_usd_pair_excluded():
 
 
 def test_rule2_stablecoin_and_paxg_excluded():
-    for base in sorted(pu.EXCLUDED_STABLE_AND_PAXG_BASES):
+    # Literal AC-named bases -- NOT derived from the constant under test.
+    # Iterating the constant itself is vacuous: emptying
+    # EXCLUDED_STABLE_AND_PAXG_BASES would make this loop body never run and
+    # the test would still pass.
+    for base in ("USDC", "USDG", "USDT", "PAXG"):
         snap = pu.evaluate_universe(DECISION_T, [_candidate(f"{base}/USD", base=base)])
         assert snap.per_symbol[0].fail_reason == "stable_or_paxg_excluded", base
+    # Cross-check the constant's actual content too, so a drift there is still
+    # caught -- but never lets an emptied/mutated constant vacuously pass the
+    # exclusion assertions above.
+    assert pu.EXCLUDED_STABLE_AND_PAXG_BASES == frozenset(
+        {"USDC", "USDG", "USDT", "PAXG"}
+    )
 
 
 def test_rule3_no_binance_stable_pair_excluded():
@@ -69,6 +79,40 @@ def test_rule3_no_binance_stable_pair_excluded():
         DECISION_T, [_candidate("HYPE/USD", quote_mode="NO_MAPPING")]
     )
     assert snap.per_symbol[0].fail_reason == "no_binance_stable_pair"
+
+
+# --------------------------------------------------------------------------- #
+# S2 remediation: rule 3 must be a validated allow-list, never a bare deny-list
+# over an unvalidated free-form string -- a typo/vocabulary-drift value must
+# be rejected fail-closed (at construction), never silently admitted eligible.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "bad_mode",
+    ["no_mapping", "NOMAPPING", "", "GARBAGE", "EXCLUDED", "usdc", "Usdc"],
+)
+def test_symbol_candidate_rejects_unrecognized_quote_mode_fail_closed(bad_mode):
+    with pytest.raises(ValueError):
+        _candidate("X/USD", quote_mode=bad_mode)
+
+
+def test_valid_binance_quote_modes_matches_quote_mode_module_vocabulary():
+    from typing import get_args
+
+    import quote_mode as qm
+
+    assert pu.VALID_BINANCE_QUOTE_MODES == {
+        "USDC",
+        "SYNTH_USDC",
+        "USDT_PROXY",
+        "NO_MAPPING",
+    }
+    assert pu.VALID_BINANCE_QUOTE_MODES == set(get_args(qm.QuoteModeLiteral))
+
+
+@pytest.mark.parametrize("good_mode", ["USDC", "SYNTH_USDC", "USDT_PROXY"])
+def test_every_mapped_quote_mode_other_than_no_mapping_passes_rule3(good_mode):
+    snap = pu.evaluate_universe(DECISION_T, [_candidate("X/USD", quote_mode=good_mode)])
+    assert snap.per_symbol[0].fail_reason != "no_binance_stable_pair"
 
 
 def test_rule5_invalid_daily_bar_in_lookback_excluded():
@@ -83,6 +127,75 @@ def test_rule6_gap_in_last_60min_excluded():
 
 def test_all_rules_pass_symbol_is_eligible():
     snap = pu.evaluate_universe(DECISION_T, [_candidate("BTC/USD")])
+    assert snap.per_symbol[0].eligible is True
+    assert snap.per_symbol[0].fail_reason is None
+
+
+# --------------------------------------------------------------------------- #
+# AC14 "in order": rule order must be observable, not just each rule
+# independently triggerable. A candidate violating a SINGLE rule reports the
+# same fail_reason regardless of check order -- these tests construct
+# candidates violating TWO adjacent rules simultaneously and pin which reason
+# wins, so a 1<->2 / 2<->3 / 4<->5 swap changes the reported reason and is
+# caught.
+# --------------------------------------------------------------------------- #
+def test_rule_order_1_before_2_wins_when_both_violated():
+    # inactive (rule 1) AND a stablecoin base (rule 2) at once -- rule 1 must
+    # win (checked first).
+    snap = pu.evaluate_universe(
+        DECISION_T, [_candidate("USDC/USD", base="USDC", active=False)]
+    )
+    assert snap.per_symbol[0].fail_reason == "alpaca_not_active_tradable_usd"
+
+
+def test_rule_order_2_before_3_wins_when_both_violated():
+    # a stablecoin base (rule 2) AND no Binance stable pair (rule 3) at once
+    # -- rule 2 must win (checked first).
+    snap = pu.evaluate_universe(
+        DECISION_T,
+        [_candidate("USDC/USD", base="USDC", quote_mode="NO_MAPPING")],
+    )
+    assert snap.per_symbol[0].fail_reason == "stable_or_paxg_excluded"
+
+
+def test_rule_order_4_before_5_wins_when_both_violated():
+    # insufficient PIT history (rule 4) AND invalid daily bar in lookback
+    # (rule 5) at once -- rule 4 must win (checked first).
+    snap = pu.evaluate_universe(
+        DECISION_T,
+        [_candidate("X/USD", history_days=100, valid_daily=False)],
+    )
+    assert snap.per_symbol[0].fail_reason == "insufficient_pit_history"
+
+
+# --------------------------------------------------------------------------- #
+# AC14 r7: n_t/eligible_symbols must reflect ONLY eligible candidates, not
+# every candidate. A candidate list that is ALL-eligible or ALL-ineligible
+# cannot distinguish "filtered by e.eligible" from "computed over every
+# candidate" -- this test mixes both in one call.
+# --------------------------------------------------------------------------- #
+def test_n_t_and_eligible_symbols_exclude_ineligible_candidates_from_a_mixed_batch():
+    candidates = [
+        _candidate("AAA/USD"),  # eligible
+        _candidate("BBB/USD", active=False),  # ineligible
+        _candidate("CCC/USD"),  # eligible
+    ]
+    snap = pu.evaluate_universe(DECISION_T, candidates)
+    assert snap.eligible_symbols == ("AAA/USD", "CCC/USD")
+    assert snap.n_t == 2
+    assert len(snap.per_symbol) == 3  # per_symbol still records every candidate
+
+
+# --------------------------------------------------------------------------- #
+# AC18: universe membership is PURELY mechanical per §6 -- no qualitative
+# curation/blacklist of specific meme-coin/narrative tickers. Any candidate
+# passing every §6 rule must be eligible regardless of its base symbol.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("base", ["SHIB", "PEPE", "BONK", "TRUMP", "WIF"])
+def test_no_qualitative_curation_filter_meme_coin_bases_pass_when_rules_are_met(
+    base,
+):
+    snap = pu.evaluate_universe(DECISION_T, [_candidate(f"{base}/USD", base=base)])
     assert snap.per_symbol[0].eligible is True
     assert snap.per_symbol[0].fail_reason is None
 
@@ -115,8 +228,25 @@ def test_unknown_listing_date_is_insufficient_history_not_a_crash():
 # alpaca_first_daily PIT-proxy provenance: explicit, never an actual listing date
 # --------------------------------------------------------------------------- #
 def test_listing_proxy_source_is_explicit_alpaca_first_daily_proxy_tag():
+    # Assert the LITERAL string, not ``pu.ALPACA_FIRST_DAILY_PROXY`` (the
+    # constant under test) -- comparing a value to the very constant that
+    # produced it is vacuous: renaming the constant AND its usage together
+    # would still pass. Also assert to_dict() key-by-key with literal keys, so
+    # a dict-key rename (e.g. "listing_proxy_source" -> "listing_date") is
+    # caught too.
     snap = pu.evaluate_universe(DECISION_T, [_candidate("X/USD", history_days=200)])
-    assert snap.per_symbol[0].listing_proxy_source == pu.ALPACA_FIRST_DAILY_PROXY
+    eligibility = snap.per_symbol[0]
+    assert eligibility.listing_proxy_source == "alpaca_first_daily_proxy"
+    assert (
+        pu.ALPACA_FIRST_DAILY_PROXY == "alpaca_first_daily_proxy"
+    )  # constant pinned too
+    assert eligibility.to_dict() == {
+        "symbol": "X/USD",
+        "eligible": True,
+        "fail_reason": None,
+        "pit_history_days": 200,
+        "listing_proxy_source": "alpaca_first_daily_proxy",
+    }
 
 
 def test_listing_proxy_source_is_none_when_no_first_daily_known():

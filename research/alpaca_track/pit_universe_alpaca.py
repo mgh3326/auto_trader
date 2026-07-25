@@ -26,7 +26,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, get_args
+
+import quote_mode as qm
 
 MIN_UNIVERSE_SIZE = 18
 MIN_PIT_HISTORY_DAYS = 180
@@ -41,6 +43,20 @@ ALPACA_FIRST_DAILY_PROXY = "alpaca_first_daily_proxy"
 EXCLUDED_STABLE_AND_PAXG_BASES: frozenset[str] = frozenset(
     {"USDC", "USDG", "USDT", "PAXG"}
 )
+
+# S2 remediation: reconcile the quote_mode vocabulary into ONE source of truth
+# (``quote_mode.QuoteModeLiteral``) instead of a bare, unvalidated ``str`` deny-
+# list. The old rule 3 checked ``candidate.binance_quote_mode in ("NO_MAPPING",
+# "EXCLUDED")`` against a free-form string with no validation anywhere -- a
+# typo or vocabulary-drift value (e.g. "no_mapping", "", "GARBAGE") silently
+# fell THROUGH the deny-list and was admitted as eligible, exactly the failure
+# rule 3 exists to prevent. ``SymbolCandidate.__post_init__`` below now rejects
+# any ``binance_quote_mode`` outside this allow-list at construction time (fail
+# closed before rule 3 ever runs), and rule 3 itself only has to distinguish
+# the single "no usable Binance pair" value, "NO_MAPPING". Note "EXCLUDED" is
+# NOT part of ``quote_mode.QuoteModeLiteral`` and never was a real value
+# produced anywhere -- it is dropped rather than reconciled in.
+VALID_BINANCE_QUOTE_MODES: frozenset[str] = frozenset(get_args(qm.QuoteModeLiteral))
 
 # Known Binance/Alpaca base-symbol renames. Listed for documentation/testing
 # ONLY -- this module never uses this mapping to merge/stitch two symbols'
@@ -71,6 +87,7 @@ __all__ = [
     "KNOWN_MIGRATIONS",
     "MIN_PIT_HISTORY_DAYS",
     "MIN_UNIVERSE_SIZE",
+    "VALID_BINANCE_QUOTE_MODES",
     "SymbolCandidate",
     "SymbolEligibility",
     "UniverseSnapshot",
@@ -102,7 +119,9 @@ class SymbolCandidate:
     alpaca_active: bool
     alpaca_tradable: bool
     is_usd_pair: bool
-    binance_quote_mode: str  # from quote_mode.resolve_quote_mode(...)
+    binance_quote_mode: (
+        str  # from quote_mode_pipeline.resolve_and_validate_candidate_quote_mode(...)
+    )
     alpaca_first_daily_ms: (
         int | None
     )  # PIT-proxy listing date (ALPACA_FIRST_DAILY_PROXY)
@@ -112,6 +131,13 @@ class SymbolCandidate:
     def __post_init__(self) -> None:
         if self.alpaca_first_daily_ms is not None:
             _int(self.alpaca_first_daily_ms, "alpaca_first_daily_ms")
+        if self.binance_quote_mode not in VALID_BINANCE_QUOTE_MODES:
+            raise ValueError(
+                f"{self.symbol}: binance_quote_mode {self.binance_quote_mode!r} is "
+                f"not a recognized quote_mode.QuoteModeLiteral value "
+                f"({sorted(VALID_BINANCE_QUOTE_MODES)}) -- rule 3 must never fail "
+                f"open on a typo/vocabulary-drift value"
+            )
 
 
 @dataclass(frozen=True)
@@ -161,8 +187,10 @@ def _evaluate_one(
     # Rule 2
     if candidate.base in EXCLUDED_STABLE_AND_PAXG_BASES:
         return result(False, "stable_or_paxg_excluded")
-    # Rule 3
-    if candidate.binance_quote_mode in ("NO_MAPPING", "EXCLUDED"):
+    # Rule 3 -- candidate.binance_quote_mode is already guaranteed to be one of
+    # VALID_BINANCE_QUOTE_MODES (validated fail-closed in __post_init__), so
+    # this only needs to check the single "no usable Binance pair" value.
+    if candidate.binance_quote_mode == "NO_MAPPING":
         return result(False, "no_binance_stable_pair")
     # Rule 4
     if pit_history_days is None or pit_history_days < min_pit_history_days:
