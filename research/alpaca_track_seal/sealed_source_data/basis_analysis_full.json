@@ -1,0 +1,891 @@
+{
+  "BTC/USD": {
+    "binance_rows": 43200,
+    "alpaca_rows": 42207,
+    "joined_rows": 42207,
+    "alpaca_coverage_pct": 97.7,
+    "trade_backed_pct_of_joined": 29.5,
+    "high_vol_threshold_abs_1m_logret": 0.001069,
+    "raw_basis": {
+      "all": {
+        "count": 42207,
+        "signed_mean_bp": -9.77,
+        "abs_mean_bp": 9.77,
+        "abs_median_bp": 8.84,
+        "abs_p95_bp": 17.06,
+        "abs_max_bp": 28.95
+      },
+      "high_vol": {
+        "count": 2160,
+        "signed_mean_bp": -11.8,
+        "abs_mean_bp": 11.8,
+        "abs_median_bp": 11.31,
+        "abs_p95_bp": 18.61,
+        "abs_max_bp": 28.95
+      }
+    },
+    "venue_basis": {
+      "all": {
+        "count": 42207,
+        "signed_mean_bp": -0.36,
+        "abs_mean_bp": 2.51,
+        "abs_median_bp": 1.65,
+        "abs_p95_bp": 9.95,
+        "abs_max_bp": 19.21
+      },
+      "high_vol": {
+        "count": 2160,
+        "signed_mean_bp": -0.37,
+        "abs_mean_bp": 2.28,
+        "abs_median_bp": 1.62,
+        "abs_p95_bp": 7.12,
+        "abs_max_bp": 18.55
+      },
+      "trade_backed": {
+        "count": 12441,
+        "signed_mean_bp": -0.46,
+        "abs_mean_bp": 2.52,
+        "abs_median_bp": 1.63,
+        "abs_p95_bp": 10.15,
+        "abs_max_bp": 18.54
+      },
+      "quote_derived": {
+        "count": 29766,
+        "signed_mean_bp": -0.31,
+        "abs_mean_bp": 2.51,
+        "abs_median_bp": 1.65,
+        "abs_p95_bp": 9.86,
+        "abs_max_bp": 19.21
+      }
+    },
+    "persistence": {
+      "gt_10bp_runs": {
+        "n_runs": 481,
+        "median_min": 1.0,
+        "p95_min": 10.0,
+        "max_min": 238
+      },
+      "gt_25bp_runs": {
+        "n_runs": 0,
+        "median_min": 0.0,
+        "p95_min": 0.0,
+        "max_min": 0
+      },
+      "gt_50bp_runs": {
+        "n_runs": 0,
+        "median_min": 0.0,
+        "p95_min": 0.0,
+        "max_min": 0
+      }
+    },
+    "recovery_after_ge25bp_pct": {
+      "within_1_bars": null,
+      "within_2_bars": null,
+      "within_3_bars": null
+    },
+    "n_ge25bp_events": 0,
+    "ar1_phi": 0.8858,
+    "ar1_half_life_min": 5.7
+  },
+  "ETH/USD": {
+    "binance_rows": 43200,
+    "alpaca_rows": 27078,
+    "joined_rows": 27078,
+    "alpaca_coverage_pct": 62.7,
+    "trade_backed_pct_of_joined": 25.0,
+    "high_vol_threshold_abs_1m_logret": 0.001352,
+    "raw_basis": {
+      "all": {
+        "count": 27078,
+        "signed_mean_bp": -9.96,
+        "abs_mean_bp": 9.97,
+        "abs_median_bp": 9.38,
+        "abs_p95_bp": 17.65,
+        "abs_max_bp": 59.21
+      },
+      "high_vol": {
+        "count": 2160,
+        "signed_mean_bp": -11.13,
+        "abs_mean_bp": 11.14,
+        "abs_median_bp": 10.97,
+        "abs_p95_bp": 19.0,
+        "abs_max_bp": 29.45
+      }
+    },
+    "venue_basis": {
+      "all": {
+        "count": 27078,
+        "signed_mean_bp": -0.26,
+        "abs_mean_bp": 3.02,
+        "abs_median_bp": 2.14,
+        "abs_p95_bp": 10.11,
+        "abs_max_bp": 55.54
+      },
+      "high_vol": {
+        "count": 2160,
+        "signed_mean_bp": -0.22,
+        "abs_mean_bp": 3.13,
+        "abs_median_bp": 2.38,
+        "abs_p95_bp": 9.03,
+        "abs_max_bp": 21.92
+      },
+      "trade_backed": {
+        "count": 6757,
+        "signed_mean_bp": -0.49,
+        "abs_mean_bp": 3.16,
+        "abs_median_bp": 2.12,
+        "abs_p95_bp": 11.04,
+        "abs_max_bp": 55.37
+      },
+      "quote_derived": {
+        "count": 20321,
+        "signed_mean_bp": -0.19,
+        "abs_mean_bp": 2.97,
+        "abs_median_bp": 2.14,
+        "abs_p95_bp": 9.62,
+        "abs_max_bp": 55.54
+      }
+    },
+    "persistence": {
+      "gt_10bp_runs": {
+        "n_runs": 679,
+        "median_min": 1.0,
+        "p95_min": 5.1,
+        "max_min": 35
+      },
+      "gt_25bp_runs": {
+        "n_runs": 1,
+        "median_min": 2.0,
+        "p95_min": 2.0,
+        "max_min": 2
+      },
+      "gt_50bp_runs": {
+        "n_runs": 1,
+        "median_min": 2.0,
+        "p95_min": 2.0,
+        "max_min": 2
+      }
+    },
+    "recovery_after_ge25bp_pct": {
+      "within_1_bars": 0.0,
+      "within_2_bars": 0.0,
+      "within_3_bars": 0.0
+    },
+    "n_ge25bp_events": 2,
+    "ar1_phi": 0.6931,
+    "ar1_half_life_min": 1.9
+  },
+  "SOL/USD": {
+    "binance_rows": 43200,
+    "alpaca_rows": 29519,
+    "joined_rows": 29519,
+    "alpaca_coverage_pct": 68.3,
+    "trade_backed_pct_of_joined": 17.5,
+    "high_vol_threshold_abs_1m_logret": 0.001583,
+    "raw_basis": {
+      "all": {
+        "count": 29519,
+        "signed_mean_bp": -9.94,
+        "abs_mean_bp": 10.16,
+        "abs_median_bp": 9.58,
+        "abs_p95_bp": 18.15,
+        "abs_max_bp": 94.44
+      },
+      "high_vol": {
+        "count": 2160,
+        "signed_mean_bp": -12.05,
+        "abs_mean_bp": 12.3,
+        "abs_median_bp": 12.36,
+        "abs_p95_bp": 20.11,
+        "abs_max_bp": 39.04
+      }
+    },
+    "venue_basis": {
+      "all": {
+        "count": 29519,
+        "signed_mean_bp": -0.04,
+        "abs_mean_bp": 3.38,
+        "abs_median_bp": 2.28,
+        "abs_p95_bp": 11.67,
+        "abs_max_bp": 90.76
+      },
+      "high_vol": {
+        "count": 2160,
+        "signed_mean_bp": 0.06,
+        "abs_mean_bp": 3.57,
+        "abs_median_bp": 2.42,
+        "abs_p95_bp": 12.08,
+        "abs_max_bp": 26.38
+      },
+      "trade_backed": {
+        "count": 5156,
+        "signed_mean_bp": -0.17,
+        "abs_mean_bp": 3.28,
+        "abs_median_bp": 2.17,
+        "abs_p95_bp": 11.77,
+        "abs_max_bp": 29.06
+      },
+      "quote_derived": {
+        "count": 24363,
+        "signed_mean_bp": -0.01,
+        "abs_mean_bp": 3.4,
+        "abs_median_bp": 2.31,
+        "abs_p95_bp": 11.65,
+        "abs_max_bp": 90.76
+      }
+    },
+    "persistence": {
+      "gt_10bp_runs": {
+        "n_runs": 1115,
+        "median_min": 1.0,
+        "p95_min": 5.0,
+        "max_min": 19
+      },
+      "gt_25bp_runs": {
+        "n_runs": 4,
+        "median_min": 1.0,
+        "p95_min": 1.0,
+        "max_min": 1
+      },
+      "gt_50bp_runs": {
+        "n_runs": 1,
+        "median_min": 1.0,
+        "p95_min": 1.0,
+        "max_min": 1
+      }
+    },
+    "recovery_after_ge25bp_pct": {
+      "within_1_bars": 75.0,
+      "within_2_bars": 75.0,
+      "within_3_bars": 75.0
+    },
+    "n_ge25bp_events": 4,
+    "ar1_phi": 0.6727,
+    "ar1_half_life_min": 1.7
+  },
+  "DOGE/USD": {
+    "binance_rows": 43200,
+    "alpaca_rows": 26150,
+    "joined_rows": 26150,
+    "alpaca_coverage_pct": 60.5,
+    "trade_backed_pct_of_joined": 4.7,
+    "high_vol_threshold_abs_1m_logret": 0.001391,
+    "raw_basis": {
+      "all": {
+        "count": 26150,
+        "signed_mean_bp": -9.87,
+        "abs_mean_bp": 9.91,
+        "abs_median_bp": 9.43,
+        "abs_p95_bp": 17.14,
+        "abs_max_bp": 29.92
+      },
+      "high_vol": {
+        "count": 2160,
+        "signed_mean_bp": -10.78,
+        "abs_mean_bp": 10.86,
+        "abs_median_bp": 10.67,
+        "abs_p95_bp": 18.28,
+        "abs_max_bp": 29.92
+      }
+    },
+    "venue_basis": {
+      "all": {
+        "count": 26150,
+        "signed_mean_bp": -0.09,
+        "abs_mean_bp": 3.05,
+        "abs_median_bp": 2.17,
+        "abs_p95_bp": 10.49,
+        "abs_max_bp": 26.03
+      },
+      "high_vol": {
+        "count": 2160,
+        "signed_mean_bp": 0.13,
+        "abs_mean_bp": 3.02,
+        "abs_median_bp": 2.29,
+        "abs_p95_bp": 9.29,
+        "abs_max_bp": 17.63
+      },
+      "trade_backed": {
+        "count": 1237,
+        "signed_mean_bp": 0.14,
+        "abs_mean_bp": 2.96,
+        "abs_median_bp": 2.05,
+        "abs_p95_bp": 10.55,
+        "abs_max_bp": 18.73
+      },
+      "quote_derived": {
+        "count": 24913,
+        "signed_mean_bp": -0.1,
+        "abs_mean_bp": 3.05,
+        "abs_median_bp": 2.18,
+        "abs_p95_bp": 10.48,
+        "abs_max_bp": 26.03
+      }
+    },
+    "persistence": {
+      "gt_10bp_runs": {
+        "n_runs": 833,
+        "median_min": 1.0,
+        "p95_min": 4.0,
+        "max_min": 13
+      },
+      "gt_25bp_runs": {
+        "n_runs": 1,
+        "median_min": 1.0,
+        "p95_min": 1.0,
+        "max_min": 1
+      },
+      "gt_50bp_runs": {
+        "n_runs": 0,
+        "median_min": 0.0,
+        "p95_min": 0.0,
+        "max_min": 0
+      }
+    },
+    "recovery_after_ge25bp_pct": {
+      "within_1_bars": 0.0,
+      "within_2_bars": 0.0,
+      "within_3_bars": 0.0
+    },
+    "n_ge25bp_events": 1,
+    "ar1_phi": 0.6293,
+    "ar1_half_life_min": 1.5
+  },
+  "XRP/USD": {
+    "binance_rows": 43200,
+    "alpaca_rows": 25775,
+    "joined_rows": 25775,
+    "alpaca_coverage_pct": 59.7,
+    "trade_backed_pct_of_joined": 15.8,
+    "high_vol_threshold_abs_1m_logret": 0.001296,
+    "raw_basis": {
+      "all": {
+        "count": 25775,
+        "signed_mean_bp": -9.8,
+        "abs_mean_bp": 9.89,
+        "abs_median_bp": 9.43,
+        "abs_p95_bp": 17.47,
+        "abs_max_bp": 110.68
+      },
+      "high_vol": {
+        "count": 2160,
+        "signed_mean_bp": -10.64,
+        "abs_mean_bp": 10.74,
+        "abs_median_bp": 10.51,
+        "abs_p95_bp": 18.21,
+        "abs_max_bp": 31.06
+      }
+    },
+    "venue_basis": {
+      "all": {
+        "count": 25775,
+        "signed_mean_bp": -0.01,
+        "abs_mean_bp": 3.22,
+        "abs_median_bp": 2.27,
+        "abs_p95_bp": 10.85,
+        "abs_max_bp": 106.99
+      },
+      "high_vol": {
+        "count": 2160,
+        "signed_mean_bp": 0.38,
+        "abs_mean_bp": 3.19,
+        "abs_median_bp": 2.4,
+        "abs_p95_bp": 9.69,
+        "abs_max_bp": 21.96
+      },
+      "trade_backed": {
+        "count": 4075,
+        "signed_mean_bp": -0.16,
+        "abs_mean_bp": 3.2,
+        "abs_median_bp": 2.21,
+        "abs_p95_bp": 11.24,
+        "abs_max_bp": 25.93
+      },
+      "quote_derived": {
+        "count": 21700,
+        "signed_mean_bp": 0.02,
+        "abs_mean_bp": 3.22,
+        "abs_median_bp": 2.29,
+        "abs_p95_bp": 10.71,
+        "abs_max_bp": 106.99
+      }
+    },
+    "persistence": {
+      "gt_10bp_runs": {
+        "n_runs": 877,
+        "median_min": 1.0,
+        "p95_min": 5.0,
+        "max_min": 18
+      },
+      "gt_25bp_runs": {
+        "n_runs": 4,
+        "median_min": 1.0,
+        "p95_min": 1.8,
+        "max_min": 2
+      },
+      "gt_50bp_runs": {
+        "n_runs": 1,
+        "median_min": 1.0,
+        "p95_min": 1.0,
+        "max_min": 1
+      }
+    },
+    "recovery_after_ge25bp_pct": {
+      "within_1_bars": 40.0,
+      "within_2_bars": 60.0,
+      "within_3_bars": 80.0
+    },
+    "n_ge25bp_events": 5,
+    "ar1_phi": 0.625,
+    "ar1_half_life_min": 1.5
+  },
+  "AAVE/USD": {
+    "binance_symbol": "AAVEUSDT",
+    "joined_rows": 35377,
+    "alpaca_coverage_pct": 81.9,
+    "trade_backed_pct_of_joined": 4.2,
+    "venue_basis": {
+      "all": {
+        "count": 35377,
+        "signed_mean_bp": -0.34,
+        "abs_median_bp": 2.24,
+        "abs_p95_bp": 10.74,
+        "abs_max_bp": 251.54
+      },
+      "high_vol": {
+        "count": 2160,
+        "signed_mean_bp": -0.32,
+        "abs_median_bp": 2.35,
+        "abs_p95_bp": 10.48,
+        "abs_max_bp": 106.06
+      }
+    },
+    "n_ge25bp_events": 3,
+    "ar1_phi": 0.6542,
+    "ar1_half_life_min": 1.6
+  },
+  "AVAX/USD": {
+    "binance_symbol": "AVAXUSDT",
+    "joined_rows": 28374,
+    "alpaca_coverage_pct": 65.7,
+    "trade_backed_pct_of_joined": 6.1,
+    "venue_basis": {
+      "all": {
+        "count": 28374,
+        "signed_mean_bp": 0.39,
+        "abs_median_bp": 2.55,
+        "abs_p95_bp": 14.56,
+        "abs_max_bp": 157.25
+      },
+      "high_vol": {
+        "count": 2160,
+        "signed_mean_bp": -0.0,
+        "abs_median_bp": 2.62,
+        "abs_p95_bp": 14.71,
+        "abs_max_bp": 33.94
+      }
+    },
+    "n_ge25bp_events": 181,
+    "ar1_phi": 0.7491,
+    "ar1_half_life_min": 2.4
+  },
+  "BAT/USD": {
+    "binance_symbol": "BATUSDT",
+    "joined_rows": 18853,
+    "alpaca_coverage_pct": 43.6,
+    "trade_backed_pct_of_joined": 0.7,
+    "venue_basis": {
+      "all": {
+        "count": 18853,
+        "signed_mean_bp": -0.04,
+        "abs_median_bp": 6.37,
+        "abs_p95_bp": 23.04,
+        "abs_max_bp": 341.82
+      },
+      "high_vol": {
+        "count": 1913,
+        "signed_mean_bp": -0.01,
+        "abs_median_bp": 5.95,
+        "abs_p95_bp": 19.62,
+        "abs_max_bp": 88.49
+      }
+    },
+    "n_ge25bp_events": 728,
+    "ar1_phi": 0.4552,
+    "ar1_half_life_min": 0.9
+  },
+  "BCH/USD": {
+    "binance_symbol": "BCHUSDT",
+    "joined_rows": 29571,
+    "alpaca_coverage_pct": 68.5,
+    "trade_backed_pct_of_joined": 3.1,
+    "venue_basis": {
+      "all": {
+        "count": 29571,
+        "signed_mean_bp": -0.09,
+        "abs_median_bp": 2.67,
+        "abs_p95_bp": 13.5,
+        "abs_max_bp": 508.91
+      },
+      "high_vol": {
+        "count": 2159,
+        "signed_mean_bp": -0.0,
+        "abs_median_bp": 2.58,
+        "abs_p95_bp": 10.92,
+        "abs_max_bp": 32.69
+      }
+    },
+    "n_ge25bp_events": 130,
+    "ar1_phi": 0.4973,
+    "ar1_half_life_min": 1.0
+  },
+  "CRV/USD": {
+    "binance_symbol": "CRVUSDT",
+    "joined_rows": 30422,
+    "alpaca_coverage_pct": 70.4,
+    "trade_backed_pct_of_joined": 1.9,
+    "venue_basis": {
+      "all": {
+        "count": 30422,
+        "signed_mean_bp": 0.42,
+        "abs_median_bp": 3.49,
+        "abs_p95_bp": 11.91,
+        "abs_max_bp": 88.38
+      },
+      "high_vol": {
+        "count": 2159,
+        "signed_mean_bp": 0.08,
+        "abs_median_bp": 3.72,
+        "abs_p95_bp": 13.23,
+        "abs_max_bp": 25.69
+      }
+    },
+    "n_ge25bp_events": 8,
+    "ar1_phi": 0.5008,
+    "ar1_half_life_min": 1.0
+  },
+  "DOT/USD": {
+    "binance_symbol": "DOTUSDT",
+    "joined_rows": 27725,
+    "alpaca_coverage_pct": 64.2,
+    "trade_backed_pct_of_joined": 3.3,
+    "venue_basis": {
+      "all": {
+        "count": 27725,
+        "signed_mean_bp": -0.58,
+        "abs_median_bp": 5.2,
+        "abs_p95_bp": 14.11,
+        "abs_max_bp": 464.2
+      },
+      "high_vol": {
+        "count": 2136,
+        "signed_mean_bp": -0.61,
+        "abs_median_bp": 6.21,
+        "abs_p95_bp": 15.24,
+        "abs_max_bp": 29.12
+      }
+    },
+    "n_ge25bp_events": 43,
+    "ar1_phi": 0.3043,
+    "ar1_half_life_min": 0.6
+  },
+  "GRT/USD": {
+    "binance_symbol": "GRTUSDT",
+    "joined_rows": 23428,
+    "alpaca_coverage_pct": 54.2,
+    "trade_backed_pct_of_joined": 0.9,
+    "venue_basis": {
+      "all": {
+        "count": 23428,
+        "signed_mean_bp": 3.4,
+        "abs_median_bp": 5.44,
+        "abs_p95_bp": 14.3,
+        "abs_max_bp": 41.83
+      },
+      "high_vol": {
+        "count": 2129,
+        "signed_mean_bp": 2.68,
+        "abs_median_bp": 5.55,
+        "abs_p95_bp": 16.14,
+        "abs_max_bp": 41.83
+      }
+    },
+    "n_ge25bp_events": 38,
+    "ar1_phi": 0.4695,
+    "ar1_half_life_min": 0.9
+  },
+  "LINK/USD": {
+    "binance_symbol": "LINKUSDT",
+    "joined_rows": 26369,
+    "alpaca_coverage_pct": 61.0,
+    "trade_backed_pct_of_joined": 5.7,
+    "venue_basis": {
+      "all": {
+        "count": 26369,
+        "signed_mean_bp": 0.14,
+        "abs_median_bp": 2.21,
+        "abs_p95_bp": 9.59,
+        "abs_max_bp": 149.16
+      },
+      "high_vol": {
+        "count": 2160,
+        "signed_mean_bp": 0.26,
+        "abs_median_bp": 2.27,
+        "abs_p95_bp": 8.9,
+        "abs_max_bp": 22.79
+      }
+    },
+    "n_ge25bp_events": 1,
+    "ar1_phi": 0.647,
+    "ar1_half_life_min": 1.6
+  },
+  "LTC/USD": {
+    "binance_symbol": "LTCUSDT",
+    "joined_rows": 24924,
+    "alpaca_coverage_pct": 57.7,
+    "trade_backed_pct_of_joined": 4.5,
+    "venue_basis": {
+      "all": {
+        "count": 24924,
+        "signed_mean_bp": 0.13,
+        "abs_median_bp": 2.33,
+        "abs_p95_bp": 12.26,
+        "abs_max_bp": 843.0
+      },
+      "high_vol": {
+        "count": 2160,
+        "signed_mean_bp": 0.44,
+        "abs_median_bp": 2.5,
+        "abs_p95_bp": 10.38,
+        "abs_max_bp": 33.27
+      }
+    },
+    "n_ge25bp_events": 104,
+    "ar1_phi": 0.6594,
+    "ar1_half_life_min": 1.7
+  },
+  "PEPE/USD": {
+    "binance_symbol": "PEPEUSDT",
+    "joined_rows": 27093,
+    "alpaca_coverage_pct": 62.7,
+    "trade_backed_pct_of_joined": 0.9,
+    "venue_basis": {
+      "all": {
+        "count": 27093,
+        "signed_mean_bp": -4.95,
+        "abs_median_bp": 11.23,
+        "abs_p95_bp": 47.66,
+        "abs_max_bp": 65.16
+      },
+      "high_vol": {
+        "count": 1739,
+        "signed_mean_bp": -3.14,
+        "abs_median_bp": 26.45,
+        "abs_p95_bp": 51.41,
+        "abs_max_bp": 65.16
+      }
+    },
+    "n_ge25bp_events": 9619,
+    "ar1_phi": 0.1453,
+    "ar1_half_life_min": 0.4
+  },
+  "SHIB/USD": {
+    "binance_symbol": "SHIBUSDT",
+    "joined_rows": 29907,
+    "alpaca_coverage_pct": 69.2,
+    "trade_backed_pct_of_joined": 1.3,
+    "venue_basis": {
+      "all": {
+        "count": 29907,
+        "signed_mean_bp": 0.56,
+        "abs_median_bp": 10.59,
+        "abs_p95_bp": 26.51,
+        "abs_max_bp": 52.05
+      },
+      "high_vol": {
+        "count": 1854,
+        "signed_mean_bp": 1.33,
+        "abs_median_bp": 13.15,
+        "abs_p95_bp": 28.03,
+        "abs_max_bp": 52.05
+      }
+    },
+    "n_ge25bp_events": 1716,
+    "ar1_phi": 0.2668,
+    "ar1_half_life_min": 0.5
+  },
+  "SKY/USD": {
+    "binance_symbol": "SKYUSDT",
+    "joined_rows": 26572,
+    "alpaca_coverage_pct": 61.5,
+    "trade_backed_pct_of_joined": 0.9,
+    "venue_basis": {
+      "all": {
+        "count": 26572,
+        "signed_mean_bp": -0.5,
+        "abs_median_bp": 2.7,
+        "abs_p95_bp": 12.13,
+        "abs_max_bp": 53.32
+      },
+      "high_vol": {
+        "count": 2157,
+        "signed_mean_bp": -1.01,
+        "abs_median_bp": 3.0,
+        "abs_p95_bp": 13.39,
+        "abs_max_bp": 53.32
+      }
+    },
+    "n_ge25bp_events": 14,
+    "ar1_phi": 0.6065,
+    "ar1_half_life_min": 1.4
+  },
+  "SUSHI/USD": {
+    "binance_symbol": "SUSHIUSDT",
+    "joined_rows": 28890,
+    "alpaca_coverage_pct": 66.9,
+    "trade_backed_pct_of_joined": 0.7,
+    "venue_basis": {
+      "all": {
+        "count": 28890,
+        "signed_mean_bp": 0.25,
+        "abs_median_bp": 5.18,
+        "abs_p95_bp": 18.0,
+        "abs_max_bp": 1249.32
+      },
+      "high_vol": {
+        "count": 2114,
+        "signed_mean_bp": 0.59,
+        "abs_median_bp": 5.24,
+        "abs_p95_bp": 16.68,
+        "abs_max_bp": 50.47
+      }
+    },
+    "n_ge25bp_events": 409,
+    "ar1_phi": 0.2922,
+    "ar1_half_life_min": 0.6
+  },
+  "TRUMP/USD": {
+    "binance_symbol": "TRUMPUSDT",
+    "joined_rows": 27412,
+    "alpaca_coverage_pct": 63.5,
+    "trade_backed_pct_of_joined": 0.8,
+    "venue_basis": {
+      "all": {
+        "count": 27412,
+        "signed_mean_bp": -0.29,
+        "abs_median_bp": 3.6,
+        "abs_p95_bp": 12.1,
+        "abs_max_bp": 3003.4
+      },
+      "high_vol": {
+        "count": 2160,
+        "signed_mean_bp": 0.9,
+        "abs_median_bp": 3.64,
+        "abs_p95_bp": 12.06,
+        "abs_max_bp": 2597.04
+      }
+    },
+    "n_ge25bp_events": 44,
+    "ar1_phi": 0.0074,
+    "ar1_half_life_min": 0.1
+  },
+  "UNI/USD": {
+    "binance_symbol": "UNIUSDT",
+    "joined_rows": 33877,
+    "alpaca_coverage_pct": 78.4,
+    "trade_backed_pct_of_joined": 5.4,
+    "venue_basis": {
+      "all": {
+        "count": 33877,
+        "signed_mean_bp": -0.4,
+        "abs_median_bp": 2.41,
+        "abs_p95_bp": 10.94,
+        "abs_max_bp": 360.89
+      },
+      "high_vol": {
+        "count": 2160,
+        "signed_mean_bp": -0.51,
+        "abs_median_bp": 2.67,
+        "abs_p95_bp": 11.74,
+        "abs_max_bp": 27.11
+      }
+    },
+    "n_ge25bp_events": 7,
+    "ar1_phi": 0.4819,
+    "ar1_half_life_min": 0.9
+  },
+  "XTZ/USD": {
+    "binance_symbol": "XTZUSDT",
+    "joined_rows": 25625,
+    "alpaca_coverage_pct": 59.3,
+    "trade_backed_pct_of_joined": 0.9,
+    "venue_basis": {
+      "all": {
+        "count": 25625,
+        "signed_mean_bp": -0.38,
+        "abs_median_bp": 3.7,
+        "abs_p95_bp": 15.52,
+        "abs_max_bp": 41.65
+      },
+      "high_vol": {
+        "count": 2139,
+        "signed_mean_bp": -0.2,
+        "abs_median_bp": 3.41,
+        "abs_p95_bp": 13.15,
+        "abs_max_bp": 32.18
+      }
+    },
+    "n_ge25bp_events": 176,
+    "ar1_phi": 0.4373,
+    "ar1_half_life_min": 0.8
+  },
+  "YFI/USD": {
+    "binance_symbol": "YFIUSDT",
+    "joined_rows": 27991,
+    "alpaca_coverage_pct": 64.8,
+    "trade_backed_pct_of_joined": 0.8,
+    "venue_basis": {
+      "all": {
+        "count": 27991,
+        "signed_mean_bp": -0.05,
+        "abs_median_bp": 6.38,
+        "abs_p95_bp": 23.03,
+        "abs_max_bp": 117.19
+      },
+      "high_vol": {
+        "count": 2137,
+        "signed_mean_bp": -2.69,
+        "abs_median_bp": 6.37,
+        "abs_p95_bp": 23.69,
+        "abs_max_bp": 64.09
+      }
+    },
+    "n_ge25bp_events": 1098,
+    "ar1_phi": 0.5771,
+    "ar1_half_life_min": 1.3
+  },
+  "_frozen_basis_cap_proposal_bp": {
+    "BTC/USD": 11,
+    "ETH/USD": 13,
+    "SOL/USD": 16,
+    "DOGE/USD": 13,
+    "XRP/USD": 13,
+    "AAVE/USD": 14,
+    "AVAX/USD": 18,
+    "BAT/USD": 23,
+    "BCH/USD": 14,
+    "CRV/USD": 17,
+    "DOT/USD": 19,
+    "GRT/USD": 20,
+    "LINK/USD": 12,
+    "LTC/USD": 14,
+    "PEPE/USD": 55,
+    "SHIB/USD": 32,
+    "SKY/USD": 17,
+    "SUSHI/USD": 20,
+    "TRUMP/USD": 16,
+    "UNI/USD": 15,
+    "XTZ/USD": 17,
+    "YFI/USD": 27
+  }
+}
