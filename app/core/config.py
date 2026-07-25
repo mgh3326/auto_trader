@@ -631,6 +631,9 @@ class Settings(BaseSettings):
     # ROB-337 Slice 2 — watch validity review job. Default off; the task and
     # CLI are scheduleless / dry-run-default even when this is set.
     WATCH_VALIDITY_REVIEW_ENABLED: bool = False
+    # ROB-971: scheduleless TaskIQ expiry sweep. Enable only after manual
+    # operator reps; recurring scheduling remains a separate decision.
+    watch_expire_sweep_enabled: bool = False
 
     # MCP caller identity fallback for non-HTTP/manual runs
     mcp_caller_agent_id_fallback: str | None = Field(
