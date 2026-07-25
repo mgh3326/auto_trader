@@ -141,8 +141,10 @@ describe("MonthlyEventsTimeline", () => {
     expect(screen.queryByTestId("calendar-timeline-empty")).not.toBeInTheDocument();
     const may11 = document.querySelector('[data-day-anchor="2026-05-11"]')!;
     expect(within(may11 as HTMLElement).getByText("AAPL")).toBeInTheDocument();
-    // May 13 cluster present somewhere in the timeline.
-    expect(screen.getByText("미국 실적 발표 4건")).toBeInTheDocument();
+    // May 13 cluster present somewhere in the timeline. ROB-186: a cluster with no
+    // topEvents renders as the ClusterOverflow row ("{base} · 그 외 {count}건"), not
+    // the aggregate title verbatim.
+    expect(screen.getByText("미국 실적 발표 · 그 외 4건")).toBeInTheDocument();
   });
 
   test("selectedDate flags only the matching section", () => {
