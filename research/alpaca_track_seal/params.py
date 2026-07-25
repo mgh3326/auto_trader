@@ -29,6 +29,7 @@ __all__ = [
     "SpreadCensusSeal",
     "SymbolSpreadEntry",
     "SymbolUniverseEntry",
+    "UniverseSealError",
     "build_sealed_params",
     "validate_cost_scenarios",
     "validate_sealed_universe",
