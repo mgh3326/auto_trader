@@ -428,6 +428,7 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "get_investment_opinions",
         "get_investor_trends",
         "get_kimchi_premium",
+        "get_krx_session_health",
         "get_latest_market_brief",
         "get_market_index",
         "get_market_issues",

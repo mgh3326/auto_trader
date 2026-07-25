@@ -387,6 +387,15 @@ async def test_fallback_stale_snapshot_returned_not_hard_zero():
     assert len(resp["results"]) == 1  # NOT hard-0
 
 
+def test_expired_krx_warning_names_snapshot_and_momentum_fallbacks():
+    response = kr_mod._krx_session_unavailable_response("kr", "volume", "desc")
+
+    warning = response["warnings"][0]
+    assert "screen_stocks_snapshot" in warning
+    assert "get_momentum_candidates" in warning
+    assert response["meta"]["reason"] == "krx_session_expired"
+
+
 @pytest.mark.asyncio
 @pytest.mark.unit
 async def test_fallback_none_snapshot_goes_live():
