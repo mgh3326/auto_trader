@@ -26,11 +26,15 @@ from frozen_config import FROZEN_CONFIG, CampaignConfig
 SCHEMA_VERSION = "rob351_campaign.v1"
 
 
-def _gate_trade(data: list, fee_bps: float, min_trades: int) -> tuple[vg.GateReport, float, float, float]:
+def _gate_trade(
+    data: list, fee_bps: float, min_trades: int
+) -> tuple[vg.GateReport, float, float, float]:
     rep = vg.evaluate_gate(
         candidate_runs={"p": data},
-        baseline_breakout=[], baseline_random=[],
-        fee_bps=fee_bps, min_trades=min_trades,
+        baseline_breakout=[],
+        baseline_random=[],
+        fee_bps=fee_bps,
+        min_trades=min_trades,
     )
     gross = rep.results.get("gross", {}).get("net_pnl", 0.0)
     net = rep.results.get("net_after_cost", {}).get("net_pnl", 0.0)
@@ -38,10 +42,14 @@ def _gate_trade(data: list, fee_bps: float, min_trades: int) -> tuple[vg.GateRep
     return rep, gross, net, breakeven
 
 
-def _gate_portfolio(data: list, fee_bps: float, min_periods: int) -> tuple[vg.GateReport, float, float, float]:
+def _gate_portfolio(
+    data: list, fee_bps: float, min_periods: int
+) -> tuple[vg.GateReport, float, float, float]:
     rep = vg.evaluate_gate_portfolio(
-        candidate_runs={"p": data}, baseline_periods=[],
-        fee_bps=fee_bps, min_periods=min_periods,
+        candidate_runs={"p": data},
+        baseline_periods=[],
+        fee_bps=fee_bps,
+        min_periods=min_periods,
     )
     gross = rep.results.get("gross", {}).get("net_pnl", 0.0)
     net = rep.results.get("net_after_cost", {}).get("net_pnl", 0.0)
@@ -64,7 +72,8 @@ def run_campaign(
         name = spec["name"]
         summary = spec["summary"]
         classified = classify(
-            summary, cost_blind=True,
+            summary,
+            cost_blind=True,
             min_samples=min(summary.sample_count, min_trades) if min_trades else 1,
             min_gross_bps=config.economic_triviality_floor_bps,
         )
@@ -82,14 +91,17 @@ def run_campaign(
             continue
 
         if spec["kind"] == "portfolio":
-            rep, gross, net, breakeven = _gate_portfolio(spec["data"], fee_bps, min_trades)
+            rep, gross, net, breakeven = _gate_portfolio(
+                spec["data"], fee_bps, min_trades
+            )
         else:
             rep, gross, net, breakeven = _gate_trade(spec["data"], fee_bps, min_trades)
         row["gate_verdict"] = rep.verdict
         oos_significant = rep.verdict != "insufficient_data"
 
         verdict = rob343_label.label_343_candidate(
-            taker_net_pnl=net, gross_pnl=gross,
+            taker_net_pnl=net,
+            gross_pnl=gross,
             maker_conservative_net=(spec.get("maker_conservative_net") or 0.0),
             oos_significant=oos_significant,
             breakeven_taker_bps=breakeven,

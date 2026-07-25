@@ -7,6 +7,7 @@
     signals(bars)[:k] outside the warmup tail;
 (c) the module runs on a small real slice without error.
 """
+
 from __future__ import annotations
 
 import rob382_bars as rb
@@ -19,14 +20,20 @@ _1H_MS = 60 * 60 * 1000
 _5M_OFFSET_MS = 48 * _1H_MS
 
 
-def _bar(i: int, o: float, h: float, low: float, c: float, vol: float = 100.0) -> rb.OHLCVBar:
+def _bar(
+    i: int, o: float, h: float, low: float, c: float, vol: float = 100.0
+) -> rb.OHLCVBar:
     ts = _5M_OFFSET_MS + i * _5M_MS
-    return rb.OHLCVBar(ts=ts, open=o, high=h, low=low, close=c, volume=vol, close_ts=ts + _5M_MS - 1)
+    return rb.OHLCVBar(
+        ts=ts, open=o, high=h, low=low, close=c, volume=vol, close_ts=ts + _5M_MS - 1
+    )
 
 
 def _bar_1h(i: int, c: float, vol: float = 1000.0) -> rb.OHLCVBar:
     ts = i * _1H_MS
-    return rb.OHLCVBar(ts=ts, open=c, high=c, low=c, close=c, volume=vol, close_ts=ts + _1H_MS - 1)
+    return rb.OHLCVBar(
+        ts=ts, open=c, high=c, low=c, close=c, volume=vol, close_ts=ts + _1H_MS - 1
+    )
 
 
 def _build_5m_series() -> list[rb.OHLCVBar]:
@@ -75,7 +82,9 @@ def test_entry_fires_on_documented_condB() -> None:
     entry, _exit = m.signals(bars, bars_1h)
     assert len(entry) == len(bars)
     # The crash region (last ~25 bars) must produce at least one entry via condB.
-    assert any(entry[260:]), "expected condB entry during the EWO-deep-negative crash dip"
+    assert any(entry[260:]), (
+        "expected condB entry during the EWO-deep-negative crash dip"
+    )
 
 
 def test_entry_blocked_when_uptrend_broken() -> None:

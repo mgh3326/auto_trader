@@ -64,9 +64,7 @@ def missing_kis_cred_names() -> list[str]:
 
 def evaluate_field_presence(output: Mapping[str, Any]) -> dict[str, bool]:
     """Map each expected HHDFS00000300 field to present-and-non-blank."""
-    return {
-        field: output.get(field) not in (None, "") for field in EXPECTED_FIELDS
-    }
+    return {field: output.get(field) not in (None, "") for field in EXPECTED_FIELDS}
 
 
 def decide_exit_code(price: float | None) -> int:
@@ -186,8 +184,10 @@ async def run_smoke(
             print(f"[smoke] get_quote(US) 예외({type(exc).__name__}): {exc}")
 
     code = decide_exit_code(price)
-    verdict = "OK (KIS-primary 라이브 현재가 확인)" if code == 0 else (
-        "현재가 없음/0 — raw output 필드명/세션 확인 필요"
+    verdict = (
+        "OK (KIS-primary 라이브 현재가 확인)"
+        if code == 0
+        else ("현재가 없음/0 — raw output 필드명/세션 확인 필요")
     )
     print(f"[smoke] verdict: exit={code} — {verdict}")
     return code

@@ -42,9 +42,21 @@ SPECS = [
     ("breakout 100/100", "breakout", 100, 100, {}),
     ("ict S+V+F (all)", "ict", 100, 100, {"session": True, "vol": True, "fvg": True}),
     ("ict S+V (no FVG)", "ict", 100, 100, {"session": True, "vol": True, "fvg": False}),
-    ("ict V+F (no sess)", "ict", 100, 100, {"session": False, "vol": True, "fvg": True}),
+    (
+        "ict V+F (no sess)",
+        "ict",
+        100,
+        100,
+        {"session": False, "vol": True, "fvg": True},
+    ),
     ("ict vol-only", "ict", 100, 100, {"session": False, "vol": True, "fvg": False}),
-    ("ict session-only", "ict", 100, 100, {"session": True, "vol": False, "fvg": False}),
+    (
+        "ict session-only",
+        "ict",
+        100,
+        100,
+        {"session": True, "vol": False, "fvg": False},
+    ),
 ]
 
 
@@ -68,8 +80,11 @@ def _run_single(catalog_path, symbol, strategy, tp, sl, trade_size, flags):
         )
     )
     engine.add_venue(
-        venue=Venue("BINANCE"), oms_type=OmsType.HEDGING, account_type=AccountType.CASH,
-        base_currency=None, starting_balances=[Money(1_000_000, USDT)],
+        venue=Venue("BINANCE"),
+        oms_type=OmsType.HEDGING,
+        account_type=AccountType.CASH,
+        base_currency=None,
+        starting_balances=[Money(1_000_000, USDT)],
     )
     engine.add_instrument(instrument)
     engine.add_data(ticks)
@@ -77,18 +92,32 @@ def _run_single(catalog_path, symbol, strategy, tp, sl, trade_size, flags):
 
     if strategy == "breakout":
         from strategy_breakout import BreakoutScalper, BreakoutScalperConfig
-        strat = BreakoutScalper(BreakoutScalperConfig(
-            instrument_id=instrument.id, bar_type=bar_type,
-            trade_size=trade_size, tp_bps=tp, sl_bps=sl))
+
+        strat = BreakoutScalper(
+            BreakoutScalperConfig(
+                instrument_id=instrument.id,
+                bar_type=bar_type,
+                trade_size=trade_size,
+                tp_bps=tp,
+                sl_bps=sl,
+            )
+        )
     else:
         from strategy_ict import IctScalper, IctScalperConfig
-        strat = IctScalper(IctScalperConfig(
-            instrument_id=instrument.id, bar_type=bar_type, trade_size=trade_size,
-            tp_bps=tp, sl_bps=sl,
-            require_session=flags.get("session", True),
-            require_vol=flags.get("vol", True),
-            require_fvg=flags.get("fvg", True),
-            require_sweep=flags.get("sweep", False)))
+
+        strat = IctScalper(
+            IctScalperConfig(
+                instrument_id=instrument.id,
+                bar_type=bar_type,
+                trade_size=trade_size,
+                tp_bps=tp,
+                sl_bps=sl,
+                require_session=flags.get("session", True),
+                require_vol=flags.get("vol", True),
+                require_fvg=flags.get("fvg", True),
+                require_sweep=flags.get("sweep", False),
+            )
+        )
     engine.add_strategy(strat)
     engine.run()
 
@@ -123,14 +152,29 @@ def _metrics(trades, fee_bps):
 
 
 def _worker(catalog, symbol, strategy, tp, sl, size, flags):
-    cmd = [sys.executable, os.path.abspath(__file__), "--single",
-           "--strategy", strategy, "--tp", str(tp), "--sl", str(sl),
-           "--catalog", str(catalog), "--symbol", symbol, "--trade-size", size,
-           "--flags", json.dumps(flags)]
+    cmd = [
+        sys.executable,
+        os.path.abspath(__file__),
+        "--single",
+        "--strategy",
+        strategy,
+        "--tp",
+        str(tp),
+        "--sl",
+        str(sl),
+        "--catalog",
+        str(catalog),
+        "--symbol",
+        symbol,
+        "--trade-size",
+        size,
+        "--flags",
+        json.dumps(flags),
+    ]
     proc = subprocess.run(cmd, capture_output=True, text=True, env=os.environ)
     for line in proc.stdout.splitlines():
         if line.startswith(_SENTINEL):
-            return json.loads(line[len(_SENTINEL):])["trades"]
+            return json.loads(line[len(_SENTINEL) :])["trades"]
     raise RuntimeError(f"worker {strategy} {tp}/{sl} failed:\n{proc.stderr[-700:]}")
 
 
@@ -140,8 +184,11 @@ def main() -> int:
     ap.add_argument("--symbol", default="XRPUSDT")
     ap.add_argument("--trade-size", default="100")
     ap.add_argument("--export", default="results/compare.csv", type=Path)
-    ap.add_argument("--specs", default="",
-                    help="comma-sep label substrings to include (default: all)")
+    ap.add_argument(
+        "--specs",
+        default="",
+        help="comma-sep label substrings to include (default: all)",
+    )
     ap.add_argument("--single", action="store_true")
     ap.add_argument("--strategy", choices=["breakout", "ict"])
     ap.add_argument("--tp", type=int)
@@ -150,19 +197,32 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.single:
-        _run_single(args.catalog, args.symbol, args.strategy, args.tp, args.sl,
-                    args.trade_size, json.loads(args.flags))
+        _run_single(
+            args.catalog,
+            args.symbol,
+            args.strategy,
+            args.tp,
+            args.sl,
+            args.trade_size,
+            json.loads(args.flags),
+        )
         return 0
 
     print(f"compare: {args.symbol}, size={args.trade_size}, fees={FEE_GRID_BPS}")
-    print("profit judged at realistic fee (10/7.5 bps taker); 0bps = gross-edge reference only.\n")
+    print(
+        "profit judged at realistic fee (10/7.5 bps taker); 0bps = gross-edge reference only.\n"
+    )
 
-    specs = SPECS if not args.specs else [
-        s for s in SPECS if any(k.strip() in s[0] for k in args.specs.split(","))
-    ]
+    specs = (
+        SPECS
+        if not args.specs
+        else [s for s in SPECS if any(k.strip() in s[0] for k in args.specs.split(","))]
+    )
     out_rows = []
     for label, strategy, tp, sl, flags in specs:
-        trades = _worker(args.catalog, args.symbol, strategy, tp, sl, args.trade_size, flags)
+        trades = _worker(
+            args.catalog, args.symbol, strategy, tp, sl, args.trade_size, flags
+        )
         n_total = len(trades)
         flag = "  <-- LOW TRADES (overfit risk)" if n_total < OVERFIT_MIN_TRADES else ""
         print(f"### {label}   (trades={n_total}){flag}")
@@ -171,18 +231,32 @@ def main() -> int:
             n, net, win, avg_bps, mdd = _metrics(trades, fee)
             tag = "GROSS" if fee == 0.0 else f"{fee:.1f}"
             print(f"   {tag:>5} {net:>+10.1f} {win:>6.1f} {avg_bps:>+8.1f} {mdd:>9.1f}")
-            out_rows.append({
-                "strategy": label, "fee_bps_per_leg": fee, "trades": n,
-                "net_pnl_usdt": round(net, 2), "win_rate_pct": round(win, 1),
-                "avg_bps_per_trade": round(avg_bps, 2), "max_drawdown_usdt": round(mdd, 2),
-                "low_trade_overfit_flag": n_total < OVERFIT_MIN_TRADES,
-            })
+            out_rows.append(
+                {
+                    "strategy": label,
+                    "fee_bps_per_leg": fee,
+                    "trades": n,
+                    "net_pnl_usdt": round(net, 2),
+                    "win_rate_pct": round(win, 1),
+                    "avg_bps_per_trade": round(avg_bps, 2),
+                    "max_drawdown_usdt": round(mdd, 2),
+                    "low_trade_overfit_flag": n_total < OVERFIT_MIN_TRADES,
+                }
+            )
         print()
 
     print("verdict (realistic taker fees):")
     for label, *_ in [(s[0],) for s in specs]:
-        net10 = next(r["net_pnl_usdt"] for r in out_rows if r["strategy"] == label and r["fee_bps_per_leg"] == 10.0)
-        net75 = next(r["net_pnl_usdt"] for r in out_rows if r["strategy"] == label and r["fee_bps_per_leg"] == 7.5)
+        net10 = next(
+            r["net_pnl_usdt"]
+            for r in out_rows
+            if r["strategy"] == label and r["fee_bps_per_leg"] == 10.0
+        )
+        net75 = next(
+            r["net_pnl_usdt"]
+            for r in out_rows
+            if r["strategy"] == label and r["fee_bps_per_leg"] == 7.5
+        )
         print(f"  {label:>22}: 10bps={net10:+.1f}  7.5bps={net75:+.1f}")
 
     args.export.parent.mkdir(parents=True, exist_ok=True)

@@ -58,7 +58,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=100,
         help="Symbols per processing batch when --all is set (default 100).",
     )
-    parser.add_argument("--concurrency", type=int, default=4, help="Per-symbol fetch concurrency.")
+    parser.add_argument(
+        "--concurrency", type=int, default=4, help="Per-symbol fetch concurrency."
+    )
     parser.add_argument(
         "--commit",
         action="store_true",

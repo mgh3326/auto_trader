@@ -22,6 +22,7 @@ taker trades) — no builder needed for it.
 Missed fills (entry limit cancelled on timeout) earn nothing and are simply
 ABSENT from the record list; the re-sim reports the missed count separately.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -29,20 +30,20 @@ from hashlib import blake2b
 
 from validated_gate import Trade  # pure import (stdlib-only module)
 
-REF_FEE_BPS = 10.0          # mirrors validated_gate.REF_FEE_BPS (as-run reference point)
-TAKER_BASELINE_BPS = 4.0    # real demo taker
-MAKER_FEE_BPS = 2.0         # real demo maker
+REF_FEE_BPS = 10.0  # mirrors validated_gate.REF_FEE_BPS (as-run reference point)
+TAKER_BASELINE_BPS = 4.0  # real demo taker
+MAKER_FEE_BPS = 2.0  # real demo maker
 
 
 @dataclass(frozen=True)
 class MakerTradeRecord:
-    gross: float                 # realized price P&L on the zero-fee re-sim (fee-free)
-    entry_notional: float        # entry leg notional (price * qty)
-    exit_notional: float         # exit leg notional (price * qty)
+    gross: float  # realized price P&L on the zero-fee re-sim (fee-free)
+    entry_notional: float  # entry leg notional (price * qty)
+    exit_notional: float  # exit leg notional (price * qty)
     ts_opened: int
-    filled: bool                 # False = limit cancelled (missed fill)
-    tp_hit: bool                 # exit was the maker-limit TP (vs the taker stop SL)
-    adverse_excursion_bps: float # worst adverse move between fill and exit, bps
+    filled: bool  # False = limit cancelled (missed fill)
+    tp_hit: bool  # exit was the maker-limit TP (vs the taker stop SL)
+    adverse_excursion_bps: float  # worst adverse move between fill and exit, bps
 
 
 def _legs_fee(record: MakerTradeRecord) -> float:
@@ -63,8 +64,14 @@ def build_maker_optimistic(records: list[MakerTradeRecord]) -> list[Trade]:
         if not r.filled:
             continue
         fee = _legs_fee(r)
-        out.append(Trade(net_ref_pnl=r.gross - fee, commission_ref=fee,
-                         notional=r.entry_notional, ts_opened=r.ts_opened))
+        out.append(
+            Trade(
+                net_ref_pnl=r.gross - fee,
+                commission_ref=fee,
+                notional=r.entry_notional,
+                ts_opened=r.ts_opened,
+            )
+        )
     return out
 
 
@@ -77,7 +84,7 @@ def classify_easy_tp(record: MakerTradeRecord, excursion_eps_bps: float = 2.0) -
 def _uniform_from_ts(ts_opened: int) -> float:
     """Deterministic uniform [0,1) from the trade timestamp (reproducible, no RNG)."""
     digest = blake2b(str(ts_opened).encode(), digest_size=8).digest()
-    return int.from_bytes(digest, "big") / 2.0 ** 64
+    return int.from_bytes(digest, "big") / 2.0**64
 
 
 def build_maker_conservative(
@@ -98,10 +105,19 @@ def build_maker_conservative(
     for r in records:
         if not r.filled:
             continue
-        if classify_easy_tp(r, excursion_eps_bps) and _uniform_from_ts(r.ts_opened) < queue_loss_pct:
+        if (
+            classify_easy_tp(r, excursion_eps_bps)
+            and _uniform_from_ts(r.ts_opened) < queue_loss_pct
+        ):
             continue  # queue loss
         fee = _legs_fee(r)
         adverse_cost = adverse_bps * r.entry_notional / 10_000.0
-        out.append(Trade(net_ref_pnl=r.gross - fee - adverse_cost, commission_ref=fee,
-                         notional=r.entry_notional, ts_opened=r.ts_opened))
+        out.append(
+            Trade(
+                net_ref_pnl=r.gross - fee - adverse_cost,
+                commission_ref=fee,
+                notional=r.entry_notional,
+                ts_opened=r.ts_opened,
+            )
+        )
     return out

@@ -7,6 +7,7 @@ for the multi-timeframe informatives). No keys, no auth, no orders, no secrets. 
 under pit_data_root()/klines/<interval>/<symbol>/ (gitignored). Resumable (skips files
 already on disk). NOT committed: raw bars stay out of git.
 """
+
 from __future__ import annotations
 
 import sys
@@ -22,7 +23,9 @@ TO_MONTH = "2025-12"
 def main() -> int:
     for interval in INTERVALS:
         for sym in SYMBOLS:
-            summary = fetcher.fetch_months(sym, interval, FROM_MONTH, TO_MONTH, market="um")
+            summary = fetcher.fetch_months(
+                sym, interval, FROM_MONTH, TO_MONTH, market="um"
+            )
             print(
                 f"[{interval}] {sym}: downloaded={summary['downloaded']} "
                 f"skipped={summary['skipped']} missing={summary['missing']} -> {summary['dir']}",

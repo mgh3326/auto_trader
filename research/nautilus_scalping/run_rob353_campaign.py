@@ -13,6 +13,7 @@ Two modes:
 Safety: research/backtest only. No live, no Demo confirm, no broker/order/scheduler/DB,
 no /invest. ROB-343 is RECOMMENDED by the verdict, never run here. No raw data committed.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -45,22 +46,37 @@ def _self_test() -> dict:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="ROB-353 bounded empirical RUN (research only)")
-    ap.add_argument("--self-test", action="store_true",
-                    help="synthetic wiring proof (no network); prints the verdict table")
+    ap = argparse.ArgumentParser(
+        description="ROB-353 bounded empirical RUN (research only)"
+    )
+    ap.add_argument(
+        "--self-test",
+        action="store_true",
+        help="synthetic wiring proof (no network); prints the verdict table",
+    )
     ap.add_argument("--from-month", default="2023-01")
     ap.add_argument("--to-month", default="2026-04")
-    ap.add_argument("--max-symbols", type=int, default=None,
-                    help="operator bound on universe size (default: all qualifying)")
-    ap.add_argument("--skip-fetch", action="store_true",
-                    help="use already-downloaded klines; do not hit the network")
+    ap.add_argument(
+        "--max-symbols",
+        type=int,
+        default=None,
+        help="operator bound on universe size (default: all qualifying)",
+    )
+    ap.add_argument(
+        "--skip-fetch",
+        action="store_true",
+        help="use already-downloaded klines; do not hit the network",
+    )
     args = ap.parse_args(argv)
 
     if args.self_test:
         result = _self_test()
         print(json.dumps(result, indent=2))
         from frozen_config import FROZEN_CONFIG
-        assert result["config_hash"] == FROZEN_CONFIG.config_hash(), "frozen config drift!"
+
+        assert result["config_hash"] == FROZEN_CONFIG.config_hash(), (
+            "frozen config drift!"
+        )
         return 0
 
     return _real_run(args)
@@ -77,7 +93,9 @@ def _real_run(args) -> int:  # pragma: no cover - network/operator-gated
     import pit_universe
     from frozen_config import FROZEN_CONFIG
 
-    manifest = pit_universe.PITManifest.load("data_manifests/pit_universe.v1.json").strict_usdt_perp()
+    manifest = pit_universe.PITManifest.load(
+        "data_manifests/pit_universe.v1.json"
+    ).strict_usdt_perp()
     lo = pit_universe._date_to_epoch_ms(f"{args.from_month}-01")
     hi = pit_universe._date_to_epoch_ms(f"{args.to_month}-28")
     symbols = cc.filter_universe(manifest, lo, hi)
@@ -87,9 +105,13 @@ def _real_run(args) -> int:  # pragma: no cover - network/operator-gated
 
     if not args.skip_fetch:
         for i, sym in enumerate(symbols, 1):
-            summary = pit_klines_fetcher.fetch_months(sym, "1d", args.from_month, args.to_month)
+            summary = pit_klines_fetcher.fetch_months(
+                sym, "1d", args.from_month, args.to_month
+            )
             if i % 25 == 0:
-                print(f"  fetched {i}/{len(symbols)} (last {sym}: {summary['downloaded']} dl)")
+                print(
+                    f"  fetched {i}/{len(symbols)} (last {sym}: {summary['downloaded']} dl)"
+                )
 
     panel = pit_bars.load_panel(symbols, "1d", manifest)
     panel = {s: v for s, v in panel.items() if len(v) >= 30}
@@ -113,23 +135,31 @@ def _real_run(args) -> int:  # pragma: no cover - network/operator-gated
         "family_drawdown_bps": {},
         "skipped_controls": [
             "dollar-volume liquidity filter (used manifest coverage/confidence instead)",
-            "parameter-neighborhood sweep", "BTC regime split", "symbol-concentration analysis",
+            "parameter-neighborhood sweep",
+            "BTC regime split",
+            "symbol-concentration analysis",
             "1h interval (deferred)",
         ],
     }
     for spec in specs:
         if spec["kind"] == "portfolio":
             controls["family_drawdown_bps"][spec["name"]] = cc.max_drawdown_bps(
-                [p.gross_ref_pnl for p in spec["data"]], notional=cs.NOTIONAL)
+                [p.gross_ref_pnl for p in spec["data"]], notional=cs.NOTIONAL
+            )
 
     os.makedirs("results/rob353", exist_ok=True)
-    out = {"verdict_table": result, "controls": controls,
-           "spec_sample_counts": {s["name"]: s["summary"].sample_count for s in specs}}
+    out = {
+        "verdict_table": result,
+        "controls": controls,
+        "spec_sample_counts": {s["name"]: s["summary"].sample_count for s in specs},
+    }
     with open("results/rob353/rob351_campaign.v1.json", "w") as fh:
         json.dump(out, fh, indent=2, default=str)
     print(json.dumps(out, indent=2, default=str))
-    print("\nwrote results/rob353/rob351_campaign.v1.json (gitignored). "
-          "Author docs/runbooks/rob-353-pr2-empirical-verdict.md from this output.")
+    print(
+        "\nwrote results/rob353/rob351_campaign.v1.json (gitignored). "
+        "Author docs/runbooks/rob-353-pr2-empirical-verdict.md from this output."
+    )
     return 0
 
 

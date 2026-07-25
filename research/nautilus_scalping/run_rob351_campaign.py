@@ -34,26 +34,50 @@ def _self_test() -> dict:
     from frozen_config import FROZEN_CONFIG
 
     def trades(gross_each, n):
-        return [families.make_taker_trade(gross_each, ts=i, notional=1000.0) for i in range(n)]
+        return [
+            families.make_taker_trade(gross_each, ts=i, notional=1000.0)
+            for i in range(n)
+        ]
 
     specs = [
-        {"name": "family1_breakout_continuation",
-         "summary": HypothesisSummary("f1", "demo", 40, 8.0, 4.0, oos_gross_bps=8.0),
-         "kind": "trade", "data": trades(5.0, 40), "maker_conservative_net": None},
-        {"name": "family2_trend_basket(seed-style cost-binding)",
-         "summary": HypothesisSummary("f2", "demo", 40, 6.0, -2.0, oos_gross_bps=6.0),
-         "kind": "trade", "data": trades(0.5, 40), "maker_conservative_net": 1.5},
-        {"name": "family3_xs_momentum(no gross edge)",
-         "summary": HypothesisSummary("f3", "demo", 40, -1.0, -3.0, oos_gross_bps=-1.0),
-         "kind": "trade", "data": trades(-2.0, 40), "maker_conservative_net": None},
+        {
+            "name": "family1_breakout_continuation",
+            "summary": HypothesisSummary("f1", "demo", 40, 8.0, 4.0, oos_gross_bps=8.0),
+            "kind": "trade",
+            "data": trades(5.0, 40),
+            "maker_conservative_net": None,
+        },
+        {
+            "name": "family2_trend_basket(seed-style cost-binding)",
+            "summary": HypothesisSummary(
+                "f2", "demo", 40, 6.0, -2.0, oos_gross_bps=6.0
+            ),
+            "kind": "trade",
+            "data": trades(0.5, 40),
+            "maker_conservative_net": 1.5,
+        },
+        {
+            "name": "family3_xs_momentum(no gross edge)",
+            "summary": HypothesisSummary(
+                "f3", "demo", 40, -1.0, -3.0, oos_gross_bps=-1.0
+            ),
+            "kind": "trade",
+            "data": trades(-2.0, 40),
+            "maker_conservative_net": None,
+        },
     ]
     return campaign.run_campaign(specs, config=FROZEN_CONFIG, min_trades=5)
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="ROB-351 cost-blind funnel (research only)")
-    ap.add_argument("--self-test", action="store_true",
-                    help="run the funnel on synthetic fixtures and print the verdict table")
+    ap = argparse.ArgumentParser(
+        description="ROB-351 cost-blind funnel (research only)"
+    )
+    ap.add_argument(
+        "--self-test",
+        action="store_true",
+        help="run the funnel on synthetic fixtures and print the verdict table",
+    )
     args = ap.parse_args(argv)
 
     if args.self_test:

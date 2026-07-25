@@ -70,8 +70,13 @@ def required_bars(config: IctConfig) -> int:
 
 def _no_entry(reason: str) -> SignalDecision:
     return SignalDecision(
-        has_entry=False, side=None, entry_price=None, tp_price=None,
-        sl_price=None, confidence=Decimal("0"), reason_codes=(reason,),
+        has_entry=False,
+        side=None,
+        entry_price=None,
+        tp_price=None,
+        sl_price=None,
+        confidence=Decimal("0"),
+        reason_codes=(reason,),
     )
 
 
@@ -100,16 +105,14 @@ def atr_bps(candles: Sequence[Candle], period: int) -> Decimal:
 def has_bullish_fvg(candles: Sequence[Candle], lookback: int) -> bool:
     """Bullish fair value gap in the last ``lookback`` bars: a 3-bar imbalance
     where ``candles[i].high < candles[i+2].low`` (gap up left unfilled)."""
-    window = candles[-(lookback + 2):]
-    return any(
-        window[i].high < window[i + 2].low for i in range(len(window) - 2)
-    )
+    window = candles[-(lookback + 2) :]
+    return any(window[i].high < window[i + 2].low for i in range(len(window) - 2))
 
 
 def swept_low_reclaim(candles: Sequence[Candle], lookback: int) -> bool:
     """Sell-side liquidity sweep + reclaim: the current bar's low dips below the
     prior ``lookback``-bar min low (stops taken) but it CLOSES back above it."""
-    prior = candles[-(lookback + 1):-1]
+    prior = candles[-(lookback + 1) : -1]
     prior_min_low = min(c.low for c in prior)
     cur = candles[-1]
     return cur.low < prior_min_low and cur.close > prior_min_low
@@ -129,7 +132,10 @@ def evaluate_ict(candles: Sequence[Candle], config: IctConfig) -> SignalDecision
     prior = candles[:-1]
 
     # session filter
-    if config.require_session and _hour_utc(current.close_time_ms) not in config.killzone_hours_utc:
+    if (
+        config.require_session
+        and _hour_utc(current.close_time_ms) not in config.killzone_hours_utc
+    ):
         return _no_entry("OUT_OF_SESSION")
 
     # volatility floor
@@ -140,7 +146,7 @@ def evaluate_ict(candles: Sequence[Candle], config: IctConfig) -> SignalDecision
     # trend + breakout confirmation
     sma_fast = _sma(closes, config.sma_fast)
     sma_slow = _sma(closes, config.sma_slow)
-    prior_high = max(c.high for c in prior[-config.breakout_lookback:])
+    prior_high = max(c.high for c in prior[-config.breakout_lookback :])
     if not (sma_fast > sma_slow and current.close > prior_high):
         return _no_entry("NO_BREAKOUT")
 
@@ -154,7 +160,11 @@ def evaluate_ict(candles: Sequence[Candle], config: IctConfig) -> SignalDecision
 
     entry = current.close
     # confidence: scaled by how far ATR exceeds the floor (capped at 1).
-    conf = min(Decimal("1"), atr / (config.atr_min_bps * Decimal("4"))) if config.atr_min_bps else Decimal("0.5")
+    conf = (
+        min(Decimal("1"), atr / (config.atr_min_bps * Decimal("4")))
+        if config.atr_min_bps
+        else Decimal("0.5")
+    )
     return SignalDecision(
         has_entry=True,
         side="BUY",
@@ -162,5 +172,9 @@ def evaluate_ict(candles: Sequence[Candle], config: IctConfig) -> SignalDecision
         tp_price=entry * (Decimal("1") + config.tp_bps / _BPS),
         sl_price=entry * (Decimal("1") - config.sl_bps / _BPS),
         confidence=conf,
-        reason_codes=("ICT_LONG", "BREAKOUT", "FVG" if config.require_fvg else "NO_FVG_REQ"),
+        reason_codes=(
+            "ICT_LONG",
+            "BREAKOUT",
+            "FVG" if config.require_fvg else "NO_FVG_REQ",
+        ),
     )

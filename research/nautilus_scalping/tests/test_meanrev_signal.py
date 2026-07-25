@@ -4,6 +4,7 @@
 Each rule is a pure function; these pin entry logic, the no-entry reasons,
 determinism, and no-lookahead (truncation invariance).
 """
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -17,10 +18,12 @@ def _c(close, high=None, low=None, *, ts=0) -> Candle:
     d = lambda x: Decimal(str(x))  # noqa: E731
     cv = d(close)
     return Candle(
-        open_time_ms=ts, open=cv,
+        open_time_ms=ts,
+        open=cv,
         high=d(high) if high is not None else cv,
         low=d(low) if low is not None else cv,
-        close=cv, close_time_ms=ts,
+        close=cv,
+        close_time_ms=ts,
     )
 
 
@@ -56,7 +59,9 @@ def test_within_band_with_dispersion_no_entry() -> None:
     # slight fluctuation so sd > 0, but no extreme dip or spike -> within band
     candles = [_c(100 + (i % 2), 101, 99, ts=i * 60_000) for i in range(19)]
     candles.append(_c(100, 101, 99, ts=19 * 60_000))
-    d = evaluate_meanrev(candles, MeanRevConfig(require_vol=False, z_entry=Decimal("2.0")))
+    d = evaluate_meanrev(
+        candles, MeanRevConfig(require_vol=False, z_entry=Decimal("2.0"))
+    )
     assert not d.has_entry and d.reason_codes == ("WITHIN_BAND",)
 
 

@@ -120,12 +120,12 @@ async def enumerate_db_universe(
     holdings = await ManualHoldingsService(session).get_holdings_by_user(
         user_id, broker_type="toss"
     )
-    kr = [
-        to_db_symbol(h.ticker) for h in holdings if h.market_type == MarketType.KR
-    ][:limit]
-    us = [
-        to_db_symbol(h.ticker) for h in holdings if h.market_type == MarketType.US
-    ][:limit]
+    kr = [to_db_symbol(h.ticker) for h in holdings if h.market_type == MarketType.KR][
+        :limit
+    ]
+    us = [to_db_symbol(h.ticker) for h in holdings if h.market_type == MarketType.US][
+        :limit
+    ]
     return kr, us
 
 
@@ -175,7 +175,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Arm real Toss/KIS network reads. Without this flag: dry-run only.",
     )
     parser.add_argument(
-        "--json", action="store_true", default=False, help="(reserved) force JSON output."
+        "--json",
+        action="store_true",
+        default=False,
+        help="(reserved) force JSON output.",
     )
     return parser.parse_args(argv)
 
@@ -212,9 +215,7 @@ async def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         kr_symbols, us_symbols = await _resolve_universe(args)
-        allowlist = frozenset(
-            s.strip() for s in args.allowlist.split(",") if s.strip()
-        )
+        allowlist = frozenset(s.strip() for s in args.allowlist.split(",") if s.strip())
 
         if not args.confirm_live:
             # Dry-run: enumerate + print the plan. ZERO network calls.

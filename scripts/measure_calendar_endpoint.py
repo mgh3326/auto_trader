@@ -233,8 +233,10 @@ def _summary_dict(row: ScenarioRow) -> dict[str, object]:
 
 
 def _print_scenario(name: str, summary: dict[str, object]) -> None:
-    print(f"[{name}] from={summary['from_date']} to={summary['to_date']} "
-          f"days_requested={summary['days_requested']}")
+    print(
+        f"[{name}] from={summary['from_date']} to={summary['to_date']} "
+        f"days_requested={summary['days_requested']}"
+    )
     print(f"  status_counts={summary['status_counts']}")
 
     def _fmt(label: str, block: dict[str, float | int]) -> str:
@@ -250,7 +252,7 @@ def _print_scenario(name: str, summary: dict[str, object]) -> None:
 
     print(_fmt("cold", summary["cold"]))
     print(_fmt("warm", summary["warm"]))
-    print(_fmt("all",  summary["all"]))
+    print(_fmt("all", summary["all"]))
 
     counts = summary.get("counts")
     if counts:
@@ -392,18 +394,14 @@ def main() -> int:
         return 2
 
     anchor = (
-        date.fromisoformat(args.selected)
-        if args.selected
-        else datetime.now(KST).date()
+        date.fromisoformat(args.selected) if args.selected else datetime.now(KST).date()
     )
     grid_start, grid_end = _grid_range(anchor)
 
     scenarios: list[Scenario] = [
         Scenario("42d_grid (current)", grid_start, grid_end),
         Scenario("7d (±3)", anchor - timedelta(days=3), anchor + timedelta(days=3)),
-        Scenario(
-            "15d (±7)", anchor - timedelta(days=7), anchor + timedelta(days=7)
-        ),
+        Scenario("15d (±7)", anchor - timedelta(days=7), anchor + timedelta(days=7)),
         Scenario("single_day", anchor, anchor),
     ]
     repeated = Scenario(
@@ -441,19 +439,15 @@ def main() -> int:
     overhead = _fixed_overhead_block(rows)
     if overhead:
         print("Fixed-overhead estimation (warm-mean anchors):")
-        print(
-            f"  per_day_marginal ≈ {overhead['per_day_marginal_ms']:.1f} ms/day"
-        )
-        print(
-            f"  fixed_overhead   ≈ {overhead['fixed_overhead_ms']:.1f} ms"
-        )
+        print(f"  per_day_marginal ≈ {overhead['per_day_marginal_ms']:.1f} ms/day")
+        print(f"  fixed_overhead   ≈ {overhead['fixed_overhead_ms']:.1f} ms")
         print()
         for proj in overhead["fanout_projection"]:
             W = proj["visible_days"]
             print(
                 f"  cold view of ~{W} visible days: "
                 f"single-day fanout ≈ {proj['single_day_fanout_total_ms']:.0f} ms "
-                f"vs ±{(W-1)//2} range single call ≈ "
+                f"vs ±{(W - 1) // 2} range single call ≈ "
                 f"{proj['range_single_call_total_ms']:.0f} ms"
             )
 

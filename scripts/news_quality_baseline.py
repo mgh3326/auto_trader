@@ -91,7 +91,9 @@ def _analyze_us_articles(articles: list[Any]) -> dict[str, Any]:
     big_tech_fp_rate = (
         len(big_tech_fp_candidates) / sample_count if sample_count else 0.0
     )
-    broad_market_flag_rate = broad_market_flag_count / sample_count if sample_count else 0.0
+    broad_market_flag_rate = (
+        broad_market_flag_count / sample_count if sample_count else 0.0
+    )
 
     return {
         "sample_count": sample_count,
@@ -176,7 +178,9 @@ async def _load_articles_from_db(
         from app.models.news import NewsArticle
 
         async with AsyncSessionLocal() as db:
-            cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=window_hours)
+            cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+                hours=window_hours
+            )
             stmt = (
                 select(NewsArticle)
                 .where(NewsArticle.market == market)
@@ -221,9 +225,7 @@ def run_baseline_on_articles(
 async def async_main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    output_dir = Path(
-        args.output_dir or f"/tmp/rob155_news_quality_{timestamp}"
-    )
+    output_dir = Path(args.output_dir or f"/tmp/rob155_news_quality_{timestamp}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     report: dict[str, Any] = {
@@ -245,7 +247,9 @@ async def async_main(argv: list[str] | None = None) -> int:
         report[market] = metrics
 
     report_path = output_dir / "baseline_report.json"
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    report_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     print(f"output_dir: {output_dir}")
     print(f"report: {report_path}")

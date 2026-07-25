@@ -10,6 +10,7 @@ so we build the baselines here and feed them to ``validated_gate.evaluate_gate``
     closed by the candidate's OWN exit model + exit signal — isolates whether the ENTRY edge
     beats random timing with identical exits ("is the signal better than a coin flip?").
 """
+
 from __future__ import annotations
 
 import random
@@ -27,7 +28,9 @@ def _to_family_bars(bars: Sequence[OHLCVBar]) -> list[families.Bar]:
 
 def breakout_baseline(bars: Sequence[OHLCVBar]) -> list[Trade]:
     """Micro-breakout control on the same bars (frozen ROB-351 family params)."""
-    return families.breakout_continuation_trades(_to_family_bars(bars), notional=bt.NOTIONAL)
+    return families.breakout_continuation_trades(
+        _to_family_bars(bars), notional=bt.NOTIONAL
+    )
 
 
 def random_baseline(

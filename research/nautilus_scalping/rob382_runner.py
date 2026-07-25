@@ -19,6 +19,7 @@ net_* are reported at the FROZEN taker (4.0 bps/leg = 8 bps round trip; the gate
 at the harsher retail REF fee (10 bps/leg) so the cost-sensitivity is explicit. No market data
 is committed; raw bars stay on disk.
 """
+
 from __future__ import annotations
 
 import math
@@ -57,12 +58,18 @@ def _mean(xs: Sequence[float]) -> float:
 def _summary(name: str, trades: Sequence[Trade]) -> HypothesisSummary:
     gross = [(t.net_ref_pnl + t.commission_ref) / t.notional * 1e4 for t in trades]
     net_ref = [t.net_ref_pnl / t.notional * 1e4 for t in trades]
-    oos_g = [g for g, t in zip(gross, trades, strict=True) if t.ts_opened > OOS_SPLIT_TS]
-    oos_n = [n for n, t in zip(net_ref, trades, strict=True) if t.ts_opened > OOS_SPLIT_TS]
+    oos_g = [
+        g for g, t in zip(gross, trades, strict=True) if t.ts_opened > OOS_SPLIT_TS
+    ]
+    oos_n = [
+        n for n, t in zip(net_ref, trades, strict=True) if t.ts_opened > OOS_SPLIT_TS
+    ]
     return HypothesisSummary(
-        name=name, conditions=f"ROB-382 faithful port; OOS split {OOS_SPLIT_TS}",
+        name=name,
+        conditions=f"ROB-382 faithful port; OOS split {OOS_SPLIT_TS}",
         sample_count=len(trades),
-        gross_expectancy_bps=_mean(gross), fee_adjusted_bps=_mean(net_ref),
+        gross_expectancy_bps=_mean(gross),
+        fee_adjusted_bps=_mean(net_ref),
         oos_gross_bps=(_mean(oos_g) if oos_g else None),
         oos_fee_adjusted_bps=(_mean(oos_n) if oos_n else None),
     )
@@ -84,7 +91,12 @@ def simulate_candidate(module, symbols: Sequence[str] = DEFAULT_SYMBOLS):
             bars_1h_cache[sym] = bars_1h
         entry, exit_sig = module.signals(bars, bars_1h)
         trades = bt.simulate(bars, entry, exit_sig, module.EXIT_MODEL)
-        per_symbol[sym] = {"bars": bars, "exit_sig": exit_sig, "trades": len(trades), "trade_list": trades}
+        per_symbol[sym] = {
+            "bars": bars,
+            "exit_sig": exit_sig,
+            "trades": len(trades),
+            "trade_list": trades,
+        }
         pooled.extend(trades)
     pooled.sort(key=lambda t: t.ts_opened)
     diag = {
@@ -93,8 +105,10 @@ def simulate_candidate(module, symbols: Sequence[str] = DEFAULT_SYMBOLS):
         "needs_informative_1h": bool(getattr(module, "NEEDS_INFORMATIVE_1H", False)),
         "per_symbol_trade_counts": {s: d["trades"] for s, d in per_symbol.items()},
         "exit_model": {
-            "type": module.EXIT_MODEL.type, "hard_sl_pct": module.EXIT_MODEL.hard_sl_pct,
-            "roi_pct": module.EXIT_MODEL.roi_pct, "max_hold_bars": module.EXIT_MODEL.max_hold_bars,
+            "type": module.EXIT_MODEL.type,
+            "hard_sl_pct": module.EXIT_MODEL.hard_sl_pct,
+            "roi_pct": module.EXIT_MODEL.roi_pct,
+            "max_hold_bars": module.EXIT_MODEL.max_hold_bars,
         },
         "hold_semantics": getattr(module, "HOLD_SEMANTICS", "unspecified"),
     }
@@ -109,8 +123,15 @@ def _build_baselines(module, per_symbol: dict) -> tuple[list[Trade], list[Trade]
         if not bars:
             continue
         breakout.extend(bl.breakout_baseline(bars))
-        rnd.extend(bl.random_baseline(bars, d["exit_sig"], module.EXIT_MODEL,
-                                      n_entries=d["trades"], seed=1_000 + idx))
+        rnd.extend(
+            bl.random_baseline(
+                bars,
+                d["exit_sig"],
+                module.EXIT_MODEL,
+                n_entries=d["trades"],
+                seed=1_000 + idx,
+            )
+        )
     breakout.sort(key=lambda t: t.ts_opened)
     rnd.sort(key=lambda t: t.ts_opened)
     return breakout, rnd
@@ -128,22 +149,29 @@ def _funnel_verdict(screen_reco: str, gate_verdict: str | None) -> str:
     return "gross_edge_present_needs_full_validation"  # tested vs baselines/OOS, not validated
 
 
-def run_candidate(module, *, name: str, contrast: dict, symbols: Sequence[str] = DEFAULT_SYMBOLS,
-                  min_trades: int = 100) -> dict:
+def run_candidate(
+    module,
+    *,
+    name: str,
+    contrast: dict,
+    symbols: Sequence[str] = DEFAULT_SYMBOLS,
+    min_trades: int = 100,
+) -> dict:
     """Full per-candidate pipeline → one counts-only verdict row + contrast fields.
 
     ``contrast`` carries strat.ninja numbers (recorded FOR CONTRAST ONLY, never as evidence).
     """
     cfg = FROZEN_CONFIG
-    taker_rt_bps = 2.0 * cfg.taker_bps      # frozen taker round-trip cost (8 bps)
-    ref_rt_bps = 2.0 * REF_FEE_BPS          # retail REF round-trip cost (20 bps)
+    taker_rt_bps = 2.0 * cfg.taker_bps  # frozen taker round-trip cost (8 bps)
+    ref_rt_bps = 2.0 * REF_FEE_BPS  # retail REF round-trip cost (20 bps)
 
     trades, per_symbol, diag = simulate_candidate(module, symbols)
     summary = _summary(name, trades)
 
     # Stage 1 — cost-blind gross screen (triviality floor + OOS-gross sign).
     screened = classify(
-        summary, cost_blind=True,
+        summary,
+        cost_blind=True,
         min_samples=min(summary.sample_count, min_trades) if min_trades else 1,
         min_gross_bps=cfg.economic_triviality_floor_bps,
     )
@@ -155,9 +183,14 @@ def run_candidate(module, *, name: str, contrast: dict, symbols: Sequence[str] =
     if screened.recommendation == "promote_to_full_validation":
         breakout, rnd = _build_baselines(module, per_symbol)
         rep = vg.evaluate_gate(
-            candidate_runs={"p": trades}, baseline_breakout=breakout, baseline_random=rnd,
-            fee_bps=cfg.taker_bps, min_trades=min_trades, candidate_name=name,
-            symbols=list(symbols), window={"oos_split_ts": OOS_SPLIT_TS},
+            candidate_runs={"p": trades},
+            baseline_breakout=breakout,
+            baseline_random=rnd,
+            fee_bps=cfg.taker_bps,
+            min_trades=min_trades,
+            candidate_name=name,
+            symbols=list(symbols),
+            window={"oos_split_ts": OOS_SPLIT_TS},
         )
         gate_verdict = rep.verdict
         gate_reasons = rep.verdict_reasons
@@ -168,7 +201,9 @@ def run_candidate(module, *, name: str, contrast: dict, symbols: Sequence[str] =
         beats_random = oos_net.get("net_pnl", 0.0) > rd.get("net_after_cost", 0.0)
 
     gross_bps = [(t.net_ref_pnl + t.commission_ref) / t.notional * 1e4 for t in trades]
-    oos_gross = [g for g, t in zip(gross_bps, trades, strict=True) if t.ts_opened > OOS_SPLIT_TS]
+    oos_gross = [
+        g for g, t in zip(gross_bps, trades, strict=True) if t.ts_opened > OOS_SPLIT_TS
+    ]
 
     g_full = summary.gross_expectancy_bps
     g_oos = summary.oos_gross_bps
@@ -179,8 +214,10 @@ def run_candidate(module, *, name: str, contrast: dict, symbols: Sequence[str] =
     meets_survivor = bool(
         gate_verdict == "validated"
         and t_oos_gross >= cfg.target_t
-        and oos_net_taker is not None and oos_net_taker > 0
-        and beats_breakout and beats_random
+        and oos_net_taker is not None
+        and oos_net_taker > 0
+        and beats_breakout
+        and beats_random
     )
 
     return {
@@ -198,10 +235,14 @@ def run_candidate(module, *, name: str, contrast: dict, symbols: Sequence[str] =
         "our_oos_gross_bps": (round(g_oos, 4) if g_oos is not None else None),
         # net at OUR frozen taker (8 bps RT) vs retail REF (20 bps RT) — cost sensitivity explicit
         "our_net_bps_frozen_taker": round(g_full - taker_rt_bps, 4),
-        "our_oos_net_bps_frozen_taker": (round(g_oos - taker_rt_bps, 4) if g_oos is not None else None),
+        "our_oos_net_bps_frozen_taker": (
+            round(g_oos - taker_rt_bps, 4) if g_oos is not None else None
+        ),
         "our_net_bps_retail_ref": round(summary.fee_adjusted_bps, 4),
         "our_oos_net_bps_retail_ref": (
-            round(summary.oos_fee_adjusted_bps, 4) if summary.oos_fee_adjusted_bps is not None else None
+            round(summary.oos_fee_adjusted_bps, 4)
+            if summary.oos_fee_adjusted_bps is not None
+            else None
         ),
         "frozen_taker_rt_bps": taker_rt_bps,
         "retail_ref_rt_bps": ref_rt_bps,

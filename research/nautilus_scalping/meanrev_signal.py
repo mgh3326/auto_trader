@@ -12,6 +12,7 @@ Spot is long-only (fade oversold dips); the futures short mirror (fade
 overbought spikes) is gated on ``allow_short`` exactly like the production
 breakout signal.
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -28,13 +29,13 @@ _BPS = Decimal("10000")
 @dataclass(frozen=True)
 class MeanRevConfig:
     lookback: int = 20
-    z_entry: Decimal = Decimal("2.0")   # enter when z crosses +/- this
-    tp_bps: Decimal = Decimal("30")     # revert target
+    z_entry: Decimal = Decimal("2.0")  # enter when z crosses +/- this
+    tp_bps: Decimal = Decimal("30")  # revert target
     sl_bps: Decimal = Decimal("30")
     atr_period: int = 14
     atr_min_bps: Decimal = Decimal("8")
     require_vol: bool = True
-    allow_short: bool = False           # spot: False; futures: True
+    allow_short: bool = False  # spot: False; futures: True
 
 
 def required_bars(config: MeanRevConfig) -> int:
@@ -62,12 +63,19 @@ def zscore(closes: Sequence[Decimal], lookback: int) -> Decimal:
 
 def _no_entry(reason: str) -> SignalDecision:
     return SignalDecision(
-        has_entry=False, side=None, entry_price=None, tp_price=None,
-        sl_price=None, confidence=Decimal("0"), reason_codes=(reason,),
+        has_entry=False,
+        side=None,
+        entry_price=None,
+        tp_price=None,
+        sl_price=None,
+        confidence=Decimal("0"),
+        reason_codes=(reason,),
     )
 
 
-def evaluate_meanrev(candles: Sequence[Candle], config: MeanRevConfig) -> SignalDecision:
+def evaluate_meanrev(
+    candles: Sequence[Candle], config: MeanRevConfig
+) -> SignalDecision:
     """Long-only (spot) / short-mirror (futures) z-score fade. Pure over closed candles."""
     if len(candles) < required_bars(config):
         return _no_entry("INSUFFICIENT_HISTORY")
@@ -82,7 +90,11 @@ def evaluate_meanrev(candles: Sequence[Candle], config: MeanRevConfig) -> Signal
 
     current = candles[-1]
     entry = current.close
-    conf = min(Decimal("1"), (abs(z) - config.z_entry) / config.z_entry) if config.z_entry else Decimal("0.5")
+    conf = (
+        min(Decimal("1"), (abs(z) - config.z_entry) / config.z_entry)
+        if config.z_entry
+        else Decimal("0.5")
+    )
     conf = max(Decimal("0"), conf)
 
     long_ok = z <= -config.z_entry
@@ -90,16 +102,22 @@ def evaluate_meanrev(candles: Sequence[Candle], config: MeanRevConfig) -> Signal
 
     if long_ok:
         return SignalDecision(
-            has_entry=True, side="BUY", entry_price=entry,
+            has_entry=True,
+            side="BUY",
+            entry_price=entry,
             tp_price=entry * (Decimal("1") + config.tp_bps / _BPS),
             sl_price=entry * (Decimal("1") - config.sl_bps / _BPS),
-            confidence=conf, reason_codes=("MEANREV_LONG", "OVERSOLD_FADE"),
+            confidence=conf,
+            reason_codes=("MEANREV_LONG", "OVERSOLD_FADE"),
         )
     if short_ok:
         return SignalDecision(
-            has_entry=True, side="SELL", entry_price=entry,
+            has_entry=True,
+            side="SELL",
+            entry_price=entry,
             tp_price=entry * (Decimal("1") - config.tp_bps / _BPS),
             sl_price=entry * (Decimal("1") + config.sl_bps / _BPS),
-            confidence=conf, reason_codes=("MEANREV_SHORT", "OVERBOUGHT_FADE"),
+            confidence=conf,
+            reason_codes=("MEANREV_SHORT", "OVERBOUGHT_FADE"),
         )
     return _no_entry("WITHIN_BAND")
