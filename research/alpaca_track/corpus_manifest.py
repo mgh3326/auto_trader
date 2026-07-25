@@ -1,0 +1,275 @@
+"""ROB-1059 H1 (spec §14.1/AC3) — the immutable per-symbol/corpus manifest.
+
+Records: half-open window ``[start,end)``, symbols, quote_mode, source
+(distinguishing checksum-verified archive rows from unchecksummed REST
+backfill rows), row counts, expected counts, the missing-row (gap) list,
+per-file SHA-256, generator version, schema version. ``content_hash()`` uses
+the same canonical, collision-free identity authority as
+``research/nautilus_scalping/rob941_manifest.py`` (``research_contracts`` via
+the ``canonical_hash`` shim) so re-running the SAME builder over the SAME
+already-collected shards reproduces a byte-identical manifest hash without any
+new network collection.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
+import canonical_hash
+
+SCHEMA_VERSION = "rob1059_corpus_manifest.v1"
+GENERATOR_VERSION = "rob1059_h1_corpus_builder.v1"
+_MINUTE_MS = 60_000
+
+SourceLiteral = Literal["archive_monthly", "archive_daily", "backfill_rest"]
+_VALID_SOURCES = ("archive_monthly", "archive_daily", "backfill_rest")
+
+__all__ = [
+    "GENERATOR_VERSION",
+    "SCHEMA_VERSION",
+    "CorpusManifest",
+    "ShardSource",
+    "SymbolCorpusManifest",
+]
+
+
+def _int(value: object, name: str) -> int:
+    # S5 remediation: this module previously had no int/float type discipline
+    # at all (unlike daily_bars.py/pit_universe_alpaca.py's `_int`/`_float`),
+    # so `row_count`/`expected_count`/`window_start_ms`/`window_end_ms`
+    # silently accepted `bool` and `int` subclasses.
+    if type(value) is not int:
+        raise TypeError(f"{name} must be built-in int")
+    return value
+
+
+@dataclass(frozen=True)
+class ShardSource:
+    """One contributing fetch — either a checksum-verified archive (monthly or
+    daily) or an unchecksummed REST backfill for an archive-uncovered range."""
+
+    source: SourceLiteral
+    year: int
+    month: int
+    day: int | None  # None only for a monthly archive
+    url: str
+    checksum_sha256: str | None  # None only for backfill_rest (no sidecar exists)
+
+    def to_dict(self) -> dict:
+        return {
+            "source": self.source,
+            "year": self.year,
+            "month": self.month,
+            "day": self.day,
+            "url": self.url,
+            "checksum_sha256": self.checksum_sha256,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> ShardSource:
+        return cls(
+            source=d["source"],
+            year=d["year"],
+            month=d["month"],
+            day=d.get("day"),
+            url=d["url"],
+            checksum_sha256=d.get("checksum_sha256"),
+        )
+
+    def __post_init__(self) -> None:
+        # CodeRabbit fix: `source` itself was never validated against the
+        # literal set -- a typo'd/tampered `source` (e.g. loaded via
+        # `from_dict`) satisfied NEITHER checksum branch below and was
+        # silently accepted with no checksum constraint enforced at all,
+        # defeating this module's fail-closed identity guarantee.
+        if self.source not in _VALID_SOURCES:
+            raise ValueError(
+                f"unknown ShardSource.source: {self.source!r} (must be one of "
+                f"{_VALID_SOURCES})"
+            )
+        if self.source in ("archive_monthly", "archive_daily") and (
+            self.checksum_sha256 is None
+        ):
+            raise ValueError(
+                f"{self.source} shard must carry a verified checksum_sha256"
+            )
+        if self.source == "backfill_rest" and self.checksum_sha256 is not None:
+            raise ValueError("backfill_rest shard must NOT carry a checksum_sha256")
+
+
+@dataclass(frozen=True)
+class SymbolCorpusManifest:
+    symbol: str
+    quote_mode: str
+    sources: tuple[ShardSource, ...]
+    row_count: int
+    expected_count: int
+    missing_open_times_ms: tuple[int, ...]  # explicit missing-minute list
+    normalized_content_sha256: str  # canonical_hash over the normalized row content
+    # S1/AC7 remediation: the per-UTC-day |USDCUSDT-1|>30bp basis-drift flag,
+    # recorded (never applied/excluded) ONLY for USDT_PROXY symbols -- (ISO
+    # date string, flag) pairs in canonical ascending-date order. Empty for
+    # every other quote_mode.
+    usdcusdt_basis_drift_flags: tuple[tuple[str, bool], ...] = ()
+
+    def __post_init__(self) -> None:
+        _int(self.row_count, "row_count")
+        _int(self.expected_count, "expected_count")
+        if self.row_count < 0 or self.expected_count < 0:
+            raise ValueError("row_count/expected_count must be non-negative")
+        for t in self.missing_open_times_ms:
+            _int(t, "missing_open_times_ms element")
+        # Adversarial-review remediation (same class as the `S1/AC7`
+        # `usdcusdt_basis_drift_flags` discipline just below): invariant D
+        # (`row_count + len(missing_open_times_ms) == expected_count`) is
+        # defeatable by a `missing_open_times_ms` list that is unordered,
+        # duplicated, or negative -- e.g. `(1000, 1000)` satisfies the count
+        # arithmetic while silently double-counting ONE real gap as two, or
+        # `(999999999, -5)` satisfies it while carrying a nonsense timestamp.
+        # A hand-crafted/corrupted manifest built from those must never
+        # construct silently, exactly like a corrupted `usdcusdt_basis_drift_flags`
+        # must not.
+        if any(t < 0 for t in self.missing_open_times_ms):
+            raise ValueError("missing_open_times_ms element must be non-negative")
+        if len(self.missing_open_times_ms) != len(
+            set(self.missing_open_times_ms)
+        ) or list(self.missing_open_times_ms) != sorted(self.missing_open_times_ms):
+            raise ValueError(
+                "missing_open_times_ms must be strictly ascending with no "
+                "duplicate timestamps"
+            )
+        # CodeRabbit fix: this manifest is the canonical, hashed identity
+        # `persistence.load_symbol_shard`'s `expected_row_count` relies on --
+        # a hand-crafted/corrupted manifest with an inconsistent row
+        # accounting (e.g. `expected_count` bumped without a matching
+        # `missing_open_times_ms` entry) must never construct silently.
+        if self.row_count + len(self.missing_open_times_ms) != self.expected_count:
+            raise ValueError(
+                "row_count + len(missing_open_times_ms) must equal "
+                f"expected_count (got {self.row_count} + "
+                f"{len(self.missing_open_times_ms)} != {self.expected_count})"
+            )
+        dates = [d for d, _flag in self.usdcusdt_basis_drift_flags]
+        if len(dates) != len(set(dates)) or dates != sorted(dates):
+            raise ValueError(
+                "usdcusdt_basis_drift_flags must be canonical ascending-by-date "
+                "order with no duplicate dates"
+            )
+        for _d, flag in self.usdcusdt_basis_drift_flags:
+            if type(flag) is not bool:
+                raise TypeError("usdcusdt_basis_drift_flags flag must be built-in bool")
+
+    def to_dict(self) -> dict:
+        return {
+            "symbol": self.symbol,
+            "quote_mode": self.quote_mode,
+            "sources": [s.to_dict() for s in self.sources],
+            "row_count": self.row_count,
+            "expected_count": self.expected_count,
+            "missing_open_times_ms": list(self.missing_open_times_ms),
+            "normalized_content_sha256": self.normalized_content_sha256,
+            "usdcusdt_basis_drift_flags": [
+                [d, flag] for d, flag in self.usdcusdt_basis_drift_flags
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> SymbolCorpusManifest:
+        return cls(
+            symbol=d["symbol"],
+            quote_mode=d["quote_mode"],
+            sources=tuple(ShardSource.from_dict(s) for s in d["sources"]),
+            row_count=d["row_count"],
+            expected_count=d["expected_count"],
+            missing_open_times_ms=tuple(d["missing_open_times_ms"]),
+            normalized_content_sha256=d["normalized_content_sha256"],
+            usdcusdt_basis_drift_flags=tuple(
+                (pair[0], pair[1]) for pair in d.get("usdcusdt_basis_drift_flags", [])
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class CorpusManifest:
+    window_start_ms: int
+    window_end_ms: int  # exclusive
+    symbols: tuple[str, ...]  # canonical lexicographic order
+    per_symbol: tuple[SymbolCorpusManifest, ...]  # canonical lexicographic order
+    generator_version: str = GENERATOR_VERSION
+    schema_version: str = SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        _int(self.window_start_ms, "window_start_ms")
+        _int(self.window_end_ms, "window_end_ms")
+        if self.window_end_ms <= self.window_start_ms:
+            raise ValueError("window_end_ms must be after window_start_ms")
+        if self.symbols != tuple(sorted(self.symbols)):
+            raise ValueError("symbols must be canonical lexicographic order")
+        if len(self.symbols) != len(set(self.symbols)):
+            raise ValueError("duplicate symbol in manifest")
+        manifest_symbols = tuple(s.symbol for s in self.per_symbol)
+        if manifest_symbols != self.symbols:
+            raise ValueError(
+                f"per_symbol coverage {list(manifest_symbols)} != declared symbols "
+                f"{list(self.symbols)} (exact canonical-order match required)"
+            )
+        # Adversarial-review remediation: `SymbolCorpusManifest` itself has no
+        # window bounds to check against (only the enclosing `CorpusManifest`
+        # does), so a `missing_open_times_ms` entry outside
+        # `[window_start_ms, window_end_ms)` -- or not minute-aligned to
+        # `window_start_ms` -- must be caught HERE, at construction of the
+        # manifest that actually owns the window.
+        for sm in self.per_symbol:
+            for t in sm.missing_open_times_ms:
+                if not (self.window_start_ms <= t < self.window_end_ms):
+                    raise ValueError(
+                        f"{sm.symbol}: missing_open_times_ms element {t} outside "
+                        f"manifest window [{self.window_start_ms}, "
+                        f"{self.window_end_ms})"
+                    )
+                if (t - self.window_start_ms) % _MINUTE_MS != 0:
+                    raise ValueError(
+                        f"{sm.symbol}: missing_open_times_ms element {t} is not "
+                        "minute-aligned to window_start_ms"
+                    )
+
+    def to_dict(self) -> dict:
+        return {
+            "window_start_ms": self.window_start_ms,
+            "window_end_ms": self.window_end_ms,
+            "symbols": list(self.symbols),
+            "per_symbol": [s.to_dict() for s in self.per_symbol],
+            "generator_version": self.generator_version,
+            "schema_version": self.schema_version,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> CorpusManifest:
+        return cls(
+            window_start_ms=d["window_start_ms"],
+            window_end_ms=d["window_end_ms"],
+            symbols=tuple(d["symbols"]),
+            per_symbol=tuple(
+                SymbolCorpusManifest.from_dict(s) for s in d["per_symbol"]
+            ),
+            generator_version=d.get("generator_version", GENERATOR_VERSION),
+            schema_version=d.get("schema_version", SCHEMA_VERSION),
+        )
+
+    def content_hash(self) -> str:
+        """Immutable identity: canonical SHA-256 over the full manifest
+        content. Re-running the SAME builder over the SAME already-collected
+        shards (no new network collection) reproduces this exact hash."""
+        return canonical_hash.canonical_sha256(self.to_dict())
+
+    def save(self, path: str | Path) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self.to_dict(), indent=2, sort_keys=True))
+
+    @classmethod
+    def load(cls, path: str | Path) -> CorpusManifest:
+        return cls.from_dict(json.loads(Path(path).read_text()))
