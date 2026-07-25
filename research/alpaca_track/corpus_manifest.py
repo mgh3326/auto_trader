@@ -34,6 +34,16 @@ __all__ = [
 ]
 
 
+def _int(value: object, name: str) -> int:
+    # S5 remediation: this module previously had no int/float type discipline
+    # at all (unlike daily_bars.py/pit_universe_alpaca.py's `_int`/`_float`),
+    # so `row_count`/`expected_count`/`window_start_ms`/`window_end_ms`
+    # silently accepted `bool` and `int` subclasses.
+    if type(value) is not int:
+        raise TypeError(f"{name} must be built-in int")
+    return value
+
+
 @dataclass(frozen=True)
 class ShardSource:
     """One contributing fetch — either a checksum-verified archive (monthly or
@@ -87,6 +97,28 @@ class SymbolCorpusManifest:
     expected_count: int
     missing_open_times_ms: tuple[int, ...]  # explicit missing-minute list
     normalized_content_sha256: str  # canonical_hash over the normalized row content
+    # S1/AC7 remediation: the per-UTC-day |USDCUSDT-1|>30bp basis-drift flag,
+    # recorded (never applied/excluded) ONLY for USDT_PROXY symbols -- (ISO
+    # date string, flag) pairs in canonical ascending-date order. Empty for
+    # every other quote_mode.
+    usdcusdt_basis_drift_flags: tuple[tuple[str, bool], ...] = ()
+
+    def __post_init__(self) -> None:
+        _int(self.row_count, "row_count")
+        _int(self.expected_count, "expected_count")
+        if self.row_count < 0 or self.expected_count < 0:
+            raise ValueError("row_count/expected_count must be non-negative")
+        for t in self.missing_open_times_ms:
+            _int(t, "missing_open_times_ms element")
+        dates = [d for d, _flag in self.usdcusdt_basis_drift_flags]
+        if len(dates) != len(set(dates)) or dates != sorted(dates):
+            raise ValueError(
+                "usdcusdt_basis_drift_flags must be canonical ascending-by-date "
+                "order with no duplicate dates"
+            )
+        for _d, flag in self.usdcusdt_basis_drift_flags:
+            if type(flag) is not bool:
+                raise TypeError("usdcusdt_basis_drift_flags flag must be built-in bool")
 
     def to_dict(self) -> dict:
         return {
@@ -97,6 +129,9 @@ class SymbolCorpusManifest:
             "expected_count": self.expected_count,
             "missing_open_times_ms": list(self.missing_open_times_ms),
             "normalized_content_sha256": self.normalized_content_sha256,
+            "usdcusdt_basis_drift_flags": [
+                [d, flag] for d, flag in self.usdcusdt_basis_drift_flags
+            ],
         }
 
     @classmethod
@@ -109,6 +144,9 @@ class SymbolCorpusManifest:
             expected_count=d["expected_count"],
             missing_open_times_ms=tuple(d["missing_open_times_ms"]),
             normalized_content_sha256=d["normalized_content_sha256"],
+            usdcusdt_basis_drift_flags=tuple(
+                (pair[0], pair[1]) for pair in d.get("usdcusdt_basis_drift_flags", [])
+            ),
         )
 
 
@@ -122,6 +160,10 @@ class CorpusManifest:
     schema_version: str = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
+        _int(self.window_start_ms, "window_start_ms")
+        _int(self.window_end_ms, "window_end_ms")
+        if self.window_end_ms <= self.window_start_ms:
+            raise ValueError("window_end_ms must be after window_start_ms")
         if self.symbols != tuple(sorted(self.symbols)):
             raise ValueError("symbols must be canonical lexicographic order")
         if len(self.symbols) != len(set(self.symbols)):
