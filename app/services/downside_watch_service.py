@@ -154,13 +154,34 @@ class DownsideWatchService:
         )
 
     def _build_request(
-        self, level: DownsideWatchLevel, *, valid_until
+        self, level: DownsideWatchLevel, *, valid_until, already_breached: bool = False
     ) -> CreateInvestmentWatchRequest:
         rationale = (
             f"ROB-928 하방 워치 자동등록 (source={level.source}): "
             f"근거 레벨={level.threshold}. 트레일링 미지원 — 레벨 고정, "
             "주기 재등록 필요 (stale 경고)."
         )
+        metadata: dict[str, Any] = {
+            "rob928_level_source": level.source,
+            "rob928_quantity": str(level.quantity),
+            "trailing_supported": False,
+        }
+        trigger_checklist: list[str] = []
+        if already_breached:
+            # ROB-971: registered while current_price was already past the
+            # below threshold. Tagged (metadata + a leading trigger_checklist
+            # entry, which is copied into the watch trigger notification —
+            # see investment_report_add_items contract) so the first scanner
+            # fire reads as "already breached at registration" instead of
+            # routine below-watch noise.
+            metadata["rob971_already_breached"] = {
+                "reason": "already_breached",
+                "at": now_kst().isoformat(),
+            }
+            trigger_checklist.append(
+                "ROB-971 already_breached: 등록 시점에 이미 손절선 이탈 상태 — "
+                "첫 발화는 신규 이탈이 아니라 기존 이탈의 보고임"
+            )
         return CreateInvestmentWatchRequest.model_validate(
             {
                 "created_by": CREATED_BY,
@@ -175,21 +196,37 @@ class DownsideWatchService:
                     "action_mode": "notify_only",
                 },
                 "valid_until": valid_until,
-                "metadata": {
-                    "rob928_level_source": level.source,
-                    "rob928_quantity": str(level.quantity),
-                    "trailing_supported": False,
-                },
+                "trigger_checklist": trigger_checklist,
+                "metadata": metadata,
             }
         )
 
     async def register_sweep(self, *, dry_run: bool = True) -> dict[str, Any]:
+        """Sweep active KR holdings and register support-break watches.
+
+        ROB-971: a below watch whose price is already at/below its threshold
+        used to be dropped entirely (``continue``, never registered) to avoid
+        an immediate alert-burst. That silently removed the most at-risk
+        positions from monitoring — the exact "stop-loss breach goes
+        unactioned" failure this module exists to prevent. It is now
+        registered like any other level; ``already_breached`` (True when
+        ``current_price`` has already crossed the threshold, using the same
+        strict ``<`` the below-scanner uses in
+        ``app.jobs.watch_market_data.is_triggered``) is tagged onto the
+        alert's metadata and trigger_checklist so the resulting first-fire
+        notification reads as a backlog report, not fresh noise.
+        ``skipped_already_triggered`` is kept only for response-shape
+        backward compatibility and is expected to stay empty; genuine
+        registration-time price failures are reported separately in
+        ``skipped_price_unavailable``.
+        """
         levels = await self.compute_levels()
         valid_until = now_kst() + DEFAULT_VALID_FOR
 
         registered: list[dict[str, Any]] = []
         skipped_existing: list[dict[str, Any]] = []
         skipped_already_triggered: list[dict[str, Any]] = []
+        skipped_price_unavailable: list[dict[str, Any]] = []
         level_summaries: list[dict[str, Any]] = []
 
         for level in levels:
@@ -211,29 +248,20 @@ class DownsideWatchService:
                 )
                 continue
 
-            # ROB-971: a below watch whose price is already at/below its
-            # threshold fires on the first scanner pass. Never register such
-            # a condition: doing so turns historical stop-loss breaches into
-            # an alert burst instead of a useful future watch.
             current_price = await self._current_price_fetcher(level.symbol)
             if current_price is None:
-                skipped_already_triggered.append(
+                skipped_price_unavailable.append(
                     {
                         "symbol": level.symbol,
                         "reason": "current_price_unavailable",
                     }
                 )
                 continue
-            if current_price <= level.threshold:
-                skipped_already_triggered.append(
-                    {
-                        "symbol": level.symbol,
-                        "reason": "condition_already_true_at_registration",
-                        "current_price": str(current_price),
-                        "threshold": str(level.threshold),
-                    }
-                )
-                continue
+
+            # Matches the below-scanner's strict comparison
+            # (app.jobs.watch_market_data.is_triggered) so the tag means
+            # exactly "the scanner would fire on its very next pass".
+            already_breached = current_price < level.threshold
 
             if dry_run:
                 registered.append(
@@ -242,11 +270,14 @@ class DownsideWatchService:
                         "threshold": str(level.threshold),
                         "source": level.source,
                         "would_register": True,
+                        "already_breached": already_breached,
                     }
                 )
                 continue
 
-            request = self._build_request(level, valid_until=valid_until)
+            request = self._build_request(
+                level, valid_until=valid_until, already_breached=already_breached
+            )
             alert, idempotent = await DirectWatchCreateService(
                 self._session, self._watch_repo
             ).create(request)
@@ -258,6 +289,7 @@ class DownsideWatchService:
                     "threshold": str(level.threshold),
                     "source": level.source,
                     "idempotent": idempotent,
+                    "already_breached": already_breached,
                 }
             )
 
@@ -266,6 +298,7 @@ class DownsideWatchService:
             "registered": registered,
             "skipped_existing": skipped_existing,
             "skipped_already_triggered": skipped_already_triggered,
+            "skipped_price_unavailable": skipped_price_unavailable,
             "levels": level_summaries,
         }
 

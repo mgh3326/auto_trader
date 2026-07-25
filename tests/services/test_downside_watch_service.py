@@ -250,9 +250,13 @@ async def test_register_sweep_registered_alert_shape(session: AsyncSession) -> N
 
 
 @pytest.mark.asyncio
-async def test_register_sweep_skips_below_watch_when_condition_is_already_true(
+async def test_register_sweep_registers_and_tags_already_breached_watch(
     session: AsyncSession,
 ) -> None:
+    """ROB-971 HIGH-1 fix: a below watch whose price has already crossed its
+    threshold must still be registered (never silently dropped — that was
+    the one case where the most at-risk holding lost monitoring). It's
+    tagged instead so the first fire reads as a backlog report."""
     symbol = _symbol()
     await _seed_journal(session, symbol=symbol, stop_loss="48000")
     await session.commit()
@@ -264,21 +268,61 @@ async def test_register_sweep_skips_below_watch_when_condition_is_already_true(
         session, current_price_fetcher=_already_breached
     ).register_sweep(dry_run=False)
 
-    assert result["registered"] == []
-    assert result["skipped_already_triggered"] == [
-        {
-            "symbol": symbol,
-            "reason": "condition_already_true_at_registration",
-            "current_price": "47999",
-            "threshold": "48000.0000",
-        }
-    ]
+    assert len(result["registered"]) == 1
+    entry = result["registered"][0]
+    assert entry["symbol"] == symbol
+    assert entry["already_breached"] is True
+    # Kept for response-shape backward compatibility; must stay empty now
+    # that already-breached levels are registered rather than skipped.
+    assert result["skipped_already_triggered"] == []
+
+    alert = await session.scalar(
+        sa.select(InvestmentWatchAlert).where(InvestmentWatchAlert.symbol == symbol)
+    )
+    assert alert is not None
+    assert alert.status == "active"
+    assert alert.alert_metadata["rob971_already_breached"]["reason"] == (
+        "already_breached"
+    )
+    assert any("already_breached" in entry for entry in alert.trigger_checklist)
 
 
 @pytest.mark.asyncio
-async def test_register_sweep_skips_when_registration_price_is_unavailable(
+async def test_register_sweep_boundary_at_exact_threshold_is_not_tagged_breached(
     session: AsyncSession,
 ) -> None:
+    """MEDIUM-2: the already_breached tag must align with the below-scanner's
+    strict ``<`` (app.jobs.watch_market_data.is_triggered) — a price exactly
+    at the threshold has not yet triggered, so it registers untagged."""
+    symbol = _symbol()
+    await _seed_journal(session, symbol=symbol, stop_loss="48000")
+    await session.commit()
+
+    async def _exactly_at_threshold(_symbol: str) -> Decimal:
+        return Decimal("48000")
+
+    result = await DownsideWatchService(
+        session, current_price_fetcher=_exactly_at_threshold
+    ).register_sweep(dry_run=False)
+
+    assert len(result["registered"]) == 1
+    assert result["registered"][0]["already_breached"] is False
+
+    alert = await session.scalar(
+        sa.select(InvestmentWatchAlert).where(InvestmentWatchAlert.symbol == symbol)
+    )
+    assert alert is not None
+    assert "rob971_already_breached" not in alert.alert_metadata
+    assert alert.trigger_checklist == []
+
+
+@pytest.mark.asyncio
+async def test_register_sweep_price_unavailable_is_reported_separately(
+    session: AsyncSession,
+) -> None:
+    """LOW-3: registration-time price failures are a distinct bucket from
+    the (now-unused) already-triggered skip bucket — the two mean opposite
+    things and must not be conflated."""
     symbol = _symbol()
     await _seed_journal(session, symbol=symbol, stop_loss="48000")
     await session.commit()
@@ -291,6 +335,7 @@ async def test_register_sweep_skips_when_registration_price_is_unavailable(
     ).register_sweep(dry_run=False)
 
     assert result["registered"] == []
-    assert result["skipped_already_triggered"] == [
+    assert result["skipped_already_triggered"] == []
+    assert result["skipped_price_unavailable"] == [
         {"symbol": symbol, "reason": "current_price_unavailable"}
     ]

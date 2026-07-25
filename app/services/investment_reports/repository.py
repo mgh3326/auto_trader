@@ -350,9 +350,13 @@ class InvestmentReportsRepository:
         )
 
     async def list_expired_active_alerts_for_update(
-        self, *, now: datetime
+        self, *, now: datetime, lock: bool = True
     ) -> list[InvestmentWatchAlert]:
-        result = await self._session.scalars(
+        """``lock=False`` is for read-only dry-run previews: it skips
+        ``FOR UPDATE SKIP LOCKED`` so a concurrent sweeper's held row locks
+        don't make the preview undercount candidates it isn't going to
+        mutate anyway."""
+        stmt = (
             sa.select(InvestmentWatchAlert)
             .where(
                 InvestmentWatchAlert.status == "active",
@@ -361,8 +365,10 @@ class InvestmentReportsRepository:
             .order_by(
                 InvestmentWatchAlert.valid_until.asc(), InvestmentWatchAlert.id.asc()
             )
-            .with_for_update(skip_locked=True)
         )
+        if lock:
+            stmt = stmt.with_for_update(skip_locked=True)
+        result = await self._session.scalars(stmt)
         return list(result.all())
 
     async def list_alerts(

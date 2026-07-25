@@ -1097,12 +1097,24 @@ async def run_expired_watches_sweep(*, now: datetime) -> dict[str, Any]:
 
 
 async def sweep_expired_watches_impl(dry_run: bool = True) -> dict[str, Any]:
-    """List or expire active alerts whose valid_until has passed (ROB-971)."""
-    now = datetime.now(UTC)
-    async with AsyncSessionLocal() as db:
-        repo = InvestmentReportsRepository(db)
-        candidates = await repo.list_expired_active_alerts_for_update(now=now)
-        if dry_run:
+    """List or expire active alerts whose valid_until has passed (ROB-971).
+
+    dry_run and the real sweep use separate sessions/queries rather than
+    sharing one lock-then-fall-through session: a dry-run preview takes no
+    ``FOR UPDATE`` lock (nothing to protect — see ``lock=False`` on the
+    repository call) and the real sweep re-queries fresh inside
+    ``run_expired_watches_sweep`` regardless, so acquiring a lock here first
+    would only be released unused.
+    """
+    from app.core.timezone import now_kst
+
+    now = now_kst()
+    if dry_run:
+        async with AsyncSessionLocal() as db:
+            repo = InvestmentReportsRepository(db)
+            candidates = await repo.list_expired_active_alerts_for_update(
+                now=now, lock=False
+            )
             return {
                 "success": True,
                 "dry_run": True,
