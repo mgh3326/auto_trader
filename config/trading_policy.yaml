@@ -2,9 +2,9 @@
 # Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
 # (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
 # Repo is public; exposing these values is an accepted decision.
-version: "2026-07-22.1"
-captured_as_of: "2026-07-22"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22"
+version: "2026-07-23.1"
+captured_as_of: "2026-07-23"
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; ROB-1037 provisional shadow policy v1"
 
 authority:
   scope: judgment_policy_only
@@ -30,6 +30,75 @@ order_proposals:
       kr: 500000
       us: 400
       crypto: 300000
+
+# ROB-1037 Phase 1 — pure shadow-evaluation contract only. These bands are
+# versioned provisional values, not outcome-optimal production thresholds.
+# Proposal generation, scheduling, mutation, and auto-approval all remain hard
+# disabled. Recalibration requires shadow/mock evidence and a policy version
+# change.
+kr_resting_lane:
+  policy_version: "rob1037-p1-v1"
+  calibration_version: "rob1037-bands-provisional-v1"
+  activation:
+    evaluation_enabled: true
+    calibration_status: provisional_shadow
+    proposal_generation_enabled: false
+    schedule_enabled: false
+    mutation_enabled: false
+    auto_approve_allowed: false
+    auto_approve_reconsideration: operator_pr_only_after_phase_6_manual_reps
+  account_scope:
+    allowed_account_modes: [kis_live, toss_live]
+    order_routable_required: true
+  order_shape:
+    order_type: limit
+    time_in_force: DAY
+    rung_count: 1
+    approval_mode: telegram_manual
+    next_day_reuse: never_fresh_decision_required
+  direction:
+    scope: symbol_across_kis_and_toss
+    approval_requery_required: true
+    symbol_reservation_required_at_approval: true
+    symbol_lock_required_at_approval: true
+    enforcement_phase: 3
+  bands:
+    moderate_support:
+      lower_pct: -8
+      upper_pct: -3
+      lower_inclusive: false
+      upper_inclusive: true
+    deep_support:
+      lower_pct: -12
+      upper_pct: -8
+      lower_inclusive: true
+      upper_inclusive: true
+    far_resistance:
+      lower_pct: 6
+      upper_pct: 15
+      lower_inclusive: false
+      upper_inclusive: true
+    near_resistance_upper_inclusive_pct: 6
+  source_families:
+    minimum_independent_family_count: 2
+    fibonacci_levels_share_one_family: true
+    poc_vah_val_share_one_volume_profile_family: true
+  freshness:
+    baseline: expected_completed_krx_bar
+    discovery_quote_ttl_seconds: 300
+    final_revalidation_quote_ttl_seconds: 60
+    mixed_vintage_action: fail_closed
+    policy_hash_mismatch_action: fail_closed
+  buy_sizing:
+    new_entry_min_notional_krw: 200000
+    new_entry_max_notional_krw: 400000
+    quantity_rule: minimum_integer_at_or_above_min
+    existing_position_action: defer_add_sizing_undefined
+  sell:
+    normal_sell_floor_multiple: 1.01
+    multi_share_far_quantity: 1
+    single_share_far_full_exit_enabled: false
+    above_far_action: watch_only
 
 # Raw-sector -> cluster grouping for the concentration cap. A member matches a
 # symbol's symbol_sectors label (name_kr / name_en / source_key) when the member

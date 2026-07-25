@@ -107,6 +107,9 @@ def get_policy_for(market: str, lane: str) -> dict[str, Any]:
         "thresholds": thresholds,
         "decision_rules": decision_rules,
         "market_rules": market_rules,
+        "kr_resting_lane": (
+            doc.kr_resting_lane.model_dump(mode="json") if market == "kr" else None
+        ),
         # ROB-932 — single global advisory trigger, not market/lane-scoped;
         # echoed unconditionally alongside the version/content_hash stamp.
         "crash_day": doc.crash_day.model_dump(),

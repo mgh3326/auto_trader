@@ -13,6 +13,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.kr_resting_lane import KRRestingLanePolicy
+
 Lane = Literal["buy", "sell", "discovery"]
 Market = Literal["kr", "us", "crypto"]
 
@@ -233,6 +235,7 @@ class TradingPolicyDocument(BaseModel):
     source: str
     authority: PolicyAuthority
     order_proposals: OrderProposalsPolicy
+    kr_resting_lane: KRRestingLanePolicy
     sector_clusters: dict[str, list[str]]
     thresholds: dict[str, PolicyThreshold]
     decision_rules: dict[str, PolicyDecisionRule] = Field(default_factory=dict)
