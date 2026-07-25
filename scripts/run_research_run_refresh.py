@@ -5,6 +5,7 @@ Read-only by default (dry-run). Examples:
   uv run python scripts/run_research_run_refresh.py --stage preopen
   uv run python scripts/run_research_run_refresh.py --stage nxt_aftermarket --no-dry-run
 """
+
 from __future__ import annotations
 
 import argparse
@@ -38,7 +39,11 @@ async def _dry_run(*, stage: str, market_scope: str) -> dict:
                 ),
             )
         except research_run_decision_session_service.ResearchRunNotFound:
-            return {"status": "dry_run", "reason": "no_research_run", "would_create": False}
+            return {
+                "status": "dry_run",
+                "reason": "no_research_run",
+                "would_create": False,
+            }
         snapshot = await research_run_live_refresh_service.build_live_refresh_snapshot(
             db, run=run
         )
@@ -54,7 +59,9 @@ async def _dry_run(*, stage: str, market_scope: str) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="run_research_run_refresh")
-    parser.add_argument("--stage", choices=["preopen", "nxt_aftermarket"], required=True)
+    parser.add_argument(
+        "--stage", choices=["preopen", "nxt_aftermarket"], required=True
+    )
     parser.add_argument("--market-scope", default="kr", choices=["kr"])
     parser.add_argument(
         "--dry-run", dest="dry_run", default=True, action=argparse.BooleanOptionalAction
@@ -62,14 +69,10 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.dry_run:
-        result = asyncio.run(
-            _dry_run(stage=args.stage, market_scope=args.market_scope)
-        )
+        result = asyncio.run(_dry_run(stage=args.stage, market_scope=args.market_scope))
     else:
         result = asyncio.run(
-            run_research_run_refresh(
-                stage=args.stage, market_scope=args.market_scope
-            )
+            run_research_run_refresh(stage=args.stage, market_scope=args.market_scope)
         )
     print(json.dumps(result, indent=2, ensure_ascii=False))
 

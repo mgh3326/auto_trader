@@ -18,6 +18,7 @@ Faithfulness rules (timeframe/hold-preserving — ROB-382 §2, not short-horizon
   * SL-first within a bar (conservative): if a bar's range spans both stop and target,
     assume the stop filled first (matches strategy_meanrev's conservative exit).
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence

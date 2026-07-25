@@ -13,27 +13,59 @@ from frozen_config import FROZEN_CONFIG
 
 
 def _trades(gross_each, n, notional=1000.0):
-    return [families.make_taker_trade(gross_each, ts=i, notional=notional) for i in range(n)]
+    return [
+        families.make_taker_trade(gross_each, ts=i, notional=notional) for i in range(n)
+    ]
 
 
 def test_campaign_produces_verdict_table_with_three_outcomes():
     specs = [
         # net-viable: big gross, survives taker fees -> promote_to_pilot
-        {"name": "A_net_viable",
-         "summary": HypothesisSummary("A", "c", 40, gross_expectancy_bps=8.0,
-                                      fee_adjusted_bps=4.0, oos_gross_bps=8.0),
-         "kind": "trade", "data": _trades(5.0, 40), "maker_conservative_net": None},
+        {
+            "name": "A_net_viable",
+            "summary": HypothesisSummary(
+                "A",
+                "c",
+                40,
+                gross_expectancy_bps=8.0,
+                fee_adjusted_bps=4.0,
+                oos_gross_bps=8.0,
+            ),
+            "kind": "trade",
+            "data": _trades(5.0, 40),
+            "maker_conservative_net": None,
+        },
         # cost-binding + closable: gross>0, taker-net<0, maker-conservative>0 -> 343 candidate
-        {"name": "B_cost_binding",
-         "summary": HypothesisSummary("B", "c", 40, gross_expectancy_bps=6.0,
-                                      fee_adjusted_bps=-2.0, oos_gross_bps=6.0),
-         # gross +0.5/trade but taker fee (~0.8/trade) pushes net negative
-         "kind": "trade", "data": _trades(0.5, 40), "maker_conservative_net": 1.5},
+        {
+            "name": "B_cost_binding",
+            "summary": HypothesisSummary(
+                "B",
+                "c",
+                40,
+                gross_expectancy_bps=6.0,
+                fee_adjusted_bps=-2.0,
+                oos_gross_bps=6.0,
+            ),
+            # gross +0.5/trade but taker fee (~0.8/trade) pushes net negative
+            "kind": "trade",
+            "data": _trades(0.5, 40),
+            "maker_conservative_net": 1.5,
+        },
         # no gross edge -> screened_out at Stage 1, never reaches the gate
-        {"name": "C_screened",
-         "summary": HypothesisSummary("C", "c", 40, gross_expectancy_bps=-1.0,
-                                      fee_adjusted_bps=-3.0, oos_gross_bps=-1.0),
-         "kind": "trade", "data": _trades(-2.0, 40), "maker_conservative_net": None},
+        {
+            "name": "C_screened",
+            "summary": HypothesisSummary(
+                "C",
+                "c",
+                40,
+                gross_expectancy_bps=-1.0,
+                fee_adjusted_bps=-3.0,
+                oos_gross_bps=-1.0,
+            ),
+            "kind": "trade",
+            "data": _trades(-2.0, 40),
+            "maker_conservative_net": None,
+        },
     ]
     rep = campaign.run_campaign(specs, config=FROZEN_CONFIG, min_trades=5)
 

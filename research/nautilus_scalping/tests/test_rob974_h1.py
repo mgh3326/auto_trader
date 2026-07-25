@@ -129,7 +129,11 @@ def test_cp4_typed_deterministic_lineage_seal_is_order_invariant_and_sensitive()
     assert parent.content_hash() == PARENT_CONTENT_SHA256
     selected = {symbol: tuple(rows(1)) for symbol in ("XRPUSDT", "DOGEUSDT", "SOLUSDT")}
     actual = feature_input_hash(selected)
-    permuted = {"SOLUSDT": selected["SOLUSDT"], "XRPUSDT": selected["XRPUSDT"], "DOGEUSDT": selected["DOGEUSDT"]}
+    permuted = {
+        "SOLUSDT": selected["SOLUSDT"],
+        "XRPUSDT": selected["XRPUSDT"],
+        "DOGEUSDT": selected["DOGEUSDT"],
+    }
     assert feature_input_hash(permuted) == actual
     from_rows = DerivedManifest.create(
         rows=selected, context_start=0, context_end=240 * MIN

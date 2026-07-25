@@ -10,6 +10,7 @@ Covers:
 Pure: no freqtrade / talib / pandas. Run from research/nautilus_scalping:
     uv run --no-project pytest tests/test_rob382_cluc.py -q
 """
+
 from __future__ import annotations
 
 import rob382_bars as rb
@@ -17,8 +18,10 @@ import rob382_indicators as I
 import rob382_signal_cluc as m
 
 
-def _bar(ts, o, h, l, c, v=10.0, interval_ms=60_000):
-    return rb.OHLCVBar(ts=ts, open=o, high=h, low=l, close=c, volume=v, close_ts=ts + interval_ms - 1)
+def _bar(ts, o, h, l, c, v=10.0, interval_ms=60_000):  # noqa: E741
+    return rb.OHLCVBar(
+        ts=ts, open=o, high=h, low=l, close=c, volume=v, close_ts=ts + interval_ms - 1
+    )
 
 
 # Anchor the base (1m) series AFTER 200 fully-closed 1h bars so the merged ROCR(168) is valid.
@@ -31,7 +34,9 @@ def _flat_1h(n=300, price=100.0):
     bars_1h = []
     t1 = 0
     for _ in range(n):
-        bars_1h.append(_bar(t1, price, price + 0.5, price - 0.5, price, v=1000.0, interval_ms=_H))
+        bars_1h.append(
+            _bar(t1, price, price + 0.5, price - 0.5, price, v=1000.0, interval_ms=_H)
+        )
         t1 += _H
     return bars_1h
 
@@ -76,20 +81,27 @@ def test_entry_fires_on_documented_case():
     last = len(bars) - 1
 
     # Re-derive the documented cond_a sub-conditions to prove the case is genuinely satisfied.
-    opens = [b.open for b in bars]; highs = [b.high for b in bars]
-    lows = [b.low for b in bars]; closes = [b.close for b in bars]
+    opens = [b.open for b in bars]
+    highs = [b.high for b in bars]
+    lows = [b.low for b in bars]
+    closes = [b.close for b in bars]
     _ho, hh, hl, hc = I.heikin_ashi(opens, highs, lows, closes)
     ha_typ = [(hh[i] + hl[i] + hc[i]) / 3.0 for i in range(len(bars))]
     mr, lr, _u = I.bollinger(ha_typ, m.BB_WINDOW, m.BB_NUM_STD, ddof=1)
-    mid = [v if v == v else 0.0 for v in mr]; lower = [v if v == v else 0.0 for v in lr]
-    bbd = abs(mid[last] - lower[last]); cd = abs(hc[last] - hc[last - 1]); tail = abs(hc[last] - hl[last])
+    mid = [v if v == v else 0.0 for v in mr]
+    lower = [v if v == v else 0.0 for v in lr]
+    bbd = abs(mid[last] - lower[last])
+    cd = abs(hc[last] - hc[last - 1])
+    tail = abs(hc[last] - hl[last])
     assert lower[last - 1] > 0
     assert bbd > hc[last] * m.BBDELTA_CLOSE
     assert cd > hc[last] * m.CLOSEDELTA_CLOSE
     assert tail < bbd * m.BBDELTA_TAIL
     assert hc[last] < lower[last - 1]
     assert hc[last] <= hc[last - 1]
-    assert entry[last] is True, "cond_a squeeze-dip entry should fire when all conditions + rocr gate hold"
+    assert entry[last] is True, (
+        "cond_a squeeze-dip entry should fire when all conditions + rocr gate hold"
+    )
 
 
 def test_entry_blocked_when_rocr_gate_broken():
@@ -107,11 +119,15 @@ def test_entry_blocked_when_rocr_gate_broken():
     entry, _exit = m.signals(bars, bars_1h)
     last = len(bars) - 1
     # Sanity: the rocr at the last bar must indeed be below the gate (the broken condition).
-    o1h = [b.open for b in bars_1h]; h1h = [b.high for b in bars_1h]
-    l1h = [b.low for b in bars_1h]; c1h = [b.close for b in bars_1h]
+    o1h = [b.open for b in bars_1h]
+    h1h = [b.high for b in bars_1h]
+    l1h = [b.low for b in bars_1h]
+    c1h = [b.close for b in bars_1h]
     ha_c_1h = I.heikin_ashi(o1h, h1h, l1h, c1h)[3]
     rocr_v = I.rocr(ha_c_1h, m.ROCR_1H_LEN)
-    rocr_b = I.merge_informative([b.ts for b in bars], [b.close_ts for b in bars_1h], rocr_v)
+    rocr_b = I.merge_informative(
+        [b.ts for b in bars], [b.close_ts for b in bars_1h], rocr_v
+    )
     assert rocr_b[last] < m.ROCR_1H, "test setup: rocr gate must actually be broken"
     assert entry[last] is False, "entry must NOT fire when the rocr_1h gate is broken"
 
@@ -132,7 +148,9 @@ def test_no_lookahead_truncation_invariance():
     trunc_entry, trunc_exit = m.signals(bars[:k], bars_1h)
 
     WARMUP = 250  # past ema_slow(50)/bollinger(40)/rsi(14) warmup
-    WARMUP_TAIL = 0  # truncation re-seeds nothing here (all indicators are running-window/causal)
+    WARMUP_TAIL = (
+        0  # truncation re-seeds nothing here (all indicators are running-window/causal)
+    )
     lo, hi = WARMUP, k - WARMUP_TAIL
     mism_entry = [i for i in range(lo, hi) if full_entry[i] != trunc_entry[i]]
     mism_exit = [i for i in range(lo, hi) if full_exit[i] != trunc_exit[i]]

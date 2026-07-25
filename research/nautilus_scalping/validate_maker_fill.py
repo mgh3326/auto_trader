@@ -15,6 +15,7 @@ Usage (rob-320 venv):
         --symbols XRPUSDT,BTCUSDT --window-from 2026-03-01 --window-to 2026-05-14 \
         --export results/rob324/maker_fill.json
 """
+
 from __future__ import annotations
 
 import argparse
@@ -63,13 +64,19 @@ def _merge_recs(runs):
     return sorted((rec for r in runs for rec in r), key=lambda rec: rec.ts_opened)
 
 
-def _gate(candidate_runs, breakout, random_ctrl, fee_bps, symbols, window, name, seed=42):
+def _gate(
+    candidate_runs, breakout, random_ctrl, fee_bps, symbols, window, name, seed=42
+):
     report = evaluate_gate(
         candidate_runs=candidate_runs,
-        baseline_breakout=breakout, baseline_random=random_ctrl,
-        fee_bps=fee_bps, min_trades=100,
-        candidate_name=name, hypothesis="mean_reversion",
-        symbols=symbols, window=window,
+        baseline_breakout=breakout,
+        baseline_random=random_ctrl,
+        fee_bps=fee_bps,
+        min_trades=100,
+        candidate_name=name,
+        hypothesis="mean_reversion",
+        symbols=symbols,
+        window=window,
     )
     # ROB-328 statistical robustness on the val-best config's net-after-fee per-trade PnL:
     # bootstrap Sharpe CI + Monte-Carlo permutation. apply_statistical_evidence only
@@ -81,7 +88,10 @@ def _gate(candidate_runs, breakout, random_ctrl, fee_bps, symbols, window, name,
         bootstrap = bootstrap_sharpe_ci(net_pnls, n_bootstrap=1000, seed=seed)
         monte_carlo = monte_carlo_permutation(net_pnls, n_sim=1000, seed=seed)
         apply_statistical_evidence(report, bootstrap)
-        stats = {"bootstrap_sharpe_ci": bootstrap, "monte_carlo_permutation": monte_carlo}
+        stats = {
+            "bootstrap_sharpe_ci": bootstrap,
+            "monte_carlo_permutation": monte_carlo,
+        }
     out = report.to_dict()
     out.update(stats)
     return out
@@ -96,28 +106,71 @@ def main() -> int:
     ap.add_argument("--export", type=Path, default="results/rob324/maker_fill.json")
     args = ap.parse_args()
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
-    window = {"from": args.window_from, "to": args.window_to,
-              "folds": {"train": 0.5, "val": 0.25, "oos": 0.25}}
+    window = {
+        "from": args.window_from,
+        "to": args.window_to,
+        "folds": {"train": 0.5, "val": 0.25, "oos": 0.25},
+    }
 
     # --- baselines (taker, single config each), merged across symbols ---
     print("Running taker baselines (breakout, random)...")
-    breakout = _merge([run(args.catalog, s, "micro_breakout",
-                           get_candidate("micro_breakout").default_params,
-                           _SIZE.get(s, "100"), args.window_from, args.window_to)
-                       for s in symbols])
-    random_ctrl = _merge([run(args.catalog, s, "random_entry",
-                              get_candidate("random_entry").default_params,
-                              _SIZE.get(s, "100"), args.window_from, args.window_to)
-                          for s in symbols])
+    breakout = _merge(
+        [
+            run(
+                args.catalog,
+                s,
+                "micro_breakout",
+                get_candidate("micro_breakout").default_params,
+                _SIZE.get(s, "100"),
+                args.window_from,
+                args.window_to,
+            )
+            for s in symbols
+        ]
+    )
+    random_ctrl = _merge(
+        [
+            run(
+                args.catalog,
+                s,
+                "random_entry",
+                get_candidate("random_entry").default_params,
+                _SIZE.get(s, "100"),
+                args.window_from,
+                args.window_to,
+            )
+            for s in symbols
+        ]
+    )
 
     # --- scenario 1: taker baseline candidate over the param grid (grid rescales 10->4) ---
     print("Scenario 1: taker baseline @ 4 bps (grid)...")
-    taker_runs = {label: _merge([run(args.catalog, s, "meanrev_zscore_fade",
-                                     dict(params), _SIZE.get(s, "100"),
-                                     args.window_from, args.window_to) for s in symbols])
-                  for label, params in _GRID}
-    taker_report = _gate(taker_runs, breakout, random_ctrl, TAKER_BASELINE_BPS,
-                         symbols, window, "meanrev_taker_baseline")
+    taker_runs = {
+        label: _merge(
+            [
+                run(
+                    args.catalog,
+                    s,
+                    "meanrev_zscore_fade",
+                    dict(params),
+                    _SIZE.get(s, "100"),
+                    args.window_from,
+                    args.window_to,
+                )
+                for s in symbols
+            ]
+        )
+        for label, params in _GRID
+    }
+    taker_report = _gate(
+        taker_runs,
+        breakout,
+        random_ctrl,
+        TAKER_BASELINE_BPS,
+        symbols,
+        window,
+        "meanrev_taker_baseline",
+    )
 
     # --- scenarios 2 & 3: maker re-sim over the SAME grid (param-stability preserved) ---
     print("Scenarios 2 & 3: maker re-sim (grid)...")
@@ -126,25 +179,51 @@ def main() -> int:
     for label, params in _GRID:
         per_symbol = []
         for s in symbols:
-            recs, att, fil = run_maker(args.catalog, s, dict(params), _SIZE.get(s, "100"),
-                                       args.window_from, args.window_to)
+            recs, att, fil = run_maker(
+                args.catalog,
+                s,
+                dict(params),
+                _SIZE.get(s, "100"),
+                args.window_from,
+                args.window_to,
+            )
             per_symbol.append(recs)
             attempted += att
             filled += fil
         maker_recs[label] = _merge_recs(per_symbol)
 
-    opt_runs = {label: build_maker_optimistic(recs) for label, recs in maker_recs.items()}
-    con_runs = {label: build_maker_conservative(
-                    recs, queue_loss_pct=_FILL_MODEL["queue_loss_pct"],
-                    adverse_bps=_FILL_MODEL["adverse_bps"],
-                    excursion_eps_bps=_FILL_MODEL["excursion_eps_bps"])
-                for label, recs in maker_recs.items()}
+    opt_runs = {
+        label: build_maker_optimistic(recs) for label, recs in maker_recs.items()
+    }
+    con_runs = {
+        label: build_maker_conservative(
+            recs,
+            queue_loss_pct=_FILL_MODEL["queue_loss_pct"],
+            adverse_bps=_FILL_MODEL["adverse_bps"],
+            excursion_eps_bps=_FILL_MODEL["excursion_eps_bps"],
+        )
+        for label, recs in maker_recs.items()
+    }
 
     # maker scenarios: net already at real fees -> evaluate at REF (as-run)
-    opt_report = _gate(opt_runs, breakout, random_ctrl, REF_FEE_BPS,
-                       symbols, window, "meanrev_maker_optimistic")
-    con_report = _gate(con_runs, breakout, random_ctrl, REF_FEE_BPS,
-                       symbols, window, "meanrev_maker_conservative")
+    opt_report = _gate(
+        opt_runs,
+        breakout,
+        random_ctrl,
+        REF_FEE_BPS,
+        symbols,
+        window,
+        "meanrev_maker_optimistic",
+    )
+    con_report = _gate(
+        con_runs,
+        breakout,
+        random_ctrl,
+        REF_FEE_BPS,
+        symbols,
+        window,
+        "meanrev_maker_conservative",
+    )
 
     artifact = {
         "schema_version": "validated_signal_gate.v2",
@@ -153,21 +232,27 @@ def main() -> int:
         "symbols": symbols,
         "window": window,
         "cost_model": {
-            "maker_fee_bps": MAKER_FEE_BPS, "taker_fee_bps": TAKER_BASELINE_BPS,
+            "maker_fee_bps": MAKER_FEE_BPS,
+            "taker_fee_bps": TAKER_BASELINE_BPS,
             "commission_source": "results/rob324/binance_usdm_commission_rates.json",
-            "note": ("maker scenarios bake real per-leg fees into net; gate evaluated "
-                     "at its reference point (as-run). taker baseline uses the gate's "
-                     "native single-rate rescale to 4.0 bps."),
+            "note": (
+                "maker scenarios bake real per-leg fees into net; gate evaluated "
+                "at its reference point (as-run). taker baseline uses the gate's "
+                "native single-rate rescale to 4.0 bps."
+            ),
         },
         "fill_model": _FILL_MODEL,
-        "fill_stats": {"entries_attempted": attempted, "entries_filled": filled,
-                       "missed_fills": attempted - filled},
+        "fill_stats": {
+            "entries_attempted": attempted,
+            "entries_filled": filled,
+            "missed_fills": attempted - filled,
+        },
         "scenarios": {
             "taker_baseline": taker_report,
             "maker_optimistic": opt_report,
             "maker_conservative": con_report,
         },
-        "verdict": con_report["verdict"],            # headline = conservative (honest bound)
+        "verdict": con_report["verdict"],  # headline = conservative (honest bound)
         "verdict_reasons": con_report["verdict_reasons"],
         "verdict_source": "maker_conservative",
     }
@@ -188,4 +273,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

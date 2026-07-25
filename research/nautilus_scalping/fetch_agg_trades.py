@@ -73,8 +73,7 @@ def _verify(zip_path: Path, checksum_path: Path) -> None:
     actual = _sha256(zip_path)
     if actual != expected:
         raise ValueError(
-            f"checksum mismatch for {zip_path.name}: "
-            f"expected {expected}, got {actual}"
+            f"checksum mismatch for {zip_path.name}: expected {expected}, got {actual}"
         )
 
 
