@@ -1193,17 +1193,39 @@ async def test_market_collector_altseason_only_for_crypto():
 @pytest.mark.asyncio
 async def test_market_collector_altseason_failure_is_soft():
     # Altseason is best-effort: a fetch error leaves the rest of the snapshot.
+    index_rows = [
+        {
+            "symbol": "CRYPTO",
+            "name": "Crypto Total Market",
+            "current": 3_100_000_000_000.0,
+            "change_pct": 1.85,
+        }
+    ]
+
+    async def fake_index_quote_fn(symbols):
+        assert symbols == ["CRYPTO"]
+        return index_rows
+
     async def fake_altseason_fn():
-        raise RuntimeError("upbit down")
+        raise RuntimeError("provider off")
 
     collector = MarketEventsSnapshotCollector(
         MagicMock(),
         query_service=_empty_events_query(),
+        index_quote_fn=fake_index_quote_fn,
         altseason_fn=fake_altseason_fn,
     )
     results = await collector.collect(_request(market="crypto"))
     assert results[0].freshness_status == "fresh"
+    assert results[0].errors_json["altseason"] == "RuntimeError: provider off"
     assert "events" in results[0].payload_json
+    assert results[0].payload_json["indices"] == {
+        "CRYPTO": {
+            "change_percent": 1.85,
+            "name": "Crypto Total Market",
+            "current": 3_100_000_000_000.0,
+        }
+    }
     assert "altseason" not in results[0].payload_json
 
 
@@ -1239,15 +1261,22 @@ async def test_build_altseason_fn_returns_payload(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_build_altseason_fn_failopen_on_error(monkeypatch):
-    from app.services.action_report.snapshot_backed.collectors import registry
-
+async def test_production_registry_preserves_altseason_error_diagnostic(monkeypatch):
     async def boom():
         raise RuntimeError("upbit down")
 
     monkeypatch.setattr("app.services.external.upbit_index.fetch_upbit_altseason", boom)
-    fn = registry._build_altseason_fn()
-    assert await fn() is None
+    collectors = production_collector_registry(MagicMock())
+    collector = collectors.get("market")
+    assert isinstance(collector, MarketEventsSnapshotCollector)
+    collector._query = _empty_events_query()
+
+    results = await collector.collect(_request(market="crypto"))
+
+    assert results[0].freshness_status == "fresh"
+    assert results[0].errors_json["altseason"] == "RuntimeError: upbit down"
+    assert "altseason" not in results[0].payload_json
+    assert results[0].payload_json["events"] == []
 
 
 # ---------------------------------------------------------------------------

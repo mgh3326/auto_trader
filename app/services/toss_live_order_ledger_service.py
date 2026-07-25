@@ -5,10 +5,18 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.order_proposals import OrderProposal, OrderProposalRung
 from app.models.review import TossFillPollState, TossLiveOrderLedger
+
+_PROPOSAL_EVIDENCE_ACCEPTING_STATES = (
+    "acked",
+    "resting",
+    "partially_filled",
+    "unverified",
+)
 
 
 def _external_order_raw(order: Any) -> dict[str, Any]:
@@ -117,7 +125,10 @@ class TossLiveOrderLedgerService:
         stop_loss: Decimal | None = None,
         min_hold_days: int | None = None,
         notes: str | None = None,
+        exit_intent: str | None = None,
         exit_reason: str | None = None,
+        retrospective_id: int | None = None,
+        approval_issue_id: str | None = None,
         indicators_snapshot: dict[str, Any] | None = None,
         report_item_uuid: str | uuid.UUID | None = None,
         approval_hash: str | None = None,
@@ -173,7 +184,10 @@ class TossLiveOrderLedgerService:
             stop_loss=stop_loss,
             min_hold_days=min_hold_days,
             notes=notes,
+            exit_intent=exit_intent,
             exit_reason=exit_reason,
+            retrospective_id=retrospective_id,
+            approval_issue_id=approval_issue_id,
             indicators_snapshot=indicators_snapshot,
             report_item_uuid=parse_report_item_uuid(report_item_uuid),
             approval_hash=approval_hash,
@@ -225,7 +239,7 @@ class TossLiveOrderLedgerService:
         order_id: str | None = None,
         market: str | None = None,
         limit: int = 100,
-    ) -> list[TossLiveOrderLedger]:
+    ) -> tuple[list[TossLiveOrderLedger], dict[str, int]]:
         stmt = select(TossLiveOrderLedger).where(
             TossLiveOrderLedger.status.in_(("accepted", "pending", "partial"))
         )
@@ -245,6 +259,143 @@ class TossLiveOrderLedgerService:
         for row in rows:
             self._db.expunge(row)
         return rows
+
+    async def list_terminal_projection_candidates(
+        self,
+        *,
+        symbol: str | None = None,
+        order_id: str | None = None,
+        market: str | None = None,
+        limit: int = 100,
+    ) -> list[TossLiveOrderLedger]:
+        """Find terminal Toss rows whose proposal rung still needs projection."""
+        evidence_match = or_(
+            and_(
+                TossLiveOrderLedger.correlation_id.is_not(None),
+                TossLiveOrderLedger.correlation_id == OrderProposalRung.correlation_id,
+            ),
+            and_(
+                TossLiveOrderLedger.broker_order_id.is_not(None),
+                TossLiveOrderLedger.broker_order_id
+                == OrderProposalRung.broker_order_id,
+            ),
+        )
+        stmt = (
+            select(TossLiveOrderLedger)
+            .join(OrderProposalRung, evidence_match)
+            .join(
+                OrderProposal,
+                OrderProposalRung.proposal_pk == OrderProposal.id,
+            )
+            .where(
+                TossLiveOrderLedger.operation_kind == "place",
+                TossLiveOrderLedger.status.in_(("filled", "cancelled", "rejected")),
+                OrderProposal.account_mode == "toss_live",
+                OrderProposal.symbol == TossLiveOrderLedger.symbol,
+                or_(
+                    and_(
+                        TossLiveOrderLedger.market == "kr",
+                        OrderProposal.market == "equity_kr",
+                    ),
+                    and_(
+                        TossLiveOrderLedger.market == "us",
+                        OrderProposal.market == "equity_us",
+                    ),
+                ),
+            )
+        )
+        if symbol:
+            stmt = stmt.where(TossLiveOrderLedger.symbol == symbol)
+        if order_id:
+            stmt = stmt.where(TossLiveOrderLedger.broker_order_id == order_id)
+        if market:
+            stmt = stmt.where(TossLiveOrderLedger.market == market)
+        stmt = stmt.order_by(TossLiveOrderLedger.id.asc()).limit(limit)
+        rows = list((await self._db.execute(stmt)).unique().scalars().all())
+        candidates: list[TossLiveOrderLedger] = []
+        anomalies: dict[str, int] = {}
+        for row in rows:
+            accepted, reason = await self._terminal_projection_match(row)
+            if accepted:
+                candidates.append(row)
+            elif reason is not None:
+                anomalies[reason] = anomalies.get(reason, 0) + 1
+        for row in candidates:
+            self._db.expunge(row)
+        return candidates, anomalies
+
+    async def _terminal_projection_match(
+        self, row: TossLiveOrderLedger
+    ) -> tuple[bool, str | None]:
+        """Accept only one broker/correlation-consistent rung for repair.
+
+        A terminal ledger row may be linked to legacy duplicated correlations.
+        Projection repair must never pick an arbitrary rung: a present evidence
+        key must identify exactly one eligible rung, and when both keys resolve
+        they must resolve to the same rung.
+        """
+        broker_match = (
+            OrderProposalRung.broker_order_id == row.broker_order_id
+            if row.broker_order_id is not None
+            else literal(False)
+        )
+        correlation_match = (
+            OrderProposalRung.correlation_id == row.correlation_id
+            if row.correlation_id is not None
+            else literal(False)
+        )
+        idempotency_match = (
+            OrderProposalRung.idempotency_key == row.client_order_id
+            if row.client_order_id is not None
+            else literal(False)
+        )
+        if (
+            row.broker_order_id is None
+            and row.correlation_id is None
+            and row.client_order_id is None
+        ):
+            return False, None
+        stmt = (
+            select(
+                OrderProposalRung.id,
+                OrderProposalRung.state,
+                broker_match.label("broker_match"),
+                correlation_match.label("correlation_match"),
+                idempotency_match.label("idempotency_match"),
+            )
+            .join(OrderProposal, OrderProposalRung.proposal_pk == OrderProposal.id)
+            .where(
+                or_(broker_match, correlation_match, idempotency_match),
+                OrderProposal.account_mode == "toss_live",
+                OrderProposal.symbol == row.symbol,
+                or_(
+                    and_(row.market == "kr", OrderProposal.market == "equity_kr"),
+                    and_(row.market == "us", OrderProposal.market == "equity_us"),
+                ),
+            )
+        )
+        matches = list((await self._db.execute(stmt)).all())
+        broker_ids = {match.id for match in matches if match.broker_match}
+        correlation_ids = {match.id for match in matches if match.correlation_match}
+        idempotency_ids = {match.id for match in matches if match.idempotency_match}
+        evidence_sets = [
+            ids for ids in (broker_ids, correlation_ids, idempotency_ids) if ids
+        ]
+        if not evidence_sets:
+            return False, None
+        intersection = set.intersection(*evidence_sets)
+        if not intersection:
+            return False, "proposal_evidence_conflict"
+        if len(broker_ids) > 1:
+            return False, "broker_id_duplicate"
+        if not broker_ids and not idempotency_ids and len(correlation_ids) > 1:
+            return False, "content_hash_only_ambiguous"
+        if len(intersection) > 1:
+            return False, "proposal_evidence_ambiguous"
+        rung_id = next(iter(intersection))
+        return next(match.state for match in matches if match.id == rung_id) in (
+            _PROPOSAL_EVIDENCE_ACCEPTING_STATES
+        ), None
 
     async def update_reconcile_outcome(
         self,

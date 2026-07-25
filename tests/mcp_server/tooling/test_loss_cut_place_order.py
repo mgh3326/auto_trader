@@ -27,6 +27,7 @@ async def test_dry_run_loss_cut_returns_all_violations_single_response():
             dry_run=True,
             exit_intent="loss_cut",
             retrospective_id=None,
+            proposal_flow=True,
         )
     assert resp["success"] is False
     assert resp["error"] == "loss_cut_preconditions_failed"
@@ -74,9 +75,6 @@ async def test_loss_cut_live_rejects_invalid_hash_even_when_mode_off(monkeypatch
     with (
         patch.object(ov, "get_caller_agent_id", return_value=_TRADER_AGENT_ID),
         patch.object(
-            ov, "_fetch_approval_issue_status", new=AsyncMock(return_value="done")
-        ),
-        patch.object(
             ov,
             "_get_retrospective_by_id_for_loss_cut",
             new=AsyncMock(return_value=fake_retro),
@@ -116,6 +114,7 @@ async def test_loss_cut_live_rejects_invalid_hash_even_when_mode_off(monkeypatch
             exit_reason="stop_loss",
             approval_issue_id="ROB-800",
             approval_hash="not-a-real-token",
+            proposal_flow=True,
         )
 
     assert resp["success"] is False

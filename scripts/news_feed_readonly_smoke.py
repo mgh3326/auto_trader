@@ -51,7 +51,9 @@ class SmokeResult:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ROB-155 GET-only news feed smoke")
-    parser.add_argument("--base-url", required=True, help="API base URL, e.g. https://example")
+    parser.add_argument(
+        "--base-url", required=True, help="API base URL, e.g. https://example"
+    )
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument(
         "--auth-header-env",
@@ -80,7 +82,9 @@ def validate_feed_payload(path: str, payload: Any) -> SmokeResult:
 
     if not isinstance(payload, dict):
         errors.append("payload_not_object")
-    if "items" not in payload and not (isinstance(payload.get("data"), dict) and "items" in payload["data"]):
+    if "items" not in payload and not (
+        isinstance(payload.get("data"), dict) and "items" in payload["data"]
+    ):
         errors.append("missing_items")
 
     crypto_category_count = 0
@@ -95,7 +99,9 @@ def validate_feed_payload(path: str, payload: Any) -> SmokeResult:
         for field in _OPTIONAL_ADDITIVE_FIELDS_WARN:
             if field not in item:
                 source_market_missing_count += 1
-            elif field == "sourceMarket" and item.get("sourceMarket") != item.get("market"):
+            elif field == "sourceMarket" and item.get("sourceMarket") != item.get(
+                "market"
+            ):
                 source_market_divergent_count += 1
         scope = item.get("scope")
         if scope not in _ALLOWED_SCOPES:
@@ -116,7 +122,9 @@ def validate_feed_payload(path: str, payload: Any) -> SmokeResult:
     if source_market_missing_count:
         warnings.append(f"source_market_missing_on_{source_market_missing_count}_items")
     if source_market_divergent_count:
-        warnings.append(f"source_market_diverges_from_market_on_{source_market_divergent_count}_items")
+        warnings.append(
+            f"source_market_diverges_from_market_on_{source_market_divergent_count}_items"
+        )
 
     return SmokeResult(
         path=path,
@@ -127,7 +135,9 @@ def validate_feed_payload(path: str, payload: Any) -> SmokeResult:
     )
 
 
-def _fetch_json(base_url: str, path: str, timeout: float, auth_header: str | None) -> Any:
+def _fetch_json(
+    base_url: str, path: str, timeout: float, auth_header: str | None
+) -> Any:
     url = urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
     headers = {"Accept": "application/json"}
     if auth_header:
@@ -138,7 +148,9 @@ def _fetch_json(base_url: str, path: str, timeout: float, auth_header: str | Non
     return json.loads(body)
 
 
-def run_smoke(base_url: str, timeout: float = 10.0, auth_header: str | None = None) -> list[SmokeResult]:
+def run_smoke(
+    base_url: str, timeout: float = 10.0, auth_header: str | None = None
+) -> list[SmokeResult]:
     results: list[SmokeResult] = []
     for path in _DEFAULT_PATHS:
         try:

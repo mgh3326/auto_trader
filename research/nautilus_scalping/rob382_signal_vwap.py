@@ -30,6 +30,7 @@ Causality: every value at index i derives only from bars[0..i]. The indicator li
 already causal; the VWAP band uses rolling_std OF the vwap series (a causal transform of
 a causal series), and all RSI/CTI/tcp are backward-looking windows.
 """
+
 from __future__ import annotations
 
 import rob382_backtest as bt
@@ -96,7 +97,9 @@ def signals(bars, bars_1h=None):  # noqa: ARG001 (bars_1h unused; NEEDS_INFORMAT
     vwap = I.rolling_vwap(highs, lows, closes, volumes, _VWAP_WINDOW)
     vwap_sd = I.rolling_std(vwap, _VWAP_WINDOW)  # df['vwap'].rolling(20).std()
     vwap_low = [
-        vwap[i] - _VWAP_NUM_STD * vwap_sd[i] if (_valid(vwap[i]) and _valid(vwap_sd[i])) else float("nan")
+        vwap[i] - _VWAP_NUM_STD * vwap_sd[i]
+        if (_valid(vwap[i]) and _valid(vwap_sd[i]))
+        else float("nan")
         for i in range(n)
     ]
 

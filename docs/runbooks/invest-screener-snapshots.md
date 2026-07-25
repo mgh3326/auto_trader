@@ -75,6 +75,29 @@ via `INSERT ON CONFLICT DO UPDATE`. `--all` iterates the full active universe in
 `--batch-size` chunks (default 200), committing per batch when `--commit` is set.
 `--all` is mutually exclusive with `--symbol` and `--limit`.
 
+### Build `support_proximity` payloads (ROB-976)
+
+Run this only after the ordinary full KR partition exists. The dedicated builder
+uses that partition for cheap candidate preselection, then recalculates each
+bounded candidate's price and support from one completed-OHLCV frame and stores
+the normalized KRW market cap, turnover, support, and distance on the same row.
+`support_computed_at` marks every evaluated row, including honest no-support
+results, so an empty newer build cannot fall back to older matching candidates.
+
+```bash
+# Bounded preview; default is dry-run/no writes
+uv run python -m scripts.build_support_proximity_snapshot \
+    --market kr --candidate-pool-limit 30
+
+# Persist after reviewing the preview
+uv run python -m scripts.build_support_proximity_snapshot \
+    --market kr --candidate-pool-limit 30 --commit
+```
+
+The manual TaskIQ task name is `build_support_proximity_snapshots`. It has no
+schedule label and also defaults to `commit=false`. Both CLI and task persist
+only through `InvestScreenerSnapshotsRepository.upsert`.
+
 **Operator approval gating:** never run `--all --commit` against production
 without explicit human approval citing dry-run evidence. The recommended
 sequence is:
@@ -159,7 +182,8 @@ scheduler activation can be reviewed against a known-stable manual baseline.
 
 - **Read/model/UI/data-layer only.** No broker, order, watch, or order-intent mutations.
 - The CLI defaults to `--dry-run`. Accidental invocation without `--commit` is a no-op.
-- Migration is table-create only — no `ALTER` of existing tables.
+- ROB-976 adds nullable support/quality columns and a partial ranking index; it
+  does not rewrite existing rows.
 - The repository's `upsert` is the only write path; direct `INSERT/UPDATE/DELETE` is forbidden.
 
 ---

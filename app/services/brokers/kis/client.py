@@ -9,6 +9,8 @@ from pandas import DataFrame
 
 from app.core.async_rate_limiter import get_limiter
 from app.core.config import settings
+from app.services.brokers.kis.pre_send import PreSendHook
+from app.services.brokers.kis.send_outcome import OrderSendOutcomeTracker
 from app.services.redis_token_manager import get_kis_mock_token_manager
 
 from .account import AccountClient, extract_domestic_cash_summary_from_integrated_margin
@@ -332,6 +334,9 @@ class KISClient(BaseKISClient):
     ) -> list[dict[str, Any]]:
         return await self._account.inquire_overseas_margin(is_mock)
 
+    async def inquire_mock_overseas_buyable_amount(self) -> dict[str, Any]:
+        return await self._account.inquire_mock_overseas_buyable_amount()
+
     async def inquire_integrated_margin(
         self,
         is_mock: bool = False,
@@ -374,9 +379,18 @@ class KISClient(BaseKISClient):
         quantity: int,
         price: int = 0,
         is_mock: bool = False,
+        *,
+        pre_send_hook: PreSendHook | None = None,
+        send_outcome: OrderSendOutcomeTracker | None = None,
     ) -> dict[str, Any]:
         return await self._domestic_orders.order_korea_stock(
-            stock_code, order_type, quantity, price, is_mock
+            stock_code,
+            order_type,
+            quantity,
+            price,
+            is_mock,
+            pre_send_hook=pre_send_hook,
+            send_outcome=send_outcome,
         )
 
     async def sell_korea_stock(
@@ -399,6 +413,8 @@ class KISClient(BaseKISClient):
         order_type: str,
         is_mock: bool = False,
         krx_fwdg_ord_orgno: str | None = None,
+        *,
+        pre_send_hook: PreSendHook | None = None,
     ) -> dict[str, Any]:
         return await self._domestic_orders.cancel_korea_order(
             order_number,
@@ -408,6 +424,7 @@ class KISClient(BaseKISClient):
             order_type,
             is_mock,
             krx_fwdg_ord_orgno,
+            pre_send_hook=pre_send_hook,
         )
 
     async def inquire_daily_order_domestic(
@@ -419,9 +436,19 @@ class KISClient(BaseKISClient):
         order_number: str = "",
         is_mock: bool = False,
         max_pages: int = 100,
+        inter_page_delay: float = 0.1,
+        stop_when_no_new_rows: bool = False,
     ) -> list[dict[str, Any]]:
         return await self._domestic_orders.inquire_daily_order_domestic(
-            start_date, end_date, stock_code, side, order_number, is_mock, max_pages
+            start_date,
+            end_date,
+            stock_code,
+            side,
+            order_number,
+            is_mock,
+            max_pages,
+            inter_page_delay=inter_page_delay,
+            stop_when_no_new_rows=stop_when_no_new_rows,
         )
 
     async def modify_korea_order(
@@ -450,9 +477,17 @@ class KISClient(BaseKISClient):
         quantity: int,
         price: float = 0.0,
         is_mock: bool = False,
+        *,
+        pre_send_hook: PreSendHook | None = None,
     ) -> dict[str, Any]:
         return await self._overseas_orders.order_overseas_stock(
-            symbol, exchange_code, order_type, quantity, price, is_mock
+            symbol,
+            exchange_code,
+            order_type,
+            quantity,
+            price,
+            is_mock,
+            pre_send_hook=pre_send_hook,
         )
 
     async def buy_overseas_stock(
@@ -462,9 +497,11 @@ class KISClient(BaseKISClient):
         quantity: int,
         price: float = 0.0,
         is_mock: bool = False,
+        *,
+        pre_send_hook: PreSendHook | None = None,
     ) -> dict[str, Any]:
         return await self._overseas_orders.buy_overseas_stock(
-            symbol, exchange_code, quantity, price, is_mock
+            symbol, exchange_code, quantity, price, is_mock, pre_send_hook=pre_send_hook
         )
 
     async def sell_overseas_stock(
@@ -474,9 +511,11 @@ class KISClient(BaseKISClient):
         quantity: int,
         price: float = 0.0,
         is_mock: bool = False,
+        *,
+        pre_send_hook: PreSendHook | None = None,
     ) -> dict[str, Any]:
         return await self._overseas_orders.sell_overseas_stock(
-            symbol, exchange_code, quantity, price, is_mock
+            symbol, exchange_code, quantity, price, is_mock, pre_send_hook=pre_send_hook
         )
 
     async def inquire_overseas_orders(
@@ -495,9 +534,16 @@ class KISClient(BaseKISClient):
         exchange_code: str,
         quantity: int,
         is_mock: bool = False,
+        *,
+        pre_send_hook: PreSendHook | None = None,
     ) -> dict[str, Any]:
         return await self._overseas_orders.cancel_overseas_order(
-            order_number, symbol, exchange_code, quantity, is_mock
+            order_number,
+            symbol,
+            exchange_code,
+            quantity,
+            is_mock,
+            pre_send_hook=pre_send_hook,
         )
 
     async def inquire_daily_order_overseas(
@@ -510,6 +556,8 @@ class KISClient(BaseKISClient):
         order_number: str = "",
         is_mock: bool = False,
         max_pages: int = 100,
+        inter_page_delay: float = 0.1,
+        stop_when_no_new_rows: bool = False,
     ) -> list[dict[str, Any]]:
         return await self._overseas_orders.inquire_daily_order_overseas(
             start_date,
@@ -520,6 +568,8 @@ class KISClient(BaseKISClient):
             order_number,
             is_mock,
             max_pages,
+            inter_page_delay=inter_page_delay,
+            stop_when_no_new_rows=stop_when_no_new_rows,
         )
 
     async def modify_overseas_order(

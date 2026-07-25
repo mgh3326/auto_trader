@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
+from sqlalchemy import delete
 
 from app.mcp_server.tooling.alpaca_paper import (
     reset_alpaca_paper_service_factory,
@@ -16,6 +19,53 @@ from app.mcp_server.tooling.alpaca_paper_orders import (
     reset_alpaca_paper_orders_service_factory,
     set_alpaca_paper_orders_service_factory,
 )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_smoke_rows():
+    """The smoke side-effect submit now persists a snapshot + a durable manual
+    claim; keep the deterministic manual keys and smoke snapshots clean."""
+    from app.core.db import AsyncSessionLocal
+    from app.models.market_quote_snapshot import MarketQuoteSnapshot
+    from app.models.review import AlpacaPaperOrderLedger
+
+    led = delete(AlpacaPaperOrderLedger).where(
+        AlpacaPaperOrderLedger.client_order_id.like("rob73-%")
+        | AlpacaPaperOrderLedger.client_order_id.like("rob74-crypto-%")
+    )
+    snap = delete(MarketQuoteSnapshot).where(
+        MarketQuoteSnapshot.symbol.in_(["AAPL", "KRW-BTC"])
+    )
+    async with AsyncSessionLocal() as db:
+        await db.execute(led)
+        await db.execute(snap)
+        await db.commit()
+    yield
+    async with AsyncSessionLocal() as db:
+        await db.execute(led)
+        await db.execute(snap)
+        await db.commit()
+
+
+async def _seed_real_snapshot() -> int:
+    """A REAL (unmarked) server-observed snapshot the smoke can reference."""
+    from datetime import UTC, datetime
+
+    from app.core.db import AsyncSessionLocal
+    from app.models.market_quote_snapshot import MarketQuoteSnapshot
+
+    async with AsyncSessionLocal() as db:
+        row = MarketQuoteSnapshot(
+            market="us",
+            symbol="AAPL",
+            source="yahoo",
+            snapshot_at=datetime.now(UTC),
+            price=Decimal("150"),
+        )
+        db.add(row)
+        await db.commit()
+        return row.id
+
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[1]
@@ -72,6 +122,18 @@ def test_dev_smoke_script_no_raw_payload_print() -> None:
                             f"smoke script calls print({arg.id}) "
                             "which would dump a raw broker payload"
                         )
+
+
+@pytest.mark.unit
+def test_dev_smoke_script_does_not_fabricate_trusted_snapshots() -> None:
+    """ROB-842 G5: the smoke must never write a market_quote_snapshots row (which
+    would masquerade an order/limit price as trusted server-observed evidence)."""
+    text = SCRIPT_PATH.read_text(encoding="utf-8")
+    assert "MarketQuoteSnapshot" not in text, (
+        "smoke script must not construct/persist a market_quote_snapshots row"
+    )
+    # It requires the operator to reference a real snapshot instead.
+    assert "--quote-snapshot-id" in text
 
 
 @pytest.mark.unit
@@ -373,9 +435,14 @@ async def test_dev_smoke_both_gates_runs_submit_then_cancel(
     set_alpaca_paper_service_factory(lambda: ro)  # type: ignore[arg-type]
     set_alpaca_paper_orders_service_factory(lambda: orders)  # type: ignore[arg-type]
     monkeypatch.setenv("ALPACA_PAPER_SMOKE_ALLOW_SIDE_EFFECTS", "1")
+    # The smoke no longer fabricates evidence; the operator points it at a REAL
+    # server-observed snapshot (here seeded as an unmarked yahoo row).
+    sid = await _seed_real_snapshot()
     try:
         module = _load_module()
-        args = module.build_parser().parse_args(["--confirm-paper-side-effect"])
+        args = module.build_parser().parse_args(
+            ["--confirm-paper-side-effect", "--quote-snapshot-id", str(sid)]
+        )
         rc = await module._async_main(args)
     finally:
         reset_alpaca_paper_service_factory()

@@ -310,8 +310,10 @@ def normalize_upbit_fill(raw: Mapping[str, Any]) -> FillOrder:
     symbol = str(_pick_first(raw, ["code", "market", "symbol"]) or "UNKNOWN")
     side = _normalize_side(str(_pick_first(raw, ["ask_bid", "side"]) or ""))
     filled_price = _safe_float(_pick_first(raw, ["trade_price", "price", "avg_price"]))
+    # Upbit myOrder uses ``volume`` for the current fill when state=trade;
+    # ``executed_volume`` is cumulative order evidence used by rung projection.
     filled_qty = _safe_float(
-        _pick_first(raw, ["trade_volume", "executed_volume", "volume"])
+        _pick_first(raw, ["trade_volume", "volume", "executed_volume"])
     )
     filled_amount = _safe_float(_pick_first(raw, ["trade_amount", "executed_amount"]))
     if filled_amount <= 0 and filled_price > 0 and filled_qty > 0:

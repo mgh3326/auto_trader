@@ -35,8 +35,11 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from app.core.config import settings
-from app.monitoring.trade_notifier import TradeNotifier, get_trade_notifier
+from app.core.config import settings  # noqa: E402
+from app.monitoring.trade_notifier import (  # noqa: E402
+    TradeNotifier,
+    get_trade_notifier,
+)
 
 
 def print_section(title: str) -> None:
@@ -66,7 +69,9 @@ def print_warning(message: str) -> None:
     print(f"⚠️  {message}")
 
 
-async def test_buy_notification(notifier: TradeNotifier, market_type: str, webhook_name: str) -> bool:
+async def test_buy_notification(
+    notifier: TradeNotifier, market_type: str, webhook_name: str
+) -> bool:
     """Test buy order notification."""
     print_info(f"Testing buy notification for {webhook_name}...")
 
@@ -101,7 +106,9 @@ async def test_buy_notification(notifier: TradeNotifier, market_type: str, webho
         return False
 
 
-async def test_sell_notification(notifier: TradeNotifier, market_type: str, webhook_name: str) -> bool:
+async def test_sell_notification(
+    notifier: TradeNotifier, market_type: str, webhook_name: str
+) -> bool:
     """Test sell order notification."""
     print_info(f"Testing sell notification for {webhook_name}...")
 
@@ -137,7 +144,9 @@ async def test_sell_notification(notifier: TradeNotifier, market_type: str, webh
         return False
 
 
-async def test_analysis_notification(notifier: TradeNotifier, market_type: str, webhook_name: str) -> bool:
+async def test_analysis_notification(
+    notifier: TradeNotifier, market_type: str, webhook_name: str
+) -> bool:
     """Test AI analysis notification."""
     print_info(f"Testing analysis notification for {webhook_name}...")
 
@@ -256,7 +265,9 @@ async def run_tests(
     # Configure with webhooks from settings
     notifier.configure(
         bot_token=getattr(settings, "telegram_token", "") or "",
-        chat_ids=[getattr(settings, "telegram_chat_id", "")] if getattr(settings, "telegram_chat_id", None) else [],
+        chat_ids=[getattr(settings, "telegram_chat_id", "")]
+        if getattr(settings, "telegram_chat_id", None)
+        else [],
         enabled=True,
         discord_webhook_us=config["us"],
         discord_webhook_kr=config["kr"],
@@ -316,13 +327,19 @@ async def run_tests(
                 test_results.append(result)
             else:
                 # Test buy, sell, and analysis notifications
-                result1 = await test_buy_notification(notifier, webhook_type, webhook_name)
+                result1 = await test_buy_notification(
+                    notifier, webhook_type, webhook_name
+                )
                 test_results.append(result1)
 
-                result2 = await test_sell_notification(notifier, webhook_type, webhook_name)
+                result2 = await test_sell_notification(
+                    notifier, webhook_type, webhook_name
+                )
                 test_results.append(result2)
 
-                result3 = await test_analysis_notification(notifier, webhook_type, webhook_name)
+                result3 = await test_analysis_notification(
+                    notifier, webhook_type, webhook_name
+                )
                 test_results.append(result3)
 
         results[webhook_name] = test_results
@@ -351,9 +368,13 @@ def display_summary(results: dict[str, list[bool]], verbose: bool) -> int:
         passed_tests += webhook_passed
 
         if webhook_passed == webhook_total:
-            print_success(f"{webhook_name}: {webhook_passed}/{webhook_total} tests passed")
+            print_success(
+                f"{webhook_name}: {webhook_passed}/{webhook_total} tests passed"
+            )
         else:
-            print_warning(f"{webhook_name}: {webhook_passed}/{webhook_total} tests passed")
+            print_warning(
+                f"{webhook_name}: {webhook_passed}/{webhook_total} tests passed"
+            )
 
         if verbose:
             for i, result in enumerate(test_results, 1):
@@ -364,10 +385,14 @@ def display_summary(results: dict[str, list[bool]], verbose: bool) -> int:
     print(f"Overall: {passed_tests}/{total_tests} tests passed")
 
     if passed_tests == total_tests:
-        print_success("\n🎉 All tests passed! Discord webhook integration is working correctly.")
+        print_success(
+            "\n🎉 All tests passed! Discord webhook integration is working correctly."
+        )
         return 0
     else:
-        print_error(f"\n❌ {total_tests - passed_tests} test(s) failed. Please check your Discord webhook configuration.")
+        print_error(
+            f"\n❌ {total_tests - passed_tests} test(s) failed. Please check your Discord webhook configuration."
+        )
         return 1
 
 
@@ -387,7 +412,8 @@ def main() -> int:
         help="Show what would be sent without actually sending",
     )
     parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
         help="Enable verbose output",
     )
@@ -396,11 +422,13 @@ def main() -> int:
 
     try:
         # Run async tests
-        results = asyncio.run(run_tests(
-            market_type=args.market_type,
-            dry_run=args.dry_run,
-            verbose=args.verbose,
-        ))
+        results = asyncio.run(
+            run_tests(
+                market_type=args.market_type,
+                dry_run=args.dry_run,
+                verbose=args.verbose,
+            )
+        )
 
         # Display summary
         exit_code = display_summary(results, args.verbose)
@@ -414,6 +442,7 @@ def main() -> int:
         print_error(f"Unexpected error: {e}")
         if args.verbose:
             import traceback
+
             traceback.print_exc()
         return 1
 

@@ -9,6 +9,7 @@ Covers:
 
 Pure (stdlib + harness modules only); no network, no freqtrade/talib/pandas.
 """
+
 from __future__ import annotations
 
 import rob382_bars as rb
@@ -16,8 +17,12 @@ import rob382_signal_vwap as m
 from rob382_bars import OHLCVBar
 
 
-def _bar(ts: int, o: float, h: float, lo: float, c: float, v: float = 100.0) -> OHLCVBar:
-    return OHLCVBar(ts=ts, open=o, high=h, low=lo, close=c, volume=v, close_ts=ts + 299_999)
+def _bar(
+    ts: int, o: float, h: float, lo: float, c: float, v: float = 100.0
+) -> OHLCVBar:
+    return OHLCVBar(
+        ts=ts, open=o, high=h, low=lo, close=c, volume=v, close_ts=ts + 299_999
+    )
 
 
 def _build_decline(n_pre: int = 130) -> list[OHLCVBar]:
@@ -73,13 +78,16 @@ def test_entry_does_not_fire_when_rsi_condition_broken():
         open=last.open,
         high=last.open * 1.06,
         low=last.open * 0.999,
-        close=last.open * 1.05,  # rally → RSI-14 lifts, close above vwap_low, tcp gap gone
+        close=last.open
+        * 1.05,  # rally → RSI-14 lifts, close above vwap_low, tcp gap gone
         volume=last.volume,
         close_ts=last.close_ts,
     )
     bars = bars[:-1] + [up]
     entry, _ = m.signals(bars)
-    assert entry[-1] is False, "entry must NOT fire when the RSI/dip condition is broken"
+    assert entry[-1] is False, (
+        "entry must NOT fire when the RSI/dip condition is broken"
+    )
 
 
 def test_no_lookahead_truncation_invariance():

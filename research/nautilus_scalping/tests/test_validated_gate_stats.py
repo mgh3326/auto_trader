@@ -8,6 +8,7 @@ pure-stdlib (no numpy), seeded for reproducibility. The framing is *not* "find
 an edge" but "prove the net-after-fee result is statistically robust" — see
 ROB-316/320 (fees kill the scalper).
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -47,7 +48,7 @@ def test_bootstrap_all_positive_ci_strictly_positive() -> None:
     out = bootstrap_sharpe_ci(pnls, n_bootstrap=500, seed=7)
     assert out["observed_sharpe"] > 0
     assert out["ci_lower"] <= out["ci_upper"]
-    assert out["ci_lower"] > 0           # every resample of positives is positive
+    assert out["ci_lower"] > 0  # every resample of positives is positive
     assert out["prob_positive"] == 1.0
 
 
@@ -55,7 +56,7 @@ def test_bootstrap_all_negative_ci_upper_below_zero() -> None:
     pnls = [-1.0, -2.0, -1.5, -2.5, -1.0, -2.0, -3.0, -1.5] * 8
     out = bootstrap_sharpe_ci(pnls, n_bootstrap=500, seed=7)
     assert out["observed_sharpe"] < 0
-    assert out["ci_upper"] < 0           # net edge statistically <= 0
+    assert out["ci_upper"] < 0  # net edge statistically <= 0
     assert out["prob_positive"] == 0.0
 
 
@@ -141,9 +142,13 @@ def _losing_report() -> GateReport:
     losing = [Trade(-0.5, -0.1, 100, ts) for ts in range(400)]
     return evaluate_gate(
         candidate_runs={"z2.0/tp30/sl30": losing},
-        baseline_breakout=losing, baseline_random=losing,
-        fee_bps=10.0, min_trades=100, fractions=(0.5, 0.25, 0.25),
-        candidate_name="meanrev_demo", hypothesis="mean_reversion",
+        baseline_breakout=losing,
+        baseline_random=losing,
+        fee_bps=10.0,
+        min_trades=100,
+        fractions=(0.5, 0.25, 0.25),
+        candidate_name="meanrev_demo",
+        hypothesis="mean_reversion",
     )
 
 
@@ -151,8 +156,11 @@ def test_write_run_card_emits_json_and_md(tmp_path: Path) -> None:
     report = _losing_report()
     bs = bootstrap_sharpe_ci([-0.5] * 400, n_bootstrap=200, seed=3)
     paths = write_run_card(
-        report, tmp_path, config={"fee_bps": 10.0},
-        data_sources=["binance_demo"], bootstrap=bs,
+        report,
+        tmp_path,
+        config={"fee_bps": 10.0},
+        data_sources=["binance_demo"],
+        bootstrap=bs,
     )
     assert paths["json"].exists() and paths["md"].exists()
 
@@ -164,7 +172,7 @@ def test_write_run_card_emits_json_and_md(tmp_path: Path) -> None:
 
     md = paths["md"].read_text()
     assert "net-after-fee" in md.lower()
-    assert "ROB-316" in md          # fee-kill framing is explicit in the card
+    assert "ROB-316" in md  # fee-kill framing is explicit in the card
     assert report.verdict in md
 
 
@@ -184,7 +192,7 @@ def test_negative_ci_downgrades_a_validated_verdict() -> None:
     report = GateReport(verdict="validated", verdict_reasons=["passed gate"])
     bs = bootstrap_sharpe_ci([-1.0, -2.0, -1.5, -0.5] * 50, n_bootstrap=200, seed=5)
     apply_statistical_evidence(report, bs)
-    assert report.verdict == "not_validated"   # statistical guard overrides
+    assert report.verdict == "not_validated"  # statistical guard overrides
     assert any("statistic" in r.lower() for r in report.verdict_reasons)
 
 
@@ -192,4 +200,4 @@ def test_positive_ci_does_not_upgrade_not_validated() -> None:
     report = GateReport(verdict="not_validated", verdict_reasons=["thin oos"])
     bs = bootstrap_sharpe_ci([1.0, 2.0, 1.5, 0.5] * 50, n_bootstrap=200, seed=5)
     apply_statistical_evidence(report, bs)
-    assert report.verdict == "not_validated"    # never flips up; gate owns that
+    assert report.verdict == "not_validated"  # never flips up; gate owns that

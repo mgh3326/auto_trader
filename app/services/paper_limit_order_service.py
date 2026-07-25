@@ -353,6 +353,9 @@ class PaperLimitOrderService:
                                 "kind": "price_target",
                                 "direction": direction,
                                 "target_price": float(Decimal(str(target_price))),
+                                "outcome_rule_version": (
+                                    "window-touch-v1-high-gte-low-lte"
+                                ),
                             },
                             probability=float(probability),
                             review_date=review_date,

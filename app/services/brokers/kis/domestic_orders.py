@@ -10,6 +10,13 @@ from app.services.kr_symbol_universe_service import is_nxt_eligible
 
 from . import constants
 from .base import _log_kis_api_failure
+from .order_throttle import (
+    MAX_THROTTLE_RESUBMITS,
+    is_provider_throttle_reject,
+    throttle_backoff_seconds,
+)
+from .pre_send import PreSendHook
+from .send_outcome import OrderSendDisposition, OrderSendOutcomeTracker
 
 if TYPE_CHECKING:
     from .protocols import KISClientProtocol
@@ -19,6 +26,18 @@ if TYPE_CHECKING:
 # fail-closed(RuntimeError). KR live mutation 경로(order/cancel/modify)의 무한 재-POST
 # 및 실 주문 다중 제출 리스크를 차단한다.
 _MAX_TOKEN_REFRESH_RESUBMITS = 1
+
+
+def _domestic_order_key(order: dict[str, Any]) -> str | None:
+    """Identity key for a daily-order row (ROB-903 dedupe-aware early stop).
+
+    KIS re-emits the same execution row across continuation pages; the order
+    number (odno) uniquely identifies a row. Returns ``None`` when absent so
+    callers fall back to exhaustive pagination.
+    """
+    odno = order.get("odno") or order.get("ODNO")
+    key = str(odno).strip() if odno is not None else ""
+    return key or None
 
 
 class DomesticOrderClient:
@@ -236,7 +255,10 @@ class DomesticOrderClient:
         price: int = 0,  # 0이면 시장가
         is_mock: bool = False,
         *,
+        pre_send_hook: PreSendHook | None = None,
+        send_outcome: OrderSendOutcomeTracker | None = None,
         _token_retry_depth: int = 0,
+        _throttle_retry_depth: int = 0,
     ) -> dict:
         """
         국내주식 주문 (매수/매도)
@@ -315,6 +337,14 @@ class DomesticOrderClient:
             f"tr_id: {tr_id}, routing: {body['EXCG_ID_DVSN_CD']}"
         )
 
+        # ROB-BAC: always observe the send outcome, so a gateway throttle
+        # rejection (provably NOT_CREATED) can be told apart from an ambiguous
+        # one. Callers that pass their own tracker keep it — their contract is
+        # unchanged, and a locally created tracker is never returned.
+        outcome = (
+            send_outcome if send_outcome is not None else OrderSendOutcomeTracker()
+        )
+
         js = await self._parent._request_with_rate_limit(
             "POST",
             self._parent._kis_url(constants.DOMESTIC_ORDER_URL),
@@ -328,9 +358,14 @@ class DomesticOrderClient:
             # and 429 re-POSTs (throttle is pre-send wait only).
             retry_request_errors=False,
             max_retries_override=0,
+            # ROB-843 P1: mock-only freshness re-check fired at the actual HTTP
+            # send boundary (None for live → identical behavior).
+            pre_send_hook=pre_send_hook,
+            send_outcome=outcome,
         )
 
         if js.get("rt_cd") != "0":
+            outcome.mark_provider_rejected()
             msg_cd = js.get("msg_cd", "")
             msg1 = js.get("msg1", "")
             _log_kis_api_failure(
@@ -364,14 +399,67 @@ class DomesticOrderClient:
                 )
                 await self._parent._token_manager.clear_token()
                 await self._parent._ensure_token()
+                # ROB-843 P1: re-thread the hook so the token-refresh re-send
+                # re-checks freshness immediately before its own HTTP mutation.
                 return await self.order_korea_stock(
                     stock_code,
                     order_type,
                     quantity,
                     price,
                     is_mock,
+                    pre_send_hook=pre_send_hook,
+                    send_outcome=send_outcome,
                     _token_retry_depth=_token_retry_depth + 1,
+                    _throttle_retry_depth=_throttle_retry_depth,
                 )
+
+            # ROB-BAC: a gateway per-second throttle rejection is declined
+            # *before* the order engine — the <500 response with rt_cd != "0"
+            # and no ODNO proves no order exists, so a bounded re-POST carries
+            # no double-submit risk. ROB-645's "never re-POST" still governs
+            # every ambiguous outcome: the NOT_CREATED check below excludes the
+            # 5xx-with-body case, and timeouts never reach here at all.
+            if is_provider_throttle_reject(msg_cd, msg1):
+                if outcome.disposition is not OrderSendDisposition.NOT_CREATED:
+                    logging.error(
+                        "국내주식 주문 초당한도 거절이나 결과 불확정(http=%s) - "
+                        "fail-closed (stock_code=%s, order_type=%s)",
+                        outcome.last_http_status,
+                        stock_code,
+                        order_type,
+                    )
+                elif _throttle_retry_depth < MAX_THROTTLE_RESUBMITS:
+                    delay = throttle_backoff_seconds(_throttle_retry_depth)
+                    logging.warning(
+                        "국내주식 주문 초당 거래건수 초과(%s) - %.2fs 후 재전송(%d/%d) "
+                        "(stock_code=%s, order_type=%s)",
+                        msg_cd,
+                        delay,
+                        _throttle_retry_depth + 1,
+                        MAX_THROTTLE_RESUBMITS,
+                        stock_code,
+                        order_type,
+                    )
+                    await asyncio.sleep(delay)
+                    return await self.order_korea_stock(
+                        stock_code,
+                        order_type,
+                        quantity,
+                        price,
+                        is_mock,
+                        pre_send_hook=pre_send_hook,
+                        send_outcome=send_outcome,
+                        _token_retry_depth=_token_retry_depth,
+                        _throttle_retry_depth=_throttle_retry_depth + 1,
+                    )
+                else:
+                    logging.error(
+                        "국내주식 주문 초당한도 재전송 캡(%d) 초과 - fail-closed "
+                        "(stock_code=%s, order_type=%s)",
+                        MAX_THROTTLE_RESUBMITS,
+                        stock_code,
+                        order_type,
+                    )
 
             error_msg = f"{msg_cd} {msg1}"
             raise RuntimeError(error_msg)
@@ -382,6 +470,12 @@ class DomesticOrderClient:
             "odno": output.get("ODNO") or output.get("ORD_NO"),  # 주문번호
             "ord_tmd": output.get("ORD_TMD"),  # 주문시각
             "msg": js.get("msg1"),  # 응답메시지
+            # ROB-843: preserve the provider-verified accepted contract. This
+            # point is reached only when rt_cd == "0" (non-zero raised above);
+            # carrying it forward lets the kis_mock result boundary prove
+            # provider acceptance instead of inferring success from an ID alone.
+            "rt_cd": js.get("rt_cd"),
+            "msg_cd": js.get("msg_cd"),
         }
 
         logging.info(
@@ -423,6 +517,7 @@ class DomesticOrderClient:
         is_mock: bool = False,
         krx_fwdg_ord_orgno: str | None = None,
         *,
+        pre_send_hook: PreSendHook | None = None,
         _token_retry_depth: int = 0,
     ) -> dict:
         """
@@ -525,6 +620,7 @@ class DomesticOrderClient:
             # but keep the no-double-submit policy uniform across order mutations.
             retry_request_errors=False,
             max_retries_override=0,
+            pre_send_hook=pre_send_hook,
         )
 
         if js.get("rt_cd") != "0":
@@ -561,6 +657,7 @@ class DomesticOrderClient:
                     order_type,
                     is_mock,
                     resolved_kis_orgno,
+                    pre_send_hook=pre_send_hook,
                     _token_retry_depth=_token_retry_depth + 1,
                 )
 
@@ -591,6 +688,8 @@ class DomesticOrderClient:
         order_number: str = "",
         is_mock: bool = False,
         max_pages: int = 100,
+        inter_page_delay: float = 0.1,
+        stop_when_no_new_rows: bool = False,
     ) -> list[dict]:
         """
         국내주식 일별 체결조회 (주문 히스토리)
@@ -603,6 +702,13 @@ class DomesticOrderClient:
             order_number: 주문번호 (특정 주문만 조회 시)
             is_mock: True면 모의투자, False면 실전투자
             max_pages: 최대 조회 페이지 수
+            inter_page_delay: 연속조회 페이지 사이 sleep(초). KIS 19 req/s rate
+                limiter가 이미 페이싱하므로 이중 스로틀 — 표시 경로는 0.0을 넘긴다
+                (ROB-903). reconcile/fill-evidence 경로는 기본 0.1 유지.
+            stop_when_no_new_rows: True면 non-empty 페이지가 새 주문행(odno)을 더하지
+                못하는 순간 중단(KIS 중복행 연속조회 runaway 방지). 이미 모든 고유 행을
+                수집한 시점이라 증거 손실 없음. 기본 False(현행 exhaustive) — reconcile
+                경로는 기본값 유지.
 
         Returns:
             체결 주문 목록 (list of dict)
@@ -652,6 +758,7 @@ class DomesticOrderClient:
         )
 
         all_orders = []
+        seen_order_keys: set[str] = set()
         ctx_area_fk100 = ""
         ctx_area_nk100 = ""
         tr_cont = ""
@@ -739,6 +846,18 @@ class DomesticOrderClient:
                 logging.info(f"페이지 {page}에서 더 이상 주문이 없음")
                 break
 
+            # ROB-903: display path halts once a page adds no new order rows
+            # (KIS duplicate-cursor runaway). All unique rows already collected →
+            # no fill evidence lost. Reconcile keeps the default (exhaustive).
+            if stop_when_no_new_rows:
+                page_keys = {
+                    key for o in orders if (key := _domestic_order_key(o)) is not None
+                }
+                if page_keys and page_keys <= seen_order_keys:
+                    logging.info("연속조회 새 주문행 없음 — 조기 종료(display)")
+                    break
+                seen_order_keys |= page_keys
+
             all_orders.extend(orders)
             logging.info(
                 f"페이지 {page}: {len(orders)}건 조회 (누적: {len(all_orders)}건)"
@@ -759,7 +878,8 @@ class DomesticOrderClient:
             if page > page_limit:
                 truncated = True
                 break
-            await asyncio.sleep(0.1)
+            if inter_page_delay > 0:
+                await asyncio.sleep(inter_page_delay)
 
         if truncated:
             raise RuntimeError(

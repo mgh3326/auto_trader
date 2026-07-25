@@ -20,8 +20,9 @@ flipping the gates.
 | MCP tools (`investment_report_prepare_bundle` / `..._get_hermes_context` / `..._create_from_hermes_composition` / `investment_stage_artifacts_ingest_from_hermes`) | Hermes pulls context + posts artifacts/composition back over MCP. | `app/mcp_server/tooling/investment_hermes_handlers.py` |
 | HTTP routes (`/trading/api/investment-reports/hermes/{prepare-bundle, context, stage-artifacts, composition}`) | Same surface as MCP, exposed over HTTP for Hermes if it prefers HTTP transport. | `app/routers/investment_hermes_http.py` |
 | AuthMiddleware token branch | Shared-secret auth for the HTTP family (prefix-match). | `app/middleware/auth.py` |
-| `hermes_bundle_preparation_flow` (Prefect) | Calls `SnapshotBundleEnsureService.ensure(...)` on a cadence so Hermes finds a fresh bundle to pull from. | `app/flows/hermes_bundle_preparation_flow.py` |
 | `HermesContextExporter` / `HermesCompositionIngestService` / `HermesStageArtifactsIngestService` | Service layer the MCP + HTTP routes both call. | `app/services/investment_stages/hermes_context.py` / `hermes_ingest.py` |
+
+> **ROB-986 update**: the `hermes_bundle_preparation_flow` Prefect flow (bundle-preparation cadence) was removed — it was never deployed (no `robin-prefect-automations` registration, zero invocation history). Bundle freshness for a Hermes pull is now produced ad hoc via `investment_report_prepare_bundle` (MCP) / HTTP `prepare-bundle` (§1) at pull time; there is no scheduled cadence.
 
 ---
 
@@ -29,17 +30,15 @@ flipping the gates.
 
 | Var | Default | Set on | Notes |
 |---|---|---|---|
-| `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED` | `false` | auto_trader app + MCP server + Prefect worker | Must be `true` for any Hermes endpoint or the prep flow to do real work. Same gate as the legacy `investment_report_generate_from_bundle` MCP tool. |
+| `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED` | `false` | auto_trader app + MCP server | Must be `true` for any Hermes endpoint to do real work. Same gate as the legacy `investment_report_generate_from_bundle` MCP tool. |
 | `HERMES_INGEST_TOKEN` | empty | auto_trader app (HTTP route only) | Shared secret for the HTTP family. Token unset → all four HTTP endpoints respond `403 "Hermes ingest token not configured"`. **Do NOT commit a real value to this repo** — operator places it in the deployment secret store. |
 | `HERMES_INGEST_TOKEN_HEADER` | `X-Hermes-Ingest-Token` | auto_trader app + Hermes side | Header name Hermes must use. Default rarely needs changing. |
-| `HERMES_BUNDLE_PREPARATION_ENABLED` | `false` | Prefect worker | Activation gate for the bundle-preparation flow. `false` → flow exits with `{"status": "disabled", ...}` and zero side effects. `true` → flow calls `SnapshotBundleEnsureService.ensure` on its schedule. |
 
-The four vars are independent gates:
+The vars are independent gates:
 
 ```
 HTTP endpoint reachable  ← token configured + correct header
 HTTP endpoint produces  ← generator flag on
-Prep flow does work     ← generator flag on AND prep-flow flag on
 ```
 
 ---
@@ -63,9 +62,7 @@ Order matters: confirm each step before moving on.
      https://<auto_trader>/trading/api/investment-reports/hermes/context
    ```
    Expected: 200 with the frozen Hermes context payload. 401 → header/value mismatch. 403 → token not configured on the server side. 503 → generator flag is off.
-4. **Prefect worker env**: set `HERMES_BUNDLE_PREPARATION_ENABLED=true` on the worker that runs the `rob-287 hermes bundle preparation` flow. Initial invocation should land an `InvestmentSnapshotBundle` row and return `{"status": "ok", ...}`.
-5. **Prefect deployment registration**: register a paused deployment of `hermes_bundle_preparation_flow` in `robin-prefect-automations`. Suggested cadence: KR equity preset every 5 minutes during 09:00–15:30 KST. Unpause manually after a clean dry-run.
-6. **End-to-end smoke**: ask Hermes to drive a single cycle against the non-prod auto_trader instance. Expected timeline:
+4. **End-to-end smoke**: ask Hermes to drive a single cycle against the non-prod auto_trader instance. Expected timeline:
    1. Hermes calls `POST /prepare-bundle` (or polls existing bundles).
    2. Hermes calls `POST /context` with a `snapshot_bundle_uuid`.
    3. Hermes ingests stage artifacts as it computes them (`POST /stage-artifacts`).
@@ -86,20 +83,11 @@ If any of those steps surfaces an error envelope or non-2xx status, stop and ins
 [ ] Confirm HERMES_INGEST_TOKEN_HEADER agrees with Hermes' production
     configuration.
 [ ] Run the smoke CLI / curl checks from §3 against the prod
-    auto_trader hostname BUT with HERMES_BUNDLE_PREPARATION_ENABLED
-    still false. This verifies the HTTP surface, NOT the flow.
-[ ] Register the Prefect deployment in robin-prefect-automations,
-    paused=true. Do NOT unpause yet.
-[ ] Set HERMES_BUNDLE_PREPARATION_ENABLED=true on the prod Prefect
-    worker. Restart the worker to pick up the env change.
-[ ] Manually trigger a single run of the paused deployment. Verify the
-    InvestmentSnapshotBundle row landed and the return value is
-    {"status": "ok", ...}.
+    auto_trader hostname. This verifies the HTTP surface.
 [ ] Ask Hermes to perform a single end-to-end cycle. Inspect:
        - One investment_stage_run row with status='completed'.
        - One investment_report row referencing the same snapshot bundle.
        - No anomalies in Sentry from app/services/investment_stages/.
-[ ] Unpause the Prefect deployment.
 [ ] Monitor for one trading session before considering ROB-287 closed.
 ```
 
@@ -113,9 +101,8 @@ the round-trip + a clean session.
 
 Every gate has an off-switch:
 
-* Hermes producing bad reports → flip `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=false`. All four HTTP endpoints + the prep flow return 503/disabled in one round trip.
+* Hermes producing bad reports → flip `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=false`. All four HTTP endpoints return 503/disabled in one round trip.
 * HTTP surface specifically misbehaving → flip `HERMES_INGEST_TOKEN` to empty. The middleware returns 403 to every call; Hermes will fail fast.
-* Prep flow over-running → pause the deployment in Prefect; flip `HERMES_BUNDLE_PREPARATION_ENABLED=false` as belt-and-braces.
 
 Rolling back any of these is a config-only change; no auto_trader
 redeploy is required.
@@ -131,10 +118,9 @@ redeploy is required.
 | HTTP `503` with `snapshot_backed_report_generator_disabled` | `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED` is false on the auto_trader app server. | Restart the process if the env was changed without restart. |
 | HTTP `409` with `artifact_content_conflict` | Hermes re-ingested the same `(run_uuid, stage_type)` with a different payload. | Hermes-side bug — auto_trader's append-only contract is doing its job. |
 | HTTP `409` with `run_envelope_mismatch` | A second ingest under the same `run_uuid` carries different `market/account_scope/policy_version`. | Hermes-side bug — fix the envelope. |
-| Prep flow `"status": "disabled"` on the worker | `HERMES_BUNDLE_PREPARATION_ENABLED=false` (default). | Flip the env var; restart the Prefect worker. |
-| Hermes never sees a fresh bundle | Either the flow is disabled, the deployment is paused, or the cadence is too sparse for Hermes' poll interval. | Manually run the flow once and check `created=true` in the return. |
+| Hermes never sees a fresh bundle | No bundle has been prepared for this identity tuple yet. | Manually call `investment_report_prepare_bundle` (MCP) / HTTP `prepare-bundle` and check `created=true` in the return. |
 
-The middleware token branches are at `app/middleware/auth.py`. The flow body is at `app/flows/hermes_bundle_preparation_flow.py`. The service layer that all four endpoints share is at `app/services/investment_stages/hermes_context.py` + `hermes_ingest.py`.
+The middleware token branches are at `app/middleware/auth.py`. The service layer that all four endpoints share is at `app/services/investment_stages/hermes_context.py` + `hermes_ingest.py`.
 
 ---
 
@@ -146,7 +132,7 @@ After the activation steps in §3 / §4 land but **before** flipping ROB-287 to 
 
 - `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED=true` on the target auto_trader app.
 - `HERMES_INGEST_TOKEN` configured on the target app, value known to the operator.
-- One existing `InvestmentSnapshotBundle` row (use the prep flow once or seed manually). The smoke does NOT call `/prepare-bundle` — that's a separate concern.
+- One existing `InvestmentSnapshotBundle` row (call `investment_report_prepare_bundle` once or seed manually). The smoke does NOT call `/prepare-bundle` — that's a separate concern.
 
 ### 7.2 CLI usage
 
@@ -377,11 +363,10 @@ separately whether to:
 
 ## 9. ROB-314 — production-collector bundle preparation (real KR/kis_live evidence)
 
-The three report-generation entrypoints now inject `production_collector_registry(session)` and accept a `user_id`:
+The two report-generation entrypoints now inject `production_collector_registry(session)` and accept a `user_id`:
 
 - MCP `investment_report_prepare_bundle` (`user_id` is an optional tool arg)
 - HTTP `POST /trading/api/investment-reports/hermes/prepare-bundle` (`user_id` is an optional body field)
-- Prefect `hermes_bundle_preparation_flow` (`user_id` is an optional flow param)
 
 Because these paths are token-authed (HTTP) or have no user context (MCP), `user_id`
 must be supplied explicitly by the caller — it is never derived from an authenticated

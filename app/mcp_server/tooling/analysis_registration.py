@@ -24,6 +24,8 @@ from app.mcp_server.tooling.research_pipeline_read import (
     stage_analysis_get_impl,
 )
 from app.mcp_server.tooling.screener_snapshot_tool import screen_stocks_snapshot_impl
+from app.mcp_server.tooling.theme_events import get_theme_events_impl
+from app.services.krx import probe_krx_session_health
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -47,6 +49,8 @@ ANALYSIS_TOOL_NAMES: set[str] = {
     "get_dividends",
     "get_crypto_fear_greed",
     "get_momentum_candidates",
+    "get_krx_session_health",
+    "get_theme_events",
     "research_session_get",
     "research_session_list_recent",
     "stage_analysis_get",
@@ -60,9 +64,26 @@ def register_analysis_tools(
     """Register MCP tools for analysis, screening, and ranking utilities."""
 
     @mcp.tool(
+        name="get_krx_session_health",
+        description=(
+            "Read-only KRX authenticated-session health probe. Detects an expired "
+            "KRX session and reuses the normal KRX login path once; it never writes "
+            "market, broker, or order state. If status='unavailable' with "
+            "reason='krx_session_expired', use screen_stocks_snapshot(market='kr') "
+            "for persisted discovery and get_momentum_candidates(market='kr') for "
+            "intraday momentum candidates."
+        ),
+    )
+    async def get_krx_session_health() -> dict[str, Any]:
+        return await probe_krx_session_health()
+
+    @mcp.tool(
         name="get_momentum_candidates",
         description=(
-            "Read-only early-catch candidates for 급등 Korean stocks from persisted "
+            "Use for KR-only intraday 급등 early-catch scoring; for general filtered "
+            "discovery use screen_stocks or screen_stocks_snapshot, and for simple "
+            "market rankings use get_top_stocks. Read-only early-catch candidates "
+            "for 급등 Korean stocks from persisted "
             "Naver Stock momentum snapshots. Scores cross-surface signals such as "
             "searchTop, quantTop, up, priceTop, KRX/NXT confirmation, rank deltas, "
             "and theme leadership. Does not fetch Naver or mutate broker/order state."
@@ -80,9 +101,41 @@ def register_analysis_tools(
         )
 
     @mcp.tool(
+        name="get_theme_events",
+        description=(
+            "Read-only 테마/업종 클러스터 snapshots from persisted Naver Stock theme "
+            "events (10-minute intraday collector). Returns rank/name/change_rate/"
+            "trade_value/stock_count/leader_symbols per item, with an intraday "
+            "data_state=stale tag when the latest snapshot is >20min old during a "
+            "live KRX session. Does not fetch Naver or mutate broker/order state."
+        ),
+    )
+    async def get_theme_events(
+        market: str = "kr",
+        event_kind: str = "all",
+        top_n: int = 20,
+        trading_date: str | None = None,
+        at: str | None = None,
+        include_stocks: bool = False,
+    ) -> dict[str, Any]:
+        return await get_theme_events_impl(
+            market=market,
+            event_kind=event_kind,
+            top_n=top_n,
+            trading_date=trading_date,
+            at=at,
+            include_stocks=include_stocks,
+        )
+
+    @mcp.tool(
         name="get_top_stocks",
         description=(
-            "Get top stocks by ranking type across different markets (KR/US/Crypto). "
+            "Use for a simple ranking-type sort (optionally with KR market-cap/"
+            "turnover quality floors); for richer filtered candidate discovery use "
+            "screen_stocks or the persisted-preset "
+            "screen_stocks_snapshot, and for KR intraday 급등 scoring use "
+            "get_momentum_candidates. Get top stocks by ranking type across different "
+            "markets (KR/US/Crypto). "
             "KR: volume, market_cap, gainers, losers, foreign_net_buy, "
             "foreign_net_sell (foreigners = back-compat alias for foreign_net_buy). "
             "Foreign rankings expose named foreign_net_qty / foreign_net_amount "
@@ -91,6 +144,18 @@ def register_analysis_tools(
             "provenance tag, and apply a default-ON liquidity filter "
             "(|foreign_net_amount| >= FOREIGNERS_MIN_NET_AMOUNT_KRW, default 1억 "
             "KRW; pass include_illiquid=true to bypass). "
+            "min_market_cap/min_turnover (KR only, raw KRW) are fail-closed "
+            "quality floors. min_market_cap uses only the normalized Naver-backed "
+            "market_valuation_snapshots value (never the provider-unit KR "
+            "fundamentals backfill); min_turnover uses trade_amount, falling back "
+            "to price*volume. Unknown values cannot establish a pass. Excluded "
+            "counts echo under market_cap_filter / "
+            "turnover_filter; if the filter empties an otherwise non-empty "
+            "losers page, the response is status=degraded with degraded_reason "
+            "(never the generic 'no losing stocks' message). Useful on "
+            "ranking_type=losers to cut illiquid junk-cap noise before a "
+            "지지선 매수 후보 scan; for a ranked-by-support-distance view use "
+            "screen_stocks_snapshot(preset='support_proximity') instead. "
             "US: volume, market_cap, gainers, losers "
             "Crypto: volume, gainers, losers, relative_strength (vs BTC 24h)."
         ),
@@ -100,12 +165,16 @@ def register_analysis_tools(
         ranking_type: str = "volume",
         limit: int = 20,
         include_illiquid: bool = False,
+        min_market_cap: float | None = None,
+        min_turnover: float | None = None,
     ) -> dict[str, Any]:
         return await get_top_stocks_impl(
             market=market,
             ranking_type=ranking_type,
             limit=limit,
             include_illiquid=include_illiquid,
+            min_market_cap=min_market_cap,
+            min_turnover=min_turnover,
         )
 
     @mcp.tool(
@@ -205,7 +274,12 @@ def register_analysis_tools(
     @mcp.tool(
         name="analyze_stock_batch",
         description=(
-            "Analyze multiple stocks in parallel with compact summaries. "
+            "Analyze multiple stocks in parallel with compact summaries. For KR/crypto "
+            "and US regular-session analysis, a planned batch already returns a fresh "
+            "price plus context, so a separate get_quote is normally unnecessary. "
+            "Exception: use get_quote(include_extended_hours=True) for US premarket/"
+            "afterhours; use get_quote for previous_close, and get_ohlcv when OHLC "
+            "candles are required. "
             "Returns per-symbol compact summary (symbol, price, RSI, consensus, supports/resistances) "
             "by default, or full analysis when quick=False. "
             "When include_position=True (default), each compact summary carries a "
@@ -254,7 +328,14 @@ def register_analysis_tools(
     @mcp.tool(
         name="screen_stocks",
         description=(
-            "Screen stocks across markets (KR/US/Crypto) with filters. "
+            "Use for live, generic filter/sort discovery across KR/US/Crypto; use "
+            "screen_stocks_snapshot for curated persisted presets, get_top_stocks "
+            "for simple rankings, and get_momentum_candidates for KR intraday 급등 "
+            "scoring. If this returns reason='krx_session_expired', fall back to "
+            "screen_stocks_snapshot(market='kr') for persisted presets; use "
+            "get_momentum_candidates(market='kr') for KR intraday momentum. "
+            "Screen stocks across markets (KR/US/Crypto) "
+            "with filters. "
             "KR supports kospi/kosdaq/konex/all, 30-day ADV via adv_krw_min "
             "(1B KRW conservative, 5B KRW aggressive), instrument_types, "
             "and exclude_sectors. "
@@ -321,13 +402,24 @@ def register_analysis_tools(
     @mcp.tool(
         name="screen_stocks_snapshot",
         description=(
-            "Snapshot-backed screener: run one or more /invest/screener presets over "
+            "Use for curated persisted-preset discovery; use screen_stocks for live "
+            "generic filters, get_top_stocks for simple rankings, and "
+            "get_momentum_candidates for KR intraday 급등 scoring. Snapshot-backed "
+            "screener: run one or more /invest/screener presets over "
             "their base snapshots (Discovery Workflow, ROB-515). "
             "Unlike screen_stocks (generic tvscreener/KIS path), this serves persisted "
             "screener snapshot data. preset can be a single ID or a comma-separated "
             "list (e.g. 'consecutive_gainers,double_buy'); presets can also be a "
             "list for multi-preset sweeps with symbol deduplication and "
             "matchedPresets tagging. "
+            "preset='support_proximity' (KR, ROB-976) ranks a quality-filtered "
+            "blue-chip universe by distance to its nearest support level. The "
+            "bounded builder reuses get_support_resistance's fib/volume-profile/"
+            "Bollinger clustering on one completed OHLCV frame and persists its "
+            "price/support/distance plus normalized market cap atomically; this "
+            "tool only reads that snapshot and never recalculates a level. Symbols "
+            "with no stored support below the snapshot price are excluded. "
+            "riskContext on each row carries the support kind/strength. "
             "filters=[{field, operator(gte|lte|eq), value}] tune the preset's "
             "thresholds (threaded for consecutive_gainers and crypto). "
             "exclude_held hides KIS-live portfolio symbols; exclude_watched is "
@@ -345,6 +437,12 @@ def register_analysis_tools(
             "recomputed each call from a fresh price so it stays intraday-current. "
             "min_analyst_* filters resolve consensus from the cache and only the "
             "returned page is enriched. "
+            "priceLabel, changePctLabel, and metricValueLabel are values at the "
+            "snapshot time and may be stale by up to one session; before confirming "
+            "a top candidate, revalidate it separately (get_quote / "
+            "get_support_resistance / analyze_stock_batch). "
+            "analysisContext.rsi14, when present, is the "
+            "separately exposed RSI field. "
             "Results are capped (default 40) and paginated via limit/offset."
         ),
     )

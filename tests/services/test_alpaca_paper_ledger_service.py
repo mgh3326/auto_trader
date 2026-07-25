@@ -47,6 +47,7 @@ def test_alpaca_paper_ledger_model_columns():
         "broker",
         "account_mode",
         "lifecycle_state",
+        "terminalized_at",
         "signal_symbol",
         "signal_venue",
         "execution_symbol",
@@ -128,6 +129,7 @@ def test_alpaca_paper_ledger_partial_unique_indexes():
     # New correlation/record_kind lookup indexes
     assert "ix_alpaca_paper_ledger_correlation_id" in index_names
     assert "ix_alpaca_paper_ledger_record_kind" in index_names
+    assert "ix_alpaca_paper_ledger_terminalized_at" in index_names
 
 
 @pytest.mark.unit
@@ -159,6 +161,7 @@ def test_alpaca_paper_ledger_lifecycle_check_canonical_states():
         "final_reconciled",
         "anomaly",
         "stale_preview_cleanup_required",
+        "canceled",
     ]
     for state in canonical:
         assert state in check_text, f"Canonical state {state!r} missing from CHECK"
@@ -167,7 +170,6 @@ def test_alpaca_paper_ledger_lifecycle_check_canonical_states():
         "validation_failed",
         "open",
         "partially_filled",
-        "canceled",
         "unexpected",
     ]
     for state in excluded:
@@ -184,6 +186,7 @@ def test_canonical_lifecycle_constants_exported():
     from app.services.alpaca_paper_ledger_service import (
         CANONICAL_LIFECYCLE_STATES,
         LIFECYCLE_ANOMALY,
+        LIFECYCLE_CANCELED,
         LIFECYCLE_CLOSED,
         LIFECYCLE_FILLED,
         LIFECYCLE_FINAL_RECONCILED,
@@ -207,8 +210,9 @@ def test_canonical_lifecycle_constants_exported():
     assert LIFECYCLE_FINAL_RECONCILED == "final_reconciled"
     assert LIFECYCLE_ANOMALY == "anomaly"
     assert LIFECYCLE_STALE_PREVIEW_CLEANUP_REQUIRED == "stale_preview_cleanup_required"
+    assert LIFECYCLE_CANCELED == "canceled"
 
-    assert len(CANONICAL_LIFECYCLE_STATES) == 11
+    assert len(CANONICAL_LIFECYCLE_STATES) == 12
     assert CANONICAL_LIFECYCLE_STATES == {
         "planned",
         "previewed",
@@ -221,6 +225,7 @@ def test_canonical_lifecycle_constants_exported():
         "final_reconciled",
         "anomaly",
         "stale_preview_cleanup_required",
+        "canceled",
     }
 
 
@@ -269,6 +274,26 @@ def test_derive_lifecycle_state(order_status, filled_qty, expected):
     from app.services.alpaca_paper_ledger_service import _derive_lifecycle_state
 
     assert _derive_lifecycle_state(order_status, filled_qty) == expected
+
+
+@pytest.mark.unit
+def test_derive_lifecycle_state_canceled_evidence():
+    from app.services.alpaca_paper_ledger_service import _derive_lifecycle_state
+
+    assert (
+        _derive_lifecycle_state("canceled", None, has_cancel_evidence=True)
+        == "canceled"
+    )
+    assert (
+        _derive_lifecycle_state("canceled", None, has_cancel_evidence=False)
+        == "anomaly"
+    )
+    assert (
+        _derive_lifecycle_state("CANCELED", 0, has_cancel_evidence=True) == "canceled"
+    )
+    assert (
+        _derive_lifecycle_state("CANCELED", 0, has_cancel_evidence=False) == "anomaly"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -505,6 +530,27 @@ def test_redact_sensitive_text_masks_operator_narrative_values():
     assert "abc123" not in redacted
     assert "xyz" not in redacted
     assert "paper-1" not in redacted
+
+
+@pytest.mark.unit
+def test_redact_sensitive_text_masks_json_quoted_secrets():
+    from app.services.alpaca_paper_ledger_service import (
+        _JSON_SENSITIVE_RE,
+        _redact_sensitive_text,
+    )
+
+    # (a) JSON-quoted secret masking + message survives
+    text = '{"secret":"must-not-leak","message":"cancel not permitted"}'
+    redacted = _redact_sensitive_text(text)
+
+    assert redacted == '{"secret":"[REDACTED]","message":"cancel not permitted"}'
+    assert "must-not-leak" not in redacted
+
+    # (b) mutation guard - verify that it explicitly depends on the new _JSON_SENSITIVE_RE pattern
+    assert _JSON_SENSITIVE_RE is not None
+    match = _JSON_SENSITIVE_RE.search(text)
+    assert match is not None
+    assert match.group("value") == "must-not-leak"
 
 
 # ---------------------------------------------------------------------------
@@ -1325,3 +1371,186 @@ def test_service_is_valid_python():
     source = SERVICE_PATH.read_text()
     tree = ast.parse(source)
     assert tree is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_status_with_cancel_evidence_derives_canceled():
+    """ROB-953: asserts the TRANSITION, not just the SET clause.
+
+    Do not trust a green CI here on the SET value alone — the previous version of
+    this test only compiled `update_params["lifecycle_state"]` and therefore
+    stayed green while a WHERE guard silently filtered the anomaly row out,
+    blocking the legitimate anomaly -> canceled transition entirely. A false
+    green. The WHERE clause is now asserted alongside the SET clause, and
+    `test_record_status_anomaly_to_canceled_transition_actually_lands` proves the
+    same path against a real row.
+    """
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(cancel_status="canceled", lifecycle_state="anomaly")
+    db = _mock_db_with_row(row)
+
+    svc = AlpacaPaperLedgerService(db)
+    await svc.record_status(
+        "test-client-001",
+        order={"id": "bid1", "status": "canceled", "filled_qty": "0"},
+    )
+    update_stmt = db.execute.call_args_list[1].args[0]
+    compiled = update_stmt.compile()
+    assert compiled.params["lifecycle_state"] == "canceled"
+
+    # The row's CURRENT state (anomaly) must not be excluded by the write guard,
+    # or the derived "canceled" would never be applied to any row.
+    # Compile WHERE criteria separately: the terminalized_at SET expression also
+    # contains the full terminal-state set, but that CASE is not a write guard.
+    guarded_states = set()
+    for criterion in update_stmt._where_criteria:
+        where_params = criterion.compile().params
+        for key, value in where_params.items():
+            if key.startswith("lifecycle_state_") and isinstance(value, list):
+                guarded_states.update(value)
+    assert guarded_states, "expected an immutable-state guard in the WHERE clause"
+    assert "anomaly" not in guarded_states
+    assert "canceled" not in guarded_states
+    assert guarded_states == {"position_reconciled", "closed", "final_reconciled"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_status_without_cancel_evidence_derives_anomaly():
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(cancel_status=None, lifecycle_state="anomaly")
+    db = _mock_db_with_row(row)
+
+    svc = AlpacaPaperLedgerService(db)
+    await svc.record_status(
+        "test-client-001",
+        order={"id": "bid1", "status": "canceled", "filled_qty": "0"},
+    )
+    update_stmt = db.execute.call_args_list[1].args[0]
+    update_params = update_stmt.compile().params
+    assert update_params["lifecycle_state"] == "anomaly"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_status_does_not_update_final_reconciled_row():
+    from app.models.review import AlpacaPaperOrderLedger
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(lifecycle_state="final_reconciled", record_kind="execution")
+    db = _mock_db_with_row(row)
+
+    await AlpacaPaperLedgerService(db).record_status(
+        "test-client-001",
+        order={"id": "bid1", "status": "filled", "filled_qty": "1"},
+    )
+
+    update_stmt = db.execute.call_args_list[1].args[0]
+    compiled = str(update_stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "lifecycle_state NOT IN" in compiled
+    assert "final_reconciled" in compiled
+    assert AlpacaPaperOrderLedger.__tablename__ in compiled
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_status_rowcount_zero_skips_raw_response_accumulation():
+    """ROB-953 LOW follow-up: a guard-rejected write (rowcount=0, e.g. a
+    concurrent write already landed a higher-lifecycle state) must not
+    accumulate raw_response evidence for a transition that never persisted.
+    The shipped code already gates `_accumulate_raw_response` on
+    `write_applied` — this was unguarded by any test, so a regression that
+    dropped the gate would have shipped silently (a prior audit found
+    `write_applied=True` mutations still left the whole test suite green)."""
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(lifecycle_state="submitted", record_kind="execution")
+    db = AsyncMock()
+
+    class _SelectResult:
+        def scalar_one_or_none(self):
+            return row
+
+    class _UpdateResult:
+        rowcount = 0
+
+    db.execute = AsyncMock(side_effect=[_SelectResult(), _UpdateResult()])
+    db.commit = AsyncMock()
+    db.refresh = AsyncMock()
+
+    svc = AlpacaPaperLedgerService(db)
+    result = await svc.record_status(
+        "test-client-001",
+        order={"id": "bid1", "status": "filled", "filled_qty": "1"},
+        raw_response={"reconcile_order": {"status": "filled"}},
+        return_write_result=True,
+    )
+
+    assert result.applied is False
+    # Exactly 2 execute calls: the read (get_execution_by_client_order_id) and
+    # the guarded UPDATE. A 3rd call would be the raw_responses-accumulation
+    # UPDATE, which must never fire when the guard rejected the write.
+    assert db.execute.call_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_cancel_transitions_to_canceled_if_order_status_is_canceled():
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(order_status="canceled", lifecycle_state="anomaly")
+    db = _mock_db_with_row(row)
+
+    svc = AlpacaPaperLedgerService(db)
+    await svc.record_cancel("test-client-001", cancel_status="canceled")
+    update_stmt = db.execute.call_args_list[1].args[0]
+    update_params = update_stmt.compile().params
+    assert update_params["lifecycle_state"] == "canceled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_cancel_clears_status_anomaly_error_summary():
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(
+        order_status="canceled",
+        lifecycle_state="anomaly",
+        error_summary="anomaly: order_status='canceled' during status check",
+    )
+    db = _mock_db_with_row(row)
+
+    svc = AlpacaPaperLedgerService(db)
+    await svc.record_cancel("test-client-001", cancel_status="canceled")
+    update_stmt = db.execute.call_args_list[1].args[0]
+    update_params = update_stmt.compile().params
+    assert update_params["lifecycle_state"] == "canceled"
+    assert update_params["error_summary"] is None
+
+
+@pytest.mark.unit
+def test_schema_accepts_canceled_state():
+    from datetime import UTC, datetime
+
+    from app.schemas.execution_contracts import OrderLifecycleEvent, OrderPreviewLine
+
+    event = OrderLifecycleEvent(
+        account_mode="alpaca_paper",
+        execution_source="preopen",
+        state="canceled",
+        occurred_at=datetime.now(UTC),
+    )
+    assert event.state == "canceled"
+
+    line = OrderPreviewLine(
+        symbol="AAPL",
+        market="equity_us",
+        side="buy",
+        account_mode="alpaca_paper",
+        execution_source="preopen",
+        lifecycle_state="canceled",
+    )
+    assert line.lifecycle_state == "canceled"

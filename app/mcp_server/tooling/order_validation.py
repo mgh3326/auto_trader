@@ -4,12 +4,8 @@ from __future__ import annotations
 
 import datetime
 import json
-import re
-import time
 from dataclasses import dataclass
 from typing import Any
-
-import httpx
 
 import app.services.brokers.upbit.client as upbit_service
 import app.services.market_data as market_data_service
@@ -25,13 +21,7 @@ from app.mcp_server.tooling.market_session import (
     kr_market_data_state,
 )
 from app.mcp_server.tooling.portfolio_cash import (
-    extract_usd_orderable_from_row as _extract_usd_orderable_from_row,
-)
-from app.mcp_server.tooling.portfolio_cash import (
     get_cash_balance_impl,
-)
-from app.mcp_server.tooling.portfolio_cash import (
-    select_usd_row_for_us_order as _select_usd_row_for_us_order,
 )
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
@@ -55,10 +45,10 @@ async def _call_kis(method: Any, *args: Any, is_mock: bool, **kwargs: Any) -> An
     return await method(*args, **kwargs)
 
 
-_DEFENSIVE_TRIM_APPROVAL_REGEX = re.compile(r"^[A-Z]+-\d+$")
-_DEFENSIVE_TRIM_CACHE_TTL_SECONDS = 60.0
-_defensive_trim_success_cache: dict[str, float] = {}
 _TRADER_AGENT_ID_DEFAULT = "6b2192cc-14fa-4335-b572-2fe1e0cb54a7"
+
+# ROB-912 — marketable sell(지정가<현재가)은 유리 체결이므로 허용, fat-finger 딥디스카운트만 차단. 2%는 trim_preplace ultra_near 티어(≤2%)와 대칭.
+SELL_MARKETABLE_MAX_DISCOUNT = 0.02
 
 
 @dataclass(frozen=True)
@@ -92,7 +82,7 @@ class LossCutContext:
 
     retrospective_id: int
     exit_reason: str
-    approval_issue_id: str
+    approval_issue_id: str | None
     requester_agent_id: str
     max_slip: float
     approval_verified_at: datetime.datetime
@@ -151,8 +141,14 @@ def evaluate_sell_price_guards(
             f"Sell price {price} below minimum "
             f"(avg_buy_price * 1.01 = {min_sell_price:.0f})"
         )
-    if price < current_price:
-        return f"Sell price {price} below current price {current_price}"
+    if current_price > 0:
+        band_floor = current_price * (1.0 - SELL_MARKETABLE_MAX_DISCOUNT)
+        if price < band_floor:
+            return (
+                f"Sell price {price} below marketable band floor "
+                f"{band_floor:.4f} (current {current_price} * "
+                f"(1 - {SELL_MARKETABLE_MAX_DISCOUNT}))"
+            )
     return None
 
 
@@ -348,22 +344,6 @@ async def evaluate_sector_concentration(
         return {"verdict": "unknown", "fail_open": True, "reason": str(exc)}
 
 
-def _is_cached_approved(approval_issue_id: str) -> bool:
-    expires_at = _defensive_trim_success_cache.get(approval_issue_id)
-    if expires_at is None:
-        return False
-    if expires_at <= time.time():
-        _defensive_trim_success_cache.pop(approval_issue_id, None)
-        return False
-    return True
-
-
-def _cache_approved(approval_issue_id: str) -> None:
-    _defensive_trim_success_cache[approval_issue_id] = (
-        time.time() + _DEFENSIVE_TRIM_CACHE_TTL_SECONDS
-    )
-
-
 def _log_defensive_trim_bypass(
     *,
     symbol: str,
@@ -443,36 +423,6 @@ def _log_mock_loss_sell_bypass(
     )
 
 
-async def _fetch_approval_issue_status(approval_issue_id: str) -> str | None:
-    api_url = getattr(settings, "paperclip_api_url", None)
-    api_key = getattr(settings, "paperclip_api_key", None)
-    if not api_url or not api_key:
-        logger.warning(
-            "defensive_trim disabled: missing PAPERCLIP_API_URL or PAPERCLIP_API_KEY"
-        )
-        return None
-
-    issue_api_url = f"{api_url.rstrip('/')}/api/issues/{approval_issue_id}"
-    headers = {"Authorization": f"Bearer {api_key}"}
-
-    try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            response = await client.get(issue_api_url, headers=headers)
-    except Exception:
-        return None
-
-    if response.status_code != 200:
-        return None
-
-    try:
-        payload = response.json()
-    except ValueError:
-        return None
-
-    status = payload.get("status")
-    return str(status) if status is not None else None
-
-
 async def _validate_defensive_trim_preconditions(
     *,
     defensive_trim: bool,
@@ -483,54 +433,7 @@ async def _validate_defensive_trim_preconditions(
     """Validate defensive_trim gates using middleware-extracted caller identity."""
     if not defensive_trim:
         return None
-
-    if side != "sell":
-        raise ValueError(
-            "defensive_trim requires side='sell' (buy orders always use existing path)"
-        )
-    if order_type != "limit":
-        raise ValueError(
-            "defensive_trim requires order_type='limit' (market orders are blocked)"
-        )
-    if not approval_issue_id:
-        raise ValueError("defensive_trim=True requires approval_issue_id")
-    if not _DEFENSIVE_TRIM_APPROVAL_REGEX.match(approval_issue_id):
-        raise ValueError("approval_issue_id format invalid (expected e.g. 'ROB-164')")
-
-    caller_agent_id = get_caller_agent_id()
-    if not caller_agent_id:
-        raise ValueError(
-            "caller identity unavailable — defensive_trim requires authenticated MCP caller"
-        )
-
-    trader_agent_id = getattr(settings, "trader_agent_id", _TRADER_AGENT_ID_DEFAULT)
-    if caller_agent_id != trader_agent_id:
-        raise ValueError(
-            "defensive_trim requires Trader agent caller "
-            f"(got caller_agent_id={caller_agent_id})"
-        )
-
-    approval_status: str | None
-    if _is_cached_approved(approval_issue_id):
-        approval_status = "done"
-    else:
-        try:
-            approval_status = await _fetch_approval_issue_status(approval_issue_id)
-        except Exception:
-            approval_status = None
-        if approval_status == "done":
-            _cache_approved(approval_issue_id)
-
-    if approval_status != "done":
-        raise ValueError(
-            f"approval_issue_id {approval_issue_id} not found or not in 'done' status"
-        )
-
-    return DefensiveTrimContext(
-        approval_issue_id=approval_issue_id,
-        requester_agent_id=caller_agent_id,
-        approval_verified_at=datetime.datetime.now(datetime.UTC),
-    )
+    raise ValueError("defensive_trim_direct_path_disabled_use_order_proposal_create")
 
 
 _LOSS_CUT_EXIT_REASONS = frozenset({"stop_loss", "thesis_change"})
@@ -559,6 +462,7 @@ async def _validate_loss_cut_preconditions(
     order_type: str,
     is_mock: bool,
     symbol: str,
+    proposal_flow: bool = False,
 ) -> tuple[LossCutContext | None, list[str]]:
     """ROB-800 — fail-closed loss_cut gate. Collects EVERY violation so a
     dry_run preview can return them all in one response. Returns (None, []) when
@@ -566,6 +470,8 @@ async def _validate_loss_cut_preconditions(
     """
     if exit_intent != "loss_cut":
         return None, []
+    if not proposal_flow:
+        return None, ["loss_cut_direct_path_disabled_use_order_proposal_create"]
 
     errors: list[str] = []
 
@@ -596,26 +502,6 @@ async def _validate_loss_cut_preconditions(
             f"caller agent {caller_agent_id} not permitted for loss_cut "
             "(add to LOSS_CUT_ALLOWED_AGENT_IDS)"
         )
-
-    approval_status: str | None = None
-    if not approval_issue_id:
-        errors.append("loss_cut requires approval_issue_id")
-    elif not _DEFENSIVE_TRIM_APPROVAL_REGEX.match(approval_issue_id):
-        errors.append("approval_issue_id format invalid (expected e.g. 'ROB-800')")
-    else:
-        if _is_cached_approved(approval_issue_id):
-            approval_status = "done"
-        else:
-            try:
-                approval_status = await _fetch_approval_issue_status(approval_issue_id)
-            except Exception:
-                approval_status = None
-            if approval_status == "done":
-                _cache_approved(approval_issue_id)
-        if approval_status != "done":
-            errors.append(
-                f"approval_issue_id {approval_issue_id} not found or not in 'done' status"
-            )
 
     retro = None
     if retrospective_id is None:
@@ -658,7 +544,7 @@ async def _validate_loss_cut_preconditions(
         LossCutContext(
             retrospective_id=retrospective_id,  # type: ignore[arg-type]
             exit_reason=resolved_exit_reason,
-            approval_issue_id=approval_issue_id,  # type: ignore[arg-type]
+            approval_issue_id=approval_issue_id,
             requester_agent_id=caller_agent_id,  # type: ignore[arg-type]
             max_slip=_loss_cut_max_slip_value(),
             approval_verified_at=datetime.datetime.now(datetime.UTC),
@@ -983,14 +869,16 @@ async def _get_balance_for_order(market_type: str, is_mock: bool = False) -> flo
         # (already net of pending buys; no extra subtraction).
         return await _live_kis_orderable("kis_overseas")
 
-    # mock US: KIS 모의투자엔 해외 orderable-cash 서비스가 없음(OPSQ0002). ROB-417
-    # 조기 가드가 _check_balance_and_warn에서 선제 차단하므로 여기 도달은 방어적.
+    # ROB-951: mock US is deliberately isolated from the live path above.
+    # VTTS3007R's ord_psbl_frcr_amt is verified USD orderable cash. Missing or
+    # failed responses raise so _check_balance_and_warn retains its fail-closed
+    # handling; never coerce a failed read to zero.
     kis = _create_kis_client(is_mock=is_mock)
-    margin_data = await _call_kis(kis.inquire_overseas_margin, is_mock=is_mock)
-    usd_row = _select_usd_row_for_us_order(margin_data)
-    if usd_row is None:
-        raise RuntimeError("USD margin data not found in KIS overseas margin")
-    return _extract_usd_orderable_from_row(usd_row)
+    buyable_amount = await kis.inquire_mock_overseas_buyable_amount()
+    orderable = buyable_amount.get("ovrs_ord_psbl_amt")
+    if orderable is None:
+        raise RuntimeError("VTTS3007R response missing verified USD orderable cash")
+    return float(orderable)
 
 
 async def _record_order_history(
@@ -1487,9 +1375,13 @@ async def _validate_sell_side(
 def _kis_mock_us_orderable_unsupported() -> bool:
     """KIS 모의투자가 해외(USD) orderable-cash 서비스를 제공하지 않는지 여부.
 
-    OPSQ0002 "없는 서비스 코드" — 2026-05-27 live smoke로 확정. capability_matrix를
-    권위 소스로 사용하므로, 미래에 US mock cash 어댑터가 생겨 account_cash_read=True가
-    되면 이 가드는 자동으로 완화된다.
+    폐기 근거(ROB-951): `inquire_overseas_margin`(OPSQ0002 "없는 서비스 코드",
+    2026-05-27 live smoke)만이 mock US cash 경로였을 때 이 가드가 매수를 차단했다.
+    2026-07-17 probe로 `VTTS3007R`이 mock 호스트에서 USD orderable cash를 반환함이
+    확인되어 `inquire_mock_overseas_buyable_amount()`로 배선됐고, capability_matrix의
+    `kis_mock.account_cash_read`가 True로 flip되면서 이 가드는 완화된 상태다.
+    capability_matrix가 권위 소스이므로 여기 하드코딩된 판단은 없다 — 배선이
+    되돌려지면 matrix flip만으로 가드가 다시 닫힌다.
     """
     from app.services.us_dual_paper.capability_matrix import get_capability_matrix
 

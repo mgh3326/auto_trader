@@ -45,8 +45,9 @@ def make_taker_trade(
     fee magnitude, so ``cost_model.net_at_fee(.., 0)`` recovers the gross PnL.
     """
     fee = 2.0 * ref_fee_bps / 1e4 * notional
-    return Trade(net_ref_pnl=gross_pnl - fee, commission_ref=fee,
-                 notional=notional, ts_opened=ts)
+    return Trade(
+        net_ref_pnl=gross_pnl - fee, commission_ref=fee, notional=notional, ts_opened=ts
+    )
 
 
 def _period_commission(turnover_notional: float, ref_fee_bps: float) -> float:
@@ -73,12 +74,14 @@ def breakout_continuation_trades(
     n = len(bars)
     i = lookback
     while i < n:
-        prior_high = max(b.high for b in bars[i - lookback:i])
+        prior_high = max(b.high for b in bars[i - lookback : i])
         if bars[i].close > prior_high:
             exit_idx = min(i + hold, n - 1)
             entry = bars[i].close
             ret = (bars[exit_idx].close - entry) / entry if entry else 0.0
-            trades.append(make_taker_trade(ret * notional, bars[i].ts, notional, ref_fee_bps))
+            trades.append(
+                make_taker_trade(ret * notional, bars[i].ts, notional, ref_fee_bps)
+            )
             i = exit_idx + 1  # non-overlapping
         else:
             i += 1
@@ -123,9 +126,13 @@ def ts_trend_basket_periods(
             if pos != prev_pos[s]:
                 turnover += per_symbol_notional
             prev_pos[s] = pos
-        periods.append(PortfolioPeriod(
-            ts=ts, gross_ref_pnl=gross - _period_commission(turnover, ref_fee_bps),
-            commission_ref=_period_commission(turnover, ref_fee_bps)))
+        periods.append(
+            PortfolioPeriod(
+                ts=ts,
+                gross_ref_pnl=gross - _period_commission(turnover, ref_fee_bps),
+                commission_ref=_period_commission(turnover, ref_fee_bps),
+            )
+        )
     return periods
 
 
@@ -149,8 +156,15 @@ def xs_momentum_periods(
     notional (full turnover each rebalance).
     """
     rebals = sorted(rebalances)
-    xs_by_ts = dict(_panel.iter_rebalance_cross_sections(
-        closes_by_symbol, rebals, lookback, manifest=manifest, min_seasoning=min_seasoning))
+    xs_by_ts = dict(
+        _panel.iter_rebalance_cross_sections(
+            closes_by_symbol,
+            rebals,
+            lookback,
+            manifest=manifest,
+            min_seasoning=min_seasoning,
+        )
+    )
     periods: list[PortfolioPeriod] = []
     for idx, ts in enumerate(rebals[:-1]):
         xs = xs_by_ts.get(ts, {})
@@ -166,9 +180,13 @@ def xs_momentum_periods(
         for sym in shorts:
             gross -= _realized_return(closes_by_symbol[sym], ts, next_ts) * leg_notional
         turnover = notional  # full rebalance
-        periods.append(PortfolioPeriod(
-            ts=ts, gross_ref_pnl=gross - _period_commission(turnover, ref_fee_bps),
-            commission_ref=_period_commission(turnover, ref_fee_bps)))
+        periods.append(
+            PortfolioPeriod(
+                ts=ts,
+                gross_ref_pnl=gross - _period_commission(turnover, ref_fee_bps),
+                commission_ref=_period_commission(turnover, ref_fee_bps),
+            )
+        )
     return periods
 
 

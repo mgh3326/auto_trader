@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import datetime
+import re
 import uuid
+from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from typing import cast as typing_cast
 
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -17,9 +21,48 @@ from app.jobs.kis_mock_reconciliation_job import run_kis_mock_reconciliation
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
 from app.models.review import KISMockOrderLedger
+from app.services.brokers.kis.live_order_expiry import kr_day_order_expiry
+from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
+    LedgerWriteError,
+)
+from app.services.brokers.kis.order_id import normalize_broker_order_id
 from app.services.kis_mock_lifecycle_service import KISMockLifecycleService
+from app.services.kis_mock_reconcile_scope import (
+    normalize_kis_mock_reconcile_market,  # noqa: F401 - re-exported for back-compat
+    resolve_kis_mock_reconcile_scope,
+)
 from app.services.live_correlation import live_correlation_id
 from app.services.live_place_provenance import publish_place_time_forecast
+
+# ROB-843: sensitive-key fragments to redact from raw broker evidence before it
+# is persisted or returned. Matched case-insensitively as a substring of the key
+# (covers appkey/appsecret/approval_key/approval_hash/authorization/cookie/token).
+_SENSITIVE_KEY_RE = re.compile(
+    r"(token|authorization|cookie|secret|credential|password|passwd|"
+    r"api[_-]?key|app[_-]?key|approval|account[_-]?no)",
+    re.IGNORECASE,
+)
+_REDACTED = "[REDACTED]"
+
+
+def _redact_evidence(payload: Any) -> Any:
+    """Recursively redact sensitive keys from a mapping/list (non-mutating).
+
+    Returns a fresh structure; the original object is never modified. Only keys
+    are matched — scalar values under non-sensitive keys (order id, result code,
+    message) are preserved verbatim for diagnostics.
+    """
+    if isinstance(payload, Mapping):
+        return {
+            k: _REDACTED
+            if isinstance(k, str) and _SENSITIVE_KEY_RE.search(k)
+            else _redact_evidence(v)
+            for k, v in payload.items()
+        }
+    if isinstance(payload, (list, tuple)):
+        return [_redact_evidence(item) for item in payload]
+    return payload
+
 
 KIS_MOCK_SHADOW_PENDING_SOURCE = "kis_mock_ledger_shadow"
 KIS_MOCK_SHADOW_PENDING_CONFIDENCE = "db_shadow_pending"
@@ -40,6 +83,17 @@ def _status_to_lifecycle_state(status: str | None) -> str:
     if status is None:
         return "anomaly"
     return _LEDGER_STATUS_TO_LIFECYCLE.get(status, "anomaly")
+
+
+def _accepted_or_failed_message(
+    accepted: bool, status: str, ledger_id: int | None
+) -> str:
+    """Human-readable outcome message for the normalized mock-order response."""
+    if not accepted:
+        return f"KIS mock order not accepted (status={status}); evidence recorded"
+    if ledger_id:
+        return "KIS mock order recorded to kis_mock_order_ledger"
+    return "KIS mock order accepted but ledger insert returned no id"
 
 
 def _to_decimal(val: Any) -> Decimal | None:
@@ -181,17 +235,69 @@ async def _list_kis_mock_shadow_pending_orders(
     return [_shadow_row_to_order(row) for row in rows]
 
 
+def _is_kr_day_order_expired_for_reservation(
+    row: dict[str, Any],
+    *,
+    now: datetime.datetime,
+) -> bool:
+    """ROB-890: conservative KR DAY expiry for shadow reservation only.
+
+    Returns True when the row's conservative expiry time has passed relative to
+    ``now``. Only ``equity_kr`` rows are evaluated; ``equity_us`` rows always
+    return False (KR session rules do not apply). Fail-closed: missing or
+    unparseable ``ordered_at`` returns False so the reservation is kept.
+    """
+    if row.get("instrument_type") != "equity_kr":
+        return False
+
+    ordered_at_str = row.get("ordered_at")
+    if not ordered_at_str:
+        return False
+
+    try:
+        accepted_at = datetime.datetime.fromisoformat(str(ordered_at_str))
+    except (ValueError, TypeError):
+        return False
+
+    expiry_iso, _reason = kr_day_order_expiry(
+        accepted_at=accepted_at,
+        side=row.get("side", ""),
+    )
+    if not expiry_iso:
+        return False
+
+    try:
+        expiry_dt = datetime.datetime.fromisoformat(expiry_iso)
+    except (ValueError, TypeError):
+        return False
+
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=9)))
+
+    return now >= expiry_dt
+
+
 async def _get_kis_mock_shadow_exposure(
     *,
     normalized_symbol: str | None = None,
     market_type: str | None = None,
     limit: int = 1000,
+    now: datetime.datetime | None = None,
 ) -> dict[str, Any]:
     """Summarize non-terminal KIS mock ledger exposure.
+
+    ROB-890: KR DAY orders whose conservative session expiry has passed are
+    excluded from ``buy_reserved_amount`` / ``sell_reserved_quantity`` so stale
+    shadow-pending rows stop permanently locking cash and sellable quantity.
+    Expired rows remain visible in ``orders`` for reconciliation; lifecycle
+    state is never mutated by this function.
 
     On DB/query failure, confidence becomes ``unknown`` so execution paths can
     fail closed rather than over-allocating cash or sellable quantity.
     """
+    if now is None:
+        now = now_kst()
+
     try:
         rows = await _list_kis_mock_shadow_pending_orders(
             normalized_symbol=normalized_symbol,
@@ -208,14 +314,24 @@ async def _get_kis_mock_shadow_exposure(
             "buy_reserved_amount": 0.0,
             "sell_reserved_quantity": 0.0,
             "orders": [],
+            "expired_reservation_count": 0,
         }
 
+    active_rows = [
+        row
+        for row in rows
+        if not _is_kr_day_order_expired_for_reservation(row, now=now)
+    ]
+    expired_count = len(rows) - len(active_rows)
+
     buy_reserved = sum(
-        _decimal_to_float(row.get("amount")) for row in rows if row.get("side") == "buy"
+        _decimal_to_float(row.get("amount"))
+        for row in active_rows
+        if row.get("side") == "buy"
     )
     sell_reserved = sum(
         _decimal_to_float(row.get("remaining_qty"))
-        for row in rows
+        for row in active_rows
         if row.get("side") == "sell"
     )
     return {
@@ -225,6 +341,7 @@ async def _get_kis_mock_shadow_exposure(
         "buy_reserved_amount": buy_reserved,
         "sell_reserved_quantity": sell_reserved,
         "orders": rows,
+        "expired_reservation_count": expired_count,
     }
 
 
@@ -257,15 +374,25 @@ async def _save_kis_mock_order_ledger(
     exit_reason: str | None = None,
     gross_pnl: Decimal | None = None,
     net_pnl: Decimal | None = None,
+    reconciled_at: Any | None = None,
     report_item_uuid: uuid.UUID | None = None,
     mirror_cohort: str | None = None,
     mirror_source_bucket: str | None = None,
+    raise_on_error: bool = False,
 ) -> int | None:
     """Insert one row into review.kis_mock_order_ledger.
 
-    Returns the new primary-key id, or None on conflict / error.
+    Returns the new primary-key id, or None on a benign on-conflict no-op. When
+    ``raise_on_error`` is set, a real DB error raises ``LedgerWriteError`` so the
+    caller can distinguish a conflict (row already durable) from a lost write
+    (ROB-843 P1-2); otherwise a DB error is swallowed and returns None (legacy).
     """
     resolved_lifecycle = lifecycle_state or _status_to_lifecycle_state(status)
+    # ROB-843: a row inserted directly as ``reconciled`` (e.g. a scalping exit
+    # close) must carry an authoritative ``reconciled_at`` so cooldown can key
+    # off the real close time; the reconciler sets it on job-driven transitions.
+    if reconciled_at is None and resolved_lifecycle == "reconciled":
+        reconciled_at = now_kst()
     try:
         async with _order_session_factory()() as db:
             stmt = (
@@ -301,6 +428,7 @@ async def _save_kis_mock_order_ledger(
                     exit_reason=exit_reason,
                     gross_pnl=gross_pnl,
                     net_pnl=net_pnl,
+                    reconciled_at=reconciled_at,
                     report_item_uuid=report_item_uuid,
                     mirror_cohort=mirror_cohort,
                     mirror_source_bucket=mirror_source_bucket,
@@ -314,7 +442,33 @@ async def _save_kis_mock_order_ledger(
             return None
     except Exception as exc:
         logger.warning("Failed to save kis_mock order ledger row: %s", exc)
+        if raise_on_error:
+            raise LedgerWriteError(str(exc) or exc.__class__.__name__) from exc
         return None
+
+
+async def _native_row_exists(order_no: str | None) -> bool:
+    """True if a durable native (non-scalping) row exists for ``order_no``.
+
+    Used after an on-conflict no-op to confirm the existing row is durable
+    (ROB-843 P1-2) rather than treating the write as lost.
+    """
+    if not order_no:
+        return False
+    try:
+        async with _order_session_factory()() as db:
+            found = await db.scalar(
+                select(func.count())
+                .select_from(KISMockOrderLedger)
+                .where(
+                    func.trim(KISMockOrderLedger.order_no) == order_no.strip(),
+                    KISMockOrderLedger.scalping_role.is_(None),
+                )
+            )
+        return bool(found or 0)
+    except Exception as exc:  # noqa: BLE001 — lookup failure => not durable
+        logger.warning("native row lookup failed for order_no=%s: %s", order_no, exc)
+        return False
 
 
 async def _record_kis_mock_order(
@@ -343,21 +497,56 @@ async def _record_kis_mock_order(
     amt_val = _to_float(dry_run_result.get("estimated_value"), default=0.0)
     currency = "KRW" if market_type != "equity_us" else "USD"
 
-    order_no = execution_result.get("odno") or execution_result.get("ord_no")
-    order_time = execution_result.get("ord_tmd")
-    raw_output = execution_result.get("output") or {}
-    krx_orgno = execution_result.get("krx_fwdg_ord_orgno") or raw_output.get(
-        "KRX_FWDG_ORD_ORGNO"
-    )
-    rt_cd = str(execution_result.get("rt_cd", "")) or None
-    msg = execution_result.get("msg") or execution_result.get("msg1")
+    # ROB-843: normalize the native submit response truthfully. A malformed
+    # (non-mapping) payload carries no order fields — treat as unknown and keep
+    # a redacted marker as evidence rather than crashing on ``.get``.
+    is_mapping = isinstance(execution_result, Mapping)
+    raw_exec: dict[str, Any]
+    if is_mapping:
+        raw_exec = dict(execution_result)
+    else:
+        raw_exec = {"_malformed": str(execution_result)[:500]}
 
-    if rt_cd == "0":
+    # ROB-843: normalize the broker order id (strip; reject blank/whitespace/
+    # malformed) so "   " is never treated as an accepted order. Domestic and
+    # overseas results share this helper.
+    order_no = normalize_broker_order_id(raw_exec.get("odno") or raw_exec.get("ord_no"))
+    order_time = raw_exec.get("ord_tmd")
+    raw_output = raw_exec.get("output") or {}
+    krx_orgno = raw_exec.get("krx_fwdg_ord_orgno") or (
+        raw_output.get("KRX_FWDG_ORD_ORGNO")
+        if isinstance(raw_output, Mapping)
+        else None
+    )
+    rt_cd = str(raw_exec.get("rt_cd", "")) or None
+    msg = raw_exec.get("msg") or raw_exec.get("msg1")
+
+    # Accepted success REQUIRES all of: a mapping payload, provider success
+    # status (rt_cd == "0"), and a valid (non-blank) broker order ID. Anything
+    # else is rejected (provider error code) or unknown (id-less / malformed).
+    accepted = is_mapping and rt_cd == "0" and order_no is not None
+    if accepted:
         status = "accepted"
-    elif rt_cd and rt_cd != "0":
+    elif is_mapping and rt_cd and rt_cd != "0":
         status = "rejected"
     else:
-        status = "accepted" if order_no else "unknown"
+        status = "unknown"
+
+    if accepted:
+        failure_reason: str | None = None
+        failure_detail: str | None = None
+    elif not is_mapping:
+        failure_reason = "malformed_response"
+        failure_detail = raw_exec["_malformed"]
+    elif status == "rejected":
+        failure_reason = "broker_rejected"
+        failure_detail = msg or f"rt_cd={rt_cd}"
+    elif rt_cd == "0":
+        failure_reason = "missing_broker_order_id"
+        failure_detail = msg or "provider success without broker order id"
+    else:
+        failure_reason = "unknown_response"
+        failure_detail = msg or f"rt_cd={rt_cd} order_no={order_no}"
 
     # ROB-730 provenance spine: mint a deterministic place-time correlation_id so
     # this mock order joins forecast → fill → journal → retrospective, mirroring
@@ -374,33 +563,64 @@ async def _record_kis_mock_order(
             rung=0,
         )
 
-    ledger_id = await _save_kis_mock_order_ledger(
-        symbol=normalized_symbol,
-        instrument_type=market_type,
-        side=side,
-        order_type=order_type,
-        quantity=qty_val,
-        price=price_val,
-        amount=amt_val,
-        currency=currency,
-        order_no=str(order_no) if order_no else None,
-        order_time=order_time,
-        krx_fwdg_ord_orgno=krx_orgno,
-        status=status,
-        response_code=rt_cd,
-        response_message=msg,
-        raw_response=execution_result,
-        reason=reason,
-        thesis=thesis,
-        strategy=strategy,
-        notes=notes,
-        lifecycle_state=_status_to_lifecycle_state(status),
-        holdings_baseline_qty=holdings_baseline_qty,
-        correlation_id=correlation_id,
-        report_item_uuid=report_item_uuid,
-        mirror_cohort=mirror_cohort,
-        mirror_source_bucket=mirror_source_bucket,
-    )
+    # ROB-843: redact sensitive keys from the raw broker evidence before it is
+    # persisted or returned. Recursive, non-mutating; non-sensitive diagnostics
+    # (order id / result code / message) are preserved.
+    redacted_exec = _redact_evidence(raw_exec)
+
+    # ROB-843 P1-2: distinguish a benign on-conflict no-op from a lost write. A
+    # lost native write must not silently drop the order from the daily count —
+    # fall back to a durable evidence row, and if that also fails, degrade
+    # tracking so subsequent automated orders fail closed.
+    ledger_tracking_unavailable = False
+    try:
+        ledger_id = await _save_kis_mock_order_ledger(
+            symbol=normalized_symbol,
+            instrument_type=market_type,
+            side=side,
+            order_type=order_type,
+            quantity=qty_val,
+            price=price_val,
+            amount=amt_val,
+            currency=currency,
+            order_no=order_no,
+            order_time=order_time,
+            krx_fwdg_ord_orgno=krx_orgno,
+            status=status,
+            response_code=rt_cd,
+            response_message=msg,
+            raw_response=redacted_exec,
+            reason=reason,
+            thesis=thesis,
+            strategy=strategy,
+            notes=notes,
+            lifecycle_state=_status_to_lifecycle_state(status),
+            holdings_baseline_qty=holdings_baseline_qty,
+            correlation_id=correlation_id,
+            report_item_uuid=report_item_uuid,
+            mirror_cohort=mirror_cohort,
+            mirror_source_bucket=mirror_source_bucket,
+            raise_on_error=True,
+        )
+    except LedgerWriteError as exc:
+        logger.warning(
+            "native kis_mock ledger write lost (symbol=%s order_no=%s): %s",
+            normalized_symbol,
+            order_no,
+            exc,
+        )
+        ledger_id = None
+
+    if accepted:
+        # ROB-843 P1: an accepted order whose native row is NOT durable (write
+        # error, and no existing row from a conflict) is "sent but not tracked".
+        # We do NOT write a control row here (that shared the native write's
+        # failure mode). Instead the caller keeps the write-ahead reservation
+        # unresolved — a durable, restart-safe fail-close resolved only by
+        # reconciliation. Signal that state to the caller.
+        native_durable = ledger_id is not None or await _native_row_exists(order_no)
+        if not native_durable:
+            ledger_tracking_unavailable = True
 
     # ROB-730: emit the place-time forecast only for accepted orders (mirrors
     # kis_live). publish_place_time_forecast is itself buy+target-gated and runs
@@ -420,41 +640,89 @@ async def _record_kis_mock_order(
         )
 
     return {
-        "success": True,
+        # ROB-843: success is truthful — accepted iff mapping + rt_cd==0 +
+        # non-empty broker order ID. Rejected/malformed/unknown/id-less never
+        # report success, and the native failure/unknown evidence is preserved.
+        "success": accepted,
         "dry_run": False,
         "preview": dry_run_result,
-        "execution": execution_result,
+        "execution": redacted_exec,
         "account_mode": "kis_mock",
         "broker": "kis",
         "ledger_id": ledger_id,
-        "order_no": str(order_no) if order_no else None,
-        "odno": str(order_no) if order_no else None,
+        "order_no": order_no,
+        "odno": order_no,
         "order_time": order_time,
         "ord_tmd": order_time,
         "krx_fwdg_ord_orgno": krx_orgno,
         "status": status,
         "response_code": rt_cd,
         "response_message": msg,
+        "reason": failure_reason,
+        "detail": failure_detail,
         "correlation_id": correlation_id,
         "fill_recorded": False,
         "journal_created": False,
-        "message": (
-            "KIS mock order recorded to kis_mock_order_ledger"
-            if ledger_id
-            else "KIS mock order accepted but ledger insert returned no id"
-        ),
+        # ROB-843 P1-2: broker success is preserved; this flags that durable
+        # bookkeeping was lost so the caller can fail-close the NEXT order.
+        "ledger_tracking_unavailable": ledger_tracking_unavailable,
+        "message": (_accepted_or_failed_message(accepted, status, ledger_id)),
     }
+
+
+# NOTE (ROB-1007): scope validation/normalization now lives in
+# app.services.kis_mock_reconcile_scope (imported above) so the job layer can
+# share the same chokepoint without a circular import (this module already
+# imports run_kis_mock_reconciliation from the job module). Both names are
+# re-exported as module attributes here for back-compat with existing
+# callers/tests that do `kis_mock_ledger.resolve_kis_mock_reconcile_scope(...)`
+# or monkeypatch it.
 
 
 async def kis_mock_reconciliation_run_impl(
     *,
     dry_run: bool = True,
     limit: int = 100,
+    market: str | None = None,
+    symbol: str | None = None,
+    ledger_ids: list[int] | None = None,
 ) -> dict[str, Any]:
-    """Execute KIS mock order reconciliation and return summary."""
+    """Execute KIS mock order reconciliation and return summary.
+
+    ``market``/``symbol`` (ROB-1018) narrow the open-order lookup so a
+    single-market/single-symbol reconciliation pass never proposes
+    transitions on out-of-scope rows (e.g. a US session no longer flips KR
+    resting orders to ``stale``). ``ledger_ids`` (ROB-1007) narrows further to
+    an explicit set of ledger rows — useful for re-checking specific
+    previously-"stale" rows without a full scan. All three default to
+    ``None``, preserving the prior full-scan behavior for existing callers
+    (TaskIQ periodic task, unscoped MCP calls).
+
+    Response contract (ROB-1018 fix #2/#3, ROB-1007 fix #3): every
+    success/error path returns the *effective* (canonical, alias-normalized)
+    scope under ``scope`` — e.g. a requested ``market="us"`` always echoes
+    back as ``"equity_us"``. The one exception is an invalid-selector
+    rejection, handled by :func:`resolve_kis_mock_reconcile_scope` before any
+    other work happens here: it has no ``scope`` key and instead echoes the
+    verbatim, unnormalized request under ``requested_scope``, plus a
+    ``selector`` key naming which selector (``"market"`` or ``"ledger_ids"``)
+    was rejected.
+    """
+    scope, scope_error = resolve_kis_mock_reconcile_scope(
+        market=market, symbol=symbol, ledger_ids=ledger_ids
+    )
+    if scope_error:
+        return scope_error
     try:
         async with _order_session_factory()() as db:
-            return await run_kis_mock_reconciliation(db, dry_run=dry_run, limit=limit)
+            return await run_kis_mock_reconciliation(
+                db,
+                dry_run=dry_run,
+                limit=limit,
+                market=scope["market"],
+                symbol=scope["symbol"],
+                ledger_ids=scope.get("ledger_ids"),
+            )
     except Exception as exc:
         logger.exception("Failed to run KIS mock reconciliation: %s", exc)
         return {
@@ -462,6 +730,7 @@ async def kis_mock_reconciliation_run_impl(
             "error": str(exc),
             "source": "mcp",
             "account_mode": "kis_mock",
+            "scope": scope,
         }
 
 

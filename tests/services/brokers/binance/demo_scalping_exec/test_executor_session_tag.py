@@ -12,6 +12,7 @@ from decimal import Decimal
 import pytest
 
 from app.services.brokers.binance.demo_scalping.contract import (
+    MarketConditions,
     ScalpingRiskLimits,
 )
 from app.services.brokers.binance.demo_scalping.market_data import BookTicker
@@ -25,6 +26,15 @@ from app.services.brokers.binance.demo_scalping_exec.executor import (
 from app.services.brokers.binance.demo_scalping_exec.reference import SymbolReference
 
 _NOW = dt.datetime(2026, 5, 25, 12, 0, 0, tzinfo=dt.UTC)
+
+# ROB-841: the executor fails closed without a server market snapshot; supply a
+# fresh, tight one for calls that are not themselves testing the market gates.
+_FRESH_MARKET = MarketConditions(
+    spread_bps=Decimal("2"),
+    data_age_seconds=5.0,
+    spot_free_base_qty=Decimal("0"),
+)
+
 _REF = SymbolReference(
     price=Decimal("100"),
     step_size=Decimal("0.1"),
@@ -83,7 +93,8 @@ class _Sub:
     def __init__(self, status, coid, avg, qty=Decimal("0.1")):
         self.status = status
         self.client_order_id = coid
-        self.broker_order_id = "b1"
+        # ROB-844: unique broker id per leg (distinct orders never share one).
+        self.broker_order_id = f"bk-{coid}"
         self.avg_price = avg
         self.executed_qty = qty
 
@@ -160,6 +171,7 @@ async def test_session_tag_and_signal_snapshot_recorded(db_session) -> None:
     result = await ex.execute_monitored(
         _intent("LLMTAGUSDT"),
         confirm=True,
+        market=_FRESH_MARKET,
         max_poll_count=5,
         session_tag="llm",
         signal_snapshot=snap,
@@ -188,7 +200,7 @@ async def test_session_tag_defaults_none_no_regression(db_session) -> None:
         poll_delay_seconds=0.0,
     )
     result = await ex.execute_monitored(
-        _intent("NOTAGUSDT"), confirm=True, max_poll_count=5
+        _intent("NOTAGUSDT"), confirm=True, market=_FRESH_MARKET, max_poll_count=5
     )
     row = await ScalpTradeAnalyticsService(db_session).get_by_open_client_order_id(
         result.open_client_order_id
@@ -215,6 +227,7 @@ async def test_execute_one_shot_records_session_tag(db_session) -> None:
     result = await ex.execute(
         _intent("ONESHOTTAGUSDT"),
         confirm=True,
+        market=_FRESH_MARKET,
         session_tag="llm",
         signal_snapshot=snap,
     )

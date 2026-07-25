@@ -176,8 +176,25 @@ INTRADAY_ACTION_REPORT_V1 = BundlePolicy(
 )
 
 
+ANALYSIS_SNAPSHOT_BUNDLE_V1 = BundlePolicy(
+    policy_version="analysis_snapshot_bundle_v1",
+    bundle_ttl=FreshnessPolicy(soft_ttl=_seconds(180), hard_ttl=_seconds(300)),
+    kinds=(
+        SnapshotKindPolicy(
+            snapshot_kind="llm_input_frozen",
+            freshness=FreshnessPolicy(soft_ttl=_seconds(180), hard_ttl=_seconds(300)),
+            required=True,
+            # Six section-local budgets total less than this outer guard, which
+            # itself leaves headroom inside the 240s MCP request budget.
+            collector_timeout=_seconds(225),
+        ),
+    ),
+)
+
+
 POLICIES: dict[str, BundlePolicy] = {
     INTRADAY_ACTION_REPORT_V1.policy_version: INTRADAY_ACTION_REPORT_V1,
+    ANALYSIS_SNAPSHOT_BUNDLE_V1.policy_version: ANALYSIS_SNAPSHOT_BUNDLE_V1,
 }
 
 

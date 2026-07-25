@@ -26,7 +26,8 @@ def register_trade_retrospective_tools(mcp: Any) -> None:
         description=(
             "Store a structured trade retrospective (outcome, absolute realized_pnl, "
             "fill/plan price, pnl_pct, rationale/result/lesson/next_strategy) for a "
-            "trade. account_mode in {kis_mock, kiwoom_mock, kis_live, toss_live, "
+            "trade. outcome in {filled, partially_filled, unfilled, rejected, "
+            "cancelled}. account_mode in {kis_mock, kiwoom_mock, kis_live, toss_live, "
             "alpaca_paper, upbit_live}. Idempotent per correlation_id (omit it to "
             "append). "
             "kiwoom_mock cannot supply realized_pnl/fill_price (no fill evidence, "
@@ -40,8 +41,10 @@ def register_trade_retrospective_tools(mcp: Any) -> None:
             "expired, thesis_change, policy_violation, stale_evidence, "
             "guardrail_block, stop_loss}. When trigger_type is set, a non-empty next_actions "
             "list is required in the same call (each next_action needs a non-empty "
-            "action; optional owner/issue_id/status/due_kst_date, status in "
-            "{open, in_progress, done})."
+            "action; optional owner/issue_id/status/due_kst_date). New actions may start "
+            "only as open or in_progress. Echo action_id and version when retrying an "
+            "existing canonical action. To intentionally create a distinct occurrence, "
+            "pass force_new=true with a stable creation_key for idempotent retries."
         ),
     )(save_trade_retrospective)
     _ = mcp.tool(

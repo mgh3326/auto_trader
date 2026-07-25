@@ -139,3 +139,31 @@ class TestParseMarginResponse:
         assert result["stck_cash_ord_psbl_amt"] == pytest.approx(3_000_000.0)
         assert result["usd_ord_psbl_amt"] == pytest.approx(1200.00)
         assert result["usd_balance"] == pytest.approx(900.00)
+
+
+@pytest.mark.asyncio
+async def test_inquire_mock_overseas_buyable_amount_uses_vtts3007_and_parses_usd():
+    parent = FakeParent()
+    parent._ensure_token = pytest.importorskip("unittest.mock").AsyncMock()
+    parent._kis_url = lambda path: f"https://mock.example{path}"
+    parent._request_with_rate_limit = pytest.importorskip("unittest.mock").AsyncMock(
+        return_value={
+            "rt_cd": "0",
+            "output": {
+                "ord_psbl_frcr_amt": "99996.18",
+                "sll_ruse_psbl_amt": "13.95",
+                "exrt": "1488.88",
+            },
+        }
+    )
+    client = AccountClient(parent)
+
+    result = await client.inquire_mock_overseas_buyable_amount()
+
+    assert result["ovrs_ord_psbl_amt"] == pytest.approx(99996.18)
+    assert result["sll_ruse_psbl_amt"] == pytest.approx(13.95)
+    assert result["exrt"] == pytest.approx(1488.88)
+    assert result["raw"]["ord_psbl_frcr_amt"] == "99996.18"
+    kwargs = parent._request_with_rate_limit.await_args.kwargs
+    assert kwargs["tr_id"] == "VTTS3007R"
+    assert kwargs["api_name"] == "inquire_mock_overseas_buyable_amount"

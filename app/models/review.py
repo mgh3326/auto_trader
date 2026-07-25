@@ -8,12 +8,14 @@ from decimal import Decimal
 
 from sqlalchemy import (
     TIMESTAMP,
+    VARCHAR,
     BigInteger,
     Boolean,
     CheckConstraint,
     Date,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -609,7 +611,10 @@ class TossLiveOrderLedger(Base):
     stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     min_hold_days: Mapped[int | None] = mapped_column(SmallInteger)
     notes: Mapped[str | None] = mapped_column(Text)
+    exit_intent: Mapped[str | None] = mapped_column(Text)
     exit_reason: Mapped[str | None] = mapped_column(Text)
+    retrospective_id: Mapped[int | None] = mapped_column(BigInteger)
+    approval_issue_id: Mapped[str | None] = mapped_column(Text)
     indicators_snapshot: Mapped[dict | None] = mapped_column(JSONB)
     report_item_uuid: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
     approval_hash: Mapped[str | None] = mapped_column(Text)
@@ -707,7 +712,7 @@ class AlpacaPaperOrderLedger(Base):
             "lifecycle_state IN ("
             "'planned','previewed','validated','submitted','filled',"
             "'position_reconciled','sell_validated','closed','final_reconciled','anomaly',"
-            "'stale_preview_cleanup_required'"
+            "'stale_preview_cleanup_required','canceled'"
             ")",
             name="alpaca_paper_ledger_lifecycle_state",
         ),
@@ -737,6 +742,7 @@ class AlpacaPaperOrderLedger(Base):
         Index("ix_alpaca_paper_ledger_broker_order_id", "broker_order_id"),
         Index("ix_alpaca_paper_ledger_lifecycle_state", "lifecycle_state"),
         Index("ix_alpaca_paper_ledger_created_at", "created_at"),
+        Index("ix_alpaca_paper_ledger_terminalized_at", "terminalized_at"),
         Index("ix_alpaca_paper_ledger_candidate_uuid", "candidate_uuid"),
         Index(
             "ix_alpaca_paper_ledger_briefing_run_uuid",
@@ -768,6 +774,11 @@ class AlpacaPaperOrderLedger(Base):
 
     # Application lifecycle state (ROB-90 canonical)
     lifecycle_state: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # ROB-954: first transition into a retrospective-terminal lifecycle state.
+    # Nullable for pre-migration rows and every still-open row; unlike updated_at,
+    # this has no onupdate hook and metadata-only writes must never move it.
+    terminalized_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 
     # ROB-90: buy/sell leg role — separate from broker `side` (order direction).
     leg_role: Mapped[str | None] = mapped_column(Text)
@@ -1152,6 +1163,157 @@ class TradeRetrospective(Base):
 
 
 # ---------------------------------------------------------------------------
+# review.trade_retrospective_actions — canonical action lifecycle (ROB-878)
+# ---------------------------------------------------------------------------
+class TradeRetrospectiveAction(Base):
+    """ROB-878 — canonical retrospective action with stable identity and lifecycle.
+
+    Shadow mode: rows are backfilled from parent JSONB but not exposed to any
+    reader. Canonical mode: all reads/writes move here; parent JSONB becomes a
+    compatibility projection.
+    """
+
+    __tablename__ = "trade_retrospective_actions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["retrospective_id"],
+            ["review.trade_retrospectives.id"],
+            ondelete="CASCADE",
+            name="fk_trade_retrospective_actions_retrospective",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        UniqueConstraint(
+            "retrospective_id",
+            "position",
+            name="uq_trade_retrospective_actions_position",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        CheckConstraint(
+            "status IN ('open','in_progress','done','obsolete','expired')",
+            name="status",
+        ),
+        CheckConstraint(
+            "status_source IN ('migration','retrospective_save','web','mcp','triage','reconciler')",
+            name="status_source",
+        ),
+        CheckConstraint("version >= 1", name="version"),
+        CheckConstraint("position >= 0", name="position_col"),
+        CheckConstraint(
+            "(status IN ('done','obsolete','expired') AND resolved_at IS NOT NULL) "
+            "OR (status IN ('open','in_progress') AND resolved_at IS NULL)",
+            name="resolved_terminal",
+        ),
+        CheckConstraint(
+            "(status NOT IN ('obsolete','expired')) "
+            "OR (status_reason IS NOT NULL AND btrim(status_reason) <> '' "
+            "AND length(status_reason) <= 2000)",
+            name="reason_required",
+        ),
+        CheckConstraint(
+            "(status <> 'expired') "
+            "OR (status_evidence IS NOT NULL "
+            "AND jsonb_typeof(status_evidence) = 'object')",
+            name="evidence_required",
+        ),
+        Index(
+            "ix_trade_retrospective_actions_parent_position",
+            "retrospective_id",
+            "position",
+            "id",
+        ),
+        Index(
+            "ix_trade_retrospective_actions_due_active",
+            "due_kst_date",
+            "id",
+            postgresql_where=text("status IN ('open', 'in_progress')"),
+        ),
+        Index(
+            "uq_trade_retrospective_actions_creation_key",
+            "retrospective_id",
+            "creation_key",
+            unique=True,
+            postgresql_where=text("creation_key IS NOT NULL"),
+        ),
+        Index(
+            "ix_trade_retrospective_actions_issue_id",
+            "issue_id",
+            postgresql_where=text("issue_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_trade_retrospective_actions_status_updated",
+            "status",
+            "updated_at",
+            "id",
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    retrospective_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    creation_key: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    owner: Mapped[str | None] = mapped_column(Text)
+    issue_id: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'open'")
+    )
+    due_kst_date: Mapped[date | None] = mapped_column(Date)
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("1")
+    )
+    status_changed_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    status_actor: Mapped[str] = mapped_column(VARCHAR(128), nullable=False)
+    status_source: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+    status_reason: Mapped[str | None] = mapped_column(Text)
+    status_evidence: Mapped[dict | None] = mapped_column(JSONB)
+    legacy_payload: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class TradeRetrospectiveActionControl(Base):
+    """ROB-878 — singleton lifecycle control row (shadow/canonical mode)."""
+
+    __tablename__ = "trade_retrospective_action_control"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="singleton"),
+        CheckConstraint("mode IN ('shadow','canonical')", name="mode"),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    mode: Mapped[str] = mapped_column(Text, nullable=False)
+    cutover_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    cutover_action_count: Mapped[int | None] = mapped_column(Integer)
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+# ---------------------------------------------------------------------------
 # review.trade_forecasts — resolvable probabilistic forecasts (ROB-650)
 # ---------------------------------------------------------------------------
 class TradeForecast(Base):
@@ -1163,18 +1325,22 @@ class TradeForecast(Base):
     (LLM boundary); the record/resolve/score logic here is fully deterministic.
 
     ``forecast_id`` is the idempotency key (client-supplied to update while open,
-    or auto-generated). ``forecast_target`` is a structured JSONB claim; the
-    ``price_target`` kind resolves deterministically against loaded daily OHLCV
-    (ROB-639), non-price kinds resolve via an operator-supplied manual outcome
-    (evidence required). ``correlation_id`` aligns with trade_retrospectives
-    (ROB-647) so a postmortem can cite the forecast it graded.
+    or auto-generated). ``forecast_target`` is a structured JSONB claim. The
+    Versioned ``price_target`` claims retain their window high/low touch
+    semantics; versionless legacy rows are quarantined. The additive
+    ``terminal_close`` kind uses exactly the review-date regular-session close
+    under a versioned equality contract. Corporate-action adjustment is
+    intentionally unsupported pending ROB-1043. Other kinds resolve via an
+    operator-supplied manual outcome (evidence required).
+    ``correlation_id`` aligns with trade_retrospectives (ROB-647) so a postmortem
+    can cite the forecast it graded.
     """
 
     __tablename__ = "trade_forecasts"
     __table_args__ = (
         UniqueConstraint("forecast_id", name="uq_trade_forecasts_forecast_id"),
         CheckConstraint(
-            "status IN ('open','closed')",
+            "status IN ('open','closed','closed_no_claim')",
             name="ck_trade_forecasts_status",
         ),
         CheckConstraint(
@@ -1259,4 +1425,37 @@ class TradeForecast(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+# ---------------------------------------------------------------------------
+# review.toss_manual_activity_alerts — ROB-866 idempotency marker
+# ---------------------------------------------------------------------------
+class TossManualActivityAlert(Base):
+    """ROB-866 — records Toss manual (unbooked) orders that have been alerted.
+
+    Toss has no execution websocket, so operator app-side trades are invisible to
+    the system until reported. The manual-activity sweep diffs GET /orders against
+    ``review.toss_live_order_ledger`` + proposal rungs to surface unbooked orders,
+    then alerts Telegram + session_context. This table is the alert-idempotency
+    marker only — it is NOT a fill/bookkeeping ledger (that is stage 2). Presence
+    of a ``broker_order_id`` here means "already alerted; do not re-alert".
+    """
+
+    __tablename__ = "toss_manual_activity_alerts"
+    __table_args__ = (
+        Index("ix_toss_manual_activity_alerts_alerted_at", "alerted_at"),
+        {"schema": "review"},
+    )
+
+    broker_order_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    symbol: Mapped[str | None] = mapped_column(Text)
+    side: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str | None] = mapped_column(Text)
+    market: Mapped[str | None] = mapped_column(Text)
+    is_open: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
+    alerted_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )

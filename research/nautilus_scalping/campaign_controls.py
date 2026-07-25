@@ -5,6 +5,7 @@ max drawdown, buy&hold return, and the survivorship-/quality-aware universe filt
 (membership overlap + manifest coverage/confidence). Dollar-volume liquidity
 filtering is intentionally NOT done here (disclosed as a skipped control).
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -26,7 +27,9 @@ def buy_hold_bps(close_series: Sequence[tuple[int, float]]) -> float:
     return (last - first) / first * 1e4 if first else 0.0
 
 
-def max_drawdown_bps(period_net_pnls: Sequence[float], notional: float = 1000.0) -> float:
+def max_drawdown_bps(
+    period_net_pnls: Sequence[float], notional: float = 1000.0
+) -> float:
     equity = notional
     peak = notional
     worst = 0.0
@@ -38,12 +41,19 @@ def max_drawdown_bps(period_net_pnls: Sequence[float], notional: float = 1000.0)
     return worst
 
 
-def filter_universe(manifest: PITManifest, lo_ts: int, hi_ts: int,
-                    min_coverage: float = 0.8, confidences=("high", "medium")) -> list[str]:
+def filter_universe(
+    manifest: PITManifest,
+    lo_ts: int,
+    hi_ts: int,
+    min_coverage: float = 0.8,
+    confidences=("high", "medium"),
+) -> list[str]:
     """Symbols whose listing overlaps [lo_ts, hi_ts] with adequate data quality."""
     kept = []
     for x in manifest.listings:
-        overlaps = x.listed_from <= hi_ts and (x.delisted_at is None or x.delisted_at > lo_ts)
+        overlaps = x.listed_from <= hi_ts and (
+            x.delisted_at is None or x.delisted_at > lo_ts
+        )
         cov_ok = (x.kline_coverage or 0.0) >= min_coverage
         conf_ok = x.confidence in confidences
         if overlaps and cov_ok and conf_ok:

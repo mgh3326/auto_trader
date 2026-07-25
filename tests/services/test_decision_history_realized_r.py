@@ -8,6 +8,11 @@ from app.models.investment_reports import InvestmentReport, InvestmentReportItem
 from app.services import decision_history as dh
 from app.services.trade_journal.forecast_service import _normalize_symbol_for_filter
 
+# This file writes investment-report rows through the shared ``db_session``.
+# Serialize it with the helper fixture cleanup so xdist workers cannot race an
+# INSERT against ``TRUNCATE ... investment_reports ... CASCADE``.
+pytestmark = pytest.mark.usefixtures("investment_reports_cleanup_lock")
+
 
 def _digit_symbol() -> str:
     return ("9" + uuid.uuid4().hex[:9])[:10].upper()

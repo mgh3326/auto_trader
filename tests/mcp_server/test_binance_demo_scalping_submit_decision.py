@@ -1,23 +1,94 @@
 from __future__ import annotations
 
+import inspect
+from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 import app.mcp_server.tooling.binance_demo_scalping_handler as mod
+from app.services.brokers.binance.demo_scalping.contract import (
+    MarketConditions,
+    ReasonCode,
+)
+from app.services.brokers.binance.demo_scalping.market_data import (
+    MarketConditionsUnavailable,
+)
+
+_FRESH = MarketConditions(
+    spread_bps=Decimal("3"),
+    data_age_seconds=4.0,
+    spot_free_base_qty=Decimal("0"),
+)
+
+
+def _preflight_result(
+    status: str, *, reason_codes=(), sized_qty=None, sized_notional=None
+):
+    return type(
+        "R",
+        (),
+        {
+            "status": status,
+            "reason_codes": tuple(reason_codes),
+            "sized_qty": sized_qty,
+            "sized_notional_usdt": sized_notional,
+        },
+    )()
 
 
 @pytest.mark.asyncio
 async def test_dry_run_returns_plan_no_order() -> None:
-    result = await mod.binance_demo_scalping_submit_decision(
-        symbol="XRPUSDT", side="BUY", rationale="funding flip", dry_run=True
+    # ROB-841: dry-run now runs the SAME server-derived market/risk preflight,
+    # but places no order and inserts no ledger row. Seam is mocked so the unit
+    # test does no network / DB.
+    allowed = _preflight_result(
+        "dry_run", sized_qty=Decimal("7.3"), sized_notional=Decimal("10")
     )
+    with patch.object(
+        mod, "_dry_run_preflight", AsyncMock(return_value=(_FRESH, allowed))
+    ):
+        result = await mod.binance_demo_scalping_submit_decision(
+            symbol="XRPUSDT", side="BUY", rationale="funding flip", dry_run=True
+        )
     assert result["status"] == "planned"
     assert result["dry_run"] is True
     assert result["symbol"] == "XRPUSDT"
     assert result["side"] == "BUY"
     assert result["session_tag"] == "llm"
     assert "rationale" in result
+    # Server-observed market snapshot echoed back for auditability.
+    assert result["market_conditions"]["spread_bps"] == "3"
+    assert result["market_conditions"]["data_age_seconds"] == 4.0
+
+
+@pytest.mark.asyncio
+async def test_dry_run_blocked_surfaces_existing_reason_codes() -> None:
+    blocked = _preflight_result("blocked", reason_codes=(ReasonCode.SPREAD_TOO_WIDE,))
+    with patch.object(
+        mod, "_dry_run_preflight", AsyncMock(return_value=(_FRESH, blocked))
+    ):
+        result = await mod.binance_demo_scalping_submit_decision(
+            symbol="XRPUSDT", side="BUY", rationale="x", dry_run=True
+        )
+    assert result["status"] == "blocked"
+    assert ReasonCode.SPREAD_TOO_WIDE in result["reason_codes"]
+    assert result["dry_run"] is True
+
+
+@pytest.mark.asyncio
+async def test_dry_run_market_unavailable_fails_closed() -> None:
+    with patch.object(
+        mod,
+        "_dry_run_preflight",
+        AsyncMock(side_effect=MarketConditionsUnavailable("provider_error: boom")),
+    ):
+        result = await mod.binance_demo_scalping_submit_decision(
+            symbol="XRPUSDT", side="BUY", rationale="x", dry_run=True
+        )
+    assert result["status"] == "market_conditions_unavailable"
+    assert result["dry_run"] is True
+    assert "provider_error" in result["reason"]
 
 
 @pytest.mark.asyncio
@@ -77,10 +148,54 @@ async def test_confirm_executes_monitored_with_llm_tag() -> None:
 
 
 @pytest.mark.asyncio
+async def test_confirm_market_unavailable_fails_closed_no_order() -> None:
+    with patch.object(
+        mod,
+        "_execute_confirmed_round_trip",
+        AsyncMock(side_effect=MarketConditionsUnavailable("empty_kline")),
+    ):
+        result = await mod.binance_demo_scalping_submit_decision(
+            symbol="XRPUSDT",
+            side="BUY",
+            rationale="x",
+            dry_run=False,
+            confirm=True,
+        )
+    assert result["status"] == "market_conditions_unavailable"
+    assert result["dry_run"] is False
+    assert "empty_kline" in result["reason"]
+
+
+@pytest.mark.asyncio
 async def test_confirm_required_for_real_order() -> None:
-    # dry_run False but confirm False → still a plan, no execution.
-    result = await mod.binance_demo_scalping_submit_decision(
-        symbol="XRPUSDT", side="BUY", rationale="x", dry_run=False, confirm=False
+    # dry_run False but confirm False → still a plan (dry-run preflight), no order.
+    allowed = _preflight_result(
+        "dry_run", sized_qty=Decimal("7.3"), sized_notional=Decimal("10")
     )
+    with patch.object(
+        mod, "_dry_run_preflight", AsyncMock(return_value=(_FRESH, allowed))
+    ):
+        result = await mod.binance_demo_scalping_submit_decision(
+            symbol="XRPUSDT", side="BUY", rationale="x", dry_run=False, confirm=False
+        )
     assert result["status"] == "planned"
     assert result["dry_run"] is True
+
+
+def test_public_contract_has_no_caller_controlled_market_fields() -> None:
+    # AC5: spread / data-age must be server-observed only — the public tool
+    # signature must never accept them as inputs.
+    params = set(
+        inspect.signature(mod.binance_demo_scalping_submit_decision).parameters
+    )
+    forbidden = {
+        "spread",
+        "spread_bps",
+        "data_age",
+        "data_age_seconds",
+        "market",
+        "market_conditions",
+    }
+    assert params.isdisjoint(forbidden), (
+        f"caller-controlled market fields: {params & forbidden}"
+    )

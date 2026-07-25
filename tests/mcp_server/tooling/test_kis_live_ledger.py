@@ -153,6 +153,269 @@ async def test_record_kis_live_order_does_not_book_fill(db_session):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_reconcile_repairs_terminal_filled_proposal_projection(db_session):
+    """ROB-900: a booked KIS fill must repair its linked resting rung.
+
+    This intentionally seeds a terminal ledger row before reconcile.  The open
+    row scan cannot see it, so only the terminal projection-repair path may
+    converge the proposal.
+    """
+    from datetime import UTC, datetime
+    from decimal import Decimal
+    from uuid import uuid4
+
+    from app.mcp_server.tooling import kis_live_ledger as kl
+    from app.services.order_proposals import OrderProposalsService
+    from app.services.order_proposals.service import RungInput
+
+    suffix = uuid4().hex
+    order_no = f"KIS-ROB900-{suffix}"
+    correlation_id = f"live:kis_live:rob900-{suffix}"
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="214150",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="rob900-test",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("50000"), None)],
+    )
+    for state in ("revalidating", "approved", "submitting"):
+        await service.transition_rung(group.proposal_id, 0, new_state=state)
+    await service.record_resting(
+        group.proposal_id,
+        0,
+        broker_order_id=order_no,
+        correlation_id=correlation_id,
+        idempotency_key=f"idem-{suffix}",
+        approval_hash_digest=f"digest-{suffix}",
+        now=datetime.now(UTC),
+    )
+    await db_session.commit()
+
+    ledger_id = await kl._save_kis_live_order_ledger(
+        symbol="214150",
+        instrument_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        quantity=1.0,
+        price=50000.0,
+        amount=50000.0,
+        currency="KRW",
+        order_no=order_no,
+        order_time="090000",
+        krx_fwdg_ord_orgno=None,
+        status="filled",
+        response_code="0",
+        response_message=None,
+        raw_response={},
+        reason=None,
+        thesis="test",
+        strategy="test",
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
+        correlation_id=correlation_id,
+    )
+    assert ledger_id is not None
+
+    result = await kl.kis_live_reconcile_orders_impl(dry_run=False)
+    _, rungs = await OrderProposalsService(db_session).get_proposal(group.proposal_id)
+
+    assert result["proposal_projection_repair"] == {
+        "candidates": 1,
+        "converged": 1,
+        "failed": 0,
+        "anomalies": {},
+    }
+    assert rungs[0].state == "filled"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_terminal_repair_skips_terminal_and_resting_key_conflict(db_session):
+    """ROB-900 P0: terminal correlation evidence blocks a conflicting KIS fill."""
+    from datetime import UTC, datetime
+    from decimal import Decimal
+    from uuid import uuid4
+
+    from app.mcp_server.tooling import kis_live_ledger as kl
+    from app.services.order_proposals import OrderProposalsService
+    from app.services.order_proposals.service import RungInput
+
+    suffix = uuid4().hex
+    order_no = f"KIS-ROB900-CONFLICT-{suffix}"
+    resting_correlation = f"live:kis_live:resting-{suffix}"
+    terminal_correlation = f"live:kis_live:terminal-{suffix}"
+    service = OrderProposalsService(db_session)
+
+    async def create_rung(*, broker_order_id: str, correlation_id: str):
+        group = await service.create_proposal(
+            symbol="214150",
+            market="equity_kr",
+            account_mode="kis_live",
+            side="buy",
+            order_type="limit",
+            proposer="rob900-conflict-test",
+            rungs=[RungInput(0, "buy", Decimal("1"), Decimal("50000"), None)],
+        )
+        for state in ("revalidating", "approved", "submitting"):
+            await service.transition_rung(group.proposal_id, 0, new_state=state)
+        await service.record_resting(
+            group.proposal_id,
+            0,
+            broker_order_id=broker_order_id,
+            correlation_id=correlation_id,
+            idempotency_key=f"idem-{broker_order_id}",
+            approval_hash_digest=f"digest-{broker_order_id}",
+            now=datetime.now(UTC),
+        )
+        return group.proposal_id
+
+    resting_id = await create_rung(
+        broker_order_id=order_no, correlation_id=resting_correlation
+    )
+    terminal_id = await create_rung(
+        broker_order_id=f"terminal-{order_no}", correlation_id=terminal_correlation
+    )
+    await service.transition_rung(terminal_id, 0, new_state="filled")
+    await db_session.commit()
+    await kl._save_kis_live_order_ledger(
+        symbol="214150",
+        instrument_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        quantity=1.0,
+        price=50000.0,
+        amount=50000.0,
+        currency="KRW",
+        order_no=order_no,
+        order_time="090000",
+        krx_fwdg_ord_orgno=None,
+        status="filled",
+        response_code="0",
+        response_message=None,
+        raw_response={},
+        reason=None,
+        thesis="test",
+        strategy="test",
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
+        correlation_id=terminal_correlation,
+    )
+
+    result = await kl.kis_live_reconcile_orders_impl(dry_run=False)
+    _, resting = await OrderProposalsService(db_session).get_proposal(resting_id)
+    _, terminal = await OrderProposalsService(db_session).get_proposal(terminal_id)
+    assert result["proposal_projection_repair"] == {
+        "candidates": 0,
+        "converged": 0,
+        "failed": 0,
+        "anomalies": {"proposal_evidence_conflict": 1},
+    }
+    assert terminal[0].state == "filled"
+    assert resting[0].state == "resting"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconcile_new_filled_row_converges_proposal_in_same_pass(db_session):
+    """ROB-900 P1: KIS fill booking immediately projects its resting rung."""
+    from datetime import UTC, datetime
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, patch
+    from uuid import uuid4
+
+    from app.mcp_server.tooling import kis_live_ledger as kl
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        FillEvidence,
+        FillVerdict,
+    )
+    from app.services.order_proposals import OrderProposalsService
+    from app.services.order_proposals.service import RungInput
+
+    suffix = uuid4().hex
+    order_no = f"KIS-ROB900-IMMEDIATE-{suffix}"
+    correlation_id = f"live:kis_live:immediate-{suffix}"
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="214150",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="rob900-immediate-test",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("50000"), None)],
+    )
+    for state in ("revalidating", "approved", "submitting"):
+        await service.transition_rung(group.proposal_id, 0, new_state=state)
+    await service.record_resting(
+        group.proposal_id,
+        0,
+        broker_order_id=order_no,
+        correlation_id=correlation_id,
+        idempotency_key=f"idem-{suffix}",
+        approval_hash_digest=f"digest-{suffix}",
+        now=datetime.now(UTC),
+    )
+    await db_session.commit()
+    await kl._save_kis_live_order_ledger(
+        symbol="214150",
+        instrument_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        quantity=1.0,
+        price=50000.0,
+        amount=50000.0,
+        currency="KRW",
+        order_no=order_no,
+        order_time="090000",
+        krx_fwdg_ord_orgno=None,
+        status="accepted",
+        response_code="0",
+        response_message=None,
+        raw_response={},
+        reason=None,
+        thesis="test",
+        strategy="test",
+        target_price=None,
+        stop_loss=None,
+        min_hold_days=None,
+        notes=None,
+        exit_reason=None,
+        indicators_snapshot=None,
+        correlation_id=correlation_id,
+    )
+    filled = FillEvidence(
+        FillVerdict.FILLED, Decimal("1"), Decimal("50000"), None, "filled", ""
+    )
+    with (
+        patch.object(kl, "_fetch_live_daily_rows", new=AsyncMock(return_value=[])),
+        patch.object(kl, "classify_fill_evidence", return_value=filled),
+        patch.object(kl, "_save_order_fill", new=AsyncMock(return_value=1)),
+        patch.object(
+            kl,
+            "_create_trade_journal_for_buy",
+            new=AsyncMock(return_value={"journal_id": 2}),
+        ),
+        patch.object(kl, "_link_journal_to_fill", new=AsyncMock(return_value=None)),
+    ):
+        result = await kl.kis_live_reconcile_orders_impl(dry_run=False)
+    _, rungs = await OrderProposalsService(db_session).get_proposal(group.proposal_id)
+    assert result["reconciled"][0]["action"] == "booked_filled"
+    assert rungs[0].state == "filled"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_fetch_live_daily_rows_for_order():
     from unittest.mock import AsyncMock, patch
 

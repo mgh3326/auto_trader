@@ -1,6 +1,6 @@
 import logging
 
-from app.core.config import settings
+from app.core.config import settings, validate_kiwoom_mock_config
 from app.mcp_server.env_utils import (
     _env,
     _env_int,
@@ -48,35 +48,79 @@ from app.mcp_server.tooling import register_all_tools  # noqa: E402
 
 _auth_token = _env("MCP_AUTH_TOKEN", "")
 _mcp_profile = resolve_mcp_profile(_env("MCP_PROFILE"))
+_mcp_type = _env("MCP_TYPE", "streamable-http")
 
 
-def _validate_profile_auth_token(profile: McpProfile, token: str | None) -> None:
+def _validate_profile_auth_token(
+    profile: McpProfile, token: str | None, mcp_type: str
+) -> None:
     token_required_profiles = {
         McpProfile.ACCOUNT_READ,
         McpProfile.TRADINGCODEX_EXECUTION,
+        McpProfile.PAPER_EXECUTION,
     }
     if profile in token_required_profiles and not (token or "").strip():
         raise RuntimeError(
             f"MCP_PROFILE={profile.value} requires non-empty MCP_AUTH_TOKEN"
         )
+    if mcp_type not in {"streamable-http", "sse"} or (token or "").strip():
+        return
+    if profile is McpProfile.KIWOOM:
+        raise RuntimeError(
+            "MCP_PROFILE=kiwoom requires non-empty MCP_AUTH_TOKEN "
+            "for network transports"
+        )
+    if profile is McpProfile.DEFAULT and bool(
+        getattr(settings, "kiwoom_mock_us_enabled", False)
+    ):
+        raise RuntimeError(
+            "Kiwoom US mutation exposure requires non-empty MCP_AUTH_TOKEN "
+            "for network transports"
+        )
 
 
 def _validate_profile_runtime_settings(profile: McpProfile) -> None:
-    if profile is not McpProfile.TRADINGCODEX_EXECUTION:
+    if profile is McpProfile.PAPER_EXECUTION:
+        if not settings.PAPER_EXECUTION_ENABLED:
+            raise RuntimeError(
+                "MCP_PROFILE=paper_execution requires PAPER_EXECUTION_ENABLED=true"
+            )
         return
-    if settings.order_approval_hash_mode != "required":
-        raise RuntimeError(
-            "MCP_PROFILE=tradingcodex_execution requires "
-            "ORDER_APPROVAL_HASH_MODE=required"
-        )
-    if settings.toss_approval_hash_mode != "required":
-        raise RuntimeError(
-            "MCP_PROFILE=tradingcodex_execution requires "
-            "TOSS_APPROVAL_HASH_MODE=required"
-        )
+
+    restricted_profiles = {
+        McpProfile.ACCOUNT_READ,
+        McpProfile.TRADINGCODEX_EXECUTION,
+    }
+    if profile in restricted_profiles and bool(
+        getattr(settings, "kiwoom_mock_enabled", False)
+    ):
+        missing = validate_kiwoom_mock_config(settings)
+        if missing:
+            raise RuntimeError(
+                f"MCP_PROFILE={profile.value} has incomplete Kiwoom mock config: "
+                + ", ".join(missing)
+            )
+        mock_base_url = str(settings.kiwoom_mock_base_url).rstrip("/")
+        if mock_base_url != "https://mockapi.kiwoom.com":
+            raise RuntimeError(
+                f"MCP_PROFILE={profile.value} requires Kiwoom mock host "
+                "https://mockapi.kiwoom.com"
+            )
+
+    if profile is McpProfile.TRADINGCODEX_EXECUTION:
+        if settings.order_approval_hash_mode != "required":
+            raise RuntimeError(
+                "MCP_PROFILE=tradingcodex_execution requires "
+                "ORDER_APPROVAL_HASH_MODE=required"
+            )
+        if settings.toss_approval_hash_mode != "required":
+            raise RuntimeError(
+                "MCP_PROFILE=tradingcodex_execution requires "
+                "TOSS_APPROVAL_HASH_MODE=required"
+            )
 
 
-_validate_profile_auth_token(_mcp_profile, _auth_token)
+_validate_profile_auth_token(_mcp_profile, _auth_token, _mcp_type)
 _validate_profile_runtime_settings(_mcp_profile)
 auth_provider = build_auth_provider(_auth_token)
 mcp = FastMCP(
@@ -95,12 +139,14 @@ mcp = FastMCP(
     lifespan=build_server_lifespan(),
 )
 
-mcp.add_middleware(McpToolCallSentryMiddleware())
+# Caller identity is outermost so the Sentry middleware can attach the resolved
+# consumer before the request-scoped contextvars are reset.
 mcp.add_middleware(CallerIdentityMiddleware())
+mcp.add_middleware(McpToolCallSentryMiddleware())
 # ROB-469 PR2: per-tool timeout — added LAST so it is the INNERMOST middleware
-# (wraps the tool) while Sentry stays outermost and captures the ToolError with the
-# tool-call context. Bounds the single event loop so one slow tool can't take all
-# 128 tools down (the ROB-469 SPOF).
+# (wraps the tool) while Sentry still wraps timeout execution and captures the
+# ToolError with caller/tool context. Bounds the single event loop so one slow
+# tool can't take all 128 tools down (the ROB-469 SPOF).
 mcp.add_middleware(
     ToolTimeoutMiddleware(
         default_timeout_s=get_mcp_tool_timeout_default(),
@@ -119,7 +165,7 @@ def _validate_caller_agent_id_fallback(mcp_type: str) -> None:
         raise RuntimeError(
             "MCP_CALLER_AGENT_ID is only allowed for stdio/local dev transports; "
             "unset it for production HTTP deployments and send "
-            "x-paperclip-agent-id explicitly."
+            "x-paperclip-agent-id explicitly (canonical legacy compatibility header)."
         )
 
 
@@ -154,6 +200,7 @@ def main() -> None:
     )
 
     try:
+        _validate_profile_auth_token(_mcp_profile, _auth_token, mcp_type)
         _validate_caller_agent_id_fallback(mcp_type)
 
         if mcp_type == "stdio":

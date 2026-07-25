@@ -42,6 +42,19 @@ ALLOWED_PACKAGE_PATHS: frozenset[str] = frozenset(
 # must live inside ``ALLOWED_PACKAGE_PATHS`` and must not be added here.
 ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
     {
+        # ROB-849 — canonical cohort orchestration stores the exact venue/source
+        # literals and consumes the one existing public REST client. None of
+        # these files defines a parallel Binance HTTP/WS client or signed path.
+        "app/jobs/paper_cohort.py",
+        "app/models/paper_cohort.py",
+        "app/services/paper_cohort/cohort_service.py",
+        "app/services/paper_cohort/contracts.py",
+        "app/services/paper_cohort/market_snapshot.py",
+        "app/services/paper_cohort/native_links.py",
+        "app/services/paper_cohort/provenance.py",
+        "app/services/paper_cohort/runner.py",
+        "app/services/paper_cohort/signals.py",
+        "app/services/paper_cohort/venue_quotes.py",
         "app/mcp_server/tooling/fundamentals_handlers.py",
         "app/mcp_server/tooling/fundamentals_sources_binance.py",
         "app/mcp_server/tooling/fundamentals_sources_naver.py",
@@ -76,6 +89,15 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # binance_testnet_order_ledger.py file was deleted in ROB-298.
         "app/models/binance_demo_order_ledger.py",
         "app/models/__init__.py",
+        # ROB-850 — paper evaluation references "Binance" as a view/source
+        # identifier (ViewName.BINANCE_BROKER, ViewSource.BINANCE_DEMO_LEDGER).
+        # No Binance HTTP/WS client or signed path is defined here.
+        "app/models/paper_evaluation.py",
+        "app/services/paper_evaluation/__init__.py",
+        "app/services/paper_evaluation/contracts.py",
+        "app/services/paper_evaluation/pnl.py",
+        "app/services/paper_evaluation/scorecard.py",
+        "app/services/paper_evaluation/service.py",
         # ROB-313 / ROB-315 — the scalp_trade_analytics ORM model lives under
         # app/models/. It is analytics-only persistence (no HTTP/WS, no signed
         # surface); "Binance" appears only in its docstring as the venue whose
@@ -94,6 +116,14 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # imports + the BINANCE_DEMO_SCALPING_* env-flag names.
         "app/jobs/binance_demo_scalping_runner.py",
         "app/tasks/binance_demo_scalping_tasks.py",
+        # ROB-844 — scheduleless abandoned-root reconciliation orchestration.
+        # The job only composes the existing in-package signed read clients with
+        # the ledger reconciler; HMAC/HTTP remains inside the adapter package.
+        # The task is a no-schedule, default-off wrapper and __init__ only
+        # registers that task module.
+        "app/jobs/binance_demo_root_reservation_reconciliation.py",
+        "app/tasks/binance_demo_root_reservation_reconcile_tasks.py",
+        "app/tasks/__init__.py",
         # Phase 2 — Demo scalping daily review + buy&hold benchmark automation.
         # Orchestration only: the job rolls scalp_trade_analytics into the review
         # draft and computes the benchmark via the in-package adapters; the flow
@@ -111,6 +141,23 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # under settings.binance_demo_scalping_enabled; references "Binance" only
         # via the import path + settings flag name (no HTTP/WS surface).
         "app/mcp_server/tooling/registry.py",
+        # ROB-845 — canonical paper-execution contracts and evidence vocabulary.
+        # These files mention Binance only as a capability/signal venue and
+        # delegate to the isolated in-package Demo adapter. They contain no
+        # Binance HTTP, signing, or API-key implementation.
+        "app/mcp_server/tooling/paper_execution_registration.py",
+        "app/services/alpaca_paper_order_application.py",
+        "app/services/brokers/alpaca/paper_adapter.py",
+        "app/services/brokers/capabilities.py",
+        # Lazy composition root only registers the in-package Demo adapter; it
+        # contains no Binance HTTP, signing, credential, or endpoint behavior.
+        "app/services/brokers/paper/composition.py",
+        "app/services/crypto_execution_mapping.py",
+        "app/services/paper_approval_packet.py",
+        # ROB-850 reads the already-persisted demo ledger and native quote
+        # evidence for evaluation accounting. It has no HTTP, signing,
+        # credential, endpoint, websocket, or mutation behavior.
+        "app/services/paper_evaluation/evidence.py",
         # ROB-323 / ROB-325 — the operator Naver remote-debug audit's Chrome
         # CDP host allowlist. Contains NO Binance HTTP/WS/signed surface; it is
         # a strict 127.0.0.1:9222 allowlist and references "binance" only in a
@@ -118,6 +165,18 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # precedent it mirrors (strict-equality, no wildcard). String reference
         # only — same class as the other entries here.
         "app/services/action_report/remote_debug_audit/host_allowlist.py",
+        # ROB-907 — read-only binance_demo_ledger_status MCP tool. Reads the
+        # already-persisted demo ledger exclusively through
+        # BinanceDemoLedgerService (no repository import, no HTTP/WS client,
+        # no signing, no credentials). References "Binance" only via the
+        # module/tool name and the service import path. (registry.py's new
+        # conditional import of this module needs no separate entry — it is
+        # already allow-listed above for the Phase 3 handler import.)
+        "app/mcp_server/tooling/binance_demo_ledger_status_read.py",
+        # ROB-907 — route_request_lanes.py adds "binance_demo_ledger_status"
+        # to READ_ONLY_ADVISORY_TOOLS: a bare tool-name string in a Python
+        # set literal, not a Binance HTTP/WS/signed reference.
+        "app/mcp_server/tooling/route_request_lanes.py",
     }
 )
 

@@ -23,6 +23,7 @@ class FillVerdict(StrEnum):
     FILLED = "filled"
     PARTIAL = "partial"
     PENDING = "pending"
+    EXPIRED = "expired"
     NONE = "none"
     UNSUPPORTED = "unsupported"
 

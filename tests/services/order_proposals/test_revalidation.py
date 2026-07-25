@@ -1,17 +1,45 @@
+import functools
+import re
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from app.services.order_proposals import OrderProposalsService
+from app.services.order_proposals import revalidation as revalidation_module
+from app.services.order_proposals.broker_gateway import SubmitEvidence
 from app.services.order_proposals.revalidation import (
     _adapt_live_submit_response,
-    revalidate_and_submit,
+    preview_loss_cut_confirmation,
+)
+from app.services.order_proposals.revalidation import (
+    revalidate_and_submit as _production_revalidate_and_submit,
 )
 from app.services.order_proposals.service import RungInput
 from app.services.order_proposals.target_order import TargetOrderSnapshot
+from tests.services.order_proposals.window_fakes import allow_known_session
+
+
+@pytest.fixture(autouse=True)
+def _known_market_session(monkeypatch):
+    monkeypatch.setattr(
+        revalidation_module, "evaluate_approval_window", allow_known_session
+    )
+
+
+async def revalidate_and_submit(**kwargs):
+    """Bind legacy unit calls to the same policy a card/auto path persisted."""
+    if kwargs.get("expected_policy_stamp") is None:
+        group, _rungs = await kwargs["service"].get_proposal(kwargs["proposal_id"])
+        observed_at = kwargs["now"]
+        decision = await allow_known_session(group, now=observed_at)
+        kwargs["expected_policy_stamp"] = decision.policy_stamp
+        kwargs.setdefault("window_evaluator", allow_known_session)
+        kwargs.setdefault("now_fn", lambda: observed_at)
+    return await _production_revalidate_and_submit(**kwargs)
 
 
 def _bound_toss_context():
@@ -89,6 +117,31 @@ async def test_unchanged_submits_resting(db_session):
 
 
 @pytest.mark.asyncio
+async def test_superseded_group_returns_error_before_broker_preview(db_session):
+    svc, group = await _create_proposal(db_session)
+    replacement_id = uuid.uuid4()
+    group.lifecycle_state = "superseded"
+    group.superseded_by_proposal_id = replacement_id
+    await db_session.commit()
+    broker_calls = []
+
+    async def broker_must_not_run(**kwargs):
+        broker_calls.append(kwargs)
+        raise AssertionError("superseded proposal must not reach broker preview")
+
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime(2026, 7, 14, 1, 15, tzinfo=UTC),
+        place_order_fn=broker_must_not_run,
+    )
+
+    assert broker_calls == []
+    assert [outcome.result for outcome in outcomes] == ["error"]
+    assert outcomes[0].detail == {"error": f"proposal_superseded_by:{replacement_id}"}
+
+
+@pytest.mark.asyncio
 async def test_unchanged_submits_acked(db_session):
     svc = OrderProposalsService(db_session)
     g = await svc.create_proposal(
@@ -154,6 +207,82 @@ async def test_price_change_needs_reconfirm_no_submit(db_session):
     assert out[0].detail["after"]["limit_price"] == "2340000"
     _, rungs = await svc.get_proposal(g.proposal_id)
     assert rungs[0].state == "needs_reconfirm"
+
+
+@pytest.mark.asyncio
+async def test_submit_time_eligibility_veto_degrades_to_pending_approval(db_session):
+    svc, group = await _create_proposal(db_session)
+    broker_calls = []
+
+    async def place_order(**kwargs):
+        broker_calls.append(kwargs)
+        assert kwargs["dry_run"] is True
+        return {
+            "success": True,
+            "approval_hash": "TESTTOKEN",
+            "price": "2226000",
+            "quantity": "10",
+            "current_price": "2250000",
+        }
+
+    async def eligibility_gate(**kwargs):
+        assert kwargs["preview"]["current_price"] == "2250000"
+        return {
+            "eligible": False,
+            "reason": "distance_below_minimum",
+            "details": {"policy_version": "test-policy"},
+        }
+
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        eligibility_gate=eligibility_gate,
+    )
+
+    assert [call["dry_run"] for call in broker_calls] == [True]
+    assert outcomes[0].result == "approval_required"
+    assert outcomes[0].detail["reason"] == "distance_below_minimum"
+    _, rungs = await svc.get_proposal(group.proposal_id)
+    assert rungs[0].state == "pending_approval"
+
+
+@pytest.mark.asyncio
+async def test_auto_eligibility_multi_rung_degrades_before_any_preview(db_session):
+    svc = OrderProposalsService(db_session)
+    group = await svc.create_proposal(
+        symbol="A",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[
+            RungInput(0, "buy", Decimal("1"), Decimal("97"), None),
+            RungInput(1, "buy", Decimal("1"), Decimal("96"), None),
+        ],
+    )
+    await db_session.commit()
+
+    async def must_not_preview(**kwargs):
+        raise AssertionError("multi-rung auto approval must degrade before preview")
+
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=must_not_preview,
+        eligibility_gate=lambda **kwargs: {"eligible": True},
+    )
+
+    assert [outcome.result for outcome in outcomes] == [
+        "approval_required",
+        "approval_required",
+    ]
+    assert {outcome.detail["reason"] for outcome in outcomes} == {
+        "multi_rung_requires_approval"
+    }
 
 
 @pytest.mark.asyncio
@@ -339,6 +468,80 @@ async def test_loss_cut_bindings_forwarded_to_preview_and_submit(
         expected,
         expected,
     ]
+
+
+@pytest.mark.asyncio
+async def test_loss_cut_confirmation_preview_is_read_only_and_builds_evidence(
+    db_session, monkeypatch
+):
+    retro = SimpleNamespace(
+        id=42,
+        symbol="005930",
+        trigger_type="stop_loss",
+        created_at=datetime.now(UTC),
+        lesson="손절 기준을 늦추지 않는다",
+    )
+
+    async def fake_lookup(session, retrospective_id):
+        return retro
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "sell", Decimal("2"), Decimal("99"), None)],
+        exit_intent="loss_cut",
+        exit_reason="stop_loss",
+        retrospective_id=42,
+    )
+    calls = []
+
+    async def fake_preview(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "price": "99",
+            "quantity": "2",
+            "current_price": "100",
+            "avg_buy_price": "200",
+            "loss_cut_slip_band": "98",
+        }
+
+    async def fake_retro_lookup(retrospective_id):
+        assert retrospective_id == 42
+        return retro
+
+    evidence = await preview_loss_cut_confirmation(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=fake_preview,
+        retrospective_lookup_fn=fake_retro_lookup,
+    )
+
+    assert [call["dry_run"] for call in calls] == [True]
+    assert evidence == {
+        "rungs": [
+            {
+                "rung_index": 0,
+                "current_price": "100",
+                "avg_buy_price": "200",
+                "loss_pct": "-50.00",
+                "loss_cut_slip_band": "98",
+            }
+        ],
+        "retrospective_id": 42,
+        "lesson_excerpt": "손절 기준을 늦추지 않는다",
+    }
+    _group, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "pending_approval"
 
 
 @pytest.mark.asyncio
@@ -952,6 +1155,303 @@ async def test_replace_target_drift_is_rejected_without_cancel(
     assert rungs[0].void_reason == f"target_snapshot_mismatch:{field}"
 
 
+def _toss_broker_order(**overrides):
+    values = {
+        "order_id": "broker-1",
+        "symbol": "005930",
+        "side": "SELL",
+        "order_type": "LIMIT",
+        "price": Decimal("70000"),
+        "quantity": Decimal("10"),
+        "execution": {},
+        "status": "PENDING",
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+@pytest.mark.asyncio
+async def test_toss_live_cancel_end_to_end_through_broker_gateway(db_session):
+    """A resting toss_live KR limit order, a cancel proposal, and a fake
+    broker cancel call routed through the *real* broker_gateway dispatch
+    (fetch_target_order / cancel_target_order), not a stand-in
+    fetch_target_fn/cancel_target_fn -- only the actual Toss network boundary
+    (TossReadClient.get_order, toss_cancel_order) is faked.
+
+    Scope note (ROB-972 round-1): this calls `revalidate_and_submit`
+    directly, with no nonce/Telegram callback -- it is NOT an approval-
+    boundary e2e test and must not be read as covering the "did the
+    eligibility gate run before this cancel" question. That coverage lives
+    in `test_telegram_callback.py::test_toss_live_cancel_approve_click_consumes_nonce_before_broker_cancel`
+    (the real AC3 -- the 07-20 incident scenario, driven through
+    `handle_callback_update`) and in `test_dispatch.py`'s
+    `test_dispatch_auto_approve_cancel_replace_never_mutates_before_gate`
+    (the auto-dispatch path). This test's job is narrower: broker_gateway
+    routing (fetch_target_order/cancel_target_order dispatch on
+    account_mode) actually reaches the Toss-specific functions.
+    """
+    from app.services.order_proposals.broker_gateway import (
+        cancel_target_order,
+        fetch_target_order,
+    )
+
+    service = OrderProposalsService(db_session)
+    approved = _target_snapshot(
+        broker_order_id="broker-1",
+        symbol="005930",
+        side="sell",
+        limit_price="70000",
+        remaining_quantity="10",
+    )
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        action="cancel",
+        target_broker_order_id="broker-1",
+        target_order_snapshot=approved.to_payload(),
+        rungs=[RungInput(0, "sell", Decimal("10"), Decimal("70000"), None)],
+    )
+    await db_session.commit()
+
+    toss_orders = iter(
+        [
+            _toss_broker_order(status="PENDING"),
+            _toss_broker_order(status="CANCELED"),
+        ]
+    )
+
+    class FakeTossClient:
+        async def get_order(self, order_id):
+            assert order_id == "broker-1"
+            return next(toss_orders)
+
+    cancel_calls = []
+
+    async def fake_toss_cancel(**kwargs):
+        cancel_calls.append(kwargs)
+        return {"success": True, "original_order_id": kwargs["order_id"]}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=_forbidden_submit,
+        fetch_target_fn=functools.partial(
+            fetch_target_order, toss_client=FakeTossClient()
+        ),
+        cancel_target_fn=functools.partial(
+            cancel_target_order, toss_cancel_fn=fake_toss_cancel
+        ),
+    )
+
+    assert outcomes[0].result == "cancelled"
+    assert cancel_calls == [
+        {
+            "order_id": "broker-1",
+            "dry_run": False,
+            "confirm": True,
+            "account_mode": "toss_live",
+        }
+    ]
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "cancelled"
+    assert rungs[0].broker_order_id == "broker-1"
+
+
+@pytest.mark.asyncio
+async def test_toss_live_replace_end_to_end_uses_toss_client_order_id(db_session):
+    """ROB-972 regression guard -- _revalidate_replace_rung previously only
+    generated a proposal_client_order_id for account_mode == 'upbit', so a
+    toss_live replace's live submit step would always fail with
+    invalid_toss_client_order_id. Assert the real toss-shaped id reaches
+    place_order_fn and the whole cancel-then-place pipeline converges.
+    """
+    from app.services.order_proposals.broker_gateway import (
+        cancel_target_order,
+        fetch_target_order,
+    )
+    from app.services.order_proposals.revalidation import (
+        _toss_proposal_client_order_id,
+    )
+
+    service = OrderProposalsService(db_session)
+    approved = _target_snapshot(
+        broker_order_id="broker-1",
+        symbol="005930",
+        side="sell",
+        limit_price="70000",
+        remaining_quantity="10",
+    )
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        action="replace",
+        target_broker_order_id="broker-1",
+        target_order_snapshot=approved.to_payload(),
+        rungs=[RungInput(0, "sell", Decimal("10"), Decimal("71000"), None)],
+    )
+    await db_session.commit()
+
+    toss_orders = iter(
+        [
+            _toss_broker_order(status="PENDING"),
+            _toss_broker_order(status="CANCELED"),
+        ]
+    )
+
+    class FakeTossClient:
+        async def get_order(self, order_id):
+            return next(toss_orders)
+
+    async def fake_toss_cancel(**kwargs):
+        return {"success": True}
+
+    submit_calls = []
+
+    async def place_order_fn(**kwargs):
+        if kwargs.get("dry_run"):
+            return {
+                "success": True,
+                "approval_hash": "fresh",
+                "price": "71000",
+                "quantity": "10",
+            }
+        submit_calls.append(kwargs)
+        return {"success": True, "status": "resting", "broker_order_id": "new-1"}
+
+    async def no_opposite_pending(**kwargs):
+        return None
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order_fn,
+        fetch_target_fn=functools.partial(
+            fetch_target_order, toss_client=FakeTossClient()
+        ),
+        cancel_target_fn=functools.partial(
+            cancel_target_order, toss_cancel_fn=fake_toss_cancel
+        ),
+        opposite_pending_check_fn=no_opposite_pending,
+    )
+
+    assert outcomes[0].result == "submitted_resting"
+    assert len(submit_calls) == 1
+    expected_client_order_id = _toss_proposal_client_order_id(group.proposal_id, 0)
+    assert submit_calls[0]["proposal_client_order_id"] == expected_client_order_id
+    assert re.fullmatch(r"[a-zA-Z0-9\-_]+", expected_client_order_id)
+    assert len(expected_client_order_id) <= 36
+
+
+@pytest.mark.asyncio
+async def test_toss_live_replace_opposite_pending_blocks_before_cancel(db_session):
+    """ROB-972 round-1 finding -- Toss replace non-atomicity.
+
+    Toss's live place path rejects an opposite-side pending order just
+    before POST, but the dry-run preview `_revalidate_replace_preview` uses
+    never runs that scan -- so before this fix, a replace could cancel the
+    original resting order and only THEN discover the replacement is
+    rejected, leaving the operator with nothing resting. Assert the
+    opposite-pending check runs before the cancel, so a losing race leaves
+    the original order untouched and the rung retryable.
+    """
+    from app.services.order_proposals.broker_gateway import (
+        cancel_target_order,
+        fetch_target_order,
+    )
+
+    service = OrderProposalsService(db_session)
+    approved = _target_snapshot(
+        broker_order_id="broker-1",
+        symbol="005930",
+        side="sell",
+        limit_price="70000",
+        remaining_quantity="10",
+    )
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        action="replace",
+        target_broker_order_id="broker-1",
+        target_order_snapshot=approved.to_payload(),
+        rungs=[RungInput(0, "sell", Decimal("10"), Decimal("71000"), None)],
+    )
+    await db_session.commit()
+
+    class FakeTossClient:
+        async def get_order(self, order_id):
+            assert order_id == "broker-1"
+            return _toss_broker_order(status="PENDING")
+
+    async def place_order_fn(**kwargs):
+        assert kwargs.get("dry_run") is True, (
+            "opposite-pending must block before the cancel-then-place "
+            "pipeline ever reaches a live submit"
+        )
+        return {
+            "success": True,
+            "approval_hash": "fresh",
+            "price": "71000",
+            "quantity": "10",
+        }
+
+    cancel_calls = []
+
+    async def fake_toss_cancel(**kwargs):
+        cancel_calls.append(kwargs)
+        raise AssertionError(
+            "the original order must not be cancelled when the "
+            "opposite-pending pre-check rejects the replace"
+        )
+
+    async def opposite_pending_found(**kwargs):
+        assert kwargs == {
+            "account_mode": "toss_live",
+            "market": "equity_kr",
+            "symbol": "005930",
+            "side": "sell",
+        }
+        return {
+            "success": False,
+            "error": "An opposite pending order exists for symbol 005930 (BUY).",
+        }
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order_fn,
+        fetch_target_fn=functools.partial(
+            fetch_target_order, toss_client=FakeTossClient()
+        ),
+        cancel_target_fn=functools.partial(
+            cancel_target_order, toss_cancel_fn=fake_toss_cancel
+        ),
+        opposite_pending_check_fn=opposite_pending_found,
+    )
+
+    assert cancel_calls == []
+    assert outcomes[0].result == "guard_blocked"
+    assert "opposite pending order" in outcomes[0].detail["error"].lower()
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "pending_approval"
+    refreshed, _ = await service.get_proposal(group.proposal_id)
+    assert refreshed.target_broker_order_id == "broker-1"
+
+
 def test_toss_decimal_args_are_exact_and_canonical():
     from app.services.order_proposals import revalidation as mod
 
@@ -964,12 +1464,372 @@ def test_toss_decimal_args_are_exact_and_canonical():
 def test_toss_proposal_client_ids_are_stable_and_rung_scoped():
     from app.services.order_proposals import revalidation as mod
 
+    # Toss OpenAPI OrderCreateRequest.clientOrderId (openapi.json).
+    toss_client_order_id_max_length = 36
     proposal_id = uuid.UUID("12345678-1234-5678-1234-567812345678")
     same = mod._toss_proposal_client_order_id(proposal_id, 0)
     assert same == mod._toss_proposal_client_order_id(proposal_id, 0)
     assert same != mod._toss_proposal_client_order_id(proposal_id, 1)
     assert same != mod._toss_proposal_client_order_id(uuid.uuid4(), 0)
     assert same.startswith("tosprop-")
+    assert len(same) <= toss_client_order_id_max_length
+    assert re.fullmatch(r"[a-zA-Z0-9\-_]+", same)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dry_run", [True, False], ids=["preview", "submit"])
+async def test_toss_adapter_forwards_loss_cut_binding(monkeypatch, dry_run):
+    import app.mcp_server.tooling.orders_toss_variants as toss
+    from app.services.order_proposals import revalidation as mod
+
+    calls: list[dict] = []
+
+    async def fake_preview(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "approval_hash": "preview-token",
+            "payload_preview": {
+                "clientOrderId": "tosprop-loss-cut",
+                "price": "50000",
+                "quantity": "1",
+            },
+        }
+
+    async def fake_submit(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "order_id": "toss-loss-cut-1",
+            "client_order_id": "tosprop-loss-cut",
+            "approval_hash_digest": "loss-cut-digest",
+        }
+
+    monkeypatch.setattr(toss, "toss_preview_order", fake_preview)
+    monkeypatch.setattr(toss, "toss_place_order", fake_submit)
+
+    await mod._default_place_order_fn(
+        dry_run=dry_run,
+        account_mode="toss_live",
+        symbol="005930",
+        side="sell",
+        market="equity_kr",
+        order_type="limit",
+        quantity=Decimal("1"),
+        price=Decimal("50000"),
+        proposal_client_order_id="tosprop-loss-cut",
+        approval_hash="preview-token",
+        exit_intent="loss_cut",
+        exit_reason="stop_loss",
+        retrospective_id=42,
+        approval_issue_id="ROB-858",
+    )
+
+    assert calls[0]["exit_intent"] == "loss_cut"
+    assert calls[0]["exit_reason"] == "stop_loss"
+    assert calls[0]["retrospective_id"] == 42
+    assert calls[0]["approval_issue_id"] == "ROB-858"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_client_order_id",
+    ["x" * 37, "invalid@client-order-id"],
+)
+async def test_toss_submit_rejects_invalid_client_order_id_before_broker_call(
+    monkeypatch, invalid_client_order_id
+):
+    import app.mcp_server.tooling.orders_toss_variants as toss
+    from app.services.order_proposals import revalidation as mod
+
+    async def forbidden_broker_call(**kwargs):
+        pytest.fail(f"broker POST must not be called: {kwargs}")
+
+    monkeypatch.setattr(toss, "toss_place_order", forbidden_broker_call)
+
+    result = await mod._default_place_order_fn(
+        dry_run=False,
+        account_mode="toss_live",
+        symbol="000660",
+        side="buy",
+        market="equity_kr",
+        order_type="limit",
+        quantity=Decimal("1"),
+        price=Decimal("222600"),
+        proposal_client_order_id=invalid_client_order_id,
+        approval_hash="preview-token",
+    )
+
+    assert result["success"] is False
+    assert result["mutation_sent"] is False
+    assert result["error_code"] == "invalid_toss_client_order_id"
+
+
+def test_upbit_proposal_client_ids_are_stable_and_rung_scoped():
+    from app.services.order_proposals import revalidation as mod
+
+    proposal_id = uuid.UUID("12345678-1234-5678-1234-567812345678")
+    first = mod._proposal_client_order_id(proposal_id, 0)
+    assert first == mod._proposal_client_order_id(proposal_id, 0)
+    assert first != mod._proposal_client_order_id(proposal_id, 1)
+    assert first != mod._proposal_client_order_id(uuid.uuid4(), 0)
+    assert first.startswith("oprop-")
+    assert len(first) <= 40
+
+
+@pytest.mark.asyncio
+async def test_upbit_revalidation_binds_same_proposal_client_id_to_preview_and_submit(
+    db_session,
+):
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="KRW-BTC",
+        market="crypto",
+        account_mode="upbit",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("0.01"), Decimal("70000000"), None)],
+    )
+    await db_session.commit()
+    calls: list[dict] = []
+
+    async def accepted(**kwargs):
+        calls.append(kwargs)
+        if kwargs["dry_run"]:
+            return {
+                "success": True,
+                "approval_hash": "upbit-token",
+                "price": "70000000",
+                "quantity": "0.01",
+            }
+        return {"success": True, "status": "resting", "broker_order_id": "upbit-1"}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=accepted,
+    )
+
+    from app.services.order_proposals import revalidation as mod
+
+    expected = mod._proposal_client_order_id(group.proposal_id, 0)
+    assert outcomes[0].result == "submitted_resting"
+    assert [call["proposal_client_order_id"] for call in calls] == [
+        expected,
+        expected,
+    ]
+
+
+async def _create_upbit_submit_proposal(db_session):
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="KRW-BTC",
+        market="crypto",
+        account_mode="upbit",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("0.01"), Decimal("70000000"), None)],
+    )
+    await db_session.commit()
+    return service, group
+
+
+def _upbit_preview() -> dict[str, str | bool]:
+    return {
+        "success": True,
+        "approval_hash": "upbit-approval",
+        "price": "70000000",
+        "quantity": "0.01",
+    }
+
+
+@pytest.mark.asyncio
+async def test_upbit_submit_failure_found_evidence_converges_resting(
+    db_session, monkeypatch
+):
+    from app.services.order_proposals import revalidation as mod
+
+    service, group = await _create_upbit_submit_proposal(db_session)
+    monkeypatch.setattr(mod, "_proposal_client_order_id", lambda *_: "oprop-expected")
+    live_calls: list[str] = []
+    evidence_calls: list[dict] = []
+
+    async def place_order_fn(**kwargs):
+        if kwargs["dry_run"]:
+            return _upbit_preview()
+        live_calls.append(kwargs["proposal_client_order_id"])
+        return {"success": False}
+
+    async def evidence_fn(**kwargs):
+        evidence_calls.append(kwargs)
+        return SubmitEvidence("found", "35bee07f-full", "wait")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order_fn,
+        fetch_submit_evidence_fn=evidence_fn,
+    )
+
+    assert live_calls == ["oprop-expected"]
+    assert len(evidence_calls) == 1
+    assert outcomes[0].result == "submitted_resting"
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "resting"
+    assert rungs[0].broker_order_id == "35bee07f-full"
+    assert rungs[0].idempotency_key == "oprop-expected"
+
+
+@pytest.mark.asyncio
+async def test_upbit_true_rejection_absent_evidence_is_rejected(
+    db_session, monkeypatch
+):
+    from app.services.order_proposals import revalidation as mod
+
+    service, group = await _create_upbit_submit_proposal(db_session)
+    monkeypatch.setattr(mod, "_proposal_client_order_id", lambda *_: "oprop-expected")
+    live_calls: list[str] = []
+    evidence_calls = 0
+
+    async def place_order_fn(**kwargs):
+        if kwargs["dry_run"]:
+            return _upbit_preview()
+        live_calls.append(kwargs["proposal_client_order_id"])
+        return {"success": False, "error": "insufficient balance"}
+
+    async def evidence_fn(**kwargs):
+        nonlocal evidence_calls
+        evidence_calls += 1
+        return SubmitEvidence("absent")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order_fn,
+        fetch_submit_evidence_fn=evidence_fn,
+    )
+
+    assert outcomes[0].result == "error"
+    assert live_calls == ["oprop-expected"]
+    assert evidence_calls == 1
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "rejected"
+    assert rungs[0].void_reason == "insufficient balance"
+
+
+@pytest.mark.asyncio
+async def test_upbit_submit_evidence_unknown_is_unverified(db_session, monkeypatch):
+    from app.services.order_proposals import revalidation as mod
+
+    service, group = await _create_upbit_submit_proposal(db_session)
+    monkeypatch.setattr(mod, "_proposal_client_order_id", lambda *_: "oprop-expected")
+    live_calls: list[str] = []
+    evidence_calls = 0
+
+    async def place_order_fn(**kwargs):
+        if kwargs["dry_run"]:
+            return _upbit_preview()
+        live_calls.append(kwargs["proposal_client_order_id"])
+        return {"success": False, "error": "submit not confirmed"}
+
+    async def evidence_fn(**kwargs):
+        nonlocal evidence_calls
+        evidence_calls += 1
+        return SubmitEvidence("unknown", reason="timeout")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order_fn,
+        correlation_mint=lambda **_: "corr-expected",
+        fetch_submit_evidence_fn=evidence_fn,
+    )
+
+    assert outcomes[0].result == "unverified"
+    assert live_calls == ["oprop-expected"]
+    assert evidence_calls == 1
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "unverified"
+    assert rungs[0].idempotency_key == "oprop-expected"
+    assert rungs[0].correlation_id == "corr-expected"
+    assert rungs[0].void_reason == "submit_evidence_unknown:timeout"
+
+
+@pytest.mark.asyncio
+async def test_upbit_submit_exception_found_evidence_converges_resting(
+    db_session, monkeypatch
+):
+    from app.services.order_proposals import revalidation as mod
+
+    service, group = await _create_upbit_submit_proposal(db_session)
+    monkeypatch.setattr(mod, "_proposal_client_order_id", lambda *_: "oprop-expected")
+    live_calls: list[str] = []
+    evidence_calls = 0
+
+    async def place_order_fn(**kwargs):
+        if kwargs["dry_run"]:
+            return _upbit_preview()
+        live_calls.append(kwargs["proposal_client_order_id"])
+        raise httpx.ReadTimeout("submit timeout")
+
+    async def evidence_fn(**kwargs):
+        nonlocal evidence_calls
+        evidence_calls += 1
+        return SubmitEvidence("found", "35bee07f-full", "watch")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order_fn,
+        fetch_submit_evidence_fn=evidence_fn,
+    )
+
+    assert outcomes[0].result == "submitted_resting"
+    assert live_calls == ["oprop-expected"]
+    assert evidence_calls == 1
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "resting"
+    assert rungs[0].broker_order_id == "35bee07f-full"
+
+
+@pytest.mark.asyncio
+async def test_default_place_order_forwards_proposal_client_id_to_preview_and_submit(
+    monkeypatch,
+):
+    import app.mcp_server.tooling.order_execution as order_execution
+    from app.services.order_proposals import revalidation as mod
+
+    calls: list[dict] = []
+
+    async def fake_impl(**kwargs):
+        calls.append(kwargs)
+        return {"success": True}
+
+    monkeypatch.setattr(order_execution, "_place_order_impl", fake_impl)
+    expected = mod._proposal_client_order_id(
+        uuid.UUID("12345678-1234-5678-1234-567812345678"), 0
+    )
+    for dry_run in (True, False):
+        await mod._default_place_order_fn(
+            dry_run=dry_run,
+            account_mode="upbit",
+            symbol="KRW-BTC",
+            side="buy",
+            market="crypto",
+            order_type="limit",
+            quantity=Decimal("0.01"),
+            price=Decimal("70000000"),
+            proposal_client_order_id=expected,
+        )
+
+    assert [call["client_order_id"] for call in calls] == [expected, expected]
 
 
 @pytest.mark.asyncio
@@ -1039,6 +1899,351 @@ async def test_toss_kr_routes_preview_and_accepted_submit(db_session, monkeypatc
     assert rungs[0].correlation_id == "proposal-correlation"
     assert rungs[0].idempotency_key == calls["preview_context"].client_order_id
     assert rungs[0].approval_hash_digest == "canonical-ledger-digest"
+
+
+@pytest.mark.asyncio
+async def test_toss_insufficient_buying_power_prevents_submit(db_session):
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("1070300"), None)],
+    )
+    await db_session.commit()
+    submit_calls = 0
+
+    async def place_order(**kwargs):
+        nonlocal submit_calls
+        if kwargs["dry_run"]:
+            client_order_id = kwargs["proposal_client_order_id"]
+            return {
+                "success": True,
+                "approval_hash": "preview-token",
+                "price": "1070300",
+                "quantity": "1",
+                "estimated_value": "1070300",
+                "fee": "0",
+                "payload_preview": {
+                    "clientOrderId": client_order_id,
+                    "price": "1070300",
+                    "quantity": "1",
+                },
+            }
+        submit_calls += 1
+        pytest.fail("broker POST must not run with known insufficient buying power")
+
+    async def buying_power_claimer(**kwargs):
+        assert kwargs == {
+            "account_mode": "toss_live",
+            "broker_account_id": None,
+            "currency": "KRW",
+            "amount": Decimal("1070300"),
+        }
+        return Decimal("400000")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        buying_power_claimer=buying_power_claimer,
+    )
+
+    assert outcomes[0].result == "needs_reconfirm"
+    assert outcomes[0].detail == {
+        "reason": "insufficient_buying_power",
+        "currency": "KRW",
+        "available": "400000",
+        "required": "1070300",
+        "shortfall": "670300",
+    }
+    assert submit_calls == 0
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "needs_reconfirm"
+
+
+async def _create_toss_gate_proposal(db_session, *, side="buy", rungs=None):
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+        side=side,
+        order_type="limit",
+        proposer="p",
+        rungs=rungs or [RungInput(0, side, Decimal("1"), Decimal("100000"), None)],
+    )
+    await db_session.commit()
+    return service, group
+
+
+def _toss_gate_preview(kwargs, *, quantity="1", price="100000"):
+    return {
+        "success": True,
+        "approval_hash": "preview-token",
+        "price": price,
+        "quantity": quantity,
+        "estimated_value": str(Decimal(quantity) * Decimal(price)),
+        "fee": "0",
+        "payload_preview": {
+            "clientOrderId": kwargs["proposal_client_order_id"],
+            "price": price,
+            "quantity": quantity,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_toss_sufficient_buying_power_preserves_submit_path(db_session):
+    service, group = await _create_toss_gate_proposal(db_session)
+    submit_calls = 0
+
+    async def place_order(**kwargs):
+        nonlocal submit_calls
+        if kwargs["dry_run"]:
+            return _toss_gate_preview(kwargs)
+        submit_calls += 1
+        return {
+            "success": True,
+            "status": "resting",
+            "broker_order_id": "toss-enough-1",
+        }
+
+    async def reader(**kwargs):
+        return Decimal("100001")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        buying_power_claimer=reader,
+    )
+
+    assert [outcome.result for outcome in outcomes] == ["submitted_resting"]
+    assert submit_calls == 1
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "resting"
+
+
+@pytest.mark.asyncio
+async def test_toss_sell_rung_skips_buying_power_gate(db_session):
+    service, group = await _create_toss_gate_proposal(db_session, side="sell")
+    submit_calls = 0
+
+    async def place_order(**kwargs):
+        nonlocal submit_calls
+        if kwargs["dry_run"]:
+            return _toss_gate_preview(kwargs)
+        submit_calls += 1
+        return {
+            "success": True,
+            "status": "resting",
+            "broker_order_id": "toss-sell-1",
+        }
+
+    async def forbidden_reader(**kwargs):
+        pytest.fail(f"sell rung must not read buying power: {kwargs}")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        buying_power_claimer=forbidden_reader,
+    )
+
+    assert [outcome.result for outcome in outcomes] == ["submitted_resting"]
+    assert submit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_toss_buying_power_failure_fails_open_to_submit(db_session):
+    service, group = await _create_toss_gate_proposal(db_session)
+    submit_calls = 0
+
+    async def place_order(**kwargs):
+        nonlocal submit_calls
+        if kwargs["dry_run"]:
+            return _toss_gate_preview(kwargs)
+        submit_calls += 1
+        return {
+            "success": True,
+            "status": "resting",
+            "broker_order_id": "toss-fail-open-1",
+        }
+
+    async def failed_reader(**kwargs):
+        raise RuntimeError("buying-power endpoint unavailable")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        buying_power_claimer=failed_reader,
+    )
+
+    assert [outcome.result for outcome in outcomes] == ["submitted_resting"]
+    assert submit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_toss_deposit_then_same_proposal_reapproval_succeeds(db_session):
+    service, group = await _create_toss_gate_proposal(db_session)
+    buying_power = iter((Decimal("50000"), Decimal("150000")))
+    submit_calls = 0
+
+    async def place_order(**kwargs):
+        nonlocal submit_calls
+        if kwargs["dry_run"]:
+            return _toss_gate_preview(kwargs)
+        submit_calls += 1
+        return {
+            "success": True,
+            "status": "resting",
+            "broker_order_id": "toss-after-deposit-1",
+        }
+
+    async def reader(**kwargs):
+        return next(buying_power)
+
+    first = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        buying_power_claimer=reader,
+    )
+    await service.transition_rung(group.proposal_id, 0, new_state="pending_approval")
+    second = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        buying_power_claimer=reader,
+    )
+
+    assert [outcome.result for outcome in first] == ["needs_reconfirm"]
+    assert [outcome.result for outcome in second] == ["submitted_resting"]
+    assert submit_calls == 1
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "resting"
+
+
+@pytest.mark.asyncio
+async def test_toss_successful_rung_reserves_cached_power_for_next_rung(db_session):
+    service, group = await _create_toss_gate_proposal(
+        db_session,
+        rungs=[
+            RungInput(0, "buy", Decimal("6"), Decimal("10000"), None),
+            RungInput(1, "buy", Decimal("6"), Decimal("10000"), None),
+        ],
+    )
+    available = Decimal("100000")
+    submit_calls = 0
+    reservations: list[Decimal] = []
+
+    async def place_order(**kwargs):
+        nonlocal submit_calls
+        if kwargs["dry_run"]:
+            return _toss_gate_preview(kwargs, quantity="6", price="10000")
+        submit_calls += 1
+        return {
+            "success": True,
+            "status": "resting",
+            "broker_order_id": f"toss-reserved-{kwargs['rung']}",
+        }
+
+    async def claimer(**kwargs):
+        nonlocal available
+        reservations.append(kwargs["amount"])
+        before = available
+        if before >= kwargs["amount"]:
+            available -= kwargs["amount"]
+        return before
+
+    async def forbidden_releaser(**kwargs):
+        pytest.fail(f"accepted claims must not be released: {kwargs}")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        buying_power_claimer=claimer,
+        buying_power_releaser=forbidden_releaser,
+    )
+
+    assert [outcome.result for outcome in outcomes] == [
+        "submitted_resting",
+        "needs_reconfirm",
+    ]
+    assert submit_calls == 1
+    assert reservations == [Decimal("60000"), Decimal("60000")]
+    assert outcomes[1].detail["available"] == "40000"
+    assert outcomes[1].detail["shortfall"] == "20000"
+
+
+@pytest.mark.asyncio
+async def test_toss_explicit_rejection_releases_provisional_power(db_session):
+    service, group = await _create_toss_gate_proposal(db_session)
+    released: list[Decimal] = []
+
+    async def place_order(**kwargs):
+        if kwargs["dry_run"]:
+            return _toss_gate_preview(kwargs)
+        return {"success": False, "error": "broker_rejected"}
+
+    async def claimer(**kwargs):
+        assert kwargs["amount"] == Decimal("100000")
+        return Decimal("150000")
+
+    async def releaser(**kwargs):
+        released.append(kwargs["amount"])
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        buying_power_claimer=claimer,
+        buying_power_releaser=releaser,
+    )
+
+    assert outcomes[0].result == "error"
+    assert released == [Decimal("100000")]
+
+
+@pytest.mark.asyncio
+async def test_toss_ambiguous_submit_keeps_provisional_power(db_session):
+    service, group = await _create_toss_gate_proposal(db_session)
+
+    async def place_order(**kwargs):
+        if kwargs["dry_run"]:
+            return _toss_gate_preview(kwargs)
+        raise TimeoutError("submit response lost")
+
+    async def claimer(**kwargs):
+        return Decimal("150000")
+
+    async def forbidden_releaser(**kwargs):
+        pytest.fail(f"ambiguous submission must keep its claim: {kwargs}")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order,
+        buying_power_claimer=claimer,
+        buying_power_releaser=forbidden_releaser,
+    )
+
+    assert outcomes[0].result == "unverified"
 
 
 @pytest.mark.asyncio
@@ -1349,6 +2554,8 @@ async def test_replace_confirmation_exception_returns_unverified_no_submit(db_se
 async def test_replace_submit_ambiguity_persists_reconcile_lineage(
     db_session, submit_result
 ):
+    from app.services.order_proposals import revalidation as mod
+
     service, group = await _create_target_proposal(db_session, action="replace")
     snapshots = iter([_target_snapshot(), _target_snapshot(status="cancelled")])
 
@@ -1368,6 +2575,9 @@ async def test_replace_submit_ambiguity_persists_reconcile_lineage(
             raise TimeoutError("submit outcome unknown")
         return {"success": True, "status": "unknown"}
 
+    async def evidence_fn(**kwargs):
+        return SubmitEvidence("unknown", reason="lookup unavailable")
+
     outcomes = await revalidate_and_submit(
         service=service,
         proposal_id=group.proposal_id,
@@ -1376,12 +2586,71 @@ async def test_replace_submit_ambiguity_persists_reconcile_lineage(
         fetch_target_fn=fetch_target_fn,
         cancel_target_fn=cancel_target_fn,
         correlation_mint=lambda **kwargs: "corr-replace-1",
+        fetch_submit_evidence_fn=evidence_fn,
     )
 
     assert outcomes[0].result == "unverified"
     _, rungs = await service.get_proposal(group.proposal_id)
     assert rungs[0].correlation_id == "corr-replace-1"
-    assert rungs[0].idempotency_key == "idem-replace-1"
+    assert rungs[0].idempotency_key == mod._proposal_client_order_id(
+        group.proposal_id, 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_replace_submit_failure_found_evidence_converges_resting(
+    db_session, monkeypatch
+):
+    from app.services.order_proposals import revalidation as mod
+
+    service, group = await _create_target_proposal(db_session, action="replace")
+    monkeypatch.setattr(mod, "_proposal_client_order_id", lambda *_: "oprop-replace")
+    snapshots = iter([_target_snapshot(), _target_snapshot(status="cancelled")])
+    place_calls: list[dict] = []
+    evidence_calls: list[dict] = []
+
+    async def fetch_target_fn(**kwargs):
+        return next(snapshots)
+
+    async def cancel_target_fn(**kwargs):
+        return {"success": True}
+
+    async def place_order_fn(**kwargs):
+        place_calls.append(kwargs)
+        if kwargs["dry_run"]:
+            return await _matching_preview(**kwargs)
+        return {"success": False, "error": "duplicate identifier"}
+
+    async def evidence_fn(**kwargs):
+        evidence_calls.append(kwargs)
+        return SubmitEvidence("found", "replacement-order", "wait")
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+        place_order_fn=place_order_fn,
+        fetch_target_fn=fetch_target_fn,
+        cancel_target_fn=cancel_target_fn,
+        fetch_submit_evidence_fn=evidence_fn,
+    )
+
+    assert outcomes[0].result == "submitted_resting"
+    assert [call["proposal_client_order_id"] for call in place_calls] == [
+        "oprop-replace",
+        "oprop-replace",
+    ]
+    assert evidence_calls == [
+        {
+            "identifier": "oprop-replace",
+            "account_mode": "upbit",
+            "market": "crypto",
+        }
+    ]
+    _, rungs = await service.get_proposal(group.proposal_id)
+    assert rungs[0].state == "resting"
+    assert rungs[0].broker_order_id == "replacement-order"
+    assert rungs[0].idempotency_key == "oprop-replace"
 
 
 @pytest.mark.asyncio
@@ -1839,8 +3108,69 @@ async def test_toss_explicit_rejection_records_rejected(db_session, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_toss_typed_400_rejection_converges_with_broker_diagnostics(
+    db_session, monkeypatch
+):
+    from app.services.order_proposals.telegram_callback import _build_result_summary
+
+    svc = OrderProposalsService(db_session)
+    group = await svc.create_proposal(
+        symbol="000660",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="buy",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("50000"), None)],
+    )
+    await db_session.commit()
+
+    async def fake_preview(**kwargs):
+        client_order_id = _bound_toss_context().client_order_id
+        return {
+            "success": True,
+            "approval_hash": "reject-token",
+            "payload_preview": {
+                "price": "50000",
+                "quantity": "1",
+                "clientOrderId": client_order_id,
+            },
+        }
+
+    async def fake_submit(**kwargs):
+        return {
+            "success": False,
+            "mutation_sent": True,
+            "status_code": 400,
+            "code": "invalid-client-order-id",
+            "message": "clientOrderId must be at most 36 characters " + ("x" * 400),
+            "error": "Toss API error status=400",
+        }
+
+    import app.mcp_server.tooling.orders_toss_variants as toss
+
+    monkeypatch.setattr(toss, "toss_preview_order", fake_preview)
+    monkeypatch.setattr(toss, "toss_place_order", fake_submit)
+    outcomes = await revalidate_and_submit(
+        service=svc,
+        proposal_id=group.proposal_id,
+        now=datetime.now(UTC),
+    )
+
+    assert outcomes[0].result == "error"
+    assert "invalid-client-order-id" in outcomes[0].detail["error"]
+    assert "clientOrderId must be at most 36 characters" in outcomes[0].detail["error"]
+    assert len(outcomes[0].detail["error"]) <= 240
+    _, rungs = await svc.get_proposal(group.proposal_id)
+    assert rungs[0].state == "rejected"
+    assert "invalid-client-order-id" in rungs[0].void_reason
+    assert "clientOrderId must be at most 36 characters" in rungs[0].void_reason
+    assert "invalid-client-order-id" in _build_result_summary(outcomes)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("submit_result", "expected_order_id"),
+    ("submit_result", "expected_order_id", "reason_fragments"),
     [
         (
             {
@@ -1849,6 +3179,19 @@ async def test_toss_explicit_rejection_records_rejected(db_session, monkeypatch)
                 "error": "broker timeout; order state unknown",
             },
             None,
+            ("broker timeout",),
+        ),
+        (
+            {
+                "success": False,
+                "mutation_sent": True,
+                "status_code": 500,
+                "code": "internal-error",
+                "message": "temporary upstream failure",
+                "error": "Toss API error status=500",
+            },
+            None,
+            ("internal-error", "temporary upstream failure"),
         ),
         (
             {
@@ -1859,12 +3202,13 @@ async def test_toss_explicit_rejection_records_rejected(db_session, monkeypatch)
                 "client_order_id": "ambiguous-client",
             },
             "preserved-broker-order",
+            ("ledger write failed",),
         ),
     ],
-    ids=["timeout_unknown", "ledger_failure_preserves_order_id"],
+    ids=["timeout_unknown", "server_500_unknown", "ledger_failure_preserves_order_id"],
 )
 async def test_toss_post_send_failure_records_unverified(
-    db_session, monkeypatch, submit_result, expected_order_id
+    db_session, monkeypatch, submit_result, expected_order_id, reason_fragments
 ):
     svc = OrderProposalsService(db_session)
     group = await svc.create_proposal(
@@ -1904,12 +3248,14 @@ async def test_toss_post_send_failure_records_unverified(
     )
 
     assert outcomes[0].result == "unverified"
-    assert outcomes[0].detail["submit"]["error"] == submit_result["error"]
+    assert outcomes[0].detail["submit"]["error"]
     assert outcomes[0].detail["submit"].get("order_id") == expected_order_id
     _, rungs = await svc.get_proposal(group.proposal_id)
     assert rungs[0].state == "unverified"
     assert rungs[0].state != "pending_approval"
     assert rungs[0].void_reason.startswith("ambiguous_submit_response:")
+    for fragment in reason_fragments:
+        assert fragment in rungs[0].void_reason
 
 
 @pytest.mark.asyncio

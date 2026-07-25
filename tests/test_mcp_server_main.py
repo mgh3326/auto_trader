@@ -10,7 +10,10 @@ import pytest
 
 
 class _FakeFastMCP:
+    init_count = 0
+
     def __init__(self, **kwargs: object) -> None:
+        type(self).init_count += 1
         self.init_kwargs = kwargs
         self.run = MagicMock()
         self.add_middleware = MagicMock()
@@ -58,9 +61,15 @@ def _load_main_module(
     auth_token: str = "",
     account_read: bool = False,
     tradingcodex_execution: bool = False,
+    paper_execution: bool = False,
+    paper_execution_enabled: bool = False,
+    kiwoom: bool = False,
+    unrelated_profile: bool = False,
+    kiwoom_mock_us_enabled: bool = False,
 ) -> tuple[ModuleType, _FakeFastMCP, MagicMock, object, object]:
     main_path = Path(__file__).resolve().parents[1] / "app" / "mcp_server" / "main.py"
 
+    _FakeFastMCP.init_count = 0
     fake_fastmcp = ModuleType("fastmcp")
     fake_fastmcp.__dict__["FastMCP"] = _FakeFastMCP
 
@@ -87,7 +96,29 @@ def _load_main_module(
             mcp_caller_agent_id_fallback=None,
             order_approval_hash_mode="required",
             toss_approval_hash_mode="required",
+            kiwoom_mock_enabled=False,
+            kiwoom_mock_app_key=None,
+            kiwoom_mock_app_secret=None,
+            kiwoom_mock_account_no=None,
+            kiwoom_mock_base_url="https://mockapi.kiwoom.com",
+            kiwoom_mock_us_enabled=kiwoom_mock_us_enabled,
+            PAPER_EXECUTION_ENABLED=paper_execution_enabled,
         )
+
+    def validate_kiwoom_mock_config(settings: object) -> list[str]:
+        missing: list[str] = []
+        if not bool(getattr(settings, "kiwoom_mock_enabled", False)):
+            missing.append("KIWOOM_MOCK_ENABLED")
+        for attribute, env_name in (
+            ("kiwoom_mock_app_key", "KIWOOM_MOCK_APP_KEY"),
+            ("kiwoom_mock_app_secret", "KIWOOM_MOCK_APP_SECRET"),
+            ("kiwoom_mock_account_no", "KIWOOM_MOCK_ACCOUNT_NO"),
+        ):
+            if not str(getattr(settings, attribute, None) or "").strip():
+                missing.append(env_name)
+        return missing
+
+    fake_config.__dict__["validate_kiwoom_mock_config"] = validate_kiwoom_mock_config
 
     fake_auth = ModuleType("app.mcp_server.auth")
     fake_auth.__dict__["build_auth_provider"] = MagicMock(return_value="auth-provider")
@@ -114,16 +145,29 @@ def _load_main_module(
 
     account_read_profile = _FakeProfileMember("account_read")
     tradingcodex_execution_profile = _FakeProfileMember("tradingcodex_execution")
-    if tradingcodex_execution:
+    paper_execution_profile = _FakeProfileMember("paper_execution")
+    default_profile = _FakeProfileMember("default")
+    kiwoom_profile = _FakeProfileMember("kiwoom")
+    unrelated_profile_member = _FakeProfileMember("crypto")
+    if paper_execution:
+        resolved_profile = paper_execution_profile
+    elif tradingcodex_execution:
         resolved_profile = tradingcodex_execution_profile
     elif account_read:
         resolved_profile = account_read_profile
+    elif kiwoom:
+        resolved_profile = kiwoom_profile
+    elif unrelated_profile:
+        resolved_profile = unrelated_profile_member
     else:
-        resolved_profile = "profile"
+        resolved_profile = default_profile
     fake_profiles = ModuleType("app.mcp_server.profiles")
     fake_profiles.__dict__["McpProfile"] = SimpleNamespace(
         ACCOUNT_READ=account_read_profile,
         TRADINGCODEX_EXECUTION=tradingcodex_execution_profile,
+        PAPER_EXECUTION=paper_execution_profile,
+        DEFAULT=default_profile,
+        KIWOOM=kiwoom_profile,
     )
     fake_profiles.__dict__["resolve_mcp_profile"] = MagicMock(
         return_value=resolved_profile
@@ -195,16 +239,15 @@ def _load_main_module(
 
 @pytest.mark.unit
 class TestMcpServerMain:
-    def test_registers_caller_identity_middleware_after_sentry(
+    def test_registers_caller_identity_middleware_before_sentry(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _, mcp, _, _, _ = _load_main_module(monkeypatch)
 
         calls = [call.args[0] for call in mcp.add_middleware.call_args_list]
-        # Sentry (outermost) then CallerIdentity, then ROB-469 PR2's
-        # ToolTimeoutMiddleware added LAST so it is innermost (wraps the tool) while
-        # Sentry stays outermost and captures the timeout ToolError.
-        assert calls[:2] == ["middleware", "caller-identity-middleware"]
+        # Caller identity is outermost so Sentry sees its request context; the
+        # ToolTimeoutMiddleware remains innermost and Sentry still wraps it.
+        assert calls[:2] == ["caller-identity-middleware", "middleware"]
         assert type(calls[2]).__name__ == "ToolTimeoutMiddleware"
         assert len(calls) == 3
 
@@ -365,6 +408,71 @@ class TestMcpServerMain:
 
         module.main()
 
+    @pytest.mark.parametrize("transport", ["streamable-http", "sse"])
+    def test_kiwoom_network_profile_requires_auth_at_import(
+        self, monkeypatch: pytest.MonkeyPatch, transport: str
+    ) -> None:
+        monkeypatch.setenv("MCP_TYPE", transport)
+        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+
+        with pytest.raises(
+            RuntimeError,
+            match="MCP_PROFILE=kiwoom requires non-empty MCP_AUTH_TOKEN",
+        ):
+            _load_main_module(monkeypatch, kiwoom=True)
+
+        assert _FakeFastMCP.init_count == 0
+
+    def test_default_network_profile_with_us_mutation_gate_requires_auth(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MCP_TYPE", "streamable-http")
+        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+
+        with pytest.raises(
+            RuntimeError,
+            match="Kiwoom US mutation exposure requires non-empty MCP_AUTH_TOKEN",
+        ):
+            _load_main_module(monkeypatch, kiwoom_mock_us_enabled=True)
+
+        assert _FakeFastMCP.init_count == 0
+
+    def test_kiwoom_network_profile_accepts_auth_token(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MCP_TYPE", "sse")
+        module, _, _, _, _ = _load_main_module(
+            monkeypatch,
+            auth_token="kiwoom-token",
+            kiwoom=True,
+        )
+        assert module._mcp_profile.value == "kiwoom"
+
+    def test_kiwoom_stdio_local_path_may_run_without_auth(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MCP_TYPE", "stdio")
+        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+        module, _, _, _, _ = _load_main_module(monkeypatch, kiwoom=True)
+        assert module._mcp_profile.value == "kiwoom"
+
+    def test_default_gate_off_and_unrelated_network_profiles_remain_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MCP_TYPE", "streamable-http")
+        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+        default_module, _, _, _, _ = _load_main_module(
+            monkeypatch, kiwoom_mock_us_enabled=False
+        )
+        assert default_module._mcp_profile.value == "default"
+
+        unrelated_module, _, _, _, _ = _load_main_module(
+            monkeypatch,
+            unrelated_profile=True,
+            kiwoom_mock_us_enabled=True,
+        )
+        assert unrelated_module._mcp_profile.value == "crypto"
+
     def test_tradingcodex_execution_profile_requires_auth_token(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -414,3 +522,129 @@ class TestMcpServerMain:
             tradingcodex_execution=True,
         )
         assert module._mcp_profile is execution_profile
+
+    @pytest.mark.parametrize(
+        "profile_kwargs",
+        [
+            {"account_read": True},
+            {"tradingcodex_execution": True},
+        ],
+    )
+    def test_restricted_profiles_fail_startup_when_kiwoom_mock_enabled_incomplete(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        profile_kwargs: dict[str, bool],
+    ) -> None:
+        fake_settings = types.SimpleNamespace(
+            mcp_caller_agent_id_fallback="",
+            order_approval_hash_mode="required",
+            toss_approval_hash_mode="required",
+            LOG_LEVEL="INFO",
+            kiwoom_mock_enabled=True,
+            kiwoom_mock_app_key=None,
+            kiwoom_mock_app_secret=None,
+            kiwoom_mock_account_no=None,
+            kiwoom_mock_base_url="https://mockapi.kiwoom.com",
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "app.core.config",
+            types.SimpleNamespace(settings=fake_settings),
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                "KIWOOM_MOCK_APP_KEY.*KIWOOM_MOCK_APP_SECRET.*KIWOOM_MOCK_ACCOUNT_NO"
+            ),
+        ):
+            _load_main_module(
+                monkeypatch,
+                auth_token="restricted-profile-token",
+                **profile_kwargs,
+            )
+
+    @pytest.mark.parametrize(
+        "profile_kwargs",
+        [
+            {"account_read": True},
+            {"tradingcodex_execution": True},
+        ],
+    )
+    def test_restricted_profiles_fail_startup_on_kiwoom_live_host(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        profile_kwargs: dict[str, bool],
+    ) -> None:
+        fake_settings = types.SimpleNamespace(
+            mcp_caller_agent_id_fallback="",
+            order_approval_hash_mode="required",
+            toss_approval_hash_mode="required",
+            LOG_LEVEL="INFO",
+            kiwoom_mock_enabled=True,
+            kiwoom_mock_app_key="configured",
+            kiwoom_mock_app_secret="configured",
+            kiwoom_mock_account_no="configured",
+            kiwoom_mock_base_url="https://api.kiwoom.com",
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "app.core.config",
+            types.SimpleNamespace(settings=fake_settings),
+        )
+
+        with pytest.raises(RuntimeError, match="mockapi.kiwoom.com"):
+            _load_main_module(
+                monkeypatch,
+                auth_token="restricted-profile-token",
+                **profile_kwargs,
+            )
+
+    def test_paper_execution_profile_requires_auth_before_fastmcp(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+
+        with pytest.raises(
+            RuntimeError,
+            match="MCP_PROFILE=paper_execution requires non-empty MCP_AUTH_TOKEN",
+        ):
+            _load_main_module(
+                monkeypatch,
+                paper_execution=True,
+                paper_execution_enabled=True,
+            )
+
+        assert _FakeFastMCP.init_count == 0
+
+    def test_paper_execution_profile_requires_enabled_flag_before_fastmcp(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        with pytest.raises(
+            RuntimeError,
+            match="MCP_PROFILE=paper_execution requires PAPER_EXECUTION_ENABLED=true",
+        ):
+            _load_main_module(
+                monkeypatch,
+                auth_token="paper-execution-token",
+                paper_execution=True,
+                paper_execution_enabled=False,
+            )
+
+        assert _FakeFastMCP.init_count == 0
+
+    def test_paper_execution_profile_boots_when_enabled_and_authenticated(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        module, _, _, _, _ = _load_main_module(
+            monkeypatch,
+            auth_token="paper-execution-token",
+            paper_execution=True,
+            paper_execution_enabled=True,
+        )
+
+        assert module._mcp_profile.value == "paper_execution"
+        assert _FakeFastMCP.init_count == 1

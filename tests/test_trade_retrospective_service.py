@@ -3,14 +3,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import AsyncSessionLocal, engine
 from app.models.review import TradeRetrospective
 from app.models.trade_journal import TradeJournal
 from app.services.trade_journal import trade_retrospective_service as svc
@@ -50,6 +53,70 @@ async def _mock_journal(db, *, cid="j1"):
     await db.commit()
     await db.refresh(j)
     return j
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_upsert_recovers_inside_savepoint():
+    cid = f"race-{uuid.uuid4()}"
+    base_payload = {
+        "symbol": "005930",
+        "instrument_type": "equity_kr",
+        "account_mode": "kis_mock",
+        "market": "kr",
+        "outcome": "filled",
+        "correlation_id": cid,
+    }
+
+    async with AsyncSessionLocal() as first, AsyncSessionLocal() as second:
+        first_pid = (await first.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+        second_pid = (
+            await second.execute(text("SELECT pg_backend_pid()"))
+        ).scalar_one()
+
+        first_result, _ = await svc.TradeRetrospectiveRepository(first).upsert(
+            {**base_payload, "lesson": "first writer"}
+        )
+        assert first_result == "created"
+
+        second_task = asyncio.create_task(
+            svc.TradeRetrospectiveRepository(second).upsert(
+                {**base_payload, "lesson": "second writer"}
+            )
+        )
+        try:
+            async with engine.connect() as observer:
+                for _ in range(200):
+                    blockers = (
+                        await observer.execute(
+                            text("SELECT pg_blocking_pids(:pid)"),
+                            {"pid": second_pid},
+                        )
+                    ).scalar_one()
+                    if first_pid in blockers:
+                        break
+                    await asyncio.sleep(0.01)
+                else:
+                    pytest.fail("second upsert never blocked on the first insert")
+
+            await first.commit()
+            second_result, row = await asyncio.wait_for(second_task, timeout=5)
+            assert second_result == "updated"
+            assert row.lesson == "second writer"
+
+            # Prove the outer transaction remains usable after race recovery.
+            count = (
+                await second.execute(
+                    select(func.count())
+                    .select_from(TradeRetrospective)
+                    .where(TradeRetrospective.correlation_id == cid)
+                )
+            ).scalar_one()
+            assert count == 1
+            await second.commit()
+        finally:
+            if not second_task.done():
+                second_task.cancel()
+                await asyncio.gather(second_task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -391,6 +458,48 @@ async def test_retrospective_derives_fx_fields_from_journal(
     assert row.total_pnl_krw == Decimal("112963.4000")
     assert row.fx_rate_source == "reconcile_spot"
     assert row.fx_pnl_accuracy == "approximate"
+
+
+@pytest.mark.asyncio
+async def test_update_with_journal_id_does_not_overwrite_omitted_manual_values(
+    db_session: AsyncSession,
+):
+    j = await _mock_journal(db_session, cid="journal-update-presence")
+    j.buy_fx_rate = Decimal("1389.3300")
+    j.fx_rate_source = "reconcile_spot"
+    await db_session.commit()
+
+    _, first = await svc.save_retrospective(
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        correlation_id="journal-update-presence",
+        journal_id=j.id,
+        realized_pnl=Decimal("777.0000"),
+        realized_pnl_currency="KRW",
+        buy_fx_rate=Decimal("999.0000"),
+        fx_rate_source="manual",
+    )
+    await db_session.commit()
+    assert first.realized_pnl == Decimal("777.0000")
+
+    _, updated = await svc.save_retrospective(
+        db_session,
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_mock",
+        outcome="filled",
+        correlation_id="journal-update-presence",
+        journal_id=j.id,
+    )
+    await db_session.commit()
+
+    assert updated.realized_pnl == Decimal("777.0000")
+    assert updated.realized_pnl_source == "caller_supplied"
+    assert updated.buy_fx_rate == Decimal("999.0000")
+    assert updated.fx_rate_source == "manual"
 
 
 # ---------------------------------------------------------------------------

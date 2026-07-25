@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -31,6 +31,7 @@ def _stored(article_id: int, url: str, title: str, status: str = "pending"):
             "judged_at": None,
             "hints": None,
         },
+        fetched_at=datetime(2026, 6, 10, 8, 55),
     )
 
 
@@ -55,6 +56,7 @@ def _stored_us(article_id: int, url: str, title: str, status: str = "pending"):
             "hints": None,
         },
         summary="summary text",
+        fetched_at=datetime(2026, 6, 10, 8, 55),
     )
 
 
@@ -134,11 +136,61 @@ async def test_kr_persists_then_serves_db_state(monkeypatch) -> None:
     assert result.status == "ok"
     assert result.excluded_count == 3
     assert result.degraded is False
+    assert result.fetched_at is not None
+    assert result.cache_hit is False
+    assert result.fallback_source is None
+    assert result.provider_provenance == [
+        {
+            "provider": "naver",
+            "served_by": "naver",
+            "mode": "live",
+            "status": "ok",
+            "error_code": None,
+        }
+    ]
     upsert.assert_awaited_once()
     art = result.articles[0]
     assert art.provider_metadata["relevance"]["status"] == "pending"
     # 현재 fetch 윈도우에 있던 기사는 원본 source_item 보존
     assert art.provider_metadata["source_item"] == raw[0]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_kr_fetched_at_is_stamped_only_after_provider_success(
+    monkeypatch,
+) -> None:
+    raw = [
+        {
+            "title": "네이버 원천 시각",
+            "url": "https://finance.naver.com/item/news_read.naver?article_id=2&office_id=009",
+            "source": "매일경제",
+            "datetime": "2026-06-10",
+        }
+    ]
+    acquired_at = datetime(2026, 7, 24, 3, 0, tzinfo=UTC)
+    events: list[str] = []
+
+    async def provider_fetch(symbol: str, *, limit: int):
+        events.append("provider_returned")
+        return raw
+
+    def clock() -> datetime:
+        events.append("timestamp_created")
+        return acquired_at
+
+    monkeypatch.setattr(symbol_news_service.naver_finance, "fetch_news", provider_fetch)
+    monkeypatch.setattr(symbol_news_service, "_utcnow", clock)
+    _patch_store(
+        monkeypatch,
+        stored=[_stored(2, raw[0]["url"], raw[0]["title"])],
+    )
+
+    result = await symbol_news_service.fetch_symbol_news("035420", "kr", limit=10)
+
+    assert events == ["provider_returned", "timestamp_created"]
+    assert result.fetched_at == acquired_at
+    assert result.articles[0].fetched_at == acquired_at
 
 
 @pytest.mark.unit
@@ -169,6 +221,11 @@ async def test_kr_fetch_failure_serves_db_cache_degraded(monkeypatch) -> None:
         "fetch_news",
         AsyncMock(side_effect=RuntimeError("naver down")),
     )
+    monkeypatch.setattr(
+        symbol_news_service,
+        "_utcnow",
+        lambda: pytest.fail("failed provider must not mint fetched_at"),
+    )
     _patch_store(monkeypatch, stored=[_stored(1, "https://x/cached", "캐시 기사")])
 
     result = await symbol_news_service.fetch_symbol_news("035420", "kr", limit=10)
@@ -177,6 +234,18 @@ async def test_kr_fetch_failure_serves_db_cache_degraded(monkeypatch) -> None:
     assert result.degraded is True
     assert result.fetch_error == "RuntimeError"
     assert result.articles[0].title == "캐시 기사"
+    assert result.fetched_at == datetime(2026, 6, 10, 8, 55, tzinfo=UTC)
+    assert result.cache_hit is True
+    assert result.fallback_source == "news_articles"
+    assert result.provider_provenance == [
+        {
+            "provider": "naver",
+            "served_by": "news_articles",
+            "mode": "fallback",
+            "status": "error",
+            "error_code": "RuntimeError",
+        }
+    ]
 
 
 @pytest.mark.unit
@@ -298,6 +367,10 @@ async def test_provider_error_is_fail_soft(
     assert result.status == "error"
     assert result.error_code == "RuntimeError"
     assert result.articles == []
+    assert result.fetched_at is None
+    assert result.cache_hit is False
+    assert result.fallback_source is None
+    assert result.provider_provenance[0]["mode"] == "none"
 
 
 @pytest.mark.unit

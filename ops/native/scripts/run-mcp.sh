@@ -24,7 +24,7 @@ source "${AUTO_TRADER_BASE:-$HOME/services/auto_trader}/scripts/common.sh"
 
 # _export_selected_env_prefixes may pull MCP_PORT from the env file; export after
 # the prefix call so the per-color value wins.
-_export_selected_env_prefixes MCP_
+_export_selected_env_prefixes MCP_ BINANCE_
 export MCP_PORT="$PORT"
 # ROB-469 PR3: per-color liveness heartbeat the watchdog polls.
 export MCP_HEARTBEAT_PATH="${AUTO_TRADER_BASE:-$HOME/services/auto_trader}/state/heartbeat/mcp-${COLOR}.json"

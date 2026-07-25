@@ -866,11 +866,16 @@ class TestAnalyzeStockBatch:
             "resistances": [{"price": 77000, "strength": "medium"}],
             # ROB-541: include_position defaults True; not held -> null.
             "position": None,
-            # ROB-638 additive fetch-cache contract keys. The mocked
+            # ROB-1048 additive freshness/provenance contract keys. The mocked
             # _analyze_stock_impl bypasses the real pipeline, so no fetch-layer
-            # cache is consulted: cache_hit False, derived_as_of None.
+            # provider envelope is available.
+            "data_state": "degraded",
             "cache_hit": False,
             "derived_as_of": None,
+            "fetched_at": None,
+            "data_age_seconds": None,
+            "fallback_source": None,
+            "provider_provenance": [],
         }
         # Single batched holdings fetch only — never per symbol.
         assert empty_collect.await_count == 1
@@ -2132,6 +2137,7 @@ class TestGetFxRateToolRegistration:
             not in (
                 McpProfile.SHADOW_REPLAY,
                 McpProfile.ACCOUNT_READ,
+                McpProfile.PAPER_EXECUTION,
             )
         ],
     )
@@ -4598,8 +4604,11 @@ async def test_analyze_stock_kr_reuses_preloaded_ohlcv_and_bundled_naver(monkeyp
         "volume": 1000000,
         "value": 75000000000.0,
         "source": "kis",
-        "price_as_of": "1970-01-01T00:00:00",
+        "price_as_of": "2024-01-01T00:00:00",
         "is_stale_price": True,
+        "price_freshness": "stale",
+        "price_usable": False,
+        "price_unavailable_reason": "stale_price_asof",
     }
     assert result["valuation"]["instrument_type"] == "equity_kr"
     assert result["news"]["source"] == "naver"

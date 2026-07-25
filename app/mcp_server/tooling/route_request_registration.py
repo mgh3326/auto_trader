@@ -11,13 +11,14 @@ reconnect — ROB-469).
 from __future__ import annotations
 
 import inspect
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.mcp_server.tooling.route_request_lanes import (
-    ALL_KNOWN_TOOLS,
     INTENT_TO_LANE,
     LANE_TO_POLICY_LANE,
     VALID_MARKETS,
+    build_registry_unavailable_plan,
     build_route_plan,
 )
 from app.services.trading_policy_service import (
@@ -32,22 +33,31 @@ if TYPE_CHECKING:
 ROUTE_REQUEST_TOOL_NAMES: set[str] = {"route_request"}
 
 
-async def _live_registered_names(mcp: Any) -> set[str]:
-    """Best-effort live tool surface via FastMCP.list_tools(). Fail-open to the
-    full known set (no filtering) if introspection is unavailable."""
+@dataclass(frozen=True)
+class _RegistrySnapshot:
+    available: bool
+    names: frozenset[str] = frozenset()
+
+
+async def _live_registered_names(mcp: Any) -> _RegistrySnapshot:
+    """Read the live FastMCP tool surface without inventing a fallback surface."""
     lister = getattr(mcp, "list_tools", None)
-    if lister is None:
-        return set(ALL_KNOWN_TOOLS)
+    if not callable(lister):
+        return _RegistrySnapshot(available=False)
     try:
         result = lister()
         if inspect.isawaitable(result):
             result = await result
-        names = {getattr(t, "name", None) for t in result}
-        names.discard(None)
-        names_str: set[str] = {str(n) for n in names}
-        return names_str or set(ALL_KNOWN_TOOLS)
+        names: set[str] = set()
+        for tool in result:
+            name = getattr(tool, "name", None)
+            if isinstance(name, str) and name.strip():
+                names.add(name.strip())
     except Exception:
-        return set(ALL_KNOWN_TOOLS)
+        return _RegistrySnapshot(available=False)
+    if not names:
+        return _RegistrySnapshot(available=False)
+    return _RegistrySnapshot(available=True, names=frozenset(names))
 
 
 def register_route_request_tools(mcp: FastMCP) -> None:
@@ -101,11 +111,18 @@ def register_route_request_tools(mcp: FastMCP) -> None:
                     "error": "unknown_market",
                     "detail": str(exc),
                 }
-        registered = await _live_registered_names(mcp)
+        registry_snapshot = await _live_registered_names(mcp)
+        if not registry_snapshot.available:
+            return build_registry_unavailable_plan(
+                intent,
+                market,
+                verdict_thresholds=verdict_thresholds,
+                policy_version=version,
+            )
         return build_route_plan(
             intent,
             market,
-            registered_tools=registered,
+            registered_tools=set(registry_snapshot.names),
             verdict_thresholds=verdict_thresholds,
             policy_version=version,
         )
@@ -120,10 +137,14 @@ def register_route_request_tools(mcp: FastMCP) -> None:
             "{kr, us, crypto} (required). Deterministic (same input -> same "
             "output). ADVISORY ONLY — it does not block anything; it echoes "
             "get_trading_policy (ROB-646) with policy_version so a verdict can "
-            "cite the criteria. standard_tool_sequence is intersected with the "
-            "live-registered tool surface (unregistered tools are dropped); for "
-            "crypto/US the KR-centric place step is replaced by the generic "
-            "place_order execution tool (market-aware, ROB-658). "
+            "cite the criteria. Buy/sell use the proposal-led-v1 contract: "
+            "order_proposal_create is the only order-intent surface, Telegram "
+            "human approval is required, proposal revalidation owns fresh "
+            "preview/submit, and broker evidence reconciliation is required. "
+            "This route contract is advisory and cannot enforce or disable "
+            "auto-approval configuration. Discovery retains its legacy direct "
+            "execution mapping. Registry introspection failure and a missing "
+            "required proposal tool fail closed without a direct-order fallback. "
             "Missing or unknown intent/market returns a deterministic "
             "success=false envelope (error in {missing_intent, unknown_intent, "
             "missing_market, unknown_market})."

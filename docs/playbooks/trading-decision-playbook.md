@@ -115,16 +115,23 @@ lanes:
    area low; place a deep limit `buy.deep_limit_pct_range` below the current
    price (pull-back catch, never chase). On crash days add a deeper rung (e.g.
    fib-50).
-5. Execute: `toss_place_order(confirm=true)` (fee-free, preferred) or
-   `kis_live_place_order(thesis + strategy, dry_run preview → live)` to spend
-   down KIS deposit. `kis_live_place_order(dry_run=true)` is the preview; there
-   is no separate KIS preview tool.
-6. Foreign-cascade names (e.g. semis): no market order until **price band
+5. Create the order intent with `order_proposal_create(action="place")`.
+   The `proposal-led-v1` route contract requires a **human Telegram approval
+   click**. The operator must not call a broker preview or place tool directly:
+   fresh preview/revalidation and broker submit belong to the proposal approval
+   subsystem. `route_request` is advisory, so it cannot override a deployment's
+   auto-approval configuration; the create response's `approval_dispatch` is
+   the runtime truth.
+6. Broker acceptance/resting is not a fill. Converge fill/cancel state through
+   the registered broker/account reconcile helper and broker evidence; the
+   route has no `account_mode`, so it does not choose one reconcile tool.
+7. Foreign-cascade names (e.g. semis): no market order until **price band
    reached AND foreign selling stops** — until both, only a small deep rung.
 
-7. **Negative-class recording (ROB-712):** every reviewed-but-rejected candidate
+8. **Negative-class recording (ROB-712):** every reviewed-but-rejected candidate
    leaves a `decision_bucket=deferred_no_action` item with `confidence` +
-   rejection reason, plus a resolvable `forecast_save(kind="price_target", …)`
+   rejection reason, plus a resolvable `forecast_save(kind="price_target",
+   outcome_rule_version="window-touch-v1-high-gte-low-lte", …)`
    (e.g. "no +X% within N days") so calibration isn't censored. The
    `investment_report_create` response surfaces a `warnings` advisory when an
    item is missing `confidence`.
@@ -142,10 +149,11 @@ lanes:
         args: {mode: quick, include_position: true, max_symbols: 10}
       - tool: get_intraday_investor_flow
         gate: recovery_gate
-      - tool: toss_place_order        # account routing: Toss preferred
-        confirm: true
-      - tool: kis_live_place_order    # KIS deposit spend-down; dry_run preview -> live
-        confirm: true
+      - tool: order_proposal_create
+        action: place
+        approval: telegram_human_click_required
+        preview_owner: proposal_revalidation
+        reconcile_requirement: broker_evidence
     gates:
       - recovery_gate     # deploy reserve only when >= recovery_gate.min_conditions_met
       - loss_guard        # sell price >= avg * sell.loss_guard_min_multiple (sell-side)
@@ -177,15 +185,23 @@ lanes:
      RSI-neutral 2-6% resistance becomes a system watch. In this conflict,
      `sell.upside_place_max_pct` limits trim size rather than blocking
      pre-placement eligibility.
-4. Execute from the **holding account**: Toss holdings via `toss_place_order`, KIS
-   holdings via `kis_live_place_order` (`dry_run` preview → live). Sell-into-strength
-   **split ladder** just under resistance;
-   [ROB-477](https://linear.app/mgh3326/issue/ROB-477) requires a bottom-anchor rung
-   (`sell_ladder_fill_preview` checks fill-safety), preserve the core lot. Trim
-   over-concentrated sectors first when in the money. If the name has a **pending buy
-   limit on Toss**, `toss_cancel_order` **first** — no two-sided (buy+sell) resting
-   orders on one symbol.
-5. WATCH items are recorded as conditional trigger text (e.g. "when in-the-money
+4. Build the sell-into-strength **split ladder** just under resistance.
+   [ROB-477](https://linear.app/mgh3326/issue/ROB-477) requires a bottom-anchor
+   rung; run the pure `sell_ladder_fill_preview` fill-safety check **before**
+   creating a proposal, preserve the core lot, and trim over-concentrated
+   sectors first when in the money.
+5. Create place/cancel/replace intent only through
+   `order_proposal_create`. The `proposal-led-v1` route contract requires a
+   **human Telegram approval click**. If the symbol has a pending buy, first
+   create a separate cancel proposal and wait for confirmed cancellation
+   evidence before creating the sell proposal; never call a direct cancel or
+   place tool from this lane.
+6. Fresh broker preview/revalidation and submit belong to the proposal approval
+   subsystem. `route_request` is advisory and cannot override auto-approval
+   configuration; `approval_dispatch` in the create response is the runtime
+   truth. Broker acceptance/resting is not a fill, so converge the result with
+   the registered broker/account reconcile helper and broker evidence.
+7. WATCH items are recorded as conditional trigger text (e.g. "when in-the-money
    AND resistance reached, place at <price>"). Today this depends on session
    memory / journal — [ROB-637](https://linear.app/mgh3326/issue/ROB-637)
    (analysis artifacts) is the durable target.
@@ -198,11 +214,12 @@ lanes:
     steps:
       - tool: toss_get_positions
       - tool: analyze_stock_batch
-      - tool: toss_cancel_order       # clear same-symbol buy pending (two-sided) before sell
-      - tool: toss_place_order        # sell-into-strength split ladder (Toss holdings)
-        confirm: true
-      - tool: kis_live_place_order    # sell KIS holdings from holding account; dry_run preview -> live
       - tool: sell_ladder_fill_preview  # ROB-477 bottom-anchor rung, fill-safety
+      - tool: order_proposal_create
+        actions: [place, cancel, replace]
+        approval: telegram_human_click_required
+        preview_owner: proposal_revalidation
+        reconcile_requirement: broker_evidence
     verdicts: [PLACE, WATCH, HOLD]
     gates:
       - loss_guard        # sell price >= avg * sell.loss_guard_min_multiple
@@ -241,7 +258,8 @@ recurring new-buy discovery-and-ranking round. It has no code definition yet;
 
 6. **Negative-class recording (ROB-712):** every reviewed-but-rejected candidate
    leaves a `decision_bucket=deferred_no_action` item with `confidence` +
-   rejection reason, plus a resolvable `forecast_save(kind="price_target", …)`
+   rejection reason, plus a resolvable `forecast_save(kind="price_target",
+   outcome_rule_version="window-touch-v1-high-gte-low-lte", …)`
    (e.g. "no +X% within N days") so calibration isn't censored. The
    `investment_report_create` response surfaces a `warnings` advisory when an
    item is missing `confidence`.
@@ -264,6 +282,36 @@ lanes:
       - tool: toss_place_order        # winners only, support-line limit
         confirm: true
 ```
+
+---
+
+### 3.1 🎣 이중 그물 후보 소싱 (ROB-976)
+
+크래시데이(07-20)에 "우량주 지지선 그물 후보"를 찾으려 했으나 발굴 경로가
+없었다 — `get_top_stocks(losers)`는 시총/거래대금 필터가 없어 잡주만 걸렸고,
+`get_support_resistance`는 심볼 단위라 유니버스 스캔이 불가능했다. **이중
+그물**은 §3 fan-out의 두 축을 급락일 우량주 발굴에 맞춰 조합하는 소비
+패턴이다:
+
+1. **그물 1 — 하락률 net**: `get_top_stocks(market="kr", ranking_type="losers", min_market_cap=..., min_turnover=...)`.
+   `min_market_cap`/`min_turnover`(ROB-976)로 잡주 소음을 먼저 걷어낸
+   하락률 상위 우량주 목록.
+2. **그물 2 — 지지선 근접 net**: `screen_stocks_snapshot(preset="support_proximity")`.
+   시총/거래대금 품질 필터를 통과한 종목을 최근접 지지선까지 거리
+   (`dist_to_support_pct`) 오름차순으로 반환 — 지지선 계산은
+   `get_support_resistance`와 동일 로직(fib/거래량프로파일/볼린저)을
+   야간 bounded 빌더가 완료봉 OHLCV 한 프레임에 적용하고, 그 프레임의
+   가격·지지선·거리를 함께 저장한다. 조회 중에는 재계산하지 않는다.
+3. **교차 확인**: 두 그물의 교집합(또는 그물 2 상위 종목이 그물 1에도 뜬
+   경우) = 우량주가 실제로 지지선 근처까지 눌린 상태 — §3 스크리닝
+   단계(RSI/upside/rights-issue 필터)로 그대로 이어서 검증.
+4. **심볼 단위 재확인**: 최종 후보는 `get_support_resistance(symbol)`로
+   상위 종목만 별도 실시간 재검증 후 `get_quote`로 가격을 다시 확인
+   (`support_proximity` 행 자체는 최대 1세션 stale일 수 있음 —
+   screen_stocks_snapshot 공통 경고).
+
+`support_proximity`는 KR 전용(US는 후속)이며 지지선이 없는(현재가 아래
+클러스터가 없는) 종목은 결과에서 제외된다(fail-closed, fabricate 금지).
 
 ---
 

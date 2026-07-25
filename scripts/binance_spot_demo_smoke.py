@@ -79,6 +79,7 @@ _DEFAULT_BASE_URL = "https://demo-api.binance.com"
 _EXCHANGE_INFO_PATH = "/api/v3/exchangeInfo"
 _PRICE_PATH = "/api/v3/ticker/price"
 _CID_PREFIX = "rob298-"
+_GLOBAL_OPEN_ROOT_CAP = 1
 
 
 def _truthy(value: str | None) -> bool:
@@ -390,7 +391,13 @@ async def _run_confirm(args: argparse.Namespace) -> int:
 
         async with AsyncSessionLocal() as session:
             ledger = BinanceDemoLedgerService(session)
-            instrument_id = await _get_or_create_instrument(session, args.symbol)
+            instrument_id = await ledger.resolve_or_create_instrument(
+                venue="binance",
+                product="spot",
+                venue_symbol=args.symbol,
+                base_asset=args.symbol.removesuffix("USDT"),
+                quote_asset="USDT",
+            )
             buy_cid = _new_cid()
             close_cid = _new_cid()
 
@@ -441,8 +448,15 @@ async def _execute_confirm_lifecycle(
     """Run the full planned→reconciled lifecycle. Returns exit code."""
     now = _now_utc()
 
-    # 1. PLANNED — insert ledger row first.
-    await ledger.record_planned(
+    metadata = {"source": "rob-298-smoke", "role": "open"}
+    credential_fingerprint = getattr(execution, "credential_fingerprint", None)
+    if isinstance(credential_fingerprint, str) and credential_fingerprint:
+        metadata["credential_fingerprint"] = credential_fingerprint
+
+    # 1. PLANNED — atomically claim the global/per-instrument root slot before
+    # validation or broker order submission. The independent transaction makes
+    # the claim durable across processes and crashes.
+    reservation = await ledger.reserve_root_planned(
         instrument_id=instrument_id,
         product="spot",
         venue_host=venue_host,
@@ -452,10 +466,16 @@ async def _execute_confirm_lifecycle(
         qty=qty,
         price=price,
         notional_usdt=notional,
-        extra_metadata={"source": "rob-298-smoke", "role": "open"},
+        extra_metadata=metadata,
+        global_open_root_cap=_GLOBAL_OPEN_ROOT_CAP,
         now=now,
     )
-    await session.commit()
+    if reservation.status != "reserved":
+        reason = reservation.reason or "exposure_slot_taken"
+        report["blockers"].append(f"exposure_slot_taken:{reason}")
+        _trace(f"reservation_blocked cid={buy_cid} reason={reason}")
+        logger.error("root reservation blocked before broker order: %s", reason)
+        return 1
     _trace(
         f"planned cid={buy_cid} product=spot symbol={symbol} side=BUY "
         f"qty={qty} venue={venue_host}"

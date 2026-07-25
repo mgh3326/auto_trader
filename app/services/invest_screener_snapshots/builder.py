@@ -169,6 +169,11 @@ async def build_snapshot_for_symbol(
         if "volume" in df.columns and df["volume"].iloc[-1] is not None
         else None
     )
+    daily_turnover = (
+        metrics.latest_close * Decimal(daily_volume)
+        if daily_volume is not None
+        else None
+    )
 
     return SnapshotUpsert(
         market=market,
@@ -182,6 +187,7 @@ async def build_snapshot_for_symbol(
         week_change_rate=metrics.week_change_rate,
         closes_window=[float(c) for c in closes[-_LOOKBACK:]],
         daily_volume=daily_volume,
+        daily_turnover=daily_turnover,
         source=source,
     )
 

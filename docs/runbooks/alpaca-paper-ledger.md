@@ -25,6 +25,7 @@ Related: ROB-83 introduced the Alpaca Paper smoke workflow. ROB-84 adds persiste
 | `sell_validated` | Sell-leg confirm-false check passed |
 | `closed` | Sell order executed; position closed |
 | `final_reconciled` | Roundtrip fully reconciled |
+| `canceled` | Order successfully canceled at the broker with cancel request evidence (ROB-920) |
 | `anomaly` | Broker returned a non-recoverable status (rejected, expired, suspended, canceled, unknown) or a state mismatch |
 
 ### Lifecycle Transitions
@@ -44,7 +45,7 @@ record_validation_attempt(validation_outcome='failed')
 
 record_submit()
   └─ lifecycle_state = _derive_lifecycle_state(order.status, order.filled_qty)
-       submitted / filled / anomaly
+       submitted / filled / anomaly / canceled
        record_kind = execution, confirm_flag = true
 
 record_status()
@@ -52,7 +53,7 @@ record_status()
        (updated on each status poll)
 
 record_cancel()
-  └─ writes cancel_status + canceled_at; lifecycle_state is set by record_status()
+  └─ writes cancel_status + canceled_at; updates lifecycle_state to canceled if order_status is already canceled (ROB-920)
 
 record_position_snapshot()
   └─ writes position_snapshot JSONB + lifecycle_state = position_reconciled
@@ -85,8 +86,14 @@ The migration `d4e5f6a7b8c9` (down_revision: `c1d2e3f4a5b6`) mapped old states a
 | `open` | `submitted` | `execution` | `confirm_flag=true` |
 | `partially_filled` | `submitted` | `execution` | Broker status preserved in `order_status` |
 | `filled` | `filled` | `execution` | `confirm_flag=true` |
-| `canceled` | `anomaly` | `execution` | `confirm_flag=true` |
+| `canceled` (with evidence) | `canceled` | `execution` | ROB-920 update (intended cancellations) |
+| `canceled` (no evidence) | `anomaly` | `execution` | ROB-920 update (unexpected cancellations) |
 | `unexpected` | `anomaly` | `execution` | — |
+
+> [!NOTE]
+> **ROB-920 Evidence-Based Cancellation (Asymmetry Rule):**
+> From 2026-07-17 (ROB-920), order_status `'canceled'` is mapped to the terminal `canceled` lifecycle state **only** if there is cancel request evidence (e.g. `cancel_status` and/or `canceled_at` is set on the row). Unexpected broker-side cancellations without evidence remain mapped to `anomaly`.
+> *2026-07-17 이전 행은 구 매핑* (Past anomaly-canceled rows before 2026-07-17 remain mapped to `anomaly` - no backfill).
 
 ---
 
@@ -170,6 +177,33 @@ alpaca_paper_ledger_get(client_order_id)
 alpaca_paper_ledger_get_by_correlation(lifecycle_correlation_id)
 alpaca_paper_roundtrip_report(lifecycle_correlation_id=None, client_order_id=None, candidate_uuid=None, briefing_artifact_run_uuid=None, open_orders=None, positions=None)
 ```
+
+---
+
+## Profile exposure (ROB-908 — DEFAULT-profile flag)
+
+The Alpaca paper surface historically registered only under the `us-paper`
+(`McpProfile.US_PAPER`) server. The mock_alpaca operator session runs on the
+single DEFAULT profile (8765 haproxy → 8766), so those tools were invisible to
+it. ROB-908 adds a flag-gated DEFAULT exposure, mirroring the ROB-601/ROB-867
+kiwoom-mock pattern:
+
+- Set `ALPACA_PAPER_DEFAULT_TOOLS_ENABLED=true`
+  (`settings.alpaca_paper_default_tools_enabled`, default `False`) to surface the
+  Alpaca paper surface in the DEFAULT profile: the read tools
+  (`alpaca_paper_get_account` / `_get_cash` / `_list_positions` / `_list_orders`
+  / `_get_order` / `_list_assets` / `_list_fills`), the pure-validator
+  `alpaca_paper_preview_order`, the read-only `us_dual_paper_*` trio, the
+  confirm-gated `alpaca_paper_submit_order` / `alpaca_paper_cancel_order`, and
+  the ledger reads (`alpaca_paper_ledger_list_recent` / `_ledger_get` /
+  `_ledger_get_by_correlation` / `_roundtrip_report` /
+  `_execution_preflight_check`).
+- With the flag off (default) these tools are **physically absent** from the
+  DEFAULT profile — a defense-in-depth complement to the per-call `confirm=True`
+  + server-issued `quote_snapshot_id` order gates, which are unchanged.
+- `alpaca_paper_automated_submit_order` (and its automated preview) are
+  **never** exposed in DEFAULT even with the flag on — they stay `us-paper`-only
+  (ROB-842 governance deny-list).
 
 ---
 
@@ -306,7 +340,49 @@ Excludes pre-submit (`planned/previewed/validated`) and `anomaly`.
 
 `find_executed_by_client_order_id(client_order_id)` — returns the execution row if `record_kind='execution'` and `lifecycle_state` is in `EXECUTED_LIFECYCLE_STATES`; else `None`.
 
-`list_by_correlation_id(lifecycle_correlation_id)` — returns all rows sharing the correlation ID, ordered oldest-first. Used by the sell-source verifier.
+`list_by_correlation_id(lifecycle_correlation_id)` — returns all rows sharing the correlation ID, ordered oldest-first.
+
+## ROB-842 Submit Boundary (packet + atomic claim + replay)
+
+Every real Alpaca Paper broker POST — manual (`alpaca_paper_submit_order`) and
+automated (`alpaca_paper_automated_submit_order`) — is routed through
+`AlpacaPaperSubmitCoordinator`, which uses this ledger as the single idempotency +
+outcome store. No new table/column/migration was added.
+
+- **Atomic claim.** `claim_submit(...)` inserts the single `record_kind='execution'`
+  row for a `client_order_id` (`lifecycle_state='submitted'`, `submitted_at`/
+  `broker_order_id` NULL) via `INSERT ... ON CONFLICT DO NOTHING RETURNING`. The
+  winner (the caller that inserted the row) is the only one that POSTs.
+- **In-flight marker.** An execution row with both `submitted_at` and
+  `broker_order_id` NULL is a claimed-but-not-yet-recorded submit (`is_inflight_execution`).
+- **Success / terminal failure.** After a broker response, `record_submit(...)`
+  fills the same row (success). A deterministic broker rejection (HTTP 4xx/422) is
+  booked terminal by `record_submit_failure(...)` (`lifecycle_state='anomaly'`,
+  `submitted_at` stamped, redacted `error_summary`). Both make the row non-in-flight.
+- **Replay.** `get_execution_by_client_order_id(...)` returns the execution row in
+  ANY state; the coordinator replays a completed submit or a terminal failure
+  before applying any time-dependent (freshness/position) check, so an expired
+  packet never turns a completed order into `stale_packet`.
+- **Sell reservation (no oversell).** `reserve_sell_and_claim(...)` holds a
+  transaction-scoped advisory lock on `(account_mode, execution_symbol)`. Under
+  that same lock, broker order statuses and the current position are read, and
+  `available = min(qty_available, live qty − Σ(open sell requested_qty))` is used
+  before inserting the claim. The claim stores its `qty` / `qty_available` baseline
+  in the existing `position_snapshot` JSONB. Immediate and crash-recovered sell
+  responses remain `submitted` for open/partial, `filled`, and unknown/unparseable
+  statuses. A `filled` sell is released only after current position evidence proves
+  the fill is reflected; missing baseline or stale cross-endpoint evidence fails
+  closed with `position_reconciliation_pending`, while an unknown status retains its
+  reservation. Cancel read-back persists known open/partial/filled broker truth but
+  retains the same `submitted` hold. None of these ambiguous paths sends a new POST.
+- **Preview binding.** `record_preview(...)` persists the server-owned approval
+  packet + provenance (quote snapshot id, content/packet hashes) as the
+  `record_kind='preview'` row; `get_preview_by_client_order_id(...)` re-reads it so
+  a duplicate-token preview answers from the persisted expiry/hash.
+
+Market evidence for both paths is loaded from a trusted `market_quote_snapshots`
+row (`app.services.alpaca_paper_market_evidence.load_market_evidence`); the caller
+never supplies correlation/snapshot/market-data/ceiling.
 
 ---
 

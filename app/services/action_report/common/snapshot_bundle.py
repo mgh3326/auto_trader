@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import uuid
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -86,12 +87,14 @@ class SnapshotBundleEnsureService:
         now = self._clock()
 
         # 1. Reuse path: most recent bundle within bundle_ttl wins.
-        latest = await self._repo.find_latest_bundle(
-            purpose=request.purpose,
-            market=request.market,
-            account_scope=request.account_scope,
-            policy_version=policy.policy_version,
-        )
+        latest = None
+        if request.mode != "create_new":
+            latest = await self._repo.find_latest_bundle(
+                purpose=request.purpose,
+                market=request.market,
+                account_scope=request.account_scope,
+                policy_version=policy.policy_version,
+            )
         if latest is not None:
             bundle_freshness = classify_freshness(
                 as_of=latest.as_of, now=now, policy=policy.bundle_ttl
@@ -135,7 +138,7 @@ class SnapshotBundleEnsureService:
                 run_uuid=None,
             )
 
-        # 3. ensure_fresh path — create a run + collect + persist.
+        # 3. collection/persistence path (ensure_fresh or create_new).
         run = await self._repo.insert_run(
             SnapshotRunCreate(
                 purpose="report_generation",
@@ -243,6 +246,9 @@ class SnapshotBundleEnsureService:
                 status=bundle_status,
                 coverage_summary=coverage,
                 freshness_summary=freshness_summary,
+                idempotency_discriminator=(
+                    str(uuid.uuid4()) if request.mode == "create_new" else None
+                ),
             )
         )
 

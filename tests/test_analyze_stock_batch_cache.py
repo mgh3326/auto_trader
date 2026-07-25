@@ -389,6 +389,19 @@ async def test_kr_hit_serves_cached_consensus_but_recomputes_live(
     assert kr_pipeline["naver_calls"] == 1
     assert first["cache_hit"] is False
     assert first["derived_as_of"]
+    assert first["fetched_at"] == first["derived_as_of"]
+    assert first["data_age_seconds"] is not None
+    assert first["data_state"] == "fresh"
+    assert first["fallback_source"] is None
+    assert first["provider_provenance"] == [
+        {
+            "provider": "naver",
+            "served_by": "naver",
+            "mode": "live",
+            "status": "ok",
+            "error_code": None,
+        }
+    ]
     assert first["quote"]["price"] == 70000.0
     assert fake_redis.set_call_count == 1
 
@@ -400,6 +413,10 @@ async def test_kr_hit_serves_cached_consensus_but_recomputes_live(
     assert kr_pipeline["naver_calls"] == 1
     assert second["cache_hit"] is True
     assert second["derived_as_of"] == first["derived_as_of"]
+    assert second["fetched_at"] == first["fetched_at"]
+    assert second["data_state"] == "fresh"
+    assert second["fallback_source"] == "analyze_fetch_cache"
+    assert second["provider_provenance"][0]["mode"] == "cache"
     # Consensus / valuation come from the cache.
     assert second["opinions"]["consensus"]["avg_target_price"] == 90000
     assert second["valuation"]["per"] == 12.3
@@ -412,6 +429,51 @@ async def test_kr_hit_serves_cached_consensus_but_recomputes_live(
     assert second["support_resistance"]["distance_basis_price"] == 72000.0
     # Recommendation was rebuilt fresh (not served from any cache).
     assert second["recommendation"]["action"] in {"buy", "hold", "sell"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kr_cache_timestamp_beyond_response_ceiling_is_stale(
+    kr_pipeline, patch_redis
+):
+    fake_redis = patch_redis()
+    await analyze_cache.set_cached_fetch_payload(
+        fake_redis,
+        analyze_cache.PROVIDER_NAVER,
+        "005930",
+        copy.deepcopy(kr_pipeline["naver_payload"]),
+        fetched_at="2026-01-01T00:00:00+09:00",
+    )
+
+    result = await analysis_analyze.analyze_stock_impl("005930", "kr")
+
+    assert kr_pipeline["naver_calls"] == 0
+    assert result["cache_hit"] is True
+    assert result["data_state"] == "stale"
+    assert result["data_age_seconds"] > 24 * 60 * 60
+    assert result["fallback_source"] == "analyze_fetch_cache"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kr_legacy_naive_cache_timestamp_is_exposed_as_aware(
+    kr_pipeline, patch_redis
+):
+    fake_redis = patch_redis()
+    naive_utc = datetime.now(ZoneInfo("UTC")).replace(tzinfo=None).isoformat()
+    await analyze_cache.set_cached_fetch_payload(
+        fake_redis,
+        analyze_cache.PROVIDER_NAVER,
+        "005930",
+        copy.deepcopy(kr_pipeline["naver_payload"]),
+        fetched_at=naive_utc,
+    )
+
+    result = await analysis_analyze.analyze_stock_impl("005930", "kr")
+
+    assert datetime.fromisoformat(result["derived_as_of"]).tzinfo is not None
+    assert result["fetched_at"] == result["derived_as_of"]
+    assert result["data_state"] == "fresh"
 
 
 @pytest.mark.asyncio
@@ -447,6 +509,8 @@ async def test_kr_degraded_snapshot_is_not_cached(
     assert fake_redis.set_call_count == 0
     assert first["cache_hit"] is False
     assert "valuation" not in first
+    assert first["data_state"] == "degraded"
+    assert first["provider_provenance"][0]["status"] == "empty"
 
     second = await analysis_analyze.analyze_stock_impl("005930", "kr")
     # No cached entry -> provider fetched again.
@@ -474,8 +538,55 @@ async def test_kr_provider_exception_is_not_cached(
     assert fake_redis.set_call_count == 0
     assert result["cache_hit"] is False
     assert "valuation" not in result
+    assert result["data_state"] == "degraded"
+    assert result["derived_as_of"] is None
+    assert result["fetched_at"] is None
+    assert result["data_age_seconds"] is None
+    assert result["fallback_source"] is None
+    assert result["provider_provenance"] == [
+        {
+            "provider": "naver",
+            "served_by": None,
+            "mode": "none",
+            "status": "error",
+            "error_code": "RuntimeError",
+        }
+    ]
     # Live surfaces still computed.
     assert result["quote"]["price"] == 70000.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kr_total_provider_and_analysis_gap_is_missing(
+    kr_pipeline, patch_redis, monkeypatch
+):
+    patch_redis()
+
+    async def broken_naver(symbol, news_limit, opinions_limit):
+        raise RuntimeError("naver down")
+
+    async def no_quote(symbol, ohlcv_df):
+        return None
+
+    async def no_indicators(symbol, indicators, market=None, preloaded_df=None):
+        return {}
+
+    async def no_sr(symbol, market=None, preloaded_df=None):
+        return {}
+
+    monkeypatch.setattr(
+        analysis_analyze, "_fetch_analysis_snapshot_naver", broken_naver
+    )
+    monkeypatch.setattr(analysis_analyze, "_resolve_kr_quote", no_quote)
+    monkeypatch.setattr(analysis_analyze, "_get_indicators_impl", no_indicators)
+    monkeypatch.setattr(analysis_analyze, "_get_support_resistance_impl", no_sr)
+
+    result = await analysis_analyze.analyze_stock_impl("005930", "kr")
+
+    assert result["data_state"] == "missing"
+    assert result["derived_as_of"] is None
+    assert result["provider_provenance"][0]["status"] == "error"
 
 
 @pytest.mark.asyncio
@@ -556,6 +667,16 @@ async def test_crypto_pipeline_never_touches_cache(monkeypatch):
     assert cache_client_calls["count"] == 0, "crypto must never touch the cache"
     assert result["cache_hit"] is False
     assert result["derived_as_of"]  # fresh fetch timestamp
+    assert result["data_state"] == "fresh"
+    assert result["provider_provenance"] == [
+        {
+            "provider": "finnhub",
+            "served_by": "finnhub",
+            "mode": "live",
+            "status": "empty",
+            "error_code": None,
+        }
+    ]
     assert result["quote"]["price"] == 95000000.0
 
 
@@ -700,6 +821,7 @@ async def test_us_refresh_bypasses_both_provider_caches(us_pipeline, patch_redis
     result = await analysis_analyze.analyze_stock_impl("AAPL", "us", refresh=True)
 
     assert result["cache_hit"] is False
+    assert result["data_state"] == "fresh"
     assert us_pipeline["snapshot_calls"] == 2
     assert us_pipeline["profile_calls"] == 2
     # Fresh values written back on refresh (2 providers x 2 calls).
@@ -729,6 +851,82 @@ async def test_us_degraded_snapshot_bundle_not_cached(
     # Profile is healthy and independently cached.
     assert f"analyze_fetch:finnhub_profile:AAPL:{et_date}" in fake_redis.store
     assert result["cache_hit"] is False
+    assert result["data_state"] == "degraded"
+    assert {
+        item["provider"]: item["status"] for item in result["provider_provenance"]
+    } == {
+        "finnhub": "empty",
+        "finnhub_profile": "ok",
+        "yfinance": "error",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_us_total_provider_failure_never_synthesizes_as_of(
+    us_pipeline, patch_redis, monkeypatch
+):
+    from app.mcp_server.tooling.fundamentals_sources_yfinance import _YFinanceSnapshot
+
+    patch_redis()
+
+    def degraded_snapshot(ticker):
+        return _YFinanceSnapshot()
+
+    async def empty_valuation(*args, **kwargs):
+        return {
+            "instrument_type": "equity_us",
+            "source": "yfinance",
+            "symbol": "AAPL",
+            "per": None,
+        }
+
+    async def empty_opinions(*args, **kwargs):
+        return {
+            "instrument_type": "equity_us",
+            "source": "yfinance",
+            "symbol": "AAPL",
+            "count": 0,
+            "opinions": [],
+            "consensus": {"total_count": None, "avg_target_price": None},
+            "warning": "unavailable",
+        }
+
+    async def broken_component(*args, **kwargs):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(
+        analysis_analyze, "_collect_yfinance_snapshot", degraded_snapshot
+    )
+    monkeypatch.setattr(analysis_analyze, "_fetch_valuation_yfinance", empty_valuation)
+    monkeypatch.setattr(
+        analysis_analyze, "_fetch_investment_opinions_yfinance", empty_opinions
+    )
+    monkeypatch.setattr(
+        analysis_analyze, "_fetch_company_profile_finnhub", broken_component
+    )
+    monkeypatch.setattr(analysis_analyze, "_fetch_news_finnhub", broken_component)
+
+    result = await analysis_analyze.analyze_stock_impl("AAPL", "us")
+
+    # Live quote/technicals still make this a usable but degraded analysis.
+    assert result["data_state"] == "degraded"
+    assert result["derived_as_of"] is None
+    assert result["fetched_at"] is None
+    assert result["data_age_seconds"] is None
+    assert result["cache_hit"] is False
+    assert {
+        item["provider"]: item["status"] for item in result["provider_provenance"]
+    } == {
+        "finnhub": "error",
+        "finnhub_profile": "error",
+        "yfinance": "error",
+    }
+    yfinance_provenance = next(
+        item for item in result["provider_provenance"] if item["provider"] == "yfinance"
+    )
+    assert yfinance_provenance["served_by"] is None
+    assert yfinance_provenance["mode"] == "none"
 
 
 # ---------------------------------------------------------------------------
@@ -808,6 +1006,19 @@ async def test_batch_propagates_fetch_cache_metadata_to_summary(monkeypatch):
             "quote": {"price": 70000},
             "cache_hit": True,
             "derived_as_of": "2026-07-02T10:00:00+09:00",
+            "fetched_at": "2026-07-02T10:00:00+09:00",
+            "data_age_seconds": 15.5,
+            "data_state": "fresh",
+            "fallback_source": "analyze_fetch_cache",
+            "provider_provenance": [
+                {
+                    "provider": "naver",
+                    "served_by": "analyze_fetch_cache",
+                    "mode": "cache",
+                    "status": "ok",
+                    "error_code": None,
+                }
+            ],
         }
 
     monkeypatch.setattr(handlers.analysis_screening, "_analyze_stock_impl", stub)
@@ -818,6 +1029,11 @@ async def test_batch_propagates_fetch_cache_metadata_to_summary(monkeypatch):
     row = result["results"]["005930"]
     assert row["cache_hit"] is True
     assert row["derived_as_of"] == "2026-07-02T10:00:00+09:00"
+    assert row["fetched_at"] == row["derived_as_of"]
+    assert row["data_age_seconds"] == 15.5
+    assert row["data_state"] == "fresh"
+    assert row["fallback_source"] == "analyze_fetch_cache"
+    assert row["provider_provenance"][0]["provider"] == "naver"
 
 
 @pytest.mark.asyncio
@@ -835,6 +1051,11 @@ async def test_batch_error_row_carries_cache_metadata(monkeypatch):
     assert "error" in row
     assert row["cache_hit"] is False
     assert row["derived_as_of"] is None
+    assert row["fetched_at"] is None
+    assert row["data_age_seconds"] is None
+    assert row["data_state"] == "missing"
+    assert row["fallback_source"] is None
+    assert row["provider_provenance"] == []
 
 
 def test_summarize_surfaces_nxt_price_provenance():

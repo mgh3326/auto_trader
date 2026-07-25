@@ -57,6 +57,7 @@ class TradeJournal(Base):
         Index("ix_trade_journals_symbol_status", "symbol", "status"),
         Index("ix_trade_journals_created", "created_at"),
         Index("ix_trade_journals_account_type", "account_type"),
+        # External issue key (legacy Paperclip name; current Linear ROB key).
         Index("ix_trade_journals_paperclip_issue_id", "paperclip_issue_id"),
         Index("ix_trade_journals_correlation_id", "correlation_id"),
         {"schema": "review"},
@@ -88,7 +89,7 @@ class TradeJournal(Base):
     # Indicator snapshot at entry
     indicators_snapshot: Mapped[dict | None] = mapped_column(JSONB)
 
-    # Extensible metadata (e.g. paperclip_issue_id linkage)
+    # Extensible metadata; the external issue key has a dedicated column below.
     extra_metadata: Mapped[dict | None] = mapped_column(
         "metadata", JSONB, nullable=True
     )
@@ -122,6 +123,7 @@ class TradeJournal(Base):
         Text, nullable=False, default="live", server_default="live"
     )
     paper_trade_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # External issue key (legacy Paperclip name; current Linear ROB key).
     paperclip_issue_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     correlation_id: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)

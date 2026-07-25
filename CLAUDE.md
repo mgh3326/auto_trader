@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 프로젝트 개요
 
-AI 기반 자동 거래 분석 시스템으로, 다양한 금융 데이터를 수집하고 out-of-process AI 에이전트(MCP consumer / Hermes)를 통해 투자 분석을 제공합니다.
+AI 기반 자동 거래 분석 시스템으로, 다양한 금융 데이터를 수집하고 out-of-process MCP consumer(claude 세션 등)를 통해 투자 분석을 제공합니다.
 
 **주요 특징:**
 - 다중 시장 지원: 국내주식(KIS), 해외주식(KIS/Yahoo Finance), 암호화폐(Upbit)
 - 다중 시간대 분석: 일봉 200개 + 분봉(60분/5분/1분)
-- AI 분석: out-of-process MCP/Hermes 에이전트가 담당 (런타임은 in-process LLM provider 미탑재 — ROB-501 가드)
+- AI 분석: out-of-process MCP consumer(claude 세션 등)가 담당 (런타임은 in-process LLM provider 미탑재 — ROB-501 가드)
 
 ## 개발 환경 설정
 
@@ -91,8 +91,8 @@ python upbit_websocket_monitor.py           # Upbit WebSocket 모니터링
 ### Runtime LLM ownership boundary
 
 auto_trader runtime code must not import or instantiate in-process LLM providers
-(Gemini/OpenAI/Grok/etc.). LLM judgment belongs to MCP consumers or Hermes
-out-of-process flows. The static guard in
+(Gemini/OpenAI/Grok/etc.). LLM judgment belongs to out-of-process MCP consumers
+(claude sessions, etc.). The static guard in
 `tests/services/action_report/snapshot_backed/test_no_internal_llm_imports.py`
 scans `app/**/*.py` for forbidden provider imports and deleted provider files.
 
@@ -147,8 +147,43 @@ scans `app/**/*.py` for forbidden provider imports and deleted provider files.
 - **Symbol allowlist**: `XRPUSDT` (default), `DOGEUSDT`, `SOLUSDT` (fallback). `BTCUSDT` 제외 (MIN_NOTIONAL=50 > cap=10). operator `--allow-symbol` override 시도해도 excluded list 우선
 - **Reconcile gate**: 클로즈 후 open orders empty AND position flat 둘 다 만족해야 `reconciled`. 둘 중 하나라도 dirty면 `anomaly` 기록
 - **`status=NEW` reconcile (ROB-305 §4)**: MARKET submit이 `NEW`를 반환해도 즉시 성공/실패로 단정하지 않음. `submitted → closed` 직행 금지(상태머신이 차단). fill 증거는 submit status → bounded `GET /fapi/v1/order` poll(`_FILL_RECONCILE_MAX_POLLS`, 무한 루프 없음) → non-flat positionRisk 순으로 확인 후에만 `filled` 기록. fill 증명 불가인데 account가 flat + open orders 0이면 close row를 `anomaly`로 기록하고 exit 2 (clean success로 위장 금지). 단일주문 status 조회는 `BinanceFuturesDemoExecutionClient.get_order`
+- **계정 전체 조회 (ROB-993 R3 추가)**: `get_all_positions()`/`get_all_open_orders()` — `symbol` 파라미터 생략 시 Binance가 전종목 데이터 반환하는 것을 그대로 노출(additive, 기존 `get_position(symbol=...)`/`get_open_orders(symbol=...)` 동작 불변). 공유 Demo 계정에서 신호 symbol이 아닌 다른 symbol의 기존 포지션/미체결도 감지해야 하는 소비자(ROB-993 strategy loop)용
 - **CLI**: `scripts/binance_futures_demo_smoke.py` (default-disabled, 5 modes)
 - **런북**: `docs/runbooks/binance-futures-demo-smoke.md`
+
+### Binance Demo 라이브 실행 루프 — 전략 플러그형 (ROB-993)
+
+실시간 1m→4h bar 집계(H1 오프라인 builder `research/nautilus_scalping/rob974_features.py`의
+`build_complete_4h`를 그대로 재사용 — UTC 경계·결측=NO_SIGNAL·forward-fill 금지 동일 시맨틱) +
+플러그형 전략 인터페이스(`evaluate(bars_4h_multi_symbol) -> Signal|None`) + kill switch +
+`BinanceFuturesDemoExecutionClient`(ROB-298) 배선. 전략 무관 인프라 — S3 신호엔진 어댑터(ROB-980)는
+별도 커밋(미포함), 기본 플러그인 `NullStrategy`는 항상 `None`.
+
+- **패키지**: `app/services/brokers/binance/demo_strategy_loop/` — `bars.py`(H1 재사용 + 1m fetch),
+  `strategy.py`(`Signal`/`StrategyPlugin`/`NullStrategy`), `kill_switch.py`(최대동시포지션1 +
+  연속 SL/UTC일), `sizing.py`, `execution.py`(open MARKET + reduceOnly close round-trip, ROB-298
+  smoke CLI와 동일 lifecycle), `correlation.py`, `orchestrator.py`(`run_tick`)
+- **CLI**: `scripts/binance_demo_strategy_loop.py` (default-disabled, `--once`/`--loop`/
+  `--paper-signal`/`--readiness`) — `--paper-signal`이 ROB-993 e2e 스모크 경로(주문 1건 데모 왕복)
+- **env**: `BINANCE_DEMO_STRATEGY_LOOP_ENABLED`(기본 false) — 기존 `BINANCE_FUTURES_DEMO_*`
+  자격증명/호스트 allowlist 그대로 상속, 신규 자격증명 표면 없음
+- **kill switch**: env 게이트 + 동시 포지션 1 상한(`count_open_lifecycles` 재사용) + 연속 SL 2회/UTC일
+  정지(자체 `strategy_loop_tag`로 스코프, closed root의 `extra_metadata.exit_reason` 워크)
+- **하드 인바리언트(R2/R3 적대검증 경화)**: leg notional `[6,10]` USDT·동시포지션 1·연속SL 2는 CLI로
+  덮어쓸 수 없는 상수(`sizing.LEG_NOTIONAL_CAP_*`/`kill_switch.LOCKED_LIMITS`), `run_tick`이 네트워크/DB
+  전에 자체 검증 — **R3**: cap 입력값뿐 아니라 LOT_SIZE floor 이후 **실현 notional**도 재검증(캡 안이어도
+  floor로 $6 밑으로 내려갈 수 있음, 키우지 않고 `sizing_blocked`). `execute_signal_round_trip`은
+  reservation 직후 broker-flat pre-submit gate(공유 Demo 계정) + 자기 fill delta 귀속 close 수량 +
+  submit/poll 응답 전부 symbol/side/qty/reduceOnly echo 검증(`BrokerEchoMismatch`) + open root를
+  reconcile 전부 통과 전까지 `filled`(blocking) 유지(조기 `closed` 전이 금지) 적용 — **R3**: flat gate가
+  신호 symbol 하나가 아니라 **계정 전체**(`BinanceFuturesDemoExecutionClient.get_all_positions`/
+  `get_all_open_orders`, symbol 파라미터 생략 시 전종목 반환 — 신규 추가)를 보고, reservation 직후 +
+  order-test 이후 submit 직전 **두 번** 재확인(완전한 TOCTOU 제거는 아님, 런북 §5). multi-symbol
+  decision bucket도 전종목 동일 `close_ts` 아니면 전략 미호출. 상세=런북 §8(R2)·§9(R3)
+- **학습루프 척추**: `correlation_id`(`binance-demo-strategy-loop:<tag>:<hash>`) → ledger → `forecast_save`
+- **런북**: `docs/runbooks/binance-demo-strategy-loop.md` (§5 — 공유 Demo 계정 간섭 주의: 프로덕션
+  demo-scalping 봇과 동일 자격증명 공유 시 계정단 상태 충돌 가능)
+- **스케줄러 등록 없음** — CLI 수동 가동만, `--loop`도 operator 소유 foreground 프로세스
 
 ### KIS WebSocket Mock Smoke (ROB-104)
 
@@ -217,7 +252,7 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
 
 ### Kiwoom Mock Account Lifecycle (ROB-97 / ROB-319)
 
-Kiwoom **모의투자** 전용 MCP order/account lifecycle. 7개 도구 모두 `account_mode="kiwoom_mock"`, KRX only.
+Kiwoom **모의투자** 전용 MCP order/account lifecycle. KR 7개 도구는 `account_mode="kiwoom_mock"`(KRX). **US는 ROB-867로 확장** — `kiwoom_mock_us_*` 변형(account_mode="kiwoom_mock_us", US 전용 앱키 4종 env, order-id 9자리 — 07-20 full 스모크 실측 확정).
 
 - **MCP 도구**: `app/mcp_server/tooling/orders_kiwoom_variants.py` — `kiwoom_mock_preview_order`, `kiwoom_mock_place_order`, `kiwoom_mock_modify_order`, `kiwoom_mock_cancel_order`, `kiwoom_mock_get_order_history`, `kiwoom_mock_get_positions`, `kiwoom_mock_get_orderable_cash`
 - **클라이언트**: `app/services/brokers/kiwoom/` — `client.KiwoomMockClient` (transport, host allowlist), `domestic_orders.KiwoomDomesticOrderClient` (buy/sell/modify/cancel), `domestic_account.KiwoomDomesticAccountClient` (orderable-amount/balance/order-status/order-detail)
@@ -233,7 +268,7 @@ Kiwoom **모의투자** 전용 MCP order/account lifecycle. 7개 도구 모두 `
 - **Mock 호스트 only**: `mockapi.kiwoom.com`만 허용 (`KiwoomMockClient` base-URL 거부 + build 후 host 재검증); live `api.kiwoom.com`은 선택 불가 방어 상수
 - **Default-disabled**: `KIWOOM_MOCK_ENABLED=true` + `KIWOOM_MOCK_APP_KEY/APP_SECRET/ACCOUNT_NO` 미설정 시 fail-closed
 - **`dry_run=False` requires `confirm=True`**: 모든 주문 mutation 도구
-- **KRX only**: `NXT`/`SOR`/비-KRX 거부 (네트워크 호출 전)
+- **KR 도구는 KRX only**: `NXT`/`SOR`/비-KRX 거부 (네트워크 호출 전). US 도구는 별도 `kiwoom_mock_us_*` 경로만 사용
 - **No secrets printed**: CLI는 missing env key **이름만** 보고, 값 출력 없음
 - **Cancel-before-submit**: `full` 모드는 cancel이 wired이기에만 실주문 제출; finally-block에서 항상 cancel 시도 후 reconcile
 
@@ -307,17 +342,17 @@ US `consecutive_gainers` 스크리너는 `invest_screener_snapshots`를 통해 �
 - **HTTP routes**: `app/routers/investment_hermes_http.py` — prefix `/trading/api/investment-reports/hermes/`
 - **AuthMiddleware token branch**: `app/middleware/auth.py` — `HERMES_INGEST_PATH_PREFIX` 라인. 토큰 미설정 → 403, 잘못된 토큰 → 401.
 - **서비스**: `app/services/investment_stages/{hermes_context,hermes_ingest}.py`
-- **Prefect flow**: `app/flows/hermes_bundle_preparation_flow.py` — `SnapshotBundleEnsureService.ensure(...)` 호출하여 Hermes가 pull할 신선한 bundle 보장. Default disabled.
 - **런북**: `docs/runbooks/hermes-report-generation.md`
 
+(ROB-986: `app/flows/hermes_bundle_preparation_flow.py` — 미배포·미호출 확인 후 제거됨. bundle 준비는 MCP/HTTP `prepare-bundle` 호출 시점에 ad hoc로 이루어짐, 별도 스케줄 없음.)
+
 **Env / config 게이트 (모두 default off)**:
-- `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED` — MCP tools + HTTP endpoints + prep flow 공통 게이트
+- `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED` — MCP tools + HTTP endpoints 공통 게이트
 - `HERMES_INGEST_TOKEN` / `HERMES_INGEST_TOKEN_HEADER` — HTTP transport shared secret (header default `X-Hermes-Ingest-Token`). 운영 secret manager에 배치, repo에 commit 금지.
-- `HERMES_BUNDLE_PREPARATION_ENABLED` — Prefect flow operational gate. False면 `{"status": "disabled", ...}` 로 dry-run 종료.
 
 **안전 경계**: 모든 endpoint는 service-layer를 통해서만 쓰기. 어떤 경로도 broker/order/watch/order-intent mutation 도달 안 함. PR #898 static import guard가 `app/services/action_report/snapshot_backed/` + `app/services/investment_stages/` 전체에서 in-process LLM provider 재도입 차단.
 
-**운영 활성화 절차**: `docs/runbooks/hermes-report-generation.md` §3 (non-prod) / §4 (prod cutover). Prefect 배포 등록은 `robin-prefect-automations`, paused-by-default. 실 Hermes JSON-over-wire round-trip 검증 후 ROB-287 Done.
+**운영 활성화 절차**: `docs/runbooks/hermes-report-generation.md` §3 (non-prod) / §4 (prod cutover). 실 Hermes JSON-over-wire round-trip 검증 후 ROB-287 Done.
 
 ### investment_report_create item 계약 (ROB-458)
 
@@ -487,7 +522,7 @@ chore/<설명>                 # 유지보수
 
 ### 워크플로우
 1. `main` 브랜치에서 feature branch 생성
-2. 코드 변경 후 커밋 (`Co-Authored-By: Paperclip <noreply@paperclip.ing>`)
+2. 코드 변경 후 커밋
 3. PR 생성 (base: `main`)
 4. 리뷰 후 머지
 5. 배포 시 `main` → `production` 머지
@@ -670,8 +705,3 @@ uv run alembic history
 - `DEPLOYMENT.md` - 배포 가이드
 - `DOCKER_USAGE.md` - Docker 사용법
 
-## gstack
-
-Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
-
-Available gstack skills: `/office-hours`, `/plan-ceo-review`, `/plan-eng-review`, `/plan-design-review`, `/design-consultation`, `/design-shotgun`, `/design-html`, `/review`, `/ship`, `/land-and-deploy`, `/canary`, `/benchmark`, `/browse`, `/connect-chrome`, `/qa`, `/qa-only`, `/design-review`, `/setup-browser-cookies`, `/setup-deploy`, `/setup-gbrain`, `/retro`, `/investigate`, `/document-release`, `/document-generate`, `/codex`, `/cso`, `/autoplan`, `/plan-devex-review`, `/devex-review`, `/careful`, `/freeze`, `/guard`, `/unfreeze`, `/gstack-upgrade`, `/learn`.

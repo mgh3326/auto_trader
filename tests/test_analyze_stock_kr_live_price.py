@@ -140,6 +140,59 @@ async def test_kr_quote_overlays_nxt_price_in_premarket(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_kr_quote_surfaces_self_describing_fields_end_to_end(monkeypatch):
+    """ROB-888: through the analyze path with the REAL overlay, the SK하이닉스
+    premarket case surfaces krx_prev_close / change_pct / session_state so the
+    operator can cross-check the gap from the MCP quote without CDP naver."""
+    from app.mcp_server.tooling import market_data_quotes
+
+    async def fake_live(symbol):
+        return {
+            "symbol": symbol,
+            "instrument_type": "equity_kr",
+            "price": 1913000.0,  # KRX prior close (premarket "개장전" block)
+            "source": "kis",
+            "price_as_of": (datetime.now(KST) - timedelta(days=1)).isoformat(),
+        }
+
+    async def fake_session(data_state, *, now=None):
+        return "nxt_premarket"
+
+    async def fake_inner_overlay(symbol, *, session):
+        return {
+            "price": 2082500.0,  # NXT premarket realtime (nxt_mid)
+            "session": session,
+            "venue": "nxt",
+            "price_source": "nxt_mid",
+        }
+
+    monkeypatch.setattr(analysis_analyze, "_fetch_kr_live_quote", fake_live)
+    # Restore the REAL overlay (autouse fixture noop'd it) and mock its internals.
+    monkeypatch.setattr(
+        analysis_analyze,
+        "_apply_nxt_quote_overlay",
+        market_data_quotes._apply_nxt_quote_overlay,
+    )
+    monkeypatch.setattr(market_data_quotes, "_nxt_quote_session", fake_session)
+    monkeypatch.setattr(
+        market_data_quotes, "_fetch_nxt_quote_overlay", fake_inner_overlay
+    )
+    monkeypatch.setattr(
+        analysis_analyze,
+        "kr_market_data_state",
+        lambda *a, **k: "premarket_unavailable",
+    )
+
+    quote = await analysis_analyze._resolve_kr_quote("000660", _ohlcv())
+
+    assert quote["price"] == 2082500.0
+    assert quote["price_source"] == "nxt_mid"
+    assert quote["session_state"] == "premarket"
+    assert quote["krx_prev_close"] == 1913000.0
+    assert quote["change_pct"] == pytest.approx(8.86, abs=0.01)
+
+
+@pytest.mark.asyncio
 async def test_kr_quote_keeps_kis_price_when_no_overlay(monkeypatch):
     today = datetime.now(KST)
 

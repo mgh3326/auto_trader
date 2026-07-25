@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
+from app.core.config import settings
 from app.mcp_server.tooling.account_routing_registration import (
     register_account_routing_tools,
 )
@@ -13,6 +14,9 @@ from app.mcp_server.tooling.analysis_artifact_tools import (
 )
 from app.mcp_server.tooling.analysis_artifact_tools import (
     analysis_artifact_save as _analysis_artifact_save,
+)
+from app.mcp_server.tooling.analysis_bundle_handlers import (
+    register_analysis_bundle_tools,
 )
 from app.mcp_server.tooling.analysis_registration import register_analysis_tools
 from app.mcp_server.tooling.forecast_registration import register_forecast_tools
@@ -25,6 +29,9 @@ from app.mcp_server.tooling.orders_kis_variants import (
     KIS_LIVE_ORDER_TOOL_NAMES,
     KIS_MOCK_ORDER_TOOL_NAMES,
     LIVE_RECONCILE_TOOL_NAMES,
+)
+from app.mcp_server.tooling.orders_kiwoom_us_variants import (
+    KIWOOM_MOCK_US_TOOL_NAMES,
 )
 from app.mcp_server.tooling.orders_kiwoom_variants import KIWOOM_MOCK_TOOL_NAMES
 from app.mcp_server.tooling.orders_registration import ORDER_TOOL_NAMES
@@ -66,6 +73,7 @@ ANALYSIS_READONLY_TOOL_NAMES: set[str] = {
     "get_indicators",
     "screen_stocks",
     "screen_stocks_snapshot",
+    "get_krx_session_health",
     "get_top_stocks",
     "get_news",
     "get_fx_rate",
@@ -75,6 +83,7 @@ ANALYSIS_READONLY_TOOL_NAMES: set[str] = {
     "get_intraday_investor_flow",
     "analysis_artifact_save",
     "analysis_artifact_get",
+    "analysis_bundle_get",
     "forecast_save",
     "session_context_append",
     "session_context_get_recent",
@@ -86,10 +95,12 @@ ANALYSIS_READONLY_FORBIDDEN_TOOL_NAMES: set[str] = (
     | KIS_MOCK_ORDER_TOOL_NAMES
     | LIVE_RECONCILE_TOOL_NAMES
     | KIWOOM_MOCK_TOOL_NAMES
+    | KIWOOM_MOCK_US_TOOL_NAMES
     | PAPER_LIMIT_ORDER_TOOL_NAMES
     | (TOSS_LIVE_ORDER_TOOL_NAMES - {"toss_get_positions"})
     | {
         "analysis_artifact_list",
+        "analysis_bundle_create",
         "forecast_resolve",
         "get_forecasts",
         "get_forecast_calibration",
@@ -150,7 +161,9 @@ def _register_persistence_tools(mcp: FastMCP) -> None:
         name="analysis_artifact_save",
         description=(
             "analysis_readonly: persist a structured analysis artifact. "
-            "Requires explicit created_by such as 'codex'; no implicit caller label."
+            "Requires explicit created_by such as 'codex'; no implicit caller "
+            "label. On a correlation retry, omitted optional fields preserve "
+            "stored values while explicit null clears nullable/collection fields."
         ),
     )
     async def analysis_artifact_save(
@@ -240,6 +253,8 @@ def register_analysis_readonly_tools(mcp: FastMCP) -> None:
     register_toss_live_order_tools(filtered)
     register_forecast_tools(filtered)
     _register_persistence_tools(mcp)
+    if settings.ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED:
+        register_analysis_bundle_tools(mcp, allow_create=False)
 
 
 __all__ = [

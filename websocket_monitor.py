@@ -37,6 +37,7 @@ from app.services.fill_notification import (
     normalize_upbit_fill,
 )
 from app.services.kis_websocket import KISAppKeyInUseError, KISExecutionWebSocket
+from app.services.order_proposals import OrderProposalsService
 from app.services.upbit_websocket import UpbitMyOrderWebSocket
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,10 @@ class UnifiedWebSocketMonitor:
         self._started_at_monotonic: float | None = None
         self.fills_forwarded = 0
         self.last_agent_success_at: str | None = None
+        self.upbit_messages_received = 0
+        self.upbit_execution_events_received = 0
+        self.upbit_last_message_at: str | None = None
+        self.upbit_last_execution_at: str | None = None
         self._kis_messages_received_closed = 0
         self._kis_execution_events_received_closed = 0
         self._kis_last_message_at_closed: str | None = None
@@ -168,14 +173,36 @@ class UnifiedWebSocketMonitor:
         """
         Upbit 주문/체결 이벤트 처리
 
-        state == "trade"인 체결만 알림 대상으로 필터링합니다.
+        state가 ``trade`` 또는 ``done``인 체결을 처리합니다.
         """
-        state = order_data.get("state")
-        if state != "trade":
+        received_at = datetime.now(UTC).isoformat()
+        self.upbit_messages_received += 1
+        self.upbit_last_message_at = received_at
+        state = str(order_data.get("state") or "")
+        if state not in {"trade", "done"}:
             logger.debug(f"Upbit non-trade state ignored: {state}")
             return
+        self.upbit_execution_events_received += 1
+        self.upbit_last_execution_at = received_at
 
         try:
+            if state == "done":
+                # ``done`` carries order-level cumulative executed_volume, not
+                # a new trade delta. The preceding ``trade`` event owns the
+                # execution-ledger row; terminal evidence only closes the rung.
+                if not await self._has_committed_upbit_execution_fill(order_data):
+                    logger.warning(
+                        "Upbit terminal projection skipped without committed fill: "
+                        "order_id=%s",
+                        order_data.get("uuid"),
+                    )
+                    return
+                await self._project_upbit_proposal_fill(order_data)
+                logger.info(
+                    "Upbit terminal fill evidence processed: order_id=%s",
+                    order_data.get("uuid"),
+                )
+                return
             fill_order = normalize_upbit_fill(order_data)
             upsert_status = await self._record_execution_ledger_fill(
                 order_data,
@@ -183,8 +210,20 @@ class UnifiedWebSocketMonitor:
                 broker="upbit",
                 correlation_id=str(order_data.get("uuid") or "n/a"),
             )
-            if upsert_status not in {"updated", "unchanged"}:
-                await self._send_fill_notification(fill_order)
+            proposal_rung_fill = False
+            if upsert_status is not None:
+                proposal_rung_fill = await self._project_upbit_proposal_fill(order_data)
+            duplicate_ledger_fill = upsert_status in {"updated", "unchanged"}
+            recover_suppressed_small_alert = (
+                duplicate_ledger_fill
+                and proposal_rung_fill
+                and not is_fill_notifiable(fill_order)
+            )
+            if not duplicate_ledger_fill or recover_suppressed_small_alert:
+                await self._send_fill_notification(
+                    fill_order,
+                    proposal_rung_fill=proposal_rung_fill,
+                )
             else:
                 logger.info(
                     "Upbit fill notification skipped for duplicate ledger row: symbol=%s status=%s",
@@ -197,6 +236,87 @@ class UnifiedWebSocketMonitor:
             )
         except Exception as e:
             logger.error(f"Upbit fill processing error: {e}", exc_info=True)
+
+    async def _has_committed_upbit_execution_fill(
+        self, order_data: dict[str, Any]
+    ) -> bool:
+        """Check the durable ledger before applying cumulative terminal evidence."""
+        broker_order_id = str(order_data.get("uuid") or "").strip()
+        if not broker_order_id:
+            return False
+        venue = str(order_data.get("venue") or "upbit_krw")
+        async with AsyncSessionLocal() as db:
+            return await ExecutionLedgerRepository(db).has_fill_for_order(
+                broker="upbit",
+                account_mode="live",
+                venue=venue,
+                broker_order_id=broker_order_id,
+            )
+
+    async def _project_upbit_proposal_fill(self, order_data: dict[str, Any]) -> bool:
+        """Best-effort projection of committed Upbit evidence into one rung."""
+        state = str(order_data.get("state") or "")
+        terminal_state = {
+            "trade": "partially_filled",
+            "done": "filled",
+        }.get(state)
+        if terminal_state is None:
+            return False
+
+        broker_order_id = str(order_data.get("uuid") or "").strip() or None
+        identifier = str(order_data.get("identifier") or "").strip() or None
+        try:
+            filled_qty = Decimal(str(order_data.get("executed_volume") or "0"))
+            if filled_qty <= 0:
+                logger.info(
+                    "Upbit proposal rung projection skipped: missing cumulative fill "
+                    "order_id=%s identifier=%s state=%s",
+                    broker_order_id,
+                    identifier,
+                    state,
+                )
+                return False
+            async with AsyncSessionLocal() as db:
+                rung = await OrderProposalsService(db).record_fill_evidence(
+                    idempotency_key=identifier,
+                    broker_order_id=broker_order_id,
+                    filled_qty=filled_qty,
+                    terminal_state=terminal_state,
+                    now=datetime.now(UTC),
+                    account_mode="upbit",
+                )
+                await db.commit()
+        except Exception as exc:  # noqa: BLE001 - ledger commit remains authoritative
+            logger.error(
+                "Upbit proposal rung projection failed: order_id=%s identifier=%s "
+                "state=%s error=%s",
+                broker_order_id,
+                identifier,
+                state,
+                exc,
+                exc_info=True,
+            )
+            return False
+
+        if rung is None:
+            logger.info(
+                "Upbit proposal rung projection found no matching proposal rung: "
+                "order_id=%s identifier=%s state=%s",
+                broker_order_id,
+                identifier,
+                state,
+            )
+            return False
+        logger.info(
+            "Upbit proposal rung projected: order_id=%s identifier=%s state=%s "
+            "rung_state=%s cumulative_filled_qty=%s",
+            broker_order_id,
+            identifier,
+            state,
+            rung.state,
+            filled_qty,
+        )
+        return True
 
     async def _on_kis_execution(self, event: dict[str, Any]) -> None:
         """
@@ -395,10 +515,14 @@ class UnifiedWebSocketMonitor:
         return status
 
     async def _send_fill_notification(
-        self, order: FillOrder, *, correlation_id: str | None = None
+        self,
+        order: FillOrder,
+        *,
+        correlation_id: str | None = None,
+        proposal_rung_fill: bool = False,
     ) -> None:
         """체결 알림: 통화 임계 → best-effort 보강 → TradeNotifier (fire-and-forget)."""
-        if not is_fill_notifiable(order):
+        if not proposal_rung_fill and not is_fill_notifiable(order):
             logger.info(
                 "Fill notification skipped: below threshold symbol=%s amount=%s currency=%s",
                 order.symbol,
@@ -589,7 +713,7 @@ class UnifiedWebSocketMonitor:
         uptime = 0.0
         if self._started_at_monotonic is not None:
             uptime = round(now - self._started_at_monotonic, 1)
-        kis_snapshot = self._current_kis_stats_snapshot()
+        runtime_snapshot = self._current_runtime_stats_snapshot()
         logger.info(
             "Unified WebSocket health: mode=%s connected=%s uptime=%s "
             "upbit_connected=%s kis_connected=%s "
@@ -601,12 +725,12 @@ class UnifiedWebSocketMonitor:
             uptime,
             upbit_connected,
             kis_connected,
-            kis_snapshot["messages_received"],
-            kis_snapshot["execution_events_received"],
+            runtime_snapshot["messages_received"],
+            runtime_snapshot["execution_events_received"],
             self.fills_forwarded,
-            kis_snapshot["last_message_at"],
-            kis_snapshot["last_execution_at"],
-            kis_snapshot["last_pingpong_at"],
+            runtime_snapshot["last_message_at"],
+            runtime_snapshot["last_execution_at"],
+            runtime_snapshot["last_pingpong_at"],
             self.last_agent_success_at,
         )
 
@@ -801,6 +925,38 @@ class UnifiedWebSocketMonitor:
                 if isinstance(current_snapshot["last_pingpong_at"], str)
                 else None,
             ),
+        }
+
+    def _current_runtime_stats_snapshot(self) -> dict[str, int | str | None]:
+        kis_snapshot = self._current_kis_stats_snapshot()
+        upbit_enabled = self.mode in {"upbit", "both"}
+        kis_enabled = self.mode in {"kis", "both"}
+        return {
+            "messages_received": (self.upbit_messages_received if upbit_enabled else 0)
+            + (int(kis_snapshot["messages_received"] or 0) if kis_enabled else 0),
+            "execution_events_received": (
+                self.upbit_execution_events_received if upbit_enabled else 0
+            )
+            + (
+                int(kis_snapshot["execution_events_received"] or 0)
+                if kis_enabled
+                else 0
+            ),
+            "last_message_at": self._latest_timestamp(
+                self.upbit_last_message_at if upbit_enabled else None,
+                kis_snapshot["last_message_at"]
+                if kis_enabled and isinstance(kis_snapshot["last_message_at"], str)
+                else None,
+            ),
+            "last_execution_at": self._latest_timestamp(
+                self.upbit_last_execution_at if upbit_enabled else None,
+                kis_snapshot["last_execution_at"]
+                if kis_enabled and isinstance(kis_snapshot["last_execution_at"], str)
+                else None,
+            ),
+            "last_pingpong_at": kis_snapshot["last_pingpong_at"]
+            if kis_enabled
+            else None,
         }
 
 

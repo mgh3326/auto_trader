@@ -44,6 +44,15 @@ async def test_insert_round_trip(db_session):
         week_change_rate=Decimal("2.1500"),
         closes_window=[77000, 77400, 77900, 78500],
         daily_volume=14_500_000,
+        daily_turnover=Decimal("1138250000000"),
+        market_cap=Decimal("400000000000000"),
+        market_cap_source="naver_finance",
+        market_cap_snapshot_date=dt.date(2026, 5, 9),
+        support_price=Decimal("77000"),
+        support_kind="bb_lower,fib_0.618",
+        support_strength="strong",
+        dist_to_support_pct=Decimal("1.9108"),
+        support_computed_at=dt.datetime(2026, 5, 9, 12, 0, tzinfo=dt.UTC),
         source="kis",
     )
     db_session.add(snap)
@@ -57,6 +66,10 @@ async def test_insert_round_trip(db_session):
     fetched = result.scalar_one()
     assert fetched.consecutive_up_days == 3
     assert fetched.closes_window == [77000, 77400, 77900, 78500]
+    assert fetched.market_cap == Decimal("400000000000000")
+    assert fetched.support_price == Decimal("77000")
+    assert fetched.dist_to_support_pct == Decimal("1.9108")
+    assert fetched.support_computed_at == dt.datetime(2026, 5, 9, 12, 0, tzinfo=dt.UTC)
 
 
 @pytest.mark.asyncio

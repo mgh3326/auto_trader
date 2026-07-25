@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import logging
+import re
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -33,13 +35,39 @@ from typing import Any, Literal
 
 from app.core.timezone import now_kst
 from app.models.order_proposals import OrderProposal, OrderProposalRung
+from app.services.brokers.kis.pre_send import PreSendFreshnessError
 from app.services.live_correlation import live_correlation_id
+from app.services.order_proposals.approval_window import (
+    ApprovalWindowCode,
+    ApprovalWindowDecision,
+    WindowEvaluator,
+    approval_window_rung_result,
+    evaluate_approval_window,
+    evaluate_approval_window_boundary,
+)
 from app.services.order_proposals.broker_gateway import (
     cancel_target_order,
+    fetch_submit_evidence,
     fetch_target_order,
 )
-from app.services.order_proposals.service import OrderProposalsService
+from app.services.order_proposals.buying_power import (
+    BuyingPowerClaim,
+    BuyingPowerClaimer,
+    BuyingPowerReleaser,
+    currency_for_market,
+    decimal_text,
+    default_buying_power_claimer,
+    default_buying_power_releaser,
+    required_cash,
+)
+from app.services.order_proposals.errors import OrderProposalError
+from app.services.order_proposals.service import (
+    OrderProposalsService,
+    proposal_approval_block_reason,
+)
 from app.services.order_proposals.target_order import TargetOrderSnapshot
+
+logger = logging.getLogger(__name__)
 
 RungOutcomeResult = Literal[
     "submitted_acked",
@@ -49,6 +77,12 @@ RungOutcomeResult = Literal[
     "unverified",
     "error",
     "cancelled",
+    "approval_required",
+    "expired",
+    "invalid_valid_until",
+    "defer_session_closed",
+    "calendar_unknown",
+    "no_executable_window",
 ]
 
 
@@ -63,6 +97,11 @@ PlaceOrderFn = Callable[..., Any]
 CorrelationMint = Callable[..., Any]
 TargetFetchFn = Callable[..., Any]
 TargetCancelFn = Callable[..., Any]
+SubmitEvidenceFetchFn = Callable[..., Any]
+RetrospectiveLookupFn = Callable[[int], Any]
+EligibilityGate = Callable[..., Any]
+OppositePendingCheckFn = Callable[..., Any]
+Clock = Callable[[], datetime]
 
 _PREVIEW_REASON = "order_proposal revalidation (rung {rung})"
 _SUBMIT_REASON = "order_proposal submit after revalidation (rung {rung})"
@@ -80,6 +119,165 @@ _GUARD_ERROR_MARKERS = (
     "stop-loss cooldown",
     "opposite pending order",
 )
+_TOSS_CLIENT_ORDER_ID_MAX_LENGTH = 36
+_TOSS_CLIENT_ORDER_ID_PATTERN = re.compile(r"[a-zA-Z0-9\-_]+")
+_SUBMIT_DIAGNOSTIC_MAX_LENGTH = 240
+
+
+async def _converge_window_block(
+    *,
+    service: OrderProposalsService,
+    group: OrderProposal,
+    rung: OrderProposalRung,
+    decision: ApprovalWindowDecision,
+    now: datetime,
+    restore_pre_send_state: bool,
+) -> RungOutcome:
+    expired = decision.code is ApprovalWindowCode.EXPIRED
+    if restore_pre_send_state and rung.state in {
+        "revalidating",
+        "approved",
+        "submitting",
+    }:
+        await service.restore_rung_after_pre_send_block(
+            group.proposal_id,
+            rung.rung_index,
+            now=now,
+            expired=expired,
+        )
+    elif expired:
+        await service.expire_rung_if_needed(
+            group.proposal_id,
+            rung.rung_index,
+            now=now,
+        )
+    return RungOutcome(
+        rung.rung_index,
+        approval_window_rung_result(decision),
+        {"approval_window": decision.to_dict(), "error": decision.code.value},
+    )
+
+
+async def _pre_mutation_window_gate(
+    *,
+    service: OrderProposalsService,
+    group: OrderProposal,
+    rung: OrderProposalRung,
+    window_evaluator: WindowEvaluator,
+    expected_policy_stamp: str,
+    now_fn: Clock,
+) -> RungOutcome | None:
+    decision = await evaluate_approval_window_boundary(
+        group,
+        window_evaluator=window_evaluator,
+        now_fn=now_fn,
+        expected_policy_stamp=expected_policy_stamp,
+    )
+    if decision.allowed:
+        return None
+    return await _converge_window_block(
+        service=service,
+        group=group,
+        rung=rung,
+        decision=decision,
+        now=decision.observed_at,
+        restore_pre_send_state=True,
+    )
+
+
+async def _post_cancel_replace_window_gate(
+    *,
+    service: OrderProposalsService,
+    group: OrderProposal,
+    rung: OrderProposalRung,
+    window_evaluator: WindowEvaluator,
+    expected_policy_stamp: str,
+    now_fn: Clock,
+) -> RungOutcome | None:
+    """Recheck immediately before the replacement submit.
+
+    Replace is necessarily a two-leg broker operation in the current gateway:
+    cancel the original, confirm that cancellation, then place the replacement.
+    If the approval window closes while the cancel leg is in flight, the
+    replacement must still fail closed. The original cancellation is already
+    authoritative broker evidence at that point, so preserve it as
+    ``cancelled`` instead of pretending the whole proposal can return to
+    ``pending_approval`` or ``expired``.
+    """
+    decision = await evaluate_approval_window_boundary(
+        group,
+        window_evaluator=window_evaluator,
+        now_fn=now_fn,
+        expected_policy_stamp=expected_policy_stamp,
+    )
+    if decision.allowed:
+        return None
+    return await _record_post_cancel_window_block(
+        service=service,
+        group=group,
+        rung=rung,
+        decision=decision,
+    )
+
+
+async def _record_post_cancel_window_block(
+    *,
+    service: OrderProposalsService,
+    group: OrderProposal,
+    rung: OrderProposalRung,
+    decision: ApprovalWindowDecision,
+) -> RungOutcome:
+    target_id = group.target_broker_order_id
+    if target_id is None:
+        raise AssertionError("target id validated before replacement cancellation")
+    await service.record_cancelled(
+        group.proposal_id,
+        rung.rung_index,
+        broker_order_id=target_id,
+        now=decision.observed_at,
+    )
+    return RungOutcome(
+        rung.rung_index,
+        approval_window_rung_result(decision),
+        {
+            "approval_window": decision.to_dict(),
+            "error": (
+                f"{decision.code.value}:target_cancelled_replacement_not_submitted"
+            ),
+            "target_cancelled": True,
+            "replacement_submitted": False,
+        },
+    )
+
+
+class ApprovalWindowPreSendGate:
+    """Transport hook that aborts immediately before an HTTP mutation."""
+
+    def __init__(
+        self,
+        *,
+        group: OrderProposal,
+        window_evaluator: WindowEvaluator,
+        expected_policy_stamp: str,
+        now_fn: Clock,
+    ) -> None:
+        self._group = group
+        self._window_evaluator = window_evaluator
+        self._expected_policy_stamp = expected_policy_stamp
+        self._now_fn = now_fn
+        self.blocked_decision: ApprovalWindowDecision | None = None
+
+    async def __call__(self) -> None:
+        decision = await evaluate_approval_window_boundary(
+            self._group,
+            window_evaluator=self._window_evaluator,
+            now_fn=self._now_fn,
+            expected_policy_stamp=self._expected_policy_stamp,
+        )
+        if decision.allowed:
+            return
+        self.blocked_decision = decision
+        raise PreSendFreshnessError((f"approval_window:{decision.code.value}",))
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -136,8 +334,38 @@ def _toss_decimal_arg(value: Decimal | None) -> str | int | None:
 
 def _toss_proposal_client_order_id(proposal_id: uuid.UUID, rung_index: int) -> str:
     """Return a proposal/rung-stable, Toss-safe private idempotency key."""
-    digest = hashlib.sha256(f"{proposal_id}:{rung_index}".encode()).hexdigest()[:32]
+    digest = hashlib.sha256(f"{proposal_id}:{rung_index}".encode()).hexdigest()[:24]
     return f"tosprop-{digest}"
+
+
+def _is_valid_toss_client_order_id(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) <= _TOSS_CLIENT_ORDER_ID_MAX_LENGTH
+        and _TOSS_CLIENT_ORDER_ID_PATTERN.fullmatch(value) is not None
+    )
+
+
+def _proposal_client_order_id(proposal_id: uuid.UUID, rung_index: int) -> str:
+    digest = hashlib.sha256(f"{proposal_id}:{rung_index}".encode()).hexdigest()[:32]
+    return f"oprop-{digest}"
+
+
+def _truncate_submit_diagnostic(value: object) -> str:
+    compact = " ".join(str(value).split())
+    if len(compact) > _SUBMIT_DIAGNOSTIC_MAX_LENGTH:
+        return compact[: _SUBMIT_DIAGNOSTIC_MAX_LENGTH - 1] + "…"
+    return compact
+
+
+def _toss_submit_error_summary(submit: dict[str, Any]) -> str | None:
+    code = str(submit.get("code") or "").strip()
+    if not code:
+        return None
+    message = str(submit.get("message") or "").strip()
+    return _truncate_submit_diagnostic(
+        f"Toss {code}: {message}" if message else f"Toss {code}"
+    )
 
 
 def _adapt_toss_preview_response(preview: dict[str, Any]) -> dict[str, Any]:
@@ -178,32 +406,71 @@ def _invalid_toss_preview_reason(
     return None
 
 
+async def _default_toss_opposite_pending_check(
+    *, account_mode: str, market: str, symbol: str, side: str
+) -> dict[str, Any] | None:
+    """Toss-only pre-cancel atomicity guard (ROB-972 R1 fix).
+
+    Toss's live place path rejects on an opposite-side pending order just
+    before POST (``orders_toss_variants._opposite_pending_error``), but that
+    scan never runs during the dry-run preview
+    ``_revalidate_replace_preview`` uses -- so a replace could cancel the
+    original resting order, then have the replacement rejected by that same
+    guard, leaving the operator with nothing resting (the original ROB-972
+    round-1 finding). Re-running the scan here, before any cancel, catches a
+    losing race while the original order is still intact. Deliberately
+    toss_live-only: kis_live/upbit replace weren't implicated by the
+    incident that reproduced this gap, and neither broker's replace path
+    shares Toss's cancel-then-place two-step.
+    """
+    if account_mode != "toss_live":
+        return None
+    from app.mcp_server.tooling.orders_toss_variants import (
+        _client_context,
+        _opposite_pending_error,
+    )
+
+    async with _client_context() as client:
+        return await _opposite_pending_error(client, symbol, side, {})
+
+
 def _adapt_toss_submit_response(
     submit: dict[str, Any], *, order_type: str
 ) -> dict[str, Any]:
     """Translate Toss accepted-only sends to the proposal submit contract."""
+    adapted = dict(submit)
+    diagnostic = _toss_submit_error_summary(submit)
+    if diagnostic is not None:
+        adapted["error"] = diagnostic
+
     if submit.get("success") is False and submit.get("mutation_sent") is True:
-        if submit.get("broker_status") != "rejected":
-            adapted = dict(submit)
+        status_code = submit.get("status_code")
+        typed_client_rejection = (
+            isinstance(status_code, int)
+            and 400 <= status_code < 500
+            and status_code != 429
+            and bool(str(submit.get("code") or "").strip())
+        )
+        if typed_client_rejection:
+            adapted["broker_status"] = "rejected"
+        elif submit.get("broker_status") != "rejected":
             adapted["success"] = None
             return adapted
-    if submit.get("success") is False or submit.get("broker_status") == "rejected":
-        adapted = dict(submit)
+    if adapted.get("success") is False or adapted.get("broker_status") == "rejected":
         adapted["success"] = False
         adapted["error"] = (
-            submit.get("error")
-            or submit.get("response_message")
-            or submit.get("message")
+            adapted.get("error")
+            or adapted.get("response_message")
+            or adapted.get("message")
             or "toss_order_rejected"
         )
         return adapted
     if (
-        submit.get("success") is not True
-        or submit.get("order_id") is None
-        or submit.get("approval_hash_digest") is None
+        adapted.get("success") is not True
+        or adapted.get("order_id") is None
+        or adapted.get("approval_hash_digest") is None
     ):
-        return submit
-    adapted = dict(submit)
+        return adapted
     adapted["status"] = "acked" if order_type == "market" else "resting"
     adapted["broker_order_id"] = submit.get("order_id")
     adapted["idempotency_key"] = submit.get("client_order_id")
@@ -266,6 +533,7 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
     if account_mode == "toss_live":
         from app.mcp_server.tooling.orders_toss_variants import (
             _bind_order_proposal_context,
+            _bind_toss_pre_send_hook,
             toss_place_order,
             toss_preview_order,
         )
@@ -280,6 +548,10 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
             "market": market,
             "account_mode": account_mode,
             "rung": kwargs.get("rung"),
+            "exit_intent": kwargs.get("exit_intent"),
+            "exit_reason": kwargs.get("exit_reason"),
+            "retrospective_id": kwargs.get("retrospective_id"),
+            "approval_issue_id": kwargs.get("approval_issue_id"),
         }
         if kwargs.get("dry_run") is True:
             with _bind_order_proposal_context(
@@ -291,10 +563,23 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
             return _adapt_toss_preview_response(preview)
 
         approval_hash = kwargs.get("approval_hash")
-        with _bind_order_proposal_context(
-            client_order_id=str(proposal_client_order_id),
-            correlation_id=kwargs.get("correlation_id"),
-            rung=kwargs.get("rung"),
+        if not _is_valid_toss_client_order_id(proposal_client_order_id):
+            return {
+                "success": False,
+                "mutation_sent": False,
+                "error_code": "invalid_toss_client_order_id",
+                "error": (
+                    "Toss clientOrderId must be at most 36 characters and match "
+                    "[a-zA-Z0-9\\-_]+"
+                ),
+            }
+        with (
+            _bind_order_proposal_context(
+                client_order_id=str(proposal_client_order_id),
+                correlation_id=kwargs.get("correlation_id"),
+                rung=kwargs.get("rung"),
+            ),
+            _bind_toss_pre_send_hook(kwargs.get("pre_send_hook")),
         ):
             submit = await toss_place_order(
                 **toss_kwargs,
@@ -302,7 +587,6 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
                 confirm=True,
                 approval_hash=approval_hash,
                 reason=kwargs.get("reason"),
-                exit_reason=kwargs.get("exit_reason"),
                 thesis=kwargs.get("thesis"),
                 strategy=kwargs.get("strategy"),
             )
@@ -321,13 +605,113 @@ async def _default_place_order_fn(**kwargs: Any) -> dict[str, Any]:
     # activation smoke, KRW-BTC canary). Normalize at this caller boundary;
     # the impl's float contract stays unchanged for every other caller.
     kwargs = {k: (float(v) if isinstance(v, Decimal) else v) for k, v in kwargs.items()}
+    if proposal_client_order_id is not None:
+        kwargs["client_order_id"] = str(proposal_client_order_id)
 
-    submit = await _place_order_impl(**kwargs)
+    submit = await _place_order_impl(**kwargs, proposal_flow=True)
     if kwargs.get("dry_run") is False:
         return _adapt_live_submit_response(
             submit, order_type=str(kwargs.get("order_type"))
         )
     return submit
+
+
+async def _default_retrospective_lookup(retrospective_id: int) -> Any:
+    from app.mcp_server.tooling.order_validation import (
+        _get_retrospective_by_id_for_loss_cut,
+    )
+
+    return await _get_retrospective_by_id_for_loss_cut(retrospective_id)
+
+
+async def preview_loss_cut_confirmation(
+    *,
+    service: OrderProposalsService,
+    proposal_id: uuid.UUID,
+    now: datetime,
+    place_order_fn: PlaceOrderFn = _default_place_order_fn,
+    retrospective_lookup_fn: RetrospectiveLookupFn = _default_retrospective_lookup,
+) -> dict[str, Any]:
+    """Build read-only, fresh evidence for Telegram's loss-cut second step."""
+    group, rungs = await service.get_proposal(proposal_id)
+    if group.exit_intent != "loss_cut" or group.retrospective_id is None:
+        raise OrderProposalError("loss_cut_confirmation_requires_loss_cut")
+    retrospective = await _maybe_await(retrospective_lookup_fn(group.retrospective_id))
+    if retrospective is None:
+        raise OrderProposalError("loss_cut_confirmation_retrospective_missing")
+
+    evidence_rungs: list[dict[str, Any]] = []
+    for rung in rungs:
+        if rung.state not in {"pending_approval", "needs_reconfirm"}:
+            continue
+        proposal_client_order_id = (
+            _toss_proposal_client_order_id(proposal_id, rung.rung_index)
+            if group.account_mode == "toss_live"
+            else _proposal_client_order_id(proposal_id, rung.rung_index)
+            if group.account_mode == "upbit"
+            else None
+        )
+        preview = await _maybe_await(
+            place_order_fn(
+                dry_run=True,
+                account_mode=group.account_mode,
+                symbol=group.symbol,
+                side=rung.side,
+                market=group.market,
+                order_type=group.order_type,
+                quantity=rung.quantity,
+                price=rung.limit_price,
+                thesis=group.thesis,
+                strategy=group.strategy,
+                exit_intent=group.exit_intent,
+                exit_reason=group.exit_reason,
+                retrospective_id=group.retrospective_id,
+                approval_issue_id=group.approval_issue_id,
+                reason=_PREVIEW_REASON.format(rung=rung.rung_index),
+                rung=rung.rung_index,
+                **(
+                    {"proposal_client_order_id": proposal_client_order_id}
+                    if proposal_client_order_id is not None
+                    else {}
+                ),
+            )
+        )
+        if preview.get("success") is False:
+            raise OrderProposalError(
+                str(preview.get("error") or "loss_cut_confirmation_preview_blocked")
+            )
+        try:
+            current_price = Decimal(str(preview["current_price"]))
+            avg_buy_price = Decimal(str(preview["avg_buy_price"]))
+            slip_band = Decimal(str(preview["loss_cut_slip_band"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise OrderProposalError(
+                "loss_cut_confirmation_preview_missing_price_context"
+            ) from exc
+        if avg_buy_price <= 0:
+            raise OrderProposalError("loss_cut_confirmation_invalid_average_cost")
+        loss_pct = ((current_price - avg_buy_price) / avg_buy_price * 100).quantize(
+            Decimal("0.01")
+        )
+        evidence_rungs.append(
+            {
+                "rung_index": rung.rung_index,
+                "current_price": _norm(current_price),
+                "avg_buy_price": _norm(avg_buy_price),
+                "loss_pct": format(loss_pct, "f"),
+                "loss_cut_slip_band": _norm(slip_band),
+            }
+        )
+    if not evidence_rungs:
+        raise OrderProposalError("loss_cut_confirmation_has_no_eligible_rungs")
+    lesson = " ".join(str(getattr(retrospective, "lesson", None) or "미기재").split())
+    if len(lesson) > 240:
+        lesson = lesson[:239] + "…"
+    return {
+        "rungs": evidence_rungs,
+        "retrospective_id": group.retrospective_id,
+        "lesson_excerpt": lesson,
+    }
 
 
 def _default_correlation_mint(
@@ -353,6 +737,14 @@ async def revalidate_and_submit(
     correlation_mint: CorrelationMint = _default_correlation_mint,
     fetch_target_fn: TargetFetchFn = fetch_target_order,
     cancel_target_fn: TargetCancelFn = cancel_target_order,
+    fetch_submit_evidence_fn: SubmitEvidenceFetchFn = fetch_submit_evidence,
+    buying_power_claimer: BuyingPowerClaimer = default_buying_power_claimer,
+    buying_power_releaser: BuyingPowerReleaser = default_buying_power_releaser,
+    eligibility_gate: EligibilityGate | None = None,
+    opposite_pending_check_fn: OppositePendingCheckFn = _default_toss_opposite_pending_check,
+    window_evaluator: WindowEvaluator | None = None,
+    expected_policy_stamp: str | None = None,
+    now_fn: Clock | None = None,
 ) -> list[RungOutcome]:
     """Revalidate + (maybe) submit every ``pending_approval`` rung.
 
@@ -361,6 +753,57 @@ async def revalidate_and_submit(
     revalidation cycle from this call.
     """
     group, rungs = await service.get_proposal(proposal_id)
+    block_reason = proposal_approval_block_reason(group)
+    if block_reason is not None:
+        return [
+            RungOutcome(rung.rung_index, "error", {"error": block_reason})
+            for rung in rungs
+        ]
+    pending_rungs = [rung for rung in rungs if rung.state == "pending_approval"]
+    evaluate_window = window_evaluator or evaluate_approval_window
+    clock = now_fn or (lambda: now)
+    persisted_stamp = (group.source_asof or {}).get("approval_window_policy_stamp")
+    active_policy_stamp = (
+        expected_policy_stamp
+        if expected_policy_stamp is not None
+        else str(persisted_stamp)
+        if persisted_stamp is not None
+        else None
+    )
+    initial_window = await evaluate_approval_window_boundary(
+        group,
+        window_evaluator=evaluate_window,
+        now_fn=clock,
+        expected_policy_stamp=active_policy_stamp,
+    )
+    if not initial_window.allowed:
+        outcomes: list[RungOutcome] = []
+        for rung in pending_rungs:
+            outcomes.append(
+                await _converge_window_block(
+                    service=service,
+                    group=group,
+                    rung=rung,
+                    decision=initial_window,
+                    now=initial_window.observed_at,
+                    restore_pre_send_state=False,
+                )
+            )
+        return outcomes
+    assert active_policy_stamp is not None
+    if eligibility_gate is not None and len(pending_rungs) > 1:
+        # Auto-dispatch must be lossless: submitting one ladder rung before a
+        # later rung fails eligibility or buying-power checks would violate
+        # the all-or-human-fallback contract. Until the submit path supports a
+        # broker-side atomic ladder, multi-rung proposals stay human-gated.
+        return [
+            RungOutcome(
+                rung.rung_index,
+                "approval_required",
+                {"reason": "multi_rung_requires_approval"},
+            )
+            for rung in pending_rungs
+        ]
     outcomes: list[RungOutcome] = []
     for rung in rungs:
         if rung.state != "pending_approval":
@@ -376,6 +819,12 @@ async def revalidate_and_submit(
                 fetch_target_fn=fetch_target_fn,
                 cancel_target_fn=cancel_target_fn,
                 correlation_mint=correlation_mint,
+                fetch_submit_evidence_fn=fetch_submit_evidence_fn,
+                eligibility_gate=eligibility_gate,
+                window_evaluator=evaluate_window,
+                expected_policy_stamp=active_policy_stamp,
+                now_fn=clock,
+                opposite_pending_check_fn=opposite_pending_check_fn,
             )
         elif action == "cancel":
             outcome = await _revalidate_cancel_rung(
@@ -385,6 +834,10 @@ async def revalidate_and_submit(
                 now=now,
                 fetch_target_fn=fetch_target_fn,
                 cancel_target_fn=cancel_target_fn,
+                eligibility_gate=eligibility_gate,
+                window_evaluator=evaluate_window,
+                expected_policy_stamp=active_policy_stamp,
+                now_fn=clock,
             )
         else:
             outcome = await _revalidate_place_rung(
@@ -394,9 +847,85 @@ async def revalidate_and_submit(
                 now=now,
                 place_order_fn=place_order_fn,
                 correlation_mint=correlation_mint,
+                fetch_submit_evidence_fn=fetch_submit_evidence_fn,
+                buying_power_claimer=buying_power_claimer,
+                buying_power_releaser=buying_power_releaser,
+                eligibility_gate=eligibility_gate,
+                window_evaluator=evaluate_window,
+                expected_policy_stamp=active_policy_stamp,
+                now_fn=clock,
             )
         outcomes.append(outcome)
     return outcomes
+
+
+async def _apply_eligibility_gate(
+    *,
+    service: OrderProposalsService,
+    group: OrderProposal,
+    rung: OrderProposalRung,
+    preview: dict[str, Any],
+    now: datetime,
+    eligibility_gate: EligibilityGate | None,
+) -> RungOutcome | None:
+    """Run the auto-dispatch eligibility gate, failing closed on any error.
+
+    Returns ``None`` when the rung is eligible (or no gate is wired -- the
+    manual Telegram-click path never passes one). Otherwise reverts the rung
+    to ``pending_approval`` and returns an ``approval_required`` outcome so
+    the caller falls back to the normal human-approval message instead of
+    completing whatever broker action it was about to take.
+
+    ROB-972 round-1 finding: this used to run only from
+    ``_revalidate_place_rung``, so ``dispatch_proposal``'s auto-approve path
+    could reach a toss_live/kis_live/upbit cancel or replace's broker
+    mutation without ``evaluate_auto_approve_eligibility`` (which rejects
+    ``action_not_place`` first) ever being consulted -- a same-day resting
+    order could be auto-cancelled before the Telegram approval message was
+    even sent. ``_revalidate_cancel_rung``/``_revalidate_replace_rung`` now
+    call this too, with an empty ``preview`` (the ``action_not_place``
+    check short-circuits before ``preview`` is ever read).
+    """
+    if eligibility_gate is None:
+        return None
+    proposal_id = group.proposal_id
+    rung_index = rung.rung_index
+    try:
+        decision = await _maybe_await(
+            eligibility_gate(
+                group=group,
+                rung=rung,
+                preview=preview,
+                now=now,
+            )
+        )
+        eligible = (
+            decision.get("eligible")
+            if isinstance(decision, dict)
+            else getattr(decision, "eligible", False)
+        )
+        reason = (
+            decision.get("reason")
+            if isinstance(decision, dict)
+            else getattr(decision, "reason", "eligibility_unknown")
+        )
+        details = (
+            decision.get("details", {})
+            if isinstance(decision, dict)
+            else getattr(decision, "details", {})
+        )
+    except Exception as exc:  # noqa: BLE001 - auto path fails closed
+        eligible = False
+        reason = "eligibility_error"
+        details = {"error": str(exc)}
+    if eligible is True:
+        return None
+    await service.transition_rung(proposal_id, rung_index, new_state="pending_approval")
+    return RungOutcome(
+        rung_index,
+        "approval_required",
+        {"reason": str(reason), **dict(details or {})},
+    )
 
 
 async def _revalidate_place_rung(
@@ -407,14 +936,34 @@ async def _revalidate_place_rung(
     now: datetime,
     place_order_fn: PlaceOrderFn,
     correlation_mint: CorrelationMint,
+    fetch_submit_evidence_fn: SubmitEvidenceFetchFn,
+    buying_power_claimer: BuyingPowerClaimer,
+    buying_power_releaser: BuyingPowerReleaser,
+    eligibility_gate: EligibilityGate | None,
+    window_evaluator: WindowEvaluator,
+    expected_policy_stamp: str,
+    now_fn: Clock,
 ) -> RungOutcome:
     proposal_id = group.proposal_id
     rung_index = rung.rung_index
-    toss_client_order_id = (
+    proposal_client_order_id = (
         _toss_proposal_client_order_id(proposal_id, rung_index)
         if group.account_mode == "toss_live"
+        else _proposal_client_order_id(proposal_id, rung_index)
+        if group.account_mode == "upbit"
         else None
     )
+
+    window_outcome = await _pre_mutation_window_gate(
+        service=service,
+        group=group,
+        rung=rung,
+        window_evaluator=window_evaluator,
+        expected_policy_stamp=expected_policy_stamp,
+        now_fn=now_fn,
+    )
+    if window_outcome is not None:
+        return window_outcome
 
     await service.transition_rung(proposal_id, rung_index, new_state="revalidating")
 
@@ -438,8 +987,8 @@ async def _revalidate_place_rung(
                 reason=_PREVIEW_REASON.format(rung=rung_index),
                 rung=rung_index,
                 **(
-                    {"proposal_client_order_id": toss_client_order_id}
-                    if toss_client_order_id is not None
+                    {"proposal_client_order_id": proposal_client_order_id}
+                    if proposal_client_order_id is not None
                     else {}
                 ),
             )
@@ -464,10 +1013,10 @@ async def _revalidate_place_rung(
             {"error": preview.get("error"), "preview": preview},
         )
 
-    if toss_client_order_id is not None:
+    if group.account_mode == "toss_live":
         invalid_reason = _invalid_toss_preview_reason(
             preview,
-            expected_client_order_id=toss_client_order_id,
+            expected_client_order_id=proposal_client_order_id,
             order_type=group.order_type,
         )
         if invalid_reason is not None:
@@ -507,10 +1056,108 @@ async def _revalidate_place_rung(
             rung_index, "needs_reconfirm", {"before": before, "after": after}
         )
 
+    gate_outcome = await _apply_eligibility_gate(
+        service=service,
+        group=group,
+        rung=rung,
+        preview=preview,
+        now=now,
+        eligibility_gate=eligibility_gate,
+    )
+    if gate_outcome is not None:
+        return gate_outcome
+
+    window_outcome = await _pre_mutation_window_gate(
+        service=service,
+        group=group,
+        rung=rung,
+        window_evaluator=window_evaluator,
+        expected_policy_stamp=expected_policy_stamp,
+        now_fn=now_fn,
+    )
+    if window_outcome is not None:
+        return window_outcome
+
+    buying_power_reservation: tuple[str, Decimal, str | None] | None = None
+    if rung.side == "buy" and rung.limit_price is not None:
+        currency = currency_for_market(group.market)
+        required = required_cash(
+            quantity=Decimal(rung.quantity),
+            limit_price=Decimal(rung.limit_price),
+            preview=preview,
+        )
+        try:
+            # The default claimer reads and provisionally subtracts under one
+            # per-account/currency lock. This closes the gap where two rapid
+            # approvals could both observe the same cached balance before
+            # either broker POST was sent.
+            claim = await _maybe_await(
+                buying_power_claimer(
+                    account_mode=group.account_mode,
+                    broker_account_id=group.broker_account_id,
+                    currency=currency,
+                    amount=required,
+                )
+            )
+        except Exception:  # noqa: BLE001 - UX gate deliberately fails open
+            # This pre-submit comparison improves operator feedback; it is not
+            # the authoritative safety control. If the advisory read is down,
+            # preserve the existing submit path and let the broker make the
+            # final buying-power decision.
+            logger.warning(
+                "order proposal buying-power lookup failed; continuing fail-open",
+                exc_info=True,
+            )
+            claim = None
+        claim_token: str | None = None
+        if isinstance(claim, BuyingPowerClaim):
+            available = claim.available
+            claim_token = claim.token
+        else:
+            available = claim
+        if available is not None and Decimal(available) < required:
+            available_decimal = Decimal(available)
+            await service.mark_needs_reconfirm(proposal_id, rung_index, now=now)
+            return RungOutcome(
+                rung_index,
+                "needs_reconfirm",
+                {
+                    "reason": "insufficient_buying_power",
+                    "currency": currency,
+                    "available": decimal_text(available_decimal),
+                    "required": decimal_text(required),
+                    "shortfall": decimal_text(required - available_decimal),
+                },
+            )
+        if available is not None:
+            buying_power_reservation = (currency, required, claim_token)
+
+    window_outcome = await _pre_mutation_window_gate(
+        service=service,
+        group=group,
+        rung=rung,
+        window_evaluator=window_evaluator,
+        expected_policy_stamp=expected_policy_stamp,
+        now_fn=now_fn,
+    )
+    if window_outcome is not None:
+        await _release_after_rejection(
+            buying_power_releaser=buying_power_releaser,
+            group=group,
+            reservation=buying_power_reservation,
+        )
+        return window_outcome
+
     await service.transition_rung(proposal_id, rung_index, new_state="approved")
     await service.transition_rung(proposal_id, rung_index, new_state="submitting")
 
     corr = await _maybe_await(correlation_mint(group=group, rung=rung, now=now))
+    transport_gate = ApprovalWindowPreSendGate(
+        group=group,
+        window_evaluator=window_evaluator,
+        expected_policy_stamp=expected_policy_stamp,
+        now_fn=now_fn,
+    )
 
     try:
         submit = await _maybe_await(
@@ -532,26 +1179,72 @@ async def _revalidate_place_rung(
                 reason=_SUBMIT_REASON.format(rung=rung_index),
                 approval_hash=preview.get("approval_hash"),
                 **(
-                    {"proposal_client_order_id": toss_client_order_id}
-                    if toss_client_order_id is not None
+                    {"proposal_client_order_id": proposal_client_order_id}
+                    if proposal_client_order_id is not None
                     else {}
                 ),
                 rung=rung_index,
                 correlation_id=corr,
+                pre_send_hook=transport_gate,
             )
         )
     except Exception as exc:  # noqa: BLE001 - broker call; ambiguous, not a void
-        await service.record_unverified(
-            proposal_id,
-            rung_index,
-            reason=f"submit_exception:{exc}",
-            now=now,
-            correlation_id=corr,
-            idempotency_key=preview.get("idempotency_key"),
-        )
-        return RungOutcome(rung_index, "unverified", {"error": str(exc)})
+        if transport_gate.blocked_decision is not None:
+            await _release_after_rejection(
+                buying_power_releaser=buying_power_releaser,
+                group=group,
+                reservation=buying_power_reservation,
+            )
+            return await _converge_window_block(
+                service=service,
+                group=group,
+                rung=rung,
+                decision=transport_gate.blocked_decision,
+                now=transport_gate.blocked_decision.observed_at,
+                restore_pre_send_state=True,
+            )
+        if group.account_mode == "upbit":
+            outcome = await _classify_submit(
+                service=service,
+                proposal_id=proposal_id,
+                rung_index=rung_index,
+                preview=preview,
+                submit={"success": False, "error": str(exc)},
+                corr=corr,
+                now=now,
+                account_mode=group.account_mode,
+                market=group.market,
+                identifier=proposal_client_order_id,
+                fetch_submit_evidence_fn=fetch_submit_evidence_fn,
+            )
+        else:
+            await service.record_unverified(
+                proposal_id,
+                rung_index,
+                reason=f"submit_exception:{exc}",
+                now=now,
+                correlation_id=corr,
+                idempotency_key=preview.get("idempotency_key"),
+            )
+            outcome = RungOutcome(rung_index, "unverified", {"error": str(exc)})
+        return outcome
 
-    return await _classify_submit(
+    if transport_gate.blocked_decision is not None:
+        await _release_after_rejection(
+            buying_power_releaser=buying_power_releaser,
+            group=group,
+            reservation=buying_power_reservation,
+        )
+        return await _converge_window_block(
+            service=service,
+            group=group,
+            rung=rung,
+            decision=transport_gate.blocked_decision,
+            now=transport_gate.blocked_decision.observed_at,
+            restore_pre_send_state=True,
+        )
+
+    outcome = await _classify_submit(
         service=service,
         proposal_id=proposal_id,
         rung_index=rung_index,
@@ -559,7 +1252,44 @@ async def _revalidate_place_rung(
         submit=submit,
         corr=corr,
         now=now,
+        account_mode=group.account_mode,
+        market=group.market,
+        identifier=proposal_client_order_id,
+        fetch_submit_evidence_fn=fetch_submit_evidence_fn,
     )
+    if outcome.result == "error":
+        await _release_after_rejection(
+            buying_power_releaser=buying_power_releaser,
+            group=group,
+            reservation=buying_power_reservation,
+        )
+    return outcome
+
+
+async def _release_after_rejection(
+    *,
+    buying_power_releaser: BuyingPowerReleaser,
+    group: OrderProposal,
+    reservation: tuple[str, Decimal, str | None] | None,
+) -> None:
+    if reservation is None:
+        return
+    currency, amount, claim_token = reservation
+    try:
+        await _maybe_await(
+            buying_power_releaser(
+                account_mode=group.account_mode,
+                broker_account_id=group.broker_account_id,
+                currency=currency,
+                claim_token=claim_token,
+                amount=amount,
+            )
+        )
+    except Exception:  # noqa: BLE001 - cache adjustment never changes broker outcome
+        logger.warning(
+            "order proposal buying-power claim release failed; ignoring",
+            exc_info=True,
+        )
 
 
 def _target_mismatch_reason(
@@ -646,6 +1376,7 @@ async def _revalidate_replace_preview(
     rung: OrderProposalRung,
     now: datetime,
     place_order_fn: PlaceOrderFn,
+    proposal_client_order_id: str | None,
 ) -> tuple[dict[str, Any] | None, RungOutcome | None]:
     proposal_id = group.proposal_id
     rung_index = rung.rung_index
@@ -667,6 +1398,12 @@ async def _revalidate_replace_preview(
                 approval_issue_id=group.approval_issue_id,
                 reason=_PREVIEW_REASON.format(rung=rung_index),
                 rung=rung_index,
+                account_mode=group.account_mode,
+                **(
+                    {"proposal_client_order_id": proposal_client_order_id}
+                    if proposal_client_order_id is not None
+                    else {}
+                ),
             )
         )
     except Exception as exc:
@@ -713,6 +1450,9 @@ async def _cancel_and_confirm_target(
     now: datetime,
     fetch_target_fn: TargetFetchFn,
     cancel_target_fn: TargetCancelFn,
+    window_evaluator: WindowEvaluator,
+    expected_policy_stamp: str,
+    now_fn: Clock,
 ) -> RungOutcome | None:
     proposal_id = group.proposal_id
     rung_index = rung.rung_index
@@ -725,6 +1465,12 @@ async def _cancel_and_confirm_target(
             rung_index, "error", {"error": "target_broker_order_id_missing"}
         )
 
+    transport_gate = ApprovalWindowPreSendGate(
+        group=group,
+        window_evaluator=window_evaluator,
+        expected_policy_stamp=expected_policy_stamp,
+        now_fn=now_fn,
+    )
     try:
         cancel_result = await _maybe_await(
             cancel_target_fn(
@@ -732,13 +1478,33 @@ async def _cancel_and_confirm_target(
                 symbol=group.symbol,
                 market=group.market,
                 account_mode=group.account_mode,
+                pre_send_hook=transport_gate,
             )
         )
     except Exception as exc:
+        if transport_gate.blocked_decision is not None:
+            return await _converge_window_block(
+                service=service,
+                group=group,
+                rung=rung,
+                decision=transport_gate.blocked_decision,
+                now=transport_gate.blocked_decision.observed_at,
+                restore_pre_send_state=True,
+            )
         await service.record_unverified(
             proposal_id, rung_index, reason=f"cancel_exception:{exc}", now=now
         )
         return RungOutcome(rung_index, "unverified", {"error": str(exc)})
+
+    if transport_gate.blocked_decision is not None:
+        return await _converge_window_block(
+            service=service,
+            group=group,
+            rung=rung,
+            decision=transport_gate.blocked_decision,
+            now=transport_gate.blocked_decision.observed_at,
+            restore_pre_send_state=True,
+        )
 
     if not isinstance(cancel_result, dict) or cancel_result.get("success") is not True:
         reason = (
@@ -790,6 +1556,50 @@ async def _cancel_and_confirm_target(
     return None
 
 
+async def _check_replace_opposite_pending(
+    *,
+    service: OrderProposalsService,
+    group: OrderProposal,
+    rung: OrderProposalRung,
+    now: datetime,
+    opposite_pending_check_fn: OppositePendingCheckFn,
+) -> RungOutcome | None:
+    """Pre-cancel guard: block a replace before it cancels the original.
+
+    ``opposite_pending_check_fn`` is a no-op (returns ``None``) for every
+    account_mode except toss_live -- see
+    ``_default_toss_opposite_pending_check``. Any exception (e.g. the Toss
+    client being unconfigured) fails closed: the rung reverts to
+    ``pending_approval`` and the original order is never touched, same as a
+    confirmed opposite-pending hit.
+    """
+    proposal_id = group.proposal_id
+    rung_index = rung.rung_index
+    try:
+        guard = await _maybe_await(
+            opposite_pending_check_fn(
+                account_mode=group.account_mode,
+                market=group.market,
+                symbol=group.symbol,
+                side=rung.side,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - fail closed: never cancel on an unknown guard state
+        await service.transition_rung(
+            proposal_id, rung_index, new_state="pending_approval"
+        )
+        return RungOutcome(
+            rung_index, "error", {"error": f"opposite_pending_check_error:{exc}"}
+        )
+    if guard is None:
+        return None
+    await service.transition_rung(proposal_id, rung_index, new_state="pending_approval")
+    error = (
+        guard.get("error") if isinstance(guard, dict) else None
+    ) or "opposite_pending_order_exists"
+    return RungOutcome(rung_index, "guard_blocked", {"error": error})
+
+
 async def _revalidate_replace_rung(
     *,
     service: OrderProposalsService,
@@ -800,7 +1610,31 @@ async def _revalidate_replace_rung(
     fetch_target_fn: TargetFetchFn,
     cancel_target_fn: TargetCancelFn,
     correlation_mint: CorrelationMint,
+    fetch_submit_evidence_fn: SubmitEvidenceFetchFn,
+    eligibility_gate: EligibilityGate | None = None,
+    window_evaluator: WindowEvaluator,
+    expected_policy_stamp: str,
+    now_fn: Clock,
+    opposite_pending_check_fn: OppositePendingCheckFn = _default_toss_opposite_pending_check,
 ) -> RungOutcome:
+    proposal_client_order_id = (
+        _toss_proposal_client_order_id(group.proposal_id, rung.rung_index)
+        if group.account_mode == "toss_live"
+        else _proposal_client_order_id(group.proposal_id, rung.rung_index)
+        if group.account_mode == "upbit"
+        else None
+    )
+    window_outcome = await _pre_mutation_window_gate(
+        service=service,
+        group=group,
+        rung=rung,
+        window_evaluator=window_evaluator,
+        expected_policy_stamp=expected_policy_stamp,
+        now_fn=now_fn,
+    )
+    if window_outcome is not None:
+        return window_outcome
+
     target_outcome = await _validate_target_action(
         service=service,
         group=group,
@@ -811,15 +1645,85 @@ async def _revalidate_replace_rung(
     if target_outcome is not None:
         return target_outcome
 
+    # ROB-972 round-1 finding: an auto-dispatch eligibility gate previously
+    # only ran for `place` rungs, so a toss_live/kis_live/upbit auto-dispatch
+    # could reach the cancel below without ever consulting
+    # `evaluate_auto_approve_eligibility` (which rejects `action_not_place`
+    # first, before it would even read `preview`). Applying the same gate
+    # here means the manual Telegram-click path (`eligibility_gate=None`) is
+    # unaffected, but auto-dispatch always falls back to human approval for
+    # cancel/replace, same as it always has for `place`.
+    gate_outcome = await _apply_eligibility_gate(
+        service=service,
+        group=group,
+        rung=rung,
+        preview={},
+        now=now,
+        eligibility_gate=eligibility_gate,
+    )
+    if gate_outcome is not None:
+        return gate_outcome
+
+    window_outcome = await _pre_mutation_window_gate(
+        service=service,
+        group=group,
+        rung=rung,
+        window_evaluator=window_evaluator,
+        expected_policy_stamp=expected_policy_stamp,
+        now_fn=now_fn,
+    )
+    if window_outcome is not None:
+        return window_outcome
+
     preview, preview_outcome = await _revalidate_replace_preview(
         service=service,
         group=group,
         rung=rung,
         now=now,
         place_order_fn=place_order_fn,
+        proposal_client_order_id=proposal_client_order_id,
     )
     if preview_outcome is not None:
         return preview_outcome
+
+    window_outcome = await _pre_mutation_window_gate(
+        service=service,
+        group=group,
+        rung=rung,
+        window_evaluator=window_evaluator,
+        expected_policy_stamp=expected_policy_stamp,
+        now_fn=now_fn,
+    )
+    if window_outcome is not None:
+        return window_outcome
+
+    # ROB-972 round-1 finding: Toss's live place path rejects an
+    # opposite-side pending order just before POST, but the dry-run preview
+    # above never runs that scan -- so without this check, a replace could
+    # cancel the original order below and then have the replacement
+    # rejected by that same guard, leaving the operator with nothing
+    # resting. Re-check here, before any cancel, so a losing race is caught
+    # while the original order is still intact.
+    opposite_outcome = await _check_replace_opposite_pending(
+        service=service,
+        group=group,
+        rung=rung,
+        now=now,
+        opposite_pending_check_fn=opposite_pending_check_fn,
+    )
+    if opposite_outcome is not None:
+        return opposite_outcome
+
+    window_outcome = await _pre_mutation_window_gate(
+        service=service,
+        group=group,
+        rung=rung,
+        window_evaluator=window_evaluator,
+        expected_policy_stamp=expected_policy_stamp,
+        now_fn=now_fn,
+    )
+    if window_outcome is not None:
+        return window_outcome
 
     proposal_id = group.proposal_id
     rung_index = rung.rung_index
@@ -832,11 +1736,31 @@ async def _revalidate_replace_rung(
         now=now,
         fetch_target_fn=fetch_target_fn,
         cancel_target_fn=cancel_target_fn,
+        window_evaluator=window_evaluator,
+        expected_policy_stamp=expected_policy_stamp,
+        now_fn=now_fn,
     )
     if cancel_outcome is not None:
         return cancel_outcome
 
     corr = await _maybe_await(correlation_mint(group=group, rung=rung, now=now))
+    window_outcome = await _post_cancel_replace_window_gate(
+        service=service,
+        group=group,
+        rung=rung,
+        window_evaluator=window_evaluator,
+        expected_policy_stamp=expected_policy_stamp,
+        now_fn=now_fn,
+    )
+    if window_outcome is not None:
+        return window_outcome
+
+    transport_gate = ApprovalWindowPreSendGate(
+        group=group,
+        window_evaluator=window_evaluator,
+        expected_policy_stamp=expected_policy_stamp,
+        now_fn=now_fn,
+    )
     try:
         submit = await _maybe_await(
             place_order_fn(
@@ -857,9 +1781,37 @@ async def _revalidate_replace_rung(
                 approval_hash=preview.get("approval_hash"),
                 rung=rung_index,
                 correlation_id=corr,
+                account_mode=group.account_mode,
+                **(
+                    {"proposal_client_order_id": proposal_client_order_id}
+                    if proposal_client_order_id is not None
+                    else {}
+                ),
+                pre_send_hook=transport_gate,
             )
         )
     except Exception as exc:
+        if transport_gate.blocked_decision is not None:
+            return await _record_post_cancel_window_block(
+                service=service,
+                group=group,
+                rung=rung,
+                decision=transport_gate.blocked_decision,
+            )
+        if group.account_mode == "upbit":
+            return await _classify_submit(
+                service=service,
+                proposal_id=proposal_id,
+                rung_index=rung_index,
+                preview=preview,
+                submit={"success": False, "error": str(exc)},
+                corr=corr,
+                now=now,
+                account_mode=group.account_mode,
+                market=group.market,
+                identifier=proposal_client_order_id,
+                fetch_submit_evidence_fn=fetch_submit_evidence_fn,
+            )
         await service.record_unverified(
             proposal_id,
             rung_index,
@@ -869,6 +1821,13 @@ async def _revalidate_replace_rung(
             idempotency_key=preview.get("idempotency_key"),
         )
         return RungOutcome(rung_index, "unverified", {"error": str(exc)})
+    if transport_gate.blocked_decision is not None:
+        return await _record_post_cancel_window_block(
+            service=service,
+            group=group,
+            rung=rung,
+            decision=transport_gate.blocked_decision,
+        )
     return await _classify_submit(
         service=service,
         proposal_id=proposal_id,
@@ -877,6 +1836,10 @@ async def _revalidate_replace_rung(
         submit=submit,
         corr=corr,
         now=now,
+        account_mode=group.account_mode,
+        market=group.market,
+        identifier=proposal_client_order_id,
+        fetch_submit_evidence_fn=fetch_submit_evidence_fn,
     )
 
 
@@ -888,7 +1851,22 @@ async def _revalidate_cancel_rung(
     now: datetime,
     fetch_target_fn: TargetFetchFn,
     cancel_target_fn: TargetCancelFn,
+    eligibility_gate: EligibilityGate | None = None,
+    window_evaluator: WindowEvaluator,
+    expected_policy_stamp: str,
+    now_fn: Clock,
 ) -> RungOutcome:
+    window_outcome = await _pre_mutation_window_gate(
+        service=service,
+        group=group,
+        rung=rung,
+        window_evaluator=window_evaluator,
+        expected_policy_stamp=expected_policy_stamp,
+        now_fn=now_fn,
+    )
+    if window_outcome is not None:
+        return window_outcome
+
     target_outcome = await _validate_target_action(
         service=service,
         group=group,
@@ -898,6 +1876,33 @@ async def _revalidate_cancel_rung(
     )
     if target_outcome is not None:
         return target_outcome
+
+    # ROB-972 round-1 finding: see the matching comment in
+    # `_revalidate_replace_rung` -- without this, auto-dispatch could reach
+    # `BROKER_CANCEL` below for a toss_live/kis_live/upbit cancel proposal
+    # without ever consulting the eligibility gate, which rejects
+    # `action_not_place` before it reads `preview`.
+    gate_outcome = await _apply_eligibility_gate(
+        service=service,
+        group=group,
+        rung=rung,
+        preview={},
+        now=now,
+        eligibility_gate=eligibility_gate,
+    )
+    if gate_outcome is not None:
+        return gate_outcome
+
+    window_outcome = await _pre_mutation_window_gate(
+        service=service,
+        group=group,
+        rung=rung,
+        window_evaluator=window_evaluator,
+        expected_policy_stamp=expected_policy_stamp,
+        now_fn=now_fn,
+    )
+    if window_outcome is not None:
+        return window_outcome
 
     proposal_id = group.proposal_id
     rung_index = rung.rung_index
@@ -910,6 +1915,9 @@ async def _revalidate_cancel_rung(
         now=now,
         fetch_target_fn=fetch_target_fn,
         cancel_target_fn=cancel_target_fn,
+        window_evaluator=window_evaluator,
+        expected_policy_stamp=expected_policy_stamp,
+        now_fn=now_fn,
     )
     if cancel_outcome is not None:
         return cancel_outcome
@@ -932,15 +1940,70 @@ async def _classify_submit(
     submit: dict[str, Any],
     corr: str,
     now: datetime,
+    account_mode: str,
+    market: str,
+    identifier: str | None,
+    fetch_submit_evidence_fn: SubmitEvidenceFetchFn,
 ) -> RungOutcome:
     success = submit.get("success")
 
     if success is False:
+        original_error = str(submit.get("error") or "submit_rejected")
+        if account_mode == "upbit" and identifier is not None:
+            evidence = await _maybe_await(
+                fetch_submit_evidence_fn(
+                    identifier=identifier,
+                    account_mode=account_mode,
+                    market=market,
+                )
+            )
+            if evidence.outcome == "found":
+                status = (
+                    "resting" if evidence.broker_state in {"wait", "watch"} else "acked"
+                )
+                record_fn = (
+                    service.record_resting
+                    if status == "resting"
+                    else service.record_ack
+                )
+                await record_fn(
+                    proposal_id,
+                    rung_index,
+                    broker_order_id=evidence.broker_order_id,
+                    correlation_id=corr,
+                    idempotency_key=identifier,
+                    approval_hash_digest=preview.get("approval_hash"),
+                    now=now,
+                )
+                result: RungOutcomeResult = (
+                    "submitted_resting" if status == "resting" else "submitted_acked"
+                )
+                return RungOutcome(
+                    rung_index,
+                    result,
+                    {"submit": submit, "submit_evidence": evidence},
+                )
+            if evidence.outcome == "unknown":
+                await service.record_unverified(
+                    proposal_id,
+                    rung_index,
+                    reason=(
+                        f"submit_evidence_unknown:{evidence.reason or original_error}"
+                    ),
+                    now=now,
+                    correlation_id=corr,
+                    idempotency_key=identifier,
+                )
+                return RungOutcome(
+                    rung_index,
+                    "unverified",
+                    {"error": original_error, "submit_evidence": evidence},
+                )
         # Explicit broker/guard rejection — not ambiguous, safe to terminalize.
         await service.record_rejected(
             proposal_id,
             rung_index,
-            reason=str(submit.get("error") or "submit_rejected"),
+            reason=original_error,
             now=now,
         )
         return RungOutcome(rung_index, "error", {"error": submit.get("error")})
@@ -976,14 +2039,19 @@ async def _classify_submit(
     # success is True but unrecognized status/missing broker_order_id, or
     # success is missing entirely (neither True nor False) — ambiguous.
     # Never auto-void on ambiguity (Principle #4).
+    ambiguous_diagnostic = _truncate_submit_diagnostic(
+        submit.get("error") or f"status={submit.get('status')!r}"
+    )
     await service.record_unverified(
         proposal_id,
         rung_index,
-        reason=f"ambiguous_submit_response:status={submit.get('status')!r}",
+        reason=f"ambiguous_submit_response:{ambiguous_diagnostic}",
         now=now,
         correlation_id=corr,
         idempotency_key=(
-            submit.get("idempotency_key") or preview.get("idempotency_key")
+            identifier
+            or submit.get("idempotency_key")
+            or preview.get("idempotency_key")
         ),
     )
     return RungOutcome(rung_index, "unverified", {"submit": submit})

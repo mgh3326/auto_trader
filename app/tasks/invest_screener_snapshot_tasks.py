@@ -38,6 +38,10 @@ from app.jobs.invest_screener_snapshots import (
     run_snapshot_build,
     run_snapshot_build_guarded,
 )
+from app.jobs.support_proximity_snapshots import (
+    SupportProximityBuildRequest,
+    run_support_proximity_build,
+)
 from app.services.invest_screener_snapshots.alerts import (
     send_screener_refresh_alert,
 )
@@ -275,6 +279,60 @@ async def build_invest_screener_snapshots(
                 "latestClose": sample.latest_close,
                 "consecutiveUpDays": sample.consecutive_up_days,
                 "weekChangeRate": sample.week_change_rate,
+            }
+            for sample in result.samples
+        ],
+        "warnings": list(result.warnings),
+    }
+
+
+@broker.task(task_name="build_support_proximity_snapshots")
+async def build_support_proximity_snapshots(
+    candidate_pool_limit: int = 30,
+    concurrency: int = 4,
+    min_market_cap: float = 300_000_000_000.0,
+    min_turnover: float = 1_000_000_000.0,
+    commit: bool = False,
+) -> dict[str, Any]:
+    """Manual, scheduleless support snapshot lever; dry-run by default."""
+
+    from decimal import Decimal
+
+    result = await run_support_proximity_build(
+        SupportProximityBuildRequest(
+            market="kr",
+            candidate_pool_limit=candidate_pool_limit,
+            concurrency=concurrency,
+            min_market_cap=Decimal(str(min_market_cap)),
+            min_turnover=Decimal(str(min_turnover)),
+            commit=commit,
+        )
+    )
+    return {
+        "market": result.market,
+        "sourcePartitionDate": (
+            result.source_partition_date.isoformat()
+            if result.source_partition_date is not None
+            else None
+        ),
+        "candidatesResolved": result.candidates_resolved,
+        "snapshotsBuilt": result.snapshots_built,
+        "supportsBuilt": result.supports_built,
+        "skipped": result.skipped,
+        "committed": result.committed,
+        "startedAt": result.started_at.isoformat(),
+        "finishedAt": result.finished_at.isoformat(),
+        "samples": [
+            {
+                "symbol": sample.symbol,
+                "snapshotDate": sample.snapshot_date.isoformat(),
+                "latestClose": sample.latest_close,
+                "supportPrice": sample.support_price,
+                "supportKind": sample.support_kind,
+                "supportStrength": sample.support_strength,
+                "distToSupportPct": sample.dist_to_support_pct,
+                "marketCap": sample.market_cap,
+                "supportComputedAt": sample.support_computed_at.isoformat(),
             }
             for sample in result.samples
         ],

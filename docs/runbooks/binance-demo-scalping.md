@@ -150,7 +150,12 @@ BINANCE_DEMO_SCALPING_ENABLED=true BINANCE_FUTURES_DEMO_ENABLED=true \
 ```
 
 Exit codes: `0` reconciled / dry-run / disabled, `1` blocked / operator
-misconfig, `2` anomaly / runtime.
+misconfig, `2` anomaly / runtime. An untrustworthy server market snapshot
+(bookTicker/kline unavailable, malformed, or non-finite; ROB-841) is a
+**blocked** outcome — the CLI emits a `demo_scalping_execute` evidence line
+with `status=blocked` and `reason_codes=[market_conditions_unavailable]` and
+exits `1` (never the generic exit `2`), before any DB session, executor, or
+broker submit.
 
 ### Running the real-order smoke (clean ledger DB)
 
@@ -171,6 +176,102 @@ don't (correctly) trip the global cap. Procedure:
    `status=reconciled`, position flat, open orders 0.
 5. Capture the redacted evidence line + a broker/ledger reconciliation
    check (open orders 0; futures position flat).
+
+### Abandoned root-reservation reconciliation (ROB-844, ROB-906)
+
+`reserve_root_planned` commits its exposure claim in an independent DB
+transaction before broker order submission. A process crash can therefore leave
+a durable **pre-acknowledgement open root** — a root row still persisted as
+`planned`, `previewed`, or `validated` whose `broker_order_id` is still NULL
+(the broker POST never reached the venue, so no acknowledgement exists). All
+three occupy the global open-root cap and are candidates here.
+`submitted`/`filled`/`anomaly` roots carry a broker ack and stay owned by the
+fill-evidence reconcile path — they are never candidates for this job.
+
+> **ROB-906:** the original job only scanned `planned` rows, so a crash *after*
+> `record_validated` (but before the broker POST) stranded a `validated` root
+> that permanently occupied the cap — observed in production as every scalping
+> tick entry blocking with `global_lifecycle_cap_reached` while the broker
+> account was flat. The pre-ack candidate set above closes that blind spot.
+
+It is never released by elapsed time alone. The scheduleless
+TaskIQ entrypoint `binance.demo_root_reservation.reconcile` combines an age
+eligibility guard (`planned_at`, populated at insert and preserved across pre-ack
+transitions) with exact broker truth by `client_order_id`. Before any
+broker GET, the persisted row must match the product's exact Demo host and its
+`extra_metadata.credential_fingerprint` must exactly match the running
+adapter's opaque API-key fingerprint. Raw API keys/secrets are never stored.
+Legacy rows with no fingerprint, rotated/mismatched credentials, or unavailable
+client identity stay blocking and dispatch zero broker reads. Each outcome
+reports its pre-release `lifecycle_state` (`planned`/`previewed`/`validated`) for
+operator readability.
+
+- explicit Binance `-2013` order-not-found is releasable only while reservation
+  age is **strictly below 89 days**. At exactly 89 days or older, lookup
+  retention makes absence ambiguous and the row stays blocking;
+- a real terminal payload can independently release at any age only when the
+  broker body actually contains valid `clientOrderId`, `symbol`, `status`,
+  non-negative finite `executedQty`, and a positive numeric `orderId`; identity
+  must match and executed quantity must be zero. Spot accepts documented
+  `CANCELED`/`REJECTED`/`EXPIRED`/`EXPIRED_IN_MATCH`; Futures accepts
+  `CANCELED`/`REJECTED`/`EXPIRED`;
+- open/partial/filled, missing/blank/invalid required fields, undocumented or
+  cross-product statuses, authentication/transport/5xx/other 4xx → keep
+  blocking;
+- discovery is lock-free; each candidate then gets its own independent
+  transaction and one-row `FOR UPDATE SKIP LOCKED`. Slow broker I/O for row 1
+  never locks row 2, while executor-first/reconciler-first races remain safe.
+
+The task has no schedule and uses three default-off gates. The minimum age is
+one hour by default and has a hard one-hour floor; configuring a larger value is
+allowed. With confirm off, it performs broker reads and reports
+`would_release`, with **zero ledger mutation/write** (the read-only transaction
+may still complete normally).
+
+| Env var | Effect |
+|---|---|
+| `BINANCE_DEMO_SCALPING_ENABLED` | shared master capability; required |
+| `BINANCE_DEMO_RESERVATION_RECONCILE_ENABLED` | enables the manual reconcile read pass |
+| `BINANCE_DEMO_RESERVATION_RECONCILE_CONFIRM` | permits local cancelled→reconciled mutation; unset means dry-run |
+| `BINANCE_DEMO_RESERVATION_RECONCILE_MIN_AGE_SECONDS` | candidate age, default/minimum `3600` |
+
+Spot and Futures clients are constructed independently. Configure only the
+product lanes this worker is authorized to read (`BINANCE_SPOT_DEMO_*` and/or
+`BINANCE_FUTURES_DEMO_*`). A missing, disabled, or invalid sibling lane does not
+broaden required credentials: its candidates report `client_unavailable`, stay
+blocking, and receive zero broker GETs.
+
+These settings are read by the **running TaskIQ worker**, not by the enqueue
+client. Prefixing `VAR=value` to `taskiq kick` changes only the kick process and
+does not propagate gates or credentials to an existing worker.
+
+1. Dry-run window: set the worker deployment environment with the two read
+   gates, only the authorized product Demo gate(s)/credentials, minimum age, and
+   `BINANCE_DEMO_RESERVATION_RECONCILE_CONFIRM=false`; restart/reload the TaskIQ
+   worker and verify it is healthy.
+2. Enqueue with no environment prefix:
+
+   ```bash
+   uv run taskiq kick app.core.taskiq_broker:broker \
+     binance.demo_root_reservation.reconcile
+   ```
+
+3. Inspect the task result/log: require `status=ok`, expected `scanned` and
+   `would_release` outcomes, and `released=0`. Query the ledger and confirm all
+   candidate lifecycle states/timestamps/metadata are unchanged. Cross-check
+   broker open orders (and Futures positions) under the same credentials.
+4. Apply window: change only the running worker deployment setting to
+   `BINANCE_DEMO_RESERVATION_RECONCILE_CONFIRM=true`, restart/reload the worker,
+   confirm the effective setting, then issue the same plain kick exactly once.
+5. Verify each reported `released` row is now `reconciled` with matching
+   redacted reconciliation evidence; verify kept rows remain in their pre-ack
+   open state (`planned`/`previewed`/`validated`, per each outcome's
+   `lifecycle_state`), broker open orders are expected, and Futures positions
+   are understood.
+6. **Immediately close the apply window:** set confirm back to `false`, restart/
+   reload the worker, and verify a subsequent controlled invocation reports
+   `mutation_confirmed=false`. On any error or unexpected outcome, perform this
+   rollback first and do not retry until ledger/broker truth is reconciled.
 
 ## Bounded-monitor TP/SL (`execute_monitored`)
 
@@ -233,11 +334,37 @@ exits flat in-run) on each signal. It is **registered with no schedule**
 | `BINANCE_DEMO_SCALPING_ENABLED` | shared feature gate |
 | `BINANCE_DEMO_SCALPING_SCHEDULER_ENABLED` | scheduler **kill switch** |
 | `BINANCE_DEMO_SCALPING_SCHEDULER_CONFIRM` | second key — without it the tick runs signals + risk re-checks but every `execute_monitored` is a **dry-run** (zero broker mutation) |
+| `BINANCE_DEMO_SCALPING_VALIDATED_GATE_PATH` | ROB-905 — path to the validated-signal gate artifact; `SCHEDULER_CONFIRM` is honoured **only** when this passes |
 
 Both `*_ENABLED` flags must be truthy or the tick builds zero clients,
 touches no DB, and returns `{"status": "disabled"}`. **The kill switch is:
 unset `BINANCE_DEMO_SCALPING_SCHEDULER_ENABLED`** (or set it false) — the
 next tick is an immediate no-op.
+
+### Validated-signal gate for `confirm=true` (ROB-905, code-enforced)
+
+Per the ROB-316 posture above, `confirm=true` alone can no longer place real
+Demo orders. `run_demo_scalping_tick` evaluates a **fail-closed validated-signal
+gate** (`app/services/brokers/binance/demo_scalping_exec/validated_signal_gate.py`)
+whenever `BINANCE_DEMO_SCALPING_SCHEDULER_CONFIRM` is truthy. The applied
+`confirm` is downgraded to `False` (the tick still runs — dry-run telemetry
+preserved, zero broker mutation) unless `BINANCE_DEMO_SCALPING_VALIDATED_GATE_PATH`
+points at a readable JSON file with:
+
+```json
+{"schema": "validated_signal_gate.v1", "verdict": "validated"}
+```
+
+An optional `"valid_until"` (ISO-8601) must be in the future or the gate is
+`gate_expired`. Any other outcome (`gate_path_unset` / `gate_file_missing` /
+`gate_file_unreadable` / `gate_invalid_json` / `gate_schema_mismatch` /
+`gate_verdict_not_validated` / `gate_expired`) downgrades to dry-run. When
+confirm was requested the tick summary carries `confirm_requested` and
+`validated_signal_gate: {allowed, reason}` alongside the applied `confirm`.
+Because the current micro-breakout signal is OOS gross-negative, **no validated
+gate artifact should exist yet** — this guard exists so an unpaused Prefect
+deployment with `confirm=true` (as observed in ROB-905) cannot place real Demo
+orders without a validated-signal artifact.
 
 ### Manual invocation (no schedule registered)
 
@@ -286,3 +413,37 @@ approval. Failure-only alerting wires onto the tick's error log
 (`logger.error` / the `TickSummary.errors` list) and the CLI's non-zero exit; a
 clean tick is quiet. Rollback = unset `BINANCE_DEMO_SCALPING_SCHEDULER_ENABLED`
 (kill switch) and pause the deployment in the ops repo.
+
+## Observability (ROB-907)
+
+Each tick's `entered` evidence tuple is `[product, symbol, status, reason_codes]`
+— `reason_codes` (e.g. `spread_too_wide`, `stale_data`, `global_lifecycle_cap_
+reached`, `daily_order_cap_reached`) is the executor's own preflight vocabulary
+(`app/services/brokers/binance/demo_scalping/contract.py::ReasonCode`), so a
+Prefect log line for an all-`blocked` tick is enough to diagnose the cause
+without a DB read.
+
+### `binance_demo_ledger_status` MCP tool (read-only)
+
+Use this tool instead of a direct production-DB `SELECT` to check
+`binance_demo_order_ledger` health during an operational review — state
+distribution (`anomaly` / unresolved `planned`·`submitted` / `reconciled`
+ratio), stuck-open root lifecycles, and freshness. Gated the same as
+`binance_demo_scalping_submit_decision` (`settings.binance_demo_scalping_
+enabled`, default off) and registered in the DEFAULT MCP profile.
+
+```
+binance_demo_ledger_status(stale_age_seconds=3600, recent_limit=20)
+→ {
+    "status_distribution": {"planned": 1, "reconciled": 12, "anomaly": 0, ...},
+    "open_root_count": 1,          # blocking root lifecycles — same definition
+                                    # the executor's capacity gate uses
+    "anomaly_count": 0,
+    "stale_open_roots": [...],     # open roots planned_at <= now - stale_age_seconds
+    "latest_activity_at": "2026-07-16T12:00:00+00:00",
+    "recent": [...],               # bounded by recent_limit (<= 200)
+    "as_of": "2026-07-16T12:05:00+00:00",
+  }
+```
+
+No broker call, no ledger write.

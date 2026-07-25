@@ -35,9 +35,13 @@ def test_timeout_never_auto_voids():
     with pytest.raises(OrderProposalInvalidStateTransition):
         sm.assert_rung_transition("submitting", "voided_local_stale")
 
+    # ROB-862: only an explicit operator path may use this transition after
+    # separately proving that no broker order exists.
+    sm.assert_rung_transition("unverified", "voided_local_stale")
+
 
 @pytest.mark.unit
-def test_local_stale_only_from_pending():
+def test_pending_can_be_marked_local_stale():
     sm.assert_rung_transition("pending_approval", "voided_local_stale")
 
 

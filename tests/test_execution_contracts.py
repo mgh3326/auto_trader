@@ -38,12 +38,13 @@ class TestOrderLifecycleState:
                 "failed",
                 "anomaly",
                 "cancelled",
+                "canceled",
             }
         )
 
     def test_terminal_states(self):
         assert ec.TERMINAL_LIFECYCLE_STATES == frozenset(
-            {"reconciled", "failed", "stale", "cancelled"}
+            {"reconciled", "failed", "stale", "cancelled", "canceled"}
         )
 
     def test_in_flight_states(self):
@@ -458,3 +459,7 @@ def test_cancelled_is_registered_terminal_state():
     assert "cancelled" in ORDER_LIFECYCLE_STATES
     assert "cancelled" in TERMINAL_LIFECYCLE_STATES
     assert is_terminal_state("cancelled") is True
+
+    assert "canceled" in ORDER_LIFECYCLE_STATES
+    assert "canceled" in TERMINAL_LIFECYCLE_STATES
+    assert is_terminal_state("canceled") is True

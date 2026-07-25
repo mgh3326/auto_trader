@@ -129,7 +129,7 @@ async def save_trade_journal(
     Warns if an active journal already exists for the same symbol.
     account_type='paper'|'mock' for paper/mock journals (paper requires account name).
     paper_trade_id links to the paper trade record.
-    paperclip_issue_id links to the Paperclip issue tracking this trade.
+    paperclip_issue_id stores the external issue key (legacy Paperclip name; current Linear ROB key).
     metadata is an optional JSON dict for extensible fields.
     """
     symbol = (symbol or "").strip()
@@ -256,7 +256,7 @@ async def get_trade_journal(
     Each entry includes hold_remaining_days, hold_expired for hold period checks.
     account_type defaults to None (all); set 'live'|'paper'|'mock' to filter.
     account (optional) filters to a specific account name.
-    paperclip_issue_id (optional) filters by Paperclip issue ID for reverse lookup.
+    paperclip_issue_id (optional) filters by external issue key (legacy Paperclip name; current Linear ROB key).
     """
     try:
         async with _session_factory()() as db:

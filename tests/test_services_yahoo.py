@@ -292,3 +292,173 @@ class TestYahooService:
             "marketCap": None,
         }
         assert mock_ticker_class.call_args.kwargs["session"] is tracing_session
+
+
+class TestYahooPrepostQuote:
+    """ROB-922: opt-in Yahoo prepost (extended-hours) quote path."""
+
+    @pytest.mark.asyncio
+    @patch("app.services.brokers.yahoo.client.yf.download")
+    async def test_fetch_ohlcv_prepost_default_omits_kwarg(
+        self, mock_download, monkeypatch
+    ):
+        """prepost unspecified (default False) must be byte-identical to the
+        existing call — no new kwarg reaches yf.download."""
+        monkeypatch.setattr(
+            "app.services.brokers.yahoo.client.build_yfinance_tracing_session",
+            lambda: object(),
+        )
+        monkeypatch.setattr(
+            "app.services.brokers.yahoo.client.settings.yahoo_ohlcv_cache_enabled",
+            False,
+            raising=False,
+        )
+        mock_download.return_value = pd.DataFrame(
+            {
+                "open": [100],
+                "high": [105],
+                "low": [95],
+                "close": [103],
+                "volume": [1000],
+            }
+        )
+
+        from app.services.brokers.yahoo.client import fetch_ohlcv
+
+        await fetch_ohlcv("AAPL", days=1)
+
+        assert "prepost" not in mock_download.call_args.kwargs
+
+    @pytest.mark.asyncio
+    @patch("app.services.brokers.yahoo.client.yf.download")
+    async def test_fetch_ohlcv_prepost_true_passes_flag_to_yf_download(
+        self, mock_download, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "app.services.brokers.yahoo.client.build_yfinance_tracing_session",
+            lambda: object(),
+        )
+        mock_download.return_value = pd.DataFrame(
+            {
+                "open": [100],
+                "high": [105],
+                "low": [95],
+                "close": [103],
+                "volume": [1000],
+            }
+        )
+
+        from app.services.brokers.yahoo.client import fetch_ohlcv
+
+        await fetch_ohlcv("AAPL", days=1, period="1h", prepost=True)
+
+        assert mock_download.call_args.kwargs["prepost"] is True
+
+    @pytest.mark.asyncio
+    @patch("app.services.brokers.yahoo.client.yf.download")
+    async def test_fetch_ohlcv_prepost_true_bypasses_closed_candle_cache(
+        self, mock_download, monkeypatch
+    ):
+        """ROB-922: prepost=True must never read/write the closed-candle cache
+        (cache is built from regular-session data only — mixing in prepost
+        would silently corrupt it)."""
+        monkeypatch.setattr(
+            "app.services.brokers.yahoo.client.build_yfinance_tracing_session",
+            lambda: object(),
+        )
+        monkeypatch.setattr(
+            "app.services.brokers.yahoo.client.settings.yahoo_ohlcv_cache_enabled",
+            True,
+            raising=False,
+        )
+        mock_download.return_value = pd.DataFrame(
+            {
+                "open": [100],
+                "high": [105],
+                "low": [95],
+                "close": [103],
+                "volume": [1000],
+            }
+        )
+
+        import app.services.yahoo_ohlcv_cache as yahoo_ohlcv_cache_service
+
+        async def _fail_if_called(*args, **kwargs):
+            raise AssertionError("cache must be bypassed when prepost=True")
+
+        monkeypatch.setattr(
+            yahoo_ohlcv_cache_service, "get_closed_candles", _fail_if_called
+        )
+
+        from app.services.brokers.yahoo.client import fetch_ohlcv
+
+        result = await fetch_ohlcv("AAPL", days=1, period="day", prepost=True)
+
+        assert mock_download.call_args.kwargs["prepost"] is True
+        assert not result.empty
+
+    @pytest.mark.asyncio
+    @patch("app.services.brokers.yahoo.client.yf.Ticker")
+    async def test_fetch_prepost_quote_returns_last_row(
+        self, mock_ticker_class, monkeypatch
+    ):
+        tracing_session = object()
+        monkeypatch.setattr(
+            "app.services.brokers.yahoo.client.build_yfinance_tracing_session",
+            lambda: tracing_session,
+        )
+
+        index = pd.DatetimeIndex(
+            [
+                "2026-07-16 08:00:00-04:00",
+                "2026-07-16 08:01:00-04:00",
+            ],
+            name="Datetime",
+        )
+        history_df = pd.DataFrame(
+            {
+                "Open": [10.0, 11.0],
+                "High": [10.5, 11.5],
+                "Low": [9.5, 10.5],
+                "Close": [10.2, 11.7],
+                "Volume": [1000, 2000],
+            },
+            index=index,
+        )
+
+        mock_ticker = MagicMock()
+        mock_ticker.history.return_value = history_df
+        mock_ticker_class.return_value = mock_ticker
+
+        from app.services.brokers.yahoo.client import fetch_prepost_quote
+
+        result = await fetch_prepost_quote("AAPL")
+
+        assert result is not None
+        assert result["price"] == pytest.approx(11.7)
+        assert result["volume"] == 2000
+        assert result["quote_asof"] == "2026-07-16T12:01:00+00:00"
+        mock_ticker.history.assert_called_once_with(
+            period="1d", interval="1m", prepost=True
+        )
+        assert mock_ticker_class.call_args.kwargs["session"] is tracing_session
+
+    @pytest.mark.asyncio
+    @patch("app.services.brokers.yahoo.client.yf.Ticker")
+    async def test_fetch_prepost_quote_returns_none_for_empty_frame(
+        self, mock_ticker_class, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "app.services.brokers.yahoo.client.build_yfinance_tracing_session",
+            lambda: object(),
+        )
+
+        mock_ticker = MagicMock()
+        mock_ticker.history.return_value = pd.DataFrame()
+        mock_ticker_class.return_value = mock_ticker
+
+        from app.services.brokers.yahoo.client import fetch_prepost_quote
+
+        result = await fetch_prepost_quote("AAPL")
+
+        assert result is None

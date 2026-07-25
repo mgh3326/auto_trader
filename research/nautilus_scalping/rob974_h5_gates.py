@@ -1,0 +1,347 @@
+"""ROB-983 (H5, CP3) -- common hard gates, E0, and win authority.
+
+All conditions must pass for a strategy ``historical_pass`` (H5 spec AC7-15);
+every stable failure reason is collected here rather than short-circuited on
+the first failing gate.
+
+E0 (AC16-17) is the mean PRICE-ONLY ``gross_bps`` over the exact
+``primary_stress17`` selected-OOS basket membership -- it excludes fixed
+scenario cost and funding, and is computed from the SAME trade set as every
+other primary gate (never a fourth 0bp scenario or a counterfactual column).
+
+Win authority (AC18-20): observed win rate is the fraction of baskets with
+``net_bps>0`` (a plain count-based fraction, not weight-adjusted). Per-trade
+``pBE=(SL_bps+17)/(TP_bps+SL_bps)`` is weighted by gross basket notional for
+S4 and equal-weight (1.0) for S3 fixed-notional trades.
+``win_margin=observed_win_rate-weighted_pBE`` must independently pass
+alongside (never instead of) PF.
+"""
+
+from __future__ import annotations
+
+import math
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+
+from rob974_h5_contracts import FOLD_IDS, H5InputError, MetricTrade
+
+__all__ = [
+    "E0_MIN_BPS",
+    "MAX_MONTHLY_CONCENTRATION",
+    "MIN_POSITIVE_FOLDS",
+    "MIN_TRADES_PER_FOLD",
+    "PF17_MIN",
+    "POOLED_E17_MIN_BPS",
+    "WIN_MARGIN_MIN",
+    "CommonGateResult",
+    "attribution_bucket",
+    "evaluate_common_gates",
+    "validate_attribution_membership",
+    "validate_selected_oos_membership",
+]
+
+POOLED_E17_MIN_BPS = 5.0
+PF17_MIN = 1.15
+MIN_POSITIVE_FOLDS = 5
+MAX_MONTHLY_CONCENTRATION = 0.50
+E0_MIN_BPS = 25.0
+WIN_MARGIN_MIN = 0.03
+MIN_TRADES_PER_FOLD = 5
+
+REASON_POOLED_E17_BELOW = "pooled_e17_below_5bp"
+REASON_PF17_BELOW = "pf17_below_1_15"
+REASON_INSUFFICIENT_POSITIVE_FOLDS = "insufficient_positive_folds"
+REASON_NO_POSITIVE_MONTHS = "no_positive_months"
+REASON_CONCENTRATION_ABOVE = "monthly_concentration_above_50pct"
+REASON_E22_NOT_POSITIVE = "e22_not_positive"
+REASON_E0_BELOW = "e0_below_25bp"
+REASON_WIN_MARGIN_BELOW = "win_margin_below_3pp"
+REASON_INSUFFICIENT_SAMPLE = "insufficient_sample"
+
+
+@dataclass(frozen=True, slots=True)
+class CommonGateResult:
+    passed: bool
+    reasons: tuple[str, ...]
+    pooled_e17_bps: float | None
+    pf17: float | None
+    positive_fold_count: int
+    monthly_concentration: float | None
+    e22_bps: float | None
+    e0_bps: float | None
+    observed_win_rate: float | None
+    weighted_pbe: float | None
+    win_margin: float | None
+    fold_trade_counts: dict[str, int]
+    fold_e17_bps: dict[str, float | None] = field(default_factory=dict)
+
+
+def _utc_month_key(exit_ts_ms: int) -> str:
+    dt = datetime.fromtimestamp(exit_ts_ms / 1000.0, tz=UTC)
+    return f"{dt.year:04d}-{dt.month:02d}"
+
+
+def _pbe(trade: MetricTrade) -> float:
+    return (trade.sl_bps + 17.0) / (trade.tp_bps + trade.sl_bps)
+
+
+def _weight(trade: MetricTrade) -> float:
+    return trade.gross_notional if trade.gross_notional is not None else 1.0
+
+
+def _attribution_membership_key(trade: MetricTrade) -> tuple[object, ...]:
+    attribution = trade.attribution
+    if attribution is None:
+        raise H5InputError("attribution_membership_row_missing")
+    return (
+        attribution.experiment_id,
+        trade.config_id,
+        trade.fold_id,
+        trade.dimension,
+        trade.direction,
+        trade.entry_ts,
+        trade.exit_ts,
+        trade.exit_reason,
+        trade.gross_bps,
+        attribution.market_return,
+        attribution.realized_holding_minutes,
+    )
+
+
+def validate_attribution_membership(
+    *,
+    primary_trades: tuple[MetricTrade, ...],
+    upward_trades: tuple[MetricTrade, ...],
+    authority: str,
+) -> bool:
+    """Validate one exact typed raw membership across E17 and E22 paths.
+
+    Legacy fixture books contain no attribution and return ``False``.  A
+    mixed book, a changed experiment identity, or different raw trade
+    membership across paths is contract drift and fails closed.
+    """
+    all_trades = primary_trades + upward_trades
+    present = tuple(trade.attribution is not None for trade in all_trades)
+    if not any(present):
+        return False
+    if not all(present):
+        raise H5InputError(f"{authority}_attribution_mixed_provenance")
+    if any(
+        trade.attribution is not None
+        and trade.attribution.contract_provenance != "actual"
+        for trade in all_trades
+    ):
+        raise H5InputError(f"{authority}_attribution_requires_actual_provenance")
+    experiment_ids = {
+        trade.attribution.experiment_id
+        for trade in all_trades
+        if trade.attribution is not None
+    }
+    if len(experiment_ids) > 1:
+        raise H5InputError(f"{authority}_attribution_experiment_identity_mismatch")
+    primary_membership = Counter(
+        _attribution_membership_key(trade) for trade in primary_trades
+    )
+    upward_membership = Counter(
+        _attribution_membership_key(trade) for trade in upward_trades
+    )
+    if primary_membership != upward_membership:
+        raise H5InputError(f"{authority}_attribution_path_membership_mismatch")
+    return True
+
+
+def attribution_bucket(
+    trades: tuple[MetricTrade, ...],
+) -> dict[str, float | int | None]:
+    """Aggregate only raw H4-carried economics for a registered bin."""
+    if not trades:
+        return {
+            "trades": 0,
+            "e0_bps": None,
+            "e13_bps": None,
+            "e17_bps": None,
+            "e22_bps": None,
+            "pf17": None,
+            "avg_holding_minutes": None,
+        }
+    attributions = []
+    for trade in trades:
+        if trade.attribution is None:
+            raise H5InputError("attribution_bucket_row_missing")
+        attributions.append(trade.attribution)
+    e17_values = [attribution.e17_bps for attribution in attributions]
+    gross_profit = sum(value for value in e17_values if value > 0.0)
+    gross_loss = -sum(value for value in e17_values if value < 0.0)
+    if gross_loss == 0.0:
+        pf17 = math.inf if gross_profit > 0.0 else float("nan")
+    else:
+        pf17 = gross_profit / gross_loss
+    count = len(trades)
+    return {
+        "trades": count,
+        "e0_bps": sum(trade.gross_bps for trade in trades) / count,
+        "e13_bps": sum(value.e13_bps for value in attributions) / count,
+        "e17_bps": sum(e17_values) / count,
+        "e22_bps": sum(value.e22_bps for value in attributions) / count,
+        "pf17": pf17,
+        "avg_holding_minutes": (
+            sum(value.realized_holding_minutes for value in attributions) / count
+        ),
+    }
+
+
+def validate_selected_oos_membership(
+    *,
+    primary_trades: tuple[MetricTrade, ...],
+    upward_trades: tuple[MetricTrade, ...],
+    authority: str,
+    expected_strategy: str | None = None,
+) -> None:
+    """Bind every scoring consumer to one selected-OOS trade membership.
+
+    D3 has three independent domains and all three are checked here before
+    arithmetic: the registered path, one strategy, and one selected config.
+    A path label by itself cannot prevent a caller from cherry-picking the
+    best rows across the 24 configs or substituting the other strategy's
+    rows.  Empty books remain scoreable as incomplete/failing evidence; any
+    rows that do exist must share the same exact membership.
+    """
+    if any(t.path_scenario != "primary_stress17" for t in primary_trades):
+        raise H5InputError(f"{authority}_primary_path_scenario_mismatch")
+    if any(t.path_scenario != "upward_stress22" for t in upward_trades):
+        raise H5InputError(f"{authority}_upward_path_scenario_mismatch")
+
+    all_trades = primary_trades + upward_trades
+    strategies = {t.strategy for t in all_trades}
+    if expected_strategy is None:
+        if len(strategies) > 1:
+            raise H5InputError(f"{authority}_strategy_domain_mismatch")
+    elif any(t.strategy != expected_strategy for t in all_trades):
+        raise H5InputError(f"{authority}_strategy_domain_mismatch")
+
+    if len({t.config_id for t in all_trades}) > 1:
+        raise H5InputError(f"{authority}_selected_oos_membership_mismatch")
+    validate_attribution_membership(
+        primary_trades=primary_trades,
+        upward_trades=upward_trades,
+        authority=authority,
+    )
+
+
+def evaluate_common_gates(
+    *,
+    primary_trades: tuple[MetricTrade, ...],
+    upward_trades: tuple[MetricTrade, ...],
+) -> CommonGateResult:
+    # D3 fail-closed membership binding (adversarial verify R1/R2): path,
+    # strategy, and selected-config membership are one indivisible seal.
+    validate_selected_oos_membership(
+        primary_trades=primary_trades,
+        upward_trades=upward_trades,
+        authority="common_gates",
+    )
+
+    reasons: set[str] = set()
+
+    fold_trade_counts: dict[str, int] = dict.fromkeys(FOLD_IDS, 0)
+    fold_net_sum: dict[str, float] = dict.fromkeys(FOLD_IDS, 0.0)
+    for t in primary_trades:
+        fold_trade_counts[t.fold_id] += 1
+        fold_net_sum[t.fold_id] += t.net_bps
+
+    for fold_id in FOLD_IDS:
+        if fold_trade_counts[fold_id] < MIN_TRADES_PER_FOLD:
+            reasons.add(REASON_INSUFFICIENT_SAMPLE)
+
+    pooled_e17_bps: float | None = None
+    pf17: float | None = None
+    e0_bps: float | None = None
+    observed_win_rate: float | None = None
+    weighted_pbe: float | None = None
+    win_margin: float | None = None
+
+    if primary_trades:
+        net_values = [t.net_bps for t in primary_trades]
+        pooled_e17_bps = sum(net_values) / len(net_values)
+        if pooled_e17_bps < POOLED_E17_MIN_BPS:
+            reasons.add(REASON_POOLED_E17_BELOW)
+
+        gross_profit = sum(v for v in net_values if v > 0)
+        gross_loss = -sum(v for v in net_values if v < 0)
+        if gross_loss == 0.0:
+            pf17 = math.inf if gross_profit > 0 else float("nan")
+        else:
+            pf17 = gross_profit / gross_loss
+        if not (pf17 >= PF17_MIN):  # NaN-safe: NaN >= x is False
+            reasons.add(REASON_PF17_BELOW)
+
+        e0_bps = sum(t.gross_bps for t in primary_trades) / len(primary_trades)
+        if e0_bps < E0_MIN_BPS:
+            reasons.add(REASON_E0_BELOW)
+
+        wins = sum(1 for v in net_values if v > 0)
+        observed_win_rate = wins / len(net_values)
+
+        total_weight = sum(_weight(t) for t in primary_trades)
+        weighted_pbe = sum(_pbe(t) * _weight(t) for t in primary_trades) / total_weight
+        win_margin = observed_win_rate - weighted_pbe
+        if win_margin < WIN_MARGIN_MIN:
+            reasons.add(REASON_WIN_MARGIN_BELOW)
+    else:
+        reasons.add(REASON_POOLED_E17_BELOW)
+        reasons.add(REASON_PF17_BELOW)
+        reasons.add(REASON_E0_BELOW)
+        reasons.add(REASON_WIN_MARGIN_BELOW)
+
+    positive_fold_count = sum(
+        1
+        for fold_id in FOLD_IDS
+        if fold_trade_counts[fold_id] > 0 and fold_net_sum[fold_id] > 0
+    )
+    if positive_fold_count < MIN_POSITIVE_FOLDS:
+        reasons.add(REASON_INSUFFICIENT_POSITIVE_FOLDS)
+
+    fold_e17_bps = {
+        fold_id: (
+            fold_net_sum[fold_id] / fold_trade_counts[fold_id]
+            if fold_trade_counts[fold_id] > 0
+            else None
+        )
+        for fold_id in FOLD_IDS
+    }
+
+    monthly_net: dict[str, float] = defaultdict(float)
+    for t in primary_trades:
+        monthly_net[_utc_month_key(t.exit_ts)] += t.net_bps
+    positive_months = {k: v for k, v in monthly_net.items() if v > 0}
+    monthly_concentration: float | None = None
+    if not positive_months:
+        reasons.add(REASON_NO_POSITIVE_MONTHS)
+    else:
+        total_positive = sum(positive_months.values())
+        monthly_concentration = max(positive_months.values()) / total_positive
+        if monthly_concentration > MAX_MONTHLY_CONCENTRATION:
+            reasons.add(REASON_CONCENTRATION_ABOVE)
+
+    e22_bps: float | None = None
+    if upward_trades:
+        e22_bps = sum(t.net_bps for t in upward_trades) / len(upward_trades)
+    if e22_bps is None or not (e22_bps > 0.0):
+        reasons.add(REASON_E22_NOT_POSITIVE)
+
+    return CommonGateResult(
+        passed=not reasons,
+        reasons=tuple(sorted(reasons)),
+        pooled_e17_bps=pooled_e17_bps,
+        pf17=pf17,
+        positive_fold_count=positive_fold_count,
+        monthly_concentration=monthly_concentration,
+        e22_bps=e22_bps,
+        e0_bps=e0_bps,
+        observed_win_rate=observed_win_rate,
+        weighted_pbe=weighted_pbe,
+        win_margin=win_margin,
+        fold_trade_counts=fold_trade_counts,
+        fold_e17_bps=fold_e17_bps,
+    )

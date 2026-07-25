@@ -5,7 +5,7 @@ This module provides KST (Korea Standard Time) as the default timezone
 for all datetime operations throughout the application.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 # KST (한국 표준시, UTC+9)
 KST = timezone(timedelta(hours=9))
@@ -41,6 +41,17 @@ def to_kst_naive(dt: datetime) -> datetime:
     if dt.tzinfo is not None:
         return dt.astimezone(KST).replace(tzinfo=None)
     return dt
+
+
+def trade_day_kst(dt: datetime) -> str:
+    """Return the KST trade day for an instant persisted as TIMESTAMPTZ.
+
+    Execution-ledger timestamps are instants.  Treat legacy naive values as UTC
+    rather than letting the host/session timezone change their reported day.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(KST).strftime("%Y%m%d")
 
 
 def format_datetime(dt: datetime | None = None, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:

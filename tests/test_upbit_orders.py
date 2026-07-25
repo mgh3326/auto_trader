@@ -95,3 +95,21 @@ class TestUpbitOrderIdempotencyIdentifier:
         await orders.place_buy_order("KRW-BTC", "1000", "0.5", "limit")
         second = request.await_args.kwargs["body_params"]["identifier"]
         assert first != second
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_order_by_identifier_uses_read_only_get(monkeypatch):
+    from app.services.brokers.upbit import orders
+
+    request = AsyncMock(return_value={"uuid": "35bee07f-full", "state": "wait"})
+    monkeypatch.setattr(orders._client, "_request_with_auth", request)
+
+    result = await orders.fetch_order_by_identifier("oprop-fixed")
+
+    assert result["uuid"] == "35bee07f-full"
+    request.assert_awaited_once_with(
+        "GET",
+        f"{orders._client.UPBIT_REST}/order",
+        query_params={"identifier": "oprop-fixed"},
+    )

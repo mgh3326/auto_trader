@@ -18,6 +18,7 @@ class SpotDemoOrderSubmitResult:
     executed_qty: Decimal
     cummulative_quote_qty: Decimal
     status: str  # FILLED / PARTIALLY_FILLED / NEW / ...
+    fee_usdt: Decimal | None = None
     raw_response_redacted: dict[str, Any] = field(default_factory=dict)
 
 

@@ -8,6 +8,13 @@ from typing import TYPE_CHECKING, Any
 from app.core.symbol import to_kis_symbol
 
 from . import constants
+from .order_throttle import (
+    MAX_THROTTLE_RESUBMITS,
+    is_provider_throttle_reject,
+    throttle_backoff_seconds,
+)
+from .pre_send import PreSendHook
+from .send_outcome import OrderSendDisposition, OrderSendOutcomeTracker
 
 if TYPE_CHECKING:
     from .protocols import KISClientProtocol
@@ -41,6 +48,18 @@ _MAX_TOKEN_REFRESH_RESUBMITS = 1
 
 def _is_token_expiry(js: dict[str, Any]) -> bool:
     return js.get("msg_cd") in ["EGW00123", "EGW00121"]
+
+
+def _overseas_order_key(order: dict[str, Any]) -> str | None:
+    """Identity key for a daily-order row (ROB-903 dedupe-aware early stop).
+
+    KIS may re-emit the same execution row across continuation pages; the order
+    number (odno) uniquely identifies a row. Returns ``None`` when no order
+    number is present so callers fall back to exhaustive pagination.
+    """
+    odno = order.get("odno") or order.get("ODNO")
+    key = str(odno).strip() if odno is not None else ""
+    return key or None
 
 
 def _normalize_kis_exchange_code(code: str) -> str:
@@ -88,7 +107,10 @@ class OverseasOrderClient:
         price: float = 0.0,  # 0이면 시장가
         is_mock: bool = False,
         *,
+        pre_send_hook: PreSendHook | None = None,
+        send_outcome: OrderSendOutcomeTracker | None = None,
         _token_retry_depth: int = 0,
+        _throttle_retry_depth: int = 0,
     ) -> dict:
         """
         해외주식 주문 (매수/매도)
@@ -189,6 +211,12 @@ class OverseasOrderClient:
             body.get("OVRS_ORD_UNPR"),
         )
 
+        # ROB-BAC: see order_korea_stock — always observe the send outcome so a
+        # gateway throttle rejection can be told apart from an ambiguous one.
+        outcome = (
+            send_outcome if send_outcome is not None else OrderSendOutcomeTracker()
+        )
+
         js = await self._parent._request_with_rate_limit(
             "POST",
             self._parent._kis_url(constants.OVERSEAS_ORDER_URL),
@@ -200,9 +228,13 @@ class OverseasOrderClient:
             # ROB-645: never re-POST an order (see domestic order_korea_stock).
             retry_request_errors=False,
             max_retries_override=0,
+            # ROB-843 P1: mock-only freshness re-check at the HTTP send boundary.
+            pre_send_hook=pre_send_hook,
+            send_outcome=outcome,
         )
 
         if js.get("rt_cd") != "0":
+            outcome.mark_provider_rejected()
             if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
                 if _token_retry_depth >= _MAX_TOKEN_REFRESH_RESUBMITS:
                     # ROB-733: 캡 초과 → 재-POST 대신 fail-closed. 실 자금 다중 제출 차단.
@@ -236,8 +268,63 @@ class OverseasOrderClient:
                     quantity,
                     price,
                     is_mock,
+                    pre_send_hook=pre_send_hook,
+                    send_outcome=send_outcome,
                     _token_retry_depth=_token_retry_depth + 1,
+                    _throttle_retry_depth=_throttle_retry_depth,
                 )
+
+            # ROB-BAC: bounded re-POST on a gateway per-second throttle. The
+            # rejection is issued before the order engine, so the <500 response
+            # with rt_cd != "0" and no ODNO proves no order was created — the
+            # one rt_cd != "0" family for which ROB-645's "never re-POST" does
+            # not apply. Ambiguous outcomes (5xx-with-body, timeouts) still
+            # fail closed via the NOT_CREATED check.
+            if is_provider_throttle_reject(js.get("msg_cd"), js.get("msg1")):
+                if outcome.disposition is not OrderSendDisposition.NOT_CREATED:
+                    logging.error(
+                        "해외주식 주문 초당한도 거절이나 결과 불확정(http=%s) - "
+                        "fail-closed (symbol=%s, exchange=%s, order_type=%s)",
+                        outcome.last_http_status,
+                        symbol,
+                        exchange_code,
+                        order_type,
+                    )
+                elif _throttle_retry_depth < MAX_THROTTLE_RESUBMITS:
+                    delay = throttle_backoff_seconds(_throttle_retry_depth)
+                    logging.warning(
+                        "해외주식 주문 초당 거래건수 초과(%s) - %.2fs 후 재전송(%d/%d) "
+                        "(symbol=%s, exchange=%s, order_type=%s)",
+                        js.get("msg_cd"),
+                        delay,
+                        _throttle_retry_depth + 1,
+                        MAX_THROTTLE_RESUBMITS,
+                        symbol,
+                        exchange_code,
+                        order_type,
+                    )
+                    await asyncio.sleep(delay)
+                    return await self.order_overseas_stock(
+                        symbol,
+                        exchange_code,
+                        order_type,
+                        quantity,
+                        price,
+                        is_mock,
+                        pre_send_hook=pre_send_hook,
+                        send_outcome=send_outcome,
+                        _token_retry_depth=_token_retry_depth,
+                        _throttle_retry_depth=_throttle_retry_depth + 1,
+                    )
+                else:
+                    logging.error(
+                        "해외주식 주문 초당한도 재전송 캡(%d) 초과 - fail-closed "
+                        "(symbol=%s, exchange=%s, order_type=%s)",
+                        MAX_THROTTLE_RESUBMITS,
+                        symbol,
+                        exchange_code,
+                        order_type,
+                    )
 
             error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
             logging.error(f"해외주식 주문 실패: {error_msg}")
@@ -249,6 +336,10 @@ class OverseasOrderClient:
             "odno": output.get("ODNO"),  # 주문번호
             "ord_tmd": output.get("ORD_TMD"),  # 주문시각
             "msg": js.get("msg1"),  # 응답메시지
+            # ROB-843: preserve the provider-verified accepted contract (reached
+            # only when rt_cd == "0") for the kis_mock result boundary.
+            "rt_cd": js.get("rt_cd"),
+            "msg_cd": js.get("msg_cd"),
         }
 
         logging.info(
@@ -264,22 +355,18 @@ class OverseasOrderClient:
         quantity: int,
         price: float = 0.0,
         is_mock: bool = False,
+        *,
+        pre_send_hook: PreSendHook | None = None,
     ) -> dict:
-        """
-        해외주식 매수 주문 편의 메서드
-
-        Args:
-            symbol: 종목 심볼
-            exchange_code: 거래소 코드
-            quantity: 매수 수량
-            price: 매수 가격 (0이면 시장가)
-            is_mock: 모의투자 여부
-
-        Returns:
-            주문 결과
-        """
+        """해외주식 매수 주문 편의 메서드."""
         return await self.order_overseas_stock(
-            symbol, exchange_code, "buy", quantity, price, is_mock
+            symbol,
+            exchange_code,
+            "buy",
+            quantity,
+            price,
+            is_mock,
+            pre_send_hook=pre_send_hook,
         )
 
     async def sell_overseas_stock(
@@ -289,22 +376,18 @@ class OverseasOrderClient:
         quantity: int,
         price: float = 0.0,
         is_mock: bool = False,
+        *,
+        pre_send_hook: PreSendHook | None = None,
     ) -> dict:
-        """
-        해외주식 매도 주문 편의 메서드
-
-        Args:
-            symbol: 종목 심볼
-            exchange_code: 거래소 코드
-            quantity: 매도 수량
-            price: 매도 가격 (0이면 시장가)
-            is_mock: 모의투자 여부
-
-        Returns:
-            주문 결과
-        """
+        """해외주식 매도 주문 편의 메서드."""
         return await self.order_overseas_stock(
-            symbol, exchange_code, "sell", quantity, price, is_mock
+            symbol,
+            exchange_code,
+            "sell",
+            quantity,
+            price,
+            is_mock,
+            pre_send_hook=pre_send_hook,
         )
 
     async def inquire_overseas_orders(
@@ -468,6 +551,7 @@ class OverseasOrderClient:
         quantity: int,
         is_mock: bool = False,
         *,
+        pre_send_hook: PreSendHook | None = None,
         _token_retry_depth: int = 0,
     ) -> dict:
         """
@@ -544,6 +628,7 @@ class OverseasOrderClient:
             # ROB-645: keep the no-double-submit policy uniform across mutations.
             retry_request_errors=False,
             max_retries_override=0,
+            pre_send_hook=pre_send_hook,
         )
 
         if js.get("rt_cd") != "0":
@@ -579,6 +664,7 @@ class OverseasOrderClient:
                     exchange_code,
                     quantity,
                     is_mock,
+                    pre_send_hook=pre_send_hook,
                     _token_retry_depth=_token_retry_depth + 1,
                 )
 
@@ -614,6 +700,8 @@ class OverseasOrderClient:
         order_number: str = "",
         is_mock: bool = False,
         max_pages: int = 100,
+        inter_page_delay: float = 0.1,
+        stop_when_no_new_rows: bool = False,
     ) -> list[dict]:
         """
         해외주식 일별 체결조회 (주문 히스토리)
@@ -627,6 +715,15 @@ class OverseasOrderClient:
             order_number: 주문번호 (해외주식은 미지원으로 무시됨)
             is_mock: True면 모의투자, False면 실전투자
             max_pages: 최대 조회 페이지 수
+            inter_page_delay: 연속조회 페이지 사이 sleep(초). KIS는 이미 19 req/s
+                sliding-window rate limiter로 페이싱되므로 이 sleep은 이중 스로틀.
+                기본 0.1(현행 유지) — 표시(display) 경로는 0.0으로 넘겨 rate limiter에만
+                의존한다(ROB-903). reconcile/fill-evidence 경로는 기본값 유지.
+            stop_when_no_new_rows: True면 non-empty 페이지가 새 주문행(odno 기준)을 하나도
+                더하지 못하는 순간 중단한다. KIS는 연속조회 커서(nk200)가 계속 전진해도
+                동일 행을 중복 반환하는 경우가 있어(runaway 100페이지) 표시 경로 비용을
+                증폭시킨다. 이 시점에는 이미 모든 고유 행을 수집했으므로 증거 손실이 없다.
+                기본 False(현행 exhaustive pagination 유지) — reconcile 경로는 기본값 유지.
 
         Returns:
             체결 주문 목록 (list of dict)
@@ -652,6 +749,7 @@ class OverseasOrderClient:
         )
 
         all_orders = []
+        seen_order_keys: set[str] = set()
         ctx_area_fk200 = ""
         ctx_area_nk200 = ""
         tr_cont = ""
@@ -749,6 +847,20 @@ class OverseasOrderClient:
                 logging.info(f"페이지 {page}에서 더 이상 주문이 없음")
                 break
 
+            # ROB-903: on the display path, halt once a page contributes no new
+            # order rows (KIS re-emits duplicate rows across continuation pages
+            # with an ever-advancing cursor). Every unique row is already
+            # collected, so this loses no fill evidence. Reconcile keeps the
+            # default (stop_when_no_new_rows=False) → exhaustive pagination.
+            if stop_when_no_new_rows:
+                page_keys = {
+                    key for o in orders if (key := _overseas_order_key(o)) is not None
+                }
+                if page_keys and page_keys <= seen_order_keys:
+                    logging.info("연속조회 새 주문행 없음 — 조기 종료(display)")
+                    break
+                seen_order_keys |= page_keys
+
             all_orders.extend(orders)
             logging.info(
                 f"페이지 {page}: {len(orders)}건 조회 (누적: {len(all_orders)}건)"
@@ -769,7 +881,8 @@ class OverseasOrderClient:
             if page > page_limit:
                 truncated = True
                 break
-            await asyncio.sleep(0.1)
+            if inter_page_delay > 0:
+                await asyncio.sleep(inter_page_delay)
 
         if truncated:
             raise RuntimeError(

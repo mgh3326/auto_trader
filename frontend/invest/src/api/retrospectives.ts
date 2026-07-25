@@ -2,6 +2,7 @@ import type {
   NextActionsResponse,
   RetroMarket,
   RetroOutcomeFilter,
+  RetrospectiveActionsResponse,
   RetrospectivesResponse,
 } from "../types/retrospectives";
 
@@ -50,5 +51,35 @@ export async function fetchOpenNextActions(
   if (status) params.set("status", status);
   const res = await fetch(`${BASE}/next-actions?${params}`, { credentials: "include" });
   if (!res.ok) throw new Error(`retrospectives next-actions ${res.status}`);
+  return res.json();
+}
+
+export interface RetrospectiveActionsQuery {
+  market?: RetroMarket;
+  triggerType?: string;
+  outcomeFilter?: RetroOutcomeFilter;
+  q?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function fetchRetrospectiveActions(
+  q: RetrospectiveActionsQuery,
+): Promise<RetrospectiveActionsResponse> {
+  const params = new URLSearchParams({
+    market: q.market ?? "all",
+    status: "open,in_progress",
+  });
+  if (q.triggerType) params.set("trigger_type", q.triggerType);
+  if (q.outcomeFilter) params.set("outcome_filter", q.outcomeFilter);
+  if (q.q) params.set("q", q.q);
+  if (q.dateFrom) params.set("kst_date_from", q.dateFrom);
+  if (q.dateTo) params.set("kst_date_to", q.dateTo);
+  if (q.limit != null) params.set("limit", String(q.limit));
+  if (q.offset != null) params.set("offset", String(q.offset));
+  const res = await fetch(`${BASE}/actions?${params}`, { credentials: "include" });
+  if (!res.ok) throw new Error(`retrospectives actions ${res.status}`);
   return res.json();
 }

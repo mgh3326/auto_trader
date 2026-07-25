@@ -271,7 +271,7 @@ def apply_status(
         stats.consecutive_reverts += 1
         return
 
-    if normalized == "crash":
+    if normalized in {"crash", "crashed", "timeout"}:
         stats.crashed += 1
         stats.valid_rounds += 1
         stats.consecutive_reverts = 0

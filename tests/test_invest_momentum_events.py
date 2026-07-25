@@ -383,6 +383,94 @@ async def test_repository_scores_momentum_candidates_with_cross_surface_rank_del
     assert "theme_leader" in top.reason_codes
 
 
+@pytest.mark.asyncio
+async def test_repository_list_theme_events_at_cutoff_picks_prior_snapshot(db_session):
+    """ROB-917: an ``at`` cutoff must select the latest snapshot at-or-before it."""
+    theme_date = dt.date(2026, 5, 19)
+    earlier_at = dt.datetime(2026, 5, 19, 9, 10, tzinfo=dt.UTC)
+    later_at = dt.datetime(2026, 5, 19, 9, 30, tzinfo=dt.UTC)
+
+    repo = InvestMomentumEventSnapshotsRepository(db_session)
+    earlier = ThemeEventUpsert(
+        snapshot_at=earlier_at,
+        trading_date=theme_date,
+        surface="market_theme_list",
+        event_kind="theme",
+        source_event_key="theme:rob917:changeRate:ALL",
+        naver_theme_no="rob917",
+        name="ROB917테마",
+        sort_type="changeRate",
+        rank=1,
+        market_type="ALL",
+        change_rate=Decimal("1.0"),
+    )
+    await repo.upsert_theme(earlier)
+    await repo.upsert_theme(
+        earlier.model_copy(
+            update={"snapshot_at": later_at, "change_rate": Decimal("5.0")}
+        )
+    )
+    await db_session.commit()
+
+    cutoff_rows = await repo.list_theme_events(
+        trading_date=theme_date,
+        at=dt.datetime(2026, 5, 19, 9, 20, tzinfo=dt.UTC),
+    )
+    assert [row.source_event_key for row in cutoff_rows] == [
+        "theme:rob917:changeRate:ALL"
+    ]
+    assert cutoff_rows[0].snapshot_at == earlier_at
+    assert cutoff_rows[0].change_rate == Decimal("1.0000")
+
+    latest_rows = await repo.list_theme_events(trading_date=theme_date)
+    assert latest_rows[0].snapshot_at == later_at
+    assert latest_rows[0].change_rate == Decimal("5.0000")
+
+
+@pytest.mark.asyncio
+async def test_repository_list_theme_event_stocks_groups_children_by_parent(db_session):
+    theme_date = dt.date(2026, 5, 20)
+    snapshot_at = dt.datetime(2026, 5, 20, 9, 10, tzinfo=dt.UTC)
+
+    repo = InvestMomentumEventSnapshotsRepository(db_session)
+    theme_id = await repo.upsert_theme(
+        ThemeEventUpsert(
+            snapshot_at=snapshot_at,
+            trading_date=theme_date,
+            surface="market_theme_list",
+            event_kind="theme",
+            source_event_key="theme:rob917stocks:changeRate:ALL",
+            naver_theme_no="rob917stocks",
+            name="ROB917자식테마",
+            sort_type="changeRate",
+            rank=1,
+            market_type="ALL",
+            stocks=[
+                {
+                    "symbol": "111111",
+                    "name": "가나",
+                    "rank": 1,
+                    "order_type": "changeRate",
+                },
+                {
+                    "symbol": "222222",
+                    "name": "다라",
+                    "rank": 2,
+                    "order_type": "changeRate",
+                },
+            ],
+        )
+    )
+    await db_session.commit()
+    assert theme_id is not None
+
+    grouped = await repo.list_theme_event_stocks([theme_id])
+    assert [stock.symbol for stock in grouped[theme_id]] == ["111111", "222222"]
+
+    empty = await repo.list_theme_event_stocks([])
+    assert empty == {}
+
+
 def test_mcp_momentum_candidate_tool_is_registered():
     from app.mcp_server.tooling.analysis_registration import ANALYSIS_TOOL_NAMES
 

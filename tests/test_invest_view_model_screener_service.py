@@ -4109,4 +4109,159 @@ async def test_unknown_preset_error_lists_valid_presets_crypto() -> None:
         session=None,
     )
     assert "사용 가능한 프리셋(crypto)" in resp.warnings[1]
-    assert "crypto_high_volume" in resp.warnings[1]
+
+
+_SUPPORT_PROXIMITY_TEST_SYMBOLS = ["976101", "976102"]
+
+
+@pytest.mark.unit
+def test_support_proximity_in_metric_field_map() -> None:
+    from app.services.invest_view_model.screener_service import _METRIC_FIELD
+
+    assert _METRIC_FIELD["support_proximity"] == "dist_to_support_pct"
+
+
+@pytest.mark.asyncio
+async def test_support_proximity_preset_missing_snapshot_reports_missing_state() -> (
+    None
+):
+    null_scalar = MagicMock()
+    null_scalar.scalar_one_or_none.return_value = None
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=null_scalar)
+
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+
+    resp = await build_screener_results(
+        preset_id="support_proximity",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        session=session,
+    )
+
+    fake_screening.list_screening.assert_not_called()
+    assert resp.results == []
+    assert resp.freshness.dataState == "missing"
+    assert resp.freshness.primary is not None
+    assert resp.freshness.primary.degradationReason == "snapshot_missing"
+
+
+@pytest.mark.asyncio
+async def test_support_proximity_preset_returns_ranked_rows_with_risk_context(
+    db_session, monkeypatch
+) -> None:
+    """End-to-end persisted row -> loader -> ScreenerResultRow.
+
+    Verifies the read path performs no support recalculation, stored
+    dist_to_support_pct drives metricValueLabel, and kind/strength surfaces via
+    riskContext (ROB-976 AC1).
+    """
+    import datetime as _dt
+    import decimal as _dec
+
+    import sqlalchemy as _sa
+
+    from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+    from app.models.kr_symbol_universe import KRSymbolUniverse
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+
+    today = _dt.date(2099, 12, 29)
+
+    import app.mcp_server.tooling.fundamentals._support_resistance as sr_module
+
+    async def _must_not_recalculate(*args, **kwargs):
+        raise AssertionError("support_proximity query attempted live recalculation")
+
+    monkeypatch.setattr(sr_module, "get_support_resistance_impl", _must_not_recalculate)
+
+    async def _purge() -> None:
+        await db_session.execute(
+            _sa.delete(InvestScreenerSnapshot).where(
+                InvestScreenerSnapshot.symbol.in_(_SUPPORT_PROXIMITY_TEST_SYMBOLS)
+            )
+        )
+        await db_session.execute(
+            _sa.delete(MarketValuationSnapshot).where(
+                MarketValuationSnapshot.symbol.in_(_SUPPORT_PROXIMITY_TEST_SYMBOLS)
+            )
+        )
+        await db_session.execute(
+            _sa.delete(KRSymbolUniverse).where(
+                KRSymbolUniverse.symbol.in_(_SUPPORT_PROXIMITY_TEST_SYMBOLS)
+            )
+        )
+        await db_session.commit()
+
+    await _purge()
+    try:
+        db_session.add(
+            KRSymbolUniverse(
+                symbol="976101", name="지지선테스트", exchange="KOSPI", is_active=True
+            )
+        )
+        db_session.add(
+            InvestScreenerSnapshot(
+                market="kr",
+                symbol="976101",
+                snapshot_date=today,
+                latest_close=_dec.Decimal("50000"),
+                prev_close=_dec.Decimal("49000"),
+                change_rate=_dec.Decimal("2.0"),
+                change_amount=_dec.Decimal("1000"),
+                daily_volume=1_000_000,
+                daily_turnover=_dec.Decimal("50000000000"),
+                market_cap=_dec.Decimal("1000000000000"),
+                market_cap_source="naver_finance",
+                market_cap_snapshot_date=today,
+                support_price=_dec.Decimal("49000"),
+                support_kind="bb_lower",
+                support_strength="strong",
+                dist_to_support_pct=_dec.Decimal("2.0"),
+                support_computed_at=_dt.datetime(2099, 12, 29, 5, 0, tzinfo=_dt.UTC),
+                closes_window=[49000, 50000],
+                source="kis",
+                computed_at=_dt.datetime(2099, 12, 29, 5, 0, tzinfo=_dt.UTC),
+            )
+        )
+        db_session.add(
+            MarketValuationSnapshot(
+                market="kr",
+                symbol="976101",
+                snapshot_date=today,
+                market_cap=_dec.Decimal("1000000000000"),
+                per=_dec.Decimal("10.0"),
+                source="naver_finance",
+            )
+        )
+        await db_session.commit()
+
+        fake_screening = type(
+            "ScreenerService",
+            (_FakeProductionScreening,),
+            {"__module__": "app.services.screener_service"},
+        )()
+
+        resp = await build_screener_results(
+            preset_id="support_proximity",
+            screening_service=fake_screening,
+            resolver=_FakeResolver(watched=set()),
+            session=db_session,
+            now=lambda: datetime(2099, 12, 29, 6, 0, tzinfo=UTC),
+        )
+
+        fake_screening.list_screening.assert_not_called()
+        symbols = [row.symbol for row in resp.results]
+        assert "976101" in symbols
+        target = next(r for r in resp.results if r.symbol == "976101")
+        assert target.metricValueLabel == "2.00%"
+        assert len(target.riskContext) == 1
+        risk = target.riskContext[0]
+        assert risk.kind == "support_level"
+        assert "bb_lower" in risk.label
+        assert "strong" in risk.label
+    finally:
+        await _purge()

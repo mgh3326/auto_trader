@@ -2,7 +2,7 @@
 
 The CLI (``scripts/list_recent_fill_events.py``) and the MCP tool
 (``app/mcp_server/tooling/execution_ledger_events.py``) both need to render
-``ExecutionLedger`` rows into the same 20-key triage-friendly dict shape.
+``ExecutionLedger`` rows into the same 21-key triage-friendly dict shape.
 
 That shape lives here as the **single source of truth**: both callers import
 ``sanitize_fill`` / ``derive_market`` from this module so the JSON output stays
@@ -17,6 +17,8 @@ review because both surfaces' tests pin the key set.
 from __future__ import annotations
 
 from typing import Any
+
+from app.core.timezone import trade_day_kst
 
 
 def derive_market(instrument_type: str) -> str:
@@ -63,6 +65,7 @@ def sanitize_fill(row: Any) -> dict[str, Any]:
         ),
         "source": row.source,
         "filled_at": row.filled_at.isoformat(),
+        "trade_day_kst": trade_day_kst(row.filled_at),
         "created_at": row.created_at.isoformat(),
     }
 

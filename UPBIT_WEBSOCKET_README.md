@@ -1,11 +1,20 @@
-# 업비트 WebSocket MyOrder 자동 분석 시스템
+# 업비트 WebSocket MyOrder 모니터링
 
-업비트의 내 주문 및 체결 WebSocket을 이용해서 매수/매도가 발생할 때마다 `analyze_coin_json`으로 단일 코인 분석을 자동으로 수행하는 시스템입니다.
+업비트의 내 주문 및 체결 WebSocket을 소비하는 경로는 두 가지입니다. 운영 체결 경로는
+`websocket_monitor.py --mode upbit`이며, 체결 레저 기록·주문 제안 런(proposal rung) 상태
+반영·Discord/Telegram 알림을 담당합니다. `upbit_websocket_monitor.py`는 분석기가 제거된
+레거시 콜백 모니터이며, 현재 분석 콜백은 로그만 남기고 실제 분석을 실행하지 않습니다.
 
 ## 📋 주요 기능
 
 - **실시간 주문/체결 모니터링**: 업비트 WebSocket MyOrder API를 통해 실시간으로 주문 및 체결 데이터 수신
-- **자동 코인 분석**: 체결이 발생한 코인에 대해 자동으로 `analyze_coin_json` 함수 호출
+- **체결 증거 기록**: `trade` 이벤트의 건별 체결량을 `review.execution_ledger`에 멱등 기록
+- **주문 제안 상태 반영**: 업비트 UUID와 `identifier`로 런을 찾아 `trade`는 부분 체결,
+  `done`은 최종 체결로 누적 수량을 반영. 프로젝션 실패는 체결 레저를 롤백하지 않고 로그로 남김
+- **체결 알림**: 새 체결을 Discord/Telegram으로 전송. 제안 런이 매칭된 체결은 일반
+  소액 알림 임계치를 넘지 않아도 전송하며, 중복 레저 이벤트는 중복 알림을 만들지 않음
+- **운영 건강성 로그**: 수신 메시지/체결 이벤트 수, 마지막 수신/체결 시각,
+  알림 전송 수를 통합 건강성 로그에 표시
 - **재연결 기능**: 연결이 끊어져도 자동으로 재연결 시도
 - **로깅 시스템**: 상세한 로그를 통한 모니터링 상태 추적
 
@@ -14,38 +23,31 @@
 ### 1. 기본 실행
 
 ```bash
-# 모든 코인 페어 모니터링 및 자동 분석
+# 운영 체결 레저/제안 런/알림 모니터
+uv run python websocket_monitor.py --mode upbit
+
+# 레거시 no-op 분석 콜백 모니터
 python upbit_websocket_monitor.py
 ```
 
 ### 2. 테스트 실행
 
 ```bash
-# WebSocket 연결 및 서비스 테스트 (실제 분석 없이)
-python test_upbit_websocket.py
+# 외부 WebSocket/브로커를 사용하지 않는 서비스·운영 경로 테스트
+uv run pytest --no-cov \
+  tests/test_upbit_websocket_service.py \
+  tests/test_websocket_monitor.py -q
 ```
 
 ### 3. 프로그래밍 방식 사용
 
 ```python
 import asyncio
-from app.services.upbit_websocket import UpbitOrderAnalysisService
-from app.analysis.service_analyzers import UpbitAnalyzer
+from websocket_monitor import UnifiedWebSocketMonitor
 
 async def main():
-    # 분석기 초기화
-    analyzer = UpbitAnalyzer()
-    
-    # 분석 콜백 함수 정의
-    async def analyze_callback(coin_name: str):
-        await analyzer.analyze_coin_json(coin_name)
-    
-    # 서비스 시작
-    service = UpbitOrderAnalysisService(analyzer_callback=analyze_callback)
-    await service.start_monitoring()
-    
-    # 특정 코인만 모니터링하려면:
-    # await service.start_monitoring(["KRW-BTC", "KRW-ETH"])
+    monitor = UnifiedWebSocketMonitor(mode="upbit")
+    await monitor.start()
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -58,15 +60,21 @@ if __name__ == "__main__":
 - 실시간 주문/체결 데이터 수신
 - 자동 재연결 기능
 
-### 2. UpbitOrderAnalysisService
-- 주문/체결 데이터 기반 자동 분석 서비스
-- 체결 감지 시 분석 콜백 호출
-- 서비스 시작/중지 관리
+### 2. UnifiedWebSocketMonitor
+- Upbit/KIS 체결 소비자 오케스트레이션
+- execution ledger 커밋 후 제안 런 프로젝션
+- 알림, 심박 파일, 재연결, 건강성 로그 관리
+
+### 3. UpbitOrderAnalysisService (레거시)
+- `upbit_websocket_monitor.py`가 사용하는 콜백 래퍼
+- 현재 엔트리포인트의 분석 콜백은 no-op
 
 ## 📊 모니터링 대상
 
 - **모든 KRW 마켓 페어**: KRW-BTC, KRW-ETH, KRW-ADA 등
-- **체결 상태만**: `state: "trade"` 인 데이터만 처리
+- **운영 체결 상태**: `state: "trade"`와 `state: "done"` 처리. `done`은 같은 UUID의
+  영속 체결 레저 증거가 있을 때만 제안 런을 최종 체결로 종료
+- **레거시 콜백 상태**: `upbit_websocket_monitor.py`는 `state: "trade"`만 콜백으로 전달
 - **매수/매도 구분**: ASK(매도), BID(매수) 모두 처리
 
 ## ⚙️ 설정
@@ -85,29 +93,41 @@ UPBIT_SECRET_KEY=your_upbit_secret_key_here
 ## 🔄 동작 흐름
 
 1. **WebSocket 연결**: 업비트 WebSocket MyOrder API에 연결
-2. **구독 시작**: 지정된 코인 페어 또는 모든 페어 구독
-3. **데이터 수신**: 실시간 주문/체결 데이터 수신
-4. **체결 감지**: `state: "trade"` 상태의 데이터 필터링
-5. **코인명 추출**: 페어 코드를 한국 이름으로 변환 (예: KRW-BTC → 비트코인)
-6. **분석 실행**: `analyze_coin_json(coin_name)` 호출
-7. **로그 기록**: 분석 시작/완료 로그 출력
+2. **데이터 수신**: 수신 수와 마지막 메시지 시각을 즉시 갱신
+3. **`trade` 체결 기록**: 건별 `volume`을 execution ledger에 먼저 커밋
+4. **제안 런 프로젝션**: 별도 DB 세션에서 누적 `executed_volume`을 부분 체결로 반영
+5. **`done` 종료 반영**: 같은 주문의 커밋된 체결이 확인되면 누적 수량으로 최종 체결 처리
+6. **알림 전송**: 중복을 제외한 체결을 전송하고, 매칭된 제안 런 체결은 소액 임계치 면제
+7. **건강성 기록**: `messages_received`, `execution_events_received`, `fills_forwarded`,
+   `last_message_at`, `last_execution_at`을 주기적으로 로그
+
+## 🚀 운영 배포
+
+macOS 네이티브 배포의 업비트 소비자는
+`com.robinco.auto-trader.upbit-websocket` 단일 활성 launchd 서비스입니다. API/MCP처럼
+블루/그린으로 교체되지 않으므로 코드 배포 후 재시작해야 합니다.
+
+```bash
+# 표준 네이티브 배포: current 심볼릭 전환 후 서비스를 자동 재시작
+scripts/deploy-native.sh <commit-sha>
+
+# 수동/아웃오브밴드 배포 후 재시작 확인
+launchctl kickstart -k gui/$(id -u)/com.robinco.auto-trader.upbit-websocket
+```
 
 ## 🚨 주의사항
 
 - **API 키 필요**: 업비트 API 키가 반드시 설정되어 있어야 합니다
 - **실제 거래 데이터**: 실제 주문/체결이 발생할 때만 동작합니다
 - **네트워크 연결**: 안정적인 인터넷 연결이 필요합니다
-- **리소스 사용**: 분석이 자주 실행될 수 있으므로 시스템 리소스를 모니터링하세요
+- **데이터베이스 연결**: `done` 종료 반영과 제안 런 프로젝션은 영속 체결 증거를 사용합니다
 
 ## 🔍 로그 예시
 
 ```
-2025-01-27 10:30:15 - upbit_websocket - INFO - 업비트 MyOrder WebSocket 연결을 시작합니다...
-2025-01-27 10:30:16 - upbit_websocket - INFO - WebSocket 연결 성공
-2025-01-27 10:30:16 - upbit_websocket - INFO - 모든 코인 페어 구독
-2025-01-27 10:30:45 - upbit_websocket - INFO - 체결 감지 - 비트코인(KRW-BTC): BID 0.001개 @ 95000000원
-2025-01-27 10:30:45 - upbit_websocket - INFO - 비트코인 분석을 시작합니다...
-2025-01-27 10:30:50 - upbit_websocket - INFO - 비트코인 분석이 완료되었습니다.
+2026-07-14 10:30:45 - websocket_monitor - INFO - Execution ledger websocket upsert committed: broker=upbit ...
+2026-07-14 10:30:45 - websocket_monitor - INFO - Upbit proposal rung projected: order_id=... state=trade rung_state=partially_filled ...
+2026-07-14 10:35:00 - websocket_monitor - INFO - Unified WebSocket health: mode=upbit connected=True ... messages_received=12 execution_events_received=3 fills_forwarded=3 ...
 ```
 
 ## 🛠️ 트러블슈팅
@@ -127,12 +147,12 @@ UPBIT_SECRET_KEY=your_upbit_secret_key_here
 - 네트워크 연결 상태 확인
 - 방화벽 설정 확인
 
-### 분석 실행 오류
-- 데이터베이스 연결 상태 확인
-- Google API 키 할당량 확인
-- 시스템 리소스 확인
+### 제안 런 프로젝션 오류
+- `Upbit proposal rung projection failed` 로그와 데이터베이스 연결 상태 확인
+- 체결 레저 커밋은 유지되므로 이후 reconcile에서 상태가 수렴하는지 확인
+- `done` 스킵이 반복되면 같은 Upbit UUID의 체결 레저 행이 존재하는지 확인
 
 ### 재연결 문제
-- 기본적으로 최대 10회 재연결 시도
-- 재연결 간격: 5초
-- 필요시 코드에서 `max_reconnect_attempts`, `reconnect_delay` 값 조정
+- 통합 모니터는 연결 종료 후 슈퍼바이저 루프에서 재연결
+- 기본 재연결 간격: 5초
+- 필요 시 `WS_MONITOR_RECONNECT_DELAY_SECONDS`로 운영 재연결 간격 조정

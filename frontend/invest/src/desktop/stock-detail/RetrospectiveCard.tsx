@@ -12,9 +12,13 @@ function pnlText(row: RetrospectiveRow): string {
   return `${sign}${row.realized_pnl.toLocaleString("ko-KR")} ${row.realized_pnl_currency ?? ""}`.trim();
 }
 
-function incompleteActions(row: RetrospectiveRow): string[] {
+// ROB-885 — explicit active allowlist. Only open|in_progress render; missing,
+// unknown, and terminal (done/obsolete/expired) statuses are inactive.
+const ACTIVE_ACTION_STATUSES = new Set(["open", "in_progress"]);
+
+function activeActions(row: RetrospectiveRow): string[] {
   return (row.next_actions ?? [])
-    .filter((a) => (a as { status?: string }).status !== "done")
+    .filter((a) => ACTIVE_ACTION_STATUSES.has(String((a as { status?: string }).status ?? "")))
     .map((a) => String((a as { action?: unknown }).action ?? ""))
     .filter(Boolean);
 }
@@ -35,7 +39,7 @@ export function RetrospectiveCard({ retrospectives }: { retrospectives: Retrospe
       {retrospectives && retrospectives.length > 0 ? (
         <div style={{ display: "grid", gap: 8 }}>
           {retrospectives.map((row) => {
-            const actions = incompleteActions(row);
+            const actions = activeActions(row);
             return (
               <div key={row.id} style={{ border: "1px solid var(--divider)", borderRadius: 12, padding: "10px 12px", display: "grid", gap: 6 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>

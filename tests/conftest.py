@@ -3,7 +3,9 @@ Pytest configuration and common fixtures for auto-trader tests.
 """
 
 import asyncio
+import contextlib
 import os
+import tempfile
 from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,6 +13,31 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pandas as pd
 import pytest
 import pytest_asyncio
+
+# Cross-worker mutex serialising the Alpaca-paper suites that mutate the shared
+# `market_quote_snapshots` / `alpaca_paper_order_ledger` tables. See
+# `_serialize_alpaca_paper_db_suites` below. Lives in the temp dir so every
+# `pytest -n auto` worker process (same machine, same DB) contends on one file.
+# Uses stdlib fcntl.flock (posix; the Linux CI + macOS dev boxes) — no extra
+# dependency — and no-ops on the rare non-posix host.
+_ALPACA_PAPER_DB_LOCK_PATH = (
+    Path(tempfile.gettempdir()) / "auto_trader_alpaca_paper_db_suite.lock"
+)
+
+
+@contextlib.contextmanager
+def _alpaca_paper_db_suite_lock() -> Generator[None]:
+    try:
+        import fcntl
+    except ImportError:  # non-posix: cannot cross-process lock, run unserialised
+        yield
+        return
+    with open(_ALPACA_PAPER_DB_LOCK_PATH, "w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def _load_env_file(env_path: Path) -> None:
@@ -300,6 +327,51 @@ def _mock_kr_market_session_calendar(monkeypatch):
         "app.mcp_server.tooling.market_session._get_kr_calendar",
         lambda: _FastKrCalendar(),
     )
+
+
+@pytest.fixture(autouse=True)
+def _serialize_alpaca_paper_db_suites(request):
+    """Serialize Alpaca-paper suites that mutate shared DB tables across workers.
+
+    The Alpaca-paper test files seed committed rows into two globally shared
+    tables (`market_quote_snapshots`, `alpaca_paper_order_ledger`) and clean up
+    with broad committed DELETEs keyed on values that are IDENTICAL across every
+    such suite — the ``"AAPL"`` quote symbol and the server-derived
+    ``rob73-``/``rob74-crypto-`` ledger-key prefixes (which are server-owned, so
+    a test cannot make them unique). Under CI's ``pytest -n auto
+    --dist=loadfile`` these sibling files run in separate workers against one
+    database, so a peer's committed cleanup can delete another running suite's
+    live rows between insert and read — surfacing as flaky
+    ``no_trusted_snapshot`` / ``LedgerNotFoundError`` failures. (Latent on main;
+    duration-based ``--splits`` kept the hostile files in separate DB jobs.)
+
+    A cross-worker file lock lets only one such suite touch those tables at a
+    time. It is *outer* to each file's own ``_clean`` autouse fixture (conftest
+    autouse fixtures wrap module autouse fixtures), so a peer never runs while
+    another suite's committed cleanup is in flight. The intra-test
+    ``asyncio.gather`` concurrency the exactly-once claim tests rely on still
+    runs inside the lock (one process holds it for the whole test).
+
+    ROB-954 round-2: ``test_trade_retrospective_pending.py`` doesn't seed the
+    shared ``alpaca_paper_order_ledger`` table itself, but its
+    ``account_mode=None`` scans read it with exact ``total_pending ==`` counts
+    over a wide ``2000-01-01``..``2100-01-01`` window — a peer alpaca_paper
+    suite committing a ``rob73-``/``rob74-crypto-`` row mid-test inflates that
+    count exactly like the write/write races above, so it needs the same
+    cross-worker serialization even though it is read-mostly here. (Do not
+    also wrap this file's own cleanup in ``_alpaca_paper_db_suite_lock()`` —
+    ``fcntl.flock`` is not reentrant across separate ``open()`` calls even
+    within one process, so nesting it under this fixture would deadlock.)"""
+    path = str(getattr(request.node, "fspath", "") or "")
+    if (
+        "alpaca_paper" not in path
+        and "paper_approval_packet" not in path
+        and "test_trade_retrospective_pending" not in path
+    ):
+        yield
+        return
+    with _alpaca_paper_db_suite_lock():
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -646,6 +718,37 @@ async def investment_reports_cleanup_lock(db_session):
 
 
 @pytest_asyncio.fixture
+async def retrospective_action_control_lock():
+    """Serialize tests that mutate the global retrospective-action authority.
+
+    The ROB-878/880 migration and cutover contracts intentionally change the
+    singleton control row and, in a few cases, rebuild its tables.  Xdist
+    workers share one PostgreSQL database, so those tests must not observe one
+    another's temporary canonical mode or DDL state.
+    """
+    from sqlalchemy import text
+
+    from app.core.db import engine
+
+    # Distinct from the production cutover lock (878_880_001), which the
+    # cutover contract tests must still be able to acquire while holding this
+    # outer test-isolation lock.
+    retrospective_action_control_test_lock_id = 878_880_999
+    async with engine.connect() as guard:
+        await guard.execute(
+            text("SELECT pg_advisory_lock(CAST(:lock_id AS bigint))"),
+            {"lock_id": retrospective_action_control_test_lock_id},
+        )
+        try:
+            yield
+        finally:
+            await guard.execute(
+                text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
+                {"lock_id": retrospective_action_control_test_lock_id},
+            )
+
+
+@pytest_asyncio.fixture
 async def user(db_session):
     """Create a test user."""
     from uuid import uuid4
@@ -927,3 +1030,71 @@ async def toss_ledger_cleanup_lock():
                 text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
                 {"lock_id": TOSS_LEDGER_TEST_LOCK_ID},
             )
+
+
+@pytest_asyncio.fixture
+async def binance_demo_reservation_lock():
+    """Serialize files that COMMIT open-root rows to ``binance_demo_order_ledger``.
+
+    ROB-844 makes ``reserve_root_planned`` commit the planned root so the claim
+    is durable and visible across processes. Consequently every executor test
+    running ``confirm=True`` leaves a committed open-root behind, and the
+    global open-*root* cap is a table-wide count. A concurrency test that asserts
+    "global cap N admits exactly one" therefore races any other file committing
+    open roots on another xdist worker (the ``--dist=loadfile`` shared-test_db
+    hazard, ROB-842). Same remedy as ``toss_ledger_cleanup_lock``: hold a
+    Postgres advisory lock for each test in the marked files so the
+    open-root-committing binance-demo family is serialized against itself. Apply
+    with ``pytestmark = pytest.mark.usefixtures("binance_demo_reservation_lock")``.
+
+    Distinct key from the production reservation advisory lock, so it never
+    blocks the reservation path under test — it only serializes test files.
+    """
+    from sqlalchemy import text
+
+    from app.core.db import engine
+
+    BINANCE_DEMO_RESERVATION_TEST_LOCK_ID = 844_000_844
+
+    async with engine.connect() as conn:
+        await conn.execute(
+            text("SELECT pg_advisory_lock(CAST(:lock_id AS bigint))"),
+            {"lock_id": BINANCE_DEMO_RESERVATION_TEST_LOCK_ID},
+        )
+        try:
+            yield
+        finally:
+            await conn.execute(
+                text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
+                {"lock_id": BINANCE_DEMO_RESERVATION_TEST_LOCK_ID},
+            )
+
+
+@pytest_asyncio.fixture
+async def binance_demo_smoke_ledger_isolation(binance_demo_reservation_lock):
+    """Serialize and remove rows committed by the two real-ledger smoke tests.
+
+    The smoke kernels intentionally commit every lifecycle transition. Their
+    randomized ``rob298-*`` ids previously escaped the ordinary ``db_session``
+    rollback and changed table-wide count assertions on another xdist worker.
+    """
+    from sqlalchemy import delete, or_
+
+    from app.core.db import AsyncSessionLocal
+    from app.models.binance_demo_order_ledger import BinanceDemoOrderLedger
+
+    async def _cleanup() -> None:
+        async with AsyncSessionLocal() as session:
+            await session.execute(
+                delete(BinanceDemoOrderLedger).where(
+                    or_(
+                        BinanceDemoOrderLedger.client_order_id.like("rob298-%"),
+                        BinanceDemoOrderLedger.client_order_id.like("rob-298-fut-%"),
+                    )
+                )
+            )
+            await session.commit()
+
+    await _cleanup()
+    yield
+    await _cleanup()

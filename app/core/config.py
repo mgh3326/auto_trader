@@ -45,6 +45,11 @@ DEFAULT_KIS_API_RATE_LIMITS: ApiRateLimitMap = {
         "rate": 1,
         "period": 0.2,
     },
+    # ROB-951: mock-US buy preflight and the read-only probe use VTTS3007R.
+    "VTTS3007R|/uapi/overseas-stock/v1/trading/inquire-psamount": {
+        "rate": 10,
+        "period": 1.0,
+    },
     "TTTC8434R|/uapi/domestic-stock/v1/trading/inquire-balance": {
         "rate": 10,
         "period": 1.0,
@@ -250,6 +255,20 @@ class Settings(BaseSettings):
     kiwoom_base_url: str = "https://api.kiwoom.com"  # live disabled in this PR
     kiwoom_mock_access_token: str | None = None
 
+    # ROB-867: US-only Kiwoom mock namespace. Same mock host, separate
+    # app_key/app_secret/account_no; never reads or falls back to KR settings.
+    kiwoom_mock_us_enabled: bool = False
+    kiwoom_mock_us_app_key: str | None = None
+    kiwoom_mock_us_app_secret: str | None = None
+    kiwoom_mock_us_account_no: str | None = None
+
+    # ROB-908: surface Alpaca paper read/preview/confirm-gated order/ledger tools
+    # in the DEFAULT profile (mock_alpaca operator session runs on DEFAULT, not a
+    # separate us-paper instance). Flag-gated off by default, mirroring the
+    # ROB-601/ROB-867 kiwoom-mock DEFAULT gate; the automated-submit tool stays
+    # US_PAPER-only regardless (ROB-842 governance).
+    alpaca_paper_default_tools_enabled: bool = False
+
     # Toss Securities Open API. Live-only, disabled by default. ROB-530 adds
     # read-only client support; order mutations are handled by follow-up issues.
     toss_api_enabled: bool = False
@@ -258,6 +277,12 @@ class Settings(BaseSettings):
     toss_api_account_seq: int | None = None
     toss_api_base_url: str | None = None
     toss_live_order_mutations_enabled: bool = False
+
+    # ROB-866: gate for the scheduleless Toss manual-activity sweep TaskIQ task.
+    # Default off — the sweep runs manually (dry_run MCP tool) first; recurrence is
+    # a separate decision after manual reps. Only gates the auto-run task; the MCP
+    # tool itself is operator-driven and gated by TOSS_API_ENABLED for reads.
+    toss_manual_activity_sweep_enabled: bool = False
 
     # ROB-701/ROB-828: Redis cache-aside for the per-symbol Toss sellable-
     # quantity fanout on /invest home, account-panel, and MCP holdings.
@@ -308,6 +333,20 @@ class Settings(BaseSettings):
     binance_demo_scalping_review_flow_enabled: bool = False
     # Phase 3 — gate for the LLM decision-injection MCP tool (default-off).
     binance_demo_scalping_enabled: bool = False
+    # ROB-845 — isolated canonical Binance Demo / Alpaca Paper experiment
+    # façade. The dedicated MCP profile must remain physically absent unless
+    # the operator opts in; startup also requires MCP bearer authentication.
+    PAPER_EXECUTION_ENABLED: bool = False
+    # ROB-849 — immutable BTC/ETH cohort scheduler. Disabled means the TaskIQ
+    # label is absent; direct task calls audit recoverable claims before returning.
+    PAPER_COHORT_ENABLED: bool = False
+    PAPER_COHORT_CRON: str = "* * * * *"
+    # ROB-848 — authenticated caller id -> validation role. Empty/unmapped is
+    # intentionally fail-closed; caller-owned payload roles are never accepted.
+    PAPER_VALIDATION_ACTOR_ROLES: dict[str, str] = Field(default_factory=dict)
+    # Bound to the authenticated PAPER_EXECUTION bearer token at the process
+    # composition boundary. Never derive this principal from a caller header.
+    PAPER_VALIDATION_AUTHENTICATED_ACTOR_ID: str = ""
 
     # KIS Rate Limiting (HTTP API)
     kis_rate_limit_rate: int = 19  # 초당 최대 요청 수 (안전 마진으로 20-1)
@@ -660,18 +699,16 @@ class Settings(BaseSettings):
     NEWS_RELEVANCE_JUDGMENT_TOKEN: str = ""
     NEWS_RELEVANCE_JUDGMENT_TIMEOUT_S: float = 120.0
     NEWS_RELEVANCE_JUDGMENT_BATCH_LIMIT: int = 50
+    # ROB-916 — default-disabled gate for scripts/backfill_news_related_symbols.py.
+    # Read-only DB access + additive news_article_related_symbols inserts only
+    # (never touches symbol_news_relevance excluded/pending state); the gate
+    # exists so the script can't run against a target DB unattended even in
+    # --dry-run.
+    NEWS_RELATED_SYMBOLS_BACKFILL_ENABLED: bool = False
 
     # ROB-510 — Finnhub news fetch reliability (per-attempt timeout + bounded retry)
     FINNHUB_NEWS_TIMEOUT_S: float = 8.0
     FINNHUB_NEWS_MAX_ATTEMPTS: int = 3
-    # ROB-287 Phase B — operational activation gate for the
-    # ``hermes_bundle_preparation_flow`` Prefect entry. Default ``False``
-    # makes the flow a structured dry-run (no ``SnapshotBundleEnsureService``
-    # write, no side effects) so the Prefect deployment can land in a
-    # paused state and operators flip the env var separately. The
-    # production cutover is owned by ``robin-prefect-automations``;
-    # nothing in this repo schedules the flow on its own.
-    HERMES_BUNDLE_PREPARATION_ENABLED: bool = False
 
     # ROB-211 execution ledger ships inert; commit/backfill activation is a separate approval-gated ops change.
     EXECUTION_LEDGER_COMMIT_ENABLED: bool = False
@@ -681,6 +718,16 @@ class Settings(BaseSettings):
     # periodic taskiq task returns paused until an operator flips these.
     KIS_MOCK_RECONCILE_ON_EXECUTION_ENABLED: bool = False
     KIS_MOCK_RECONCILE_PERIODIC_ENABLED: bool = False
+
+    # ROB-844 — scheduleless Binance Demo abandoned-reservation reconcile.
+    # The canonical ``binance_demo_scalping_enabled`` master above and the
+    # reconcile gate must both be enabled. Do not duplicate the case-insensitive
+    # BINANCE_DEMO_SCALPING_ENABLED alias here. Broker reads stay dry-run until
+    # the independent confirm gate is enabled; candidates younger than one hour
+    # are never queried.
+    BINANCE_DEMO_RESERVATION_RECONCILE_ENABLED: bool = False
+    BINANCE_DEMO_RESERVATION_RECONCILE_CONFIRM: bool = False
+    BINANCE_DEMO_RESERVATION_RECONCILE_MIN_AGE_SECONDS: int = 3600
 
     # ROB-475 / ROB-574 — paused periodic auto-reconcile for KIS live KR orders.
     # Default off; operator flips + adds recurrence outside this repo.
@@ -695,6 +742,12 @@ class Settings(BaseSettings):
     # operator automation layer; unattended booking requires both gates.
     TOSS_LIVE_AUTO_RECONCILE_ENABLED: bool = False
     TOSS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED: bool = False
+
+    # ROB-1050 — paused periodic auto-reconcile for US (KIS) and Crypto (Upbit) live orders.
+    # Default off and scheduleless in this repo. Operator flips and adds recurrence.
+    LIVE_AUTO_RECONCILE_ENABLED: bool = False
+    LIVE_AUTO_RECONCILE_DRY_RUN: bool = True
+
     # ROB-757 — Toss REST fill poller. Default off; read-only broker scan plus
     # evidence-gated local booking only after operator activation.
     TOSS_FILL_POLL_ENABLED: bool = False
@@ -721,6 +774,9 @@ class Settings(BaseSettings):
     # importable but unreachable from caller surfaces until flipped post-merge.
     # See docs/superpowers/plans/2026-05-19-rob-269-phase-2-mcp-api.md §2.
     INVESTMENT_SNAPSHOTS_MCP_ENABLED: bool = False
+    # ROB-838 — frozen analysis evidence create/read MCP surface. Default off;
+    # disabled tools are physically absent from every MCP profile.
+    ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED: bool = False
     # ROB-459 P3 — context_get(draft_policy="advisory_only")에서 baseline으로 admit할
     # advisory 프로필을 운영자가 확장(default {HERMES_ADVISOR, CLAUDE_ADVISOR}와 UNION).
     # 빈 값이면 기본만. 스모크/테스트 프로필은 명시하지 않는 한 제외(fail-closed).
@@ -763,6 +819,9 @@ class Settings(BaseSettings):
     # ORDER PROPOSALS (ROB-816) — default-off SOT ledger + read/create MCP tools.
     # Gates MCP tool registration; the Telegram approval surface has its own gate (PR 2).
     ORDER_PROPOSALS_ENABLED: bool = False
+    # ROB-871 — master gate for resting-class automatic submission. Telegram
+    # approvals remain the fallback whenever this is off or eligibility fails.
+    ORDER_PROPOSALS_AUTO_APPROVE: bool = False
     # ROB-816 PR 2 — Telegram approval flow (default off)
     ORDER_PROPOSALS_TELEGRAM_ENABLED: bool = False
     ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN: str = ""
@@ -770,6 +829,12 @@ class Settings(BaseSettings):
     ORDER_PROPOSALS_TELEGRAM_TOKEN_HEADER: str = "X-Telegram-Bot-Api-Secret-Token"
     ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR: str = ""
     ORDER_PROPOSALS_SUBMIT_AGENT_ID: str = ""
+
+    # ROB-897: gate for the scheduleless order_proposal valid_until expiry sweep
+    # TaskIQ task. Default off -- the sweep runs manually first (dry_run MCP tool
+    # `order_proposal_expire_sweep`); recurrence is a separate decision after
+    # manual reps, mirroring `toss_manual_activity_sweep_enabled` (ROB-866).
+    order_proposal_expire_sweep_enabled: bool = False
 
     @property
     def order_proposals_telegram_chat_allowlist(self) -> list[str]:
@@ -785,8 +850,6 @@ class Settings(BaseSettings):
     execution_ledger_reconcile_scheduler_window_hours: int = 24
 
     trader_agent_id: str = "6b2192cc-14fa-4335-b572-2fe1e0cb54a7"
-    paperclip_api_url: str | None = None
-    paperclip_api_key: str | None = None
 
     public_base_url: str = "https://mgh3326.duckdns.org"
 
@@ -799,6 +862,10 @@ class Settings(BaseSettings):
 
     # ROB-326 — US dual-paper premarket preview/preflight path (read-only, default off)
     us_dual_paper_preview_enabled: bool = False
+
+    # ROB-842 — automated Alpaca paper submit boundary (preview→claim→POST). The
+    # automated cohort broker mutation is fail-closed unless this gate is armed.
+    alpaca_paper_automated_submit_enabled: bool = False
 
     @field_validator("alpaca_paper_base_url", mode="before")
     @classmethod
@@ -1018,6 +1085,29 @@ def validate_kiwoom_mock_config(settings_obj: Any = settings) -> list[str]:
         missing.append("KIWOOM_MOCK_APP_SECRET")
     if not _has_nonempty_value(getattr(settings_obj, "kiwoom_mock_account_no", None)):
         missing.append("KIWOOM_MOCK_ACCOUNT_NO")
+    return missing
+
+
+def validate_kiwoom_mock_us_config(settings_obj: Any = settings) -> list[str]:
+    """Return missing Kiwoom mock US env names without exposing configured values.
+
+    ROB-867: US namespace is completely independent from KR. It never reads or
+    falls back to ``kiwoom_mock_*`` credentials.
+    """
+
+    missing: list[str] = []
+    if not bool(getattr(settings_obj, "kiwoom_mock_us_enabled", False)):
+        missing.append("KIWOOM_MOCK_US_ENABLED")
+    if not _has_nonempty_value(getattr(settings_obj, "kiwoom_mock_us_app_key", None)):
+        missing.append("KIWOOM_MOCK_US_APP_KEY")
+    if not _has_nonempty_value(
+        getattr(settings_obj, "kiwoom_mock_us_app_secret", None)
+    ):
+        missing.append("KIWOOM_MOCK_US_APP_SECRET")
+    if not _has_nonempty_value(
+        getattr(settings_obj, "kiwoom_mock_us_account_no", None)
+    ):
+        missing.append("KIWOOM_MOCK_US_ACCOUNT_NO")
     return missing
 
 

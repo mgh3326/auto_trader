@@ -205,11 +205,33 @@ async def _side_effect_account_ready(lines: list[SMOKE_LINE]) -> bool:
 async def _side_effect_submit(
     lines: list[SMOKE_LINE], args: argparse.Namespace
 ) -> str | None:
+    # ROB-842 G5: the smoke never fabricates a trusted market snapshot from the
+    # order/limit price. A confirm=True submit needs a REAL, server-observed
+    # snapshot; the operator must reference it explicitly via --quote-snapshot-id.
+    if args.quote_snapshot_id is None:
+        lines.append(
+            (
+                "submit_order(confirm=True)",
+                False,
+                "BLOCKED: --quote-snapshot-id (a real server-observed snapshot) is required",
+            )
+        )
+        return None
     try:
         submit_result = await alpaca_paper_submit_order(
             **_order_payload(args),
+            quote_snapshot_id=args.quote_snapshot_id,
             confirm=True,
         )
+        if not submit_result.get("submitted"):
+            lines.append(
+                (
+                    "submit_order(confirm=True)",
+                    False,
+                    f"BLOCKED reason={submit_result.get('reason_code')}",
+                )
+            )
+            return None
         submitted_id = submit_result["order"]["id"]
         lines.append(
             (
@@ -332,6 +354,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--qty", type=Decimal, default=SMOKE_QTY)
     parser.add_argument("--notional", type=Decimal)
     parser.add_argument("--limit-price", type=Decimal)
+    parser.add_argument(
+        "--quote-snapshot-id",
+        type=int,
+        help=(
+            "Opaque id of a REAL server-observed market_quote_snapshots row. "
+            "Required for a confirm=True side-effect submit; the smoke never "
+            "fabricates trusted market evidence from the order price."
+        ),
+    )
     parser.add_argument(
         "--time-in-force",
         choices=("day", "gtc", "ioc", "fok"),

@@ -52,6 +52,22 @@ class TestNormalizeUpbitFill:
         assert order.order_price == 3_001_500
         assert order.filled_at == "2026-02-14T18:15:22"
 
+    def test_myorder_trade_uses_trade_volume_before_cumulative_volume(self) -> None:
+        raw = {
+            "code": "KRW-BTC",
+            "ask_bid": "BID",
+            "state": "trade",
+            "price": 50_000_000,
+            "volume": "0.1",
+            "executed_volume": "0.3",
+            "trade_uuid": "trade-third-partial",
+        }
+
+        order = normalize_upbit_fill(raw)
+
+        assert order.filled_qty == pytest.approx(0.1)
+        assert order.filled_amount == pytest.approx(5_000_000)
+
 
 class TestNormalizeKisFill:
     """KIS 체결 데이터 정규화 테스트"""

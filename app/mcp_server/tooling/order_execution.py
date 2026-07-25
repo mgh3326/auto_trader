@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from decimal import Decimal
 from typing import Any, Literal
@@ -55,6 +56,11 @@ from app.mcp_server.tooling.shared import (
     to_float as _to_float,
 )
 from app.services.brokers.kis import KISClient
+from app.services.brokers.kis.pre_send import PreSendFreshnessError
+from app.services.brokers.kis.send_outcome import (
+    OrderSendDisposition,
+    OrderSendOutcomeTracker,
+)
 from app.services.crypto_trade_cooldown_service import CryptoTradeCooldownService
 from app.services.order_send_intent_service import (
     DuplicateOrderIntent,
@@ -138,18 +144,35 @@ async def _execute_order(
     market_type: str,
     is_mock: bool = False,
     identifier: str | None = None,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+    send_outcome: OrderSendOutcomeTracker | None = None,
 ) -> dict[str, Any]:
     if market_type == "crypto":
         if is_mock:
             raise ValueError(_MOCK_CRYPTO_ERROR)
         return await _execute_crypto_order(
-            symbol, side, order_type, quantity, price, identifier=identifier
+            symbol,
+            side,
+            order_type,
+            quantity,
+            price,
+            identifier=identifier,
+            pre_send_hook=pre_send_hook,
         )
     if market_type == "equity_kr":
         return await _execute_kr_order(
-            symbol, side, order_type, quantity, price, is_mock=is_mock
+            symbol,
+            side,
+            order_type,
+            quantity,
+            price,
+            is_mock=is_mock,
+            pre_send_hook=pre_send_hook,
+            send_outcome=send_outcome,
         )
-    return await _execute_us_order(symbol, side, quantity, price, is_mock=is_mock)
+    return await _execute_us_order(
+        symbol, side, quantity, price, is_mock=is_mock, pre_send_hook=pre_send_hook
+    )
 
 
 async def _execute_crypto_order(
@@ -159,17 +182,26 @@ async def _execute_crypto_order(
     quantity: float | None,
     price: float | None,
     identifier: str | None = None,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     if side == "buy":
         if order_type == "market":
             price_str = f"{price:.0f}" if price else "0"
             return await upbit_service.place_market_buy_order(
-                symbol, price_str, identifier=identifier
+                symbol,
+                price_str,
+                identifier=identifier,
+                pre_send_hook=pre_send_hook,
             )
         volume_str = f"{quantity:.8f}"
         adjusted_price = upbit_service.adjust_price_to_upbit_unit(price)
         return await upbit_service.place_buy_order(
-            symbol, adjusted_price, volume_str, "limit", identifier=identifier
+            symbol,
+            adjusted_price,
+            volume_str,
+            "limit",
+            identifier=identifier,
+            pre_send_hook=pre_send_hook,
         )
 
     holdings = await _get_holdings_for_order(symbol, "crypto")
@@ -180,12 +212,19 @@ async def _execute_crypto_order(
     volume_str = f"{volume:.8f}"
     if order_type == "market":
         return await upbit_service.place_market_sell_order(
-            symbol, volume_str, identifier=identifier
+            symbol,
+            volume_str,
+            identifier=identifier,
+            pre_send_hook=pre_send_hook,
         )
 
     adjusted_price = upbit_service.adjust_price_to_upbit_unit(price)
     return await upbit_service.place_sell_order(
-        symbol, volume_str, f"{adjusted_price}", identifier=identifier
+        symbol,
+        volume_str,
+        f"{adjusted_price}",
+        identifier=identifier,
+        pre_send_hook=pre_send_hook,
     )
 
 
@@ -196,6 +235,8 @@ async def _execute_kr_order(
     quantity: float | None,
     price: float | None,
     is_mock: bool = False,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+    send_outcome: OrderSendOutcomeTracker | None = None,
 ) -> dict[str, Any]:
     kis = _create_kis_client(is_mock=is_mock)
     stock_code = symbol
@@ -225,6 +266,11 @@ async def _execute_kr_order(
                 tick_size,
             )
 
+    # ROB-843 P1: only thread the hook when present (mock scalping). The live /
+    # normal path passes no callback at all → byte-for-byte identical behavior.
+    hook_kw = {"pre_send_hook": pre_send_hook} if pre_send_hook is not None else {}
+    if send_outcome is not None:
+        hook_kw["send_outcome"] = send_outcome
     if side == "buy":
         result = await _call_kis(
             kis.order_korea_stock,
@@ -233,6 +279,7 @@ async def _execute_kr_order(
             quantity=order_quantity,
             price=order_price,
             is_mock=is_mock,
+            **hook_kw,
         )
     else:
         result = await _call_kis(
@@ -242,6 +289,7 @@ async def _execute_kr_order(
             quantity=order_quantity,
             price=order_price,
             is_mock=is_mock,
+            **hook_kw,
         )
 
     if original_price is not None and order_price != original_price:
@@ -257,10 +305,13 @@ async def _execute_us_order(
     quantity: float | None,
     price: float | None,
     is_mock: bool = False,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     kis = _create_kis_client(is_mock=is_mock)
     exchange_code = await get_us_exchange_by_symbol(symbol)
 
+    # ROB-843 P1: pass the hook only when present (live/normal path unchanged).
+    hook_kw = {"pre_send_hook": pre_send_hook} if pre_send_hook is not None else {}
     if side == "buy":
         return await _call_kis(
             kis.buy_overseas_stock,
@@ -269,6 +320,7 @@ async def _execute_us_order(
             quantity=int(quantity) if quantity else 0,
             price=price if price else 0.0,
             is_mock=is_mock,
+            **hook_kw,
         )
     return await _call_kis(
         kis.sell_overseas_stock,
@@ -277,6 +329,7 @@ async def _execute_us_order(
         quantity=int(quantity) if quantity else 0,
         price=price if price else 0.0,
         is_mock=is_mock,
+        **hook_kw,
     )
 
 
@@ -723,6 +776,8 @@ async def _execute_and_record(
     idempotency_key: str | None = None,
     mirror_cohort: str | None = None,
     mirror_source_bucket: str | None = None,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+    send_outcome: OrderSendOutcomeTracker | None = None,
 ) -> dict[str, Any]:
     """Execute a live order, record history, fills, and journals."""
     # ROB-102: capture pre-order KIS mock holdings as the reconciler baseline.
@@ -786,14 +841,21 @@ async def _execute_and_record(
                     _duplicate_order_intent_message(intent_account_scope)
                 )
 
-    async def _release_reserved_mock_mirror_intent_after_send_failure(
+    async def _release_reserved_intent_after_send_failure(
         exc: BaseException,
+        *,
+        proven_not_sent: bool = False,
     ) -> bool:
         if (
             not intent_reserved
-            or intent_account_scope != "kis_mock"
             or intent_key is None
-            or mirror_cohort != "mock_counterfactual"
+            or (
+                not proven_not_sent
+                and (
+                    intent_account_scope != "kis_mock"
+                    or mirror_cohort != "mock_counterfactual"
+                )
+            )
         ):
             return False
 
@@ -828,6 +890,10 @@ async def _execute_and_record(
         return False
 
     try:
+        # The optional pre_send_hook is threaded to the broker transport and
+        # fired immediately before each real mutation HTTP attempt (including
+        # eligible token/rate-limit re-sends). Callers without a hook retain
+        # the existing execution behavior.
         execution_result = await _execute_order(
             symbol=normalized_symbol,
             side=side,
@@ -837,11 +903,50 @@ async def _execute_and_record(
             market_type=market_type,
             is_mock=is_mock,
             identifier=idempotency_key if market_type == "crypto" else None,
+            pre_send_hook=pre_send_hook,
+            send_outcome=send_outcome,
         )
+        if send_outcome is not None:
+            # A transport response crossed the send boundary. Until the mock
+            # result normalizer proves accepted/rejected, the outcome is unknown.
+            send_outcome.mark_unknown()
+    except PreSendFreshnessError as fresh_exc:
+        await _release_reserved_intent_after_send_failure(
+            fresh_exc,
+            proven_not_sent=True,
+        )
+        logger.info(
+            "pre-send freshness block symbol=%s side=%s reasons=%s",
+            normalized_symbol,
+            side,
+            list(fresh_exc.reason_codes),
+        )
+        return {
+            "success": False,
+            "pre_send_blocked": True,
+            "reason_codes": list(fresh_exc.reason_codes),
+            "detail": f"{type(fresh_exc).__name__}: {fresh_exc}"[:200],
+            "account_mode": "kis_mock" if is_mock else market_type,
+            "dry_run": False,
+        }
     except httpx.RequestError as send_exc:
-        retry_allowed = await _release_reserved_mock_mirror_intent_after_send_failure(
-            send_exc
-        )
+        # Preserve the transport boundary's explicit state: token/client setup
+        # can raise before dispatch (NOT_CREATED), while an actual send marks
+        # UNKNOWN immediately before crossing the HTTP boundary.
+        retry_allowed = await _release_reserved_intent_after_send_failure(send_exc)
+        if (
+            send_outcome is not None
+            and send_outcome.disposition is OrderSendDisposition.NOT_CREATED
+        ):
+            logger.error(
+                "execute_order failed before dispatch: market_type=%s, "
+                "symbol=%s, side=%s, error=%s",
+                market_type,
+                normalized_symbol,
+                side,
+                describe_exception(send_exc),
+            )
+            raise OrderSendNotCreated(send_exc) from send_exc
         # ROB-645: the order POST itself timed out / failed with no broker response.
         # Outcome is UNKNOWN for live orders (may have been accepted) — never re-send live; reconcile.
         # ROB-750: mock mirror has no live broker risk, so its scoped intent is released for retry.
@@ -864,7 +969,7 @@ async def _execute_and_record(
             else None,
         ) from send_exc
     except Exception as exec_exc:
-        await _release_reserved_mock_mirror_intent_after_send_failure(exec_exc)
+        await _release_reserved_intent_after_send_failure(exec_exc)
         logger.error(
             "execute_order 실패: stage=execute_order, market_type=%s, "
             "symbol=%s, side=%s, error=%s",
@@ -874,6 +979,17 @@ async def _execute_and_record(
             exec_exc,
         )
         raise
+
+    if send_outcome is not None and send_outcome.has_untrusted_server_error_response:
+        # KIS sometimes carries a success-shaped provider body with HTTP 5xx.
+        # It is not accepted evidence: do not write an accepted ledger row or
+        # let the round trip advance before explicit reconciliation.
+        raise OrderSendOutcomeUnknown(
+            RuntimeError(
+                "KIS order response outcome unknown after HTTP "
+                f"{send_outcome.last_http_status}"
+            )
+        )
 
     await _record_order_history(
         symbol=normalized_symbol,
@@ -898,7 +1014,7 @@ async def _execute_and_record(
     if is_mock:
         from app.mcp_server.tooling.kis_mock_ledger import _record_kis_mock_order
 
-        return await _record_kis_mock_order(
+        result = await _record_kis_mock_order(
             normalized_symbol=normalized_symbol,
             market_type=market_type,
             side=side,
@@ -917,6 +1033,14 @@ async def _execute_and_record(
             mirror_cohort=mirror_cohort,
             mirror_source_bucket=mirror_source_bucket,
         )
+        if send_outcome is not None:
+            if result.get("success"):
+                send_outcome.mark_accepted()
+            elif result.get("reason") == "broker_rejected":
+                send_outcome.mark_provider_rejected()
+            else:
+                send_outcome.mark_unknown()
+        return result
 
     # ROB-395: live KR orders record accepted-only to the live ledger; fills,
     # journals, and realized_pnl are applied later by kis_live_reconcile_orders
@@ -1125,6 +1249,14 @@ class OrderSendOutcomeUnknown(Exception):
         self.retry_hint = retry_hint
 
 
+class OrderSendNotCreated(Exception):
+    """A transport setup failed before the order crossed the HTTP boundary."""
+
+    def __init__(self, original: BaseException) -> None:
+        super().__init__(describe_exception(original))
+        self.original = original
+
+
 # ROB-645: reconcile tool to consult when an order's send outcome is unknown.
 # Only live paths have a reconcile tool (KR → kis_live_reconcile_orders,
 # US/crypto → live_reconcile_orders). Mock has none, so we never name a phantom.
@@ -1158,6 +1290,14 @@ def _augment_error_for_unknown_outcome(
     outcome-unknown failure (a definitive rejection, or a pre-send read timeout)
     is left unchanged: no order was created.
     """
+    if isinstance(exc, OrderSendNotCreated):
+        enriched = dict(base_error)
+        enriched["retry_allowed"] = True
+        enriched["error"] = (
+            "주문 전송 전 실패: "
+            f"{describe_exception(exc.original)}. 주문이 생성되지 않아 재시도할 수 있습니다."
+        )
+        return enriched
     if not isinstance(exc, OrderSendOutcomeUnknown):
         return base_error
 
@@ -1212,10 +1352,14 @@ async def _place_order_impl(
     scalping_exit_reason: str | None = None,
     correlation_id: str | None = None,
     report_item_uuid: str | None = None,
+    proposal_flow: bool = False,
     approval_hash: str | None = None,
     rung: str | int | None = None,
     mirror_cohort: str | None = None,
     mirror_source_bucket: str | None = None,
+    client_order_id: str | None = None,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+    send_outcome: OrderSendOutcomeTracker | None = None,
 ) -> dict[str, Any]:
     symbol, side_lower, order_type_lower = _validate_inputs(
         symbol,
@@ -1227,6 +1371,20 @@ async def _place_order_impl(
     )
 
     market_type, normalized_symbol = _resolve_market_type(symbol, market)
+    source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "kis"}
+    source = source_map[market_type]
+
+    def _order_error(message: str) -> dict[str, Any]:
+        return _build_order_error(message, source, normalized_symbol, market_type)
+
+    if client_order_id is not None and (
+        not isinstance(client_order_id, str)
+        or not client_order_id.strip()
+        or len(client_order_id) > 40
+    ):
+        return _order_error(
+            "client_order_id must be non-blank and at most 40 characters"
+        )
 
     # Validate buy order journal requirements before any external API calls.
     # Skipped for KIS mock: mock orders write to kis_mock_order_ledger and
@@ -1248,12 +1406,6 @@ async def _place_order_impl(
                 "instrument_type": market_type,
             }
 
-    source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "kis"}
-    source = source_map[market_type]
-
-    def _order_error(message: str) -> dict[str, Any]:
-        return _build_order_error(message, source, normalized_symbol, market_type)
-
     if market_type == "crypto" and is_mock:
         return _order_error(_MOCK_CRYPTO_ERROR)
 
@@ -1273,6 +1425,7 @@ async def _place_order_impl(
             order_type=order_type_lower,
             is_mock=is_mock,
             symbol=normalized_symbol,
+            proposal_flow=proposal_flow,
         )
         if loss_cut_errors:
             return {
@@ -1433,8 +1586,11 @@ async def _place_order_impl(
         )
         now = now_kst()
         salt_market = order_approval.salt_market_for(market_type)
-        idempotency_key = order_approval.derive_client_order_id(
-            canonical, market=salt_market, now=now, rung=rung
+        idempotency_key = client_order_id or order_approval.derive_client_order_id(
+            canonical,
+            market=salt_market,
+            now=now,
+            rung=rung,
         )
 
         # Dry-run exit — the preview emits the approval token operators pass back.
@@ -1544,6 +1700,8 @@ async def _place_order_impl(
             idempotency_key=idempotency_key,
             mirror_cohort=mirror_cohort,
             mirror_source_bucket=mirror_source_bucket,
+            pre_send_hook=pre_send_hook,
+            send_outcome=send_outcome,
         )
     except Exception as exc:
         logger.exception(

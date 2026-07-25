@@ -30,6 +30,15 @@ from app.services.brokers.kis import (
 from app.services.exchange_rate_service import get_usd_krw_rate as _get_usd_krw_rate
 from app.services.toss_portfolio_service import fetch_toss_cash_snapshot
 
+_KIS_MOCK_CASH_ACCOUNTS = frozenset({"kis", "kis_domestic", "kis_overseas"})
+
+
+def _validate_kis_mock_cash_account(account_filter: str | None) -> None:
+    if account_filter is not None and account_filter not in _KIS_MOCK_CASH_ACCOUNTS:
+        raise ValueError(
+            f"account={account_filter!r} is incompatible with account_mode='kis_mock'"
+        )
+
 
 async def get_account_costs_setting() -> dict[str, Any] | None:
     value = await get_user_setting("account_costs")
@@ -107,6 +116,10 @@ async def get_cash_balance_impl(
         parse_paper_account_token,
     )
 
+    account_filter = _normalize_account_filter(account)
+    if is_mock:
+        _validate_kis_mock_cash_account(account_filter)
+
     if is_paper_account_token(account):
         selector = parse_paper_account_token(account)
         rows, errors = await collect_paper_cash_balances(selector=selector)
@@ -132,10 +145,9 @@ async def get_cash_balance_impl(
     total_krw = 0.0
     total_usd = 0.0
 
-    account_filter = _normalize_account_filter(account)
     strict_mode = account_filter is not None
 
-    if account_filter is None or account_filter == "toss":
+    if not is_mock and (account_filter is None or account_filter == "toss"):
         if bool(getattr(settings, "toss_api_enabled", False)):
             try:
                 # ROB-549: surface buying power as orderable only once Toss live
@@ -181,7 +193,7 @@ async def get_cash_balance_impl(
                 errors.append({"source": "toss_api", "market": "cash", "error": reason})
                 unavailable_sources["toss"] = reason
 
-    if account_filter is None or account_filter in ("upbit",):
+    if not is_mock and (account_filter is None or account_filter == "upbit"):
         try:
             summary = await upbit_service.fetch_krw_cash_summary()
             krw_balance = float(summary.get("balance", 0.0))
@@ -249,6 +261,7 @@ async def get_cash_balance_impl(
                         "balance": dncl_amt,
                         "orderable": orderable,
                         "formatted": f"{int(dncl_amt):,} KRW",
+                        **({"account_mode": "kis_mock"} if is_mock else {}),
                     }
                 )
                 total_krw += dncl_amt
@@ -258,13 +271,27 @@ async def get_cash_balance_impl(
                         f"KIS domestic cash balance query failed: {exc}"
                     ) from exc
                 reason = describe_exception(exc)
-                errors.append({"source": "kis", "market": "kr", "error": reason})
+                errors.append(
+                    {
+                        "source": "kis",
+                        "market": "kr",
+                        "error": reason,
+                        **({"account_mode": "kis_mock"} if is_mock else {}),
+                    }
+                )
                 unavailable_sources["kis_domestic"] = reason
 
         if account_filter is None or account_filter in ("kis", "kis_overseas"):
             if is_mock:
                 reason = "mock_unsupported: KIS overseas margin is not available in mock mode"
-                errors.append({"source": "kis", "market": "us", "error": reason})
+                errors.append(
+                    {
+                        "source": "kis",
+                        "market": "us",
+                        "error": reason,
+                        "account_mode": "kis_mock",
+                    }
+                )
                 unavailable_sources["kis_overseas"] = reason
             else:
                 try:
@@ -397,7 +424,7 @@ async def get_available_capital_impl(
     )
 
     manual_cash_result: dict[str, Any] | None = None
-    if include_manual and not is_paper_account_token(account):
+    if include_manual and not is_mock and not is_paper_account_token(account):
         try:
             manual_setting = await get_manual_cash_setting()
             if manual_setting is not None:

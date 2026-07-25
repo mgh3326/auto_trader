@@ -89,6 +89,27 @@ class ExecutionLedgerRepository:
         )
         return result.scalar_one_or_none()
 
+    async def has_fill_for_order(
+        self,
+        *,
+        broker: str,
+        account_mode: str,
+        venue: str,
+        broker_order_id: str,
+    ) -> bool:
+        """Return whether durable fill evidence exists for one broker order."""
+        result = await self.db.execute(
+            select(ExecutionLedger.id)
+            .where(
+                ExecutionLedger.broker == broker,
+                ExecutionLedger.account_mode == account_mode,
+                ExecutionLedger.venue == venue,
+                ExecutionLedger.broker_order_id == broker_order_id,
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
     async def classify_fill(self, fill: ExecutionLedgerUpsert) -> UpsertStatus:
         existing = await self.get_by_key(
             fill.broker,
