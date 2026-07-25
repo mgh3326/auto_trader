@@ -69,6 +69,10 @@ KNOWN_MUTATION_TOOLS = frozenset(
         "investment_report_create_from_hermes_composition",
         "investment_report_prepare_bundle",
         "investment_stage_artifacts_ingest_from_hermes",
+        "investment_watch_create",
+        "investment_watch_void",
+        "investment_watch_expire",
+        "sweep_expired_watches",
     }
 )
 

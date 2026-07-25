@@ -253,8 +253,8 @@ RECONCILE_TOOLS: frozenset[str] = frozenset(
     }
 )
 
-# These are read/status helpers that remain in MUTATION_TOOLS only because that
-# public legacy bucket predates the action taxonomy.
+# These are read/status/non-broker helper tools that remain in MUTATION_TOOLS
+# because that legacy bucket predates the action taxonomy.
 STATUS_HELPER_TOOLS: frozenset[str] = frozenset(
     {
         "get_order_history",
@@ -266,6 +266,11 @@ STATUS_HELPER_TOOLS: frozenset[str] = frozenset(
         "toss_get_order_history",
         "toss_get_orderable_cash",
         "toss_get_positions",
+        # ROB-971: lifecycle writes for direct investment watches (local DB state
+        # mutation only, no direct broker order placement).
+        "investment_watch_void",
+        "investment_watch_expire",
+        "sweep_expired_watches",
     }
 )
 
