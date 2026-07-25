@@ -14,8 +14,17 @@ import yaml
 
 from app.schemas.trading_policy import (
     SingleShareExitDecisionRule,
-    SingleShareExitEvidenceSnapshot,
     TradingPolicyDocument,
+)
+from app.services.single_share_exit_snapshot_service import (
+    PRODUCER_CAPABILITY,
+    PRODUCER_IDENTITY,
+    ROSTER_CAPABILITY,
+    ContextMode,
+    ValidatedSingleShareExitContext,
+    executable_quote_price,
+    is_validated_context,
+    required_reader_capabilities,
 )
 
 _POLICY_PATH: Path = (
@@ -33,7 +42,7 @@ class TradingPolicyKeyError(ValueError):
 class SingleShareExitEvaluation:
     """Pure shadow-policy result; it neither persists nor proposes an order."""
 
-    outcome: Literal["SHADOW_ELIGIBLE", "DEFER", "INELIGIBLE"]
+    outcome: Literal["SHADOW_ELIGIBLE", "REPLAY_ELIGIBLE", "DEFER", "INELIGIBLE"]
     reason: str
     snapshot_id: str
     symbol: str
@@ -62,6 +71,17 @@ class SingleShareExitEvaluation:
     resistance_computed_at: dt.datetime | None = None
     ohlcv_through_date: dt.date | None = None
     expected_completed_krx_bar_date: dt.date | None = None
+    roster_id: str | None = None
+    roster_version: str | None = None
+    roster_hash: str | None = None
+    expected_account_identities: tuple[str, ...] = ()
+    observed_account_identities: tuple[str, ...] = ()
+    producer_identity: str | None = None
+    producer_capability: str | None = None
+    quote_kind: str | None = None
+    quote_venue: str | None = None
+    quote_executable: bool | None = None
+    quote_firm: bool | None = None
 
 
 def _reset_cache_for_tests() -> None:
@@ -129,11 +149,16 @@ def get_policy_for(market: str, lane: str) -> dict[str, Any]:
             ),
             "source": source,
         }
-    decision_rules = {
-        key: spec.model_dump(exclude={"lanes"})
-        for key, spec in doc.decision_rules.items()
-        if lane in spec.lanes
-    }
+    decision_rules: dict[str, Any] = {}
+    for key, spec in doc.decision_rules.items():
+        if lane not in spec.lanes:
+            continue
+        if (
+            isinstance(spec, SingleShareExitDecisionRule)
+            and market not in spec.scope.markets
+        ):
+            continue
+        decision_rules[key] = spec.model_dump(exclude={"lanes"})
     market_rules: dict[str, Any] = {}
     rules = doc.market_rules.get("crypto") if market == "crypto" else None
     if rules is not None:
@@ -176,12 +201,13 @@ def sector_cluster_for(label: str | None) -> str | None:
 
 
 def _single_share_result(
-    evidence: SingleShareExitEvidenceSnapshot,
+    context: ValidatedSingleShareExitContext,
     *,
-    outcome: Literal["SHADOW_ELIGIBLE", "DEFER", "INELIGIBLE"],
+    outcome: Literal["SHADOW_ELIGIBLE", "REPLAY_ELIGIBLE", "DEFER", "INELIGIBLE"],
     reason: str,
     rule: SingleShareExitDecisionRule | None = None,
     average_cost: Decimal | None = None,
+    current_quote: Decimal | None = None,
     profit_pct: Decimal | None = None,
     resistance_distance_pct: Decimal | None = None,
     normalized_source_families: tuple[str, ...] = (),
@@ -190,14 +216,22 @@ def _single_share_result(
     quote_age_seconds: Decimal | None = None,
 ) -> SingleShareExitEvaluation:
     proposal = rule.proposal if outcome == "SHADOW_ELIGIBLE" and rule else None
+    expected_identities = tuple(
+        f"{identity.broker.value}:{identity.broker_account_id}"
+        for identity in context.expected_account_identities
+    )
+    observed_identities = tuple(
+        f"{identity.broker.value}:{identity.broker_account_id}"
+        for identity in context.observed_account_identities
+    )
     return SingleShareExitEvaluation(
         outcome=outcome,
         reason=reason,
-        snapshot_id=evidence.snapshot_id,
-        symbol=evidence.target.symbol,
-        broker=evidence.target.broker,
-        broker_account_id=evidence.target.broker_account_id,
-        lot_id=evidence.target.lot_id,
+        snapshot_id=context.snapshot_id,
+        symbol=context.target.symbol,
+        broker=context.target.broker.value,
+        broker_account_id=context.target.broker_account_id,
+        lot_id=context.target.lot_id,
         candidate_action=proposal.action if proposal else None,
         sizing=proposal.sizing if proposal else None,
         approval=proposal.approval if proposal else None,
@@ -205,30 +239,61 @@ def _single_share_result(
         execution=proposal.execution if proposal else None,
         average_cost=average_cost,
         symbol_routable_sellable_quantity=symbol_routable_sellable_quantity,
-        current_quote=evidence.quote.price,
-        quote_source=evidence.quote.source,
+        current_quote=current_quote,
+        quote_source=context.quote.source.value,
         quote_age_seconds=quote_age_seconds,
-        resistance_price=evidence.resistance.price,
+        resistance_price=(
+            context.resistance.price if context.resistance is not None else None
+        ),
         profit_pct=profit_pct,
         resistance_distance_pct=resistance_distance_pct,
         normalized_source_families=normalized_source_families,
-        resistance_sources=tuple(evidence.resistance.sources),
-        resistance_strength=evidence.resistance.strength,
-        quote_observed_at=evidence.quote.observed_at,
-        resistance_computed_at=evidence.resistance.computed_at,
-        ohlcv_through_date=evidence.resistance.ohlcv_through_date,
+        resistance_sources=(
+            context.resistance.sources if context.resistance is not None else ()
+        ),
+        resistance_strength=(
+            context.resistance.strength.value
+            if context.resistance is not None
+            else None
+        ),
+        quote_observed_at=context.quote.observed_at,
+        resistance_computed_at=(
+            context.resistance.computed_at if context.resistance is not None else None
+        ),
+        ohlcv_through_date=(
+            context.resistance.ohlcv_through_date
+            if context.resistance is not None
+            else None
+        ),
         expected_completed_krx_bar_date=expected_completed_krx_bar_date,
+        roster_id=context.roster_id,
+        roster_version=context.roster_version,
+        roster_hash=context.roster_hash,
+        expected_account_identities=expected_identities,
+        observed_account_identities=observed_identities,
+        producer_identity=context.producer_identity,
+        producer_capability=context.producer_capability,
+        quote_kind=context.quote.quote_kind.value,
+        quote_venue=context.quote.venue.value,
+        quote_executable=context.quote.executable,
+        quote_firm=context.quote.firm,
     )
 
 
-def _as_aware_utc(value: dt.datetime) -> dt.datetime | None:
-    if value.tzinfo is None or value.utcoffset() is None:
-        return None
-    return value.astimezone(dt.UTC)
+def _invalid_context_result(reason: str) -> SingleShareExitEvaluation:
+    return SingleShareExitEvaluation(
+        outcome="INELIGIBLE",
+        reason=reason,
+        snapshot_id="invalid",
+        symbol="000000",
+        broker="kis",
+        broker_account_id="invalid",
+        lot_id="invalid",
+    )
 
 
 def _normalized_resistance_families(
-    sources: list[str], rule: SingleShareExitDecisionRule
+    sources: tuple[str, ...], rule: SingleShareExitDecisionRule
 ) -> tuple[str, ...]:
     normalization = rule.conditions.resistance_source_families
     volume_exact = {source.casefold() for source in normalization.volume_profile_exact}
@@ -257,200 +322,276 @@ def _expected_completed_krx_bar(now: dt.datetime) -> dt.date | None:
     return last_final_session_kr(now)
 
 
-def evaluate_single_share_exit(
-    evidence: SingleShareExitEvidenceSnapshot,
+def _evaluate_single_share_exit(
+    context: ValidatedSingleShareExitContext,
     *,
-    evaluated_at: dt.datetime | None = None,
+    now: dt.datetime,
+    eligible_outcome: Literal["SHADOW_ELIGIBLE", "REPLAY_ELIGIBLE"],
 ) -> SingleShareExitEvaluation:
-    """Evaluate one bounded evidence snapshot in shadow mode only.
-
-    Profit and resistance distance are recomputed from Decimal prices in the
-    snapshot. KIS/Toss inventory and open-order evidence are caller-supplied
-    read models, but completeness, identity, scope, timestamps, and aggregate
-    quantities are checked here. This function has no broker, DB, scheduler,
-    Telegram, proposal, or order side effects.
-    """
-
     doc = load_trading_policy()
     rule = doc.decision_rules.get("sell.single_share_exit")
     if not isinstance(rule, SingleShareExitDecisionRule):
         return _single_share_result(
-            evidence, outcome="INELIGIBLE", reason="policy_rule_unavailable"
+            context, outcome="INELIGIBLE", reason="policy_rule_unavailable"
         )
     if rule.activation_state != "shadow" or rule.proposal_enabled:
         return _single_share_result(
-            evidence,
+            context,
             outcome="INELIGIBLE",
             reason="policy_not_shadow_off",
             rule=rule,
         )
-    if evidence.market not in rule.scope.markets:
+    if context.market not in rule.scope.markets:
         return _single_share_result(
-            evidence, outcome="INELIGIBLE", reason="market_out_of_scope", rule=rule
+            context, outcome="INELIGIBLE", reason="market_out_of_scope", rule=rule
         )
-    if evidence.target.broker not in rule.scope.brokers:
+    if context.target.broker.value not in rule.scope.brokers:
         return _single_share_result(
-            evidence, outcome="INELIGIBLE", reason="broker_out_of_scope", rule=rule
+            context, outcome="INELIGIBLE", reason="broker_out_of_scope", rule=rule
         )
-
-    now = _as_aware_utc(evaluated_at or dt.datetime.now(dt.UTC))
-    captured_at = _as_aware_utc(evidence.captured_at)
-    if now is None or captured_at is None:
+    if (
+        context.producer_identity != PRODUCER_IDENTITY
+        or context.producer_capability != PRODUCER_CAPABILITY
+        or context.roster_read_model_capability != ROSTER_CAPABILITY
+        or context.reader_capabilities != required_reader_capabilities()
+    ):
         return _single_share_result(
-            evidence, outcome="INELIGIBLE", reason="naive_evidence_timestamp", rule=rule
-        )
-
-    nested_snapshot_ids = {
-        evidence.quote.snapshot_id,
-        evidence.resistance.snapshot_id,
-        evidence.open_actions_snapshot_id,
-        *(account.snapshot_id for account in evidence.accounts),
-    }
-    if nested_snapshot_ids != {evidence.snapshot_id}:
-        return _single_share_result(
-            evidence,
+            context,
             outcome="INELIGIBLE",
-            reason="inconsistent_snapshot_id",
+            reason="authoritative_producer_capability_mismatch",
+            rule=rule,
+        )
+    if context.roster_hash != context.derived_roster_hash:
+        return _single_share_result(
+            context,
+            outcome="INELIGIBLE",
+            reason="account_roster_hash_mismatch",
+            rule=rule,
+        )
+    configured_identities = tuple(
+        sorted(
+            (account.identity for account in context.configured_accounts),
+            key=lambda identity: (
+                identity.broker.value,
+                identity.broker_account_id,
+            ),
+        )
+    )
+    if (
+        configured_identities != context.expected_account_identities
+        or len(set(configured_identities)) != len(configured_identities)
+        or not context.roster_is_exact
+    ):
+        return _single_share_result(
+            context,
+            outcome="INELIGIBLE",
+            reason="expected_observed_account_roster_mismatch",
+            rule=rule,
+        )
+    routable_brokers = {
+        account.identity.broker.value
+        for account in context.configured_accounts
+        if account.order_routable
+    }
+    if not set(rule.scope.required_broker_inventory).issubset(routable_brokers):
+        return _single_share_result(
+            context,
+            outcome="INELIGIBLE",
+            reason="incomplete_kis_toss_routable_roster",
+            rule=rule,
+        )
+    if context.resistance is None:
+        return _single_share_result(
+            context,
+            outcome="INELIGIBLE",
+            reason="no_resistance_reference",
             rule=rule,
         )
     if (
-        evidence.quote.symbol != evidence.target.symbol
-        or evidence.resistance.symbol != evidence.target.symbol
+        context.quote.symbol != context.target.symbol
+        or context.resistance.symbol != context.target.symbol
     ):
         return _single_share_result(
-            evidence,
+            context,
             outcome="INELIGIBLE",
             reason="inconsistent_snapshot_symbol",
             rule=rule,
         )
-
-    required_brokers = set(rule.scope.required_broker_inventory)
-    observed_brokers = {account.broker for account in evidence.accounts}
-    if not required_brokers.issubset(observed_brokers):
+    quote = executable_quote_price(context.quote)
+    if quote is None:
         return _single_share_result(
-            evidence,
+            context,
             outcome="INELIGIBLE",
-            reason="incomplete_kis_toss_inventory",
-            rule=rule,
-        )
-    account_identities = [
-        (account.broker, account.broker_account_id) for account in evidence.accounts
-    ]
-    if len(set(account_identities)) != len(account_identities):
-        return _single_share_result(
-            evidence,
-            outcome="INELIGIBLE",
-            reason="duplicate_broker_account_snapshot",
+            reason="quote_quality_not_executable",
             rule=rule,
         )
 
-    timestamp_values = [
-        evidence.quote.observed_at,
-        evidence.resistance.computed_at,
-        evidence.open_actions_checked_at,
-        *(
-            timestamp
-            for account in evidence.accounts
-            for timestamp in (account.observed_at, account.open_orders_checked_at)
-        ),
+    timestamps_by_kind: dict[str, list[dt.datetime]] = {
+        "quote": [context.quote.observed_at],
+        "resistance": [context.resistance.computed_at],
+        "holdings": [account.holdings_observed_at for account in context.accounts],
+        "open_orders": [
+            account.open_orders_observed_at for account in context.accounts
+        ],
+        "open_actions": [context.open_actions.observed_at],
+        "captured_at": [context.captured_at],
+    }
+    all_timestamps = [
+        timestamp
+        for timestamps in timestamps_by_kind.values()
+        for timestamp in timestamps
     ]
-    timestamp_values_utc = [_as_aware_utc(value) for value in timestamp_values]
-    if any(value is None for value in timestamp_values_utc):
-        return _single_share_result(
-            evidence, outcome="INELIGIBLE", reason="naive_evidence_timestamp", rule=rule
-        )
-    max_skew = dt.timedelta(seconds=rule.conditions.snapshot_max_skew_seconds)
-    if captured_at > now or any(
-        value is None or value > now or abs(value - captured_at) > max_skew
-        for value in timestamp_values_utc
+    if any(
+        timestamp.tzinfo is None or timestamp.utcoffset() is None
+        for timestamp in all_timestamps
     ):
         return _single_share_result(
-            evidence,
+            context,
             outcome="INELIGIBLE",
-            reason="stale_or_inconsistent_evidence",
+            reason="naive_evidence_timestamp",
             rule=rule,
+            current_quote=quote,
         )
-    quote_observed_at = _as_aware_utc(evidence.quote.observed_at)
-    quote_age_seconds = (
-        Decimal(str((now - quote_observed_at).total_seconds()))
-        if quote_observed_at is not None
-        else None
+    timestamps_utc = [timestamp.astimezone(dt.UTC) for timestamp in all_timestamps]
+    now_utc = now.astimezone(dt.UTC)
+    if any(timestamp > now_utc for timestamp in timestamps_utc):
+        return _single_share_result(
+            context,
+            outcome="INELIGIBLE",
+            reason="future_evidence_timestamp",
+            rule=rule,
+            current_quote=quote,
+        )
+    pairwise_skew = max(timestamps_utc) - min(timestamps_utc)
+    if pairwise_skew > dt.timedelta(seconds=rule.conditions.snapshot_max_skew_seconds):
+        return _single_share_result(
+            context,
+            outcome="INELIGIBLE",
+            reason="snapshot_pairwise_skew_exceeded",
+            rule=rule,
+            current_quote=quote,
+        )
+    age_limits = {
+        "quote": rule.conditions.quote_max_age_seconds,
+        "resistance": rule.conditions.resistance_max_age_seconds,
+        "holdings": rule.conditions.holdings_max_age_seconds,
+        "open_orders": rule.conditions.open_orders_max_age_seconds,
+        "open_actions": rule.conditions.open_actions_max_age_seconds,
+        "captured_at": rule.conditions.captured_at_max_age_seconds,
+    }
+    for kind, timestamps in timestamps_by_kind.items():
+        oldest = min(timestamp.astimezone(dt.UTC) for timestamp in timestamps)
+        if now_utc - oldest > dt.timedelta(seconds=age_limits[kind]):
+            return _single_share_result(
+                context,
+                outcome="INELIGIBLE",
+                reason=f"stale_{kind}",
+                rule=rule,
+                current_quote=quote,
+                quote_age_seconds=Decimal(
+                    str(
+                        (
+                            now_utc - context.quote.observed_at.astimezone(dt.UTC)
+                        ).total_seconds()
+                    )
+                ),
+            )
+    quote_age_seconds = Decimal(
+        str((now_utc - context.quote.observed_at.astimezone(dt.UTC)).total_seconds())
     )
-    if quote_observed_at is None or now - quote_observed_at > dt.timedelta(
-        seconds=rule.conditions.quote_max_age_seconds
-    ):
-        return _single_share_result(
-            evidence,
-            outcome="INELIGIBLE",
-            reason="stale_quote",
-            rule=rule,
-            quote_age_seconds=quote_age_seconds,
-        )
 
-    expected_bar_date = _expected_completed_krx_bar(now)
+    expected_bar_date = _expected_completed_krx_bar(now_utc)
     if expected_bar_date is None:
         return _single_share_result(
-            evidence,
+            context,
             outcome="INELIGIBLE",
             reason="expected_completed_krx_bar_unavailable",
             rule=rule,
+            current_quote=quote,
+            quote_age_seconds=quote_age_seconds,
         )
-    if evidence.resistance.ohlcv_through_date != expected_bar_date:
+    if context.resistance.ohlcv_through_date != expected_bar_date:
         return _single_share_result(
-            evidence,
+            context,
             outcome="INELIGIBLE",
             reason="ohlcv_not_through_expected_completed_krx_bar",
             rule=rule,
+            current_quote=quote,
+            quote_age_seconds=quote_age_seconds,
             expected_completed_krx_bar_date=expected_bar_date,
         )
 
+    target_accounts = [
+        account
+        for account in context.configured_accounts
+        if account.identity == context.target.account_identity
+    ]
+    if len(target_accounts) != 1 or (
+        rule.scope.order_routable_required and not target_accounts[0].order_routable
+    ):
+        return _single_share_result(
+            context,
+            outcome="INELIGIBLE",
+            reason="target_account_not_routable",
+            rule=rule,
+            current_quote=quote,
+            quote_age_seconds=quote_age_seconds,
+            expected_completed_krx_bar_date=expected_bar_date,
+        )
     target_matches = [
         lot
-        for account in evidence.accounts
-        if account.broker == evidence.target.broker
-        and account.broker_account_id == evidence.target.broker_account_id
+        for account in context.accounts
+        if account.identity == context.target.account_identity
         for lot in account.lots
-        if lot.symbol == evidence.target.symbol and lot.lot_id == evidence.target.lot_id
+        if lot.symbol == context.target.symbol and lot.lot_id == context.target.lot_id
     ]
     if len(target_matches) != 1:
         return _single_share_result(
-            evidence,
+            context,
             outcome="INELIGIBLE",
             reason="target_lot_identity_not_unique",
             rule=rule,
+            current_quote=quote,
+            quote_age_seconds=quote_age_seconds,
             expected_completed_krx_bar_date=expected_bar_date,
         )
     target_lot = target_matches[0]
     required_quantity = Decimal(rule.conditions.symbol_routable_sellable_quantity_eq)
-    target_is_routable = (
-        not rule.scope.order_routable_required or target_lot.order_routable
-    )
     target_is_single_sellable = target_lot.sellable_quantity == required_quantity
-    if not target_is_routable or not target_is_single_sellable:
+    if not target_is_single_sellable:
         return _single_share_result(
-            evidence,
+            context,
             outcome="INELIGIBLE",
             reason="target_account_lot_not_single_routable_sellable",
             rule=rule,
             average_cost=target_lot.average_cost,
+            current_quote=quote,
+            quote_age_seconds=quote_age_seconds,
             expected_completed_krx_bar_date=expected_bar_date,
         )
+    routable_identities = {
+        account.identity
+        for account in context.configured_accounts
+        if account.order_routable
+    }
     symbol_routable_sellable_quantity = sum(
         (
             lot.sellable_quantity
-            for account in evidence.accounts
+            for account in context.accounts
+            if account.identity in routable_identities
             for lot in account.lots
-            if lot.symbol == evidence.target.symbol and lot.order_routable
+            if lot.symbol == context.target.symbol
         ),
         start=Decimal(0),
     )
     if symbol_routable_sellable_quantity != required_quantity:
         return _single_share_result(
-            evidence,
+            context,
             outcome="INELIGIBLE",
             reason="symbol_routable_sellable_quantity_not_one",
             rule=rule,
             average_cost=target_lot.average_cost,
+            current_quote=quote,
             symbol_routable_sellable_quantity=symbol_routable_sellable_quantity,
             quote_age_seconds=quote_age_seconds,
             expected_completed_krx_bar_date=expected_bar_date,
@@ -458,17 +599,18 @@ def evaluate_single_share_exit(
 
     same_symbol_open_orders = [
         order
-        for account in evidence.accounts
+        for account in context.accounts
         for order in account.open_orders
-        if order.symbol == evidence.target.symbol
+        if order.symbol == context.target.symbol
     ]
     if len(same_symbol_open_orders) > rule.conditions.same_symbol_open_orders_max:
         return _single_share_result(
-            evidence,
+            context,
             outcome="DEFER",
             reason="same_symbol_broker_open_order",
             rule=rule,
             average_cost=target_lot.average_cost,
+            current_quote=quote,
             symbol_routable_sellable_quantity=symbol_routable_sellable_quantity,
             quote_age_seconds=quote_age_seconds,
             expected_completed_krx_bar_date=expected_bar_date,
@@ -476,26 +618,26 @@ def evaluate_single_share_exit(
 
     scoped_open_actions = [
         action
-        for action in evidence.open_actions
-        if action.symbol == evidence.target.symbol
+        for action in context.open_actions.actions
+        if action.symbol == context.target.symbol
         and action.side == "sell"
-        and action.broker_account_id == evidence.target.broker_account_id
+        and action.broker_account_id == context.target.broker_account_id
     ]
     if len(scoped_open_actions) > rule.conditions.unresolved_open_actions_max:
         return _single_share_result(
-            evidence,
+            context,
             outcome="DEFER",
             reason="unresolved_scoped_open_action",
             rule=rule,
             average_cost=target_lot.average_cost,
+            current_quote=quote,
             symbol_routable_sellable_quantity=symbol_routable_sellable_quantity,
             quote_age_seconds=quote_age_seconds,
             expected_completed_krx_bar_date=expected_bar_date,
         )
 
     average_cost = target_lot.average_cost
-    quote = evidence.quote.price
-    resistance = evidence.resistance.price
+    resistance = context.resistance.price
     guard_spec = doc.thresholds.get(rule.conditions.min_sell_price_multiple_policy_key)
     try:
         guard_multiple = Decimal(str(guard_spec.value)) if guard_spec else Decimal(0)
@@ -503,22 +645,24 @@ def evaluate_single_share_exit(
         guard_multiple = Decimal(0)
     if guard_multiple <= 0:
         return _single_share_result(
-            evidence,
+            context,
             outcome="INELIGIBLE",
             reason="invalid_loss_guard_policy",
             rule=rule,
             average_cost=average_cost,
+            current_quote=quote,
             symbol_routable_sellable_quantity=symbol_routable_sellable_quantity,
             quote_age_seconds=quote_age_seconds,
             expected_completed_krx_bar_date=expected_bar_date,
         )
     if quote < average_cost * guard_multiple:
         return _single_share_result(
-            evidence,
+            context,
             outcome="INELIGIBLE",
             reason="loss_guard_not_met",
             rule=rule,
             average_cost=average_cost,
+            current_quote=quote,
             symbol_routable_sellable_quantity=symbol_routable_sellable_quantity,
             quote_age_seconds=quote_age_seconds,
             expected_completed_krx_bar_date=expected_bar_date,
@@ -530,11 +674,12 @@ def evaluate_single_share_exit(
     profit_pct = raw_profit_pct.quantize(Decimal("0.0001"))
     resistance_distance_pct = raw_resistance_distance_pct.quantize(Decimal("0.0001"))
     normalized_families = _normalized_resistance_families(
-        evidence.resistance.sources, rule
+        context.resistance.sources, rule
     )
     result_kwargs: dict[str, Any] = {
         "rule": rule,
         "average_cost": average_cost,
+        "current_quote": quote,
         "profit_pct": profit_pct,
         "resistance_distance_pct": resistance_distance_pct,
         "normalized_source_families": normalized_families,
@@ -544,7 +689,7 @@ def evaluate_single_share_exit(
     }
     if raw_profit_pct < Decimal(str(rule.conditions.profit_pct_min)):
         return _single_share_result(
-            evidence,
+            context,
             outcome="INELIGIBLE",
             reason="profit_below_provisional_minimum",
             **result_kwargs,
@@ -556,24 +701,68 @@ def evaluate_single_share_exit(
         <= Decimal(str(rule.conditions.resistance_distance_pct_max))
     ):
         return _single_share_result(
-            evidence,
+            context,
             outcome="INELIGIBLE",
             reason="resistance_outside_far_band",
             **result_kwargs,
         )
     if len(normalized_families) < rule.conditions.resistance_source_family_min:
         return _single_share_result(
-            evidence,
+            context,
             outcome="INELIGIBLE",
             reason="insufficient_independent_resistance_families",
             **result_kwargs,
         )
 
     return _single_share_result(
-        evidence,
-        outcome="SHADOW_ELIGIBLE",
-        reason="proposal_disabled_shadow_candidate",
+        context,
+        outcome=eligible_outcome,
+        reason=(
+            "proposal_disabled_shadow_candidate"
+            if eligible_outcome == "SHADOW_ELIGIBLE"
+            else "replay_candidate_no_live_eligibility"
+        ),
         **result_kwargs,
+    )
+
+
+def evaluate_single_share_exit(
+    context: ValidatedSingleShareExitContext,
+) -> SingleShareExitEvaluation:
+    """Evaluate only a live producer-issued context using the internal clock."""
+
+    if not is_validated_context(context):
+        return _invalid_context_result("unvalidated_producer_context")
+    if context.mode is not ContextMode.LIVE:
+        return _single_share_result(
+            context,
+            outcome="INELIGIBLE",
+            reason="replay_context_not_live",
+        )
+    return _evaluate_single_share_exit(
+        context,
+        now=dt.datetime.now(dt.UTC),
+        eligible_outcome="SHADOW_ELIGIBLE",
+    )
+
+
+def evaluate_single_share_exit_replay(
+    context: ValidatedSingleShareExitContext,
+) -> SingleShareExitEvaluation:
+    """Deterministic offline seam; never returns live ``SHADOW_ELIGIBLE``."""
+
+    if not is_validated_context(context):
+        return _invalid_context_result("unvalidated_producer_context")
+    if context.mode is not ContextMode.REPLAY:
+        return _single_share_result(
+            context,
+            outcome="INELIGIBLE",
+            reason="live_context_not_replay",
+        )
+    return _evaluate_single_share_exit(
+        context,
+        now=context.produced_at,
+        eligible_outcome="REPLAY_ELIGIBLE",
     )
 
 

@@ -12,7 +12,7 @@ from tests._mcp_tooling_support import DummyMCP
 async def test_get_trading_policy_returns_thresholds_and_version():
     out = await get_trading_policy(market="kr", lane="buy")
     assert out["success"] is True
-    assert out["version"] == "2026-07-23.2"
+    assert out["version"] == "2026-07-23.3"
     assert out["content_hash"]
     assert out["thresholds"]["portfolio.sector_cluster_cap_pct"]["value"] == 10
     assert out["decision_rules"] == {}
@@ -23,7 +23,7 @@ async def test_get_trading_policy_returns_crypto_market_rules_and_stamp():
     out = await get_trading_policy(market="crypto", lane="buy")
 
     assert out["success"] is True
-    assert out["version"] == "2026-07-23.2"
+    assert out["version"] == "2026-07-23.3"
     assert len(out["content_hash"]) == 12
     gate = out["market_rules"]["recovery_gate"]
     assert gate["min_conditions_met"] == 2
@@ -59,6 +59,16 @@ async def test_get_trading_policy_returns_sell_trim_preplace_rule():
         "auto_approve": False,
         "execution": "proposal_only",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("market", ["us", "crypto"])
+async def test_get_trading_policy_hides_kr_single_share_exit_from_other_markets(
+    market,
+):
+    out = await get_trading_policy(market=market, lane="sell")
+    assert out["success"] is True
+    assert "sell.single_share_exit" not in out["decision_rules"]
 
 
 @pytest.mark.asyncio

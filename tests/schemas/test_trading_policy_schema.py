@@ -1,15 +1,11 @@
 from pathlib import Path
-from typing import Literal
 
 import pytest
 import yaml
 from pydantic import ValidationError
 
-from app.schemas.trading_policy import (
-    SingleShareExitEvidenceSnapshot,
-    SingleShareExitTargetIdentity,
-    TradingPolicyDocument,
-)
+import app.schemas.trading_policy as policy_schema
+from app.schemas.trading_policy import TradingPolicyDocument
 
 _CONFIG = Path(__file__).resolve().parents[2] / "config" / "trading_policy.yaml"
 
@@ -20,7 +16,7 @@ def _raw() -> dict:
 
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-07-23.2"
+    assert doc.version == "2026-07-23.3"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -64,6 +60,11 @@ def test_single_share_exit_rule_is_provisional_shadow_only():
     assert rule.conditions.resistance_distance_pct_max == 15
     assert rule.conditions.resistance_source_family_min == 2
     assert rule.conditions.quote_max_age_seconds == 300
+    assert rule.conditions.resistance_max_age_seconds == 300
+    assert rule.conditions.holdings_max_age_seconds == 300
+    assert rule.conditions.open_orders_max_age_seconds == 300
+    assert rule.conditions.open_actions_max_age_seconds == 300
+    assert rule.conditions.captured_at_max_age_seconds == 300
     assert rule.conditions.snapshot_max_skew_seconds == 300
     assert rule.conditions.required_completed_bar_market == "XKRX"
     assert (
@@ -115,28 +116,10 @@ def test_single_share_exit_rule_requires_both_kis_and_toss_inventory():
         TradingPolicyDocument.model_validate(raw)
 
 
-def test_single_share_exit_input_contract_requires_target_and_complete_account_scope():
-    identity_fields = SingleShareExitTargetIdentity.model_fields
-    assert set(identity_fields) == {
-        "symbol",
-        "broker",
-        "broker_account_id",
-        "lot_id",
-    }
-    assert all(field.is_required() for field in identity_fields.values())
-    assert (
-        SingleShareExitEvidenceSnapshot.model_fields[
-            "broker_account_scope_complete"
-        ].annotation
-        == Literal[True]
-    )
-    with pytest.raises(ValidationError):
-        SingleShareExitTargetIdentity(
-            symbol="NAVER",
-            broker="toss",
-            broker_account_id="toss-main",
-            lot_id="lot-1",
-        )
+def test_raw_evidence_and_caller_completeness_contract_is_not_public():
+    assert not hasattr(policy_schema, "SingleShareExitEvidenceSnapshot")
+    assert not hasattr(policy_schema, "SingleShareExitBrokerAccountSnapshot")
+    assert not hasattr(policy_schema, "SingleShareExitTargetIdentity")
 
 
 def test_auto_approve_policy_has_conservative_market_caps():

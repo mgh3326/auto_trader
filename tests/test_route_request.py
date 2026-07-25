@@ -87,6 +87,18 @@ def test_buy_analysis_echoes_policy_and_proposal_contract():
     assert _steps(out)[-1] == "order_proposal_create"
 
 
+@pytest.mark.parametrize(
+    ("market", "expected"),
+    [("kr", True), ("us", False), ("crypto", False)],
+)
+def test_profit_taking_policy_surface_is_market_scoped(market, expected):
+    route = _route_tool()
+    out = asyncio.run(route(intent="profit_taking", market=market))
+    assert out["success"] is True
+    rules = out["verdict_thresholds"]["decision_rules"]
+    assert ("sell.single_share_exit" in rules) is expected
+
+
 def test_market_brief_has_version_but_empty_thresholds():
     out = asyncio.run(_route_tool()(intent="market_brief", market="kr"))
 
