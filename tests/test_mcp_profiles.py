@@ -785,6 +785,72 @@ class TestTradingCodexExecutionProfile:
         }
 
 
+class TestRouteProposalReadinessByProfile:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "profile",
+        [McpProfile.DEFAULT, McpProfile.TRADINGCODEX_EXECUTION],
+    )
+    async def test_proposal_gate_on_is_ready(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        profile: McpProfile,
+    ) -> None:
+        monkeypatch.setattr(settings, "ORDER_PROPOSALS_ENABLED", True)
+        mcp = _build_mcp(profile)
+
+        result = await mcp.tools["route_request"](
+            intent="buy_analysis",
+            market="kr",
+        )
+
+        assert "order_proposal_create" in mcp.tools
+        assert result["success"] is True
+        assert result["route_contract"]["execution_ready"] is True
+        assert result["standard_tool_sequence"][-1]["tool"] == ("order_proposal_create")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "profile",
+        [McpProfile.DEFAULT, McpProfile.TRADINGCODEX_EXECUTION],
+    )
+    async def test_proposal_gate_off_fails_closed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        profile: McpProfile,
+    ) -> None:
+        monkeypatch.setattr(settings, "ORDER_PROPOSALS_ENABLED", False)
+        mcp = _build_mcp(profile)
+
+        result = await mcp.tools["route_request"](
+            intent="profit_taking",
+            market="kr",
+        )
+
+        assert "order_proposal_create" not in mcp.tools
+        assert result["success"] is False
+        assert result["error"] == "required_route_tool_unavailable"
+        assert result["route_contract"]["execution_ready"] is False
+
+    @pytest.mark.asyncio
+    async def test_analysis_readonly_fails_closed_even_with_gate_on(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(settings, "ORDER_PROPOSALS_ENABLED", True)
+        mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
+
+        result = await mcp.tools["route_request"](
+            intent="buy_analysis",
+            market="kr",
+        )
+
+        assert "order_proposal_create" not in mcp.tools
+        assert result["success"] is False
+        assert result["error"] == "required_route_tool_unavailable"
+        assert result["route_contract"]["execution_ready"] is False
+
+
 class TestResolveMcpProfile:
     def test_none_returns_default(self) -> None:
         assert resolve_mcp_profile(None) is McpProfile.DEFAULT
