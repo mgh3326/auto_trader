@@ -279,6 +279,90 @@ def _new_high_age_trading_days(
     return sum(1 for s in sessions if s > high_date)
 
 
+def _passes_valuation_only(
+    snap: InvestKrFundamentalsSnapshot, spec: FundamentalsPresetSpec
+) -> tuple[bool, str | None]:
+    """The snapshot-column valuation thresholds (``_THRESHOLD_CHECKS``) — the cheap
+    gate that precedes any DART consumption in :func:`_passes_thresholds`.
+
+    A symbol failing here is excluded regardless of its DART derivation (the DART
+    growth/streak/dividend checks run only after this gate passes), so the caller can
+    skip the ``financial_fundamentals`` query + derive for such symbols (ROB-504 P1).
+    Returns ``(passes, reject_reason)`` with the SAME reasons :func:`_passes_thresholds`
+    emits for these columns.
+    """
+    for spec_field, col_attr, require_positive in _THRESHOLD_CHECKS:
+        threshold = getattr(spec, spec_field)
+        if threshold is None:
+            continue
+        value = getattr(snap, col_attr)
+        if value is None:
+            return False, f"{col_attr} unavailable"
+        if require_positive and value <= 0:
+            return False, f"{col_attr} not positive"
+        # ROB-444: tvscreener dividend_yield is a PERCENT (e.g. 6.32 = 6.32%), but the
+        # shared spec threshold is a RATIO (min_dividend_yield=0.03 = 3%; US
+        # market_valuation stores dividend_yield as a ratio). Compare in ratio so the
+        # 3% gate actually filters — without this, 0.48% passed `0.48 < 0.03` = False.
+        # The row's displayed dividend_yield stays percent (metric label `{v:.2f}%`).
+        cmp_value = (
+            Decimal(str(value)) / Decimal("100")
+            if col_attr == "dividend_yield"
+            else Decimal(str(value))
+        )
+        threshold_dec = Decimal(str(threshold))
+        if spec_field in _MAX_FIELDS:
+            if cmp_value > threshold_dec:
+                return False, f"{col_attr} above max"
+        else:
+            if cmp_value < threshold_dec:
+                return False, f"{col_attr} below min"
+    return True, None
+
+
+def _dart_candidate_symbols(
+    snaps: list[InvestKrFundamentalsSnapshot],
+    spec: FundamentalsPresetSpec,
+    name_map: dict[str, str],
+) -> list[str]:
+    """Deduped symbols whose DART derivation can affect the screen result.
+
+    ROB-504 P1: :func:`_passes_thresholds` consults the DART growth/streak/dividend
+    metrics only after the common-stock filter and the cheap valuation gate
+    (:func:`_passes_valuation_only`) both pass. Deriving DART for the rest of the
+    partition (~4,250 symbols) is pure waste — those symbols are excluded before any
+    DART value is read. Returns ``[]`` for valuation-only presets (no DART threshold),
+    so the loader skips the ``financial_fundamentals`` query + derivation entirely.
+    """
+    if not (
+        spec.min_revenue_growth_3y_avg is not None
+        or spec.min_earnings_growth_3y_avg is not None
+        or spec.min_earnings_increase_streak_years is not None
+        # ROB-444: dividend payout/streak are DART-first too (tvscreener
+        # payout_ratio_ttm is ~2.6% sparse → it was the binding constraint).
+        or spec.min_payout_ratio is not None
+        or spec.min_dividend_paid_streak_years is not None
+        or spec.min_dividend_growth_streak_years is not None
+    ):
+        return []
+    from app.services.invest_view_model.screener_service import (
+        _is_kr_toss_common_stock,
+    )
+
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for snap in snaps:
+        sym = snap.symbol
+        if sym in seen:
+            continue
+        seen.add(sym)
+        if not _is_kr_toss_common_stock(sym, name_map.get(sym)):
+            continue
+        if _passes_valuation_only(snap, spec)[0]:
+            candidates.append(sym)
+    return candidates
+
+
 def _passes_thresholds(
     snap: InvestKrFundamentalsSnapshot,
     spec: FundamentalsPresetSpec,
@@ -301,32 +385,13 @@ def _passes_thresholds(
         "dividend_source": None,  # ROB-444: "dart" | "tvscreener"
     }
 
-    for spec_field, col_attr, require_positive in _THRESHOLD_CHECKS:
-        threshold = getattr(spec, spec_field)
-        if threshold is None:
-            continue
-        value = getattr(snap, col_attr)
-        if value is None:
-            return False, f"{col_attr} unavailable", provenance
-        if require_positive and value <= 0:
-            return False, f"{col_attr} not positive", provenance
-        # ROB-444: tvscreener dividend_yield is a PERCENT (e.g. 6.32 = 6.32%), but the
-        # shared spec threshold is a RATIO (min_dividend_yield=0.03 = 3%; US
-        # market_valuation stores dividend_yield as a ratio). Compare in ratio so the
-        # 3% gate actually filters — without this, 0.48% passed `0.48 < 0.03` = False.
-        # The row's displayed dividend_yield stays percent (metric label `{v:.2f}%`).
-        cmp_value = (
-            Decimal(str(value)) / Decimal("100")
-            if col_attr == "dividend_yield"
-            else Decimal(str(value))
-        )
-        threshold_dec = Decimal(str(threshold))
-        if spec_field in _MAX_FIELDS:
-            if cmp_value > threshold_dec:
-                return False, f"{col_attr} above max", provenance
-        else:
-            if cmp_value < threshold_dec:
-                return False, f"{col_attr} below min", provenance
+    # ROB-504 P1: the snapshot-column valuation thresholds are the cheap gate that
+    # precedes any DART consumption below; sharing _passes_valuation_only keeps the
+    # caller's "which symbols need a DART derivation" pre-filter in lock-step with the
+    # reasons emitted here (a symbol failing valuation is excluded before dart is read).
+    valuation_ok, valuation_reason = _passes_valuation_only(snap, spec)
+    if not valuation_ok:
+        return False, valuation_reason, provenance
 
     # ROB-433: 3y-avg growth — DART (exact 3년평균) first, tvscreener YoY proxy fallback.
     for spec_field, proxy_col, dart_attr in _GROWTH_3Y_AVG_CHECKS:
@@ -602,22 +667,18 @@ async def load_kr_fundamentals_preset_from_tv_snapshot(
                 if r.market_cap is not None:
                     market_cap_map[r.symbol] = float(r.market_cap)
 
-    # ROB-433: DART-first growth/streak. Only fetch the financial_fundamentals
-    # derivation when this preset uses a 3년평균 growth or 순이익 연속증가 threshold
-    # (valuation-only presets skip the extra query). DART coverage is sparse
-    # (operator backfill), so most symbols fall back to the tvscreener proxy / SKIP,
-    # surfaced honestly per row (growth_source/streak_source) + via the warning below.
+    # ROB-433: DART-first growth/streak/dividend. ROB-504 P1: derive only for the
+    # symbols that clear the cheap valuation gate (_dart_candidate_symbols) — a symbol
+    # failing valuation is excluded before _passes_thresholds ever reads its DART
+    # derivation, so deriving it is pure waste. This bounds both the
+    # financial_fundamentals query IN-list and the Python derivation to the valuation
+    # survivors instead of the whole ~4,250-symbol partition. Valuation-only presets
+    # get an empty candidate set and skip the query entirely. DART coverage is sparse
+    # (operator backfill), so surviving symbols still fall back to the tvscreener
+    # proxy / SKIP, surfaced honestly per row (growth_source/streak_source) + warning.
     dart_by_symbol: dict[str, Any] = {}
-    if symbols and (
-        spec.min_revenue_growth_3y_avg is not None
-        or spec.min_earnings_growth_3y_avg is not None
-        or spec.min_earnings_increase_streak_years is not None
-        # ROB-444: dividend payout/streak are DART-first too (tvscreener
-        # payout_ratio_ttm is ~2.6% sparse → it was the binding constraint).
-        or spec.min_payout_ratio is not None
-        or spec.min_dividend_paid_streak_years is not None
-        or spec.min_dividend_growth_streak_years is not None
-    ):
+    dart_symbols = _dart_candidate_symbols(snaps, spec, name_map)
+    if dart_symbols:
         from app.services.financial_fundamentals_snapshots.derive import (
             derive_fundamentals_metrics,
         )
@@ -629,7 +690,7 @@ async def load_kr_fundamentals_preset_from_tv_snapshot(
         try:
             period_rows = await FinancialFundamentalsSnapshotsRepository(
                 session
-            ).latest_periods_for_symbols(market="kr", symbols=symbols)
+            ).latest_periods_for_symbols(market="kr", symbols=dart_symbols)
             dart_by_symbol = {
                 sym: derive_fundamentals_metrics(
                     [_to_period(r) for r in rows], report_date=today_market_date
