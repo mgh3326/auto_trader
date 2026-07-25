@@ -6,6 +6,7 @@ This module knows about the database. It does NOT call external APIs.
 from __future__ import annotations
 
 import enum
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -15,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import TextClause
 
 from app.services.candles_sync_common import SyncTableConfig
+
+logger = logging.getLogger(__name__)
 
 
 class MarketKey(enum.StrEnum):
@@ -191,6 +194,7 @@ class DailyCandlesRepository:
         )
         if not normalized:
             return {}
+        venue = _crypto_venue_for_partition(partition)
         sql = text(
             "SELECT venue_symbol, id FROM crypto_instruments "
             "WHERE venue = :venue AND product = 'spot' "
@@ -199,11 +203,26 @@ class DailyCandlesRepository:
         result = await self._session.execute(
             sql,
             {
-                "venue": _crypto_venue_for_partition(partition),
+                "venue": venue,
                 "symbols": normalized,
             },
         )
-        return {str(row.venue_symbol): int(row.id) for row in result}
+        resolved_map = {str(row.venue_symbol): int(row.id) for row in result}
+        missing = [s for s in normalized if s not in resolved_map]
+        if missing:
+            logger.warning(
+                "Crypto instrument lookup returned incomplete results for venue=%r (partition=%r): "
+                "requested %d symbols, found %d, missing %d symbol(s) (e.g. %s). "
+                "Verify crypto_instruments table is seeded with venue=%r.",
+                venue,
+                partition,
+                len(normalized),
+                len(resolved_map),
+                len(missing),
+                missing[:5],
+                venue,
+            )
+        return resolved_map
 
     async def _resolve_instrument_id(self, *, symbol: str, partition: str) -> int:
         """Single-symbol identity resolver. Raises ``LookupError`` if not seeded."""
@@ -388,7 +407,13 @@ class DailyCandlesRepository:
                 iid = await self._resolve_instrument_id(
                     symbol=symbol, partition=partition
                 )
-            except LookupError:
+            except LookupError as exc:
+                logger.warning(
+                    "latest_time_utc(market=CRYPTO) failed to resolve instrument_id for symbol=%r partition=%r: %s",
+                    symbol,
+                    partition,
+                    exc,
+                )
                 return None
             sql = text(
                 "SELECT MAX(time) AS latest FROM public.crypto_candles_1d "
@@ -438,7 +463,13 @@ class DailyCandlesRepository:
                 iid = await self._resolve_instrument_id(
                     symbol=symbol, partition=partition
                 )
-            except LookupError:
+            except LookupError as exc:
+                logger.warning(
+                    "fetch_range(market=CRYPTO) failed to resolve instrument_id for symbol=%r partition=%r: %s",
+                    symbol,
+                    partition,
+                    exc,
+                )
                 return []
             sql = text(
                 """
